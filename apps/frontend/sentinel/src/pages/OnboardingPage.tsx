@@ -392,7 +392,7 @@ function UserStep({ userName, setUserName, userContext, setUserContext }: {
       </div>
       <div className="space-y-2">
         <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Your Name</label>
-        <input value={userName} onChange={e => setUserName(e.target.value)} placeholder="e.g. Alexandre"
+        <input value={userName} onChange={e => setUserName(e.target.value)} placeholder="e.g. John Smith"
           className="input-field h-11" />
       </div>
       <div className="space-y-2">

@@ -1,4 +1,5 @@
 import os
+import asyncio
 
 from fastapi.testclient import TestClient
 
@@ -9,7 +10,9 @@ from app.config import settings
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.models import Session
 from app.models.system import SystemSetting
+from app.services.agent import ContextBuilder
 from app.services.onboarding_defaults import DEFAULT_SYSTEM_PROMPT, build_system_prompt
 from tests.fake_db import FakeDB
 
@@ -18,6 +21,10 @@ def _auth_headers(client: TestClient) -> dict[str, str]:
     login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
     assert login.status_code == 200
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+def _run(coro):
+    return asyncio.run(coro)
 
 
 def test_onboarding_prompt_when_user_skips_everything():
@@ -110,6 +117,170 @@ def test_onboarding_prompt_when_user_inputs_everything():
         assert persisted_prompt == expected_prompt
         assert settings.default_system_prompt == expected_prompt
         print(f"FULL_INPUT_PROMPT: {persisted_prompt}")
+    finally:
+        settings.default_system_prompt = old_prompt
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_context_assembly_when_user_skips_everything():
+    fake_db = FakeDB()
+    old_prompt = settings.default_system_prompt
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        headers = _auth_headers(client)
+        complete = client.post("/api/v1/onboarding/complete", json={}, headers=headers)
+        assert complete.status_code == 200
+
+        session = Session(user_id="dev-admin", status="active", title="context-skip")
+        fake_db.add(session)
+
+        builder = ContextBuilder(
+            default_system_prompt=settings.default_system_prompt,
+            available_tools={
+                "spawn_sub_agent",
+                "check_sub_agent",
+                "trigger_create",
+                "trigger_list",
+                "trigger_update",
+                "trigger_delete",
+            },
+        )
+        context = _run(builder.build(fake_db, session.id, pending_user_message="please automate recurring checks"))
+        system_messages = [m.content for m in context if getattr(m, "role", "") == "system"]
+
+        assert system_messages
+        first_system = system_messages[0]
+        assert DEFAULT_SYSTEM_PROMPT in first_system
+        assert "Current date and time:" in first_system
+        assert str(session.id) in first_system
+
+        assembled = "\n\n---\n\n".join(system_messages)
+        assert "## Delegation Policy" in assembled
+        assert "## Trigger Automation Policy" in assembled
+        assert "## Memory (pinned): Agent Identity" in assembled
+        assert "## Memory (pinned): User Profile" in assembled
+        assert "## Hierarchical Memory Policy" in assembled
+        print(f"SKIP_EVERYTHING_RUNTIME_CONTEXT:\n{assembled}")
+    finally:
+        settings.default_system_prompt = old_prompt
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_context_assembly_when_user_inputs_everything():
+    fake_db = FakeDB()
+    old_prompt = settings.default_system_prompt
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        headers = _auth_headers(client)
+
+        custom_prompt = build_system_prompt(
+            agent_name="Atlas",
+            agent_role=(
+                "You are a senior product-and-engineering copilot. Drive execution proactively and keep plans "
+                "actionable."
+            ),
+            agent_personality="Direct, pragmatic, and highly solution-oriented.",
+        )
+        create_agent_identity = client.post(
+            "/api/v1/memory",
+            json={
+                "content": (
+                    "You are Atlas.\n\n"
+                    "Role: Senior product-and-engineering copilot.\n\n"
+                    "Personality: Direct, pragmatic, and highly solution-oriented."
+                ),
+                "title": "Agent Identity",
+                "category": "core",
+                "importance": 100,
+                "pinned": True,
+            },
+            headers=headers,
+        )
+        assert create_agent_identity.status_code == 200
+
+        create_user_profile = client.post(
+            "/api/v1/memory",
+            json={
+                "content": (
+                    "The user's name is Alexandre.\n\n"
+                    "The user is building an autonomous multi-agent platform and prefers direct technical execution."
+                ),
+                "title": "User Profile",
+                "category": "core",
+                "importance": 90,
+                "pinned": True,
+            },
+            headers=headers,
+        )
+        assert create_user_profile.status_code == 200
+
+        complete = client.post(
+            "/api/v1/onboarding/complete",
+            json={"system_prompt": custom_prompt},
+            headers=headers,
+        )
+        assert complete.status_code == 200
+
+        session = Session(user_id="dev-admin", status="active", title="context-full")
+        fake_db.add(session)
+
+        builder = ContextBuilder(
+            default_system_prompt=settings.default_system_prompt,
+            available_tools={
+                "spawn_sub_agent",
+                "check_sub_agent",
+                "trigger_create",
+                "trigger_list",
+                "trigger_update",
+                "trigger_delete",
+            },
+        )
+        context = _run(builder.build(fake_db, session.id, pending_user_message="set up weekly status trigger"))
+        system_messages = [m.content for m in context if getattr(m, "role", "") == "system"]
+
+        assert system_messages
+        first_system = system_messages[0]
+        assert custom_prompt in first_system
+        assert str(session.id) in first_system
+
+        assembled = "\n\n---\n\n".join(system_messages)
+        assert "## Delegation Policy" in assembled
+        assert "## Trigger Automation Policy" in assembled
+        assert "## Memory (pinned): Agent Identity" in assembled
+        assert "You are Atlas." in assembled
+        assert "## Memory (pinned): User Profile" in assembled
+        assert "The user's name is Alexandre." in assembled
+        print(f"FULL_INPUT_RUNTIME_CONTEXT:\n{assembled}")
     finally:
         settings.default_system_prompt = old_prompt
         app.dependency_overrides.clear()
