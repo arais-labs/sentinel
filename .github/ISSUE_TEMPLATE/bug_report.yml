@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a reproducible problem in Sentinel or araiOS integration.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please include enough detail for us to reproduce and fix quickly.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the issue and the expected behavior.
+      placeholder: "Expected X, but saw Y."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Clear, minimal reproduction steps.
+      placeholder: |
+        1. Start stack with ...
+        2. Open ...
+        3. Click ...
+        4. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Git commit SHA, release tag, or branch.
+      placeholder: main@<sha>
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - Gateway
+        - Sentinel frontend
+        - Sentinel backend
+        - araiOS frontend
+        - araiOS backend
+        - Docker / Infra
+        - CLI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Paste logs, stack traces, or screenshots.
+      render: shell

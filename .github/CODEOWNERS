@@ -1,0 +1,7 @@
+# Default ownership
+* @arailex
+
+# Release and platform-critical paths
+/.github/ @arailex
+/infra/ @arailex
+/scripts/ @arailex
