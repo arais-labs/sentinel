@@ -1,0 +1,98 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-arai_stack}
+      POSTGRES_USER: ${POSTGRES_USER:-arai_stack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arai_stack}
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arai_stack} -d ${POSTGRES_DB:-arai_stack}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  araios-backend:
+    build:
+      context: .
+      dockerfile: infra/docker/araios-backend.dev.Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-arai_stack}:${POSTGRES_PASSWORD:-arai_stack}@postgres:5432/${POSTGRES_DB:-arai_stack}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-3600}
+      REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-604800}
+      PLATFORM_BOOTSTRAP_API_KEY: ${PLATFORM_BOOTSTRAP_API_KEY}
+    volumes:
+      - ./apps/backend/araios:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  sentinel-backend:
+    build:
+      context: .
+      dockerfile: infra/docker/sentinel-backend.dev.Dockerfile
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arai_stack}:${POSTGRES_PASSWORD:-arai_stack}@postgres:5432/${POSTGRES_DB:-arai_stack}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-3600}
+      REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-604800}
+      ARAIOS_URL: http://araios-backend:9000
+      DEV_TOKEN: disabled
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      BROWSER_LIVE_VIEW_ENABLED: "false"
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./apps/backend/sentinel:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      araios-backend:
+        condition: service_started
+
+  araios-frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm ci && VITE_BASE_PATH=/araios/ npm run dev -- --host --port 5174"
+    volumes:
+      - ./apps/frontend/araios:/app
+    depends_on:
+      araios-backend:
+        condition: service_started
+
+  sentinel-frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm ci && VITE_BASE_PATH=/sentinel/ VITE_ROUTER_BASENAME=/sentinel VITE_SENTINEL_API_BASE_URL=/sentinel/api/v1 VITE_PLATFORM_AUTH_BASE_URL=/platform/auth npm run dev -- --host --port 5173"
+    volumes:
+      - ./apps/frontend/sentinel:/app
+    depends_on:
+      sentinel-backend:
+        condition: service_started
+
+  gateway:
+    build:
+      context: .
+      dockerfile: infra/docker/gateway.dev.Dockerfile
+    image: arai-stack-gateway-dev
+    ports:
+      - "${STACK_PORT:-4747}:80"
+    depends_on:
+      araios-backend:
+        condition: service_started
+      sentinel-backend:
+        condition: service_started
+      araios-frontend:
+        condition: service_started
+      sentinel-frontend:
+        condition: service_started
+
+volumes:
+  pgdata_dev:

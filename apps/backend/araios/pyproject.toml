@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "araios-backend"
+version = "0.1.0"
+description = "araiOS backend (FastAPI)"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.115.0",
+  "uvicorn[standard]==0.30.6",
+  "sqlalchemy==2.0.35",
+  "psycopg2-binary==2.9.9",
+  "python-dotenv==1.0.1",
+  "httpx==0.27.2",
+  "PyJWT==2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.3",
+  "pytest-asyncio==0.24.0",
+  "black>=25.1.0,<26.0.0",
+]
+
+[tool.setuptools]
+py-modules = ["main", "config"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

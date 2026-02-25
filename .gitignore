@@ -1,0 +1,58 @@
+# Secrets / local env
+.env
+.env.*
+!.env.example
+.instances/
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+credentials.json
+secrets.json
+secrets.yaml
+secrets.yml
+secrets.toml
+.secrets
+.secrets.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build artifacts
+dist/
+build/
+*.tsbuildinfo
+
+# Local tooling / temp
+.tmp-license-venvs/
+reports/licenses/*.json
+tmp/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.pid
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+cd "$ROOT_DIR"
+
+staged_files="$(git diff --cached --name-only --diff-filter=ACMR)"
+if [[ -z "$staged_files" ]]; then
+  exit 0
+fi
+
+echo "Running pre-commit checks..."
+
+# 1) Whitespace and unresolved conflict markers.
+if ! git diff --cached --check --color=never; then
+  echo
+  echo "Pre-commit failed: fix whitespace errors shown above."
+  exit 1
+fi
+
+# 2) Enforce Black formatting for staged Python files.
+mapfile -t staged_python_files < <(echo "$staged_files" | grep -E '\.pyi?$' || true)
+if [[ "${#staged_python_files[@]}" -gt 0 ]]; then
+  if ! command -v black >/dev/null 2>&1; then
+    echo
+    echo "Pre-commit failed: 'black' is required for Python formatting checks."
+    echo "Install with: pip install black"
+    exit 1
+  fi
+
+  if ! black --check "${staged_python_files[@]}"; then
+    echo
+    echo "Pre-commit failed: run 'black <files>' and re-stage changes."
+    exit 1
+  fi
+fi
+
+# 3) Block common secret-bearing file names.
+blocked_paths_regex='(^|/)(\.env(\..*)?|.*\.pem|.*\.key|.*\.p12|.*\.pfx|id_rsa(\..*)?|id_ed25519(\..*)?|credentials\.json|secrets\.(json|ya?ml|toml))$'
+if echo "$staged_files" | grep -Eiq "$blocked_paths_regex"; then
+  echo
+  echo "Pre-commit failed: staged files include sensitive path patterns."
+  echo "Remove secret/cert/key files from the commit."
+  echo "$staged_files" | grep -Ei "$blocked_paths_regex" || true
+  exit 1
+fi
+
+# 4) Block very large files.
+max_size_bytes=$((5 * 1024 * 1024))
+while IFS= read -r file; do
+  [[ -z "$file" ]] && continue
+  if size="$(git cat-file -s ":$file" 2>/dev/null)"; then
+    if [[ "$size" -gt "$max_size_bytes" ]]; then
+      echo
+      echo "Pre-commit failed: '$file' is larger than 5MB."
+      exit 1
+    fi
+  fi
+done <<< "$staged_files"
+
+# 5) Heuristic secret scan on staged content (text files only).
+secret_value_regex='(AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[A-Za-z0-9_-]{35}|sk-[A-Za-z0-9]{20,}|-----BEGIN (RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----)'
+while IFS= read -r file; do
+  [[ -z "$file" ]] && continue
+  # Skip binary blobs.
+  if ! git show ":$file" | grep -Iq .; then
+    continue
+  fi
+  if git show ":$file" | grep -Eiq "$secret_value_regex"; then
+    echo
+    echo "Pre-commit failed: possible secret detected in staged file '$file'."
+    echo "If this is a test fixture, move it under explicit test fixtures and document it."
+    exit 1
+  fi
+done <<< "$staged_files"
+
+echo "Pre-commit checks passed."

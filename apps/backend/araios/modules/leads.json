@@ -1,0 +1,33 @@
+{
+  "name": "leads",
+  "label": "Leads",
+  "description": "Track and manage sales prospects and outreach",
+  "icon": "Users",
+  "type": "data",
+  "order": 10,
+  "fields": [
+    {"key": "name",             "label": "Full Name",       "type": "text",     "required": true},
+    {"key": "role",             "label": "Role",            "type": "text"},
+    {"key": "company",          "label": "Company",         "type": "text"},
+    {"key": "linkedin_url",     "label": "LinkedIn URL",    "type": "url"},
+    {"key": "status",           "label": "Status",          "type": "select",
+     "options": ["draft", "approved", "sent"]},
+    {"key": "last_contact",     "label": "Last Contact",    "type": "date"},
+    {"key": "next_action",      "label": "Next Action",     "type": "text"},
+    {"key": "message_draft",    "label": "Message Draft",   "type": "textarea"},
+    {"key": "approved_message", "label": "Approved Message","type": "textarea"},
+    {"key": "notes",            "label": "Notes",           "type": "textarea"}
+  ],
+  "list_config": {
+    "titleField":    "name",
+    "subtitleField": "company",
+    "badgeField":    "status",
+    "metaField":     "created_at",
+    "filterField":   "status"
+  },
+  "actions": [
+    {"id": "create", "label": "New Lead",  "placement": "sub-header", "type": "create"},
+    {"id": "delete", "label": "Delete",    "placement": "detail",     "type": "delete", "confirm": true}
+  ],
+  "secrets": []
+}
