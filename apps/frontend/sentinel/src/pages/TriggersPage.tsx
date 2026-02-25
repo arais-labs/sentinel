@@ -76,6 +76,30 @@ const modalDefault: ModalState = {
   useManualAction: false,
 };
 
+function readString(
+  source: Record<string, unknown>,
+  keys: string[],
+  fallback: string,
+): string {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return fallback;
+}
+
+function readNumber(
+  source: Record<string, unknown>,
+  keys: string[],
+  fallback: number,
+): number {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return fallback;
+}
+
 export function TriggersPage() {
   const navigate = useNavigate();
   const [triggers, setTriggers] = useState<Trigger[]>([]);
@@ -181,13 +205,13 @@ export function TriggersPage() {
       name: trigger.name,
       type: trigger.type,
       actionType: trigger.action_type,
-      cronExpr: isCron ? (trigger.config.expr || trigger.config.cron || '0 9 * * *') : '0 9 * * *',
-      heartbeatInterval: isHeartbeat ? (trigger.config.interval_seconds || trigger.config.interval || 3600) : 3600,
-      agentMsg: isAgentMsg ? (trigger.action_config.message || '') : '',
-      toolName: isToolCall ? (trigger.action_config.name || trigger.action_config.tool_name || '') : '',
-      toolArgs: isToolCall ? JSON.stringify(trigger.action_config.arguments || trigger.action_config.payload || {}, null, 2) : '{}',
-      httpUrl: isHttp ? (trigger.action_config.url || '') : '',
-      httpMethod: isHttp ? (trigger.action_config.method || 'POST') : 'POST',
+      cronExpr: isCron ? readString(trigger.config, ['expr', 'cron'], '0 9 * * *') : '0 9 * * *',
+      heartbeatInterval: isHeartbeat ? readNumber(trigger.config, ['interval_seconds', 'interval'], 3600) : 3600,
+      agentMsg: isAgentMsg ? readString(trigger.action_config, ['message'], '') : '',
+      toolName: isToolCall ? readString(trigger.action_config, ['name', 'tool_name'], '') : '',
+      toolArgs: isToolCall ? JSON.stringify(trigger.action_config.arguments ?? trigger.action_config.payload ?? {}, null, 2) : '{}',
+      httpUrl: isHttp ? readString(trigger.action_config, ['url'], '') : '',
+      httpMethod: isHttp ? readString(trigger.action_config, ['method'], 'POST') : 'POST',
       configText: JSON.stringify(trigger.config, null, 2),
       actionConfigText: JSON.stringify(trigger.action_config, null, 2),
       useManualConfig: false,

@@ -10,6 +10,7 @@ from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models.system import SystemSetting
+from app.services.onboarding_defaults import DEFAULT_SYSTEM_PROMPT, build_system_prompt
 from tests.fake_db import FakeDB
 
 
@@ -17,6 +18,102 @@ def _auth_headers(client: TestClient) -> dict[str, str]:
     login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
     assert login.status_code == 200
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+def test_onboarding_prompt_when_user_skips_everything():
+    fake_db = FakeDB()
+    old_prompt = settings.default_system_prompt
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        headers = _auth_headers(client)
+
+        complete = client.post("/api/v1/onboarding/complete", json={}, headers=headers)
+        assert complete.status_code == 200
+        assert complete.json()["completed"] is True
+
+        persisted_prompt = next(
+            (
+                row.value
+                for row in fake_db.storage[SystemSetting]
+                if row.key == "default_system_prompt"
+            ),
+            None,
+        )
+        assert persisted_prompt == DEFAULT_SYSTEM_PROMPT
+        assert settings.default_system_prompt == DEFAULT_SYSTEM_PROMPT
+        print(f"SKIP_EVERYTHING_PROMPT: {persisted_prompt}")
+    finally:
+        settings.default_system_prompt = old_prompt
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_onboarding_prompt_when_user_inputs_everything():
+    fake_db = FakeDB()
+    old_prompt = settings.default_system_prompt
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        headers = _auth_headers(client)
+
+        expected_prompt = build_system_prompt(
+            agent_name="Atlas",
+            agent_role=(
+                "You are a senior product-and-engineering copilot. Drive execution proactively and keep plans "
+                "actionable."
+            ),
+            agent_personality="Direct, pragmatic, and highly solution-oriented.",
+        )
+        complete = client.post(
+            "/api/v1/onboarding/complete",
+            json={"system_prompt": expected_prompt},
+            headers=headers,
+        )
+        assert complete.status_code == 200
+        assert complete.json()["completed"] is True
+
+        persisted_prompt = next(
+            (
+                row.value
+                for row in fake_db.storage[SystemSetting]
+                if row.key == "default_system_prompt"
+            ),
+            None,
+        )
+        assert persisted_prompt == expected_prompt
+        assert settings.default_system_prompt == expected_prompt
+        print(f"FULL_INPUT_PROMPT: {persisted_prompt}")
+    finally:
+        settings.default_system_prompt = old_prompt
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
 
 
 def test_onboarding_complete_creates_default_system_memories_and_prompt():

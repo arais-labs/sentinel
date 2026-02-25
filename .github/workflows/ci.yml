@@ -36,30 +36,31 @@ jobs:
         if: matrix.backend == 'sentinel'
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r apps/backend/sentinel/requirements.txt
+          python -m pip install -e "apps/backend/sentinel[dev]"
 
       - name: Test sentinel backend
         if: matrix.backend == 'sentinel'
         env:
           JWT_SECRET_KEY: ci-test-secret-key-with-32-bytes-minimum
           DEV_TOKEN: sentinel-dev-token
+          PYTHONPATH: .
         run: |
           cd apps/backend/sentinel
           python -m compileall app tests
-          pytest tests/test_auth_flow.py tests/test_validation.py tests/test_memory.py -q
+          python -m pytest tests/test_auth_flow.py tests/test_validation.py tests/test_memory.py tests/test_tools.py tests/test_onboarding.py tests/test_playwright.py -q
 
       - name: Install araios backend deps
         if: matrix.backend == 'araios'
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r apps/backend/araios/requirements.txt
+          python -m pip install -e "apps/backend/araios[dev]"
 
       - name: Test araios backend
         if: matrix.backend == 'araios'
         run: |
           cd apps/backend/araios
           python -m compileall app tests main.py
-          pytest tests -q
+          python -m pytest tests -q
 
   frontend-build:
     name: Frontend Build (${{ matrix.frontend.name }})

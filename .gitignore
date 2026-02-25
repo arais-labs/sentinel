@@ -24,11 +24,13 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 coverage.xml
+.venv/
 
 # Node
 node_modules/
@@ -45,6 +47,8 @@ build/
 # Local tooling / temp
 .tmp-license-venvs/
 reports/licenses/*.json
+apps/frontend/backend/
+apps/backend/araios/uv.lock
 tmp/
 *.log
 *.sqlite
