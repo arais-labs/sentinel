@@ -1,5 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.services.onboarding_defaults import DEFAULT_SYSTEM_PROMPT
+
 
 class Settings(BaseSettings):
     app_name: str = "Sentinel API"
@@ -59,11 +61,7 @@ class Settings(BaseSettings):
     tier_hard_anthropic_thinking_budget: int = 32000
     tier_hard_openai_reasoning_effort: str = "high"
     tier_hard_gemini_thinking_budget: int = 32000
-    default_system_prompt: str = (
-        "You are a secure operator assistant. Be concise, factual, and safe by default. "
-        "Use tools only when needed and report clear outcomes. "
-        "Prefer delegating bounded one-off tasks to sub-agents when continuity is not required."
-    )
+    default_system_prompt: str = DEFAULT_SYSTEM_PROMPT
     agent_loop_timeout: float = 1080.0
     agent_loop_cooldown: float = 1.5  # seconds between each agent loop iteration
     llm_max_retries: int = 3

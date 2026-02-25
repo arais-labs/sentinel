@@ -29,7 +29,7 @@ import type { MemoryEntry, MemoryListResponse, MemoryStats } from '../types/api'
 
 const categories = ['core', 'preference', 'project', 'correction'];
 
-const SYSTEM_MEMORY_TITLES = ['Agent Identity', 'User Profile', 'AraisOS Integration'];
+const SYSTEM_MEMORY_TITLES = ['Agent Identity', 'User Profile'];
 
 function isSystemMemory(entry: MemoryEntry): boolean {
   if (!entry.title) return false;

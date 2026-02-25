@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,12 +11,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
+from app.models import Memory
 from app.models.system import SystemSetting
+from app.services.onboarding_defaults import (
+    DEFAULT_AGENT_IDENTITY_MEMORY,
+    DEFAULT_SYSTEM_PROMPT,
+    DEFAULT_USER_PROFILE_MEMORY,
+)
 
 router = APIRouter()
+ARAIOS_BASE_URL_SETTING_KEY = "araios_integration_base_url"
+ARAIOS_AGENT_API_KEY_SETTING_KEY = "araios_integration_agent_api_key"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
 
 async def _upsert(db: AsyncSession, key: str, value: str) -> None:
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
@@ -25,6 +35,74 @@ async def _upsert(db: AsyncSession, key: str, value: str) -> None:
     else:
         setting.value = value
     await db.commit()
+
+
+async def _get_setting(db: AsyncSession, key: str) -> str | None:
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+    setting = result.scalars().first()
+    return setting.value if setting is not None else None
+
+
+def _with_default(value: str | None, default: str) -> str:
+    trimmed = (value or "").strip()
+    return trimmed or default
+
+
+async def _core_memory_by_title(db: AsyncSession, title: str) -> Memory | None:
+    result = await db.execute(
+        select(Memory).where(
+            Memory.title == title,
+            Memory.category == "core",
+            Memory.parent_id.is_(None),
+        )
+    )
+    return result.scalars().first()
+
+
+def _normalize_base_url(value: str | None) -> str:
+    normalized = (value or "").strip().rstrip("/")
+    if not normalized:
+        raise HTTPException(status_code=422, detail="AraiOS base URL is required")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(
+            status_code=422, detail="AraiOS base URL must be a valid http/https URL"
+        )
+    return normalized
+
+
+def _mask_secret(value: str | None) -> str | None:
+    if not value:
+        return None
+    if len(value) <= 8:
+        return "****"
+    return value[:4] + "..." + value[-4:]
+
+
+async def _ensure_default_system_memories(db: AsyncSession) -> None:
+    created = False
+    defaults: list[tuple[str, str, int]] = [
+        ("Agent Identity", DEFAULT_AGENT_IDENTITY_MEMORY, 100),
+        ("User Profile", DEFAULT_USER_PROFILE_MEMORY, 90),
+    ]
+    for title, content, importance in defaults:
+        existing = await _core_memory_by_title(db, title)
+        if existing is not None:
+            continue
+        db.add(
+            Memory(
+                title=title,
+                content=content,
+                category="core",
+                importance=importance,
+                pinned=True,
+                metadata_json={},
+            )
+        )
+        created = True
+
+    if created:
+        await db.commit()
 
 
 def _rebuild_llm_provider():
@@ -55,29 +133,57 @@ def _rebuild_llm_provider():
         return None
 
     tier_defs = [
-        ("fast", settings.tier_fast_anthropic_model,
-         settings.tier_fast_openai_model, settings.tier_fast_codex_model,
-         settings.tier_fast_gemini_model,
-         settings.tier_fast_max_tokens, settings.tier_fast_temperature,
-         settings.tier_fast_anthropic_thinking_budget, settings.tier_fast_openai_reasoning_effort,
-         settings.tier_fast_gemini_thinking_budget),
-        ("normal", settings.tier_normal_anthropic_model,
-         settings.tier_normal_openai_model, settings.tier_normal_codex_model,
-         settings.tier_normal_gemini_model,
-         settings.tier_normal_max_tokens, settings.tier_normal_temperature,
-         settings.tier_normal_anthropic_thinking_budget, settings.tier_normal_openai_reasoning_effort,
-         settings.tier_normal_gemini_thinking_budget),
-        ("hard", settings.tier_hard_anthropic_model,
-         settings.tier_hard_openai_model, settings.tier_hard_codex_model,
-         settings.tier_hard_gemini_model,
-         settings.tier_hard_max_tokens, settings.tier_hard_temperature,
-         settings.tier_hard_anthropic_thinking_budget, settings.tier_hard_openai_reasoning_effort,
-         settings.tier_hard_gemini_thinking_budget),
+        (
+            "fast",
+            settings.tier_fast_anthropic_model,
+            settings.tier_fast_openai_model,
+            settings.tier_fast_codex_model,
+            settings.tier_fast_gemini_model,
+            settings.tier_fast_max_tokens,
+            settings.tier_fast_temperature,
+            settings.tier_fast_anthropic_thinking_budget,
+            settings.tier_fast_openai_reasoning_effort,
+            settings.tier_fast_gemini_thinking_budget,
+        ),
+        (
+            "normal",
+            settings.tier_normal_anthropic_model,
+            settings.tier_normal_openai_model,
+            settings.tier_normal_codex_model,
+            settings.tier_normal_gemini_model,
+            settings.tier_normal_max_tokens,
+            settings.tier_normal_temperature,
+            settings.tier_normal_anthropic_thinking_budget,
+            settings.tier_normal_openai_reasoning_effort,
+            settings.tier_normal_gemini_thinking_budget,
+        ),
+        (
+            "hard",
+            settings.tier_hard_anthropic_model,
+            settings.tier_hard_openai_model,
+            settings.tier_hard_codex_model,
+            settings.tier_hard_gemini_model,
+            settings.tier_hard_max_tokens,
+            settings.tier_hard_temperature,
+            settings.tier_hard_anthropic_thinking_budget,
+            settings.tier_hard_openai_reasoning_effort,
+            settings.tier_hard_gemini_thinking_budget,
+        ),
     ]
 
     tiers: dict[str, TierConfig] = {}
-    for (tier_name, anth_model, oai_model, codex_model, gem_model,
-         max_tok, temp, thinking_budget, reasoning_effort, gem_thinking_budget) in tier_defs:
+    for (
+        tier_name,
+        anth_model,
+        oai_model,
+        codex_model,
+        gem_model,
+        max_tok,
+        temp,
+        thinking_budget,
+        reasoning_effort,
+        gem_thinking_budget,
+    ) in tier_defs:
         anth_cfg = None
         oai_cfg = None
         gem_cfg = None
@@ -171,6 +277,7 @@ def _rebuild_agent_loop(app_state) -> None:
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
 
+
 @router.get("/status")
 async def get_status(
     user: TokenPayload = Depends(require_auth),
@@ -179,6 +286,74 @@ async def get_status(
     key = f"onboarding_completed:{user.sub}"
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
     return {"completed": result.scalars().first() is not None}
+
+
+@router.get("/defaults")
+async def get_onboarding_defaults(
+    user: TokenPayload = Depends(require_auth),
+) -> dict[str, str | bool | None]:
+    _ = user
+    return {"araios_runtime_url": settings.araios_url}
+
+
+@router.get("/araios")
+async def get_araios_integration(
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str | bool | None]:
+    _ = user
+    base_url = await _get_setting(db, ARAIOS_BASE_URL_SETTING_KEY)
+    agent_api_key = await _get_setting(db, ARAIOS_AGENT_API_KEY_SETTING_KEY)
+    configured = bool((base_url or "").strip() and (agent_api_key or "").strip())
+    return {
+        "configured": configured,
+        "base_url": base_url,
+        "masked_agent_api_key": _mask_secret(agent_api_key),
+    }
+
+
+class SetAraiOSIntegrationRequest(BaseModel):
+    enabled: bool = True
+    base_url: str | None = None
+    agent_api_key: str | None = None
+
+
+@router.post("/araios")
+async def set_araios_integration(
+    payload: SetAraiOSIntegrationRequest,
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str | bool | None]:
+    _ = user
+    if not payload.enabled:
+        await _delete_setting(db, ARAIOS_BASE_URL_SETTING_KEY)
+        await _delete_setting(db, ARAIOS_AGENT_API_KEY_SETTING_KEY)
+        return {"success": True, "configured": False}
+
+    existing_base_url = await _get_setting(db, ARAIOS_BASE_URL_SETTING_KEY)
+    existing_agent_api_key = await _get_setting(db, ARAIOS_AGENT_API_KEY_SETTING_KEY)
+
+    base_url = (
+        _normalize_base_url(payload.base_url)
+        if payload.base_url is not None
+        else _normalize_base_url(existing_base_url)
+    )
+    agent_api_key = (
+        (payload.agent_api_key or "").strip()
+        if payload.agent_api_key is not None
+        else (existing_agent_api_key or "").strip()
+    )
+    if not agent_api_key:
+        raise HTTPException(status_code=422, detail="AraiOS agent API key is required")
+
+    await _upsert(db, ARAIOS_BASE_URL_SETTING_KEY, base_url)
+    await _upsert(db, ARAIOS_AGENT_API_KEY_SETTING_KEY, agent_api_key)
+    return {
+        "success": True,
+        "configured": True,
+        "base_url": base_url,
+        "masked_agent_api_key": _mask_secret(agent_api_key),
+    }
 
 
 class CompleteOnboardingRequest(BaseModel):
@@ -193,12 +368,13 @@ async def complete_onboarding(
     request: Request = None,
 ) -> dict:
     await _upsert(db, f"onboarding_completed:{user.sub}", datetime.now(UTC).isoformat())
-    if payload.system_prompt and payload.system_prompt.strip():
-        settings.default_system_prompt = payload.system_prompt.strip()
-        await _upsert(db, "default_system_prompt", payload.system_prompt.strip())
-        # Rebuild agent loop so the new prompt takes effect immediately
-        if request is not None:
-            _rebuild_agent_loop(request.app.state)
+    prompt = _with_default(payload.system_prompt, DEFAULT_SYSTEM_PROMPT)
+    settings.default_system_prompt = prompt
+    await _upsert(db, "default_system_prompt", prompt)
+    await _ensure_default_system_memories(db)
+    # Rebuild agent loop so the new prompt takes effect immediately
+    if request is not None:
+        _rebuild_agent_loop(request.app.state)
     return {"completed": True}
 
 
@@ -244,6 +420,7 @@ async def get_api_keys_status(
     user: TokenPayload = Depends(require_auth),
 ) -> dict:
     """Return which providers are configured (without exposing actual keys)."""
+
     def _mask(value: str | None) -> str | None:
         if not value:
             return None
@@ -262,7 +439,9 @@ async def get_api_keys_status(
         "providers": {
             "anthropic": {
                 "configured": bool(anthropic_key or anthropic_oauth),
-                "auth_method": "oauth" if anthropic_oauth else ("api_key" if anthropic_key else None),
+                "auth_method": (
+                    "oauth" if anthropic_oauth else ("api_key" if anthropic_key else None)
+                ),
                 "masked_key": _mask(anthropic_oauth or anthropic_key),
             },
             "openai": {

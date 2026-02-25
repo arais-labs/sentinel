@@ -506,6 +506,7 @@
   <script>
     const SESSION_KEY = "sentinel.araios.auth.session";
     const BOOTSTRAP_PENDING_KEY = "sentinel.araios.bootstrap.pending";
+    const ONBOARDING_PREFILL_KEY = "sentinel.onboarding.araios.prefill";
 
     const loginArea = document.getElementById("login-area");
     const appArea = document.getElementById("app-area");
@@ -573,6 +574,17 @@
 
     function clearPendingBootstrap() {
       sessionStorage.removeItem(BOOTSTRAP_PENDING_KEY);
+    }
+
+    function writeOnboardingPrefill(payload) {
+      if (!payload?.agent_api_key) return;
+      sessionStorage.setItem(
+        ONBOARDING_PREFILL_KEY,
+        JSON.stringify({
+          agent_api_key: payload.agent_api_key,
+          created_at: Date.now(),
+        }),
+      );
     }
 
     function setLaunchLocked(locked) {
@@ -726,6 +738,7 @@
       setStatus("Activating admin session...");
       try {
         const body = await exchangeApiKey(pending.admin_api_key);
+        writeOnboardingPrefill(pending);
         writeSession(body);
         clearPendingBootstrap();
         await renderFromSession();

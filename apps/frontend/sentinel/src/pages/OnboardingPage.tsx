@@ -3,9 +3,16 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
   Zap, ArrowRight, ArrowLeft, Check, Bot, User, Plug, Flag,
-  Eye, EyeOff, Loader2, ChevronRight,
+  Eye, EyeOff, Loader2,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import {
+  buildAgentIdentityMemoryContent,
+  buildSystemPrompt,
+  buildUserProfileMemoryContent,
+  resolveAgentIdentity,
+  resolveUserProfile,
+} from '../lib/onboarding-defaults';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -14,6 +21,11 @@ interface StepMeta {
   label: string;
   icon: React.ReactNode;
   optional?: boolean;
+}
+
+interface StarterPromptOption {
+  label: string;
+  prompt: string;
 }
 
 const STEPS: StepMeta[] = [
@@ -25,35 +37,43 @@ const STEPS: StepMeta[] = [
   { id: 'done',     label: 'Launch',        icon: <Flag size={14} /> },
 ];
 
+const STARTER_PROMPT_OPTIONS: StarterPromptOption[] = [
+  {
+    label: 'Priority Plan',
+    prompt: 'Map my top priorities for this workspace, propose the first 3 high-impact automations, and execute the safest one now.',
+  },
+  {
+    label: 'AraiOS Discovery',
+    prompt: 'Use araios_api to inspect /api/agent, summarize available modules, and recommend the best module to build first.',
+  },
+  {
+    label: 'Trigger Setup',
+    prompt: 'Design and create a trigger strategy for this workspace: one daily summary trigger, one failure-alert trigger, and one webhook trigger.',
+  },
+  {
+    label: 'Memory Audit',
+    prompt: 'Audit my current memory structure, propose a cleaner hierarchy with root categories, and apply the highest-value memory improvements.',
+  },
+];
+
+const ONBOARDING_ARAIOS_PREFILL_KEY = 'sentinel.onboarding.araios.prefill';
+
 // ── helper ───────────────────────────────────────────────────────────────────
 
-function araisOSMemoryContent(url: string, token: string): string {
-  const base = url.replace(/\/$/, '');
-  return `## AraisOS Integration
+function normalizeAraisUrl(value: string): string {
+  return value.trim().replace(/\/+$/, '');
+}
 
-AraisOS is a modular agent platform. The user may ask you to use, create, or manage modules on their AraisOS deployment.
-
-### Connection
-- Base URL: ${base}
-- Auth header: Authorization: Bearer ${token}
-
-### MANDATORY first step for any AraisOS task
-Before doing anything AraisOS-related, ALWAYS run:
-  GET ${base}/api/agent
-This endpoint returns the complete API reference: all available endpoints, the module catalog, permission levels, and instructions for registering new tools. Read it in full before taking any action. Do NOT guess or assume endpoints — only use what the guide documents.
-
-### Key HTTP status rules
-- 200 → success
-- 202 → queued for admin approval — do NOT retry
-- 400 → check the \`detail\` field for the error
-- 403 → permission denied
-
-### Core operations
-- POST ${base}/api/coordination — post status updates or hand off work to other agents
-- POST ${base}/api/modules — register a new tool/module (requires human admin approval before activation)
-
-### Memory strategy
-After your first GET /api/agent call, store key endpoints, available modules, and capability gaps to memory so future tasks don't need to re-fetch the guide from scratch.`;
+function isLocalGatewayAraisUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    const isLoopbackHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    const path = parsed.pathname.replace(/\/+$/, '');
+    return isLoopbackHost && path === '/araios';
+  } catch {
+    return false;
+  }
 }
 
 // ── sub-components ───────────────────────────────────────────────────────────
@@ -385,10 +405,12 @@ function UserStep({ userName, setUserName, userContext, setUserContext }: {
   );
 }
 
-function AraisOSStep({ use, setUse, url, setUrl, token, setToken }: {
+function AraisOSStep({ use, setUse, url, setUrl, token, setToken, autoFilled, configured }: {
   use: boolean | null; setUse: (v: boolean) => void;
   url: string; setUrl: (v: string) => void;
   token: string; setToken: (v: string) => void;
+  autoFilled: boolean;
+  configured: boolean;
 }) {
   const [showToken, setShowToken] = useState(false);
 
@@ -400,6 +422,17 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken }: {
           AraisOS is a platform for creating and managing custom agent modules. Connecting it lets your agent discover, use, and register new capabilities.
         </p>
       </div>
+
+      {autoFilled && (
+        <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/25 px-4 py-3 text-[11px] text-emerald-400">
+          Auto-filled from this stack (one-time handoff). Review and continue.
+        </div>
+      )}
+      {!autoFilled && configured && (
+        <div className="rounded-lg bg-[color:var(--surface-2)] border border-[color:var(--border-subtle)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
+          AraiOS integration is already configured for this workspace. Enter a new key only if you want to rotate it.
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         {[true, false].map(val => (
@@ -429,7 +462,7 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken }: {
               className="input-field h-11 font-mono text-sm" />
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Agent Bearer Token</label>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Agent API Key</label>
             <div className="relative">
               <input type={showToken ? 'text' : 'password'}
                 value={token} onChange={e => setToken(e.target.value)}
@@ -441,13 +474,12 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken }: {
               </button>
             </div>
             <p className="text-[10px] text-[color:var(--text-muted)]">
-              This is your <span className="font-bold text-[color:var(--text-primary)]">agent API token</span>, not an admin token.
-              It will be sent as <span className="font-mono">Authorization: Bearer &lt;token&gt;</span> on every AraisOS request.
-              Find it in your AraisOS account settings under API tokens.
+              Use the long-lived <span className="font-bold text-[color:var(--text-primary)]">agent API key</span>, not an admin key.
+              Sentinel stores it securely in your workspace and the <span className="font-mono">araios_api</span> tool handles token exchange automatically.
             </p>
           </div>
           <div className="rounded-lg bg-[color:var(--surface-2)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
-            Your agent will call <span className="font-mono text-[color:var(--text-primary)]">GET {url || '<base_url>'}/api/agent</span> first to discover all available endpoints and modules before acting.
+            After setup, ask Sentinel to call <span className="font-mono text-[color:var(--text-primary)]">araios_api</span> with path <span className="font-mono text-[color:var(--text-primary)]">/api/agent</span> to discover available modules and endpoints.
           </div>
         </div>
       )}
@@ -455,9 +487,10 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken }: {
   );
 }
 
-function DoneStep({ firstMessage, setFirstMessage, isCompleting, completedItems }: {
+function DoneStep({ firstMessage, setFirstMessage, isCompleting, completedItems, promptOptions }: {
   firstMessage: string; setFirstMessage: (v: string) => void;
   isCompleting: boolean; completedItems: string[];
+  promptOptions: StarterPromptOption[];
 }) {
   return (
     <div className="flex flex-col gap-6 max-w-lg">
@@ -489,11 +522,23 @@ function DoneStep({ firstMessage, setFirstMessage, isCompleting, completedItems 
 
       {!isCompleting && (
         <div className="space-y-2">
+          <div className="flex flex-wrap gap-2">
+            {promptOptions.map((option) => (
+              <button
+                key={option.label}
+                type="button"
+                onClick={() => setFirstMessage(option.prompt)}
+                className="px-2.5 py-1.5 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-colors"
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">First task for your agent</label>
           <textarea
             value={firstMessage}
             onChange={e => setFirstMessage(e.target.value)}
-            placeholder="e.g. Explore the AraisOS API and tell me what modules are available, then create a plan for building a code review module."
+            placeholder="e.g. Map my top priorities and launch the safest first automation."
             className="input-field min-h-[100px] py-3 resize-none text-sm leading-relaxed"
             autoFocus
           />
@@ -532,19 +577,110 @@ export function OnboardingPage() {
   const [useAraisOS, setUseAraisOS] = useState<boolean | null>(null);
   const [araisUrl, setAraisUrl] = useState('');
   const [araisToken, setAraisToken] = useState('');
+  const [araisAutoFilled, setAraisAutoFilled] = useState(false);
+  const [araisConfigured, setAraisConfigured] = useState(false);
 
   // Done step
   const [firstMessage, setFirstMessage] = useState(
-    'Explore the AraisOS API and tell me what modules are available, then create a plan for building a code review module.'
+    STARTER_PROMPT_OPTIONS[0].prompt
   );
   const [isCompleting, setIsCompleting] = useState(false);
   const [completedItems, setCompletedItems] = useState<string[]>([]);
 
   const isLastStep = step === STEPS.length - 1;
 
+  useEffect(() => {
+    let mounted = true;
+
+    async function initializeAraisDefaults() {
+      const origin = window.location.origin.replace(/\/$/, '');
+      const publicFallbackUrl = `${origin}/araios`;
+      let runtimeFallbackUrl = publicFallbackUrl;
+      let persistedBaseUrl = '';
+      let persistedConfigured = false;
+
+      try {
+        const defaults = await api.get<{ araios_runtime_url?: string | null }>('/onboarding/defaults');
+        const configuredRuntimeUrl = normalizeAraisUrl(defaults.araios_runtime_url || '');
+        if (configuredRuntimeUrl) {
+          runtimeFallbackUrl = configuredRuntimeUrl;
+        }
+      } catch {
+        runtimeFallbackUrl = publicFallbackUrl;
+      }
+
+      try {
+        const integration = await api.get<{ configured?: boolean; base_url?: string | null }>('/onboarding/araios');
+        persistedConfigured = !!integration.configured;
+        persistedBaseUrl = normalizeAraisUrl(integration.base_url || '');
+      } catch {
+        persistedConfigured = false;
+        persistedBaseUrl = '';
+      }
+
+      let didAutofill = false;
+      try {
+        const raw = sessionStorage.getItem(ONBOARDING_ARAIOS_PREFILL_KEY);
+        if (!raw) {
+          if (mounted) {
+            const resolved = persistedBaseUrl || runtimeFallbackUrl;
+            setAraisUrl(resolved);
+            if (persistedConfigured) {
+              setUseAraisOS(true);
+              setAraisConfigured(true);
+              setAraisAutoFilled(true);
+            }
+          }
+          return;
+        }
+
+        const parsed = JSON.parse(raw) as { base_url?: string; agent_api_key?: string };
+        const prefillBaseUrl = normalizeAraisUrl(parsed.base_url || '');
+        const agentApiKey = (parsed.agent_api_key || '').trim();
+        const resolvedBaseUrl = prefillBaseUrl
+          ? (isLocalGatewayAraisUrl(prefillBaseUrl) ? runtimeFallbackUrl : prefillBaseUrl)
+          : runtimeFallbackUrl;
+
+        if (mounted && resolvedBaseUrl) {
+          setAraisUrl(resolvedBaseUrl);
+        }
+        if (mounted && agentApiKey) {
+          setAraisToken(agentApiKey);
+          setUseAraisOS(true);
+        }
+
+        if (prefillBaseUrl || agentApiKey) {
+          didAutofill = true;
+        }
+      } catch {
+        if (mounted) {
+          setAraisUrl(runtimeFallbackUrl);
+        }
+      } finally {
+        // One-time prefill only: remove immediately after first read.
+        sessionStorage.removeItem(ONBOARDING_ARAIOS_PREFILL_KEY);
+        if (mounted && didAutofill) {
+          setAraisAutoFilled(true);
+        }
+        if (mounted && persistedConfigured) {
+          setAraisConfigured(true);
+        }
+      }
+    }
+
+    void initializeAraisDefaults();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   function canProceed(): boolean {
     const id = STEPS[step].id;
-    if (id === 'araios') return useAraisOS !== null;
+    if (id === 'araios') {
+      if (useAraisOS === null) return false;
+      if (useAraisOS === false) return true;
+      return !!araisUrl.trim() && (!!araisToken.trim() || araisConfigured);
+    }
     return true; // all other steps are optional content-wise
   }
 
@@ -553,6 +689,9 @@ export function OnboardingPage() {
     const items: string[] = [];
 
     try {
+      const identity = resolveAgentIdentity(agentName, agentRole, agentPersonality);
+      const userProfile = resolveUserProfile(userName, userContext);
+
       // 1. Save API keys
       const hasAnthropic = !!(apiKey || oauthToken);
       const hasOpenai = !!(openaiApiKey || openaiOauthToken);
@@ -574,67 +713,43 @@ export function OnboardingPage() {
       }
 
       // 2. Agent identity memory
-      if (agentName || agentRole) {
-        const content = [
-          agentName && `You are ${agentName}.`,
-          agentRole,
-          agentPersonality && `\nPersonality: ${agentPersonality}`,
-        ].filter(Boolean).join(' ');
-        await api.post('/memory', {
-          content,
-          title: 'Agent Identity',
-          category: 'core',
-          importance: 100,
-          pinned: true,
-        });
-        items.push('Agent identity memory created');
-        setCompletedItems([...items]);
-      }
+      await api.post('/memory', {
+        content: buildAgentIdentityMemoryContent(identity),
+        title: 'Agent Identity',
+        category: 'core',
+        importance: 100,
+        pinned: true,
+      });
+      items.push('Agent identity memory created');
+      setCompletedItems([...items]);
 
       // 3. User profile memory
-      if (userName || userContext) {
-        const content = [
-          userName && `The user's name is ${userName}.`,
-          userContext,
-        ].filter(Boolean).join('\n\n');
-        await api.post('/memory', {
-          content,
-          title: 'User Profile',
-          category: 'core',
-          importance: 90,
-          pinned: true,
-        });
-        items.push('User profile memory created');
-        setCompletedItems([...items]);
-      }
+      await api.post('/memory', {
+        content: buildUserProfileMemoryContent(userProfile),
+        title: 'User Profile',
+        category: 'core',
+        importance: 90,
+        pinned: true,
+      });
+      items.push('User profile memory created');
+      setCompletedItems([...items]);
 
-      // 4. AraisOS memory
-      if (useAraisOS && araisUrl && araisToken) {
-        await api.post('/memory', {
-          content: araisOSMemoryContent(araisUrl, araisToken),
-          title: 'AraisOS Integration',
-          category: 'core',
-          importance: 100,
-          pinned: true,
+      // 4. Persist AraiOS integration settings
+      if (useAraisOS === true) {
+        await api.post('/onboarding/araios', {
+          enabled: true,
+          base_url: normalizeAraisUrl(araisUrl),
+          agent_api_key: araisToken.trim() || undefined,
         });
-        items.push('AraisOS integration memory created');
+        items.push('AraiOS integration configured');
         setCompletedItems([...items]);
+      } else if (useAraisOS === false) {
+        await api.post('/onboarding/araios', { enabled: false });
       }
 
       // 5. Mark onboarding complete + persist system prompt
-      const systemPromptParts: string[] = [];
-      if (agentName || agentRole) {
-        if (agentName) systemPromptParts.push(`You are ${agentName}.`);
-        if (agentRole) systemPromptParts.push(agentRole);
-      }
-      systemPromptParts.push(
-        'Be concise, factual, and safe by default.',
-        'Use tools only when needed and report clear outcomes.',
-        'Prefer delegating bounded one-off tasks to sub-agents when continuity is not required.',
-      );
-      if (agentPersonality) systemPromptParts.push(`\nPersonality: ${agentPersonality}`);
       await api.post('/onboarding/complete', {
-        system_prompt: systemPromptParts.join(' '),
+        system_prompt: buildSystemPrompt(identity),
       });
       items.push('Workspace ready');
       setCompletedItems([...items]);
@@ -678,8 +793,27 @@ export function OnboardingPage() {
               {step === 1 && <LLMStep apiKey={apiKey} setApiKey={setApiKey} oauthToken={oauthToken} setOauthToken={setOauthToken} openaiApiKey={openaiApiKey} setOpenaiApiKey={setOpenaiApiKey} openaiOauthToken={openaiOauthToken} setOpenaiOauthToken={setOpenaiOauthToken} geminiApiKey={geminiApiKey} setGeminiApiKey={setGeminiApiKey} />}
               {step === 2 && <AgentStep name={agentName} setName={setAgentName} role={agentRole} setRole={setAgentRole} personality={agentPersonality} setPersonality={setAgentPersonality} />}
               {step === 3 && <UserStep userName={userName} setUserName={setUserName} userContext={userContext} setUserContext={setUserContext} />}
-              {step === 4 && <AraisOSStep use={useAraisOS} setUse={setUseAraisOS} url={araisUrl} setUrl={setAraisUrl} token={araisToken} setToken={setAraisToken} />}
-              {step === 5 && <DoneStep firstMessage={firstMessage} setFirstMessage={setFirstMessage} isCompleting={isCompleting} completedItems={completedItems} />}
+              {step === 4 && (
+                <AraisOSStep
+                  use={useAraisOS}
+                  setUse={setUseAraisOS}
+                  url={araisUrl}
+                  setUrl={setAraisUrl}
+                  token={araisToken}
+                  setToken={setAraisToken}
+                  autoFilled={araisAutoFilled}
+                  configured={araisConfigured}
+                />
+              )}
+              {step === 5 && (
+                <DoneStep
+                  firstMessage={firstMessage}
+                  setFirstMessage={setFirstMessage}
+                  isCompleting={isCompleting}
+                  completedItems={completedItems}
+                  promptOptions={STARTER_PROMPT_OPTIONS}
+                />
+              )}
             </div>
           </div>
 

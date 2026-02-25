@@ -19,22 +19,39 @@ def is_live_view_available() -> bool:
         return False
 
 
+def _origin_base_from_url(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return urlunparse((parsed.scheme, parsed.netloc, "/vnc/vnc.html", "", "", ""))
+
+
 def build_live_view_url(request: Request) -> str:
     public_url = (settings.browser_live_public_url or "").strip()
     if public_url:
         base = public_url
     else:
-        parsed = urlparse(str(request.base_url))
-        scheme = parsed.scheme or "http"
+        origin_base = _origin_base_from_url(request.headers.get("origin"))
+        if not origin_base:
+            origin_base = _origin_base_from_url(request.headers.get("referer"))
 
-        # If request is coming through a gateway/proxy (different port than app port),
-        # build a URL that stays on the same public origin and hits the proxied /vnc path.
-        if parsed.netloc and parsed.port not in {None, settings.app_port}:
-            base = urlunparse((scheme, parsed.netloc, "/vnc/vnc.html", "", "", ""))
+        if origin_base:
+            base = origin_base
         else:
-            host = settings.browser_live_host
-            netloc = f"{host}:{settings.browser_live_port}"
-            base = urlunparse((scheme, netloc, settings.browser_live_path, "", "", ""))
+            parsed = urlparse(str(request.base_url))
+            scheme = parsed.scheme or "http"
+
+            # If request is coming through a gateway/proxy (different port than app port),
+            # build a URL that stays on the same public origin and hits the proxied /vnc path.
+            if parsed.netloc and parsed.port not in {None, settings.app_port}:
+                base = urlunparse((scheme, parsed.netloc, "/vnc/vnc.html", "", "", ""))
+            else:
+                host = settings.browser_live_host
+                netloc = f"{host}:{settings.browser_live_port}"
+                base = urlunparse((scheme, netloc, settings.browser_live_path, "", "", ""))
 
     parsed_base = urlparse(base)
     path = parsed_base.path or settings.browser_live_path

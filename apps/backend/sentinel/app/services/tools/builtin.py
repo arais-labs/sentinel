@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import io
 import ipaddress
 import json
@@ -10,7 +11,8 @@ import shlex
 import socket
 import sys
 import traceback
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -20,7 +22,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Memory, Session, SubAgentTask
+from app.models import Memory, Session, SubAgentTask, SystemSetting
 from app.services.embeddings import EmbeddingService
 from app.services.memory_search import MemorySearchService
 from app.services.tools.browser_tool import BrowserManager
@@ -35,11 +37,25 @@ from app.services.tools.trigger_tools import (
 
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
 _ALLOWED_MEMORY_CATEGORIES = {"core", "preference", "project", "correction"}
+_ARAIOS_BASE_URL_SETTING_KEY = "araios_integration_base_url"
+_ARAIOS_AGENT_API_KEY_SETTING_KEY = "araios_integration_agent_api_key"
+_ARAIOS_TOKEN_REFRESH_BUFFER_SECONDS = 30
 _PYTHON_XAGENT_BASE_DIR = Path(
     os.environ.get("PYTHON_XAGENT_BASE_DIR", "/tmp/sentinel/python_xagent")
 ).expanduser()
 _MAX_PYTHON_XAGENT_OUTPUT_CHARS = 20_000
 _python_xagent_runtime_lock = asyncio.Lock()
+
+
+@dataclass(slots=True)
+class _AraiOSTokenCacheEntry:
+    access_token: str
+    refresh_token: str | None
+    expires_at: datetime
+
+
+_araios_token_cache: dict[str, _AraiOSTokenCacheEntry] = {}
+_araios_token_cache_lock = asyncio.Lock()
 
 
 def build_default_registry(
@@ -64,18 +80,29 @@ def build_default_registry(
     registry.register(_browser_reset_tool(manager))
 
     if session_factory is not None:
-        registry.register(_memory_store_tool(session_factory=session_factory, embedding_service=embedding_service))
+        registry.register(_araios_api_tool(session_factory=session_factory))
+        registry.register(
+            _memory_store_tool(session_factory=session_factory, embedding_service=embedding_service)
+        )
         registry.register(_memory_roots_tool(session_factory=session_factory))
         registry.register(_memory_get_node_tool(session_factory=session_factory))
         registry.register(_memory_list_children_tool(session_factory=session_factory))
-        registry.register(_memory_update_tool(session_factory=session_factory, embedding_service=embedding_service))
+        registry.register(
+            _memory_update_tool(
+                session_factory=session_factory, embedding_service=embedding_service
+            )
+        )
         registry.register(_memory_touch_tool(session_factory=session_factory))
         registry.register(trigger_create_tool(session_factory=session_factory))
         registry.register(trigger_list_tool(session_factory=session_factory))
         registry.register(trigger_update_tool(session_factory=session_factory))
         registry.register(trigger_delete_tool(session_factory=session_factory))
     if session_factory is not None and memory_search_service is not None:
-        registry.register(_memory_search_tool(session_factory=session_factory, memory_search_service=memory_search_service))
+        registry.register(
+            _memory_search_tool(
+                session_factory=session_factory, memory_search_service=memory_search_service
+            )
+        )
 
     return registry
 
@@ -89,7 +116,9 @@ def _file_read_tool() -> ToolDefinition:
         if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
             raise ToolValidationError("Field 'max_bytes' must be a positive integer")
 
-        allowed_base = Path(os.environ.get("TOOL_FILE_READ_BASE_DIR", "/tmp/sentinel")).expanduser().resolve()
+        allowed_base = (
+            Path(os.environ.get("TOOL_FILE_READ_BASE_DIR", "/tmp/sentinel")).expanduser().resolve()
+        )
         path = Path(path_raw).expanduser().resolve()
         if path != allowed_base and allowed_base not in path.parents:
             raise ToolValidationError(f"Path outside allowed directory: {allowed_base}")
@@ -139,7 +168,11 @@ def _http_request_tool() -> ToolDefinition:
             raise ToolValidationError("Unsupported HTTP method")
 
         timeout_seconds = payload.get("timeout_seconds", 10)
-        if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+        if (
+            not isinstance(timeout_seconds, int)
+            or isinstance(timeout_seconds, bool)
+            or timeout_seconds <= 0
+        ):
             raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
 
         headers = payload.get("headers", {})
@@ -148,7 +181,8 @@ def _http_request_tool() -> ToolDefinition:
         if not isinstance(headers, dict):
             raise ToolValidationError("Field 'headers' must be an object")
 
-        request_kwargs: dict[str, Any] = {"headers": {str(k): str(v) for k, v in headers.items()}}
+        request_headers = {str(k): str(v) for k, v in headers.items()}
+        request_kwargs: dict[str, Any] = {"headers": request_headers}
         if "body" in payload:
             body = payload["body"]
             if isinstance(body, (dict, list)):
@@ -201,17 +235,341 @@ def _http_request_tool() -> ToolDefinition:
     )
 
 
+def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        path = payload.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise ToolValidationError("Field 'path' must be a non-empty string")
+        if "://" in path:
+            raise ToolValidationError("Field 'path' must be a relative API path, not a full URL")
+
+        method = payload.get("method", "GET")
+        if not isinstance(method, str):
+            raise ToolValidationError("Field 'method' must be a string")
+        method = method.upper()
+        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+            raise ToolValidationError("Unsupported HTTP method")
+
+        timeout_seconds = payload.get("timeout_seconds", 20)
+        if (
+            not isinstance(timeout_seconds, int)
+            or isinstance(timeout_seconds, bool)
+            or timeout_seconds <= 0
+        ):
+            raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
+
+        headers_payload = payload.get("headers", {})
+        if headers_payload is None:
+            headers_payload = {}
+        if not isinstance(headers_payload, dict):
+            raise ToolValidationError("Field 'headers' must be an object")
+        request_headers = {str(k): str(v) for k, v in headers_payload.items()}
+        for header_name in request_headers:
+            if header_name.lower() == "authorization":
+                raise ToolValidationError(
+                    "Custom Authorization header is not allowed for araios_api"
+                )
+
+        query_payload = payload.get("query", {})
+        if query_payload is None:
+            query_payload = {}
+        if not isinstance(query_payload, dict):
+            raise ToolValidationError("Field 'query' must be an object")
+        query_params = _normalize_query_params(query_payload)
+
+        request_kwargs: dict[str, Any] = {"headers": request_headers}
+        if query_params:
+            request_kwargs["params"] = query_params
+
+        if "body" in payload:
+            body = payload["body"]
+            if isinstance(body, (dict, list)):
+                request_kwargs["json"] = body
+            else:
+                request_kwargs["content"] = str(body)
+
+        base_url, agent_api_key = await _load_araios_integration_settings(session_factory)
+        request_url = _join_base_and_path(base_url, path)
+
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await _araios_request_with_auth(
+                client=client,
+                method=method,
+                url=request_url,
+                request_kwargs=request_kwargs,
+                base_url=base_url,
+                agent_api_key=agent_api_key,
+            )
+
+        content_type = response.headers.get("content-type", "")
+        response_bytes = response.content
+        truncated = len(response_bytes) > _MAX_HTTP_RESPONSE_BYTES
+        visible_bytes = response_bytes[:_MAX_HTTP_RESPONSE_BYTES]
+
+        if "application/json" in content_type and not truncated:
+            try:
+                parsed_body: Any = response.json()
+            except ValueError:
+                parsed_body = response.text
+        else:
+            parsed_body = visible_bytes.decode("utf-8", errors="replace")
+            if truncated:
+                parsed_body += "\n... [truncated - response exceeded 1 MB]"
+
+        return {
+            "status_code": response.status_code,
+            "headers": dict(response.headers),
+            "body": parsed_body,
+            "truncated": truncated,
+        }
+
+    return ToolDefinition(
+        name="araios_api",
+        description=(
+            "Call the configured araiOS backend using its integrated agent API key. "
+            "Handles API-key exchange to bearer tokens automatically."
+        ),
+        risk_level="medium",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["path"],
+            "properties": {
+                "path": {"type": "string"},
+                "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                "query": {"type": "object"},
+                "headers": {"type": "object"},
+                "body": {"type": "object"},
+                "timeout_seconds": {"type": "integer"},
+            },
+        },
+        execute=_execute,
+    )
+
+
+async def _load_araios_integration_settings(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> tuple[str, str]:
+    async with session_factory() as db:
+        base_url = await _get_system_setting_value(db, _ARAIOS_BASE_URL_SETTING_KEY)
+        agent_api_key = await _get_system_setting_value(db, _ARAIOS_AGENT_API_KEY_SETTING_KEY)
+    normalized_base_url = _normalize_araios_base_url(base_url)
+    normalized_api_key = (agent_api_key or "").strip()
+    if not normalized_api_key:
+        raise ToolValidationError("AraiOS integration is not configured: missing agent API key")
+    return normalized_base_url, normalized_api_key
+
+
+async def _get_system_setting_value(db: AsyncSession, key: str) -> str | None:
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+    setting = result.scalars().first()
+    return setting.value if setting is not None else None
+
+
+def _normalize_araios_base_url(raw_value: str | None) -> str:
+    value = (raw_value or "").strip().rstrip("/")
+    if not value:
+        raise ToolValidationError("AraiOS integration is not configured: missing base URL")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ToolValidationError("Configured AraiOS base URL is invalid")
+    return value
+
+
+def _join_base_and_path(base_url: str, path: str) -> str:
+    trimmed_path = path.strip()
+    if not trimmed_path.startswith("/"):
+        trimmed_path = f"/{trimmed_path}"
+    return f"{base_url}{trimmed_path}"
+
+
+def _normalize_query_params(query: dict[str, Any]) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for key, value in query.items():
+        key_text = str(key).strip()
+        if not key_text:
+            raise ToolValidationError("Query parameter keys must be non-empty")
+        if value is None:
+            continue
+        if not isinstance(value, (str, int, float, bool)):
+            raise ToolValidationError(
+                f"Query parameter '{key_text}' must be a string, number, boolean, or null"
+            )
+        params[key_text] = str(value)
+    return params
+
+
+def _araios_cache_key(base_url: str, agent_api_key: str) -> str:
+    digest = hashlib.sha256(agent_api_key.encode("utf-8")).hexdigest()
+    return f"{base_url}|{digest}"
+
+
+def _is_araios_token_fresh(entry: _AraiOSTokenCacheEntry) -> bool:
+    refresh_deadline = datetime.now(UTC) + timedelta(seconds=_ARAIOS_TOKEN_REFRESH_BUFFER_SECONDS)
+    return entry.expires_at > refresh_deadline
+
+
+async def _get_araios_access_token(
+    *,
+    client: httpx.AsyncClient,
+    base_url: str,
+    agent_api_key: str,
+) -> str:
+    cache_key = _araios_cache_key(base_url, agent_api_key)
+
+    cached: _AraiOSTokenCacheEntry | None
+    async with _araios_token_cache_lock:
+        cached = _araios_token_cache.get(cache_key)
+    if cached is not None and _is_araios_token_fresh(cached):
+        return cached.access_token
+
+    refreshed: _AraiOSTokenCacheEntry | None = None
+    if cached is not None and cached.refresh_token:
+        refreshed = await _refresh_araios_tokens(
+            client=client,
+            base_url=base_url,
+            refresh_token=cached.refresh_token,
+        )
+
+    next_tokens = refreshed or await _issue_araios_tokens(
+        client=client,
+        base_url=base_url,
+        agent_api_key=agent_api_key,
+    )
+    async with _araios_token_cache_lock:
+        _araios_token_cache[cache_key] = next_tokens
+    return next_tokens.access_token
+
+
+async def _invalidate_araios_token_cache(*, base_url: str, agent_api_key: str) -> None:
+    cache_key = _araios_cache_key(base_url, agent_api_key)
+    async with _araios_token_cache_lock:
+        _araios_token_cache.pop(cache_key, None)
+
+
+async def _araios_request_with_auth(
+    *,
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    request_kwargs: dict[str, Any],
+    base_url: str,
+    agent_api_key: str,
+) -> httpx.Response:
+    access_token = await _get_araios_access_token(
+        client=client,
+        base_url=base_url,
+        agent_api_key=agent_api_key,
+    )
+
+    first_headers = dict(request_kwargs.get("headers", {}))
+    first_headers["Authorization"] = f"Bearer {access_token}"
+    first_kwargs = dict(request_kwargs)
+    first_kwargs["headers"] = first_headers
+
+    response = await client.request(method, url, **first_kwargs)
+    if response.status_code != 401:
+        return response
+
+    await _invalidate_araios_token_cache(base_url=base_url, agent_api_key=agent_api_key)
+    retry_access_token = await _get_araios_access_token(
+        client=client,
+        base_url=base_url,
+        agent_api_key=agent_api_key,
+    )
+    retry_headers = dict(request_kwargs.get("headers", {}))
+    retry_headers["Authorization"] = f"Bearer {retry_access_token}"
+    retry_kwargs = dict(request_kwargs)
+    retry_kwargs["headers"] = retry_headers
+    return await client.request(method, url, **retry_kwargs)
+
+
+async def _issue_araios_tokens(
+    *,
+    client: httpx.AsyncClient,
+    base_url: str,
+    agent_api_key: str,
+) -> _AraiOSTokenCacheEntry:
+    token_url = f"{base_url}/platform/auth/token"
+    try:
+        response = await client.post(token_url, json={"api_key": agent_api_key})
+    except httpx.HTTPError as exc:
+        raise ToolValidationError(f"AraiOS token exchange failed: {exc}") from exc
+    if response.status_code != 200:
+        raise ToolValidationError(
+            f"AraiOS token exchange failed with status {response.status_code}"
+        )
+    return _parse_araios_token_response(response)
+
+
+async def _refresh_araios_tokens(
+    *,
+    client: httpx.AsyncClient,
+    base_url: str,
+    refresh_token: str,
+) -> _AraiOSTokenCacheEntry | None:
+    refresh_url = f"{base_url}/platform/auth/refresh"
+    try:
+        response = await client.post(refresh_url, json={"refresh_token": refresh_token})
+    except httpx.HTTPError:
+        return None
+    if response.status_code != 200:
+        return None
+    try:
+        return _parse_araios_token_response(response)
+    except ToolValidationError:
+        return None
+
+
+def _parse_araios_token_response(response: httpx.Response) -> _AraiOSTokenCacheEntry:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ToolValidationError("AraiOS token response was not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ToolValidationError("AraiOS token response must be an object")
+    access_token = payload.get("access_token")
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise ToolValidationError("AraiOS token response is missing access_token")
+
+    refresh_token = payload.get("refresh_token")
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        refresh_token = None
+
+    expires_in_raw = payload.get("expires_in")
+    if (
+        not isinstance(expires_in_raw, int)
+        or isinstance(expires_in_raw, bool)
+        or expires_in_raw <= 0
+    ):
+        expires_in_raw = 3600
+    expires_at = datetime.now(UTC) + timedelta(seconds=expires_in_raw)
+
+    return _AraiOSTokenCacheEntry(
+        access_token=access_token.strip(),
+        refresh_token=refresh_token.strip() if isinstance(refresh_token, str) else None,
+        expires_at=expires_at,
+    )
+
+
 def _shell_exec_tool() -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         command = payload.get("command")
         if not isinstance(command, str) or not command.strip():
             raise ToolValidationError("Field 'command' must be a non-empty string")
+        safe_command = _strip_shell_operator_tail(command).strip()
+        if not safe_command:
+            raise ToolValidationError("Command resolved to empty after removing shell operators")
         timeout_seconds = payload.get("timeout_seconds", 30)
-        if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+        if (
+            not isinstance(timeout_seconds, int)
+            or isinstance(timeout_seconds, bool)
+            or timeout_seconds <= 0
+        ):
             raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
 
         process = await asyncio.create_subprocess_shell(
-            command,
+            safe_command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -264,7 +622,11 @@ def python_xagent_tool(
             raise ToolValidationError("Field 'code' must be a non-empty string")
 
         timeout_seconds = payload.get("timeout_seconds", 60)
-        if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds < 1:
+        if (
+            not isinstance(timeout_seconds, int)
+            or isinstance(timeout_seconds, bool)
+            or timeout_seconds < 1
+        ):
             raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
         timeout_seconds = min(timeout_seconds, 600)
 
@@ -285,7 +647,9 @@ def python_xagent_tool(
             or isinstance(sub_agent_timeout, bool)
             or sub_agent_timeout < 1
         ):
-            raise ToolValidationError("Field 'sub_agent_timeout_seconds' must be a positive integer")
+            raise ToolValidationError(
+                "Field 'sub_agent_timeout_seconds' must be a positive integer"
+            )
         sub_agent_timeout = min(sub_agent_timeout, 3600)
 
         await _ensure_session_exists(session_factory, session_id)
@@ -322,7 +686,9 @@ def python_xagent_tool(
                     raise ValueError("max_steps must be a positive integer")
                 max_steps = min(max_steps, 50)
 
-                effective_timeout = timeout_seconds if timeout_seconds is not None else sub_agent_timeout
+                effective_timeout = (
+                    timeout_seconds if timeout_seconds is not None else sub_agent_timeout
+                )
                 if (
                     not isinstance(effective_timeout, int)
                     or isinstance(effective_timeout, bool)
@@ -330,7 +696,9 @@ def python_xagent_tool(
                 ):
                     raise ValueError("timeout_seconds must be a positive integer")
                 effective_timeout = min(effective_timeout, 3600)
-                normalized_tools = [str(t) for t in (allowed_tools or []) if isinstance(t, str) and t]
+                normalized_tools = [
+                    str(t) for t in (allowed_tools or []) if isinstance(t, str) and t
+                ]
 
                 future = asyncio.run_coroutine_threadsafe(
                     _run_python_xagent_sub_agent(
@@ -405,14 +773,23 @@ def python_xagent_tool(
             "additionalProperties": False,
             "required": ["code"],
             "properties": {
-                "session_id": {"type": "string", "description": "Current session ID (auto-injected in agent loop)"},
-                "code": {"type": "string", "description": "Python code to execute. Optional `result` var is returned."},
+                "session_id": {
+                    "type": "string",
+                    "description": "Current session ID (auto-injected in agent loop)",
+                },
+                "code": {
+                    "type": "string",
+                    "description": "Python code to execute. Optional `result` var is returned.",
+                },
                 "requirements": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Optional pip requirements to install in this session venv",
                 },
-                "timeout_seconds": {"type": "integer", "description": "Execution timeout (default 60, max 600)"},
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Execution timeout (default 60, max 600)",
+                },
                 "sub_agent_timeout_seconds": {
                     "type": "integer",
                     "description": "Default timeout for call_sub_agent helper calls (default 300, max 3600)",
@@ -436,7 +813,9 @@ def _memory_search_tool(
         category = payload.get("category")
         if category is not None:
             if not isinstance(category, str) or category not in _ALLOWED_MEMORY_CATEGORIES:
-                raise ToolValidationError("Field 'category' must be one of: core, preference, project, correction")
+                raise ToolValidationError(
+                    "Field 'category' must be one of: core, preference, project, correction"
+                )
 
         limit = payload.get("limit", 10)
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
@@ -514,7 +893,10 @@ def _memory_search_tool(
             "required": ["query"],
             "properties": {
                 "query": {"type": "string"},
-                "category": {"type": "string", "enum": ["core", "preference", "project", "correction"]},
+                "category": {
+                    "type": "string",
+                    "enum": ["core", "preference", "project", "correction"],
+                },
                 "limit": {"type": "integer"},
                 "root_id": {"type": "string"},
                 "auto_expand": {"type": "boolean"},
@@ -536,7 +918,9 @@ def _memory_store_tool(
 
         category = payload.get("category", "project")
         if not isinstance(category, str) or category not in _ALLOWED_MEMORY_CATEGORIES:
-            raise ToolValidationError("Field 'category' must be one of: core, preference, project, correction")
+            raise ToolValidationError(
+                "Field 'category' must be one of: core, preference, project, correction"
+            )
 
         title = payload.get("title")
         if title is not None and not isinstance(title, str):
@@ -563,7 +947,12 @@ def _memory_store_tool(
                 raise ToolValidationError("Field 'parent_id' must be a valid UUID string") from exc
 
         importance = payload.get("importance", 0)
-        if not isinstance(importance, int) or isinstance(importance, bool) or importance < 0 or importance > 100:
+        if (
+            not isinstance(importance, int)
+            or isinstance(importance, bool)
+            or importance < 0
+            or importance > 100
+        ):
             raise ToolValidationError("Field 'importance' must be an integer between 0 and 100")
 
         pinned = payload.get("pinned", False)
@@ -578,7 +967,9 @@ def _memory_store_tool(
 
         embedding = payload.get("embedding")
         if embedding is not None:
-            if not isinstance(embedding, list) or not all(isinstance(x, (int, float)) for x in embedding):
+            if not isinstance(embedding, list) or not all(
+                isinstance(x, (int, float)) for x in embedding
+            ):
                 raise ToolValidationError("Field 'embedding' must be a list of numbers")
             embedding = [float(x) for x in embedding]
 
@@ -627,7 +1018,10 @@ def _memory_store_tool(
             "required": ["content"],
             "properties": {
                 "content": {"type": "string"},
-                "category": {"type": "string", "enum": ["core", "preference", "project", "correction"]},
+                "category": {
+                    "type": "string",
+                    "enum": ["core", "preference", "project", "correction"],
+                },
                 "title": {"type": "string"},
                 "summary": {"type": "string"},
                 "parent_id": {"type": "string"},
@@ -655,7 +1049,10 @@ def _memory_roots_tool(
             key=lambda item: (
                 bool(item.pinned),
                 int(item.importance or 0),
-                item.last_accessed_at or item.updated_at or item.created_at or datetime.min.replace(tzinfo=UTC),
+                item.last_accessed_at
+                or item.updated_at
+                or item.created_at
+                or datetime.min.replace(tzinfo=UTC),
             ),
             reverse=True,
         )
@@ -751,7 +1148,9 @@ def _memory_list_children_tool(
                 raise ToolValidationError("Parent memory node not found")
             memories = await _all_memories(db)
         children = [item for item in memories if item.parent_id == parent_id]
-        children.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
+        children.sort(
+            key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC), reverse=True
+        )
         return {
             "parent_id": str(parent_id),
             "items": [
@@ -797,7 +1196,16 @@ def _memory_update_tool(
         except ValueError as exc:
             raise ToolValidationError("Field 'id' must be a valid UUID string") from exc
 
-        allowed_updates = {"content", "title", "summary", "category", "parent_id", "importance", "pinned", "metadata"}
+        allowed_updates = {
+            "content",
+            "title",
+            "summary",
+            "category",
+            "parent_id",
+            "importance",
+            "pinned",
+            "metadata",
+        }
         unknown = [key for key in payload if key not in allowed_updates and key != "id"]
         if unknown:
             raise ToolValidationError(f"Unknown update fields: {', '.join(sorted(unknown))}")
@@ -826,18 +1234,29 @@ def _memory_update_tool(
                 summary = payload.get("summary")
                 if summary is not None and not isinstance(summary, str):
                     raise ToolValidationError("Field 'summary' must be a string or null")
-                node.summary = summary.strip() if isinstance(summary, str) and summary.strip() else None
+                node.summary = (
+                    summary.strip() if isinstance(summary, str) and summary.strip() else None
+                )
 
             if "category" in payload:
                 category = payload.get("category")
                 if not isinstance(category, str) or category not in _ALLOWED_MEMORY_CATEGORIES:
-                    raise ToolValidationError("Field 'category' must be one of: core, preference, project, correction")
+                    raise ToolValidationError(
+                        "Field 'category' must be one of: core, preference, project, correction"
+                    )
                 node.category = category
 
             if "importance" in payload:
                 importance = payload.get("importance")
-                if not isinstance(importance, int) or isinstance(importance, bool) or importance < 0 or importance > 100:
-                    raise ToolValidationError("Field 'importance' must be an integer between 0 and 100")
+                if (
+                    not isinstance(importance, int)
+                    or isinstance(importance, bool)
+                    or importance < 0
+                    or importance > 100
+                ):
+                    raise ToolValidationError(
+                        "Field 'importance' must be an integer between 0 and 100"
+                    )
                 node.importance = importance
 
             if "pinned" in payload:
@@ -864,13 +1283,17 @@ def _memory_update_tool(
                     try:
                         parent_id = UUID(parent_id_raw.strip())
                     except ValueError as exc:
-                        raise ToolValidationError("Field 'parent_id' must be a valid UUID string") from exc
+                        raise ToolValidationError(
+                            "Field 'parent_id' must be a valid UUID string"
+                        ) from exc
                     if parent_id == node.id:
                         raise ToolValidationError("A node cannot be its own parent")
                     parent = _memory_by_id(memories, parent_id)
                     if parent is None:
                         raise ToolValidationError("Parent memory node not found")
-                    if _is_descendant(target_parent_id=parent_id, node_id=node.id, memories=memories):
+                    if _is_descendant(
+                        target_parent_id=parent_id, node_id=node.id, memories=memories
+                    ):
                         raise ToolValidationError("Cannot move node under its own descendant")
                     node.parent_id = parent_id
 
@@ -901,7 +1324,10 @@ def _memory_update_tool(
                 "content": {"type": "string"},
                 "title": {"type": "string"},
                 "summary": {"type": "string"},
-                "category": {"type": "string", "enum": ["core", "preference", "project", "correction"]},
+                "category": {
+                    "type": "string",
+                    "enum": ["core", "preference", "project", "correction"],
+                },
                 "parent_id": {"type": "string"},
                 "importance": {"type": "integer"},
                 "pinned": {"type": "boolean"},
@@ -976,7 +1402,11 @@ def spawn_sub_agent_tool(
         max_steps = min(max_steps, 50)
 
         timeout_seconds = payload.get("timeout_seconds", 300)
-        if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds < 1:
+        if (
+            not isinstance(timeout_seconds, int)
+            or isinstance(timeout_seconds, bool)
+            or timeout_seconds < 1
+        ):
             raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
         timeout_seconds = min(timeout_seconds, 3600)
 
@@ -1041,14 +1471,23 @@ def spawn_sub_agent_tool(
                     "type": "string",
                     "description": "Concrete one-off outcome the sub-agent should produce",
                 },
-                "scope": {"type": "string", "description": "Extra context or constraints for the sub-agent"},
+                "scope": {
+                    "type": "string",
+                    "description": "Extra context or constraints for the sub-agent",
+                },
                 "allowed_tools": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Minimal tool names the sub-agent may use",
                 },
-                "max_steps": {"type": "integer", "description": "Maximum iterations (default 10, max 50). Typical range: 15-30 for research tasks — use more steps for tasks that require many browser calls or deep investigation."},
-                "timeout_seconds": {"type": "integer", "description": "Timeout in seconds (default 300)"},
+                "max_steps": {
+                    "type": "integer",
+                    "description": "Maximum iterations (default 10, max 50). Typical range: 15-30 for research tasks — use more steps for tasks that require many browser calls or deep investigation.",
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default 300)",
+                },
             },
         },
         execute=_execute,
@@ -1322,7 +1761,9 @@ def _python_xagent_sub_agent_result(task: SubAgentTask) -> dict[str, Any]:
     raw_result = task.result if isinstance(task.result, dict) else {}
     final_text = raw_result.get("final_text")
     if not isinstance(final_text, str):
-        final_text = raw_result.get("summary") if isinstance(raw_result.get("summary"), str) else None
+        final_text = (
+            raw_result.get("summary") if isinstance(raw_result.get("summary"), str) else None
+        )
     return {
         "task_id": str(task.id),
         "status": task.status,
@@ -1413,10 +1854,16 @@ async def _ensure_python_xagent_venv(venv_dir: Path, python_bin: Path) -> None:
         await proc.communicate()
         raise ToolValidationError("Timed out while creating pythonXagent virtualenv") from exc
     if proc.returncode != 0:
-        message = stderr.decode("utf-8", errors="replace") or stdout.decode("utf-8", errors="replace")
-        raise ToolValidationError(f"Failed to create virtualenv: {_truncate_python_xagent_text(message)}")
+        message = stderr.decode("utf-8", errors="replace") or stdout.decode(
+            "utf-8", errors="replace"
+        )
+        raise ToolValidationError(
+            f"Failed to create virtualenv: {_truncate_python_xagent_text(message)}"
+        )
     if not python_bin.exists():
-        raise ToolValidationError("Virtualenv creation finished but python executable was not found")
+        raise ToolValidationError(
+            "Virtualenv creation finished but python executable was not found"
+        )
 
 
 async def _install_python_xagent_requirements(
@@ -1443,7 +1890,9 @@ async def _install_python_xagent_requirements(
         await proc.communicate()
         raise ToolValidationError("Timed out while installing pythonXagent requirements") from exc
     if proc.returncode != 0:
-        message = stderr.decode("utf-8", errors="replace") or stdout.decode("utf-8", errors="replace")
+        message = stderr.decode("utf-8", errors="replace") or stdout.decode(
+            "utf-8", errors="replace"
+        )
         raise ToolValidationError(f"pip install failed: {_truncate_python_xagent_text(message)}")
 
 
@@ -1464,7 +1913,12 @@ def _venv_pip_path(venv_dir: Path) -> Path:
 def _venv_site_packages_dir(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Lib" / "site-packages"
-    return venv_dir / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    return (
+        venv_dir
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    )
 
 
 def _to_json_or_repr(value: Any) -> tuple[Any, str | None]:
@@ -1497,12 +1951,19 @@ def _stringify_sub_agent_context(value: Any | None) -> str | None:
 
 
 async def _validate_public_hostname(hostname: str) -> None:
+    normalized_hostname = hostname.strip().lower().rstrip(".")
+    allowed_hosts_raw = os.environ.get("SSRF_ALLOW_HOSTS", "")
+    allowed_hosts = {
+        value.strip().lower().rstrip(".") for value in allowed_hosts_raw.split(",") if value.strip()
+    }
+    if normalized_hostname in allowed_hosts:
+        return
     if os.environ.get("SSRF_ALLOW_PRIVATE", "").lower() in ("1", "true", "yes"):
         return
     try:
-        addr_info = socket.getaddrinfo(hostname, None)
+        addr_info = socket.getaddrinfo(normalized_hostname, None)
     except socket.gaierror as exc:
-        raise ToolValidationError(f"Cannot resolve hostname: {hostname}") from exc
+        raise ToolValidationError(f"Cannot resolve hostname: {normalized_hostname}") from exc
 
     blocked: list[str] = []
     for item in addr_info:
@@ -1520,7 +1981,7 @@ async def _validate_public_hostname(hostname: str) -> None:
 
     if blocked:
         raise ToolValidationError(
-            f"SSRF blocked: {hostname} resolves to private/internal address {', '.join(sorted(set(blocked)))}"
+            f"SSRF blocked: {normalized_hostname} resolves to private/internal address {', '.join(sorted(set(blocked)))}"
         )
 
 
@@ -1688,7 +2149,9 @@ def _browser_snapshot_tool(manager: BrowserManager) -> ToolDefinition:
         max_depth = payload.get("max_depth")
         if not isinstance(interactive_only, bool):
             raise ToolValidationError("Field 'interactive_only' must be a boolean")
-        if max_depth is not None and (not isinstance(max_depth, int) or isinstance(max_depth, bool) or max_depth < 1):
+        if max_depth is not None and (
+            not isinstance(max_depth, int) or isinstance(max_depth, bool) or max_depth < 1
+        ):
             raise ToolValidationError("Field 'max_depth' must be a positive integer")
         return await manager.get_snapshot(interactive_only=interactive_only, max_depth=max_depth)
 
