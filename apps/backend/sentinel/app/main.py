@@ -49,10 +49,12 @@ from app.services.llm.base import LLMProvider
 from app.services.llm.tier_provider import TierConfig, TierModelConfig, TierProvider
 from app.services.llm.types import ReasoningConfig
 from app.services.memory_search import MemorySearchService
+from app.services.session_runtime import run_session_runtime_janitor
 from app.services.skills import SkillRegistry, load_builtin_skills
 from app.services.sub_agents import SubAgentOrchestrator
 from app.services.tools import BrowserManager, ToolExecutor, build_default_registry
 from app.services.tools.builtin import (
+    cancel_sub_agent_tool,
     check_sub_agent_tool,
     list_sub_agents_tool,
     python_xagent_tool,
@@ -203,6 +205,9 @@ def _build_llm_provider() -> LLMProvider | None:
 async def lifespan(app: FastAPI):
     stop_event = asyncio.Event()
     cleanup_task = asyncio.create_task(RateLimitMiddleware.cleanup_loop(stop_event))
+    runtime_janitor_task = asyncio.create_task(
+        run_session_runtime_janitor(stop_event=stop_event, db_factory=AsyncSessionLocal)
+    )
     scheduler_task: asyncio.Task | None = None
     await init_db()
 
@@ -331,6 +336,7 @@ async def lifespan(app: FastAPI):
                     on_event=_on_event,
                     model="hint:reasoning",
                     max_iterations=10,
+                    allow_high_risk=True,
                 )
             )
             registered = await run_registry.register(session_key, run_task)
@@ -458,10 +464,17 @@ async def lifespan(app: FastAPI):
             spawn_sub_agent_tool(
                 session_factory=AsyncSessionLocal,
                 orchestrator=app.state.sub_agent_orchestrator,
+                ws_manager=ws_manager,
             )
         )
         registry.register(check_sub_agent_tool(session_factory=AsyncSessionLocal))
         registry.register(list_sub_agents_tool(session_factory=AsyncSessionLocal))
+        registry.register(
+            cancel_sub_agent_tool(
+                session_factory=AsyncSessionLocal,
+                orchestrator=app.state.sub_agent_orchestrator,
+            )
+        )
         registry.register(
             python_xagent_tool(
                 session_factory=AsyncSessionLocal,
@@ -473,6 +486,7 @@ async def lifespan(app: FastAPI):
                 "spawn_sub_agent",
                 "check_sub_agent",
                 "list_sub_agents",
+                "cancel_sub_agent",
                 "pythonXagent",
             }
         )
@@ -520,6 +534,7 @@ async def lifespan(app: FastAPI):
     finally:
         stop_event.set()
         await cleanup_task
+        await runtime_janitor_task
         if scheduler_task is not None:
             await scheduler_task
         from app.services.telegram_bridge import stop_telegram_bridge

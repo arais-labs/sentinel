@@ -25,6 +25,32 @@ export interface SessionListResponse {
   total: number;
 }
 
+export interface SessionRuntimeAction {
+  timestamp: string | null;
+  action: string;
+  details: Record<string, unknown>;
+}
+
+export interface SessionRuntimeStatus {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  venv_exists: boolean;
+  active: boolean;
+  active_pid: number | null;
+  last_command: string | null;
+  created_at: string | null;
+  last_used_at: string | null;
+  last_active_at: string | null;
+  actions: SessionRuntimeAction[];
+}
+
+export interface SessionRuntimeCleanupResponse {
+  session_id: string;
+  runtime_removed: boolean;
+  legacy_removed: boolean;
+}
+
 export interface Message {
   id: string;
   session_id: string;

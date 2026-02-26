@@ -7,6 +7,7 @@ import io
 import ipaddress
 import json
 import os
+import signal
 import shlex
 import socket
 import sys
@@ -25,6 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models import Memory, Session, SubAgentTask, SystemSetting
 from app.services.embeddings import EmbeddingService
 from app.services.memory_search import MemorySearchService
+from app.services.session_runtime import (
+    ensure_runtime_layout,
+    mark_runtime_state,
+    runtime_venv_dir,
+    runtime_workspace_dir,
+)
 from app.services.tools.browser_tool import BrowserManager
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolDefinition, ToolRegistry
@@ -44,6 +51,7 @@ _PYTHON_XAGENT_BASE_DIR = Path(
     os.environ.get("PYTHON_XAGENT_BASE_DIR", "/tmp/sentinel/python_xagent")
 ).expanduser()
 _MAX_PYTHON_XAGENT_OUTPUT_CHARS = 20_000
+_MAX_RUNTIME_EXEC_OUTPUT_CHARS = 50_000
 _python_xagent_runtime_lock = asyncio.Lock()
 
 
@@ -70,6 +78,8 @@ def build_default_registry(
     registry.register(_file_read_tool())
     registry.register(_http_request_tool())
     registry.register(_shell_exec_tool())
+    if session_factory is not None:
+        registry.register(_runtime_exec_tool(session_factory=session_factory))
     registry.register(_browser_navigate_tool(manager))
     registry.register(_browser_screenshot_tool(manager))
     registry.register(_browser_click_tool(manager))
@@ -644,6 +654,203 @@ def _shell_exec_tool() -> ToolDefinition:
             "properties": {
                 "command": {"type": "string"},
                 "timeout_seconds": {"type": "integer"},
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _runtime_exec_tool(
+    *, session_factory: async_sessionmaker[AsyncSession]
+) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        session_id_raw = payload.get("session_id")
+        if not isinstance(session_id_raw, str) or not session_id_raw.strip():
+            raise ToolValidationError("Field 'session_id' must be a non-empty string")
+        try:
+            session_id = UUID(session_id_raw.strip())
+        except ValueError as exc:
+            raise ToolValidationError(
+                "Field 'session_id' must be a valid UUID string"
+            ) from exc
+
+        command = payload.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ToolValidationError("Field 'command' must be a non-empty string")
+
+        timeout_seconds = payload.get("timeout_seconds", 300)
+        if (
+            not isinstance(timeout_seconds, int)
+            or isinstance(timeout_seconds, bool)
+            or timeout_seconds < 1
+        ):
+            raise ToolValidationError(
+                "Field 'timeout_seconds' must be a positive integer"
+            )
+        timeout_seconds = min(timeout_seconds, 1800)
+
+        use_python_venv = payload.get("use_python_venv", False)
+        if not isinstance(use_python_venv, bool):
+            raise ToolValidationError("Field 'use_python_venv' must be a boolean")
+
+        cwd_raw = payload.get("cwd")
+        if cwd_raw is not None and (
+            not isinstance(cwd_raw, str) or not cwd_raw.strip()
+        ):
+            raise ToolValidationError("Field 'cwd' must be a non-empty string when provided")
+
+        env_payload = payload.get("env", {})
+        if env_payload is None:
+            env_payload = {}
+        if not isinstance(env_payload, dict):
+            raise ToolValidationError("Field 'env' must be an object")
+
+        await _ensure_session_exists(session_factory, session_id)
+        await ensure_runtime_layout(session_id)
+        workspace_dir = runtime_workspace_dir(session_id)
+        venv_dir = runtime_venv_dir(session_id)
+
+        env = os.environ.copy()
+        env["HOME"] = str(workspace_dir)
+        env["PWD"] = str(workspace_dir)
+        if use_python_venv:
+            python_bin = _venv_python_path(venv_dir)
+            await _ensure_python_xagent_venv(venv_dir, python_bin)
+            venv_bin = _venv_bin_dir(venv_dir)
+            existing_path = env.get("PATH", "")
+            env["PATH"] = (
+                f"{venv_bin}{os.pathsep}{existing_path}"
+                if existing_path
+                else str(venv_bin)
+            )
+            env["VIRTUAL_ENV"] = str(venv_dir)
+
+        for key, value in env_payload.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ToolValidationError("Environment variable keys must be non-empty strings")
+            if value is None:
+                env.pop(key, None)
+                continue
+            if not isinstance(value, (str, int, float, bool)):
+                raise ToolValidationError(
+                    f"Environment variable '{key}' must be string/number/boolean/null"
+                )
+            env[key] = str(value)
+
+        run_dir = workspace_dir
+        if isinstance(cwd_raw, str) and cwd_raw.strip():
+            requested = cwd_raw.strip()
+            candidate = (
+                (workspace_dir / requested).resolve()
+                if not Path(requested).is_absolute()
+                else Path(requested).expanduser().resolve()
+            )
+            if candidate != workspace_dir and workspace_dir not in candidate.parents:
+                raise ToolValidationError("Field 'cwd' must stay within session workspace")
+            run_dir = candidate
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+        proc: asyncio.subprocess.Process | None = None
+        await mark_runtime_state(
+            session_id, active=True, command=command.strip(), pid=None
+        )
+        try:
+            if os.name == "nt":
+                proc = await asyncio.create_subprocess_exec(
+                    "cmd",
+                    "/C",
+                    command.strip(),
+                    cwd=str(run_dir),
+                    env=env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    "/bin/bash",
+                    "-lc",
+                    command.strip(),
+                    cwd=str(run_dir),
+                    env=env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                )
+
+            await mark_runtime_state(
+                session_id, active=True, command=command.strip(), pid=proc.pid
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout_seconds
+                )
+                timed_out = False
+            except TimeoutError:
+                timed_out = True
+                if proc.returncode is None:
+                    if os.name == "nt":
+                        proc.kill()
+                    else:
+                        with contextlib.suppress(ProcessLookupError):
+                            os.killpg(proc.pid, signal.SIGKILL)
+                stdout, stderr = await proc.communicate()
+
+            return {
+                "ok": not timed_out and proc.returncode == 0,
+                "timed_out": timed_out,
+                "returncode": proc.returncode,
+                "stdout": _truncate_runtime_exec_text(
+                    stdout.decode("utf-8", errors="replace")
+                ),
+                "stderr": _truncate_runtime_exec_text(
+                    stderr.decode("utf-8", errors="replace")
+                ),
+                "session_id": str(session_id),
+                "workspace": str(workspace_dir),
+                "cwd": str(run_dir),
+                "venv": str(venv_dir) if use_python_venv else None,
+            }
+        finally:
+            await mark_runtime_state(
+                session_id,
+                active=False,
+                command=command.strip(),
+                pid=proc.pid if proc is not None else None,
+            )
+
+    return ToolDefinition(
+        name="runtime_exec",
+        description=(
+            "Execute arbitrary shell commands in a per-session runtime workspace. "
+            "Supports installs and full command chains; workspace persists for this session."
+        ),
+        risk_level="high",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["command"],
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Current session ID (auto-injected in agent loop)",
+                },
+                "command": {"type": "string"},
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional working directory inside the session workspace",
+                },
+                "env": {
+                    "type": "object",
+                    "description": "Optional environment variable overrides",
+                },
+                "use_python_venv": {
+                    "type": "boolean",
+                    "description": "If true, prepends a session virtualenv to PATH for Python/pip flows",
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Execution timeout in seconds (default 300, max 1800)",
+                },
             },
         },
         execute=_execute,
@@ -1476,6 +1683,7 @@ def spawn_sub_agent_tool(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     orchestrator: Any,
+    ws_manager: Any | None = None,
 ) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         from uuid import UUID as _UUID
@@ -1549,6 +1757,13 @@ def spawn_sub_agent_tool(
             task_id = task.id
 
         orchestrator.start_task(task_id)
+        if ws_manager is not None and hasattr(ws_manager, "broadcast_sub_agent_started"):
+            with contextlib.suppress(Exception):
+                await ws_manager.broadcast_sub_agent_started(
+                    str(sid),
+                    str(task_id),
+                    objective.strip(),
+                )
         return {
             "task_id": str(task_id),
             "status": "pending",
@@ -1731,6 +1946,96 @@ def list_sub_agents_tool(
             "required": ["session_id"],
             "properties": {
                 "session_id": {"type": "string", "description": "Current session ID"},
+            },
+        },
+        execute=_execute,
+    )
+
+
+def cancel_sub_agent_tool(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    orchestrator: Any,
+) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        from uuid import UUID as _UUID
+
+        session_id = payload.get("session_id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ToolValidationError("Field 'session_id' must be a non-empty string")
+
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise ToolValidationError("Field 'task_id' must be a non-empty string")
+
+        sid = _UUID(session_id.strip())
+        tid = _UUID(task_id.strip())
+
+        async with session_factory() as db:
+            from sqlalchemy import select as _select
+
+            result = await db.execute(
+                _select(SubAgentTask).where(
+                    SubAgentTask.id == tid,
+                    SubAgentTask.session_id == sid,
+                )
+            )
+            task = result.scalars().first()
+            if task is None:
+                raise ToolValidationError("Sub-agent task not found for this session")
+
+            previous_status = str(task.status)
+            if previous_status in {"completed", "failed", "cancelled"}:
+                result_payload = task.result if isinstance(task.result, dict) else None
+                return {
+                    "task_id": str(task.id),
+                    "session_id": str(task.session_id),
+                    "cancelled": False,
+                    "status": previous_status,
+                    "previous_status": previous_status,
+                    "message": "Task already terminal; no cancellation performed.",
+                    "result": result_payload,
+                }
+
+            task.status = "cancelled"
+            task.completed_at = datetime.now(UTC)
+            current_result = task.result if isinstance(task.result, dict) else {}
+            current_result = dict(current_result)
+            current_result.setdefault("cancel_reason", "Cancelled by agent request")
+            task.result = current_result
+            await db.commit()
+            await db.refresh(task)
+
+        cancel_signal_sent = False
+        if orchestrator is not None and hasattr(orchestrator, "cancel_task"):
+            with contextlib.suppress(Exception):
+                cancel_signal_sent = bool(orchestrator.cancel_task(tid))
+
+        return {
+            "task_id": str(task.id),
+            "session_id": str(task.session_id),
+            "cancelled": True,
+            "status": str(task.status),
+            "previous_status": previous_status,
+            "cancel_signal_sent": cancel_signal_sent,
+            "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+            "result": task.result if isinstance(task.result, dict) else None,
+        }
+
+    return ToolDefinition(
+        name="cancel_sub_agent",
+        description=(
+            "Cancel a pending or running sub-agent task for the current session. "
+            "Use this to stop delegated work that is no longer needed."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id", "task_id"],
+            "properties": {
+                "session_id": {"type": "string", "description": "Current session ID"},
+                "task_id": {"type": "string", "description": "Sub-agent task ID to cancel"},
             },
         },
         execute=_execute,
@@ -2119,6 +2424,13 @@ def _truncate_python_xagent_text(value: str | None) -> str:
     if len(text) <= _MAX_PYTHON_XAGENT_OUTPUT_CHARS:
         return text
     return f"{text[:_MAX_PYTHON_XAGENT_OUTPUT_CHARS]}\n...[truncated]"
+
+
+def _truncate_runtime_exec_text(value: str | None) -> str:
+    text = value or ""
+    if len(text) <= _MAX_RUNTIME_EXEC_OUTPUT_CHARS:
+        return text
+    return f"{text[:_MAX_RUNTIME_EXEC_OUTPUT_CHARS]}\n...[truncated]"
 
 
 def _stringify_sub_agent_context(value: Any | None) -> str | None:

@@ -14,6 +14,12 @@ function agentColor(agent) {
   return AGENT_COLORS[agent] || '#6882a4';
 }
 
+function agentDisplay(msg) {
+  const label = msg?.context?.agent_label;
+  if (typeof label === 'string' && label.trim()) return label.trim();
+  return msg.agent;
+}
+
 function timeAgo(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -28,6 +34,8 @@ function timeAgo(iso) {
 export default function CoordinationPage({ notify, setRefresh }) {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
 
   const load = async (silent = false) => {
     try {
@@ -47,6 +55,35 @@ export default function CoordinationPage({ notify, setRefresh }) {
     return () => clearInterval(timer);
   }, []);
 
+  const sendMessage = async () => {
+    const message = draft.trim();
+    if (!message || sending) return;
+    try {
+      setSending(true);
+      const created = await api('/api/coordination', {
+        method: 'POST',
+        body: JSON.stringify({
+          message,
+          context: { source: 'human_ui' },
+        }),
+      });
+      setMessages((prev) => [created, ...prev]);
+      setDraft('');
+      notify('Message sent');
+    } catch (err) {
+      notify(err.message || 'Could not send message', 'warn');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const onDraftKeyDown = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void sendMessage();
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div className="sub-header">
@@ -62,7 +99,7 @@ export default function CoordinationPage({ notify, setRefresh }) {
         </div>
       </div>
 
-      <div className="detail-content" style={{ padding: '24px' }}>
+      <div className="detail-content" style={{ padding: '24px', paddingBottom: '16px' }}>
         {loading && messages.length === 0 ? (
           <div className="flex items-center justify-center h-full text-[color:var(--text-muted)]">Synchronizing relay...</div>
         ) : messages.length === 0 ? (
@@ -88,12 +125,17 @@ export default function CoordinationPage({ notify, setRefresh }) {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                     <span style={{ fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', color: agentColor(msg.agent), letterSpacing: '0.05em' }}>
-                      {msg.agent}
+                      {agentDisplay(msg)}
                     </span>
                     <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                       {timeAgo(msg.createdAt)}
                     </span>
                   </div>
+                  {agentDisplay(msg) !== msg.agent && (
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '8px', fontFamily: 'monospace' }}>
+                      id: {msg.agent}
+                    </div>
+                  )}
                   <div className="text-sm leading-relaxed text-[color:var(--text-primary)]" style={{ wordBreak: 'break-word' }}>
                     <Markdown>{msg.message}</Markdown>
                   </div>
@@ -112,6 +154,37 @@ export default function CoordinationPage({ notify, setRefresh }) {
             ))}
           </div>
         )}
+      </div>
+
+      <div
+        style={{
+          borderTop: '1px solid var(--border-subtle)',
+          background: 'var(--surface-0)',
+          padding: '12px 16px',
+        }}
+      >
+        <div style={{ maxWidth: '800px', margin: '0 auto', width: '100%' }}>
+          <label className="form-label">Send Supervision Message</label>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+            <textarea
+              className="form-input"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onDraftKeyDown}
+              rows={2}
+              placeholder="Write a message to agents (Enter to send, Shift+Enter for newline)"
+              style={{ height: 'auto', minHeight: '70px', paddingTop: '10px', paddingBottom: '10px', resize: 'vertical' }}
+            />
+            <button
+              className="btn-primary"
+              onClick={sendMessage}
+              disabled={sending || !draft.trim()}
+              style={{ height: '42px', minWidth: '96px' }}
+            >
+              {sending ? 'Sending…' : 'Send'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

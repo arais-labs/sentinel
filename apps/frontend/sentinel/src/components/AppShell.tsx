@@ -1,4 +1,4 @@
-import { PropsWithChildren, ReactNode, useState } from 'react';
+import { PropsWithChildren, ReactNode, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -18,6 +18,12 @@ import {
 } from 'lucide-react';
 
 import { APP_VERSION } from '../lib/env';
+import { api } from '../lib/api';
+import {
+  ARAIOS_SWITCH_URL_EVENT,
+  persistAraiosSwitchUrl,
+  readAraiosSwitchUrl,
+} from '../lib/araios-switch';
 import { useThemeStore } from '../store/theme-store';
 import { Logo } from './ui/Logo';
 
@@ -39,11 +45,6 @@ interface AppSwitchItem {
   label: string;
   href: string;
 }
-
-const appSwitchItems: AppSwitchItem[] = [
-  { id: 'araios', label: 'araiOS', href: '/araios/' },
-  { id: 'sentinel', label: 'Sentinel', href: '/sentinel/' },
-];
 
 const navItems: NavItem[] = [
   { label: 'Sessions', path: '/sessions', icon: LayoutDashboard },
@@ -85,8 +86,56 @@ export function AppShell({
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [araiosHref, setAraiosHref] = useState(() => readAraiosSwitchUrl());
 
-  const renderAppSwitcher = (currentApp: 'araios' | 'sentinel') => (
+  useEffect(() => {
+    let mounted = true;
+
+    const syncAraiosHref = async () => {
+      try {
+        const integration = await api.get<{ base_url: string | null }>('/onboarding/araios');
+        const next = persistAraiosSwitchUrl(integration.base_url);
+        if (mounted) {
+          setAraiosHref(next);
+        }
+      } catch {
+        // Keep fallback/default URL on read failure.
+      }
+    };
+
+    const handleAraiosSwitchUrlUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ url?: string }>).detail;
+      if (!mounted) {
+        return;
+      }
+      if (detail?.url) {
+        setAraiosHref(detail.url);
+      } else {
+        setAraiosHref(readAraiosSwitchUrl());
+      }
+    };
+
+    void syncAraiosHref();
+    window.addEventListener(
+      ARAIOS_SWITCH_URL_EVENT,
+      handleAraiosSwitchUrlUpdated as EventListener,
+    );
+    return () => {
+      mounted = false;
+      window.removeEventListener(
+        ARAIOS_SWITCH_URL_EVENT,
+        handleAraiosSwitchUrlUpdated as EventListener,
+      );
+    };
+  }, []);
+
+  const renderAppSwitcher = (currentApp: 'araios' | 'sentinel') => {
+    const appSwitchItems: AppSwitchItem[] = [
+      { id: 'araios', label: 'araiOS', href: araiosHref },
+      { id: 'sentinel', label: 'Sentinel', href: '/sentinel/' },
+    ];
+
+    return (
     <div className="inline-flex items-center rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-0.5">
       {appSwitchItems.map((item) => {
         const active = item.id === currentApp;
@@ -111,7 +160,8 @@ export function AppShell({
         );
       })}
     </div>
-  );
+    );
+  };
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">

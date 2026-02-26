@@ -10,7 +10,14 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api } from '../lib/api';
 import { formatCompactDate, truncate } from '../lib/format';
-import type { Message, MessageListResponse, Session, SessionListResponse } from '../types/api';
+import type {
+  Message,
+  MessageListResponse,
+  Session,
+  SessionListResponse,
+  SessionRuntimeCleanupResponse,
+  SessionRuntimeStatus,
+} from '../types/api';
 
 type RoleFilter = 'all' | 'user' | 'assistant' | 'system' | 'tool_result';
 type SessionKind = 'sub-agent' | 'session';
@@ -176,6 +183,23 @@ function parseRuntimeSystemBlocks(context: Record<string, unknown>): string[] {
   return raw
     .map((entry) => toStringValue(entry))
     .filter((entry): entry is string => Boolean(entry));
+}
+
+function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
+  if (!runtime?.runtime_exists) return 'runtime missing';
+  return runtime.active ? 'runtime active' : 'runtime idle';
+}
+
+function runtimeStatusTone(
+  runtime: SessionRuntimeStatus | null,
+): 'default' | 'good' | 'warn' | 'danger' | 'info' {
+  if (!runtime?.runtime_exists) return 'danger';
+  if (runtime.active) return 'good';
+  return 'default';
+}
+
+function formatRuntimeAction(action: string): string {
+  return action.replace(/_/g, ' ').trim() || action;
 }
 
 function renderPromptPopup(data: PromptPopupData) {
@@ -366,8 +390,10 @@ export function LogsPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [runtimeBySession, setRuntimeBySession] = useState<Record<string, SessionRuntimeStatus>>({});
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingRuntimeAction, setLoadingRuntimeAction] = useState(false);
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
@@ -411,13 +437,15 @@ export function LogsPage() {
   async function loadMessages(sessionId: string, silent = false) {
     if (!silent) setLoadingMessages(true);
     try {
-      const [payload, sessionDetail] = await Promise.all([
+      const [payload, sessionDetail, runtimeStatus] = await Promise.all([
         api.get<MessageListResponse>(`/sessions/${sessionId}/messages?limit=100`),
         api.get<Session>(`/sessions/${sessionId}`),
+        api.get<SessionRuntimeStatus>(`/sessions/${sessionId}/runtime?action_limit=60`),
       ]);
       setMessages(sortMessagesDesc(payload.items));
       setHasMore(payload.has_more);
       setSessions((current) => current.map((item) => (item.id === sessionId ? sessionDetail : item)));
+      setRuntimeBySession((current) => ({ ...current, [sessionId]: runtimeStatus }));
     } catch {
       if (!silent) toast.error('Failed to load logs for session');
     } finally {
@@ -428,17 +456,52 @@ export function LogsPage() {
   async function refreshMessages(sessionId: string, silent = false) {
     if (!silent) setLoadingMessages(true);
     try {
-      const [payload, sessionDetail] = await Promise.all([
+      const [payload, sessionDetail, runtimeStatus] = await Promise.all([
         api.get<MessageListResponse>(`/sessions/${sessionId}/messages?limit=100`),
         api.get<Session>(`/sessions/${sessionId}`),
+        api.get<SessionRuntimeStatus>(`/sessions/${sessionId}/runtime?action_limit=60`),
       ]);
       setMessages((current) => mergeMessages(current, payload.items));
       setHasMore((current) => current || payload.has_more);
       setSessions((current) => current.map((item) => (item.id === sessionId ? sessionDetail : item)));
+      setRuntimeBySession((current) => ({ ...current, [sessionId]: runtimeStatus }));
     } catch {
       if (!silent) toast.error('Failed to refresh logs for session');
     } finally {
       if (!silent) setLoadingMessages(false);
+    }
+  }
+
+  async function refreshRuntimeStatus(sessionId: string, silent = false) {
+    if (!silent) setLoadingRuntimeAction(true);
+    try {
+      const runtimeStatus = await api.get<SessionRuntimeStatus>(`/sessions/${sessionId}/runtime?action_limit=60`);
+      setRuntimeBySession((current) => ({ ...current, [sessionId]: runtimeStatus }));
+    } catch {
+      if (!silent) toast.error('Failed to refresh runtime status');
+    } finally {
+      if (!silent) setLoadingRuntimeAction(false);
+    }
+  }
+
+  async function cleanupRuntime(sessionId: string) {
+    const shouldCleanup = window.confirm(
+      'Cleanup this session runtime now? This removes its workspace/venv and stops active runtime process.',
+    );
+    if (!shouldCleanup) return;
+    setLoadingRuntimeAction(true);
+    try {
+      const result = await api.post<SessionRuntimeCleanupResponse>(`/sessions/${sessionId}/runtime/cleanup`);
+      if (result.runtime_removed || result.legacy_removed) {
+        toast.success('Runtime cleaned');
+      } else {
+        toast.success('Runtime already clean');
+      }
+      await Promise.all([refreshRuntimeStatus(sessionId, true), refreshMessages(sessionId, true)]);
+    } catch {
+      toast.error('Failed to cleanup runtime');
+    } finally {
+      setLoadingRuntimeAction(false);
     }
   }
 
@@ -499,6 +562,11 @@ export function LogsPage() {
   }, [messages, roleFilter, search, sourceFilter, toolFilter, toolOnly]);
 
   const activeSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
+  const activeRuntime = selectedSessionId ? runtimeBySession[selectedSessionId] ?? null : null;
+  const recentRuntimeActions = useMemo(
+    () => (activeRuntime ? [...activeRuntime.actions].reverse().slice(0, 10) : []),
+    [activeRuntime],
+  );
 
   const latestRunContextMessage = useMemo(
     () => messages.find((message) => extractRunContext(message.metadata) !== null) ?? null,
@@ -617,6 +685,81 @@ export function LogsPage() {
               <p className="mt-1 text-[11px] text-[color:var(--text-muted)]">
                 System: {truncate(activeSession.latest_system_prompt?.trim() || '[not persisted yet]', 120)}
               </p>
+              <div className="mt-3 space-y-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusChip label={runtimeStatusLabel(activeRuntime)} tone={runtimeStatusTone(activeRuntime)} />
+                  {activeRuntime?.active_pid ? (
+                    <StatusChip label={`pid ${activeRuntime.active_pid}`} tone="info" />
+                  ) : null}
+                  <button
+                    onClick={() => {
+                      if (selectedSessionId) void refreshRuntimeStatus(selectedSessionId);
+                    }}
+                    disabled={!selectedSessionId || loadingRuntimeAction}
+                    className="ml-auto inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)] disabled:opacity-60"
+                  >
+                    {loadingRuntimeAction ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                    Refresh Runtime
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (selectedSessionId) void cleanupRuntime(selectedSessionId);
+                    }}
+                    disabled={!selectedSessionId || loadingRuntimeAction}
+                    className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 disabled:opacity-60"
+                  >
+                    Cleanup Runtime
+                  </button>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <p className="text-[11px] text-[color:var(--text-muted)]">
+                    Workspace: {activeRuntime?.workspace_exists ? 'ready' : 'missing'}
+                  </p>
+                  <p className="text-[11px] text-[color:var(--text-muted)]">
+                    Venv: {activeRuntime?.venv_exists ? 'ready' : 'not created'}
+                  </p>
+                  <p className="text-[11px] text-[color:var(--text-muted)]">
+                    Last used:{' '}
+                    {activeRuntime?.last_used_at ? formatCompactDate(activeRuntime.last_used_at) : '[unknown]'}
+                  </p>
+                  <p className="text-[11px] text-[color:var(--text-muted)]">
+                    Last active:{' '}
+                    {activeRuntime?.last_active_at ? formatCompactDate(activeRuntime.last_active_at) : '[unknown]'}
+                  </p>
+                </div>
+                <p className="text-[11px] text-[color:var(--text-muted)]">
+                  Last command: {truncate(activeRuntime?.last_command || '[none yet]', 200)}
+                </p>
+                {recentRuntimeActions.length > 0 ? (
+                  <details className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+                    <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-bold uppercase tracking-wider text-[color:var(--text-muted)]">
+                      Recent Runtime Actions ({recentRuntimeActions.length})
+                    </summary>
+                    <div className="space-y-1 border-t border-[color:var(--border-subtle)] p-2">
+                      {recentRuntimeActions.map((entry, index) => (
+                        <div
+                          key={`${entry.action}-${entry.timestamp ?? 'na'}-${index}`}
+                          className="rounded border border-[color:var(--border-subtle)] px-2 py-1.5"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <StatusChip label={formatRuntimeAction(entry.action)} tone="info" />
+                            <span className="text-[10px] text-[color:var(--text-muted)]">
+                              {entry.timestamp ? formatCompactDate(entry.timestamp) : '[unknown time]'}
+                            </span>
+                          </div>
+                          {'command' in entry.details ? (
+                            <p className="mt-1 text-[11px] text-[color:var(--text-secondary)]">
+                              {truncate(String(entry.details.command ?? ''), 180)}
+                            </p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ) : (
+                  <p className="text-[11px] text-[color:var(--text-muted)]">No runtime actions captured yet.</p>
+                )}
+              </div>
             </Panel>
           ) : null}
 

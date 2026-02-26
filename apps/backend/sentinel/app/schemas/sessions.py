@@ -37,6 +37,32 @@ class SessionListResponse(BaseModel):
     total: int
 
 
+class SessionRuntimeActionResponse(BaseModel):
+    timestamp: datetime | None = None
+    action: str
+    details: dict = Field(default_factory=dict)
+
+
+class SessionRuntimeResponse(BaseModel):
+    session_id: UUID
+    runtime_exists: bool
+    workspace_exists: bool
+    venv_exists: bool
+    active: bool
+    active_pid: int | None = None
+    last_command: str | None = None
+    created_at: datetime | None = None
+    last_used_at: datetime | None = None
+    last_active_at: datetime | None = None
+    actions: list[SessionRuntimeActionResponse] = Field(default_factory=list)
+
+
+class SessionRuntimeCleanupResponse(BaseModel):
+    session_id: UUID
+    runtime_removed: bool
+    legacy_removed: bool
+
+
 class CreateMessageRequest(BaseModel):
     role: Literal["user", "system"]
     content: str = Field(min_length=1, max_length=50_000)

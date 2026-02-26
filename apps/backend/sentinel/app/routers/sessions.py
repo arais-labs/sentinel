@@ -13,6 +13,7 @@ from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
 from app.models import Memory, Message, Session
 from app.services.agent_run_registry import AgentRunRegistry
+from app.services.session_runtime import cleanup_session_runtime, get_session_runtime_snapshot
 
 logger = logging.getLogger(__name__)
 from app.schemas.sessions import (
@@ -23,6 +24,8 @@ from app.schemas.sessions import (
     MessageListResponse,
     MessageResponse,
     SessionListResponse,
+    SessionRuntimeCleanupResponse,
+    SessionRuntimeResponse,
     SessionResponse,
 )
 
@@ -121,6 +124,7 @@ async def reset_default_session(
     db.add(session)
     await db.commit()
     await db.refresh(session)
+    await _cleanup_runtime_for_session_ids(old_session_ids)
 
     # Fire-and-forget: extract memories from ended sessions
     provider = getattr(request.app.state, "agent_loop", None)
@@ -243,6 +247,29 @@ async def get_session(
     return _session_response(session)
 
 
+@router.get("/{id}/runtime")
+async def get_session_runtime(
+    id: UUID,
+    action_limit: int = Query(default=40, ge=1, le=200),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeResponse:
+    session = await _get_owned_session(db, id, user.sub)
+    snapshot = get_session_runtime_snapshot(session.id, action_limit=action_limit)
+    return SessionRuntimeResponse(**snapshot)
+
+
+@router.post("/{id}/runtime/cleanup")
+async def cleanup_runtime(
+    id: UUID,
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeCleanupResponse:
+    session = await _get_owned_session(db, id, user.sub)
+    result = await cleanup_session_runtime(session.id)
+    return SessionRuntimeCleanupResponse(session_id=session.id, **result)
+
+
 @router.delete("/{id}")
 async def end_session(
     id: UUID,
@@ -253,6 +280,7 @@ async def end_session(
     session.status = "ended"
     session.ended_at = datetime.now(UTC)
     await db.commit()
+    await _cleanup_runtime_for_session_ids([session.id])
     return {"status": "ended"}
 
 
@@ -271,6 +299,7 @@ async def purge_session(
         await db.delete(child)
     await db.delete(session)
     await db.commit()
+    await _cleanup_runtime_for_session_ids([session.id, *[child.id for child in descendants]])
     return {"status": "deleted", "deleted_descendants": str(len(descendants))}
 
 
@@ -387,6 +416,7 @@ async def chat_session(
         model=payload.model or "hint:reasoning",
         temperature=payload.temperature,
         max_iterations=payload.max_iterations,
+        allow_high_risk=True,
         stream=False,
     )
     return ChatResponse(
@@ -450,6 +480,17 @@ async def _get_descendant_sessions(
             descendants.append(child)
             stack.append(child.id)
     return descendants
+
+
+async def _cleanup_runtime_for_session_ids(session_ids: list[UUID]) -> None:
+    unique_ids = list(dict.fromkeys(session_ids))
+    if not unique_ids:
+        return
+    tasks = [cleanup_session_runtime(session_id) for session_id in unique_ids]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for session_id, result in zip(unique_ids, results):
+        if isinstance(result, Exception):
+            logger.warning("Runtime cleanup failed for session %s", session_id, exc_info=result)
 
 
 def _session_response(session: Session) -> SessionResponse:

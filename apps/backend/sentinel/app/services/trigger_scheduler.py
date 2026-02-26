@@ -234,7 +234,8 @@ class TriggerScheduler:
             session_id, 
             message.strip(), 
             stream=True, # Enable streaming for real-time UI updates
-            on_event=_on_event
+            on_event=_on_event,
+            allow_high_risk=True,
         )
         return f"agent_message:{result.final_text[:500]}"
 

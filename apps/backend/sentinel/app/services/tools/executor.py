@@ -31,7 +31,7 @@ class ToolExecutor:
         if not self._registry.is_allowed(name):
             raise PermissionError(f"Tool '{name}' is disabled")
         if tool.risk_level == "high" and not allow_high_risk:
-            raise PermissionError("Emergency stop active")
+            raise PermissionError("High-risk tool execution disabled for this run context")
 
         self._validate_payload(tool, payload)
 

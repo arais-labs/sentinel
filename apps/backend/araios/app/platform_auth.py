@@ -22,6 +22,7 @@ class PlatformIdentity:
     sub: str
     role: str
     agent_id: str | None = None
+    label: str | None = None
 
 
 def _hash_api_key(api_key: str, salt: str | None = None) -> str:
@@ -49,6 +50,7 @@ def _encode_token(*, identity: PlatformIdentity, token_type: str, ttl_seconds: i
         "sub": identity.sub,
         "role": identity.role,
         "agent_id": identity.agent_id,
+        "label": identity.label,
         "exp": int((now + timedelta(seconds=ttl_seconds)).timestamp()),
         "iat": int(now.timestamp()),
         "jti": str(uuid.uuid4()),
@@ -84,4 +86,3 @@ def decode_token(token: str, *, expected_type: str | None = None) -> dict:
         raise unauthorized
 
     return payload
-

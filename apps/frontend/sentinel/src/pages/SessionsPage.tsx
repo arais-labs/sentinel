@@ -1687,6 +1687,17 @@ export function SessionsPage() {
         });
         break;
       case 'tool_result':
+        {
+          const payload = (event.tool_result as Record<string, unknown> | undefined) ?? {};
+          const toolNameForRefresh = String(payload.tool_name ?? (event.tool_call as any)?.name ?? '').trim();
+          if (
+            toolNameForRefresh === 'spawn_sub_agent' ||
+            toolNameForRefresh === 'cancel_sub_agent' ||
+            toolNameForRefresh === 'pythonXagent'
+          ) {
+            void fetchTasks(sessionId);
+          }
+        }
         setStreaming((current) => {
           const payload = (event.tool_result as Record<string, unknown> | undefined) ?? {};
           const callId = String(payload.tool_call_id ?? (event.tool_call as any)?.id ?? '');
@@ -1756,6 +1767,7 @@ export function SessionsPage() {
       case 'sub_agent_started':
       case 'sub_agent_completed':
         void fetchTasks(sessionId);
+        void fetchSessions();
         break;
       case 'compaction_started':
         setStreaming((current) => ({ ...current, isCompactingContext: true }));

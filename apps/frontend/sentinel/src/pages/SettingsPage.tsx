@@ -11,6 +11,7 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { APP_VERSION } from '../lib/env';
 import { api } from '../lib/api';
+import { persistAraiosSwitchUrl } from '../lib/araios-switch';
 import { useAuthStore } from '../store/auth-store';
 
 // ── types ───────────────────────────────────────────────────────────────────
@@ -256,6 +257,7 @@ export function SettingsPage() {
       setProviderStatus(providers);
       setAraiosStatus(araios);
       setAraiosBaseUrl(araios.base_url || '');
+      persistAraiosSwitchUrl(araios.base_url);
     } catch {
       // silent — panel will show loading state
     } finally {

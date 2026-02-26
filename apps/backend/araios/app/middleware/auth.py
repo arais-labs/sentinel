@@ -16,6 +16,7 @@ class TokenPayload(BaseModel):
     sub: str
     role: str
     agent_id: str | None = None
+    label: str | None = None
     exp: int
     iat: int
     jti: str
@@ -132,4 +133,3 @@ def require_permission(action: str):
             )
 
     return _check
-

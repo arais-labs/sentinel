@@ -63,6 +63,7 @@ class MeResponse(BaseModel):
     sub: str
     role: str
     agent_id: str | None = None
+    label: str | None = None
 
 
 class BootstrapFinalizeResponse(BaseModel):
@@ -71,11 +72,44 @@ class BootstrapFinalizeResponse(BaseModel):
     agent_api_key: str
 
 
+class AgentKeySummary(BaseModel):
+    id: str
+    label: str
+    subject: str
+    agent_id: str | None = None
+    is_active: bool
+    created_at: str | None = None
+
+
+class AgentKeyListResponse(BaseModel):
+    agents: list[AgentKeySummary]
+
+
+class CreateAgentKeyRequest(BaseModel):
+    label: str | None = None
+    subject: str | None = None
+    agent_id: str | None = None
+
+    @field_validator("label", "subject", "agent_id")
+    @classmethod
+    def _normalize_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
+class CreateAgentKeyResponse(BaseModel):
+    agent: AgentKeySummary
+    api_key: str
+
+
 def _identity_from_key(record: PlatformApiKey) -> PlatformIdentity:
     return PlatformIdentity(
         sub=record.subject,
         role=record.role,
         agent_id=record.agent_id,
+        label=record.label,
     )
 
 
@@ -98,6 +132,22 @@ def _is_bootstrap_identity(user: TokenPayload) -> bool:
 
 def _new_platform_api_key(kind: str) -> str:
     return f"sk-arais-{kind}-{secrets.token_urlsafe(32)}"
+
+
+def _to_agent_summary(record: PlatformApiKey) -> AgentKeySummary:
+    return AgentKeySummary(
+        id=record.id,
+        label=record.label,
+        subject=record.subject,
+        agent_id=record.agent_id,
+        is_active=record.is_active,
+        created_at=record.created_at.isoformat() if record.created_at else None,
+    )
+
+
+def _require_admin(user: TokenPayload) -> None:
+    if user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
 
 
 @router.post("/token", response_model=TokenPairResponse)
@@ -182,6 +232,66 @@ async def finalize_bootstrap(
     )
 
 
+@router.get("/agents", response_model=AgentKeyListResponse)
+async def list_agent_keys(
+    user: TokenPayload = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentKeyListResponse:
+    _require_admin(user)
+    rows = (
+        db.query(PlatformApiKey)
+        .filter(
+            PlatformApiKey.role == "agent",
+            PlatformApiKey.is_active == True,  # noqa: E712
+        )
+        .order_by(PlatformApiKey.created_at.desc())
+        .all()
+    )
+    return AgentKeyListResponse(agents=[_to_agent_summary(row) for row in rows])
+
+
+@router.post("/agents", response_model=CreateAgentKeyResponse, status_code=201)
+async def create_agent_key(
+    body: CreateAgentKeyRequest,
+    response: Response,
+    user: TokenPayload = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CreateAgentKeyResponse:
+    _require_admin(user)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+    agent_id = body.agent_id or f"agent-{secrets.token_hex(4)}"
+    label = body.label or agent_id
+    subject = body.subject or agent_id
+
+    existing = (
+        db.query(PlatformApiKey)
+        .filter(
+            PlatformApiKey.role == "agent",
+            PlatformApiKey.is_active == True,  # noqa: E712
+            PlatformApiKey.agent_id == agent_id,
+        )
+        .first()
+    )
+    if existing is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="agent_id already exists")
+
+    api_key = _new_platform_api_key("agent")
+    record = PlatformApiKey(
+        label=label,
+        role="agent",
+        subject=subject,
+        agent_id=agent_id,
+        key_hash=hash_api_key(api_key),
+        is_active=True,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return CreateAgentKeyResponse(agent=_to_agent_summary(record), api_key=api_key)
+
+
 @router.post("/refresh", response_model=TokenPairResponse)
 async def refresh_tokens(body: RefreshRequest) -> TokenPairResponse:
     payload = decode_token(body.refresh_token, expected_type="refresh")
@@ -189,6 +299,7 @@ async def refresh_tokens(body: RefreshRequest) -> TokenPairResponse:
         sub=payload["sub"],
         role=payload["role"],
         agent_id=payload.get("agent_id"),
+        label=payload.get("label"),
     )
     return TokenPairResponse(
         access_token=create_access_token(identity),
@@ -200,7 +311,7 @@ async def refresh_tokens(body: RefreshRequest) -> TokenPairResponse:
 
 @router.get("/me", response_model=MeResponse)
 async def me(user: TokenPayload = Depends(get_current_user)) -> MeResponse:
-    return MeResponse(sub=user.sub, role=user.role, agent_id=user.agent_id)
+    return MeResponse(sub=user.sub, role=user.role, agent_id=user.agent_id, label=user.label)
 
 
 @router.delete("/session")

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db
-from app.middleware.auth import get_agent_id
+from app.middleware.auth import TokenPayload, get_agent_id, get_current_user
 from app.database.models import CoordinationMessage, gen_id
 from app.schemas import CoordinationSend, CoordinationMessageOut, CoordinationListResponse
 
@@ -30,12 +30,17 @@ async def send_message(
     body: CoordinationSend,
     db: Session = Depends(get_db),
     agent_id: str = Depends(get_agent_id),
+    user: TokenPayload = Depends(get_current_user),
 ):
+    context = dict(body.context) if isinstance(body.context, dict) else {}
+    if user.label and "agent_label" not in context:
+        context["agent_label"] = user.label
+
     msg = CoordinationMessage(
         id=gen_id(),
         agent=agent_id,
         message=body.message,
-        context=body.context,
+        context=context or None,
     )
     db.add(msg)
     db.commit()

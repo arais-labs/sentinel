@@ -152,6 +152,7 @@ class SubAgentOrchestrator:
                         model=self._SUB_AGENT_MODEL_HINT,
                         max_iterations=max(1, task.max_turns),
                         stream=False,
+                        allow_high_risk=True,
                         inject_queue=queue,
                         persist_incremental=True,
                         on_event=_on_sub_agent_event,
