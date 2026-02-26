@@ -34,6 +34,17 @@ interface NavItem {
   icon: typeof LayoutDashboard;
 }
 
+interface AppSwitchItem {
+  id: 'araios' | 'sentinel';
+  label: string;
+  href: string;
+}
+
+const appSwitchItems: AppSwitchItem[] = [
+  { id: 'araios', label: 'araiOS', href: '/araios/' },
+  { id: 'sentinel', label: 'Sentinel', href: '/sentinel/' },
+];
+
 const navItems: NavItem[] = [
   { label: 'Sessions', path: '/sessions', icon: LayoutDashboard },
   { label: 'Logs', path: '/logs', icon: Activity },
@@ -74,6 +85,33 @@ export function AppShell({
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  const renderAppSwitcher = (currentApp: 'araios' | 'sentinel') => (
+    <div className="inline-flex items-center rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-0.5">
+      {appSwitchItems.map((item) => {
+        const active = item.id === currentApp;
+        if (active) {
+          return (
+            <span
+              key={item.id}
+              className="inline-flex h-7 items-center rounded px-3 text-[10px] font-bold uppercase tracking-wider bg-[color:var(--surface-0)] text-[color:var(--text-primary)]"
+            >
+              {item.label}
+            </span>
+          );
+        }
+        return (
+          <a
+            key={item.id}
+            href={item.href}
+            className="inline-flex h-7 items-center rounded px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+          >
+            {item.label}
+          </a>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">
@@ -138,7 +176,7 @@ export function AppShell({
       {/* Main Content Area */}
       <div className="flex flex-1 flex-col min-w-0">
         {/* Header */}
-        <header className="flex h-16 shrink-0 items-center justify-between border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-4 md:px-6">
+        <header className="grid h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-4 md:px-6 gap-2">
           <div className="flex items-center gap-4 min-w-0">
             <button
               onClick={() => setIsMobileMenuOpen(true)}
@@ -154,7 +192,11 @@ export function AppShell({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="hidden md:flex items-center justify-center">
+            {renderAppSwitcher('sentinel')}
+          </div>
+
+          <div className="flex items-center justify-end gap-2">
             {actions}
           </div>
         </header>
