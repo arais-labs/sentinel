@@ -506,11 +506,9 @@ export function SessionsPage() {
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const activeSessionIdRef = useRef<string | null>(routeSessionId ?? null);
-  const streamingActiveRef = useRef(false);
 
-  // Keep refs in sync so WS callbacks and poll timers can read current values
+  // Keep refs in sync so WS callbacks can read current values
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
-  useEffect(() => { streamingActiveRef.current = streaming.isThinking || streaming.isStreaming; }, [streaming.isThinking, streaming.isStreaming]);
 
   const streamBusy = streaming.isThinking || streaming.isStreaming || isCompacting;
 
@@ -610,21 +608,7 @@ export function SessionsPage() {
     void fetchTasks(activeSessionId);
     void connectWs(activeSessionId);
 
-    const timer = window.setInterval(() => {
-      void fetchTasks(activeSessionId);
-    }, 6000);
-
-    // Fallback poll for trigger-fired messages that arrive while WS events are missed.
-    // Skip when the agent is actively streaming to avoid clearing in-progress state.
-    const msgTimer = window.setInterval(() => {
-      if (!streamingActiveRef.current) {
-        void loadMessages(activeSessionId);
-      }
-    }, 10000);
-
     return () => {
-      window.clearInterval(timer);
-      window.clearInterval(msgTimer);
       disconnectWs();
     };
   }, [activeSessionId]);
@@ -880,7 +864,24 @@ export function SessionsPage() {
         setMessages(sortMessages((event.history as Message[]) ?? []));
         break;
       case 'message_ack':
-        loadMessages(sessionId);
+        setMessages((current) => {
+          const messageId = (event.message_id as string | undefined)?.trim();
+          if (!messageId) return current;
+          if (current.some((item) => item.id === messageId)) return current;
+          const createdAt = (event.created_at as string | undefined) || new Date().toISOString();
+          const ackMessage: Message = {
+            id: messageId,
+            session_id: sessionId,
+            role: 'user',
+            content: (event.content as string) || '',
+            metadata: { source: 'web' },
+            token_count: null,
+            tool_call_id: null,
+            tool_name: null,
+            created_at: createdAt,
+          };
+          return sortMessages([...current, ackMessage]);
+        });
         break;
       case 'agent_thinking':
         setStreaming((current) => ({ ...current, isThinking: true, text: '', activeToolCalls: [], completedToolCalls: [], agentIteration: 0, agentMaxIterations: 0 }));
@@ -917,6 +918,10 @@ export function SessionsPage() {
         setSessions((current) =>
             current.map((s) => s.id === sessionId ? { ...s, title: event.title as string } : s)
         );
+        break;
+      case 'sub_agent_started':
+      case 'sub_agent_completed':
+        void fetchTasks(sessionId);
         break;
       case 'done': {
         const stopReason = event.stop_reason as string | undefined;

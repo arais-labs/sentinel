@@ -1073,6 +1073,109 @@ def test_gemini_tool_result_format():
     assert fr["response"]["result"] == "Found 3 results."
 
 
+def test_gemini_normalizes_dict_content_messages():
+    """Compaction-style dict messages must be converted to Gemini parts format."""
+    fake_client = _FakeAsyncClient(
+        post_response=_FakeResponse(
+            {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "ok"}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {},
+            }
+        )
+    )
+    provider = GeminiProvider(
+        api_key="test-key",
+        base_url="https://gemini.example/v1beta",
+        client_factory=lambda: fake_client,
+    )
+    _run(
+        provider.chat(
+            [
+                {"role": "system", "content": "Return valid JSON only."},
+                {"role": "user", "content": "Summarize this conversation."},
+            ],
+            model="gemini-2.0-flash",
+        )
+    )
+
+    payload = fake_client.post_calls[0]["json"]
+    assert payload["systemInstruction"]["parts"][0]["text"] == "Return valid JSON only."
+    assert payload["contents"][0]["role"] == "user"
+    assert payload["contents"][0]["parts"][0]["text"] == "Summarize this conversation."
+    assert "content" not in payload["contents"][0]
+
+
+def test_gemini_function_call_turn_serialization_is_strict():
+    """Gemini payload should keep functionCall turns clean and skip orphan leading model calls."""
+    fake_client = _FakeAsyncClient(
+        post_response=_FakeResponse(
+            {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "done"}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {},
+            }
+        )
+    )
+    provider = GeminiProvider(
+        api_key="test-key",
+        base_url="https://gemini.example/v1beta",
+        client_factory=lambda: fake_client,
+    )
+    _run(
+        provider.chat(
+            [
+                # Orphan tool-call history from a truncated context window should be dropped.
+                AssistantMessage(
+                    content=[ToolCallContent(id="orphan", name="search_web", arguments={"q": "old"})],
+                    model="gemini-2.5-flash",
+                    provider="gemini",
+                    stop_reason="tool_use",
+                ),
+                ToolResultMessage(
+                    tool_call_id="orphan",
+                    tool_name="search_web",
+                    content="old result",
+                ),
+                UserMessage(content="Do a fresh lookup"),
+                AssistantMessage(
+                    # Mixed text + tool call should serialize as functionCall-only turn.
+                    content=[
+                        TextContent(text="I'll call a tool now."),
+                        ToolCallContent(id="c1", name="search_web", arguments={"q": "fresh"}),
+                    ],
+                    model="gemini-2.5-flash",
+                    provider="gemini",
+                    stop_reason="tool_use",
+                ),
+                ToolResultMessage(
+                    tool_call_id="c1",
+                    tool_name="search_web",
+                    content="fresh result",
+                ),
+            ],
+            model="gemini-2.5-flash",
+        )
+    )
+
+    contents = fake_client.post_calls[0]["json"]["contents"]
+    assert contents[0]["role"] == "user"
+    assert contents[0]["parts"][0]["text"] == "Do a fresh lookup"
+    assert contents[1]["role"] == "model"
+    assert "functionCall" in contents[1]["parts"][0]
+    assert all("text" not in part for part in contents[1]["parts"])
+    assert contents[2]["role"] == "user"
+    assert "functionResponse" in contents[2]["parts"][0]
+
+
 def test_gemini_schema_cleaner_applied_to_tool_parameters():
     """Tool schemas should have additionalProperties stripped when sent to Gemini."""
     fake_client = _FakeAsyncClient(

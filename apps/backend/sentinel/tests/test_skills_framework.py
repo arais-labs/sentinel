@@ -7,7 +7,12 @@ import pytest
 
 from app.models import Session
 from app.services.agent.context_builder import ContextBuilder
-from app.services.skills import SkillDefinition, SkillRegistry, load_builtin_skills, load_skill_from_markdown
+from app.services.skills import (
+    SkillDefinition,
+    SkillRegistry,
+    load_builtin_skills,
+    load_skill_from_markdown,
+)
 from tests.fake_db import FakeDB
 
 
@@ -16,7 +21,9 @@ def _run(coro):
 
 
 def _builtin_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "app" / "services" / "skills" / "builtin"
+    return (
+        Path(__file__).resolve().parents[1] / "app" / "services" / "skills" / "builtin"
+    )
 
 
 def test_load_skill_from_markdown_parses_frontmatter_and_body(tmp_path: Path):
@@ -88,7 +95,9 @@ def test_skill_registry_list_active_gates_by_tools_and_env():
 
     active_with = {
         skill.name
-        for skill in registry.list_active({"file_read", "shell_exec"}, {"CUSTOM_KEY": "set"})
+        for skill in registry.list_active(
+            {"file_read", "shell_exec"}, {"CUSTOM_KEY": "set"}
+        )
     }
     assert active_with == {"ops", "secret", "plain"}
 
@@ -146,14 +155,20 @@ def test_context_builder_injects_and_removes_skill_prompts():
         available_tools={"shell_exec", "file_read", "file_write", "http_request"},
     )
     context = _run(builder.build(db, session.id))
-    system_messages = [item.content for item in context if getattr(item, "role", "") == "system"]
+    system_messages = [
+        item.content for item in context if getattr(item, "role", "") == "system"
+    ]
     joined = "\n".join(system_messages)
     assert "Active Skill: code-assistant" in joined
     assert "Code Assistant" in joined
 
     assert registry.disable("code-assistant") is True
     context_after_disable = _run(builder.build(db, session.id))
-    system_after_disable = [item.content for item in context_after_disable if getattr(item, "role", "") == "system"]
+    system_after_disable = [
+        item.content
+        for item in context_after_disable
+        if getattr(item, "role", "") == "system"
+    ]
     assert "Active Skill: code-assistant" not in "\n".join(system_after_disable)
 
 
@@ -172,7 +187,40 @@ def test_context_builder_excludes_skills_with_unmet_tool_requirements():
         available_tools={"shell_exec", "file_read", "http_request"},
     )
     context = _run(builder.build(db, session.id))
-    text = "\n".join(item.content for item in context if getattr(item, "role", "") == "system")
+    text = "\n".join(
+        item.content for item in context if getattr(item, "role", "") == "system"
+    )
     assert "Active Skill: code-assistant" not in text
     assert "Active Skill: operator" in text
     assert "Active Skill: research" in text
+
+
+def test_context_builder_injects_browser_playbook_when_browser_tools_available():
+    db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="browser-policy")
+    db.add(session)
+
+    builder = ContextBuilder(
+        default_system_prompt="Base system prompt",
+        available_tools={
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_select",
+            "browser_wait_for",
+            "browser_get_value",
+            "browser_tabs",
+            "browser_tab_focus",
+        },
+    )
+    context = _run(builder.build(db, session.id))
+    text = "\n".join(
+        item.content for item in context if getattr(item, "role", "") == "system"
+    )
+    assert "## Browser Automation Playbook" in text
+    assert (
+        "navigate -> snapshot(interactive_only=true) -> interact -> verify -> continue"
+        in text
+    )
+    assert "prefer browser_fill_form" in text

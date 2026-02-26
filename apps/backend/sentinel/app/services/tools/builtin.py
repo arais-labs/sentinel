@@ -74,15 +74,25 @@ def build_default_registry(
     registry.register(_browser_screenshot_tool(manager))
     registry.register(_browser_click_tool(manager))
     registry.register(_browser_type_tool(manager))
+    registry.register(_browser_select_tool(manager))
+    registry.register(_browser_wait_for_tool(manager))
+    registry.register(_browser_get_value_tool(manager))
+    registry.register(_browser_fill_form_tool(manager))
     registry.register(_browser_press_key_tool(manager))
     registry.register(_browser_get_text_tool(manager))
     registry.register(_browser_snapshot_tool(manager))
     registry.register(_browser_reset_tool(manager))
+    registry.register(_browser_tabs_tool(manager))
+    registry.register(_browser_tab_open_tool(manager))
+    registry.register(_browser_tab_focus_tool(manager))
+    registry.register(_browser_tab_close_tool(manager))
 
     if session_factory is not None:
         registry.register(_araios_api_tool(session_factory=session_factory))
         registry.register(
-            _memory_store_tool(session_factory=session_factory, embedding_service=embedding_service)
+            _memory_store_tool(
+                session_factory=session_factory, embedding_service=embedding_service
+            )
         )
         registry.register(_memory_roots_tool(session_factory=session_factory))
         registry.register(_memory_get_node_tool(session_factory=session_factory))
@@ -100,7 +110,8 @@ def build_default_registry(
     if session_factory is not None and memory_search_service is not None:
         registry.register(
             _memory_search_tool(
-                session_factory=session_factory, memory_search_service=memory_search_service
+                session_factory=session_factory,
+                memory_search_service=memory_search_service,
             )
         )
 
@@ -113,11 +124,17 @@ def _file_read_tool() -> ToolDefinition:
         if not isinstance(path_raw, str) or not path_raw.strip():
             raise ToolValidationError("Field 'path' must be a non-empty string")
         max_bytes = payload.get("max_bytes", 4096)
-        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
+        if (
+            not isinstance(max_bytes, int)
+            or isinstance(max_bytes, bool)
+            or max_bytes <= 0
+        ):
             raise ToolValidationError("Field 'max_bytes' must be a positive integer")
 
         allowed_base = (
-            Path(os.environ.get("TOOL_FILE_READ_BASE_DIR", "/tmp/sentinel")).expanduser().resolve()
+            Path(os.environ.get("TOOL_FILE_READ_BASE_DIR", "/tmp/sentinel"))
+            .expanduser()
+            .resolve()
         )
         path = Path(path_raw).expanduser().resolve()
         if path != allowed_base and allowed_base not in path.parents:
@@ -173,7 +190,9 @@ def _http_request_tool() -> ToolDefinition:
             or isinstance(timeout_seconds, bool)
             or timeout_seconds <= 0
         ):
-            raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
+            raise ToolValidationError(
+                "Field 'timeout_seconds' must be a positive integer"
+            )
 
         headers = payload.get("headers", {})
         if headers is None:
@@ -225,7 +244,10 @@ def _http_request_tool() -> ToolDefinition:
             "required": ["url"],
             "properties": {
                 "url": {"type": "string"},
-                "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                "method": {
+                    "type": "string",
+                    "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                },
                 "headers": {"type": "object"},
                 "body": {"type": "object"},
                 "timeout_seconds": {"type": "integer"},
@@ -235,13 +257,17 @@ def _http_request_tool() -> ToolDefinition:
     )
 
 
-def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
+def _araios_api_tool(
+    *, session_factory: async_sessionmaker[AsyncSession]
+) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         path = payload.get("path")
         if not isinstance(path, str) or not path.strip():
             raise ToolValidationError("Field 'path' must be a non-empty string")
         if "://" in path:
-            raise ToolValidationError("Field 'path' must be a relative API path, not a full URL")
+            raise ToolValidationError(
+                "Field 'path' must be a relative API path, not a full URL"
+            )
 
         method = payload.get("method", "GET")
         if not isinstance(method, str):
@@ -256,7 +282,9 @@ def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> To
             or isinstance(timeout_seconds, bool)
             or timeout_seconds <= 0
         ):
-            raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
+            raise ToolValidationError(
+                "Field 'timeout_seconds' must be a positive integer"
+            )
 
         headers_payload = payload.get("headers", {})
         if headers_payload is None:
@@ -288,7 +316,9 @@ def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> To
             else:
                 request_kwargs["content"] = str(body)
 
-        base_url, agent_api_key = await _load_araios_integration_settings(session_factory)
+        base_url, agent_api_key = await _load_araios_integration_settings(
+            session_factory
+        )
         request_url = _join_base_and_path(base_url, path)
 
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
@@ -336,7 +366,10 @@ def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> To
             "required": ["path"],
             "properties": {
                 "path": {"type": "string"},
-                "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                "method": {
+                    "type": "string",
+                    "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                },
                 "query": {"type": "object"},
                 "headers": {"type": "object"},
                 "body": {"type": "object"},
@@ -352,11 +385,15 @@ async def _load_araios_integration_settings(
 ) -> tuple[str, str]:
     async with session_factory() as db:
         base_url = await _get_system_setting_value(db, _ARAIOS_BASE_URL_SETTING_KEY)
-        agent_api_key = await _get_system_setting_value(db, _ARAIOS_AGENT_API_KEY_SETTING_KEY)
+        agent_api_key = await _get_system_setting_value(
+            db, _ARAIOS_AGENT_API_KEY_SETTING_KEY
+        )
     normalized_base_url = _normalize_araios_base_url(base_url)
     normalized_api_key = (agent_api_key or "").strip()
     if not normalized_api_key:
-        raise ToolValidationError("AraiOS integration is not configured: missing agent API key")
+        raise ToolValidationError(
+            "AraiOS integration is not configured: missing agent API key"
+        )
     return normalized_base_url, normalized_api_key
 
 
@@ -369,7 +406,9 @@ async def _get_system_setting_value(db: AsyncSession, key: str) -> str | None:
 def _normalize_araios_base_url(raw_value: str | None) -> str:
     value = (raw_value or "").strip().rstrip("/")
     if not value:
-        raise ToolValidationError("AraiOS integration is not configured: missing base URL")
+        raise ToolValidationError(
+            "AraiOS integration is not configured: missing base URL"
+        )
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ToolValidationError("Configured AraiOS base URL is invalid")
@@ -405,7 +444,9 @@ def _araios_cache_key(base_url: str, agent_api_key: str) -> str:
 
 
 def _is_araios_token_fresh(entry: _AraiOSTokenCacheEntry) -> bool:
-    refresh_deadline = datetime.now(UTC) + timedelta(seconds=_ARAIOS_TOKEN_REFRESH_BUFFER_SECONDS)
+    refresh_deadline = datetime.now(UTC) + timedelta(
+        seconds=_ARAIOS_TOKEN_REFRESH_BUFFER_SECONDS
+    )
     return entry.expires_at > refresh_deadline
 
 
@@ -559,14 +600,18 @@ def _shell_exec_tool() -> ToolDefinition:
             raise ToolValidationError("Field 'command' must be a non-empty string")
         safe_command = _strip_shell_operator_tail(command).strip()
         if not safe_command:
-            raise ToolValidationError("Command resolved to empty after removing shell operators")
+            raise ToolValidationError(
+                "Command resolved to empty after removing shell operators"
+            )
         timeout_seconds = payload.get("timeout_seconds", 30)
         if (
             not isinstance(timeout_seconds, int)
             or isinstance(timeout_seconds, bool)
             or timeout_seconds <= 0
         ):
-            raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
+            raise ToolValidationError(
+                "Field 'timeout_seconds' must be a positive integer"
+            )
 
         process = await asyncio.create_subprocess_shell(
             safe_command,
@@ -574,7 +619,9 @@ def _shell_exec_tool() -> ToolDefinition:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=timeout_seconds
+            )
         except TimeoutError:
             process.kill()
             await process.communicate()
@@ -615,7 +662,9 @@ def python_xagent_tool(
         try:
             session_id = UUID(session_id_raw.strip())
         except ValueError as exc:
-            raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+            raise ToolValidationError(
+                "Field 'session_id' must be a valid UUID string"
+            ) from exc
 
         code = payload.get("code")
         if not isinstance(code, str) or not code.strip():
@@ -627,16 +676,22 @@ def python_xagent_tool(
             or isinstance(timeout_seconds, bool)
             or timeout_seconds < 1
         ):
-            raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
+            raise ToolValidationError(
+                "Field 'timeout_seconds' must be a positive integer"
+            )
         timeout_seconds = min(timeout_seconds, 600)
 
         requirements = payload.get("requirements", [])
         if requirements is None:
             requirements = []
         if not isinstance(requirements, list):
-            raise ToolValidationError("Field 'requirements' must be an array of strings")
+            raise ToolValidationError(
+                "Field 'requirements' must be an array of strings"
+            )
         normalized_requirements = [
-            item.strip() for item in requirements if isinstance(item, str) and item.strip()
+            item.strip()
+            for item in requirements
+            if isinstance(item, str) and item.strip()
         ]
         if len(normalized_requirements) > 20:
             raise ToolValidationError("At most 20 requirement entries are allowed")
@@ -682,12 +737,18 @@ def python_xagent_tool(
             ) -> dict[str, Any]:
                 if not isinstance(objective, str) or not objective.strip():
                     raise ValueError("objective must be a non-empty string")
-                if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
+                if (
+                    not isinstance(max_steps, int)
+                    or isinstance(max_steps, bool)
+                    or max_steps < 1
+                ):
                     raise ValueError("max_steps must be a positive integer")
                 max_steps = min(max_steps, 50)
 
                 effective_timeout = (
-                    timeout_seconds if timeout_seconds is not None else sub_agent_timeout
+                    timeout_seconds
+                    if timeout_seconds is not None
+                    else sub_agent_timeout
                 )
                 if (
                     not isinstance(effective_timeout, int)
@@ -812,7 +873,10 @@ def _memory_search_tool(
 
         category = payload.get("category")
         if category is not None:
-            if not isinstance(category, str) or category not in _ALLOWED_MEMORY_CATEGORIES:
+            if (
+                not isinstance(category, str)
+                or category not in _ALLOWED_MEMORY_CATEGORIES
+            ):
                 raise ToolValidationError(
                     "Field 'category' must be one of: core, preference, project, correction"
                 )
@@ -830,14 +894,18 @@ def _memory_search_tool(
             try:
                 root_id = UUID(root_id_raw.strip())
             except ValueError as exc:
-                raise ToolValidationError("Field 'root_id' must be a valid UUID string") from exc
+                raise ToolValidationError(
+                    "Field 'root_id' must be a valid UUID string"
+                ) from exc
 
         auto_expand = payload.get("auto_expand", True)
         if not isinstance(auto_expand, bool):
             raise ToolValidationError("Field 'auto_expand' must be a boolean")
 
         async with session_factory() as db:
-            results = await memory_search_service.search(db, query, category=category, limit=limit)
+            results = await memory_search_service.search(
+                db, query, category=category, limit=limit
+            )
             memories = await _all_memories(db)
 
         items = [item.memory for item in results]
@@ -859,7 +927,9 @@ def _memory_search_tool(
                     "title": item.memory.title,
                     "summary": item.memory.summary,
                     "category": item.memory.category,
-                    "parent_id": str(item.memory.parent_id) if item.memory.parent_id else None,
+                    "parent_id": (
+                        str(item.memory.parent_id) if item.memory.parent_id else None
+                    ),
                     "importance": int(item.memory.importance or 0),
                     "pinned": bool(item.memory.pinned),
                     "score": item.score,
@@ -944,7 +1014,9 @@ def _memory_store_tool(
             try:
                 parent_id = UUID(parent_id_raw.strip())
             except ValueError as exc:
-                raise ToolValidationError("Field 'parent_id' must be a valid UUID string") from exc
+                raise ToolValidationError(
+                    "Field 'parent_id' must be a valid UUID string"
+                ) from exc
 
         importance = payload.get("importance", 0)
         if (
@@ -953,7 +1025,9 @@ def _memory_store_tool(
             or importance < 0
             or importance > 100
         ):
-            raise ToolValidationError("Field 'importance' must be an integer between 0 and 100")
+            raise ToolValidationError(
+                "Field 'importance' must be an integer between 0 and 100"
+            )
 
         pinned = payload.get("pinned", False)
         if not isinstance(pinned, bool):
@@ -1137,11 +1211,15 @@ def _memory_list_children_tool(
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         parent_id_raw = payload.get("parent_id")
         if not isinstance(parent_id_raw, str) or not parent_id_raw.strip():
-            raise ToolValidationError("Field 'parent_id' must be a non-empty UUID string")
+            raise ToolValidationError(
+                "Field 'parent_id' must be a non-empty UUID string"
+            )
         try:
             parent_id = UUID(parent_id_raw.strip())
         except ValueError as exc:
-            raise ToolValidationError("Field 'parent_id' must be a valid UUID string") from exc
+            raise ToolValidationError(
+                "Field 'parent_id' must be a valid UUID string"
+            ) from exc
         async with session_factory() as db:
             parent = await _get_memory(db, parent_id)
             if parent is None:
@@ -1149,7 +1227,8 @@ def _memory_list_children_tool(
             memories = await _all_memories(db)
         children = [item for item in memories if item.parent_id == parent_id]
         children.sort(
-            key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC), reverse=True
+            key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
         )
         return {
             "parent_id": str(parent_id),
@@ -1208,7 +1287,9 @@ def _memory_update_tool(
         }
         unknown = [key for key in payload if key not in allowed_updates and key != "id"]
         if unknown:
-            raise ToolValidationError(f"Unknown update fields: {', '.join(sorted(unknown))}")
+            raise ToolValidationError(
+                f"Unknown update fields: {', '.join(sorted(unknown))}"
+            )
 
         async with session_factory() as db:
             node = await _get_memory(db, node_id)
@@ -1219,7 +1300,9 @@ def _memory_update_tool(
             if "content" in payload:
                 content = payload.get("content")
                 if not isinstance(content, str) or not content.strip():
-                    raise ToolValidationError("Field 'content' must be a non-empty string")
+                    raise ToolValidationError(
+                        "Field 'content' must be a non-empty string"
+                    )
                 node.content = content.strip()
                 if embedding_service is not None:
                     node.embedding = await embedding_service.embed(node.content)
@@ -1228,19 +1311,28 @@ def _memory_update_tool(
                 title = payload.get("title")
                 if title is not None and not isinstance(title, str):
                     raise ToolValidationError("Field 'title' must be a string or null")
-                node.title = title.strip() if isinstance(title, str) and title.strip() else None
+                node.title = (
+                    title.strip() if isinstance(title, str) and title.strip() else None
+                )
 
             if "summary" in payload:
                 summary = payload.get("summary")
                 if summary is not None and not isinstance(summary, str):
-                    raise ToolValidationError("Field 'summary' must be a string or null")
+                    raise ToolValidationError(
+                        "Field 'summary' must be a string or null"
+                    )
                 node.summary = (
-                    summary.strip() if isinstance(summary, str) and summary.strip() else None
+                    summary.strip()
+                    if isinstance(summary, str) and summary.strip()
+                    else None
                 )
 
             if "category" in payload:
                 category = payload.get("category")
-                if not isinstance(category, str) or category not in _ALLOWED_MEMORY_CATEGORIES:
+                if (
+                    not isinstance(category, str)
+                    or category not in _ALLOWED_MEMORY_CATEGORIES
+                ):
                     raise ToolValidationError(
                         "Field 'category' must be one of: core, preference, project, correction"
                     )
@@ -1279,7 +1371,9 @@ def _memory_update_tool(
                     node.parent_id = None
                 else:
                     if not isinstance(parent_id_raw, str) or not parent_id_raw.strip():
-                        raise ToolValidationError("Field 'parent_id' must be a UUID string or null")
+                        raise ToolValidationError(
+                            "Field 'parent_id' must be a UUID string or null"
+                        )
                     try:
                         parent_id = UUID(parent_id_raw.strip())
                     except ValueError as exc:
@@ -1294,7 +1388,9 @@ def _memory_update_tool(
                     if _is_descendant(
                         target_parent_id=parent_id, node_id=node.id, memories=memories
                     ):
-                        raise ToolValidationError("Cannot move node under its own descendant")
+                        raise ToolValidationError(
+                            "Cannot move node under its own descendant"
+                        )
                     node.parent_id = parent_id
 
             await db.commit()
@@ -1357,7 +1453,10 @@ def _memory_touch_tool(
             node.last_accessed_at = datetime.now(UTC)
             await db.commit()
             await db.refresh(node)
-        return {"id": str(node.id), "last_accessed_at": node.last_accessed_at.isoformat()}
+        return {
+            "id": str(node.id),
+            "last_accessed_at": node.last_accessed_at.isoformat(),
+        }
 
     return ToolDefinition(
         name="memory_touch",
@@ -1397,7 +1496,11 @@ def spawn_sub_agent_tool(
             raise ToolValidationError("Field 'allowed_tools' must be an array")
 
         max_steps = payload.get("max_steps", 10)
-        if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
+        if (
+            not isinstance(max_steps, int)
+            or isinstance(max_steps, bool)
+            or max_steps < 1
+        ):
             raise ToolValidationError("Field 'max_steps' must be a positive integer")
         max_steps = min(max_steps, 50)
 
@@ -1407,7 +1510,9 @@ def spawn_sub_agent_tool(
             or isinstance(timeout_seconds, bool)
             or timeout_seconds < 1
         ):
-            raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
+            raise ToolValidationError(
+                "Field 'timeout_seconds' must be a positive integer"
+            )
         timeout_seconds = min(timeout_seconds, 3600)
 
         sid = _UUID(session_id.strip())
@@ -1416,16 +1521,22 @@ def spawn_sub_agent_tool(
             from sqlalchemy import select as _select
 
             # Enforce max 3 concurrent tasks per session
-            result = await db.execute(_select(SubAgentTask).where(SubAgentTask.session_id == sid))
+            result = await db.execute(
+                _select(SubAgentTask).where(SubAgentTask.session_id == sid)
+            )
             tasks = result.scalars().all()
             active = [t for t in tasks if t.status in {"pending", "running"}]
             if len(active) >= 3:
-                raise ToolValidationError("Max 3 concurrent sub-agent tasks per session")
+                raise ToolValidationError(
+                    "Max 3 concurrent sub-agent tasks per session"
+                )
 
             task = SubAgentTask(
                 session_id=sid,
                 objective=objective.strip(),
-                context=scope.strip() if isinstance(scope, str) and scope.strip() else None,
+                context=(
+                    scope.strip() if isinstance(scope, str) and scope.strip() else None
+                ),
                 constraints=[],
                 allowed_tools=[str(t) for t in allowed_tools if isinstance(t, str)],
                 max_turns=max_steps,
@@ -1509,7 +1620,9 @@ def check_sub_agent_tool(
         async with session_factory() as db:
             from sqlalchemy import select as _select
 
-            result = await db.execute(_select(SubAgentTask).where(SubAgentTask.id == tid))
+            result = await db.execute(
+                _select(SubAgentTask).where(SubAgentTask.id == tid)
+            )
             task = result.scalars().first()
             if task is None:
                 raise ToolValidationError("Sub-agent task not found")
@@ -1522,7 +1635,9 @@ def check_sub_agent_tool(
                 "tokens_used": task.tokens_used or 0,
                 "result": task.result if isinstance(task.result, dict) else None,
                 "created_at": task.created_at.isoformat() if task.created_at else None,
-                "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+                "completed_at": (
+                    task.completed_at.isoformat() if task.completed_at else None
+                ),
             }
 
     return ToolDefinition(
@@ -1534,7 +1649,10 @@ def check_sub_agent_tool(
             "additionalProperties": False,
             "required": ["task_id"],
             "properties": {
-                "task_id": {"type": "string", "description": "The sub-agent task ID to check"},
+                "task_id": {
+                    "type": "string",
+                    "description": "The sub-agent task ID to check",
+                },
             },
         },
         execute=_execute,
@@ -1556,7 +1674,9 @@ def list_sub_agents_tool(
         async with session_factory() as db:
             from sqlalchemy import select as _select
 
-            result = await db.execute(_select(SubAgentTask).where(SubAgentTask.session_id == sid))
+            result = await db.execute(
+                _select(SubAgentTask).where(SubAgentTask.session_id == sid)
+            )
             tasks = result.scalars().all()
             tasks.sort(key=lambda t: t.created_at, reverse=True)
 
@@ -1614,7 +1734,9 @@ def _children_map(memories: list[Memory]) -> dict[UUID | None, list[Memory]]:
     return mapping
 
 
-def _descendant_ids(mapping: dict[UUID | None, list[Memory]], root_id: UUID) -> set[UUID]:
+def _descendant_ids(
+    mapping: dict[UUID | None, list[Memory]], root_id: UUID
+) -> set[UUID]:
     result: set[UUID] = set()
     stack = [root_id]
     while stack:
@@ -1627,19 +1749,25 @@ def _descendant_ids(mapping: dict[UUID | None, list[Memory]], root_id: UUID) -> 
     return result
 
 
-def _is_descendant(*, target_parent_id: UUID, node_id: UUID, memories: list[Memory]) -> bool:
+def _is_descendant(
+    *, target_parent_id: UUID, node_id: UUID, memories: list[Memory]
+) -> bool:
     mapping = _children_map(memories)
     return node_id in _descendant_ids(mapping, target_parent_id)
 
 
-def _filter_by_root(items: list[Memory], memories: list[Memory], root_id: UUID) -> list[Memory]:
+def _filter_by_root(
+    items: list[Memory], memories: list[Memory], root_id: UUID
+) -> list[Memory]:
     mapping = _children_map(memories)
     allowed = _descendant_ids(mapping, root_id)
     allowed.add(root_id)
     return [item for item in items if item.id in allowed]
 
 
-def _expand_memory_branches(items: list[Memory], memories: list[Memory]) -> list[Memory]:
+def _expand_memory_branches(
+    items: list[Memory], memories: list[Memory]
+) -> list[Memory]:
     by_id = {item.id: item for item in memories}
     children = _children_map(memories)
     expanded: list[Memory] = []
@@ -1653,7 +1781,11 @@ def _expand_memory_branches(items: list[Memory], memories: list[Memory]) -> list
         current = item
         lineage: list[Memory] = []
         guard: set[UUID] = set()
-        while current.parent_id and current.parent_id in by_id and current.parent_id not in guard:
+        while (
+            current.parent_id
+            and current.parent_id in by_id
+            and current.parent_id not in guard
+        ):
             guard.add(current.parent_id)
             current = by_id[current.parent_id]
             lineage.append(current)
@@ -1694,7 +1826,9 @@ async def _run_python_xagent_sub_agent(
     allowed_tools: list[str],
 ) -> dict[str, Any]:
     async with session_factory() as db:
-        result = await db.execute(select(SubAgentTask).where(SubAgentTask.session_id == session_id))
+        result = await db.execute(
+            select(SubAgentTask).where(SubAgentTask.session_id == session_id)
+        )
         tasks = result.scalars().all()
         active = [item for item in tasks if item.status in {"pending", "running"}]
         if len(active) >= 3:
@@ -1718,7 +1852,9 @@ async def _run_python_xagent_sub_agent(
     started = orchestrator.start_task(task_id)
     if not started:
         async with session_factory() as db:
-            result = await db.execute(select(SubAgentTask).where(SubAgentTask.id == task_id))
+            result = await db.execute(
+                select(SubAgentTask).where(SubAgentTask.id == task_id)
+            )
             existing = result.scalars().first()
             if existing is None:
                 raise ToolValidationError("Failed to load sub-agent task")
@@ -1729,7 +1865,9 @@ async def _run_python_xagent_sub_agent(
     deadline = loop.time() + timeout_seconds
     while loop.time() < deadline:
         async with session_factory() as db:
-            result = await db.execute(select(SubAgentTask).where(SubAgentTask.id == task_id))
+            result = await db.execute(
+                select(SubAgentTask).where(SubAgentTask.id == task_id)
+            )
             current = result.scalars().first()
             if current is None:
                 raise ToolValidationError("Sub-agent task disappeared")
@@ -1739,7 +1877,9 @@ async def _run_python_xagent_sub_agent(
 
     orchestrator.cancel_task(task_id)
     async with session_factory() as db:
-        result = await db.execute(select(SubAgentTask).where(SubAgentTask.id == task_id))
+        result = await db.execute(
+            select(SubAgentTask).where(SubAgentTask.id == task_id)
+        )
         timed_out = result.scalars().first()
         if timed_out is not None:
             timed_out.status = "failed"
@@ -1762,7 +1902,9 @@ def _python_xagent_sub_agent_result(task: SubAgentTask) -> dict[str, Any]:
     final_text = raw_result.get("final_text")
     if not isinstance(final_text, str):
         final_text = (
-            raw_result.get("summary") if isinstance(raw_result.get("summary"), str) else None
+            raw_result.get("summary")
+            if isinstance(raw_result.get("summary"), str)
+            else None
         )
     return {
         "task_id": str(task.id),
@@ -1803,12 +1945,16 @@ def _run_python_xagent_code_sync(
 
     try:
         os.chdir(workspace_dir)
-        os.environ["PATH"] = f"{venv_bin}{os.pathsep}{old_path}" if old_path else str(venv_bin)
+        os.environ["PATH"] = (
+            f"{venv_bin}{os.pathsep}{old_path}" if old_path else str(venv_bin)
+        )
         os.environ["VIRTUAL_ENV"] = str(venv_dir)
         if venv_site_packages.exists():
             sys.path.insert(0, str(venv_site_packages))
 
-        with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+        with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(
+            stderr_buf
+        ):
             try:
                 compiled = compile(code, "<pythonXagent>", "exec")
                 exec(compiled, globals_map, globals_map)
@@ -1829,7 +1975,9 @@ def _run_python_xagent_code_sync(
         "ok": exception_text is None,
         "stdout": _truncate_python_xagent_text(stdout_buf.getvalue()),
         "stderr": _truncate_python_xagent_text(stderr_buf.getvalue()),
-        "exception": _truncate_python_xagent_text(exception_text) if exception_text else None,
+        "exception": (
+            _truncate_python_xagent_text(exception_text) if exception_text else None
+        ),
         "result": result_json,
         "result_repr": result_repr,
     }
@@ -1852,7 +2000,9 @@ async def _ensure_python_xagent_venv(venv_dir: Path, python_bin: Path) -> None:
     except TimeoutError as exc:
         proc.kill()
         await proc.communicate()
-        raise ToolValidationError("Timed out while creating pythonXagent virtualenv") from exc
+        raise ToolValidationError(
+            "Timed out while creating pythonXagent virtualenv"
+        ) from exc
     if proc.returncode != 0:
         message = stderr.decode("utf-8", errors="replace") or stdout.decode(
             "utf-8", errors="replace"
@@ -1884,16 +2034,22 @@ async def _install_python_xagent_requirements(
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout_seconds
+        )
     except TimeoutError as exc:
         proc.kill()
         await proc.communicate()
-        raise ToolValidationError("Timed out while installing pythonXagent requirements") from exc
+        raise ToolValidationError(
+            "Timed out while installing pythonXagent requirements"
+        ) from exc
     if proc.returncode != 0:
         message = stderr.decode("utf-8", errors="replace") or stdout.decode(
             "utf-8", errors="replace"
         )
-        raise ToolValidationError(f"pip install failed: {_truncate_python_xagent_text(message)}")
+        raise ToolValidationError(
+            f"pip install failed: {_truncate_python_xagent_text(message)}"
+        )
 
 
 def _venv_bin_dir(venv_dir: Path) -> Path:
@@ -1954,7 +2110,9 @@ async def _validate_public_hostname(hostname: str) -> None:
     normalized_hostname = hostname.strip().lower().rstrip(".")
     allowed_hosts_raw = os.environ.get("SSRF_ALLOW_HOSTS", "")
     allowed_hosts = {
-        value.strip().lower().rstrip(".") for value in allowed_hosts_raw.split(",") if value.strip()
+        value.strip().lower().rstrip(".")
+        for value in allowed_hosts_raw.split(",")
+        if value.strip()
     }
     if normalized_hostname in allowed_hosts:
         return
@@ -1963,7 +2121,9 @@ async def _validate_public_hostname(hostname: str) -> None:
     try:
         addr_info = socket.getaddrinfo(normalized_hostname, None)
     except socket.gaierror as exc:
-        raise ToolValidationError(f"Cannot resolve hostname: {normalized_hostname}") from exc
+        raise ToolValidationError(
+            f"Cannot resolve hostname: {normalized_hostname}"
+        ) from exc
 
     blocked: list[str] = []
     for item in addr_info:
@@ -2052,7 +2212,11 @@ def _browser_click_tool(manager: BrowserManager) -> ToolDefinition:
 
     return ToolDefinition(
         name="browser_click",
-        description="Click an element by CSS selector.",
+        description=(
+            "Click an element by selector. Supports CSS selectors and accessibility selectors "
+            "from browser_snapshot like 'button: Accept' or 'link: Sign in'. "
+            "Also supports 'aria=Name' and 'aria/Name'."
+        ),
         risk_level="medium",
         parameters_schema={
             "type": "object",
@@ -2076,7 +2240,10 @@ def _browser_type_tool(manager: BrowserManager) -> ToolDefinition:
 
     return ToolDefinition(
         name="browser_type",
-        description="Type text into an element by CSS selector.",
+        description=(
+            "Type text into an element. Supports CSS selectors and accessibility selectors "
+            "from browser_snapshot like 'textbox: Email'. Also supports 'aria=Name' and 'aria/Name'."
+        ),
         risk_level="medium",
         parameters_schema={
             "type": "object",
@@ -2085,6 +2252,213 @@ def _browser_type_tool(manager: BrowserManager) -> ToolDefinition:
             "properties": {
                 "selector": {"type": "string"},
                 "text": {"type": "string"},
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_select_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        selector = payload.get("selector")
+        value = payload.get("value")
+        label = payload.get("label")
+        index = payload.get("index")
+        if not isinstance(selector, str) or not selector.strip():
+            raise ToolValidationError("Field 'selector' must be a non-empty string")
+        criteria_count = 0
+        if value is not None:
+            if not isinstance(value, str):
+                raise ToolValidationError("Field 'value' must be a string")
+            criteria_count += 1
+        if label is not None:
+            if not isinstance(label, str):
+                raise ToolValidationError("Field 'label' must be a string")
+            criteria_count += 1
+        if index is not None:
+            if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+                raise ToolValidationError(
+                    "Field 'index' must be a non-negative integer"
+                )
+            criteria_count += 1
+        if criteria_count == 0:
+            raise ToolValidationError(
+                "Provide one of 'value', 'label', or 'index' for browser_select"
+            )
+        return await manager.select_option(
+            selector.strip(),
+            value=value,
+            label=label,
+            index=index,
+        )
+
+    return ToolDefinition(
+        name="browser_select",
+        description=(
+            "Select an option in a dropdown/select element. "
+            "Use this for native selects (Month/Day/Year, country pickers, etc.) instead of clicking option rows."
+        ),
+        risk_level="medium",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["selector"],
+            "properties": {
+                "selector": {"type": "string"},
+                "value": {"type": "string"},
+                "label": {"type": "string"},
+                "index": {"type": "integer", "minimum": 0},
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_wait_for_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        selector = payload.get("selector")
+        condition = payload.get("condition", "visible")
+        timeout_ms = payload.get("timeout_ms")
+        if not isinstance(selector, str) or not selector.strip():
+            raise ToolValidationError("Field 'selector' must be a non-empty string")
+        if not isinstance(condition, str) or not condition.strip():
+            raise ToolValidationError("Field 'condition' must be a non-empty string")
+        if timeout_ms is not None:
+            if (
+                not isinstance(timeout_ms, int)
+                or isinstance(timeout_ms, bool)
+                or timeout_ms <= 0
+            ):
+                raise ToolValidationError(
+                    "Field 'timeout_ms' must be a positive integer"
+                )
+        return await manager.wait_for(
+            selector.strip(),
+            condition=condition.strip(),
+            timeout_ms=timeout_ms,
+        )
+
+    return ToolDefinition(
+        name="browser_wait_for",
+        description=(
+            "Wait for a selector state change before continuing. "
+            "Useful for waiting until buttons become enabled or UI transitions finish."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["selector"],
+            "properties": {
+                "selector": {"type": "string"},
+                "condition": {
+                    "type": "string",
+                    "enum": [
+                        "visible",
+                        "hidden",
+                        "attached",
+                        "detached",
+                        "enabled",
+                        "disabled",
+                    ],
+                },
+                "timeout_ms": {"type": "integer", "minimum": 1},
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_get_value_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        selector = payload.get("selector")
+        if not isinstance(selector, str) or not selector.strip():
+            raise ToolValidationError("Field 'selector' must be a non-empty string")
+        return await manager.get_value(selector.strip())
+
+    return ToolDefinition(
+        name="browser_get_value",
+        description=(
+            "Read the live value/state of form controls and elements (input/textarea/select). "
+            "Use this to verify what is actually filled or selected."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["selector"],
+            "properties": {"selector": {"type": "string"}},
+        },
+        execute=_execute,
+    )
+
+
+def _browser_fill_form_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        steps = payload.get("steps")
+        continue_on_error = payload.get("continue_on_error", False)
+        verify = payload.get("verify", False)
+        if not isinstance(steps, list) or not steps:
+            raise ToolValidationError("Field 'steps' must be a non-empty array")
+        if not isinstance(continue_on_error, bool):
+            raise ToolValidationError("Field 'continue_on_error' must be a boolean")
+        if not isinstance(verify, bool):
+            raise ToolValidationError("Field 'verify' must be a boolean")
+        return await manager.fill_form(
+            steps,
+            continue_on_error=continue_on_error,
+            verify=verify,
+        )
+
+    return ToolDefinition(
+        name="browser_fill_form",
+        description=(
+            "Execute a full form flow in one call using ordered steps. "
+            "Each step requires selector and supports action: type, select, click, or wait. "
+            "If action is omitted, it is inferred from fields (text/value/label/index/click/condition). "
+            "Use verify=true to read back input/select values after type/select steps."
+        ),
+        risk_level="medium",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["steps"],
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["selector"],
+                        "properties": {
+                            "selector": {"type": "string"},
+                            "action": {
+                                "type": "string",
+                                "enum": ["type", "select", "click", "wait"],
+                            },
+                            "text": {"type": "string"},
+                            "value": {"type": "string"},
+                            "label": {"type": "string"},
+                            "index": {"type": "integer", "minimum": 0},
+                            "condition": {
+                                "type": "string",
+                                "enum": [
+                                    "visible",
+                                    "hidden",
+                                    "attached",
+                                    "detached",
+                                    "enabled",
+                                    "disabled",
+                                ],
+                            },
+                            "timeout_ms": {"type": "integer", "minimum": 1},
+                            "click": {"type": "boolean"},
+                        },
+                    },
+                },
+                "continue_on_error": {"type": "boolean"},
+                "verify": {"type": "boolean"},
             },
         },
         execute=_execute,
@@ -2115,9 +2489,15 @@ def _browser_press_key_tool(manager: BrowserManager) -> ToolDefinition:
 def _browser_get_text_tool(manager: BrowserManager) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         selector = payload.get("selector")
-        if selector is not None and (not isinstance(selector, str) or not selector.strip()):
-            raise ToolValidationError("Field 'selector' must be null or a non-empty string")
-        return await manager.get_text(selector.strip() if isinstance(selector, str) else None)
+        if selector is not None and (
+            not isinstance(selector, str) or not selector.strip()
+        ):
+            raise ToolValidationError(
+                "Field 'selector' must be null or a non-empty string"
+            )
+        return await manager.get_text(
+            selector.strip() if isinstance(selector, str) else None
+        )
 
     return ToolDefinition(
         name="browser_get_text",
@@ -2150,10 +2530,14 @@ def _browser_snapshot_tool(manager: BrowserManager) -> ToolDefinition:
         if not isinstance(interactive_only, bool):
             raise ToolValidationError("Field 'interactive_only' must be a boolean")
         if max_depth is not None and (
-            not isinstance(max_depth, int) or isinstance(max_depth, bool) or max_depth < 1
+            not isinstance(max_depth, int)
+            or isinstance(max_depth, bool)
+            or max_depth < 1
         ):
             raise ToolValidationError("Field 'max_depth' must be a positive integer")
-        return await manager.get_snapshot(interactive_only=interactive_only, max_depth=max_depth)
+        return await manager.get_snapshot(
+            interactive_only=interactive_only, max_depth=max_depth
+        )
 
     return ToolDefinition(
         name="browser_snapshot",
@@ -2162,6 +2546,8 @@ def _browser_snapshot_tool(manager: BrowserManager) -> ToolDefinition:
             "Returns roles, names, URLs, and values for all elements — clean, no CSS/JS noise, capped at 10K chars. "
             "Use interactive_only=true to see ONLY clickable/fillable elements (buttons, links, inputs) — "
             "this is the most token-efficient option when you just need to know what to interact with. "
+            "The returned role/name entries can be used directly with browser_click/browser_type "
+            "(for example: 'button: Accept', 'textbox: Email'). "
             "Prefer this over browser_get_text for discovering page structure and interactive elements. "
             "If the snapshot returns empty, fall back to browser_get_text for page content."
         ),
@@ -2198,6 +2584,108 @@ def _browser_reset_tool(manager: BrowserManager) -> ToolDefinition:
             "type": "object",
             "additionalProperties": False,
             "properties": {},
+        },
+        execute=_execute,
+    )
+
+
+def _browser_tabs_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        if payload:
+            raise ToolValidationError("browser_tabs does not accept input fields")
+        return await manager.list_tabs()
+
+    return ToolDefinition(
+        name="browser_tabs",
+        description=(
+            "List all open browser tabs and the current active tab. "
+            "Use this before focus/close operations, and after popups/open-in-new-tab flows."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+        },
+        execute=_execute,
+    )
+
+
+def _browser_tab_open_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        raw_url = payload.get("url", "about:blank")
+        if not isinstance(raw_url, str):
+            raise ToolValidationError("Field 'url' must be a string")
+        return await manager.open_tab(raw_url)
+
+    return ToolDefinition(
+        name="browser_tab_open",
+        description=(
+            "Open a new browser tab and make it active. "
+            "If no URL is provided, opens about:blank."
+        ),
+        risk_level="medium",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Optional URL to open in the new tab.",
+                }
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_tab_focus_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        tab_id = payload.get("tab_id")
+        if not isinstance(tab_id, str) or not tab_id.strip():
+            raise ToolValidationError("Field 'tab_id' must be a non-empty string")
+        return await manager.focus_tab(tab_id.strip())
+
+    return ToolDefinition(
+        name="browser_tab_focus",
+        description="Focus an existing tab by tab_id and make it the active tab.",
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["tab_id"],
+            "properties": {
+                "tab_id": {
+                    "type": "string",
+                    "description": "Tab identifier returned by browser_tabs.",
+                }
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_tab_close_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        tab_id = payload.get("tab_id")
+        if not isinstance(tab_id, str) or not tab_id.strip():
+            raise ToolValidationError("Field 'tab_id' must be a non-empty string")
+        return await manager.close_tab(tab_id.strip())
+
+    return ToolDefinition(
+        name="browser_tab_close",
+        description="Close a tab by tab_id. If it was active, the manager picks a fallback tab.",
+        risk_level="medium",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["tab_id"],
+            "properties": {
+                "tab_id": {
+                    "type": "string",
+                    "description": "Tab identifier returned by browser_tabs.",
+                }
+            },
         },
         execute=_execute,
     )

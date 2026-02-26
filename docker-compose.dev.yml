@@ -48,8 +48,11 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      BROWSER_LIVE_VIEW_ENABLED: "false"
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      BROWSER_LIVE_VIEW_ENABLED: "true"
+      UVICORN_RELOAD: "true"
+    command: bash ./scripts/start-backend.sh
+    ports:
+      - "${SENTINEL_API_PORT:-8000}:8000"
     volumes:
       - ./apps/backend/sentinel:/app
     depends_on:
@@ -64,6 +67,11 @@ services:
     command: sh -c "npm ci && VITE_BASE_PATH=/araios/ npm run dev -- --host --port 5174"
     volumes:
       - ./apps/frontend/araios:/app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5174/araios/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
     depends_on:
       araios-backend:
         condition: service_started
@@ -74,6 +82,11 @@ services:
     command: sh -c "npm ci && VITE_BASE_PATH=/sentinel/ VITE_ROUTER_BASENAME=/sentinel VITE_SENTINEL_API_BASE_URL=/sentinel/api/v1 VITE_PLATFORM_AUTH_BASE_URL=/platform/auth npm run dev -- --host --port 5173"
     volumes:
       - ./apps/frontend/sentinel:/app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5173/sentinel/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
     depends_on:
       sentinel-backend:
         condition: service_started
@@ -91,9 +104,9 @@ services:
       sentinel-backend:
         condition: service_started
       araios-frontend:
-        condition: service_started
+        condition: service_healthy
       sentinel-frontend:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   pgdata_dev:

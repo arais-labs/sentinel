@@ -250,18 +250,20 @@ class GeminiProvider(LLMProvider):
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """Convert sentinel messages to Gemini contents array + optional system text."""
         system_parts: list[str] = []
-        contents: list[dict[str, Any]] = []
+        raw_contents: list[dict[str, Any]] = []
 
         for message in messages:
-            # --- dict passthrough ---
+            # --- dict normalization ---
             if isinstance(message, dict):
-                role = str(message.get("role", "user"))
-                if role == "system":
-                    c = message.get("content")
-                    if isinstance(c, str) and c.strip():
-                        system_parts.append(c.strip())
+                normalized = self._normalize_dict_message(message)
+                if normalized is None:
                     continue
-                contents.append(message)
+                kind, payload = normalized
+                if kind == "system":
+                    if payload:
+                        system_parts.append(payload)
+                    continue
+                raw_contents.append(payload)
                 continue
 
             # --- SystemMessage ---
@@ -272,7 +274,7 @@ class GeminiProvider(LLMProvider):
 
             # --- ToolResultMessage → user role with functionResponse ---
             if isinstance(message, ToolResultMessage):
-                contents.append({
+                raw_contents.append({
                     "role": "user",
                     "parts": [
                         {
@@ -295,35 +297,207 @@ class GeminiProvider(LLMProvider):
                         item.text for item in message.content if isinstance(item, TextContent)
                     )
                 if text.strip():
-                    contents.append({"role": "user", "parts": [{"text": text}]})
+                    raw_contents.append({"role": "user", "parts": [{"text": text}]})
                 continue
 
             # --- AssistantMessage ---
             if isinstance(message, AssistantMessage):
-                parts: list[dict[str, Any]] = []
+                text_parts: list[dict[str, Any]] = []
+                function_parts: list[dict[str, Any]] = []
                 content = message.content
                 if isinstance(content, list):
                     for block in content:
                         if isinstance(block, TextContent) and block.text:
-                            parts.append({"text": block.text})
+                            text_parts.append({"text": block.text})
                         elif isinstance(block, ThinkingContent):
                             # Skip thinking — Gemini manages thinking internally
                             continue
                         elif isinstance(block, ToolCallContent):
-                            parts.append({
+                            function_parts.append({
                                 "functionCall": {
                                     "name": block.name,
                                     "args": block.arguments,
                                 }
                             })
                 elif isinstance(content, str) and content.strip():
-                    parts.append({"text": content})
-                if parts:
-                    contents.append({"role": "model", "parts": parts})
+                    text_parts.append({"text": content})
+                # Gemini is strict about function-calling turn order.
+                # If a turn has function calls, keep only functionCall parts.
+                if function_parts:
+                    raw_contents.append({"role": "model", "parts": function_parts})
+                elif text_parts:
+                    raw_contents.append({"role": "model", "parts": text_parts})
                 continue
 
+        contents = self._sanitize_contents(raw_contents)
         system_text = "\n\n".join(system_parts) if system_parts else None
         return system_text, contents
+
+    def _normalize_dict_message(
+        self,
+        message: dict[str, Any],
+    ) -> tuple[str, str | dict[str, Any]] | None:
+        role = str(message.get("role", "user")).strip().lower()
+
+        # System dicts are accepted in some internal call-sites (e.g. compaction).
+        if role == "system":
+            text = self._extract_text(message.get("content"))
+            if text:
+                return ("system", text)
+            parts = message.get("parts")
+            if isinstance(parts, list):
+                text_parts = [p.get("text") for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str)]
+                merged = "\n".join(item for item in text_parts if item.strip()).strip()
+                if merged:
+                    return ("system", merged)
+            return None
+
+        mapped_role = "model" if role in {"assistant", "model"} else "user"
+        normalized_parts = self._normalize_dict_parts(message, mapped_role)
+        if not normalized_parts:
+            return None
+        return ("content", {"role": mapped_role, "parts": normalized_parts})
+
+    def _normalize_dict_parts(self, message: dict[str, Any], mapped_role: str) -> list[dict[str, Any]]:
+        parts_out: list[dict[str, Any]] = []
+        parts = message.get("parts")
+        if isinstance(parts, list):
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts_out.append({"text": text})
+                    continue
+                fc = part.get("functionCall")
+                if (
+                    mapped_role == "model"
+                    and isinstance(fc, dict)
+                    and isinstance(fc.get("name"), str)
+                    and fc.get("name")
+                ):
+                    args = fc.get("args") if isinstance(fc.get("args"), dict) else {}
+                    parts_out.append({"functionCall": {"name": fc["name"], "args": args}})
+                    continue
+                fr = part.get("functionResponse")
+                if (
+                    mapped_role == "user"
+                    and isinstance(fr, dict)
+                    and isinstance(fr.get("name"), str)
+                    and fr.get("name")
+                ):
+                    response = fr.get("response")
+                    if not isinstance(response, dict):
+                        response = {"result": str(response) if response is not None else ""}
+                    parts_out.append({"functionResponse": {"name": fr["name"], "response": response}})
+            if parts_out:
+                return parts_out
+
+        # Common OpenAI-style payloads use "content" string instead of Gemini "parts".
+        text = self._extract_text(message.get("content"))
+        if text:
+            return [{"text": text}]
+
+        # Allow "tool_result" dict-like messages when passed through internal adapters.
+        if mapped_role == "user":
+            tool_name = message.get("tool_name") or message.get("name")
+            if isinstance(tool_name, str) and tool_name.strip():
+                result_text = self._extract_text(message.get("content")) or self._extract_text(message.get("result")) or ""
+                return [
+                    {
+                        "functionResponse": {
+                            "name": tool_name.strip(),
+                            "response": {"result": result_text},
+                        }
+                    }
+                ]
+        return []
+
+    def _sanitize_contents(self, contents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Make conversation history safe for Gemini function-calling constraints."""
+        sanitized: list[dict[str, Any]] = []
+
+        for item in contents:
+            role = item.get("role")
+            parts = item.get("parts")
+            if role not in {"user", "model"} or not isinstance(parts, list):
+                continue
+
+            text_parts = [
+                {"text": p.get("text")}
+                for p in parts
+                if isinstance(p, dict) and isinstance(p.get("text"), str) and p.get("text").strip()
+            ]
+            function_call_parts = [
+                {"functionCall": {"name": p["functionCall"]["name"], "args": p["functionCall"].get("args") if isinstance(p["functionCall"].get("args"), dict) else {}}}
+                for p in parts
+                if (
+                    isinstance(p, dict)
+                    and isinstance(p.get("functionCall"), dict)
+                    and isinstance(p["functionCall"].get("name"), str)
+                    and p["functionCall"]["name"]
+                )
+            ]
+            function_response_parts = [
+                {"functionResponse": {"name": p["functionResponse"]["name"], "response": p["functionResponse"].get("response") if isinstance(p["functionResponse"].get("response"), dict) else {"result": str(p["functionResponse"].get("response") or "")}}}
+                for p in parts
+                if (
+                    isinstance(p, dict)
+                    and isinstance(p.get("functionResponse"), dict)
+                    and isinstance(p["functionResponse"].get("name"), str)
+                    and p["functionResponse"]["name"]
+                )
+            ]
+
+            if role == "model":
+                if function_call_parts:
+                    if not sanitized:
+                        continue
+                    # Gemini requires functionCall turns to come after user/functionResponse.
+                    if sanitized[-1]["role"] != "user":
+                        continue
+                    sanitized.append({"role": "model", "parts": function_call_parts})
+                    continue
+                if text_parts:
+                    sanitized.append({"role": "model", "parts": text_parts})
+                continue
+
+            # role == "user"
+            if function_response_parts:
+                if sanitized:
+                    prev = sanitized[-1]
+                    prev_has_fc = prev["role"] == "model" and any(
+                        isinstance(p, dict) and "functionCall" in p for p in prev.get("parts", [])
+                    )
+                    if prev_has_fc:
+                        sanitized.append({"role": "user", "parts": function_response_parts})
+                        continue
+                # Orphan functionResponse: keep explicit user text if present; otherwise drop.
+                if text_parts:
+                    sanitized.append({"role": "user", "parts": text_parts})
+                continue
+
+            if text_parts:
+                sanitized.append({"role": "user", "parts": text_parts})
+
+        # Gemini payloads should not start with a model turn.
+        while sanitized and sanitized[0]["role"] != "user":
+            sanitized.pop(0)
+        return sanitized
+
+    @staticmethod
+    def _extract_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            return "\n".join(part for part in parts if part.strip()).strip()
+        return ""
 
     # ------------------------------------------------------------------
     # Response parsing (non-streaming)

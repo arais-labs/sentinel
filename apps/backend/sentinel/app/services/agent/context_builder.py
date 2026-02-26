@@ -37,7 +37,9 @@ class ContextBuilder:
         env: Mapping[str, str] | None = None,
         memory_search_service: MemorySearchService | None = None,
     ) -> None:
-        self._default_system_prompt = (default_system_prompt or settings.default_system_prompt).strip()
+        self._default_system_prompt = (
+            default_system_prompt or settings.default_system_prompt
+        ).strip()
         self._message_limit = max(1, message_limit)
         self._skill_registry = skill_registry
         self._available_tools = set(available_tools or set())
@@ -61,6 +63,12 @@ class ContextBuilder:
         trigger_policy = self._trigger_system_message()
         if trigger_policy is not None:
             context.append(trigger_policy)
+        execution_policy = self._execution_system_message()
+        if execution_policy is not None:
+            context.append(execution_policy)
+        browser_policy = self._browser_automation_system_message()
+        if browser_policy is not None:
+            context.append(browser_policy)
 
         context.extend(await self._memory_system_messages(db, pending_user_message))
 
@@ -71,7 +79,9 @@ class ContextBuilder:
         context.extend(self._active_skill_messages())
 
         recent = await self._recent_messages(db, session_id)
-        estimated_tokens = int(sum(self._word_count(item.content or "") for item in recent) * 1.3)
+        estimated_tokens = int(
+            sum(self._word_count(item.content or "") for item in recent) * 1.3
+        )
         if estimated_tokens > 80_000:
             logger.warning(
                 "Context window estimate exceeds threshold: session_id=%s estimated_tokens=%s",
@@ -118,20 +128,59 @@ class ContextBuilder:
             )
         )
 
+    def _execution_system_message(self) -> SystemMessage | None:
+        return SystemMessage(
+            content=(
+                "## Execution Policy\n"
+                "When the user asks you to execute a multi-step task, keep acting until the task is complete or a true blocker appears.\n"
+                "Do not end a turn with text like 'I'll do X next' while no new tool call is issued.\n"
+                "If a tool fails, immediately try a different valid approach (e.g., alternate selector strategy) before asking the user for help.\n"
+                "Only ask the user for input when required by external verification, permissions, or unavailable credentials."
+            )
+        )
+
+    def _browser_automation_system_message(self) -> SystemMessage | None:
+        available = self._available_tools
+        if "browser_navigate" not in available or "browser_snapshot" not in available:
+            return None
+
+        return SystemMessage(
+            content=(
+                "## Browser Automation Playbook\n"
+                "Use this standard flow for web tasks: navigate -> snapshot(interactive_only=true) -> interact -> verify -> continue.\n"
+                "For standard multi-field forms, prefer browser_fill_form with ordered steps to reduce tool-call overhead.\n"
+                "Use selectors exactly as returned by browser_snapshot (for example: 'button: Continue', 'textbox: Email', 'combobox: Month').\n"
+                "For dropdowns/selects, use browser_select instead of clicking option rows.\n"
+                "Before clicking a submit/next button, use browser_wait_for with condition='enabled'.\n"
+                "After filling fields, verify with browser_get_value or a fresh browser_snapshot.\n"
+                "When navigation/popups create multiple tabs, use browser_tabs then browser_tab_focus before continuing.\n"
+                "Only stop for user help when external human verification is required (captcha, OTP, email code, phone code)."
+            )
+        )
+
     async def _latest_summary(self, db: AsyncSession, session_id: UUID) -> str | None:
-        result = await db.execute(select(SessionSummary).where(SessionSummary.session_id == session_id))
+        result = await db.execute(
+            select(SessionSummary).where(SessionSummary.session_id == session_id)
+        )
         summaries = result.scalars().all()
         if not summaries:
             return None
-        summaries.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
+        summaries.sort(
+            key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
         payload = summaries[0].summary if isinstance(summaries[0].summary, dict) else {}
         summary_text = str(payload.get("summary_text") or "").strip()
         if not summary_text:
             return None
         return f"Session summary:\n{summary_text}"
 
-    async def _recent_messages(self, db: AsyncSession, session_id: UUID) -> list[Message]:
-        result = await db.execute(select(Message).where(Message.session_id == session_id))
+    async def _recent_messages(
+        self, db: AsyncSession, session_id: UUID
+    ) -> list[Message]:
+        result = await db.execute(
+            select(Message).where(Message.session_id == session_id)
+        )
         items = result.scalars().all()
         items.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC))
         return items[-self._message_limit :]
@@ -160,7 +209,11 @@ class ContextBuilder:
                             ToolCallContent(
                                 id=tc["id"],
                                 name=tc.get("name", ""),
-                                arguments=tc.get("arguments") if isinstance(tc.get("arguments"), dict) else {},
+                                arguments=(
+                                    tc.get("arguments")
+                                    if isinstance(tc.get("arguments"), dict)
+                                    else {}
+                                ),
                             )
                         )
             return AssistantMessage(content=content_blocks)
@@ -192,14 +245,19 @@ class ContextBuilder:
                 return __import__("json").dumps(parsed)
         except Exception:
             pass
-        return content[: self._MAX_TOOL_RESULT_CHARS] + f"\n...[truncated from {len(content)} chars]"
+        return (
+            content[: self._MAX_TOOL_RESULT_CHARS]
+            + f"\n...[truncated from {len(content)} chars]"
+        )
 
     def _active_skill_messages(self) -> list[SystemMessage]:
         if self._skill_registry is None:
             return []
 
         messages: list[SystemMessage] = []
-        active_skills = self._skill_registry.list_active(self._available_tools, self._env)
+        active_skills = self._skill_registry.list_active(
+            self._available_tools, self._env
+        )
         for skill in active_skills:
             messages.append(
                 SystemMessage(
@@ -220,7 +278,11 @@ class ContextBuilder:
             if current.role == "assistant":
                 tool_call_ids = self._tool_call_ids(current)
                 if not tool_call_ids:
-                    converted.append(self._convert_message_with_options(current, include_tool_calls=True))
+                    converted.append(
+                        self._convert_message_with_options(
+                            current, include_tool_calls=True
+                        )
+                    )
                     i += 1
                     continue
 
@@ -235,15 +297,27 @@ class ContextBuilder:
                     for item in trailing_tool_results
                     if isinstance(item.tool_call_id, str) and item.tool_call_id
                 }
-                has_all_results = all(call_id in result_ids for call_id in tool_call_ids)
+                has_all_results = all(
+                    call_id in result_ids for call_id in tool_call_ids
+                )
 
                 if has_all_results:
-                    converted.append(self._convert_message_with_options(current, include_tool_calls=True))
-                    converted.extend(self._convert_message(item) for item in trailing_tool_results)
+                    converted.append(
+                        self._convert_message_with_options(
+                            current, include_tool_calls=True
+                        )
+                    )
+                    converted.extend(
+                        self._convert_message(item) for item in trailing_tool_results
+                    )
                 else:
                     # Anthropic requires strict adjacency between tool_use and tool_result.
                     # If history is truncated/corrupt, degrade to plain assistant text.
-                    converted.append(self._convert_message_with_options(current, include_tool_calls=False))
+                    converted.append(
+                        self._convert_message_with_options(
+                            current, include_tool_calls=False
+                        )
+                    )
                 i = j if trailing_tool_results else i + 1
                 continue
 
@@ -285,7 +359,10 @@ class ContextBuilder:
             key=lambda item: (
                 bool(item.pinned),
                 int(item.importance or 0),
-                item.last_accessed_at or item.updated_at or item.created_at or datetime.min.replace(tzinfo=UTC),
+                item.last_accessed_at
+                or item.updated_at
+                or item.created_at
+                or datetime.min.replace(tzinfo=UTC),
             ),
             reverse=True,
         )
@@ -368,7 +445,9 @@ class ContextBuilder:
                 seen.add(child.id)
                 child_depth = self._memory_depth(child, by_id)
                 child_title = (child.title or "").strip() or child.content.strip()[:80]
-                child_summary = (child.summary or "").strip() or child.content.strip()[:120]
+                child_summary = (child.summary or "").strip() or child.content.strip()[
+                    :120
+                ]
                 relevant_lines.append(
                     f"  child=[{child.id}] depth={child_depth} title={child_title} summary={child_summary}"
                 )
@@ -376,7 +455,8 @@ class ContextBuilder:
         if relevant_lines:
             messages.append(
                 SystemMessage(
-                    content="## Potentially Relevant Memory Branches (auto)\n" + "\n".join(relevant_lines)
+                    content="## Potentially Relevant Memory Branches (auto)\n"
+                    + "\n".join(relevant_lines)
                 )
             )
         return messages
@@ -384,7 +464,11 @@ class ContextBuilder:
     def _resolve_root(self, node: Memory, by_id: dict[UUID, Memory]) -> Memory:
         current = node
         guard: set[UUID] = set()
-        while current.parent_id and current.parent_id in by_id and current.parent_id not in guard:
+        while (
+            current.parent_id
+            and current.parent_id in by_id
+            and current.parent_id not in guard
+        ):
             guard.add(current.parent_id)
             current = by_id[current.parent_id]
         return current
@@ -393,7 +477,11 @@ class ContextBuilder:
         depth = 0
         current = node
         guard: set[UUID] = set()
-        while current.parent_id and current.parent_id in by_id and current.parent_id not in guard:
+        while (
+            current.parent_id
+            and current.parent_id in by_id
+            and current.parent_id not in guard
+        ):
             guard.add(current.parent_id)
             depth += 1
             current = by_id[current.parent_id]

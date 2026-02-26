@@ -142,6 +142,7 @@ Note: this repository ships token-based onboarding out of the box.
 - `infra/` -> gateway and Docker wiring
 - `docker-compose.yml` -> production-style local runtime
 - `docker-compose.dev.yml` -> hot reload runtime for all four apps
+- `docs/browser-roadmap.md` -> browser automation roadmap
 
 ## Operations
 
