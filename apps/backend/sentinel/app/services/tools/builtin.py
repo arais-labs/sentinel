@@ -1556,9 +1556,9 @@ def spawn_sub_agent_tool(
             "timeout_seconds": timeout_seconds,
             "note": (
                 f"Sub-agent spawned (timeout: {timeout_seconds}s). "
-                "If this is a quick task (≤30s), use pythonXagent to sleep the appropriate amount then check results. "
-                "For longer tasks, end your turn now and ask the user if they want to wait — "
-                "the system will automatically resume you with all results when every sub-agent completes."
+                "Next steps: use check_sub_agent with this task_id before reporting delegated output. "
+                "Do not block waiting in-turn; continue other work and check status later. "
+                "The main session can be prompted when results are ready."
             ),
         }
 
@@ -1566,10 +1566,9 @@ def spawn_sub_agent_tool(
         name="spawn_sub_agent",
         description=(
             "Spawn a sub-agent for a bounded one-off task. "
-            "After spawning, decide based on expected duration: "
-            "for quick tasks (≤30s) use pythonXagent to sleep the appropriate time then check results; "
-            "for longer tasks, end your turn and inform the user — "
-            "the system will automatically resume your turn with all results once every sub-agent completes."
+            "Recommended workflow: list_sub_agents -> spawn_sub_agent -> check_sub_agent before reporting completion. "
+            "Keep delegation non-blocking: continue main work and verify with check_sub_agent when needed. "
+            "By default, sub-agents can use all tools when allowed_tools is omitted or empty."
         ),
         risk_level="low",
         parameters_schema={
@@ -1589,7 +1588,7 @@ def spawn_sub_agent_tool(
                 "allowed_tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Minimal tool names the sub-agent may use",
+                    "description": "Optional allowlist of tool names. Omit or pass [] to allow all tools.",
                 },
                 "max_steps": {
                     "type": "integer",
@@ -1627,13 +1626,34 @@ def check_sub_agent_tool(
             if task is None:
                 raise ToolValidationError("Sub-agent task not found")
 
+            result_payload = task.result if isinstance(task.result, dict) else None
+            status = str(task.status)
+            next_action = "Continue other work and check_sub_agent again later."
+            retry_recommended = False
+            if status == "completed":
+                next_action = (
+                    "Evaluate whether the delegated output fully satisfies the objective. "
+                    "If not, spawn_sub_agent again with a refined objective/scope."
+                )
+                final_text = result_payload.get("final_text") if isinstance(result_payload, dict) else None
+                if not isinstance(final_text, str) or not final_text.strip():
+                    retry_recommended = True
+            elif status in {"failed", "cancelled"}:
+                retry_recommended = True
+                next_action = (
+                    "Retry by spawning a new sub-agent with a refined objective/scope "
+                    "or adjusted max_steps/timeout."
+                )
+
             return {
                 "task_id": str(task.id),
                 "objective": task.objective,
-                "status": task.status,
+                "status": status,
                 "turns_used": task.turns_used or 0,
                 "tokens_used": task.tokens_used or 0,
-                "result": task.result if isinstance(task.result, dict) else None,
+                "result": result_payload,
+                "retry_recommended": retry_recommended,
+                "next_action": next_action,
                 "created_at": task.created_at.isoformat() if task.created_at else None,
                 "completed_at": (
                     task.completed_at.isoformat() if task.completed_at else None
@@ -1642,7 +1662,11 @@ def check_sub_agent_tool(
 
     return ToolDefinition(
         name="check_sub_agent",
-        description="Check the status and result of a sub-agent task.",
+        description=(
+            "Check the status and result of a sub-agent task. "
+            "Use this before claiming delegated work is complete. "
+            "If output is insufficient, refine objective/scope and spawn again."
+        ),
         risk_level="low",
         parameters_schema={
             "type": "object",
@@ -1696,7 +1720,10 @@ def list_sub_agents_tool(
 
     return ToolDefinition(
         name="list_sub_agents",
-        description="List all sub-agent tasks for the current session.",
+        description=(
+            "List all sub-agent tasks for the current session. "
+            "Use this before spawning to avoid duplicate delegation."
+        ),
         risk_level="low",
         parameters_schema={
             "type": "object",

@@ -11,10 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.models import Session, SubAgentTask
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.services.llm.types import AgentEvent
 from app.services.tools import ToolExecutor, ToolRegistry
 
 
 class SubAgentOrchestrator:
+    _SUB_AGENT_MODEL_HINT = "hint:hard"
+
     def __init__(
         self,
         agent_loop: AgentLoop | None = None,
@@ -123,6 +126,22 @@ class SubAgentOrchestrator:
             key = str(task.id)
             queue: asyncio.Queue[str] = asyncio.Queue()
             self._inject_queues[key] = queue
+            last_reported_turn = int(task.turns_used or 0)
+
+            async def _on_sub_agent_event(event: AgentEvent) -> None:
+                nonlocal last_reported_turn
+                if event.type != "agent_progress":
+                    return
+                turn = int(event.iteration or 0)
+                if turn <= last_reported_turn:
+                    return
+                last_reported_turn = turn
+                task.turns_used = min(turn, int(task.max_turns))
+                try:
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+
             try:
                 result = await asyncio.wait_for(
                     scoped_loop.run(
@@ -130,9 +149,12 @@ class SubAgentOrchestrator:
                         child_session.id,
                         task.objective,
                         system_prompt=prompt,
+                        model=self._SUB_AGENT_MODEL_HINT,
                         max_iterations=max(1, task.max_turns),
                         stream=False,
                         inject_queue=queue,
+                        persist_incremental=True,
+                        on_event=_on_sub_agent_event,
                     ),
                     timeout=max(1, task.timeout_seconds),
                 )
@@ -217,7 +239,11 @@ class SubAgentOrchestrator:
         return AgentLoop(self._agent_loop.provider, context_builder, tool_adapter)
 
     def _sub_agent_system_prompt(self, task: SubAgentTask) -> str:
-        tools = ", ".join(task.allowed_tools) if isinstance(task.allowed_tools, list) and task.allowed_tools else "none"
+        tools = (
+            ", ".join(task.allowed_tools)
+            if isinstance(task.allowed_tools, list) and task.allowed_tools
+            else "all available tools"
+        )
         scope = task.context or "No extra scope provided"
         return (
             "You are a delegated sub-agent. Stay strictly within objective and scope.\n"

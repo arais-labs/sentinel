@@ -20,6 +20,8 @@ async def init_db() -> None:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS parent_session_id UUID"))
+        await conn.execute(text("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS initial_prompt TEXT"))
+        await conn.execute(text("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS latest_system_prompt TEXT"))
         await conn.execute(text("ALTER TABLE triggers ADD COLUMN IF NOT EXISTS user_id VARCHAR(100)"))
         await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS tool_call_id VARCHAR(100)"))
         await conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS tool_name VARCHAR(100)"))

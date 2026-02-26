@@ -32,17 +32,16 @@ router = APIRouter()
 @router.get("")
 async def list_sessions(
     status_filter: str | None = Query(default=None, alias="status"),
+    include_sub_agents: bool = Query(default=False),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionListResponse:
-    result = await db.execute(
-        select(Session).where(
-            Session.user_id == user.sub,
-            Session.parent_session_id.is_(None),
-        )
-    )
+    query = select(Session).where(Session.user_id == user.sub)
+    if not include_sub_agents:
+        query = query.where(Session.parent_session_id.is_(None))
+    result = await db.execute(query)
     sessions = result.scalars().all()
     if status_filter:
         sessions = [s for s in sessions if s.status == status_filter]
@@ -281,6 +280,9 @@ async def create_message(
     if session.status != "active":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session is not active")
 
+    if payload.role == "user" and not session.initial_prompt and payload.content.strip():
+        session.initial_prompt = payload.content.strip()
+
     message = Message(
         session_id=session.id,
         role=payload.role,
@@ -395,7 +397,10 @@ def _session_response(session: Session) -> SessionResponse:
         id=session.id,
         user_id=session.user_id,
         agent_id=session.agent_id,
+        parent_session_id=session.parent_session_id,
         title=session.title,
+        initial_prompt=session.initial_prompt,
+        latest_system_prompt=session.latest_system_prompt,
         status=session.status,
         started_at=session.started_at,
         ended_at=session.ended_at,

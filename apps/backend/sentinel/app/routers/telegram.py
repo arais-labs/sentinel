@@ -14,7 +14,7 @@ from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
 from app.models import Session
 from app.models.system import SystemSetting
-from app.services.telegram_bridge import TelegramBridge
+from app.services.telegram_bridge import TELEGRAM_CHAT_ROUTES_KEY, TelegramBridge
 
 router = APIRouter()
 
@@ -168,11 +168,17 @@ async def get_status(
         "owner_user_id": settings.telegram_owner_user_id or settings.dev_user_id,
         "target_session_id": settings.telegram_target_session_id,
         "owner_chat_id": settings.telegram_owner_chat_id,
+        "owner_telegram_user_id": settings.telegram_owner_telegram_user_id,
     }
 
 
 class ConfigureRequest(BaseModel):
     bot_token: str
+
+
+class OwnerBindingRequest(BaseModel):
+    chat_id: int
+    telegram_user_id: str | None = None
 
 
 @router.post("/configure")
@@ -182,13 +188,17 @@ async def configure(
     user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    owner_changed = bool(settings.telegram_owner_user_id and settings.telegram_owner_user_id != user.sub)
     settings.telegram_bot_token = payload.bot_token
     settings.telegram_owner_user_id = user.sub
-    settings.telegram_owner_chat_id = None
     settings.telegram_target_session_id = await _resolve_target_or_latest_session_id(db, user.sub)
     await _upsert(db, "telegram_bot_token", payload.bot_token)
     await _upsert(db, "telegram_owner_user_id", user.sub)
-    await _delete_setting(db, "telegram_owner_chat_id")
+    if owner_changed:
+        settings.telegram_owner_chat_id = None
+        settings.telegram_owner_telegram_user_id = None
+        await _delete_setting(db, "telegram_owner_chat_id")
+        await _delete_setting(db, "telegram_owner_telegram_user_id")
     if settings.telegram_target_session_id:
         await _upsert(db, "telegram_target_session_id", settings.telegram_target_session_id)
     else:
@@ -205,16 +215,72 @@ async def start_bridge(
 ) -> dict:
     if not settings.telegram_bot_token:
         return {"success": False, "error": "No bot token configured"}
+    owner_changed = bool(settings.telegram_owner_user_id and settings.telegram_owner_user_id != user.sub)
     settings.telegram_owner_user_id = user.sub
-    settings.telegram_owner_chat_id = None
     settings.telegram_target_session_id = await _resolve_target_or_latest_session_id(db, user.sub)
     await _upsert(db, "telegram_owner_user_id", user.sub)
-    await _delete_setting(db, "telegram_owner_chat_id")
+    if owner_changed:
+        settings.telegram_owner_chat_id = None
+        settings.telegram_owner_telegram_user_id = None
+        await _delete_setting(db, "telegram_owner_chat_id")
+        await _delete_setting(db, "telegram_owner_telegram_user_id")
     if settings.telegram_target_session_id:
         await _upsert(db, "telegram_target_session_id", settings.telegram_target_session_id)
     else:
         await _delete_setting(db, "telegram_target_session_id")
     await _start_bridge(request.app.state)
+    return {"success": True}
+
+
+@router.post("/owner")
+async def bind_owner_telegram_identity(
+    payload: OwnerBindingRequest,
+    request: Request,
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    bridge: TelegramBridge | None = getattr(request.app.state, "telegram_bridge", None)
+    connected = bridge.connected_chats if bridge else {}
+    chat_info = connected.get(payload.chat_id)
+    if chat_info is None:
+        return {
+            "success": False,
+            "error": "Chat not connected. Send /start from owner DM first.",
+        }
+    if str(chat_info.get("chat_type", "")).lower() != "private":
+        return {"success": False, "error": "Owner binding requires a private DM chat"}
+
+    inferred_tg_user_id = chat_info.get("user_id")
+    owner_tg_user_id = payload.telegram_user_id or (
+        str(inferred_tg_user_id) if inferred_tg_user_id is not None else None
+    )
+
+    settings.telegram_owner_user_id = user.sub
+    settings.telegram_owner_chat_id = str(payload.chat_id)
+    settings.telegram_owner_telegram_user_id = owner_tg_user_id
+    await _upsert(db, "telegram_owner_user_id", user.sub)
+    await _upsert(db, "telegram_owner_chat_id", settings.telegram_owner_chat_id)
+    if owner_tg_user_id:
+        await _upsert(db, "telegram_owner_telegram_user_id", owner_tg_user_id)
+    else:
+        await _delete_setting(db, "telegram_owner_telegram_user_id")
+
+    return {
+        "success": True,
+        "owner_chat_id": settings.telegram_owner_chat_id,
+        "owner_telegram_user_id": settings.telegram_owner_telegram_user_id,
+    }
+
+
+@router.delete("/owner")
+async def clear_owner_telegram_identity(
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    settings.telegram_owner_chat_id = None
+    settings.telegram_owner_telegram_user_id = None
+    await _delete_setting(db, "telegram_owner_chat_id")
+    await _delete_setting(db, "telegram_owner_telegram_user_id")
     return {"success": True}
 
 
@@ -238,8 +304,11 @@ async def delete_config(
     settings.telegram_owner_user_id = None
     settings.telegram_target_session_id = None
     settings.telegram_owner_chat_id = None
+    settings.telegram_owner_telegram_user_id = None
     await _delete_setting(db, "telegram_bot_token")
     await _delete_setting(db, "telegram_owner_user_id")
     await _delete_setting(db, "telegram_target_session_id")
     await _delete_setting(db, "telegram_owner_chat_id")
+    await _delete_setting(db, "telegram_owner_telegram_user_id")
+    await _delete_setting(db, TELEGRAM_CHAT_ROUTES_KEY)
     return {"success": True}

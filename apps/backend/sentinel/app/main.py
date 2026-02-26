@@ -5,11 +5,10 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-# Configure logging so our debug/info logs are visible
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+from app.logging_context import configure_logging
+
+# Configure logging so our debug/info logs are visible and session-scoped.
+configure_logging()
 # Set DEBUG for our agent/provider modules specifically
 logging.getLogger("app.services.agent").setLevel(logging.DEBUG)
 logging.getLogger("app.services.llm").setLevel(logging.DEBUG)

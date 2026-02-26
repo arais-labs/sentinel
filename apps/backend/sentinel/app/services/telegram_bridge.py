@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_MSG_LEN = 4096
 TELEGRAM_OWNER_PAIRING_TTL_SECONDS = 600
+TELEGRAM_CHAT_ROUTES_KEY = "telegram_chat_routes"
 
 
 def mask_telegram_token(value: str | None) -> str | None:
@@ -65,6 +67,7 @@ async def persist_telegram_settings(
     owner_user_id: str,
     target_session_id: str | None = None,
     owner_chat_id: str | None = None,
+    owner_telegram_user_id: str | None = None,
 ) -> None:
     await _upsert_setting("telegram_bot_token", bot_token)
     await _upsert_setting("telegram_owner_user_id", owner_user_id)
@@ -76,6 +79,10 @@ async def persist_telegram_settings(
         await _upsert_setting("telegram_owner_chat_id", owner_chat_id)
     else:
         await _delete_setting("telegram_owner_chat_id")
+    if owner_telegram_user_id:
+        await _upsert_setting("telegram_owner_telegram_user_id", owner_telegram_user_id)
+    else:
+        await _delete_setting("telegram_owner_telegram_user_id")
 
 
 async def clear_telegram_settings() -> None:
@@ -86,6 +93,7 @@ async def clear_telegram_settings() -> None:
     await _delete_setting("telegram_owner_telegram_user_id")
     await _delete_setting("telegram_pairing_code_hash")
     await _delete_setting("telegram_pairing_code_expires_at")
+    await _delete_setting(TELEGRAM_CHAT_ROUTES_KEY)
 
 
 def _pairing_code_hash(raw_code: str) -> str:
@@ -260,7 +268,7 @@ async def resolve_owner_user_id_from_session(session_id: str | None) -> str | No
 
 
 class TelegramBridge:
-    """Bridges Telegram chats to the Sentinel agent's default session."""
+    """Bridges Telegram chats to Sentinel with deterministic per-channel routing."""
 
     def __init__(
         self,
@@ -338,6 +346,336 @@ class TelegramBridge:
             and getattr(chat, "type", None) == "private"
             and metadata.get("telegram_is_owner")
         )
+
+    @staticmethod
+    def _to_int(value: object) -> int | None:
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_json_dict(raw: str) -> dict:
+        text = (raw or "").strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _build_telegram_audit_line(
+        *,
+        chat_id: object | None,
+        chat_type: str,
+        delivered: bool,
+        fallback_used: bool,
+    ) -> str:
+        safe_chat_id = "unknown" if chat_id is None else str(chat_id)
+        safe_chat_type = (chat_type or "unknown").lower()
+        if delivered:
+            mode = "fallback" if fallback_used else "tool"
+            return (
+                f"Telegram audit: sent reply to chat_id={safe_chat_id} "
+                f"({safe_chat_type}, mode={mode})"
+            )
+        return f"Telegram audit: no reply sent to chat_id={safe_chat_id} ({safe_chat_type})"
+
+    async def _normalize_non_inline_assistant_output(
+        self,
+        db: object,
+        *,
+        session_id: UUID,
+        created_after: datetime,
+        chat_id: object | None,
+        chat_type: str,
+        delivered: bool,
+        fallback_used: bool,
+    ) -> None:
+        result = await db.execute(select(MessageModel).where(MessageModel.session_id == session_id))
+        messages = [
+            item
+            for item in result.scalars().all()
+            if item.role == "assistant"
+            and (item.created_at or datetime.min.replace(tzinfo=UTC)) >= created_after
+        ]
+        messages.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC))
+
+        non_empty = [item for item in messages if (item.content or "").strip()]
+        audit_line = self._build_telegram_audit_line(
+            chat_id=chat_id,
+            chat_type=chat_type,
+            delivered=delivered,
+            fallback_used=fallback_used,
+        )
+        audit_metadata = {
+            "source": "telegram_audit",
+            "telegram_chat_id": chat_id,
+            "telegram_chat_type": chat_type,
+            "telegram_delivery_mode": "fallback" if fallback_used else "tool",
+            "telegram_delivery_success": delivered,
+        }
+
+        if not non_empty:
+            db.add(
+                MessageModel(
+                    session_id=session_id,
+                    role="assistant",
+                    content=audit_line,
+                    metadata_json=audit_metadata,
+                )
+            )
+            await db.commit()
+            return
+
+        for item in non_empty[:-1]:
+            item.content = ""
+
+        tail = non_empty[-1]
+        tail.content = audit_line
+        existing_metadata = tail.metadata_json if isinstance(tail.metadata_json, dict) else {}
+        tail.metadata_json = {**existing_metadata, **audit_metadata}
+        await db.commit()
+
+    @staticmethod
+    def _json_string(value: object) -> str:
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
+
+    @staticmethod
+    def _route_key(
+        *,
+        chat_type: str,
+        chat_id: int | None,
+        sender_user_id: int | None,
+    ) -> str | None:
+        if chat_id is None:
+            return None
+        normalized = (chat_type or "").lower()
+        if normalized in {"group", "supergroup"}:
+            return f"group:{chat_id}"
+        if normalized == "private":
+            return f"dm:{chat_id}:{sender_user_id or 0}"
+        return None
+
+    async def _load_chat_routes(self, db: object) -> dict[str, dict]:
+        result = await db.execute(select(SystemSetting).where(SystemSetting.key == TELEGRAM_CHAT_ROUTES_KEY))
+        setting = result.scalars().first()
+        if setting is None:
+            return {}
+        try:
+            parsed = json.loads(setting.value)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        routes: dict[str, dict] = {}
+        for key, value in parsed.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            routes[key] = value
+        return routes
+
+    async def _save_chat_routes(self, db: object, routes: dict[str, dict]) -> None:
+        result = await db.execute(select(SystemSetting).where(SystemSetting.key == TELEGRAM_CHAT_ROUTES_KEY))
+        setting = result.scalars().first()
+        payload = self._json_string(routes)
+        if setting is None:
+            db.add(SystemSetting(key=TELEGRAM_CHAT_ROUTES_KEY, value=payload))
+        else:
+            setting.value = payload
+        await db.commit()
+
+    async def _resolve_owner_main_session_with_db(self, db: object) -> UUID | None:
+        """Resolve owner DM route session (canonical main session)."""
+        target_session_id = settings.telegram_target_session_id
+        target_session: SessionModel | None = None
+        if target_session_id:
+            try:
+                parsed_target = UUID(target_session_id)
+            except ValueError:
+                parsed_target = None
+            if parsed_target is not None:
+                target_result = await db.execute(
+                    select(SessionModel).where(
+                        SessionModel.id == parsed_target,
+                        SessionModel.user_id == self._user_id,
+                        SessionModel.parent_session_id.is_(None),
+                    )
+                )
+                target_session = target_result.scalars().first()
+                if target_session is not None:
+                    if target_session.status != "active":
+                        target_session.status = "active"
+                        target_session.ended_at = None
+                        await db.commit()
+                    return target_session.id
+
+        result = await db.execute(
+            select(SessionModel).where(
+                SessionModel.user_id == self._user_id,
+                SessionModel.status == "active",
+                SessionModel.parent_session_id.is_(None),
+            )
+        )
+        sessions = result.scalars().all()
+        if sessions:
+            sessions.sort(
+                key=lambda s: s.created_at or datetime.min.replace(tzinfo=UTC),
+                reverse=True,
+            )
+            session = sessions[0]
+            settings.telegram_target_session_id = str(session.id)
+            await _upsert_setting("telegram_target_session_id", str(session.id))
+            return session.id
+
+        # If no active root exists, revive newest root.
+        fallback_result = await db.execute(
+            select(SessionModel).where(
+                SessionModel.user_id == self._user_id,
+                SessionModel.parent_session_id.is_(None),
+            )
+        )
+        fallback_roots = fallback_result.scalars().all()
+        if fallback_roots:
+            fallback_roots.sort(
+                key=lambda s: s.created_at or datetime.min.replace(tzinfo=UTC),
+                reverse=True,
+            )
+            session = fallback_roots[0]
+            session.status = "active"
+            session.ended_at = None
+            await db.commit()
+            settings.telegram_target_session_id = str(session.id)
+            await _upsert_setting("telegram_target_session_id", str(session.id))
+            return session.id
+
+        session = SessionModel(
+            user_id=self._user_id,
+            agent_id="dev-agent",
+            title="Main",
+            status="active",
+        )
+        db.add(session)
+        await db.commit()
+        await db.refresh(session)
+        settings.telegram_target_session_id = str(session.id)
+        await _upsert_setting("telegram_target_session_id", str(session.id))
+        return session.id
+
+    async def _resolve_or_create_routed_session(
+        self,
+        db: object,
+        *,
+        route_key: str,
+        chat_type: str,
+        chat_id: int,
+        chat_title: str | None,
+        sender_user_id: int | None,
+        sender_name: str | None,
+    ) -> tuple[UUID | None, str]:
+        routes = await self._load_chat_routes(db)
+        route = routes.get(route_key) if isinstance(routes.get(route_key), dict) else None
+        if route is not None:
+            raw_session_id = route.get("session_id")
+            if isinstance(raw_session_id, str) and raw_session_id.strip():
+                try:
+                    parsed_session_id = UUID(raw_session_id.strip())
+                except ValueError:
+                    parsed_session_id = None
+                if parsed_session_id is not None:
+                    found = await db.execute(
+                        select(SessionModel).where(
+                            SessionModel.id == parsed_session_id,
+                            SessionModel.user_id == self._user_id,
+                            SessionModel.parent_session_id.is_(None),
+                        )
+                    )
+                    existing = found.scalars().first()
+                    if existing is not None:
+                        if existing.status != "active":
+                            existing.status = "active"
+                            existing.ended_at = None
+                            await db.commit()
+                        route["last_seen_at"] = datetime.now(UTC).isoformat()
+                        route["chat_title"] = chat_title or route.get("chat_title") or ""
+                        routes[route_key] = route
+                        await self._save_chat_routes(db, routes)
+                        return (existing.id, "existing")
+
+        normalized_type = chat_type.lower()
+        if normalized_type in {"group", "supergroup"}:
+            session_title = f"TG Group · {chat_title or str(chat_id)}"
+            guardrail_level = "untrusted_group"
+        else:
+            display = (sender_name or "").strip() or str(sender_user_id or chat_id)
+            session_title = f"TG DM · {display}"
+            guardrail_level = "untrusted_private"
+
+        session = SessionModel(
+            user_id=self._user_id,
+            agent_id="dev-agent",
+            title=session_title,
+            status="active",
+        )
+        db.add(session)
+        await db.commit()
+        await db.refresh(session)
+
+        routes[route_key] = {
+            "session_id": str(session.id),
+            "chat_id": chat_id,
+            "chat_type": normalized_type,
+            "chat_title": chat_title or "",
+            "sender_user_id": sender_user_id,
+            "sender_name": sender_name or "",
+            "guardrail_level": guardrail_level,
+            "created_at": datetime.now(UTC).isoformat(),
+            "last_seen_at": datetime.now(UTC).isoformat(),
+        }
+        await self._save_chat_routes(db, routes)
+        return (session.id, "created")
+
+    async def _resolve_inbound_session(
+        self,
+        db: object,
+        *,
+        chat: object | None,
+        user: object | None,
+        metadata: dict,
+    ) -> tuple[UUID | None, str]:
+        if self._should_reply_inline(chat, metadata):
+            return (await self._resolve_owner_main_session_with_db(db), "owner_main")
+
+        chat_type = str(getattr(chat, "type", "")).lower()
+        chat_id = self._to_int(getattr(chat, "id", None))
+        sender_user_id = self._to_int(getattr(user, "id", None))
+        route_key = self._route_key(
+            chat_type=chat_type,
+            chat_id=chat_id,
+            sender_user_id=sender_user_id,
+        )
+        if route_key is None or chat_id is None:
+            return (None, "unknown")
+
+        sender_name = None
+        if user is not None:
+            sender_name = getattr(user, "full_name", None) or getattr(user, "first_name", None)
+        chat_title = getattr(chat, "title", None) if chat is not None else None
+
+        session_id, _ = await self._resolve_or_create_routed_session(
+            db,
+            route_key=route_key,
+            chat_type=chat_type,
+            chat_id=chat_id,
+            chat_title=chat_title,
+            sender_user_id=sender_user_id,
+            sender_name=sender_name,
+        )
+        if chat_type in {"group", "supergroup"}:
+            return (session_id, "group_channel")
+        return (session_id, "dm_channel")
 
     async def send_message(self, chat_id: int, text: str) -> bool:
         """Send a message to a specific Telegram chat. Returns True on success."""
@@ -438,16 +776,23 @@ class TelegramBridge:
         if not update.message:
             return
         chat = update.effective_chat
+        user = update.effective_user
         if chat is None:
             return
         logger.info("Telegram /start: chat_id=%s type=%s", chat.id, chat.type)
 
-        self._connected_chats[chat.id] = {
+        chat_info = {
             "chat_id": chat.id,
             "chat_type": chat.type,
             "title": chat.title or chat.full_name or str(chat.id),
             "connected_at": datetime.now(UTC).isoformat(),
         }
+        if user is not None:
+            chat_info["user_id"] = user.id
+            chat_info["user_name"] = user.full_name or user.first_name or "Unknown"
+            if user.username:
+                chat_info["username"] = user.username
+        self._connected_chats[chat.id] = chat_info
 
         group_hint = ""
         if chat.type in ("group", "supergroup"):
@@ -558,7 +903,7 @@ class TelegramBridge:
 
         # Register chat if not already registered
         if chat.id not in self._connected_chats:
-            self._connected_chats[chat.id] = {
+            chat_info = {
                 "chat_id": chat.id,
                 "chat_type": chat.type,
                 "title": chat.title
@@ -566,6 +911,12 @@ class TelegramBridge:
                 or str(chat.id),
                 "connected_at": datetime.now(UTC).isoformat(),
             }
+            if user is not None:
+                chat_info["user_id"] = user.id
+                chat_info["user_name"] = user.full_name or user.first_name or "Unknown"
+                if user.username:
+                    chat_info["username"] = user.username
+            self._connected_chats[chat.id] = chat_info
         is_owner = self._is_owner_sender(chat, user)
 
         metadata = {
@@ -631,11 +982,27 @@ class TelegramBridge:
         # Keep persisted user text clean; transport/source details stay in metadata.
         content = text
 
-        # Resolve default session
-        session_id = await self._resolve_default_session()
-        if session_id is None:
-            await update.message.reply_text("Could not resolve agent session.")
-            return
+        # Persist user message
+        from sqlalchemy import select, func
+
+        async with self._db_factory() as db:
+            session_id, route_scope = await self._resolve_inbound_session(
+                db,
+                chat=chat,
+                user=user,
+                metadata=metadata,
+            )
+            if session_id is None:
+                await update.message.reply_text("Could not resolve agent session.")
+                return
+
+            metadata["telegram_route_scope"] = route_scope
+            if route_scope in {"group_channel", "dm_channel"}:
+                metadata["telegram_untrusted_channel"] = True
+            if route_scope == "dm_channel":
+                metadata["telegram_guardrail_level"] = "untrusted_private"
+            elif route_scope == "group_channel":
+                metadata["telegram_guardrail_level"] = "untrusted_group"
 
         session_key = str(session_id)
 
@@ -656,10 +1023,8 @@ class TelegramBridge:
                 )
                 return
 
-        # Persist user message
-        from sqlalchemy import select, func
-
         async with self._db_factory() as db:
+
             count_result = await db.execute(
                 select(func.count())
                 .select_from(MessageModel)
@@ -686,7 +1051,7 @@ class TelegramBridge:
             )
 
             # Name session if first message
-            if is_first_message and self._agent_loop is not None:
+            if is_first_message and self._agent_loop is not None and route_scope == "owner_main":
                 asyncio.create_task(
                     self._name_session(session_id, text, self._ws_manager, self._agent_loop)
                 )
@@ -697,8 +1062,31 @@ class TelegramBridge:
             # Run agent
             from app.services.llm.types import AgentEvent
 
+            inline_reply_mode = route_scope == "owner_main"
+            expected_chat_id = self._to_int(getattr(chat, "id", None))
+            tool_delivery_success = False
+            tool_delivery_chat_id: int | None = None
+
             async def _on_event(event: AgentEvent) -> None:
+                nonlocal tool_delivery_success, tool_delivery_chat_id
                 await self._ws_manager.broadcast_agent_event(session_key, event)
+                if inline_reply_mode:
+                    return
+                if event.type != "tool_result" or event.tool_result is None:
+                    return
+                tool_result = event.tool_result
+                if tool_result.tool_name != "send_telegram_message" or tool_result.is_error:
+                    return
+                payload = self._parse_json_dict(tool_result.content)
+                if payload.get("success") is not True:
+                    return
+                outbound_chat_id = self._to_int(payload.get("chat_id"))
+                if outbound_chat_id is None:
+                    return
+                if expected_chat_id is not None and outbound_chat_id != expected_chat_id:
+                    return
+                tool_delivery_success = True
+                tool_delivery_chat_id = outbound_chat_id
 
             run_task = asyncio.create_task(
                 self._agent_loop.run(
@@ -723,7 +1111,7 @@ class TelegramBridge:
                 result = await run_task
                 final_text = result.final_text if result else ""
 
-                if self._should_reply_inline(chat, metadata):
+                if inline_reply_mode:
                     if final_text:
                         await self._send_chunked(update, final_text)
                     else:
@@ -736,10 +1124,37 @@ class TelegramBridge:
                             if image_b64:
                                 await self._send_photo(chat.id, image_b64)
                 else:
+                    fallback_used = False
+                    chat_id = getattr(chat, "id", None)
+                    chat_type = str(getattr(chat, "type", "unknown"))
+                    # Safety net: if model forgot to call send_telegram_message for this inbound
+                    # chat, send the final text directly so Telegram still gets a response.
+                    if (
+                        not tool_delivery_success
+                        and chat_id is not None
+                        and isinstance(final_text, str)
+                        and final_text.strip()
+                    ):
+                        await self._send_chunked_to_chat(int(chat_id), final_text.strip())
+                        tool_delivery_success = True
+                        tool_delivery_chat_id = int(chat_id)
+                        fallback_used = True
+
+                    await self._normalize_non_inline_assistant_output(
+                        db,
+                        session_id=session_id,
+                        created_after=message.created_at or datetime.min.replace(tzinfo=UTC),
+                        chat_id=tool_delivery_chat_id if tool_delivery_chat_id is not None else chat_id,
+                        chat_type=chat_type,
+                        delivered=tool_delivery_success,
+                        fallback_used=fallback_used,
+                    )
                     logger.info(
-                        "Telegram inbound processed without inline reply; use send_telegram_message for external response. chat_id=%s type=%s",
+                        "Telegram non-inline processed: chat_id=%s type=%s delivered=%s fallback=%s",
                         getattr(chat, "id", None),
                         getattr(chat, "type", None),
+                        tool_delivery_success,
+                        fallback_used,
                     )
 
             except asyncio.CancelledError:
@@ -765,74 +1180,9 @@ class TelegramBridge:
     # -- helpers -------------------------------------------------------------
 
     async def _resolve_default_session(self) -> UUID | None:
-        """Find the target session for Telegram routing, creating one if needed."""
+        """Backward-compatible helper for owner main route resolution."""
         async with self._db_factory() as db:
-            target_session_id = settings.telegram_target_session_id
-            target_session: SessionModel | None = None
-            if target_session_id:
-                try:
-                    parsed_target = UUID(target_session_id)
-                except ValueError:
-                    parsed_target = None
-                if parsed_target is not None:
-                    target_result = await db.execute(
-                        select(SessionModel).where(
-                            SessionModel.id == parsed_target,
-                            SessionModel.user_id == self._user_id,
-                            SessionModel.parent_session_id.is_(None),
-                        )
-                    )
-                    target_session = target_result.scalars().first()
-                    if target_session is not None and target_session.status == "active":
-                        return target_session.id
-
-            result = await db.execute(
-                select(SessionModel).where(
-                    SessionModel.user_id == self._user_id,
-                    SessionModel.status == "active",
-                    SessionModel.parent_session_id.is_(None),
-                )
-            )
-            sessions = result.scalars().all()
-
-            if sessions:
-                sessions.sort(
-                    key=lambda s: s.created_at or datetime.min.replace(tzinfo=UTC),
-                    reverse=True,
-                )
-                return sessions[0].id
-
-            # If target exists but is no longer active, only use it as fallback when no
-            # active root session is available.
-            if target_session is not None:
-                return target_session.id
-
-            # If no active root exists, revive the newest root session.
-            fallback_result = await db.execute(
-                select(SessionModel).where(
-                    SessionModel.user_id == self._user_id,
-                    SessionModel.parent_session_id.is_(None),
-                )
-            )
-            fallback_roots = fallback_result.scalars().all()
-            if fallback_roots:
-                fallback_roots.sort(
-                    key=lambda s: s.created_at or datetime.min.replace(tzinfo=UTC),
-                    reverse=True,
-                )
-                return fallback_roots[0].id
-
-            # No root session exists at all, create one.
-            session = SessionModel(
-                user_id=self._user_id,
-                agent_id="dev-agent",
-                title="Main",
-                status="active",
-            )
-            db.add(session)
-            await db.commit()
-            await db.refresh(session)
-            return session.id
+            return await self._resolve_owner_main_session_with_db(db)
 
     async def _send_chunked(self, update: Update, text: str) -> None:
         """Send a message, splitting at Telegram's 4096-char limit."""
@@ -1029,6 +1379,7 @@ def telegram_manage_integration_tool(app_state_ref: object) -> "ToolDefinition":
             "owner_user_id": settings.telegram_owner_user_id or settings.dev_user_id,
             "target_session_id": settings.telegram_target_session_id,
             "owner_chat_id": settings.telegram_owner_chat_id,
+            "owner_telegram_user_id": settings.telegram_owner_telegram_user_id,
         }
 
     async def _resolve_owner(payload: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -1094,15 +1445,21 @@ def telegram_manage_integration_tool(app_state_ref: object) -> "ToolDefinition":
             if target_error:
                 return {"success": False, "error": target_error}
 
+            owner_changed = settings.telegram_owner_user_id != owner_user_id
             settings.telegram_bot_token = bot_token.strip()
             settings.telegram_owner_user_id = owner_user_id
             settings.telegram_target_session_id = target_session_id
-            settings.telegram_owner_chat_id = None
+            if owner_changed:
+                settings.telegram_owner_chat_id = None
+                settings.telegram_owner_telegram_user_id = None
+                await _delete_setting("telegram_owner_chat_id")
+                await _delete_setting("telegram_owner_telegram_user_id")
             await persist_telegram_settings(
                 bot_token=settings.telegram_bot_token,
                 owner_user_id=settings.telegram_owner_user_id or settings.dev_user_id,
                 target_session_id=settings.telegram_target_session_id,
                 owner_chat_id=settings.telegram_owner_chat_id,
+                owner_telegram_user_id=settings.telegram_owner_telegram_user_id,
             )
             await start_telegram_bridge(app_state_ref)
             return {"success": True, "action": action, **(await _status_payload())}
@@ -1121,7 +1478,9 @@ def telegram_manage_integration_tool(app_state_ref: object) -> "ToolDefinition":
                     await _upsert_setting("telegram_owner_user_id", owner_user_id)
                 if owner_changed:
                     settings.telegram_owner_chat_id = None
+                    settings.telegram_owner_telegram_user_id = None
                     await _delete_setting("telegram_owner_chat_id")
+                    await _delete_setting("telegram_owner_telegram_user_id")
             if target_session_id:
                 settings.telegram_target_session_id = target_session_id
                 await _upsert_setting("telegram_target_session_id", target_session_id)

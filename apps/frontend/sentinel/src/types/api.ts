@@ -11,7 +11,10 @@ export interface Session {
   id: string;
   user_id: string;
   agent_id: string | null;
+  parent_session_id?: string | null;
   title: string | null;
+  initial_prompt?: string | null;
+  latest_system_prompt?: string | null;
   status: string;
   started_at: string;
   ended_at: string | null;

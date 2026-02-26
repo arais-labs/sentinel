@@ -17,6 +17,7 @@ from app.config import settings
 from app.dependencies import get_db
 from app.middleware.auth import decode_and_validate_token
 from app.models import Message, Session
+from app.logging_context import reset_log_session, set_log_session
 from app.services.compaction import CompactionService
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.llm.types import AgentEvent, ToolCallContent
@@ -61,6 +62,7 @@ async def stream_session(
 
     await websocket.accept()
     session_key = str(id)
+    session_log_token = set_log_session(session_key)
     await manager.connect(session_key, websocket)
 
     history = await _load_history(db, id)
@@ -77,10 +79,13 @@ async def stream_session(
             parsed, model_hint, max_iterations, attachments = result
 
             is_first_message = not session_has_messages
+            parsed_text = parsed.strip()
 
             metadata: dict[str, Any] = {"source": "web"}
             if attachments:
                 metadata["attachments"] = attachments
+            if parsed_text and not session.initial_prompt:
+                session.initial_prompt = parsed_text
             message = Message(
                 session_id=id,
                 role="user",
@@ -233,6 +238,7 @@ async def stream_session(
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
+        reset_log_session(session_log_token)
         await manager.disconnect(session_key, websocket)
 
 

@@ -23,7 +23,10 @@ class SessionResponse(BaseModel):
     id: UUID
     user_id: str
     agent_id: str | None = None
+    parent_session_id: UUID | None = None
     title: str | None = None
+    initial_prompt: str | None = None
+    latest_system_prompt: str | None = None
     status: str
     started_at: datetime
     ended_at: datetime | None = None

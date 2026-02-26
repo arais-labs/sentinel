@@ -11,7 +11,8 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import Message
+from app.logging_context import reset_log_session, set_log_session
+from app.models import Message, Session
 from app.services.agent.context_builder import ContextBuilder
 from app.services.agent.tool_image_reinjection import (
     ToolImageReinjectionPolicy,
@@ -32,6 +33,7 @@ from app.services.llm.types import (
     ToolResultContent,
     ToolResultMessage,
     ToolSchema,
+    SystemMessage,
     UserMessage,
 )
 
@@ -104,7 +106,9 @@ class AgentLoop:
         timeout_seconds: float | None = None,
         on_event: Callable[[AgentEvent], Awaitable[None]] | None = None,
         inject_queue: asyncio.Queue[str] | None = None,
+        persist_incremental: bool = False,
     ) -> AgentLoopResult:
+        session_log_token = set_log_session(session_id)
         if timeout_seconds is None:
             timeout_seconds = settings.agent_loop_timeout
         user = UserMessage(content=user_message)
@@ -118,6 +122,7 @@ class AgentLoop:
                 await on_event(AgentEvent(type="error", error="Emergency stop KILL_ALL is active"))
                 await on_event(AgentEvent(type="done", stop_reason="aborted"))
             await self._persist_messages(db, session_id, created, assistant_iterations)
+            reset_log_session(session_log_token)
             return AgentLoopResult(
                 final_text="",
                 messages_created=len(created),
@@ -132,9 +137,19 @@ class AgentLoop:
             system_prompt,
             pending_user_message=self._user_text(user_message),
         )
+        tools = self.tool_adapter.get_tool_schemas()
+        runtime_system_prompt = self._extract_runtime_system_prompt(messages)
+        runtime_context_snapshot = self._build_runtime_context_snapshot(
+            messages,
+            tools,
+            model_hint=model,
+            temperature=temperature,
+            max_iterations=max_iterations,
+            stream=stream,
+        )
+        context_snapshot_pending = True
         messages.append(user)
 
-        tools = self.tool_adapter.get_tool_schemas()
         logger.info(
             "AgentLoop.run: session_id=%s model=%s stream=%s tools=%s",
             session_id, model, stream, [t.name for t in tools],
@@ -143,6 +158,7 @@ class AgentLoop:
         iterations = 0
         done_emitted = False
         last_error: str | None = None
+        persisted_count = 0
         reinjected_hashes: set[str] = set()
         reinjection_policy = ToolImageReinjectionPolicy(
             enabled=settings.tool_image_reinjection_enabled,
@@ -164,6 +180,26 @@ class AgentLoop:
                 else:
                     await _caller_on_event(event)  # type: ignore[misc]
             on_event = _intercepted_on_event
+
+        async def _persist_new_messages() -> None:
+            nonlocal persisted_count, context_snapshot_pending
+            if not persist_incremental:
+                return
+            if persisted_count >= len(created):
+                return
+            batch = created[persisted_count:]
+            snapshot = runtime_context_snapshot if context_snapshot_pending else None
+            await self._persist_messages(
+                db,
+                session_id,
+                batch,
+                assistant_iterations,
+                effective_system_prompt=runtime_system_prompt,
+                runtime_context_snapshot=snapshot,
+            )
+            if snapshot is not None:
+                context_snapshot_pending = False
+            persisted_count = len(created)
 
         async def _run_finalization_round(progress_max: int) -> bool:
             """
@@ -260,6 +296,7 @@ class AgentLoop:
             messages.append(final_response)
             created.append(final_response)
             assistant_iterations[id(final_response)] = iterations
+            await _persist_new_messages()
             done_emitted = True
             return True
 
@@ -370,6 +407,7 @@ class AgentLoop:
                         "Loop ending: stop_reason=%r != 'tool_use', session_id=%s",
                         response.stop_reason, session_id,
                     )
+                    await _persist_new_messages()
                     if on_event is not None and not stream:
                         await on_event(AgentEvent(type="done", stop_reason=response.stop_reason, message=response))
                     done_emitted = True
@@ -445,6 +483,7 @@ class AgentLoop:
                                 ),
                             )
                         )
+                await _persist_new_messages()
                 # Cooldown between iterations to avoid hammering the LLM provider
                 if settings.agent_loop_cooldown > 0:
                     await asyncio.sleep(settings.agent_loop_cooldown)
@@ -461,7 +500,17 @@ class AgentLoop:
             error_msg = _make_error_message(f"Agent timed out after {int(timeout_seconds)}s. You can retry your request.")
             created.append(error_msg)
             assistant_iterations[id(error_msg)] = iterations
-            await self._persist_messages(db, session_id, created, assistant_iterations)
+            snapshot = runtime_context_snapshot if context_snapshot_pending else None
+            await self._persist_messages(
+                db,
+                session_id,
+                created,
+                assistant_iterations,
+                effective_system_prompt=runtime_system_prompt,
+                runtime_context_snapshot=snapshot,
+            )
+            if snapshot is not None:
+                context_snapshot_pending = False
             persisted = True
             if on_event is not None:
                 await on_event(AgentEvent(type="done", stop_reason="timeout"))
@@ -472,7 +521,17 @@ class AgentLoop:
             error_msg = _make_error_message("Generation stopped by user.")
             created.append(error_msg)
             assistant_iterations[id(error_msg)] = iterations
-            await self._persist_messages(db, session_id, created, assistant_iterations)
+            snapshot = runtime_context_snapshot if context_snapshot_pending else None
+            await self._persist_messages(
+                db,
+                session_id,
+                created,
+                assistant_iterations,
+                effective_system_prompt=runtime_system_prompt,
+                runtime_context_snapshot=snapshot,
+            )
+            if snapshot is not None:
+                context_snapshot_pending = False
             persisted = True
             if on_event is not None:
                 await on_event(AgentEvent(type="error", error=last_error))
@@ -481,14 +540,27 @@ class AgentLoop:
 
         # Persist before emitting the final done so loadMessages() sees committed data.
         if not persisted:
-            await self._persist_messages(db, session_id, created, assistant_iterations)
+            if persist_incremental:
+                await _persist_new_messages()
+            else:
+                snapshot = runtime_context_snapshot if context_snapshot_pending else None
+                await self._persist_messages(
+                    db,
+                    session_id,
+                    created,
+                    assistant_iterations,
+                    effective_system_prompt=runtime_system_prompt,
+                    runtime_context_snapshot=snapshot,
+                )
+                if snapshot is not None:
+                    context_snapshot_pending = False
 
         if deferred_done is not None and _caller_on_event is not None:
             await _caller_on_event(deferred_done)
         elif not done_emitted and _caller_on_event is not None:
             await _caller_on_event(AgentEvent(type="done", stop_reason="stop"))
 
-        return AgentLoopResult(
+        result = AgentLoopResult(
             final_text=self._extract_final_text(created),
             messages_created=len(created),
             usage=total_usage,
@@ -496,6 +568,8 @@ class AgentLoop:
             error=last_error,
             attachments=self._collect_attachments(created),
         )
+        reset_log_session(session_log_token)
+        return result
 
     async def _stream_response(
         self,
@@ -667,13 +741,44 @@ class AgentLoop:
         session_id: UUID,
         created: list[AgentMessage],
         assistant_iterations: dict[int, int],
+        *,
+        effective_system_prompt: str | None = None,
+        runtime_context_snapshot: dict[str, Any] | None = None,
     ) -> None:
         base_time = datetime.now(UTC)
+        session_record = await db.get(Session, session_id)
+        if session_record is not None and effective_system_prompt:
+            prompt = effective_system_prompt.strip()
+            if prompt:
+                session_record.latest_system_prompt = prompt
+        start_offset = 0
+        if runtime_context_snapshot:
+            summary = (
+                f"[Runtime Context Snapshot] model={runtime_context_snapshot.get('model_hint', '')} "
+                f"tools={runtime_context_snapshot.get('tool_count', 0)} "
+                f"system_blocks={runtime_context_snapshot.get('system_message_count', 0)}"
+            )
+            db.add(
+                Message(
+                    session_id=session_id,
+                    role="system",
+                    content=summary,
+                    metadata_json={"source": "runtime_context", "run_context": runtime_context_snapshot},
+                    created_at=base_time,
+                )
+            )
+            start_offset = 1
         for idx, message in enumerate(created):
-            created_at = base_time + timedelta(milliseconds=idx)
+            created_at = base_time + timedelta(milliseconds=idx + start_offset)
             if isinstance(message, UserMessage):
                 metadata = dict(message.metadata or {})
                 text_content = self._user_text(message.content)
+                if (
+                    session_record is not None
+                    and not session_record.initial_prompt
+                    and text_content.strip()
+                ):
+                    session_record.initial_prompt = text_content.strip()
                 if isinstance(message.content, list):
                     attachments: list[dict[str, Any]] = []
                     for block in message.content:
@@ -744,6 +849,63 @@ class AgentLoop:
                 db.add(record)
 
         await db.commit()
+
+    @staticmethod
+    def _extract_runtime_system_prompt(messages: list[AgentMessage]) -> str | None:
+        blocks: list[str] = []
+        for message in messages:
+            if not isinstance(message, SystemMessage):
+                continue
+            prompt = (message.content or "").strip()
+            if prompt:
+                blocks.append(prompt)
+        if not blocks:
+            return None
+        return "\n\n---\n\n".join(blocks)
+
+    @staticmethod
+    def _build_runtime_context_snapshot(
+        messages: list[AgentMessage],
+        tools: list[ToolSchema],
+        *,
+        model_hint: str,
+        temperature: float,
+        max_iterations: int,
+        stream: bool,
+    ) -> dict[str, Any]:
+        system_blocks: list[str] = []
+        pinned_memories: list[dict[str, str]] = []
+        for message in messages:
+            if not isinstance(message, SystemMessage):
+                continue
+            content = (message.content or "").strip()
+            if not content:
+                continue
+            system_blocks.append(content)
+            if content.startswith("## Memory (pinned):"):
+                first_line, _, remainder = content.partition("\n")
+                title = first_line.replace("## Memory (pinned):", "").strip()
+                pinned_memories.append({"title": title or "Untitled", "content": remainder.strip()})
+
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "model_hint": model_hint,
+            "temperature": temperature,
+            "max_iterations": max_iterations,
+            "stream": stream,
+            "system_message_count": len(system_blocks),
+            "system_messages": system_blocks,
+            "pinned_memories": pinned_memories,
+            "tool_count": len(tools),
+            "tools": [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                }
+                for tool in tools
+            ],
+        }
 
     def _extract_final_text(self, messages: list[AgentMessage]) -> str:
         for message in reversed(messages):

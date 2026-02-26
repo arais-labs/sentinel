@@ -10,6 +10,7 @@ import {
   RefreshCw,
   RotateCcw,
   Send,
+  Users,
   Square,
   Wand2,
   Wrench,
@@ -119,6 +120,39 @@ function humanizeAgentError(raw: string): string {
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+interface TelegramGroupTurnContext {
+  chatTitle: string;
+  userName: string;
+}
+
+function parseTelegramGroupResponseLabel(content: string): TelegramGroupTurnContext | null {
+  const firstLine = content.split('\n', 1)[0]?.trim() ?? '';
+  if (!firstLine.startsWith('TG Group Response')) return null;
+  const parts = firstLine.split('·').map((part) => part.trim());
+  if (parts.length >= 3) {
+    return {
+      chatTitle: parts[1] || 'Group',
+      userName: parts[2] || 'Unknown',
+    };
+  }
+  return { chatTitle: 'Group', userName: 'Unknown' };
+}
+
+function isTelegramGroupAuditMessage(message: Message): boolean {
+  if (message.role !== 'assistant') return false;
+  const content = message.content ?? '';
+  const metadata = message.metadata ?? {};
+  const source = typeof metadata.source === 'string' ? metadata.source.toLowerCase() : '';
+  const chatType = typeof metadata.telegram_chat_type === 'string'
+    ? metadata.telegram_chat_type.toLowerCase()
+    : '';
+  if (source === 'telegram_audit' && (chatType === 'group' || chatType === 'supergroup')) return true;
+  const lower = content.toLowerCase();
+  return (
+    lower.includes('telegram audit:') && lower.includes('(group)')
+  ) || content.includes('TG Group Response');
 }
 
 function previewPayloadValue(value: unknown, maxChars = 180): { text: string; truncated: boolean } {
@@ -341,6 +375,11 @@ const MessageCard = memo(({
 }) => {
   const isUser = message.role === 'user';
   const isToolResult = message.role === 'tool_result';
+  const isTelegramGroupResponse = !isUser && !isToolResult && isTelegramGroupAuditMessage(message);
+  const telegramGroupLabel = parseTelegramGroupResponseLabel(message.content ?? '');
+  const renderedAssistantContent = isTelegramGroupResponse
+    ? (message.content ?? '').replace(/^TG Group Response[^\n]*\n?/i, '').trimStart()
+    : message.content;
   const userAttachments = isUser ? extractImageAttachments(message.metadata) : [];
   const attachments = (message.metadata?.attachments as Array<{ base64: string }> | undefined) ?? [];
   const screenshotBase64 = isToolResult ? (attachments.find(a => a.base64)?.base64 ?? null) : null;
@@ -401,6 +440,8 @@ const MessageCard = memo(({
             ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent rounded-tr-none font-medium'
             : isToolResult
             ? 'bg-sky-500/5 border-sky-500/20 font-mono text-[12px] rounded-tl-none'
+            : isTelegramGroupResponse
+            ? 'bg-emerald-500/8 border-emerald-500/25 rounded-tl-none font-medium'
             : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] rounded-tl-none font-medium'
         }`}
       >
@@ -498,9 +539,19 @@ const MessageCard = memo(({
             </>
           ) : (
             <div className="space-y-2">
+              {isTelegramGroupResponse ? (
+                <div className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-emerald-400">
+                  <Users size={10} />
+                  <span className="truncate">
+                    {telegramGroupLabel
+                      ? `TG Group Response · ${telegramGroupLabel.chatTitle} · ${telegramGroupLabel.userName}`
+                      : 'TG Group Response'}
+                  </span>
+                </div>
+              ) : null}
               <div className={`markdown-body ${isUser ? 'prose-invert' : ''}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {message.content}
+                  {renderedAssistantContent}
                 </ReactMarkdown>
               </div>
               {userAttachments.length > 0 ? (
@@ -766,6 +817,7 @@ export function SessionsPage() {
   const [mode, setMode] = useState<'solo' | 'advanced'>(
       () => (localStorage.getItem('sentinel-mode') as 'solo' | 'advanced') ?? 'solo',
   );
+  const hasActiveSubAgentTasks = tasks.some((task) => task.status === 'running' || task.status === 'pending');
 
   useEffect(() => {
     localStorage.setItem('sentinel-mode', mode);
@@ -1029,6 +1081,16 @@ export function SessionsPage() {
     };
   }, [activeSessionId]);
 
+  useEffect(() => {
+    if (!activeSessionId || !hasActiveSubAgentTasks) return;
+    const timer = window.setInterval(() => {
+      void fetchTasks(activeSessionId);
+    }, 1500);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activeSessionId, hasActiveSubAgentTasks]);
+
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -1265,7 +1327,7 @@ export function SessionsPage() {
         name,
         scope,
         max_steps: maxSteps,
-        allowed_tools: [], // defaults to standard set in backend if empty or we can add logic to select tools
+        allowed_tools: [], // empty allowlist = full tool access for sub-agent
       });
       toast.success('Sub-agent node initialized');
       setIsSpawnModalOpen(false);
@@ -2027,7 +2089,13 @@ export function SessionsPage() {
                     {messages
                       .filter(m => m.role !== 'system')
                       .filter(m => !(m.role === 'assistant' && !m.content?.trim() && !m.tool_name))
-                      .map(m => <MessageCard key={m.id} message={m} toolArgumentsByCallId={toolArgumentsByCallId} />)}
+                      .map(m => (
+                        <MessageCard
+                          key={m.id}
+                          message={m}
+                          toolArgumentsByCallId={toolArgumentsByCallId}
+                        />
+                      ))}
 
                     {streaming.completedToolCalls.map((c, idx) => <StreamToolCard key={`${c.id}-${c.contentIndex ?? 'na'}-${idx}`} call={c} active={false} />)}
                     {streaming.activeToolCalls.map((c, idx) => <StreamToolCard key={`${c.id}-${c.contentIndex ?? 'na'}-${idx}`} call={c} active={true} />)}

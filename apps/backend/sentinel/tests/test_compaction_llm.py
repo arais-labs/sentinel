@@ -189,7 +189,7 @@ def test_context_builder_formats_group_telegram_messages_for_model_only():
     text_blocks = [b.text for b in user_content if isinstance(b, TextContent)]
     assert text_blocks
     assert text_blocks[-1].startswith(
-        "[Telegram group 'Ops' chat_id=-100123 from John Smith direct_reply_required] "
+        "[Telegram group 'Ops' chat_id=-100123 from John Smith direct_reply_required ui_audit_only untrusted_group] "
     )
     assert text_blocks[-1].endswith("Deploy status?")
 

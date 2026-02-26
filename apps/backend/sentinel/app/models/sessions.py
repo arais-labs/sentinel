@@ -20,6 +20,8 @@ class Session(Base):
         UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    initial_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latest_system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

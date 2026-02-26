@@ -15,14 +15,22 @@ import { api } from '../lib/api';
 interface TelegramStatus {
   running: boolean;
   bot_username: string | null;
+  can_read_all_group_messages?: boolean | null;
   connected_chats: Record<string, {
     chat_id: number;
     chat_type: string;
     title: string;
     connected_at: string;
+    user_id?: number;
+    user_name?: string;
+    username?: string;
   }>;
   token_configured: boolean;
   masked_token: string | null;
+  owner_user_id?: string | null;
+  owner_chat_id?: string | null;
+  owner_telegram_user_id?: string | null;
+  target_session_id?: string | null;
 }
 
 // ── main page ───────────────────────────────────────────────────────────────
@@ -32,10 +40,13 @@ export function TelegramPage() {
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState('');
   const [showToken, setShowToken] = useState(false);
+  const [selectedOwnerChatId, setSelectedOwnerChatId] = useState('');
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [bindingOwner, setBindingOwner] = useState(false);
+  const [clearingOwner, setClearingOwner] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const fetchStatus = useCallback(async () => {
@@ -54,6 +65,12 @@ export function TelegramPage() {
     const interval = window.setInterval(fetchStatus, 10_000);
     return () => window.clearInterval(interval);
   }, [fetchStatus]);
+
+  useEffect(() => {
+    if (!selectedOwnerChatId && status?.owner_chat_id) {
+      setSelectedOwnerChatId(status.owner_chat_id);
+    }
+  }, [status?.owner_chat_id, selectedOwnerChatId]);
 
   async function handleSave() {
     if (!token.trim()) return;
@@ -110,7 +127,36 @@ export function TelegramPage() {
     }
   }
 
+  async function handleBindOwner() {
+    if (!selectedOwnerChatId.trim()) return;
+    setBindingOwner(true);
+    try {
+      await api.post('/telegram/owner', { chat_id: Number(selectedOwnerChatId) });
+      toast.success('Owner Telegram identity linked');
+      await fetchStatus();
+    } catch {
+      toast.error('Failed to bind owner Telegram identity');
+    } finally {
+      setBindingOwner(false);
+    }
+  }
+
+  async function handleClearOwner() {
+    setClearingOwner(true);
+    try {
+      await api.delete('/telegram/owner');
+      toast.success('Owner Telegram identity removed');
+      setSelectedOwnerChatId('');
+      await fetchStatus();
+    } catch {
+      toast.error('Failed to remove owner Telegram identity');
+    } finally {
+      setClearingOwner(false);
+    }
+  }
+
   const chats = status?.connected_chats ? Object.values(status.connected_chats) : [];
+  const privateChats = chats.filter(chat => chat.chat_type === 'private');
 
   return (
     <AppShell
@@ -164,6 +210,19 @@ export function TelegramPage() {
                   <span className="text-[10px] font-mono text-[color:var(--text-muted)]">{status.masked_token}</span>
                 </div>
               )}
+
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-[color:var(--text-muted)] uppercase tracking-wider">Owner Main Session</span>
+                <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
+                  {status?.target_session_id || 'not set'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-[color:var(--text-muted)] uppercase tracking-wider">Owner Telegram Chat</span>
+                <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
+                  {status?.owner_chat_id || 'not set'}
+                </span>
+              </div>
             </div>
           )}
         </Panel>
@@ -265,6 +324,43 @@ export function TelegramPage() {
               )}
             </div>
           )}
+
+          <div className="space-y-2 pt-2 border-t border-[color:var(--border-subtle)]">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+              Owner Telegram Identity
+            </label>
+            <div className="flex gap-2">
+              <select
+                value={selectedOwnerChatId}
+                onChange={(e) => setSelectedOwnerChatId(e.target.value)}
+                className="input-field h-9 text-[11px] w-full"
+              >
+                <option value="">Select owner private DM chat</option>
+                {privateChats.map((chat) => (
+                  <option key={chat.chat_id} value={String(chat.chat_id)}>
+                    {chat.title} ({chat.chat_id})
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={handleBindOwner}
+                disabled={!selectedOwnerChatId.trim() || bindingOwner}
+                className="btn-secondary h-9 px-3 text-[10px] font-bold uppercase tracking-widest"
+              >
+                {bindingOwner ? <Loader2 size={12} className="animate-spin" /> : 'Set Owner'}
+              </button>
+              <button
+                onClick={handleClearOwner}
+                disabled={!status?.owner_chat_id || clearingOwner}
+                className="btn-secondary h-9 px-3 text-[10px] font-bold uppercase tracking-widest text-rose-500 disabled:opacity-50"
+              >
+                {clearingOwner ? <Loader2 size={12} className="animate-spin" /> : 'Remove Owner'}
+              </button>
+            </div>
+            <p className="text-[10px] text-[color:var(--text-muted)]">
+              Owner DM always routes to main session. Choose which private Telegram chat identity is treated as owner.
+            </p>
+          </div>
         </Panel>
 
         {/* Connected Chats */}
@@ -323,7 +419,7 @@ export function TelegramPage() {
         <div className="bg-[color:var(--surface-1)] p-4 rounded-xl border border-[color:var(--border-subtle)] flex items-start gap-3">
           <Info size={16} className="text-[color:var(--accent-solid)] shrink-0 mt-0.5" />
           <p className="text-[11px] text-[color:var(--text-secondary)] leading-relaxed font-medium">
-            Messages from Telegram are routed to the agent's default session. Responses appear both in Telegram and the web chat. Create a bot via <span className="font-mono">@BotFather</span> in Telegram to get a token.
+            Owner DM always routes to your main session. Each Telegram group and each non-owner DM gets its own persistent channel session for stable context and safer isolation. Create a bot via <span className="font-mono">@BotFather</span> in Telegram to get a token.
           </p>
         </div>
       </div>

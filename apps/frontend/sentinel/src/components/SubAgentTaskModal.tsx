@@ -21,13 +21,28 @@ function sortMessages(items: Message[]) {
 }
 
 export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }: SubAgentTaskModalProps) {
-  const isRunning = task.status === 'running' || task.status === 'pending';
-  const childSessionId = (task.result?.child_session_id as string) ?? null;
+  const [liveTask, setLiveTask] = useState<SubAgentTask>(task);
+  const isRunning = liveTask.status === 'running' || liveTask.status === 'pending';
+  const childSessionId = (liveTask.result?.child_session_id as string) ?? null;
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const taskPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const messagePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    setLiveTask(task);
+  }, [task]);
+
+  async function fetchTask() {
+    try {
+      const payload = await api.get<SubAgentTask>(`/sessions/${liveTask.session_id}/sub-agents/${liveTask.id}`);
+      setLiveTask(payload);
+    } catch {
+      /* ignore */
+    }
+  }
 
   async function fetchMessages(sessionId: string) {
     try {
@@ -41,14 +56,32 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
   }
 
   useEffect(() => {
+    void fetchTask();
+    if (taskPollRef.current) clearInterval(taskPollRef.current);
+    if (isRunning || !childSessionId) {
+      taskPollRef.current = setInterval(() => {
+        void fetchTask();
+      }, 1500);
+    }
+    return () => {
+      if (taskPollRef.current) clearInterval(taskPollRef.current);
+    };
+  }, [liveTask.id, liveTask.session_id, isRunning, childSessionId]);
+
+  useEffect(() => {
     if (!childSessionId) return;
     setLoadingMsgs(true);
     fetchMessages(childSessionId).finally(() => setLoadingMsgs(false));
 
+    if (messagePollRef.current) clearInterval(messagePollRef.current);
     if (isRunning) {
-      pollRef.current = setInterval(() => fetchMessages(childSessionId), 2000);
+      messagePollRef.current = setInterval(() => {
+        void fetchMessages(childSessionId);
+      }, 1500);
     }
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    return () => {
+      if (messagePollRef.current) clearInterval(messagePollRef.current);
+    };
   }, [childSessionId, isRunning]);
 
   return (
@@ -69,8 +102,8 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
           </div>
           <div className="flex items-center gap-4">
             <StatusChip
-              label={task.status}
-              tone={task.status === 'completed' ? 'good' : task.status === 'running' ? 'warn' : task.status === 'failed' ? 'danger' : 'default'}
+              label={liveTask.status}
+              tone={liveTask.status === 'completed' ? 'good' : liveTask.status === 'running' ? 'warn' : liveTask.status === 'failed' ? 'danger' : 'default'}
             />
             <button type="button" onClick={onClose} className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors">
               <X size={20} />
@@ -87,7 +120,7 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
                 <Target size={12} className="text-[color:var(--text-muted)]" />
                 <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Objective</span>
               </div>
-              <p className="text-xs leading-relaxed text-[color:var(--text-secondary)]">{task.scope || '—'}</p>
+              <p className="text-xs leading-relaxed text-[color:var(--text-secondary)]">{liveTask.scope || '—'}</p>
             </section>
 
             {/* Steps */}
@@ -99,14 +132,14 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
               <div className="space-y-2">
                 <div className="flex justify-between text-[10px]">
                   <span className="text-[color:var(--text-muted)] font-bold uppercase">Steps</span>
-                  <span className="font-mono font-bold">{task.turns_used} / {task.max_steps}</span>
+                  <span className="font-mono font-bold">{liveTask.turns_used} / {liveTask.max_steps}</span>
                 </div>
                 <div className="w-full bg-[color:var(--surface-2)] h-1 rounded-full overflow-hidden">
-                  <div className="bg-[color:var(--accent-solid)] h-full transition-all duration-500" style={{ width: `${Math.min((task.turns_used / task.max_steps) * 100, 100)}%` }} />
+                  <div className="bg-[color:var(--accent-solid)] h-full transition-all duration-500" style={{ width: `${Math.min((liveTask.turns_used / liveTask.max_steps) * 100, 100)}%` }} />
                 </div>
                 <div className="flex justify-between text-[10px]">
                   <span className="text-[color:var(--text-muted)] font-bold uppercase">Tokens</span>
-                  <span className="font-mono font-bold">{task.tokens_used.toLocaleString()}</span>
+                  <span className="font-mono font-bold">{liveTask.tokens_used.toLocaleString()}</span>
                 </div>
               </div>
             </section>
@@ -120,24 +153,24 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
               <div className="space-y-2 text-[10px]">
                 <div>
                   <span className="text-[color:var(--text-muted)] font-bold uppercase block">Created</span>
-                  <span className="font-mono">{formatCompactDate(task.created_at)}</span>
+                  <span className="font-mono">{formatCompactDate(liveTask.created_at)}</span>
                 </div>
                 <div>
                   <span className="text-[color:var(--text-muted)] font-bold uppercase block">Finished</span>
-                  <span className="font-mono">{task.completed_at ? formatCompactDate(task.completed_at) : '—'}</span>
+                  <span className="font-mono">{liveTask.completed_at ? formatCompactDate(liveTask.completed_at) : '—'}</span>
                 </div>
               </div>
             </section>
 
             {/* Allowed Tools */}
-            {task.allowed_tools.length > 0 && (
+            {liveTask.allowed_tools.length > 0 && (
               <section className="space-y-2">
                 <div className="flex items-center gap-1.5">
                   <Wrench size={12} className="text-[color:var(--text-muted)]" />
                   <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Tools</span>
                 </div>
                 <div className="flex flex-wrap gap-1">
-                  {task.allowed_tools.map(tool => (
+                  {liveTask.allowed_tools.map(tool => (
                     <span key={tool} className="px-1.5 py-0.5 rounded bg-[color:var(--surface-2)] text-[9px] font-mono font-bold border border-[color:var(--border-subtle)]">{tool}</span>
                   ))}
                 </div>
@@ -199,7 +232,7 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
         <div className="px-6 py-4 bg-[color:var(--surface-1)] border-t border-[color:var(--border-subtle)] flex items-center justify-between gap-3 flex-shrink-0">
           <div>
             {isRunning && onTerminate && (
-              <button onClick={() => onTerminate(task.id)} disabled={isTerminating}
+              <button onClick={() => onTerminate(liveTask.id)} disabled={isTerminating}
                 className="btn-secondary h-9 px-4 text-rose-500 hover:bg-rose-500/10 hover:border-rose-500/20 gap-2 text-xs">
                 {isTerminating ? <Hash size={14} className="animate-spin" /> : <Trash2 size={14} />}
                 Terminate

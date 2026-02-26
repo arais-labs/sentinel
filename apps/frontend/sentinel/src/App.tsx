@@ -5,6 +5,7 @@ import { Toaster } from 'sonner';
 
 import { Logo } from './components/ui/Logo';
 import { AdminPage } from './pages/AdminPage';
+import { LogsPage } from './pages/LogsPage';
 import { LoginPage } from './pages/LoginPage';
 import { MemoryPage } from './pages/MemoryPage';
 import { OnboardingPage } from './pages/OnboardingPage';
@@ -104,6 +105,7 @@ export default function App() {
           <Route path="/onboarding" element={<OnboardingPage />} />
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/sessions/:id" element={<SessionsPage />} />
+          <Route path="/logs" element={<LogsPage />} />
           <Route path="/memory" element={<MemoryPage />} />
           <Route path="/triggers" element={<TriggersPage />} />
           <Route path="/triggers/:id" element={<TriggerDetailPage />} />

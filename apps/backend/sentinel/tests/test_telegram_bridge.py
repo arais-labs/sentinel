@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.config import settings
 from app.models import Session
+from app.models.system import SystemSetting
 from app.services.telegram_bridge import (
+    TELEGRAM_CHAT_ROUTES_KEY,
     TelegramBridge,
     send_telegram_message_tool,
     start_telegram_bridge,
@@ -86,7 +89,7 @@ def test_resolve_default_session_prefers_explicit_target_when_valid():
         settings.telegram_target_session_id = old_target
 
 
-def test_resolve_default_session_prefers_active_root_when_target_is_ended():
+def test_resolve_default_session_reactivates_explicit_target_when_ended():
     db = FakeDB()
     now = datetime.now(UTC)
 
@@ -103,8 +106,8 @@ def test_resolve_default_session_prefers_active_root_when_target_is_ended():
     try:
         bridge = _build_bridge(db=db, user_id="admin")
         resolved = _run(bridge._resolve_default_session())  # noqa: SLF001
-        assert resolved == owner_other.id
-        assert owner_target.status == "ended"
+        assert resolved == owner_target.id
+        assert owner_target.status == "active"
     finally:
         settings.telegram_target_session_id = old_target
 
@@ -127,7 +130,7 @@ def test_resolve_default_session_uses_newest_root_when_no_active_root():
         bridge = _build_bridge(db=db, user_id="admin")
         resolved = _run(bridge._resolve_default_session())  # noqa: SLF001
         assert resolved == owner_new.id
-        assert owner_new.status == "ended"
+        assert owner_new.status == "active"
     finally:
         settings.telegram_target_session_id = old_target
 
@@ -356,3 +359,112 @@ def test_should_reply_inline_owner_private_only():
     assert (
         bridge._should_reply_inline(group_chat, {"telegram_is_owner": True}) is False
     )  # noqa: SLF001
+
+
+def test_resolve_inbound_session_owner_dm_uses_owner_main_route():
+    db = FakeDB()
+    now = datetime.now(UTC)
+    owner_main = Session(user_id="admin", title="Main", status="active")
+    owner_main.created_at = now
+    db.add(owner_main)
+
+    old_target = settings.telegram_target_session_id
+    settings.telegram_target_session_id = str(owner_main.id)
+    try:
+        bridge = _build_bridge(db=db, user_id="admin")
+        private_chat = SimpleNamespace(id=123, type="private", title=None)
+        owner_user = SimpleNamespace(id=123, full_name="Owner", first_name="Owner")
+        session_id, scope = _run(
+            bridge._resolve_inbound_session(  # noqa: SLF001
+                db,
+                chat=private_chat,
+                user=owner_user,
+                metadata={"telegram_is_owner": True},
+            )
+        )
+        assert session_id == owner_main.id
+        assert scope == "owner_main"
+    finally:
+        settings.telegram_target_session_id = old_target
+
+
+def test_resolve_inbound_session_group_routes_to_persistent_channel():
+    db = FakeDB()
+    bridge = _build_bridge(db=db, user_id="admin")
+    group_chat = SimpleNamespace(id=-100123, type="supergroup", title="Ops")
+    user_a = SimpleNamespace(id=111, full_name="John Smith", first_name="John")
+    user_b = SimpleNamespace(id=222, full_name="Ron Cahlon", first_name="Ron")
+
+    first_session_id, first_scope = _run(
+        bridge._resolve_inbound_session(  # noqa: SLF001
+            db,
+            chat=group_chat,
+            user=user_a,
+            metadata={"telegram_is_owner": False},
+        )
+    )
+    second_session_id, second_scope = _run(
+        bridge._resolve_inbound_session(  # noqa: SLF001
+            db,
+            chat=group_chat,
+            user=user_b,
+            metadata={"telegram_is_owner": False},
+        )
+    )
+
+    assert first_scope == "group_channel"
+    assert second_scope == "group_channel"
+    assert first_session_id == second_session_id
+
+    routes_setting = db.storage[SystemSetting][0]
+    payload = json.loads(routes_setting.value)
+    assert "group:-100123" in payload
+    assert payload["group:-100123"]["session_id"] == str(first_session_id)
+    sessions = db.storage[Session]
+    assert any((s.title or "").startswith("TG Group · Ops") for s in sessions)
+
+
+def test_resolve_inbound_session_non_owner_dm_has_private_channel_per_user():
+    db = FakeDB()
+    bridge = _build_bridge(db=db, user_id="admin")
+    chat_ron = SimpleNamespace(id=555, type="private", title=None)
+    ron = SimpleNamespace(id=555, full_name="Ron Cahlon", first_name="Ron")
+    chat_john = SimpleNamespace(id=777, type="private", title=None)
+    john = SimpleNamespace(id=777, full_name="John Smith", first_name="John")
+
+    ron_session_1, ron_scope_1 = _run(
+        bridge._resolve_inbound_session(  # noqa: SLF001
+            db,
+            chat=chat_ron,
+            user=ron,
+            metadata={"telegram_is_owner": False},
+        )
+    )
+    ron_session_2, ron_scope_2 = _run(
+        bridge._resolve_inbound_session(  # noqa: SLF001
+            db,
+            chat=chat_ron,
+            user=ron,
+            metadata={"telegram_is_owner": False},
+        )
+    )
+    john_session, john_scope = _run(
+        bridge._resolve_inbound_session(  # noqa: SLF001
+            db,
+            chat=chat_john,
+            user=john,
+            metadata={"telegram_is_owner": False},
+        )
+    )
+
+    assert ron_scope_1 == "dm_channel"
+    assert ron_scope_2 == "dm_channel"
+    assert john_scope == "dm_channel"
+    assert ron_session_1 == ron_session_2
+    assert john_session != ron_session_1
+
+    routes_settings = [s for s in db.storage[SystemSetting] if s.key == TELEGRAM_CHAT_ROUTES_KEY]
+    assert routes_settings
+    payload = json.loads(routes_settings[0].value)
+    assert "dm:555:555" in payload
+    assert "dm:777:777" in payload
