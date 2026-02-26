@@ -15,6 +15,7 @@ import {
   Wand2,
   Wrench,
   X,
+  Trash2,
   Terminal,
   Globe,
   ExternalLink,
@@ -312,25 +313,76 @@ function ToolPayloadView({
 
 // --- Memoized Components ---
 
-const SessionRow = memo(({ session, isActive, onClick }: {
-  session: Session; isActive: boolean; onClick: (id: string) => void;
+const SessionRow = memo(({
+  session,
+  isActive,
+  onClick,
+  canDelete,
+  isDeleting,
+  onDelete,
+  multiSelectMode,
+  selected,
+  onToggleSelect,
+}: {
+  session: Session;
+  isActive: boolean;
+  onClick: (id: string) => void;
+  canDelete: boolean;
+  isDeleting: boolean;
+  onDelete: (session: Session) => void;
+  multiSelectMode: boolean;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
 }) => (
-    <button
-        onClick={() => onClick(session.id)}
-        className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
-            isActive
-                ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
-                : 'hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-transparent'
+  <div className="group relative">
+    {multiSelectMode && canDelete ? (
+      <button
+        onClick={() => onToggleSelect(session.id)}
+        title={selected ? 'Unselect session' : 'Select session'}
+        className={`absolute left-2 top-2 h-6 w-6 rounded-md border flex items-center justify-center transition-colors ${
+          selected
+            ? 'border-sky-500/40 bg-sky-500/15'
+            : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)]'
         }`}
+      >
+        <span className={`h-2.5 w-2.5 rounded-sm ${selected ? 'bg-sky-500' : 'bg-transparent'}`} />
+      </button>
+    ) : null}
+    <button
+      onClick={() => {
+        if (multiSelectMode) {
+          if (canDelete) onToggleSelect(session.id);
+          return;
+        }
+        onClick(session.id);
+      }}
+      className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
+        isActive
+          ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
+          : 'hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-transparent'
+      } ${multiSelectMode ? 'pl-10 pr-3' : 'pr-10'}`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-semibold truncate">{session.title || 'Session'}</span>
-        <StatusChip label={session.status} tone={
-          session.status === 'active' ? 'good' : session.status === 'ended' ? 'danger' : 'default'
-        } className="scale-75 origin-right" />
+        <StatusChip
+          label={session.status}
+          tone={session.status === 'active' ? 'good' : session.status === 'ended' ? 'danger' : 'default'}
+          className="scale-75 origin-right"
+        />
       </div>
       <span className="text-[10px] text-[color:var(--text-muted)]">{formatCompactDate(session.started_at)}</span>
     </button>
+    {canDelete && !multiSelectMode ? (
+      <button
+        onClick={() => onDelete(session)}
+        disabled={isDeleting}
+        title="Delete session"
+        className="absolute right-2 top-2 h-7 w-7 rounded-md border border-rose-500/20 text-rose-500 bg-[color:var(--surface-1)] hover:bg-rose-500/10 flex items-center justify-center transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+      >
+        {isDeleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+      </button>
+    ) : null}
+  </div>
 ));
 SessionRow.displayName = 'SessionRow';
 
@@ -779,6 +831,11 @@ export function SessionsPage() {
   const auth = useAuthStore();
 
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
+  const [historyTab, setHistoryTab] = useState<'sessions' | 'sub_agents'>('sessions');
   const [sessionFilter, setSessionFilter] = useState('');
   const [activeSessionId, setActiveSessionId] = useState<string | null>(routeSessionId ?? null);
 
@@ -982,11 +1039,32 @@ export function SessionsPage() {
     }
   }, [detectBottom, hasMoreMessages, activeSessionId, messages.length]);
 
+  const sessionsInTab = useMemo(() => {
+    if (historyTab === 'sub_agents') {
+      return sessions.filter((session) => Boolean(session.parent_session_id));
+    }
+    return sessions.filter((session) => !session.parent_session_id);
+  }, [sessions, historyTab]);
+
   const filteredSessions = useMemo(() => {
     const q = sessionFilter.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter((s) => `${s.title ?? ''} ${s.status}`.toLowerCase().includes(q));
-  }, [sessions, sessionFilter]);
+    if (!q) return sessionsInTab;
+    return sessionsInTab.filter((s) => `${s.title ?? ''} ${s.status}`.toLowerCase().includes(q));
+  }, [sessionsInTab, sessionFilter]);
+
+  const selectedSessionIdSet = useMemo(() => new Set(selectedSessionIds), [selectedSessionIds]);
+  const selectableVisibleSessionIds = useMemo(
+    () => filteredSessions
+      .filter((session) => Boolean(defaultSessionId) && session.id !== defaultSessionId)
+      .map((session) => session.id),
+    [filteredSessions, defaultSessionId],
+  );
+  const allVisibleSelected = useMemo(
+    () =>
+      selectableVisibleSessionIds.length > 0 &&
+      selectableVisibleSessionIds.every((id) => selectedSessionIdSet.has(id)),
+    [selectableVisibleSessionIds, selectedSessionIdSet],
+  );
 
   const onSessionClick = useCallback((id: string) => {
     setActiveSessionId(id);
@@ -1028,6 +1106,10 @@ export function SessionsPage() {
       setActiveSessionId(routeSessionId);
     }
   }, [routeSessionId, activeSessionId]);
+
+  useEffect(() => {
+    setSelectedSessionIds((current) => current.filter((id) => sessions.some((session) => session.id === id)));
+  }, [sessions]);
 
   useEffect(() => {
     void fetchSessions();
@@ -1134,9 +1216,10 @@ export function SessionsPage() {
   async function fetchSessions() {
     try {
       const [payload, defaultSession] = await Promise.all([
-        api.get<SessionListResponse>('/sessions?limit=40&offset=0'),
+        api.get<SessionListResponse>('/sessions?limit=100&offset=0&include_sub_agents=true'),
         api.get<Session>('/sessions/default'),
       ]);
+      setDefaultSessionId(defaultSession.id);
       setSessions((current) => {
         const exists = payload.items.find((s) => s.id === defaultSession.id);
         return exists ? payload.items : [defaultSession, ...payload.items];
@@ -1147,6 +1230,95 @@ export function SessionsPage() {
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to load sessions');
+    }
+  }
+
+  async function deleteSession(session: Session) {
+    if (deletingSessionId) return;
+    if (session.id === defaultSessionId) {
+      toast.error('Main session cannot be deleted');
+      return;
+    }
+    const label = (session.title || 'Session').trim() || 'Session';
+    const confirmed = window.confirm(`Delete "${label}" and all its messages? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setDeletingSessionId(session.id);
+    try {
+      await api.delete<{ status: string }>(`/sessions/${session.id}/purge`);
+      let remaining: Session[] = [];
+      setSessions((current) => {
+        remaining = current.filter((item) => item.id !== session.id);
+        return remaining;
+      });
+      setSelectedSessionIds((current) => current.filter((id) => id !== session.id));
+
+      if (activeSessionId === session.id) {
+        const fallbackId =
+          (defaultSessionId && defaultSessionId !== session.id
+            ? remaining.find((item) => item.id === defaultSessionId)?.id ?? null
+            : null) ?? remaining[0]?.id ?? null;
+        setActiveSessionId(fallbackId);
+        if (fallbackId) {
+          navigate(`/sessions/${fallbackId}`, { replace: true });
+        } else {
+          navigate('/sessions', { replace: true });
+        }
+      }
+      toast.success('Session deleted');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete session');
+    } finally {
+      setDeletingSessionId(null);
+    }
+  }
+
+  async function deleteSelectedSessions() {
+    if (deletingSessionId) return;
+    const targetIds = selectedSessionIds.filter((id) => id !== defaultSessionId);
+    if (targetIds.length === 0) return;
+    const confirmed = window.confirm(`Delete ${targetIds.length} selected sessions? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setDeletingSessionId('bulk');
+    try {
+      const results = await Promise.allSettled(
+        targetIds.map((id) => api.delete<{ status: string }>(`/sessions/${id}/purge`)),
+      );
+      const deletedIds = targetIds.filter((_, index) => results[index]?.status === 'fulfilled');
+      const failedCount = targetIds.length - deletedIds.length;
+
+      if (deletedIds.length > 0) {
+        let remaining: Session[] = [];
+        setSessions((current) => {
+          remaining = current.filter((session) => !deletedIds.includes(session.id));
+          return remaining;
+        });
+        setSelectedSessionIds((current) => current.filter((id) => !deletedIds.includes(id)));
+
+        if (activeSessionId && deletedIds.includes(activeSessionId)) {
+          const fallbackId =
+            (defaultSessionId && !deletedIds.includes(defaultSessionId)
+              ? remaining.find((session) => session.id === defaultSessionId)?.id ?? null
+              : null) ?? remaining[0]?.id ?? null;
+          setActiveSessionId(fallbackId);
+          if (fallbackId) {
+            navigate(`/sessions/${fallbackId}`, { replace: true });
+          } else {
+            navigate('/sessions', { replace: true });
+          }
+        }
+      }
+
+      if (failedCount === 0) {
+        toast.success(`${deletedIds.length} session${deletedIds.length === 1 ? '' : 's'} deleted`);
+      } else if (deletedIds.length > 0) {
+        toast.error(`${failedCount} session${failedCount === 1 ? '' : 's'} could not be deleted`);
+      } else {
+        toast.error('Failed to delete selected sessions');
+      }
+    } finally {
+      setDeletingSessionId(null);
     }
   }
 
@@ -1832,6 +2004,28 @@ export function SessionsPage() {
             <div className={`flex flex-col h-full min-w-[16rem] transition-opacity duration-200 ${mode === 'advanced' ? 'opacity-100' : 'opacity-0'}`}>
               <div className="p-3 border-b border-[color:var(--border-subtle)] space-y-2">
                 <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">History</h2>
+                <div className="grid grid-cols-2 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1">
+                  <button
+                    onClick={() => setHistoryTab('sessions')}
+                    className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                      historyTab === 'sessions'
+                        ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)]'
+                        : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                    }`}
+                  >
+                    Sessions
+                  </button>
+                  <button
+                    onClick={() => setHistoryTab('sub_agents')}
+                    className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                      historyTab === 'sub_agents'
+                        ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)]'
+                        : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                    }`}
+                  >
+                    Sub-agents
+                  </button>
+                </div>
                 <div className="relative">
                   <History size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
                   <input
@@ -1841,10 +2035,71 @@ export function SessionsPage() {
                       onChange={(e) => setSessionFilter(e.target.value)}
                   />
                 </div>
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    onClick={() => {
+                      setIsMultiSelectMode((current) => {
+                        const next = !current;
+                        if (!next) setSelectedSessionIds([]);
+                        return next;
+                      });
+                    }}
+                    className="rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-0)]"
+                  >
+                    {isMultiSelectMode ? 'Done' : 'Select'}
+                  </button>
+                  {isMultiSelectMode ? (
+                    <button
+                      onClick={() =>
+                        setSelectedSessionIds((current) => {
+                          const set = new Set(current);
+                          if (allVisibleSelected) {
+                            selectableVisibleSessionIds.forEach((id) => set.delete(id));
+                          } else {
+                            selectableVisibleSessionIds.forEach((id) => set.add(id));
+                          }
+                          return Array.from(set);
+                        })
+                      }
+                      className="rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-0)]"
+                    >
+                      {allVisibleSelected ? 'Unselect All' : 'Select All'}
+                    </button>
+                  ) : null}
+                </div>
+                {isMultiSelectMode ? (
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] uppercase tracking-wider text-[color:var(--text-muted)]">
+                      {selectedSessionIds.length} selected
+                    </p>
+                    <button
+                      onClick={() => void deleteSelectedSessions()}
+                      disabled={selectedSessionIds.length === 0 || deletingSessionId !== null}
+                      className="rounded-md border border-rose-500/30 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-rose-500 hover:bg-rose-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Delete Selected
+                    </button>
+                  </div>
+                ) : null}
               </div>
               <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
                 {filteredSessions.map((s) => (
-                    <SessionRow key={s.id} session={s} isActive={s.id === activeSessionId} onClick={onSessionClick} />
+                    <SessionRow
+                      key={s.id}
+                      session={s}
+                      isActive={s.id === activeSessionId}
+                      onClick={onSessionClick}
+                      canDelete={Boolean(defaultSessionId) && s.id !== defaultSessionId}
+                      isDeleting={deletingSessionId === s.id || deletingSessionId === 'bulk'}
+                      onDelete={deleteSession}
+                      multiSelectMode={isMultiSelectMode}
+                      selected={selectedSessionIdSet.has(s.id)}
+                      onToggleSelect={(id) =>
+                        setSelectedSessionIds((current) =>
+                          current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+                        )
+                      }
+                    />
                 ))}
                 {filteredSessions.length === 0 && (
                     <div className="py-8 text-center text-[10px] text-[color:var(--text-muted)] uppercase tracking-widest">

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
-from app.models import Trigger, TriggerLog
+from app.models import Session, SystemSetting, Trigger, TriggerLog
 from app.services.agent.loop import AgentLoopResult
 from app.services.llm.types import TokenUsage
 from app.services.trigger_scheduler import TriggerScheduler, compute_next_fire_at
@@ -100,6 +101,76 @@ def test_scheduler_agent_message_action_calls_agent_loop():
     logs = db.storage[TriggerLog]
     assert len(logs) == 1
     assert logs[0].status == "fired"
+
+
+def test_scheduler_rewrites_invalid_agent_session_to_main_session():
+    db = FakeDB()
+    main = Session(user_id="user-1", title="Main", status="active")
+    random = Session(user_id="user-1", title="random", status="active")
+    db.add(main)
+    db.add(random)
+    trigger = Trigger(
+        name="agent-job",
+        user_id="user-1",
+        type="heartbeat",
+        enabled=True,
+        config={"interval_seconds": 60},
+        action_type="agent_message",
+        action_config={"message": "ping", "session_id": str(random.id)},
+        next_fire_at=datetime.now(UTC),
+    )
+    db.add(trigger)
+
+    agent = _AgentLoopStub()
+    scheduler = TriggerScheduler(
+        agent_loop=agent,
+        tool_executor=None,
+        db_factory=_SessionFactory(db),
+        poll_interval_seconds=0.01,
+    )
+    _run(scheduler._fire_trigger(trigger.id))
+
+    assert agent.calls
+    assert agent.calls[0]["session_id"] == main.id
+    assert trigger.action_config.get("session_id") == str(main.id)
+
+
+def test_scheduler_allows_telegram_route_session_target():
+    db = FakeDB()
+    main = Session(user_id="user-1", title="Main", status="active")
+    telegram_session = Session(user_id="user-1", title="TG Group · Ops", status="active")
+    db.add(main)
+    db.add(telegram_session)
+    db.add(
+        SystemSetting(
+            key="telegram_chat_routes",
+            value=json.dumps({"group:123": {"session_id": str(telegram_session.id)}}),
+        )
+    )
+    trigger = Trigger(
+        name="agent-job",
+        user_id="user-1",
+        type="heartbeat",
+        enabled=True,
+        config={"interval_seconds": 60},
+        action_type="agent_message",
+        action_config={"message": "ping", "session_id": str(telegram_session.id)},
+        next_fire_at=datetime.now(UTC),
+    )
+    db.add(trigger)
+
+    agent = _AgentLoopStub()
+    scheduler = TriggerScheduler(
+        agent_loop=agent,
+        tool_executor=None,
+        db_factory=_SessionFactory(db),
+        poll_interval_seconds=0.01,
+    )
+    _run(scheduler._fire_trigger(trigger.id))
+
+    assert agent.calls
+    assert agent.calls[0]["session_id"] == telegram_session.id
+    assert trigger.action_config.get("session_id") == str(telegram_session.id)
 
 
 def test_scheduler_tool_call_action_uses_tool_executor():

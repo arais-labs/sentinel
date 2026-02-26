@@ -12,12 +12,13 @@ from croniter import croniter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Session, Trigger, TriggerLog
+from app.models import Session, SystemSetting, Trigger, TriggerLog
 from app.services.agent import AgentLoop
 from app.services.tools import ToolExecutor
 from app.services.ws_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
+TELEGRAM_CHAT_ROUTES_KEY = "telegram_chat_routes"
 
 
 def compute_next_fire_at(
@@ -238,6 +239,12 @@ class TriggerScheduler:
         return f"agent_message:{result.final_text[:500]}"
 
     async def _resolve_agent_session(self, db: AsyncSession, trigger: Trigger, action: dict) -> UUID:
+        effective_user_id = (trigger.user_id or "system-trigger").strip() or "system-trigger"
+        main_session = await self._resolve_or_create_main_session(
+            db,
+            user_id=effective_user_id,
+            trigger_name=trigger.name,
+        )
         session_id_raw = action.get("session_id")
         if isinstance(session_id_raw, str):
             try:
@@ -245,32 +252,119 @@ class TriggerScheduler:
             except ValueError:
                 session_id = None
             if session_id is not None:
-                result = await db.execute(select(Session).where(Session.id == session_id))
+                result = await db.execute(
+                    select(Session).where(Session.id == session_id, Session.user_id == effective_user_id)
+                )
                 existing = result.scalars().first()
-                if existing is not None:
+                if existing is not None and await self._is_allowed_trigger_session_target(
+                    db,
+                    user_id=effective_user_id,
+                    main_session_id=main_session.id,
+                    candidate_session=existing,
+                ):
+                    if existing.status != "active":
+                        existing.status = "active"
+                        existing.ended_at = None
                     return existing.id
 
-        # Fallback: Find user's last active session if trigger has a user_id
-        if trigger.user_id:
-            result = await db.execute(
-                select(Session)
-                .where(Session.user_id == trigger.user_id, Session.status == "active")
-                .order_by(Session.created_at.desc())
-                .limit(1)
+        if main_session.status != "active":
+            main_session.status = "active"
+            main_session.ended_at = None
+        normalized_action = dict(action) if isinstance(action, dict) else {}
+        normalized_action["session_id"] = str(main_session.id)
+        trigger.action_config = normalized_action
+        logger.info(
+            "Trigger %s had non-canonical session target; reassigned to main session %s",
+            trigger.id,
+            main_session.id,
+        )
+        return main_session.id
+
+    async def _resolve_or_create_main_session(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: str,
+        trigger_name: str,
+    ) -> Session:
+        active_result = await db.execute(
+            select(Session).where(
+                Session.user_id == user_id,
+                Session.status == "active",
+                Session.parent_session_id.is_(None),
             )
-            active_session = result.scalars().first()
-            if active_session:
-                return active_session.id
+        )
+        active_roots = active_result.scalars().all()
+        if active_roots:
+            active_roots.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC))
+            return active_roots[0]
+
+        root_result = await db.execute(
+            select(Session).where(
+                Session.user_id == user_id,
+                Session.parent_session_id.is_(None),
+            )
+        )
+        roots = root_result.scalars().all()
+        if roots:
+            roots.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC))
+            reused = roots[0]
+            reused.status = "active"
+            reused.ended_at = None
+            if not (reused.title or "").strip():
+                reused.title = "Main"
+            return reused
 
         session = Session(
-            user_id=trigger.user_id or "system-trigger",
-            title=f"trigger:{trigger.name[:80]}",
+            user_id=user_id,
+            title="Main",
             status="active",
         )
         db.add(session)
         await db.commit()
         await db.refresh(session)
-        return session.id
+        logger.info("Created fallback main session for trigger '%s': %s", trigger_name, session.id)
+        return session
+
+    async def _is_allowed_trigger_session_target(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: str,
+        main_session_id: UUID,
+        candidate_session: Session,
+    ) -> bool:
+        if candidate_session.parent_session_id is not None:
+            return False
+        if candidate_session.user_id != user_id:
+            return False
+        if candidate_session.id == main_session_id:
+            return True
+        return await self._is_telegram_route_session(db, candidate_session.id)
+
+    async def _is_telegram_route_session(self, db: AsyncSession, session_id: UUID) -> bool:
+        result = await db.execute(select(SystemSetting).where(SystemSetting.key == TELEGRAM_CHAT_ROUTES_KEY))
+        setting = result.scalars().first()
+        if setting is None:
+            return False
+        try:
+            parsed = json.loads(setting.value)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        for route in parsed.values():
+            if not isinstance(route, dict):
+                continue
+            raw = route.get("session_id")
+            if not isinstance(raw, str):
+                continue
+            try:
+                if UUID(raw.strip()) == session_id:
+                    return True
+            except ValueError:
+                continue
+        return False
 
     async def _execute_tool_call(self, trigger: Trigger) -> str:
         if self._tool_executor is None:

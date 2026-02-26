@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -269,6 +270,9 @@ async def lifespan(app: FastAPI):
     available_tools = {tool.name for tool in registry.list_all()}
     ws_manager = ConnectionManager()
     run_registry = AgentRunRegistry()
+    wakeup_pending: dict[str, int] = defaultdict(int)
+    wakeup_workers: set[str] = set()
+    wakeup_lock = asyncio.Lock()
 
     provider = _build_llm_provider()
     app.state.tool_registry = registry
@@ -282,8 +286,12 @@ async def lifespan(app: FastAPI):
     app.state.llm_provider = provider
     app.state.agent_loop = None
 
-    async def _wakeup_main_agent(session_id: object) -> None:
-        """Server-initiated agent turn triggered when all sub-agents complete."""
+    async def _wakeup_main_agent(session_id: object) -> bool:
+        """Server-initiated agent turn triggered by sub-agent completion.
+
+        Returns True when one queued wakeup item is consumed, False when it
+        should be retried later (for example while another run is active).
+        """
         from uuid import UUID as _UUID
 
         from sqlalchemy import select as _select
@@ -293,19 +301,19 @@ async def lifespan(app: FastAPI):
 
         agent_loop = app.state.agent_loop
         if agent_loop is None:
-            return
+            return True
 
         session_key = str(session_id)
 
         if await run_registry.is_running(session_key):
-            return
+            return False
 
         async with AsyncSessionLocal() as db:
             sid = session_id if isinstance(session_id, _UUID) else _UUID(str(session_id))
             result = await db.execute(_select(SessionModel).where(SessionModel.id == sid))
             session = result.scalars().first()
             if session is None or session.status != "active":
-                return
+                return True
 
             await ws_manager.broadcast_agent_thinking(session_key)
 
@@ -316,8 +324,9 @@ async def lifespan(app: FastAPI):
                 agent_loop.run(
                     db,
                     sid,
-                    "All delegated sub-agent tasks are now complete. "
-                    "Review the sub-agent reports in your context and provide a comprehensive synthesized response to the user.",
+                    "A delegated sub-agent just finished. "
+                    "Review the latest [Sub-Agent Report] system message(s), integrate useful findings, "
+                    "and continue helping the user immediately.",
                     persist_user_message=False,
                     on_event=_on_event,
                     model="hint:reasoning",
@@ -327,7 +336,7 @@ async def lifespan(app: FastAPI):
             registered = await run_registry.register(session_key, run_task)
             if not registered:
                 run_task.cancel()
-                return
+                return False
 
             try:
                 await run_task
@@ -346,6 +355,48 @@ async def lifespan(app: FastAPI):
                     )
                 except Exception:  # noqa: BLE001
                     pass
+        return True
+
+    async def _enqueue_main_agent_wakeup(session_id: object) -> None:
+        session_key = str(session_id)
+        should_start_worker = False
+        async with wakeup_lock:
+            wakeup_pending[session_key] += 1
+            if session_key not in wakeup_workers:
+                wakeup_workers.add(session_key)
+                should_start_worker = True
+        if should_start_worker:
+            asyncio.create_task(_drain_main_agent_wakeups(session_id))
+
+    async def _drain_main_agent_wakeups(session_id: object) -> None:
+        session_key = str(session_id)
+        try:
+            while True:
+                async with wakeup_lock:
+                    pending = int(wakeup_pending.get(session_key, 0))
+                if pending <= 0:
+                    return
+
+                consumed = await _wakeup_main_agent(session_id)
+                if not consumed:
+                    await asyncio.sleep(0.75)
+                    continue
+
+                async with wakeup_lock:
+                    current = int(wakeup_pending.get(session_key, 0))
+                    if current <= 1:
+                        wakeup_pending.pop(session_key, None)
+                    else:
+                        wakeup_pending[session_key] = current - 1
+        finally:
+            async with wakeup_lock:
+                wakeup_workers.discard(session_key)
+                has_pending = int(wakeup_pending.get(session_key, 0)) > 0
+                should_restart = has_pending and session_key not in wakeup_workers
+                if should_restart:
+                    wakeup_workers.add(session_key)
+            if should_restart:
+                asyncio.create_task(_drain_main_agent_wakeups(session_id))
 
     async def _broadcast_sub_agent_completed(task) -> None:
         await ws_manager.broadcast_sub_agent_completed(
@@ -365,8 +416,7 @@ async def lifespan(app: FastAPI):
             f"Result: {summary[:2000]}"
         )
         try:
-            from app.models import Message as MsgModel, SubAgentTask as SubAgentTaskModel
-            from sqlalchemy import select as _select
+            from app.models import Message as MsgModel
 
             async with AsyncSessionLocal() as db:
                 msg = MsgModel(
@@ -377,19 +427,9 @@ async def lifespan(app: FastAPI):
                 )
                 db.add(msg)
                 await db.commit()
-
-                # Check if all sub-agents for this session are done
-                remaining_result = await db.execute(
-                    _select(SubAgentTaskModel).where(
-                        SubAgentTaskModel.session_id == task.session_id,
-                        SubAgentTaskModel.status.in_(["pending", "running"]),
-                    )
-                )
-                remaining = remaining_result.scalars().all()
-                if not remaining:
-                    asyncio.create_task(_wakeup_main_agent(task.session_id))
         except Exception:  # noqa: BLE001
             pass
+        await _enqueue_main_agent_wakeup(task.session_id)
 
     app.state.sub_agent_orchestrator = SubAgentOrchestrator(
         agent_loop=None,

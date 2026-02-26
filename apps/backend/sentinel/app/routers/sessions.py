@@ -256,6 +256,24 @@ async def end_session(
     return {"status": "ended"}
 
 
+@router.delete("/{id}/purge")
+async def purge_session(
+    id: UUID,
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    session = await _get_owned_session(db, id, user.sub)
+    main_session_id = await _get_main_session_id(db, user.sub)
+    if main_session_id is not None and session.id == main_session_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Main session cannot be deleted")
+    descendants = await _get_descendant_sessions(db, root_session_id=session.id, user_id=user.sub)
+    for child in descendants:
+        await db.delete(child)
+    await db.delete(session)
+    await db.commit()
+    return {"status": "deleted", "deleted_descendants": str(len(descendants))}
+
+
 @router.post("/{id}/stop")
 async def stop_session_generation(
     id: UUID,
@@ -390,6 +408,48 @@ async def _get_owned_session(db: AsyncSession, session_id: UUID, user_id: str) -
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     return session
+
+
+async def _get_main_session_id(db: AsyncSession, user_id: str) -> UUID | None:
+    result = await db.execute(
+        select(Session.id).where(
+            Session.user_id == user_id,
+            Session.status == "active",
+            Session.parent_session_id.is_(None),
+        ).order_by(Session.created_at.asc())
+    )
+    return result.scalars().first()
+
+
+async def _get_descendant_sessions(
+    db: AsyncSession,
+    *,
+    root_session_id: UUID,
+    user_id: str,
+) -> list[Session]:
+    """Return all descendant sessions of root_session_id for this user."""
+    result = await db.execute(select(Session).where(Session.user_id == user_id))
+    sessions = result.scalars().all()
+    by_parent: dict[UUID, list[Session]] = {}
+    for session in sessions:
+        parent_id = session.parent_session_id
+        if parent_id is None:
+            continue
+        by_parent.setdefault(parent_id, []).append(session)
+
+    descendants: list[Session] = []
+    stack: list[UUID] = [root_session_id]
+    seen: set[UUID] = set()
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        children = by_parent.get(current, [])
+        for child in children:
+            descendants.append(child)
+            stack.append(child.id)
+    return descendants
 
 
 def _session_response(session: Session) -> SessionResponse:
