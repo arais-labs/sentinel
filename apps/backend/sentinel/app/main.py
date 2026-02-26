@@ -90,29 +90,57 @@ def _build_llm_provider() -> LLMProvider | None:
     tier_defs: list[tuple[str, str, str, str, str, int, float, int, str, int]] = [
         # (tier_name, anthropic_model, openai_model, codex_model, gemini_model,
         #  max_tokens, temperature, thinking_budget, reasoning_effort, gemini_thinking_budget)
-        ("fast", settings.tier_fast_anthropic_model,
-         settings.tier_fast_openai_model, settings.tier_fast_codex_model,
-         settings.tier_fast_gemini_model,
-         settings.tier_fast_max_tokens, settings.tier_fast_temperature,
-         settings.tier_fast_anthropic_thinking_budget, settings.tier_fast_openai_reasoning_effort,
-         settings.tier_fast_gemini_thinking_budget),
-        ("normal", settings.tier_normal_anthropic_model,
-         settings.tier_normal_openai_model, settings.tier_normal_codex_model,
-         settings.tier_normal_gemini_model,
-         settings.tier_normal_max_tokens, settings.tier_normal_temperature,
-         settings.tier_normal_anthropic_thinking_budget, settings.tier_normal_openai_reasoning_effort,
-         settings.tier_normal_gemini_thinking_budget),
-        ("hard", settings.tier_hard_anthropic_model,
-         settings.tier_hard_openai_model, settings.tier_hard_codex_model,
-         settings.tier_hard_gemini_model,
-         settings.tier_hard_max_tokens, settings.tier_hard_temperature,
-         settings.tier_hard_anthropic_thinking_budget, settings.tier_hard_openai_reasoning_effort,
-         settings.tier_hard_gemini_thinking_budget),
+        (
+            "fast",
+            settings.tier_fast_anthropic_model,
+            settings.tier_fast_openai_model,
+            settings.tier_fast_codex_model,
+            settings.tier_fast_gemini_model,
+            settings.tier_fast_max_tokens,
+            settings.tier_fast_temperature,
+            settings.tier_fast_anthropic_thinking_budget,
+            settings.tier_fast_openai_reasoning_effort,
+            settings.tier_fast_gemini_thinking_budget,
+        ),
+        (
+            "normal",
+            settings.tier_normal_anthropic_model,
+            settings.tier_normal_openai_model,
+            settings.tier_normal_codex_model,
+            settings.tier_normal_gemini_model,
+            settings.tier_normal_max_tokens,
+            settings.tier_normal_temperature,
+            settings.tier_normal_anthropic_thinking_budget,
+            settings.tier_normal_openai_reasoning_effort,
+            settings.tier_normal_gemini_thinking_budget,
+        ),
+        (
+            "hard",
+            settings.tier_hard_anthropic_model,
+            settings.tier_hard_openai_model,
+            settings.tier_hard_codex_model,
+            settings.tier_hard_gemini_model,
+            settings.tier_hard_max_tokens,
+            settings.tier_hard_temperature,
+            settings.tier_hard_anthropic_thinking_budget,
+            settings.tier_hard_openai_reasoning_effort,
+            settings.tier_hard_gemini_thinking_budget,
+        ),
     ]
 
     tiers: dict[str, TierConfig] = {}
-    for (tier_name, anth_model, oai_model, codex_model, gem_model,
-         max_tok, temp, thinking_budget, reasoning_effort, gem_thinking_budget) in tier_defs:
+    for (
+        tier_name,
+        anth_model,
+        oai_model,
+        codex_model,
+        gem_model,
+        max_tok,
+        temp,
+        thinking_budget,
+        reasoning_effort,
+        gem_thinking_budget,
+    ) in tier_defs:
         anth_cfg = None
         oai_cfg = None
         gem_cfg = None
@@ -182,6 +210,7 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as _db:
         from sqlalchemy import select as _sel
         from app.models.system import SystemSetting as _SS
+
         # Keys that should only load from DB when the env var is empty/None
         _key_map = {
             "anthropic_api_key": "anthropic_api_key",
@@ -191,6 +220,12 @@ async def lifespan(app: FastAPI):
             "gemini_api_key": "gemini_api_key",
             "default_system_prompt": "default_system_prompt",
             "telegram_bot_token": "telegram_bot_token",
+            "telegram_owner_user_id": "telegram_owner_user_id",
+            "telegram_target_session_id": "telegram_target_session_id",
+            "telegram_owner_chat_id": "telegram_owner_chat_id",
+            "telegram_owner_telegram_user_id": "telegram_owner_telegram_user_id",
+            "telegram_pairing_code_hash": "telegram_pairing_code_hash",
+            "telegram_pairing_code_expires_at": "telegram_pairing_code_expires_at",
         }
         # Keys that should ALWAYS load from DB (DB overrides defaults)
         _always_load = {
@@ -306,7 +341,10 @@ async def lifespan(app: FastAPI):
                 await run_registry.clear(session_key, run_task)
                 try:
                     from app.services.compaction import CompactionService
-                    await CompactionService(provider=agent_loop.provider).auto_compact_if_needed(db, session_id=sid)
+
+                    await CompactionService(provider=agent_loop.provider).auto_compact_if_needed(
+                        db, session_id=sid
+                    )
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -319,7 +357,9 @@ async def lifespan(app: FastAPI):
         )
         # Persist a system message in the parent session so the main agent sees the result
         result_data = task.result if isinstance(task.result, dict) else {}
-        summary = result_data.get("final_text", "") or f"Sub-agent completed with status: {task.status}"
+        summary = (
+            result_data.get("final_text", "") or f"Sub-agent completed with status: {task.status}"
+        )
         content = (
             f"[Sub-Agent Report] Task: {task.objective}\n"
             f"Status: {task.status}\n"
@@ -375,10 +415,12 @@ async def lifespan(app: FastAPI):
         )
 
         # Register sub-agent management tools (use app.state for lazy orchestrator resolution)
-        registry.register(spawn_sub_agent_tool(
-            session_factory=AsyncSessionLocal,
-            orchestrator=app.state.sub_agent_orchestrator,
-        ))
+        registry.register(
+            spawn_sub_agent_tool(
+                session_factory=AsyncSessionLocal,
+                orchestrator=app.state.sub_agent_orchestrator,
+            )
+        )
         registry.register(check_sub_agent_tool(session_factory=AsyncSessionLocal))
         registry.register(list_sub_agents_tool(session_factory=AsyncSessionLocal))
         registry.register(
@@ -387,12 +429,14 @@ async def lifespan(app: FastAPI):
                 orchestrator=app.state.sub_agent_orchestrator,
             )
         )
-        available_tools.update({
-            "spawn_sub_agent",
-            "check_sub_agent",
-            "list_sub_agents",
-            "pythonXagent",
-        })
+        available_tools.update(
+            {
+                "spawn_sub_agent",
+                "check_sub_agent",
+                "list_sub_agents",
+                "pythonXagent",
+            }
+        )
         # Rebuild executor and tool adapter with new tools
         executor = ToolExecutor(registry)
         app.state.tool_executor = executor
@@ -410,42 +454,38 @@ async def lifespan(app: FastAPI):
 
     # --- Telegram bridge ---
     telegram_stop_event = asyncio.Event()
-    telegram_task: asyncio.Task | None = None
     app.state.telegram_bridge = None
     app.state.telegram_stop_event = telegram_stop_event
     app.state.telegram_task = None
 
     if settings.telegram_bot_token:
-        from app.services.telegram_bridge import TelegramBridge
+        from app.services.telegram_bridge import start_telegram_bridge
 
-        bridge = TelegramBridge(
-            bot_token=settings.telegram_bot_token,
-            user_id=settings.dev_user_id,
-            agent_loop=app.state.agent_loop,
-            run_registry=run_registry,
-            ws_manager=ws_manager,
-            db_factory=AsyncSessionLocal,
-        )
-        telegram_task = asyncio.create_task(bridge.start(telegram_stop_event))
-        app.state.telegram_bridge = bridge
-        app.state.telegram_task = telegram_task
+        await start_telegram_bridge(app.state)
 
-    # Register send_telegram_message tool (always available — returns error if bridge not running)
-    from app.services.telegram_bridge import send_telegram_message_tool
+    # Register Telegram tools (always available — return errors when bridge is not running/configured)
+    from app.services.telegram_bridge import (
+        send_telegram_message_tool,
+        telegram_manage_integration_tool,
+    )
+
     tg_tool = send_telegram_message_tool(app.state)
     registry.register(tg_tool)
     available_tools.add("send_telegram_message")
+    tg_manage_tool = telegram_manage_integration_tool(app.state)
+    registry.register(tg_manage_tool)
+    available_tools.add("telegram_manage_integration")
 
     try:
         yield
     finally:
         stop_event.set()
-        telegram_stop_event.set()
         await cleanup_task
         if scheduler_task is not None:
             await scheduler_task
-        if telegram_task is not None:
-            await telegram_task
+        from app.services.telegram_bridge import stop_telegram_bridge
+
+        await stop_telegram_bridge(app.state)
         await browser_manager.close()
 
 

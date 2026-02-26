@@ -106,6 +106,116 @@ def test_context_builder_includes_session_summary_when_available():
 
     builder = ContextBuilder(default_system_prompt="Base")
     context = _run(builder.build(db, session.id))
-    system_text = "\n".join(item.content for item in context if getattr(item, "role", "") == "system")
+    system_text = "\n".join(
+        item.content for item in context if getattr(item, "role", "") == "system"
+    )
     assert "Session summary" in system_text
     assert "Decision log" in system_text
+
+
+def test_should_auto_compact_is_token_based_not_message_count():
+    db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="token-threshold")
+    db.add(session)
+    for _ in range(31):
+        db.add(
+            Message(
+                session_id=session.id,
+                role="user",
+                content="ok",
+                metadata_json={},
+            )
+        )
+
+    service = CompactionService(provider=None)
+    assert _run(service.should_auto_compact(db, session_id=session.id)) is False
+    assert _run(service.should_auto_compact(db, session_id=session.id, threshold_tokens=20)) is True
+
+
+def test_should_auto_compact_prefers_message_token_count_when_present():
+    db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="token-count-field")
+    db.add(session)
+    db.add(
+        Message(
+            session_id=session.id,
+            role="assistant",
+            content="short",
+            token_count=1200,
+            metadata_json={},
+        )
+    )
+    db.add(
+        Message(
+            session_id=session.id,
+            role="assistant",
+            content="tiny",
+            token_count=800,
+            metadata_json={},
+        )
+    )
+
+    service = CompactionService(provider=None)
+    assert (
+        _run(service.should_auto_compact(db, session_id=session.id, threshold_tokens=1500)) is True
+    )
+
+
+def test_context_builder_formats_group_telegram_messages_for_model_only():
+    db = FakeDB()
+    session = Session(user_id="admin", status="active", title="telegram-group")
+    db.add(session)
+    db.add(
+        Message(
+            session_id=session.id,
+            role="user",
+            content="Deploy status?",
+            metadata_json={
+                "source": "telegram",
+                "telegram_chat_type": "group",
+                "telegram_chat_title": "Ops",
+                "telegram_chat_id": -100123,
+                "telegram_user_name": "John Smith",
+            },
+        )
+    )
+
+    builder = ContextBuilder(default_system_prompt="Base")
+    context = _run(builder.build(db, session.id))
+    user_messages = [m for m in context if getattr(m, "role", "") == "user"]
+    assert user_messages
+    user_content = user_messages[-1].content
+    assert isinstance(user_content, list)
+    text_blocks = [b.text for b in user_content if isinstance(b, TextContent)]
+    assert text_blocks
+    assert text_blocks[-1].startswith("[Telegram group 'Ops' chat_id=-100123 from John Smith] ")
+    assert text_blocks[-1].endswith("Deploy status?")
+
+
+def test_context_builder_keeps_owner_dm_telegram_messages_clean():
+    db = FakeDB()
+    session = Session(user_id="admin", status="active", title="telegram-owner")
+    db.add(session)
+    db.add(
+        Message(
+            session_id=session.id,
+            role="user",
+            content="How does telegram work here",
+            metadata_json={
+                "source": "telegram",
+                "telegram_chat_type": "private",
+                "telegram_is_owner": True,
+                "telegram_user_name": "John Smith",
+            },
+        )
+    )
+
+    builder = ContextBuilder(default_system_prompt="Base")
+    context = _run(builder.build(db, session.id))
+    user_messages = [m for m in context if getattr(m, "role", "") == "user"]
+    assert user_messages
+    user_content = user_messages[-1].content
+    assert isinstance(user_content, list)
+    text_blocks = [b.text for b in user_content if isinstance(b, TextContent)]
+    assert text_blocks
+    assert text_blocks[-1] == "How does telegram work here"

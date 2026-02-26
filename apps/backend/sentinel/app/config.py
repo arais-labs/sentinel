@@ -80,9 +80,17 @@ class Settings(BaseSettings):
     browser_live_resize: str = "scale"
     browser_live_probe_timeout_ms: int = 500
     browser_vnc_password: str | None = None
+    compaction_auto_trigger_tokens: int = 150_000
+    compaction_auto_resume_enabled: bool = True
 
     # --- Telegram ---
     telegram_bot_token: str | None = None
+    telegram_owner_user_id: str | None = None
+    telegram_target_session_id: str | None = None
+    telegram_owner_chat_id: str | None = None
+    telegram_owner_telegram_user_id: str | None = None
+    telegram_pairing_code_hash: str | None = None
+    telegram_pairing_code_expires_at: str | None = None
     telegram_enabled: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

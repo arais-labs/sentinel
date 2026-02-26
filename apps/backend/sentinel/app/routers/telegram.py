@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
@@ -11,6 +12,7 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
+from app.models import Session
 from app.models.system import SystemSetting
 from app.services.telegram_bridge import TelegramBridge
 
@@ -18,6 +20,7 @@ router = APIRouter()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
 
 async def _upsert(db: AsyncSession, key: str, value: str) -> None:
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
@@ -35,6 +38,53 @@ async def _delete_setting(db: AsyncSession, key: str) -> None:
     if setting is not None:
         await db.delete(setting)
         await db.commit()
+
+
+async def _latest_active_root_session_id(db: AsyncSession, user_id: str) -> str | None:
+    from datetime import UTC, datetime
+
+    result = await db.execute(
+        select(Session).where(
+            Session.user_id == user_id,
+            Session.status == "active",
+            Session.parent_session_id.is_(None),
+        )
+    )
+    sessions = result.scalars().all()
+    if not sessions:
+        return None
+    sessions.sort(
+        key=lambda s: s.created_at or datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
+    return str(sessions[0].id)
+
+
+async def _resolve_target_or_latest_session_id(db: AsyncSession, user_id: str) -> str | None:
+    existing = settings.telegram_target_session_id
+    existing_session: Session | None = None
+    if isinstance(existing, str) and existing.strip():
+        try:
+            parsed = UUID(existing.strip())
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            result = await db.execute(
+                select(Session).where(
+                    Session.id == parsed,
+                    Session.user_id == user_id,
+                    Session.parent_session_id.is_(None),
+                )
+            )
+            existing_session = result.scalars().first()
+            if existing_session is not None and existing_session.status == "active":
+                return str(existing_session.id)
+    latest_active = await _latest_active_root_session_id(db, user_id)
+    if latest_active:
+        return latest_active
+    if existing_session is not None:
+        return str(existing_session.id)
+    return None
 
 
 def _mask(value: str | None) -> str | None:
@@ -60,7 +110,7 @@ async def _start_bridge(app_state: object) -> None:
 
     bridge = TelegramBridge(
         bot_token=token,
-        user_id=settings.dev_user_id,
+        user_id=settings.telegram_owner_user_id or settings.dev_user_id,
         agent_loop=agent_loop,
         run_registry=run_registry,
         ws_manager=ws_manager,
@@ -101,6 +151,7 @@ async def _stop_bridge(app_state: object) -> None:
 
 # ── endpoints ────────────────────────────────────────────────────────────────
 
+
 @router.get("/status")
 async def get_status(
     request: Request,
@@ -110,9 +161,13 @@ async def get_status(
     return {
         "running": bridge.is_running if bridge else False,
         "bot_username": bridge.bot_username if bridge else None,
+        "can_read_all_group_messages": bridge.can_read_all_group_messages if bridge else None,
         "connected_chats": bridge.connected_chats if bridge else {},
         "token_configured": bool(settings.telegram_bot_token),
         "masked_token": _mask(settings.telegram_bot_token),
+        "owner_user_id": settings.telegram_owner_user_id or settings.dev_user_id,
+        "target_session_id": settings.telegram_target_session_id,
+        "owner_chat_id": settings.telegram_owner_chat_id,
     }
 
 
@@ -128,7 +183,16 @@ async def configure(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     settings.telegram_bot_token = payload.bot_token
+    settings.telegram_owner_user_id = user.sub
+    settings.telegram_owner_chat_id = None
+    settings.telegram_target_session_id = await _resolve_target_or_latest_session_id(db, user.sub)
     await _upsert(db, "telegram_bot_token", payload.bot_token)
+    await _upsert(db, "telegram_owner_user_id", user.sub)
+    await _delete_setting(db, "telegram_owner_chat_id")
+    if settings.telegram_target_session_id:
+        await _upsert(db, "telegram_target_session_id", settings.telegram_target_session_id)
+    else:
+        await _delete_setting(db, "telegram_target_session_id")
     await _start_bridge(request.app.state)
     return {"success": True}
 
@@ -137,9 +201,19 @@ async def configure(
 async def start_bridge(
     request: Request,
     user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     if not settings.telegram_bot_token:
         return {"success": False, "error": "No bot token configured"}
+    settings.telegram_owner_user_id = user.sub
+    settings.telegram_owner_chat_id = None
+    settings.telegram_target_session_id = await _resolve_target_or_latest_session_id(db, user.sub)
+    await _upsert(db, "telegram_owner_user_id", user.sub)
+    await _delete_setting(db, "telegram_owner_chat_id")
+    if settings.telegram_target_session_id:
+        await _upsert(db, "telegram_target_session_id", settings.telegram_target_session_id)
+    else:
+        await _delete_setting(db, "telegram_target_session_id")
     await _start_bridge(request.app.state)
     return {"success": True}
 
@@ -161,5 +235,11 @@ async def delete_config(
 ) -> dict:
     await _stop_bridge(request.app.state)
     settings.telegram_bot_token = None
+    settings.telegram_owner_user_id = None
+    settings.telegram_target_session_id = None
+    settings.telegram_owner_chat_id = None
     await _delete_setting(db, "telegram_bot_token")
+    await _delete_setting(db, "telegram_owner_user_id")
+    await _delete_setting(db, "telegram_target_session_id")
+    await _delete_setting(db, "telegram_owner_chat_id")
     return {"success": True}

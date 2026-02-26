@@ -9,6 +9,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import Message, Session, SessionSummary
 from app.services.llm.base import LLMProvider
 from app.services.llm.types import TextContent
@@ -26,7 +27,9 @@ class CompactionService:
     def __init__(self, provider: LLMProvider | None = None) -> None:
         self._provider = provider
 
-    async def compact_session(self, db: AsyncSession, *, session_id: UUID, user_id: str) -> CompactionResult:
+    async def compact_session(
+        self, db: AsyncSession, *, session_id: UUID, user_id: str
+    ) -> CompactionResult:
         session = await self._get_owned_session(db, session_id=session_id, user_id=user_id)
         return await self._compact(db, session)
 
@@ -35,10 +38,16 @@ class CompactionService:
         db: AsyncSession,
         *,
         session_id: UUID,
-        threshold_messages: int = 30,
+        threshold_tokens: int | None = None,
     ) -> CompactionResult | None:
         messages = await self._session_messages(db, session_id=session_id)
-        if len(messages) <= threshold_messages:
+        token_limit = (
+            max(1, int(threshold_tokens))
+            if threshold_tokens is not None
+            else max(1, int(settings.compaction_auto_trigger_tokens))
+        )
+        estimated_tokens = self._estimate_messages_tokens(messages)
+        if estimated_tokens <= token_limit:
             return None
         result = await db.execute(select(Session).where(Session.id == session_id))
         session = result.scalars().first()
@@ -51,10 +60,16 @@ class CompactionService:
         db: AsyncSession,
         *,
         session_id: UUID,
-        threshold_messages: int = 30,
+        threshold_tokens: int | None = None,
     ) -> bool:
         messages = await self._session_messages(db, session_id=session_id)
-        return len(messages) > threshold_messages
+        token_limit = (
+            max(1, int(threshold_tokens))
+            if threshold_tokens is not None
+            else max(1, int(settings.compaction_auto_trigger_tokens))
+        )
+        estimated_tokens = self._estimate_messages_tokens(messages)
+        return estimated_tokens > token_limit
 
     async def _compact(self, db: AsyncSession, session: Session) -> CompactionResult:
         messages = await self._session_messages(db, session_id=session.id)
@@ -73,7 +88,9 @@ class CompactionService:
 
         if self._provider is not None:
             summary_payload = await self._llm_summary_payload(older)
-            summary_text = str(summary_payload.get("context_summary") or summary_payload.get("summary_text") or "").strip()
+            summary_text = str(
+                summary_payload.get("context_summary") or summary_payload.get("summary_text") or ""
+            ).strip()
             if not summary_text:
                 summary_text = self._fallback_summary_text(older)
                 summary_payload["context_summary"] = summary_text
@@ -81,10 +98,12 @@ class CompactionService:
             summary_text = self._fallback_summary_text(older)
             summary_payload = {"summary_text": summary_text}
 
-        raw_token_count = sum(self._word_count(message.content) for message in older)
-        compressed_token_count = self._word_count(summary_text)
+        raw_token_count = self._estimate_messages_tokens(older)
+        compressed_token_count = self._estimate_text_tokens(summary_text)
 
-        result = await db.execute(select(SessionSummary).where(SessionSummary.session_id == session.id))
+        result = await db.execute(
+            select(SessionSummary).where(SessionSummary.session_id == session.id)
+        )
         summary = result.scalars().first()
         payload = dict(summary_payload)
         payload["summary_text"] = summary_text
@@ -120,8 +139,12 @@ class CompactionService:
             summary_preview=preview,
         )
 
-    async def _get_owned_session(self, db: AsyncSession, *, session_id: UUID, user_id: str) -> Session:
-        result = await db.execute(select(Session).where(Session.id == session_id, Session.user_id == user_id))
+    async def _get_owned_session(
+        self, db: AsyncSession, *, session_id: UUID, user_id: str
+    ) -> Session:
+        result = await db.execute(
+            select(Session).where(Session.id == session_id, Session.user_id == user_id)
+        )
         session = result.scalars().first()
         if session is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
@@ -141,6 +164,19 @@ class CompactionService:
     def _word_count(self, text: str) -> int:
         return len([part for part in text.split() if part])
 
+    def _estimate_text_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+        return max(1, (len(text) + 3) // 4)
+
+    def _estimate_message_tokens(self, message: Message) -> int:
+        if isinstance(message.token_count, int) and message.token_count > 0:
+            return message.token_count
+        return self._estimate_text_tokens(message.content or "")
+
+    def _estimate_messages_tokens(self, messages: list[Message]) -> int:
+        return sum(self._estimate_message_tokens(message) for message in messages)
+
     def _fallback_summary_text(self, messages: list[Message]) -> str:
         bullet_lines = [self._bullet_line(message.role, message.content) for message in messages]
         return "\n".join(bullet_lines)
@@ -151,8 +187,7 @@ class CompactionService:
             "Summarize the following conversation into strict JSON with keys: "
             "key_decisions (array of strings), tool_results (array of strings), "
             "open_tasks (array of strings), context_summary (string).\n\n"
-            "Conversation:\n"
-            + "\n".join(prompt_lines)
+            "Conversation:\n" + "\n".join(prompt_lines)
         )
 
         response = await self._provider.chat(
@@ -164,13 +199,23 @@ class CompactionService:
             temperature=0.3,
         )
 
-        text_parts = [block.text for block in response.content if isinstance(block, TextContent) and block.text]
+        text_parts = [
+            block.text
+            for block in response.content
+            if isinstance(block, TextContent) and block.text
+        ]
         raw_text = "\n".join(text_parts).strip()
         parsed = self._parse_summary_json(raw_text)
         return {
-            "key_decisions": parsed.get("key_decisions") if isinstance(parsed.get("key_decisions"), list) else [],
-            "tool_results": parsed.get("tool_results") if isinstance(parsed.get("tool_results"), list) else [],
-            "open_tasks": parsed.get("open_tasks") if isinstance(parsed.get("open_tasks"), list) else [],
+            "key_decisions": (
+                parsed.get("key_decisions") if isinstance(parsed.get("key_decisions"), list) else []
+            ),
+            "tool_results": (
+                parsed.get("tool_results") if isinstance(parsed.get("tool_results"), list) else []
+            ),
+            "open_tasks": (
+                parsed.get("open_tasks") if isinstance(parsed.get("open_tasks"), list) else []
+            ),
             "context_summary": str(parsed.get("context_summary") or ""),
         }
 

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.dependencies import get_db
 from app.middleware.auth import decode_and_validate_token
 from app.models import Message, Session
@@ -24,6 +25,11 @@ from app.services.ws_manager import ConnectionManager
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_COMPACTION_AUTO_RESUME_PROMPT = (
+    "Context was compacted automatically. Continue the same task from the latest state. "
+    "Do not repeat finished steps. If you are blocked, say exactly what is blocking you and the best next step."
+)
 
 
 @router.websocket("/{id}/stream")
@@ -96,7 +102,9 @@ async def stream_session(
 
             agent_loop = getattr(websocket.app.state, "agent_loop", None)
             if agent_loop is None:
-                await manager.broadcast_agent_error(session_key, "No provider connected for agent reply.")
+                await manager.broadcast_agent_error(
+                    session_key, "No provider connected for agent reply."
+                )
                 await manager.broadcast_done(session_key, "error")
                 continue
 
@@ -109,6 +117,7 @@ async def stream_session(
                 await manager.broadcast_agent_event(session_key, event)
 
             from app.services.llm.types import ImageContent, TextContent
+
             if attachments:
                 user_blocks: list[TextContent | ImageContent] = []
                 if parsed:
@@ -124,41 +133,63 @@ async def stream_session(
             else:
                 user_payload = parsed
 
-            run_task = asyncio.create_task(
-                agent_loop.run(
-                    db,
-                    id,
-                    user_payload,
-                    persist_user_message=False,
-                    on_event=_broadcast_event,
-                    model=model_hint or "hint:reasoning",
-                    max_iterations=max_iterations,
-                    allow_high_risk=True,
+            async def _run_once(
+                payload: str | list[TextContent | ImageContent],
+                *,
+                persist_user_message: bool,
+            ) -> tuple[bool, str | None, bool]:
+                run_task = asyncio.create_task(
+                    agent_loop.run(
+                        db,
+                        id,
+                        payload,
+                        persist_user_message=persist_user_message,
+                        on_event=_broadcast_event,
+                        model=model_hint or "hint:reasoning",
+                        max_iterations=max_iterations,
+                        allow_high_risk=True,
+                    )
                 )
+                registered = await run_registry.register(session_key, run_task)
+                if not registered:
+                    run_task.cancel()
+                    await manager.broadcast_agent_error(
+                        session_key, "Agent is already processing this session."
+                    )
+                    await manager.broadcast_done(session_key, "error")
+                    return (False, "Agent is already processing this session.", True)
+
+                cancelled = False
+                run_error: str | None = None
+                failed = False
+                try:
+                    run_result = await run_task
+                    run_error = getattr(run_result, "error", None)
+                    cancelled = run_error == "Generation stopped by user"
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception as exc:  # noqa: BLE001
+                    failed = True
+                    await manager.broadcast_agent_error(session_key, str(exc))
+                    await manager.broadcast_done(session_key, "error")
+                finally:
+                    await run_registry.clear(session_key, run_task)
+
+                return (cancelled, run_error, failed)
+
+            cancelled, run_error, failed = await _run_once(
+                user_payload,
+                persist_user_message=False,
             )
-            registered = await run_registry.register(session_key, run_task)
-            if not registered:
-                run_task.cancel()
-                await manager.broadcast_agent_error(session_key, "Agent is already processing this session.")
-                await manager.broadcast_done(session_key, "error")
+            if failed:
                 continue
 
-            cancelled = False
-            try:
-                run_result = await run_task
-                cancelled = run_result.error == "Generation stopped by user"
-            except asyncio.CancelledError:
-                cancelled = True
-            except Exception as exc:  # noqa: BLE001
-                await manager.broadcast_agent_error(session_key, str(exc))
-                await manager.broadcast_done(session_key, "error")
-            finally:
-                await run_registry.clear(session_key, run_task)
-
             # Fire-and-forget auto-compaction
-            if not cancelled:
+            if not cancelled and not run_error:
                 try:
-                    compaction_svc = CompactionService(provider=agent_loop.provider)
+                    compaction_svc = CompactionService(
+                        provider=getattr(agent_loop, "provider", None)
+                    )
                     should_compact = await compaction_svc.should_auto_compact(db, session_id=id)
                     if should_compact:
                         await manager.broadcast(
@@ -177,6 +208,18 @@ async def stream_session(
                                     "summary_preview": result.summary_preview,
                                 },
                             )
+                            if settings.compaction_auto_resume_enabled:
+                                await manager.broadcast(
+                                    session_key,
+                                    {"type": "compaction_resuming", "session_id": session_key},
+                                )
+                                await manager.broadcast_agent_thinking(session_key)
+                                _, _, resume_failed = await _run_once(
+                                    _COMPACTION_AUTO_RESUME_PROMPT,
+                                    persist_user_message=False,
+                                )
+                                if resume_failed:
+                                    continue
                 except Exception:  # noqa: BLE001
                     logger.warning("Auto-compaction failed for session %s", id, exc_info=True)
                     await manager.broadcast(
@@ -194,7 +237,9 @@ async def stream_session(
 
 
 async def _get_owned_session(db: AsyncSession, session_id: UUID, user_id: str) -> Session | None:
-    result = await db.execute(select(Session).where(Session.id == session_id, Session.user_id == user_id))
+    result = await db.execute(
+        select(Session).where(Session.id == session_id, Session.user_id == user_id)
+    )
     return result.scalars().first()
 
 

@@ -154,6 +154,7 @@ function serializeToolArguments(value: unknown): string {
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const AUTO_COMPACTION_THRESHOLD_TOKENS = 150_000;
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -1695,7 +1696,7 @@ export function SessionsPage() {
         `/sessions/${activeSessionId}/compact`, {}
       );
       if (result.raw_token_count === 0) {
-        toast.success('Nothing to compact yet (fewer than 10 messages)');
+        toast.success('Nothing to compact yet (context too small)');
       } else {
         toast.success(
           `Compacted ${result.raw_token_count} → ${result.compressed_token_count} tokens`
@@ -1844,15 +1845,14 @@ export function SessionsPage() {
                   const estimatedTokens = messages.reduce((sum, m) => {
                     return sum + (m.token_count ?? Math.round((m.content?.length ?? 0) / 4));
                   }, 0);
-                  // Practical usable context ceiling: ~150K tokens (200K window minus system prompts + tool schemas)
-                  const CTX_CEILING = 150_000;
+                  const CTX_CEILING = AUTO_COMPACTION_THRESHOLD_TOKENS;
                   const fill = Math.min(estimatedTokens / CTX_CEILING, 1);
                   const pct = Math.round(fill * 100);
                   const r = 7;
                   const circ = 2 * Math.PI * r;
                   const dash = circ * fill;
                   const ringColor = fill < 0.5 ? '#10b981' : fill < 0.8 ? '#f59e0b' : '#ef4444';
-                  const warn = fill >= 0.8;
+                  const warn = estimatedTokens >= CTX_CEILING;
                   const kTokens = estimatedTokens >= 1000 ? `${(estimatedTokens / 1000).toFixed(1)}k` : `${estimatedTokens}`;
                   return (
                     <div className="relative flex items-center gap-1.5 group cursor-default">
@@ -1876,7 +1876,7 @@ export function SessionsPage() {
                         <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Context Window</div>
                         <div><span className="font-bold" style={{ color: ringColor }}>~{kTokens}</span><span className="text-[color:var(--text-muted)]"> / 150k tokens</span></div>
                         <div className="text-[color:var(--text-muted)]">{messages.length} messages · {pct}% used</div>
-                        {warn && <div className="text-amber-500 font-bold">Consider compacting context</div>}
+                        {warn && <div className="text-amber-500 font-bold">Auto-compaction should trigger on next turn</div>}
                       </div>
                     </div>
                   );

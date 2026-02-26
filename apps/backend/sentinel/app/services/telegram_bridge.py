@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import logging
-from datetime import UTC, datetime
+import secrets
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from uuid import UUID
 
+from sqlalchemy import select
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -16,11 +20,243 @@ from telegram.ext import (
     filters,
 )
 
+from app.config import settings
+from app.database import AsyncSessionLocal
 from app.models import Message as MessageModel, Session as SessionModel
+from app.models.system import SystemSetting
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_MSG_LEN = 4096
+TELEGRAM_OWNER_PAIRING_TTL_SECONDS = 600
+
+
+def mask_telegram_token(value: str | None) -> str | None:
+    if not value:
+        return None
+    if len(value) <= 8:
+        return "****"
+    return value[:4] + "..." + value[-4:]
+
+
+async def _upsert_setting(key: str, value: str) -> None:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+        setting = result.scalars().first()
+        if setting is None:
+            db.add(SystemSetting(key=key, value=value))
+        else:
+            setting.value = value
+        await db.commit()
+
+
+async def _delete_setting(key: str) -> None:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+        setting = result.scalars().first()
+        if setting is not None:
+            await db.delete(setting)
+            await db.commit()
+
+
+async def persist_telegram_settings(
+    *,
+    bot_token: str,
+    owner_user_id: str,
+    target_session_id: str | None = None,
+    owner_chat_id: str | None = None,
+) -> None:
+    await _upsert_setting("telegram_bot_token", bot_token)
+    await _upsert_setting("telegram_owner_user_id", owner_user_id)
+    if target_session_id:
+        await _upsert_setting("telegram_target_session_id", target_session_id)
+    else:
+        await _delete_setting("telegram_target_session_id")
+    if owner_chat_id:
+        await _upsert_setting("telegram_owner_chat_id", owner_chat_id)
+    else:
+        await _delete_setting("telegram_owner_chat_id")
+
+
+async def clear_telegram_settings() -> None:
+    await _delete_setting("telegram_bot_token")
+    await _delete_setting("telegram_owner_user_id")
+    await _delete_setting("telegram_target_session_id")
+    await _delete_setting("telegram_owner_chat_id")
+    await _delete_setting("telegram_owner_telegram_user_id")
+    await _delete_setting("telegram_pairing_code_hash")
+    await _delete_setting("telegram_pairing_code_expires_at")
+
+
+def _pairing_code_hash(raw_code: str) -> str:
+    return hashlib.sha256(raw_code.encode("utf-8")).hexdigest()
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _pairing_not_expired(expires_at_iso: str | None) -> bool:
+    expires_at = _parse_iso_datetime(expires_at_iso)
+    return bool(expires_at and expires_at > _utcnow())
+
+
+async def issue_owner_pairing_code() -> tuple[str, str]:
+    code = secrets.token_hex(3).upper()
+    expires_at = (_utcnow() + timedelta(seconds=TELEGRAM_OWNER_PAIRING_TTL_SECONDS)).isoformat()
+    settings.telegram_pairing_code_hash = _pairing_code_hash(code)
+    settings.telegram_pairing_code_expires_at = expires_at
+    await _upsert_setting("telegram_pairing_code_hash", settings.telegram_pairing_code_hash)
+    await _upsert_setting("telegram_pairing_code_expires_at", expires_at)
+    return (code, expires_at)
+
+
+async def clear_owner_pairing_code() -> None:
+    settings.telegram_pairing_code_hash = None
+    settings.telegram_pairing_code_expires_at = None
+    await _delete_setting("telegram_pairing_code_hash")
+    await _delete_setting("telegram_pairing_code_expires_at")
+
+
+async def stop_telegram_bridge(app_state: object) -> None:
+    stop_event = getattr(app_state, "telegram_stop_event", None)
+    bridge = getattr(app_state, "telegram_bridge", None)
+    task = getattr(app_state, "telegram_task", None)
+
+    if stop_event is not None:
+        stop_event.set()
+
+    if bridge is not None:
+        await bridge.stop()
+
+    if task is not None and not task.done():
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+
+    app_state.telegram_bridge = None
+    app_state.telegram_stop_event = None
+    app_state.telegram_task = None
+
+
+async def resolve_latest_active_root_session_id_for_user(user_id: str) -> str | None:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(SessionModel).where(
+                SessionModel.user_id == user_id,
+                SessionModel.status == "active",
+                SessionModel.parent_session_id.is_(None),
+            )
+        )
+        sessions = result.scalars().all()
+        if not sessions:
+            return None
+        sessions.sort(
+            key=lambda s: s.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return str(sessions[0].id)
+
+
+async def reconcile_telegram_target_session(user_id: str) -> str | None:
+    """Use existing active target when valid; otherwise fall back to latest active root."""
+    existing = settings.telegram_target_session_id
+    existing_session: SessionModel | None = None
+    if isinstance(existing, str) and existing.strip():
+        try:
+            parsed = UUID(existing.strip())
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(SessionModel).where(
+                        SessionModel.id == parsed,
+                        SessionModel.user_id == user_id,
+                        SessionModel.parent_session_id.is_(None),
+                    )
+                )
+                existing_session = result.scalars().first()
+                if existing_session is not None and existing_session.status == "active":
+                    return str(existing_session.id)
+
+    latest_active = await resolve_latest_active_root_session_id_for_user(user_id)
+    if latest_active:
+        settings.telegram_target_session_id = latest_active
+        await _upsert_setting("telegram_target_session_id", latest_active)
+        return latest_active
+
+    if existing_session is not None:
+        return str(existing_session.id)
+    return None
+
+
+async def start_telegram_bridge(app_state: object) -> bool:
+    token = settings.telegram_bot_token
+    if not token:
+        return False
+
+    await stop_telegram_bridge(app_state)
+
+    ws_manager = getattr(app_state, "ws_manager", None)
+    run_registry = getattr(app_state, "agent_run_registry", None)
+    agent_loop = getattr(app_state, "agent_loop", None)
+    owner_user_id = settings.telegram_owner_user_id
+    if not owner_user_id and settings.telegram_target_session_id:
+        owner_user_id = await resolve_owner_user_id_from_session(
+            settings.telegram_target_session_id
+        )
+        if owner_user_id:
+            settings.telegram_owner_user_id = owner_user_id
+            await _upsert_setting("telegram_owner_user_id", owner_user_id)
+    if not owner_user_id:
+        owner_user_id = settings.dev_user_id
+    settings.telegram_target_session_id = await reconcile_telegram_target_session(owner_user_id)
+
+    bridge = TelegramBridge(
+        bot_token=token,
+        user_id=owner_user_id,
+        agent_loop=agent_loop,
+        run_registry=run_registry,
+        ws_manager=ws_manager,
+        db_factory=AsyncSessionLocal,
+    )
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(bridge.start(stop_event))
+    app_state.telegram_bridge = bridge
+    app_state.telegram_stop_event = stop_event
+    app_state.telegram_task = task
+    return True
+
+
+async def resolve_owner_user_id_from_session(session_id: str | None) -> str | None:
+    if not session_id:
+        return None
+    try:
+        parsed = UUID(session_id)
+    except (ValueError, TypeError):
+        return None
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(SessionModel).where(SessionModel.id == parsed))
+        session = result.scalars().first()
+        if session is None:
+            return None
+        return session.user_id
 
 
 class TelegramBridge:
@@ -48,6 +284,7 @@ class TelegramBridge:
         self._worker_task: asyncio.Task | None = None
         self._running = False
         self._bot_username: str | None = None
+        self._can_read_all_group_messages: bool | None = None
         self._connected_chats: dict[int, dict] = {}
 
     # -- public properties ---------------------------------------------------
@@ -64,8 +301,43 @@ class TelegramBridge:
     def connected_chats(self) -> dict[int, dict]:
         return dict(self._connected_chats)
 
+    @property
+    def can_read_all_group_messages(self) -> bool | None:
+        return self._can_read_all_group_messages
+
     def update_agent_loop(self, agent_loop: object) -> None:
         self._agent_loop = agent_loop
+
+    def _owner_chat_id(self) -> int | None:
+        raw = settings.telegram_owner_chat_id
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            return int(raw.strip())
+        except ValueError:
+            return None
+
+    def _is_owner_sender(self, chat: object | None, user: object | None) -> bool:
+        if chat is None or getattr(chat, "type", None) != "private":
+            return False
+        expected_user_id = settings.telegram_owner_telegram_user_id
+        if (
+            expected_user_id
+            and user is not None
+            and str(getattr(user, "id", "")) == str(expected_user_id)
+        ):
+            return True
+        owner_chat_id = self._owner_chat_id()
+        if owner_chat_id is not None and int(getattr(chat, "id", 0)) == owner_chat_id:
+            return True
+        return False
+
+    def _should_reply_inline(self, chat: object | None, metadata: dict) -> bool:
+        return bool(
+            chat is not None
+            and getattr(chat, "type", None) == "private"
+            and metadata.get("telegram_is_owner")
+        )
 
     async def send_message(self, chat_id: int, text: str) -> bool:
         """Send a message to a specific Telegram chat. Returns True on success."""
@@ -95,8 +367,12 @@ class TelegramBridge:
 
             app.add_handler(CommandHandler("start", self._handle_start))
             app.add_handler(CommandHandler("status", self._handle_status))
+            app.add_handler(CommandHandler("link", self._handle_link))
+            app.add_handler(CommandHandler("ask", self._handle_ask))
             app.add_handler(
-                MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
+                MessageHandler(
+                    (filters.TEXT | filters.CAPTION) & ~filters.COMMAND, self._handle_message
+                )
             )
 
             # initialize() calls get_me() internally and validates the token
@@ -108,9 +384,17 @@ class TelegramBridge:
                 return
 
             self._bot_username = app.bot.username
+            bot_me = await app.bot.get_me()
+            self._can_read_all_group_messages = bool(
+                getattr(bot_me, "can_read_all_group_messages", False)
+            )
             self._running = True
 
-            logger.info("Telegram bridge started as @%s", self._bot_username)
+            logger.info(
+                "Telegram bridge started as @%s (can_read_all_group_messages=%s)",
+                self._bot_username,
+                self._can_read_all_group_messages,
+            )
 
             self._worker_task = asyncio.create_task(self._message_worker())
 
@@ -144,17 +428,19 @@ class TelegramBridge:
             except Exception:
                 logger.exception("Error stopping Telegram bridge")
             self._app = None
+        self._can_read_all_group_messages = None
 
         logger.info("Telegram bridge stopped")
 
     # -- handlers ------------------------------------------------------------
 
-    async def _handle_start(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
+    async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message:
+            return
         chat = update.effective_chat
         if chat is None:
             return
+        logger.info("Telegram /start: chat_id=%s type=%s", chat.id, chat.type)
 
         self._connected_chats[chat.id] = {
             "chat_id": chat.id,
@@ -163,23 +449,106 @@ class TelegramBridge:
             "connected_at": datetime.now(UTC).isoformat(),
         }
 
+        group_hint = ""
+        if chat.type in ("group", "supergroup"):
+            group_hint = (
+                "\n\nGroup note:\n"
+                "- If Telegram privacy mode is enabled for this bot, use /ask <message>\n"
+                "- Or mention the bot in your message"
+            )
+            if self._can_read_all_group_messages is False:
+                group_hint += (
+                    "\n- Full group capture is currently OFF in Telegram settings "
+                    "(BotFather /setprivacy -> Disable)"
+                )
+
         await update.message.reply_text(
             f"Connected to Sentinel agent.\n"
             f"Chat registered as {chat.type}.\n"
             f"Send any message to interact with the agent."
+            f"{group_hint}"
         )
 
-    async def _handle_status(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
+    async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         agent_available = self._agent_loop is not None
         status = "online" if agent_available else "no provider configured"
-        await update.message.reply_text(f"Sentinel status: {status}")
+        group_mode = (
+            "all-group-messages"
+            if self._can_read_all_group_messages
+            else "privacy-mode (commands/mentions/replies only)"
+        )
+        await update.message.reply_text(f"Sentinel status: {status}\nGroup mode: {group_mode}")
 
-    async def _handle_message(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        if not update.message or not update.message.text:
+    async def _handle_link(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message:
+            return
+        chat = update.effective_chat
+        user = update.effective_user
+        if chat is None or user is None:
+            return
+        if chat.type != "private":
+            await update.message.reply_text(
+                "Owner linking must be done in a private DM with the bot."
+            )
+            return
+        if settings.telegram_owner_user_id is None:
+            await update.message.reply_text("Telegram owner is not configured yet in Sentinel.")
+            return
+        args = context.args or []
+        code = args[0].strip() if args and isinstance(args[0], str) else ""
+        if not code:
+            await update.message.reply_text("Usage: /link <PAIRING_CODE>")
+            return
+        if not _pairing_not_expired(settings.telegram_pairing_code_expires_at):
+            await update.message.reply_text(
+                "No active pairing code or it has expired. Generate a new code from Sentinel."
+            )
+            return
+        expected_hash = settings.telegram_pairing_code_hash or ""
+        received_hash = _pairing_code_hash(code)
+        if not expected_hash or not hmac.compare_digest(expected_hash, received_hash):
+            await update.message.reply_text("Invalid pairing code.")
+            return
+
+        settings.telegram_owner_telegram_user_id = str(user.id)
+        settings.telegram_owner_chat_id = str(chat.id)
+        await _upsert_setting(
+            "telegram_owner_telegram_user_id", settings.telegram_owner_telegram_user_id
+        )
+        await _upsert_setting("telegram_owner_chat_id", settings.telegram_owner_chat_id)
+        await clear_owner_pairing_code()
+        await update.message.reply_text(
+            "Owner link successful. This DM is now treated as the trusted owner channel."
+        )
+
+    async def _handle_ask(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message:
+            return
+        args = context.args or []
+        text = " ".join(arg for arg in args if isinstance(arg, str)).strip()
+        if not text:
+            await update.message.reply_text("Usage: /ask <message>")
+            return
+        chat = update.effective_chat
+        if chat is not None:
+            logger.info("Telegram /ask: chat_id=%s type=%s", chat.id, chat.type)
+        await self._enqueue_message(update, text_override=text)
+
+    async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._enqueue_message(update)
+
+    def _resolve_incoming_text(self, update: Update, text_override: str | None = None) -> str:
+        if text_override is not None:
+            return text_override.strip()
+        if not update.message:
+            return ""
+        return (update.message.text or update.message.caption or "").strip()
+
+    async def _enqueue_message(self, update: Update, *, text_override: str | None = None) -> None:
+        if not update.message:
+            return
+        incoming_text = self._resolve_incoming_text(update, text_override)
+        if not incoming_text:
             return
 
         chat = update.effective_chat
@@ -192,22 +561,36 @@ class TelegramBridge:
             self._connected_chats[chat.id] = {
                 "chat_id": chat.id,
                 "chat_type": chat.type,
-                "title": chat.title or (chat.full_name if hasattr(chat, 'full_name') else None) or str(chat.id),
+                "title": chat.title
+                or (chat.full_name if hasattr(chat, "full_name") else None)
+                or str(chat.id),
                 "connected_at": datetime.now(UTC).isoformat(),
             }
+        is_owner = self._is_owner_sender(chat, user)
 
         metadata = {
             "source": "telegram",
             "telegram_chat_id": chat.id,
             "telegram_chat_type": chat.type,
+            "telegram_is_owner": is_owner,
         }
         if chat.title:
             metadata["telegram_chat_title"] = chat.title
         if user:
             metadata["telegram_user_name"] = user.full_name or user.first_name or "Unknown"
+            metadata["telegram_user_id"] = user.id
             if user.username:
                 metadata["telegram_username"] = user.username
+        if text_override:
+            metadata["telegram_text_override"] = incoming_text
 
+        logger.info(
+            "Telegram inbound: chat_id=%s type=%s user_id=%s owner=%s",
+            chat.id,
+            chat.type,
+            metadata.get("telegram_user_id"),
+            metadata.get("telegram_is_owner"),
+        )
         await self._queue.put((update, metadata))
 
     # -- sequential message worker -------------------------------------------
@@ -216,9 +599,7 @@ class TelegramBridge:
         """Process queued Telegram messages one at a time."""
         while self._running:
             try:
-                update, metadata = await asyncio.wait_for(
-                    self._queue.get(), timeout=1.0
-                )
+                update, metadata = await asyncio.wait_for(self._queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
@@ -229,9 +610,7 @@ class TelegramBridge:
             except Exception:
                 logger.exception("Error processing Telegram message")
                 try:
-                    await update.message.reply_text(
-                        "An error occurred processing your message."
-                    )
+                    await update.message.reply_text("An error occurred processing your message.")
                 except Exception:
                     pass
 
@@ -242,23 +621,15 @@ class TelegramBridge:
             )
             return
 
-        text = update.message.text.strip()
+        text_override = metadata.get("telegram_text_override")
+        text = self._resolve_incoming_text(
+            update, str(text_override) if isinstance(text_override, str) else None
+        )
         chat = update.effective_chat
         user = update.effective_user
 
-        # Build agent-visible content with source context
-        user_name = (user.full_name or user.first_name or "Unknown") if user else "Unknown"
-        if chat.type in ("group", "supergroup"):
-            chat_title = chat.title or "Group"
-            content = (
-                f"(via Telegram group \"{chat_title}\", from {user_name}) "
-                f"{text}"
-            )
-        else:
-            content = (
-                f"(via Telegram DM from {user_name}) "
-                f"{text}"
-            )
+        # Keep persisted user text clean; transport/source details stay in metadata.
+        content = text
 
         # Resolve default session
         session_id = await self._resolve_default_session()
@@ -290,9 +661,9 @@ class TelegramBridge:
 
         async with self._db_factory() as db:
             count_result = await db.execute(
-                select(func.count()).select_from(MessageModel).where(
-                    MessageModel.session_id == session_id
-                )
+                select(func.count())
+                .select_from(MessageModel)
+                .where(MessageModel.session_id == session_id)
             )
             is_first_message = count_result.scalar_one() == 0
 
@@ -345,26 +716,31 @@ class TelegramBridge:
             registered = await self._run_registry.register(session_key, run_task)
             if not registered:
                 run_task.cancel()
-                await update.message.reply_text(
-                    "Agent is already processing this session."
-                )
+                await update.message.reply_text("Agent is already processing this session.")
                 return
 
             try:
                 result = await run_task
                 final_text = result.final_text if result else ""
 
-                if final_text:
-                    await self._send_chunked(update, final_text)
-                else:
-                    await update.message.reply_text("(Agent produced no text response)")
+                if self._should_reply_inline(chat, metadata):
+                    if final_text:
+                        await self._send_chunked(update, final_text)
+                    else:
+                        await update.message.reply_text("(Agent produced no text response)")
 
-                # Send any collected image attachments (e.g. browser screenshots)
-                if result and result.attachments:
-                    for att in result.attachments:
-                        image_b64 = att.get("base64")
-                        if image_b64:
-                            await self._send_photo(chat.id, image_b64)
+                    # Send any collected image attachments (e.g. browser screenshots)
+                    if result and result.attachments:
+                        for att in result.attachments:
+                            image_b64 = att.get("base64")
+                            if image_b64:
+                                await self._send_photo(chat.id, image_b64)
+                else:
+                    logger.info(
+                        "Telegram inbound processed without inline reply; use send_telegram_message for external response. chat_id=%s type=%s",
+                        getattr(chat, "id", None),
+                        getattr(chat, "type", None),
+                    )
 
             except asyncio.CancelledError:
                 await update.message.reply_text("Agent run was cancelled.")
@@ -372,15 +748,14 @@ class TelegramBridge:
                 logger.exception("Agent run failed for Telegram message")
                 await self._ws_manager.broadcast_agent_error(session_key, str(exc))
                 await self._ws_manager.broadcast_done(session_key, "error")
-                await update.message.reply_text(
-                    "An error occurred while processing your request."
-                )
+                await update.message.reply_text("An error occurred while processing your request.")
             finally:
                 await self._run_registry.clear(session_key, run_task)
 
                 # Auto-compaction
                 try:
                     from app.services.compaction import CompactionService
+
                     await CompactionService(
                         provider=self._agent_loop.provider
                     ).auto_compact_if_needed(db, session_id=session_id)
@@ -390,10 +765,27 @@ class TelegramBridge:
     # -- helpers -------------------------------------------------------------
 
     async def _resolve_default_session(self) -> UUID | None:
-        """Find the oldest active root session for the configured user."""
-        from sqlalchemy import select
-
+        """Find the target session for Telegram routing, creating one if needed."""
         async with self._db_factory() as db:
+            target_session_id = settings.telegram_target_session_id
+            target_session: SessionModel | None = None
+            if target_session_id:
+                try:
+                    parsed_target = UUID(target_session_id)
+                except ValueError:
+                    parsed_target = None
+                if parsed_target is not None:
+                    target_result = await db.execute(
+                        select(SessionModel).where(
+                            SessionModel.id == parsed_target,
+                            SessionModel.user_id == self._user_id,
+                            SessionModel.parent_session_id.is_(None),
+                        )
+                    )
+                    target_session = target_result.scalars().first()
+                    if target_session is not None and target_session.status == "active":
+                        return target_session.id
+
             result = await db.execute(
                 select(SessionModel).where(
                     SessionModel.user_id == self._user_id,
@@ -402,23 +794,45 @@ class TelegramBridge:
                 )
             )
             sessions = result.scalars().all()
-            if not sessions:
-                # Create one
-                session = SessionModel(
-                    user_id=self._user_id,
-                    agent_id="dev-agent",
-                    title="Main",
-                    status="active",
-                )
-                db.add(session)
-                await db.commit()
-                await db.refresh(session)
-                return session.id
 
-            sessions.sort(
-                key=lambda s: s.created_at or datetime.min.replace(tzinfo=UTC)
+            if sessions:
+                sessions.sort(
+                    key=lambda s: s.created_at or datetime.min.replace(tzinfo=UTC),
+                    reverse=True,
+                )
+                return sessions[0].id
+
+            # If target exists but is no longer active, only use it as fallback when no
+            # active root session is available.
+            if target_session is not None:
+                return target_session.id
+
+            # If no active root exists, revive the newest root session.
+            fallback_result = await db.execute(
+                select(SessionModel).where(
+                    SessionModel.user_id == self._user_id,
+                    SessionModel.parent_session_id.is_(None),
+                )
             )
-            return sessions[0].id
+            fallback_roots = fallback_result.scalars().all()
+            if fallback_roots:
+                fallback_roots.sort(
+                    key=lambda s: s.created_at or datetime.min.replace(tzinfo=UTC),
+                    reverse=True,
+                )
+                return fallback_roots[0].id
+
+            # No root session exists at all, create one.
+            session = SessionModel(
+                user_id=self._user_id,
+                agent_id="dev-agent",
+                title="Main",
+                status="active",
+            )
+            db.add(session)
+            await db.commit()
+            await db.refresh(session)
+            return session.id
 
     async def _send_chunked(self, update: Update, text: str) -> None:
         """Send a message, splitting at Telegram's 4096-char limit."""
@@ -430,7 +844,9 @@ class TelegramBridge:
             except Exception:
                 logger.exception("Failed to send Telegram chunk")
 
-    async def _send_photo(self, chat_id: int, image_base64: str, caption: str | None = None) -> None:
+    async def _send_photo(
+        self, chat_id: int, image_base64: str, caption: str | None = None
+    ) -> None:
         """Send a base64-encoded image as a photo to a Telegram chat."""
         if self._app is None:
             return
@@ -493,9 +909,7 @@ class TelegramBridge:
                 },
             )
         except Exception:
-            logger.warning(
-                "Auto-naming failed for session %s", session_id, exc_info=True
-            )
+            logger.warning("Auto-naming failed for session %s", session_id, exc_info=True)
 
 
 def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
@@ -511,6 +925,14 @@ def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
 
         chat_id = payload.get("chat_id")
         message = payload.get("message")
+        allow_owner_chat = bool(payload.get("allow_owner_chat", False))
+        owner_chat_id_raw = settings.telegram_owner_chat_id
+        owner_chat_id: int | None = None
+        if isinstance(owner_chat_id_raw, str) and owner_chat_id_raw.strip():
+            try:
+                owner_chat_id = int(owner_chat_id_raw.strip())
+            except ValueError:
+                owner_chat_id = None
 
         if not isinstance(message, str) or not message.strip():
             return {"success": False, "error": "message must be a non-empty string"}
@@ -521,7 +943,10 @@ def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
             if len(connected) == 1:
                 chat_id = next(iter(connected.keys()))
             elif len(connected) == 0:
-                return {"success": False, "error": "No Telegram chats connected. A user must send /start to the bot first."}
+                return {
+                    "success": False,
+                    "error": "No Telegram chats connected. A user must send /start to the bot first.",
+                }
             else:
                 chat_list = [
                     f"  - {info.get('title', 'Unknown')} (chat_id: {cid}, type: {info.get('chat_type', '?')})"
@@ -538,6 +963,15 @@ def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
             except (ValueError, TypeError):
                 return {"success": False, "error": f"Invalid chat_id: {chat_id}"}
 
+        if owner_chat_id is not None and chat_id == owner_chat_id and not allow_owner_chat:
+            return {
+                "success": False,
+                "error": (
+                    "Refusing to send to owner Telegram DM by tool. "
+                    "Owner messages should flow through the shared session/UI bridge."
+                ),
+            }
+
         ok = await bridge.send_message(chat_id, message.strip())
         if ok:
             return {"success": True, "chat_id": chat_id, "message_sent": message.strip()[:200]}
@@ -548,7 +982,8 @@ def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
         description=(
             "Send a message to a connected Telegram chat (group or DM). "
             "If only one chat is connected, chat_id can be omitted. "
-            "Use this when asked to message someone on Telegram."
+            "Use this when asked to message someone on Telegram. "
+            "By default this refuses owner DM chat to keep owner flow in shared session/UI."
         ),
         risk_level="medium",
         parameters_schema={
@@ -563,6 +998,176 @@ def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
                 "message": {
                     "type": "string",
                     "description": "The text message to send.",
+                },
+                "allow_owner_chat": {
+                    "type": "boolean",
+                    "description": "Optional override to allow sending directly to owner DM chat.",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def telegram_manage_integration_tool(app_state_ref: object) -> "ToolDefinition":
+    """Tool for managing Telegram integration (configure/start/stop/status/disable)."""
+    from typing import Any
+
+    from app.services.tools.registry import ToolDefinition
+
+    async def _status_payload() -> dict[str, Any]:
+        bridge: TelegramBridge | None = getattr(app_state_ref, "telegram_bridge", None)
+        connected = bridge.connected_chats if bridge else {}
+        return {
+            "running": bool(bridge and bridge.is_running),
+            "bot_username": bridge.bot_username if bridge else None,
+            "can_read_all_group_messages": bridge.can_read_all_group_messages if bridge else None,
+            "connected_chat_count": len(connected),
+            "connected_chats": connected,
+            "token_configured": bool(settings.telegram_bot_token),
+            "masked_token": mask_telegram_token(settings.telegram_bot_token),
+            "owner_user_id": settings.telegram_owner_user_id or settings.dev_user_id,
+            "target_session_id": settings.telegram_target_session_id,
+            "owner_chat_id": settings.telegram_owner_chat_id,
+        }
+
+    async def _resolve_owner(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+        owner_user_id = payload.get("owner_user_id")
+        owner_session_id = payload.get("owner_session_id")
+        if owner_user_id is not None:
+            if not isinstance(owner_user_id, str) or not owner_user_id.strip():
+                return (None, "owner_user_id must be a non-empty string")
+            return (owner_user_id.strip(), None)
+        if owner_session_id is not None:
+            if not isinstance(owner_session_id, str) or not owner_session_id.strip():
+                return (None, "owner_session_id must be a non-empty string")
+            resolved = await resolve_owner_user_id_from_session(owner_session_id.strip())
+            if not resolved:
+                return (None, f"Could not resolve owner from session_id: {owner_session_id}")
+            return (resolved, None)
+        fallback = settings.telegram_owner_user_id or settings.dev_user_id
+        return (fallback, None)
+
+    async def _resolve_target_session(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+        target_session_id = payload.get("target_session_id")
+        if target_session_id is None:
+            owner_session_id = payload.get("owner_session_id")
+            if isinstance(owner_session_id, str) and owner_session_id.strip():
+                return (owner_session_id.strip(), None)
+            return (settings.telegram_target_session_id, None)
+        if not isinstance(target_session_id, str) or not target_session_id.strip():
+            return (None, "target_session_id must be a non-empty string")
+        try:
+            UUID(target_session_id.strip())
+        except ValueError:
+            return (None, f"Invalid target_session_id: {target_session_id}")
+        return (target_session_id.strip(), None)
+
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        action_raw = payload.get("action", "status")
+        action = str(action_raw).strip().lower()
+
+        if action == "status":
+            return {"success": True, "action": action, **(await _status_payload())}
+
+        if action == "stop":
+            await stop_telegram_bridge(app_state_ref)
+            return {"success": True, "action": action, **(await _status_payload())}
+
+        if action == "disable":
+            await stop_telegram_bridge(app_state_ref)
+            settings.telegram_bot_token = None
+            settings.telegram_owner_user_id = None
+            settings.telegram_target_session_id = None
+            settings.telegram_owner_chat_id = None
+            await clear_telegram_settings()
+            return {"success": True, "action": action, **(await _status_payload())}
+
+        if action == "configure":
+            bot_token = payload.get("bot_token")
+            if not isinstance(bot_token, str) or not bot_token.strip():
+                return {"success": False, "error": "bot_token is required for action=configure"}
+            owner_user_id, owner_error = await _resolve_owner(payload)
+            if owner_error:
+                return {"success": False, "error": owner_error}
+            target_session_id, target_error = await _resolve_target_session(payload)
+            if target_error:
+                return {"success": False, "error": target_error}
+
+            settings.telegram_bot_token = bot_token.strip()
+            settings.telegram_owner_user_id = owner_user_id
+            settings.telegram_target_session_id = target_session_id
+            settings.telegram_owner_chat_id = None
+            await persist_telegram_settings(
+                bot_token=settings.telegram_bot_token,
+                owner_user_id=settings.telegram_owner_user_id or settings.dev_user_id,
+                target_session_id=settings.telegram_target_session_id,
+                owner_chat_id=settings.telegram_owner_chat_id,
+            )
+            await start_telegram_bridge(app_state_ref)
+            return {"success": True, "action": action, **(await _status_payload())}
+
+        if action == "start":
+            owner_user_id, owner_error = await _resolve_owner(payload)
+            if owner_error:
+                return {"success": False, "error": owner_error}
+            target_session_id, target_error = await _resolve_target_session(payload)
+            if target_error:
+                return {"success": False, "error": target_error}
+            if owner_user_id:
+                owner_changed = settings.telegram_owner_user_id != owner_user_id
+                settings.telegram_owner_user_id = owner_user_id
+                if settings.telegram_bot_token:
+                    await _upsert_setting("telegram_owner_user_id", owner_user_id)
+                if owner_changed:
+                    settings.telegram_owner_chat_id = None
+                    await _delete_setting("telegram_owner_chat_id")
+            if target_session_id:
+                settings.telegram_target_session_id = target_session_id
+                await _upsert_setting("telegram_target_session_id", target_session_id)
+            if not settings.telegram_bot_token:
+                return {"success": False, "error": "No Telegram bot token configured"}
+            await start_telegram_bridge(app_state_ref)
+            return {"success": True, "action": action, **(await _status_payload())}
+
+        return {
+            "success": False,
+            "error": f"Unsupported action: {action}",
+        }
+
+    return ToolDefinition(
+        name="telegram_manage_integration",
+        description=(
+            "Manage Telegram integration for Sentinel. "
+            "Actions: status, configure, start, stop, disable. "
+            "Use configure with bot_token to connect a bot and bind it to an owner user/session."
+        ),
+        risk_level="medium",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["action"],
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "configure", "start", "stop", "disable"],
+                    "description": "Integration action to run.",
+                },
+                "bot_token": {
+                    "type": "string",
+                    "description": "Telegram bot token. Required for action=configure.",
+                },
+                "owner_user_id": {
+                    "type": "string",
+                    "description": "Optional Sentinel user_id to bind as Telegram owner.",
+                },
+                "owner_session_id": {
+                    "type": "string",
+                    "description": "Optional Sentinel session_id to resolve owner user automatically.",
+                },
+                "target_session_id": {
+                    "type": "string",
+                    "description": "Optional active root session_id where inbound Telegram messages should be routed.",
                 },
             },
         },
