@@ -221,9 +221,15 @@ class ContextBuilder:
         chat_id = metadata.get("telegram_chat_id")
         if chat_type in {"group", "supergroup"}:
             chat_title = str(metadata.get("telegram_chat_title") or "Group")
-            return f"[Telegram group '{chat_title}' chat_id={chat_id} from {user_name}] {text}"
+            return (
+                f"[Telegram group '{chat_title}' chat_id={chat_id} from {user_name} "
+                f"direct_reply_required] {text}"
+            )
         if not bool(metadata.get("telegram_is_owner")):
-            return f"[Telegram DM (non-owner) chat_id={chat_id} from {user_name}] {text}"
+            return (
+                f"[Telegram DM (non-owner) chat_id={chat_id} from {user_name} "
+                f"direct_reply_required] {text}"
+            )
         return text
 
     def _convert_message_with_options(
