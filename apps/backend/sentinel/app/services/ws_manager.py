@@ -44,6 +44,7 @@ class ConnectionManager:
         message_id: str,
         content: str,
         created_at: datetime | None,
+        metadata: dict | None = None,
     ) -> None:
         await self.broadcast(
             session_id,
@@ -53,6 +54,7 @@ class ConnectionManager:
                 "message_id": message_id,
                 "content": content,
                 "created_at": self._iso(created_at),
+                "metadata": metadata or {},
             },
         )
 
@@ -131,6 +133,14 @@ class ConnectionManager:
             payload["error"] = event.error
         if event.tool_call is not None:
             payload["tool_call"] = self._tool_call_payload(event.tool_call)
+        if event.tool_result is not None:
+            payload["tool_result"] = {
+                "tool_call_id": event.tool_result.tool_call_id,
+                "tool_name": event.tool_result.tool_name,
+                "content": event.tool_result.content,
+                "is_error": event.tool_result.is_error,
+                "metadata": event.tool_result.metadata,
+            }
         if event.iteration is not None:
             payload["iteration"] = event.iteration
         if event.max_iterations is not None:

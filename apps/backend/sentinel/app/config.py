@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     default_system_prompt: str = DEFAULT_SYSTEM_PROMPT
     agent_loop_timeout: float = 1080.0
     agent_loop_cooldown: float = 1.5  # seconds between each agent loop iteration
+    tool_image_reinjection_enabled: bool = True
+    tool_image_reinjection_max_images: int = 2
+    tool_image_reinjection_max_bytes_per_image: int = 2_000_000
+    tool_image_reinjection_max_total_bytes: int = 4_000_000
     llm_max_retries: int = 3
     llm_timeout_seconds: int = 60
     browser_live_view_enabled: bool = True
@@ -73,7 +77,7 @@ class Settings(BaseSettings):
     browser_live_path: str = "/vnc.html"
     browser_live_view_only: bool = False
     browser_live_autoconnect: bool = True
-    browser_live_resize: str = "remote"
+    browser_live_resize: str = "scale"
     browser_live_probe_timeout_ms: int = 500
     browser_vnc_password: str | None = None
 

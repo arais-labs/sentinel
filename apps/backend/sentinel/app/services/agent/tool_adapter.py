@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import json
 from typing import Any
 from uuid import UUID
@@ -135,7 +136,7 @@ class ToolAdapter:
             )
 
     def _prepare_content_and_metadata(self, result: Any) -> tuple[str, dict[str, Any]]:
-        attachments: list[dict[str, str]] = []
+        attachments: list[dict[str, Any]] = []
         safe_result = self._extract_attachments(result, attachments=attachments)
         serialized = json.dumps(safe_result, default=str)
         truncated = self._truncate_content(serialized)
@@ -148,7 +149,7 @@ class ToolAdapter:
         self,
         value: Any,
         *,
-        attachments: list[dict[str, str]],
+        attachments: list[dict[str, Any]],
         path: str = "",
         key_hint: str = "",
     ) -> Any:
@@ -175,52 +176,76 @@ class ToolAdapter:
                 for idx, item in enumerate(value)
             ]
 
-        if isinstance(value, str) and self._looks_like_image_base64(value, key_hint):
-            attachment_value = value
+        if isinstance(value, str):
+            parsed = self._extract_image_payload(value, key_hint=key_hint)
+            if parsed is None:
+                return value
+            attachment_value, mime_type, size_bytes = parsed
             if len(attachment_value) > MAX_INLINE_IMAGE_BASE64_CHARS:
                 attachment_value = attachment_value[:MAX_INLINE_IMAGE_BASE64_CHARS]
             attachments.append(
                 {
                     "path": path or key_hint or "payload",
                     "base64": attachment_value,
+                    "mime_type": mime_type,
+                    "size_bytes": size_bytes,
+                    "sha256": hashlib.sha256(attachment_value.encode("ascii", errors="ignore")).hexdigest(),
                 }
             )
             return f"[base64 image omitted from context: {len(value)} chars]"
 
         return value
 
-    def _looks_like_image_base64(self, value: str, key_hint: str) -> bool:
+    def _extract_image_payload(self, value: str, *, key_hint: str) -> tuple[str, str, int] | None:
         hint = key_hint.lower()
         if "image" not in hint and "screenshot" not in hint and "base64" not in hint:
-            return False
+            return None
 
         payload = value.strip()
+        declared_mime: str | None = None
         if payload.startswith("data:image/"):
             comma_idx = payload.find(",")
             if comma_idx == -1:
-                return False
+                return None
+            header = payload[:comma_idx]
+            declared_mime = header[5:].split(";")[0].strip().lower()
             payload = payload[comma_idx + 1 :]
 
         payload = "".join(payload.split())
         if len(payload) < 64:
-            return False
+            return None
         if len(payload) % 4 != 0:
-            return False
+            return None
 
         try:
             decoded = base64.b64decode(payload, validate=True)
         except (binascii.Error, ValueError):
-            return False
-        return self._is_known_image(decoded)
+            return None
 
-    def _is_known_image(self, data: bytes) -> bool:
+        detected_mime = self._detect_image_mime(decoded)
+        if detected_mime is None:
+            return None
+        mime_type = declared_mime if declared_mime and declared_mime.startswith("image/") else detected_mime
+        if mime_type == "image/jpg":
+            mime_type = "image/jpeg"
+        return (payload, mime_type, len(decoded))
+
+    def _detect_image_mime(self, data: bytes) -> str | None:
         if len(data) < 12:
-            return False
+            return None
         is_png = data[:4] == b"\x89PNG"
         is_jpeg = data[:3] == b"\xff\xd8\xff"
         is_gif = data[:4] in (b"GIF8",)
         is_webp = data[:4] == b"RIFF" and data[8:12] == b"WEBP"
-        return is_png or is_jpeg or is_gif or is_webp
+        if is_png:
+            return "image/png"
+        if is_jpeg:
+            return "image/jpeg"
+        if is_gif:
+            return "image/gif"
+        if is_webp:
+            return "image/webp"
+        return None
 
     def _truncate_content(self, content: str) -> str:
         encoded = content.encode("utf-8", errors="replace")

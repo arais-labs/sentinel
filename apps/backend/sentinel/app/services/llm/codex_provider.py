@@ -11,6 +11,7 @@ from app.services.llm.types import (
     AgentEvent,
     AgentMessage,
     AssistantMessage,
+    ImageContent,
     ReasoningConfig,
     TextContent,
     ThinkingContent,
@@ -319,6 +320,22 @@ class CodexProvider(LLMProvider):
 
             # User message
             if isinstance(message, UserMessage) and isinstance(content, list):
+                has_images = any(isinstance(item, ImageContent) and item.data for item in content)
+                if has_images:
+                    parts: list[dict[str, Any]] = []
+                    for item in content:
+                        if isinstance(item, TextContent) and item.text:
+                            parts.append({"type": "input_text", "text": item.text})
+                        elif isinstance(item, ImageContent) and item.data:
+                            parts.append(
+                                {
+                                    "type": "input_image",
+                                    "image_url": f"data:{item.media_type};base64,{item.data}",
+                                }
+                            )
+                    if parts:
+                        input_items.append({"role": "user", "content": parts})
+                    continue
                 text = "\n".join(item.text for item in content if isinstance(item, TextContent))
                 input_items.append({"role": "user", "content": text})
                 continue

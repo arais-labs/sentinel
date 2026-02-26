@@ -49,12 +49,20 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       BROWSER_LIVE_VIEW_ENABLED: "true"
+      BROWSER_LIVE_RESOLUTION: "1920x1080x24"
+      BROWSER_VIEWPORT_WIDTH: "1920"
+      BROWSER_VIEWPORT_HEIGHT: "1080"
+      BROWSER_WINDOW_WIDTH: "1920"
+      BROWSER_WINDOW_HEIGHT: "1080"
+      BROWSER_DEVICE_SCALE_FACTOR: "0.7"
+      BROWSER_USER_DATA_DIR: /data/browser-profile
       UVICORN_RELOAD: "true"
     command: bash ./scripts/start-backend.sh
     ports:
       - "${SENTINEL_API_PORT:-8000}:8000"
     volumes:
       - ./apps/backend/sentinel:/app
+      - sentinel-browser-profile-dev:/data/browser-profile
     depends_on:
       postgres:
         condition: service_healthy
@@ -79,7 +87,7 @@ services:
   sentinel-frontend:
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "npm ci && VITE_BASE_PATH=/sentinel/ VITE_ROUTER_BASENAME=/sentinel VITE_SENTINEL_API_BASE_URL=/sentinel/api/v1 VITE_PLATFORM_AUTH_BASE_URL=/platform/auth npm run dev -- --host --port 5173"
+    command: sh -c "if [ ! -d node_modules ]; then npm ci; fi && VITE_BASE_PATH=/sentinel/ VITE_ROUTER_BASENAME=/sentinel VITE_SENTINEL_API_BASE_URL=/sentinel/api/v1 VITE_PLATFORM_AUTH_BASE_URL=/platform/auth npm run dev -- --host --port 5173"
     volumes:
       - ./apps/frontend/sentinel:/app
     healthcheck:
@@ -110,3 +118,4 @@ services:
 
 volumes:
   pgdata_dev:
+  sentinel-browser-profile-dev:

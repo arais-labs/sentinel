@@ -34,6 +34,13 @@ export interface Message {
   created_at: string;
 }
 
+export interface MessageAttachment {
+  mime_type: string;
+  base64: string;
+  filename?: string | null;
+  size_bytes?: number;
+}
+
 export interface MessageListResponse {
   items: Message[];
   has_more: boolean;

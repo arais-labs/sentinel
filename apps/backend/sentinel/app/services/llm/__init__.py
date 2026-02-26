@@ -12,6 +12,7 @@ from app.services.llm.types import (
     AgentMessage,
     AssistantContent,
     AssistantMessage,
+    ImageContent,
     ModelCompat,
     ProviderCapabilities,
     ReasoningConfig,
@@ -23,6 +24,7 @@ from app.services.llm.types import (
     ToolCallContent,
     ToolResultMessage,
     ToolSchema,
+    UserContentBlock,
     UserMessage,
 )
 
@@ -44,6 +46,8 @@ __all__ = [
     "AssistantContent",
     "AgentMessage",
     "TextContent",
+    "ImageContent",
+    "UserContentBlock",
     "ThinkingContent",
     "ToolCallContent",
     "SystemMessage",

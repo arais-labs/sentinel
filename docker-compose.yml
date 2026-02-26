@@ -49,11 +49,20 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      BROWSER_LIVE_RESOLUTION: "1920x1080x24"
+      BROWSER_VIEWPORT_WIDTH: "1920"
+      BROWSER_VIEWPORT_HEIGHT: "1080"
+      BROWSER_WINDOW_WIDTH: "1920"
+      BROWSER_WINDOW_HEIGHT: "1080"
+      BROWSER_DEVICE_SCALE_FACTOR: "0.7"
+      BROWSER_USER_DATA_DIR: /data/browser-profile
     depends_on:
       postgres:
         condition: service_healthy
       araios-backend:
         condition: service_started
+    volumes:
+      - sentinel-browser-profile:/data/browser-profile
 
   araios-frontend:
     build:
@@ -95,3 +104,4 @@ services:
 
 volumes:
   pgdata:
+  sentinel-browser-profile:

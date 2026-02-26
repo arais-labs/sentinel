@@ -16,6 +16,7 @@ AgentEventType = Literal[
     "toolcall_start",
     "toolcall_delta",
     "toolcall_end",
+    "tool_result",
     "agent_progress",
     "done",
     "error",
@@ -26,6 +27,13 @@ AgentEventType = Literal[
 class TextContent:
     type: str = "text"
     text: str = ""
+
+
+@dataclass(slots=True)
+class ImageContent:
+    type: str = "image"
+    media_type: str = "image/png"
+    data: str = ""
 
 
 @dataclass(slots=True)
@@ -53,10 +61,14 @@ class SystemMessage:
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
+UserContentBlock: TypeAlias = TextContent | ImageContent
+
+
 @dataclass(slots=True)
 class UserMessage:
     role: str = "user"
-    content: str | list[TextContent] = ""
+    content: str | list[UserContentBlock] = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
@@ -86,6 +98,15 @@ class ToolResultMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class ToolResultContent:
+    tool_call_id: str = ""
+    tool_name: str = ""
+    content: str = ""
+    is_error: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 AgentMessage: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage
 
 
@@ -95,6 +116,7 @@ class AgentEvent:
     content_index: int | None = None
     delta: str | None = None
     tool_call: ToolCallContent | None = None
+    tool_result: ToolResultContent | None = None
     message: AssistantMessage | None = None
     stop_reason: StopReason | None = None
     error: str | None = None

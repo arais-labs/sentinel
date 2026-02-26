@@ -70,8 +70,15 @@ class MessageListResponse(BaseModel):
     has_more: bool
 
 
+class ChatAttachment(BaseModel):
+    mime_type: str = Field(min_length=1, max_length=64)
+    base64: str = Field(min_length=1, max_length=8_000_000)
+    filename: str | None = Field(default=None, max_length=200)
+
+
 class ChatRequest(BaseModel):
-    content: str = Field(min_length=1, max_length=50_000)
+    content: str = Field(default="", max_length=50_000)
+    attachments: list[ChatAttachment] = Field(default_factory=list, max_length=4)
     model: str | None = None
     system_prompt: str | None = None
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
@@ -80,10 +87,14 @@ class ChatRequest(BaseModel):
     @field_validator("content")
     @classmethod
     def _validate_chat_content(cls, value: str) -> str:
-        trimmed = value.strip()
-        if not trimmed:
-            raise ValueError("content must not be empty")
-        return trimmed
+        return value.strip()
+
+    @field_validator("attachments")
+    @classmethod
+    def _validate_attachments(cls, value: list[ChatAttachment]) -> list[ChatAttachment]:
+        if value:
+            return value
+        return []
 
     @field_validator("system_prompt")
     @classmethod

@@ -336,10 +336,33 @@ async def chat_session(
     if agent_loop is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No LLM provider configured")
 
+    text = payload.content.strip()
+    if not text and not payload.attachments:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="content or attachments required")
+
+    from app.services.llm.types import ImageContent, TextContent
+    if payload.attachments:
+        user_blocks: list[TextContent | ImageContent] = []
+        if text:
+            user_blocks.append(TextContent(text=text))
+        for item in payload.attachments:
+            base64_data = item.base64.strip()
+            if ";base64," in base64_data:
+                _, _, base64_data = base64_data.partition(";base64,")
+            user_blocks.append(
+                ImageContent(
+                    media_type=item.mime_type,
+                    data=base64_data,
+                )
+            )
+        user_payload: str | list[TextContent | ImageContent] = user_blocks
+    else:
+        user_payload = text
+
     result = await agent_loop.run(
         db,
         session.id,
-        payload.content,
+        user_payload,
         system_prompt=payload.system_prompt,
         model=payload.model or "hint:reasoning",
         temperature=payload.temperature,

@@ -890,6 +890,7 @@ class BrowserManager:
         except Exception:
             pass
         self._register_page(candidate, make_active=True)
+        await self._maximize_window(candidate)
         self._sync_tabs()
 
     async def _click_response(self, selector: str) -> dict[str, Any]:
@@ -912,6 +913,23 @@ class BrowserManager:
             "title": title or "",
             "tab_id": tab_id,
         }
+
+    async def _maximize_window(self, page: Any) -> None:
+        if self._context is None:
+            return
+        try:
+            session = await self._context.new_cdp_session(page)
+            window_info = await session.send("Browser.getWindowForTarget")
+            window_id = window_info.get("windowId")
+            if window_id is None:
+                return
+            await session.send(
+                "Browser.setWindowBounds",
+                {"windowId": window_id, "bounds": {"windowState": "maximized"}},
+            )
+        except Exception:
+            # Best effort only; some runtimes do not expose window controls.
+            return
 
     def _parse_option_selector(self, selector: str) -> tuple[str, str] | None:
         # Support selectors like "option[value='2']" and "select[name='x'] option[value='2']".
@@ -1166,6 +1184,7 @@ class BrowserManager:
                     else await self._context.new_page()
                 )
                 self._register_page(page, make_active=True)
+                await self._maximize_window(page)
                 self._sync_tabs()
                 return page
             except Exception as exc:
@@ -1178,6 +1197,7 @@ class BrowserManager:
         await apply_stealth_init_script(self._context)
         page = await self._context.new_page()
         self._register_page(page, make_active=True)
+        await self._maximize_window(page)
         self._sync_tabs()
         return page
 

@@ -13,6 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import Message
 from app.services.agent.context_builder import ContextBuilder
+from app.services.agent.tool_image_reinjection import (
+    ToolImageReinjectionPolicy,
+    build_tool_image_reinjection_messages,
+)
 from app.services.agent.tool_adapter import ToolAdapter
 from app.services.estop import EstopLevel, EstopService
 from app.services.llm.base import LLMProvider
@@ -20,10 +24,12 @@ from app.services.llm.types import (
     AgentEvent,
     AgentMessage,
     AssistantMessage,
+    ImageContent,
     TextContent,
     ThinkingContent,
     TokenUsage,
     ToolCallContent,
+    ToolResultContent,
     ToolResultMessage,
     ToolSchema,
     UserMessage,
@@ -66,7 +72,7 @@ class AgentLoopResult:
     usage: TokenUsage
     iterations: int
     error: str | None = None
-    attachments: list[dict[str, str]] = field(default_factory=list)
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AgentLoop:
@@ -86,7 +92,7 @@ class AgentLoop:
         self,
         db: AsyncSession,
         session_id: UUID,
-        user_message: str,
+        user_message: str | list[TextContent | ImageContent],
         *,
         system_prompt: str | None = None,
         max_iterations: int = 50,
@@ -124,7 +130,7 @@ class AgentLoop:
             db,
             session_id,
             system_prompt,
-            pending_user_message=user_message,
+            pending_user_message=self._user_text(user_message),
         )
         messages.append(user)
 
@@ -137,6 +143,13 @@ class AgentLoop:
         iterations = 0
         done_emitted = False
         last_error: str | None = None
+        reinjected_hashes: set[str] = set()
+        reinjection_policy = ToolImageReinjectionPolicy(
+            enabled=settings.tool_image_reinjection_enabled,
+            max_images_per_turn=max(0, int(settings.tool_image_reinjection_max_images)),
+            max_bytes_per_image=max(1, int(settings.tool_image_reinjection_max_bytes_per_image)),
+            max_total_bytes_per_turn=max(1, int(settings.tool_image_reinjection_max_total_bytes)),
+        )
 
         # Defer the final "done" event until AFTER _persist_messages commits, so the
         # frontend's loadMessages() HTTP call sees the persisted messages in the DB.
@@ -152,6 +165,104 @@ class AgentLoop:
                     await _caller_on_event(event)  # type: ignore[misc]
             on_event = _intercepted_on_event
 
+        async def _run_finalization_round(progress_max: int) -> bool:
+            """
+            Force one final no-tools response when iteration budget is exhausted so
+            the assistant can provide a coherent handoff/summary instead of ending mid-thought.
+            """
+            nonlocal iterations, done_emitted, last_error
+            iterations += 1
+            if on_event is not None:
+                await on_event(
+                    AgentEvent(
+                        type="agent_progress",
+                        iteration=iterations,
+                        max_iterations=max(progress_max + 1, iterations),
+                    )
+                )
+
+            final_instruction = (
+                "You've reached the step limit, and this is the final reply for this run. "
+                "Do not call any tools. "
+                "Write a natural, user-facing update (not robotic or templated). "
+                "If the task is unfinished, briefly cover: what was completed, what is blocked/uncertain, "
+                "and the single best next step to continue."
+            )
+            final_messages = [*messages, UserMessage(content=final_instruction)]
+
+            try:
+                if stream:
+                    final_response = await self._stream_response(
+                        final_messages,
+                        model=model,
+                        tools=[],
+                        temperature=temperature,
+                        on_event=on_event,
+                    )
+                else:
+                    final_response = await self.provider.chat(
+                        final_messages,
+                        model=model,
+                        tools=[],
+                        temperature=temperature,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                logger.error(
+                    "Finalization round failed: session_id=%s iteration=%d error=%s",
+                    session_id,
+                    iterations,
+                    last_error,
+                )
+                if on_event is not None:
+                    await on_event(AgentEvent(type="error", error=last_error))
+                    await on_event(AgentEvent(type="done", stop_reason="length"))
+                done_emitted = True
+                return False
+
+            if final_response.stop_reason == "tool_use":
+                text_blocks = [
+                    block
+                    for block in final_response.content
+                    if isinstance(block, TextContent)
+                ]
+                if not text_blocks:
+                    text_blocks = [
+                        TextContent(
+                            text=(
+                                "Reached the iteration limit. I could not complete all steps in time. "
+                                "I can continue from the current state on your next message."
+                            )
+                        )
+                    ]
+                final_response = AssistantMessage(
+                    content=text_blocks,
+                    model=final_response.model,
+                    provider=final_response.provider,
+                    usage=final_response.usage,
+                    stop_reason="stop",
+                )
+
+            if not stream and on_event is not None:
+                for block in final_response.content:
+                    if isinstance(block, TextContent) and block.text:
+                        await on_event(AgentEvent(type="text_delta", delta=block.text))
+                await on_event(
+                    AgentEvent(
+                        type="done",
+                        stop_reason=final_response.stop_reason,
+                        message=final_response,
+                    )
+                )
+
+            total_usage.input_tokens += final_response.usage.input_tokens
+            total_usage.output_tokens += final_response.usage.output_tokens
+            messages.append(final_response)
+            created.append(final_response)
+            assistant_iterations[id(final_response)] = iterations
+            done_emitted = True
+            return True
+
         async def _run_iterations() -> None:
             nonlocal iterations, done_emitted, last_error
             grace_check_done = False
@@ -166,9 +277,7 @@ class AgentLoop:
                     grace_check_done = True
                     grace_granted = await self._grace_analysis(messages, session_id, effective_max, grace_extension)
                     if not grace_granted:
-                        if on_event is not None:
-                            await on_event(AgentEvent(type="done", stop_reason="length"))
-                        done_emitted = True
+                        await _run_finalization_round(effective_max)
                         break
                     logger.info(
                         "Grace extension granted (+%d iterations): session_id=%s",
@@ -297,6 +406,20 @@ class AgentLoop:
                 messages.extend(tool_results)
                 created.extend(tool_results)
 
+                reinjection = build_tool_image_reinjection_messages(
+                    tool_results,
+                    policy=reinjection_policy,
+                    seen_hashes=reinjected_hashes,
+                )
+                if reinjection.messages:
+                    messages.extend(reinjection.messages)
+                    logger.debug(
+                        "Reinjected %d tool image(s) (skipped=%d) session_id=%s",
+                        reinjection.selected_count,
+                        reinjection.skipped_count,
+                        session_id,
+                    )
+
                 for tool_result in tool_results:
                     if on_event is not None and not stream:
                         await on_event(
@@ -309,14 +432,25 @@ class AgentLoop:
                                 ),
                             )
                         )
+                    if on_event is not None:
+                        await on_event(
+                            AgentEvent(
+                                type="tool_result",
+                                tool_result=ToolResultContent(
+                                    tool_call_id=tool_result.tool_call_id,
+                                    tool_name=tool_result.tool_name,
+                                    content=tool_result.content,
+                                    is_error=tool_result.is_error,
+                                    metadata=self._stream_safe_tool_metadata(tool_result.metadata),
+                                ),
+                            )
+                        )
                 # Cooldown between iterations to avoid hammering the LLM provider
                 if settings.agent_loop_cooldown > 0:
                     await asyncio.sleep(settings.agent_loop_cooldown)
             else:
                 # Exhausted all iterations (including grace extension) — hard stop
-                if on_event is not None:
-                    await on_event(AgentEvent(type="done", stop_reason="length"))
-                done_emitted = True
+                await _run_finalization_round(total_limit)
 
         persisted = False
         try:
@@ -538,11 +672,29 @@ class AgentLoop:
         for idx, message in enumerate(created):
             created_at = base_time + timedelta(milliseconds=idx)
             if isinstance(message, UserMessage):
+                metadata = dict(message.metadata or {})
+                text_content = self._user_text(message.content)
+                if isinstance(message.content, list):
+                    attachments: list[dict[str, Any]] = []
+                    for block in message.content:
+                        if isinstance(block, ImageContent) and block.data:
+                            attachments.append(
+                                {
+                                    "mime_type": block.media_type,
+                                    "base64": block.data,
+                                }
+                            )
+                    if attachments:
+                        existing = metadata.get("attachments")
+                        if isinstance(existing, list):
+                            metadata["attachments"] = [*existing, *attachments]
+                        else:
+                            metadata["attachments"] = attachments
                 record = Message(
                     session_id=session_id,
                     role="user",
-                    content=message.content if isinstance(message.content, str) else "",
-                    metadata_json={},
+                    content=text_content,
+                    metadata_json=metadata,
                     created_at=created_at,
                 )
                 db.add(record)
@@ -603,9 +755,9 @@ class AgentLoop:
         return ""
 
     @staticmethod
-    def _collect_attachments(messages: list[AgentMessage]) -> list[dict[str, str]]:
+    def _collect_attachments(messages: list[AgentMessage]) -> list[dict[str, Any]]:
         """Gather image attachments from all ToolResultMessage metadata."""
-        attachments: list[dict[str, str]] = []
+        attachments: list[dict[str, Any]] = []
         for msg in messages:
             if isinstance(msg, ToolResultMessage) and msg.metadata:
                 for att in msg.metadata.get("attachments", []):
@@ -616,6 +768,29 @@ class AgentLoop:
     def _assistant_text(self, message: AssistantMessage) -> str:
         parts = [block.text for block in message.content if isinstance(block, TextContent) and block.text]
         return "\n".join(parts)
+
+    @staticmethod
+    def _user_text(content: str | list[TextContent | ImageContent]) -> str:
+        if isinstance(content, str):
+            return content
+        parts = [block.text for block in content if isinstance(block, TextContent) and block.text]
+        return "\n".join(parts)
+
+    @staticmethod
+    def _stream_safe_tool_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+        """Strip heavy fields (e.g. base64 blobs) from live WS tool_result events."""
+        if not metadata:
+            return {}
+        safe = dict(metadata)
+        attachments = safe.get("attachments")
+        if isinstance(attachments, list):
+            safe["attachment_count"] = len(attachments)
+            safe["attachments"] = [
+                {"path": str(item.get("path", ""))}
+                for item in attachments
+                if isinstance(item, dict)
+            ]
+        return safe
 
     async def _grace_analysis(
         self,

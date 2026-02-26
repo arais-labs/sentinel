@@ -14,6 +14,7 @@ from app.services.llm.types import (
     AgentEvent,
     AgentMessage,
     AssistantMessage,
+    ImageContent,
     ReasoningConfig,
     TextContent,
     ThinkingContent,
@@ -264,6 +265,17 @@ class AnthropicProvider(LLMProvider):
                 for block in content:
                     if isinstance(block, TextContent) and block.text:
                         user_blocks.append({"type": "text", "text": block.text})
+                    elif isinstance(block, ImageContent) and block.data:
+                        user_blocks.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": block.media_type,
+                                    "data": block.data,
+                                },
+                            }
+                        )
             if not user_blocks:
                 continue
             output.append({"role": "user", "content": user_blocks})

@@ -11,6 +11,7 @@ from app.services.llm.types import (
     AgentEvent,
     AgentMessage,
     AssistantMessage,
+    ImageContent,
     ReasoningConfig,
     TextContent,
     ThinkingContent,
@@ -272,6 +273,24 @@ class OpenAIProvider(LLMProvider):
                 continue
 
             if isinstance(message, UserMessage) and isinstance(content, list):
+                has_images = any(isinstance(item, ImageContent) and item.data for item in content)
+                if has_images:
+                    parts: list[dict[str, Any]] = []
+                    for item in content:
+                        if isinstance(item, TextContent) and item.text:
+                            parts.append({"type": "text", "text": item.text})
+                        elif isinstance(item, ImageContent) and item.data:
+                            parts.append(
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{item.media_type};base64,{item.data}",
+                                    },
+                                }
+                            )
+                    if parts:
+                        converted.append({"role": "user", "content": parts})
+                    continue
                 text = "\n".join(item.text for item in content if isinstance(item, TextContent))
                 converted.append({"role": "user", "content": text})
                 continue

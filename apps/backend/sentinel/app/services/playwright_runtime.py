@@ -34,6 +34,17 @@ def _env_int(name: str, default: int) -> int:
     return value
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw.strip())
+    except (TypeError, ValueError):
+        return default
+    return value
+
+
 def _split_extra_args(raw: str) -> list[str]:
     parts = [part.strip() for part in raw.split(",")]
     return [part for part in parts if part]
@@ -55,7 +66,13 @@ def build_chromium_launch_options(*, headless: bool | None = None) -> dict[str, 
     if no_sandbox:
         args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
     if not resolved_headless:
+        window_width = max(_env_int("BROWSER_WINDOW_WIDTH", _env_int("BROWSER_VIEWPORT_WIDTH", 1600)), 800)
+        window_height = max(_env_int("BROWSER_WINDOW_HEIGHT", _env_int("BROWSER_VIEWPORT_HEIGHT", 900)), 600)
+        args.append(f"--window-size={window_width},{window_height}")
         args.append("--start-maximized")
+        device_scale_factor = _env_float("BROWSER_DEVICE_SCALE_FACTOR", 1.0)
+        if device_scale_factor > 0:
+            args.append(f"--force-device-scale-factor={device_scale_factor:g}")
 
     args.extend(_split_extra_args(os.getenv("BROWSER_EXTRA_ARGS", "")))
 

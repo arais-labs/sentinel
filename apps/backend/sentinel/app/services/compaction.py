@@ -46,6 +46,16 @@ class CompactionService:
             return None
         return await self._compact(db, session)
 
+    async def should_auto_compact(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        threshold_messages: int = 30,
+    ) -> bool:
+        messages = await self._session_messages(db, session_id=session_id)
+        return len(messages) > threshold_messages
+
     async def _compact(self, db: AsyncSession, session: Session) -> CompactionResult:
         messages = await self._session_messages(db, session_id=session.id)
 

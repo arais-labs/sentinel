@@ -29,6 +29,17 @@ def _origin_base_from_url(value: str | None) -> str | None:
     return urlunparse((parsed.scheme, parsed.netloc, "/vnc/vnc.html", "", "", ""))
 
 
+def _normalize_resize_mode(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    if raw in {"scale", "remote", "off"}:
+        return raw
+    # Backward compatibility with older/local wording.
+    if raw in {"local", "fit"}:
+        return "scale"
+    # Safe default: fit viewport to container in embedded mode.
+    return "scale"
+
+
 def build_live_view_url(request: Request) -> str:
     public_url = (settings.browser_live_public_url or "").strip()
     if public_url:
@@ -60,7 +71,7 @@ def build_live_view_url(request: Request) -> str:
 
     query = dict(parse_qsl(parsed_base.query, keep_blank_values=True))
     query.setdefault("autoconnect", "1" if settings.browser_live_autoconnect else "0")
-    query.setdefault("resize", settings.browser_live_resize)
+    query.setdefault("resize", _normalize_resize_mode(settings.browser_live_resize))
     query.setdefault("view_only", "1" if settings.browser_live_view_only else "0")
 
     password = (settings.browser_vnc_password or "").strip()

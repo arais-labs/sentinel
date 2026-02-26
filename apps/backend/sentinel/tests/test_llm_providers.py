@@ -8,6 +8,7 @@ import httpx
 
 from app.services.llm.anthropic_provider import AnthropicProvider
 from app.services.llm.base import LLMProvider
+from app.services.llm.codex_provider import CodexProvider
 from app.services.llm.gemini_provider import GeminiProvider
 from app.services.llm.gemini_schema_cleaner import clean_schema_for_gemini
 from app.services.llm.openai_provider import OpenAIProvider
@@ -17,6 +18,7 @@ from app.services.llm.tier_provider import TierConfig, TierModelConfig, TierProv
 from app.services.llm.types import (
     AgentEvent,
     AssistantMessage,
+    ImageContent,
     ReasoningConfig,
     SystemMessage,
     TextContent,
@@ -240,6 +242,46 @@ def test_openai_chat_with_custom_base_url():
     assert result.stop_reason == "tool_use"
     assert isinstance(result.content[1], ToolCallContent)
     assert result.content[1].arguments["q"] == "abc"
+
+
+def test_openai_formats_user_image_blocks():
+    provider = OpenAIProvider(api_key="test-key")
+    converted = provider._to_openai_messages(  # type: ignore[attr-defined]
+        [
+            UserMessage(
+                content=[
+                    TextContent(text="Describe this"),
+                    ImageContent(media_type="image/png", data="AAAABBBB"),
+                ]
+            )
+        ]
+    )
+    assert converted[0]["role"] == "user"
+    parts = converted[0]["content"]
+    assert isinstance(parts, list)
+    assert parts[0]["type"] == "text"
+    assert parts[1]["type"] == "image_url"
+    assert parts[1]["image_url"]["url"] == "data:image/png;base64,AAAABBBB"
+
+
+def test_anthropic_formats_user_image_blocks():
+    provider = AnthropicProvider(api_key="test-key", base_url="https://anthropic.example")
+    converted = provider._to_anthropic_messages(  # type: ignore[attr-defined]
+        [
+            UserMessage(
+                content=[
+                    TextContent(text="Look at this"),
+                    ImageContent(media_type="image/jpeg", data="CCCCDDDD"),
+                ]
+            )
+        ]
+    )
+    assert converted[0]["role"] == "user"
+    blocks = converted[0]["content"]
+    assert blocks[0]["type"] == "text"
+    assert blocks[1]["type"] == "image"
+    assert blocks[1]["source"]["media_type"] == "image/jpeg"
+    assert blocks[1]["source"]["data"] == "CCCCDDDD"
 
 
 def test_reliable_provider_fallback_on_429():
@@ -918,6 +960,25 @@ def test_gemini_chat_parses_tool_calls():
     assert result.usage.output_tokens == 20
 
 
+def test_gemini_formats_user_image_blocks():
+    provider = GeminiProvider(api_key="test-key", base_url="https://gemini.example/v1beta")
+    _, contents = provider._to_gemini_contents(  # type: ignore[attr-defined]
+        [
+            UserMessage(
+                content=[
+                    TextContent(text="Analyze image"),
+                    ImageContent(media_type="image/webp", data="EEEFFFF"),
+                ]
+            )
+        ]
+    )
+    assert contents[0]["role"] == "user"
+    parts = contents[0]["parts"]
+    assert parts[0]["text"] == "Analyze image"
+    assert parts[1]["inlineData"]["mimeType"] == "image/webp"
+    assert parts[1]["inlineData"]["data"] == "EEEFFFF"
+
+
 def test_gemini_stream_events():
     stream_lines = [
         'data: {"candidates":[{"content":{"parts":[{"thought":true,"text":"hmm"}]},"finishReason":null}]}',
@@ -1213,3 +1274,23 @@ def test_gemini_schema_cleaner_applied_to_tool_parameters():
     params = payload["tools"][0]["functionDeclarations"][0]["parameters"]
     assert "additionalProperties" not in params
     assert "minLength" not in params["properties"]["x"]
+
+
+def test_codex_formats_user_image_blocks():
+    provider = CodexProvider(oauth_token="test-token")
+    _, input_items = provider._to_codex_input(  # type: ignore[attr-defined]
+        [
+            UserMessage(
+                content=[
+                    TextContent(text="Read screenshot"),
+                    ImageContent(media_type="image/png", data="GGGHHH"),
+                ]
+            )
+        ]
+    )
+    assert input_items[0]["role"] == "user"
+    content = input_items[0]["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "input_text"
+    assert content[1]["type"] == "input_image"
+    assert content[1]["image_url"] == "data:image/png;base64,GGGHHH"

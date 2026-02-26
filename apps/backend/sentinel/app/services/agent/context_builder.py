@@ -16,6 +16,7 @@ from app.services.skills.registry import SkillRegistry
 from app.services.llm.types import (
     AgentMessage,
     AssistantMessage,
+    ImageContent,
     SystemMessage,
     TextContent,
     ToolCallContent,
@@ -228,6 +229,25 @@ class ContextBuilder:
             )
         if message.role == "system":
             return SystemMessage(content=message.content or "")
+        metadata = message.metadata_json or {}
+        attachments = metadata.get("attachments")
+        blocks: list[TextContent | ImageContent] = []
+        text = (message.content or "").strip()
+        if text:
+            blocks.append(TextContent(text=text))
+        if isinstance(attachments, list):
+            for item in attachments:
+                if not isinstance(item, dict):
+                    continue
+                mime_type = item.get("mime_type")
+                data = item.get("base64")
+                if not isinstance(mime_type, str) or not isinstance(data, str):
+                    continue
+                if not data.strip():
+                    continue
+                blocks.append(ImageContent(media_type=mime_type.strip() or "image/png", data=data.strip()))
+        if blocks:
+            return UserMessage(content=blocks)
         return UserMessage(content=message.content or "")
 
     def _truncate_tool_result(self, content: str) -> str:

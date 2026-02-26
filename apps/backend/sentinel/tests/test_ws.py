@@ -64,11 +64,25 @@ def test_ws_connect_send_ack_and_rejections():
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
 
-            ws.send_json({"type": "message", "content": "hello from ws"})
+            ws.send_json(
+                {
+                    "type": "message",
+                    "content": "hello from ws",
+                    "attachments": [
+                        {
+                            "mime_type": "image/png",
+                            "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s8bVgAAAABJRU5ErkJggg==",
+                            "filename": "pixel.png",
+                        }
+                    ],
+                }
+            )
             ack = ws.receive_json()
             assert ack["type"] == "message_ack"
             assert ack["session_id"] == session_id
             assert ack["content"] == "hello from ws"
+            assert ack["metadata"]["source"] == "web"
+            assert len(ack["metadata"]["attachments"]) == 1
 
             # No provider configured in tests -> explicit agent error for UI feedback.
             no_provider = ws.receive_json()
@@ -80,7 +94,9 @@ def test_ws_connect_send_ack_and_rejections():
 
         messages = client.get(f"/api/v1/sessions/{session_id}/messages", headers=owner_headers)
         assert messages.status_code == 200
-        assert any(item["content"] == "hello from ws" for item in messages.json()["items"])
+        stored = next(item for item in messages.json()["items"] if item["content"] == "hello from ws")
+        assert stored["metadata"]["source"] == "web"
+        assert len(stored["metadata"]["attachments"]) == 1
 
         with pytest.raises(WebSocketDisconnect) as missing_token:
             with client.websocket_connect(f"/ws/sessions/{session_id}/stream"):

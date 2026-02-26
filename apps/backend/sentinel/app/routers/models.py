@@ -28,9 +28,9 @@ async def list_models(request: Request):
     # Fallback when no provider is configured
     return {
         "models": [
-            {"id": "hint:fast", "label": "Fast", "description": "Quick responses"},
-            {"id": "hint:normal", "label": "Normal", "description": "Balanced quality and speed"},
-            {"id": "hint:hard", "label": "Deep Think", "description": "Extended reasoning"},
+            {"id": "hint:fast", "label": "Fast", "description": "Quick responses", "tier": "fast"},
+            {"id": "hint:normal", "label": "Normal", "description": "Balanced quality and speed", "tier": "normal"},
+            {"id": "hint:hard", "label": "Deep Think", "description": "Extended reasoning", "tier": "hard"},
         ],
         "default": "hint:normal",
     }

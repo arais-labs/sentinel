@@ -1,4 +1,5 @@
 import {
+  ArrowDown,
   Bot,
   ChevronDown,
   CircleOff,
@@ -16,8 +17,13 @@ import {
   Terminal,
   Globe,
   ExternalLink,
+  Zap,
+  Activity,
+  Brain,
+  Sparkles,
+  Paperclip,
 } from 'lucide-react';
-import { FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback } from 'react';
+import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
@@ -35,6 +41,7 @@ import { api } from '../lib/api';
 import { useAuthStore } from '../store/auth-store';
 import type {
   Message,
+  MessageAttachment,
   MessageListResponse,
   ModelOption,
   ModelsResponse,
@@ -73,13 +80,13 @@ function sortMessages(items: Message[]) {
   return [...items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 }
 
-function formatToolArguments(raw: string): string {
-  if (!raw.trim()) return '';
+function tryParseJson(raw: string): unknown | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
   try {
-    const parsed = JSON.parse(raw);
-    return JSON.stringify(parsed, null, 2);
+    return JSON.parse(trimmed);
   } catch {
-    return raw;
+    return null;
   }
 }
 
@@ -108,6 +115,164 @@ function humanizeAgentError(raw: string): string {
     return raw.slice(0, 200) + '…';
   }
   return raw;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function previewPayloadValue(value: unknown, maxChars = 180): { text: string; truncated: boolean } {
+  let raw: string;
+  if (typeof value === 'string') {
+    raw = value;
+  } else if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
+    raw = String(value);
+  } else {
+    try {
+      raw = JSON.stringify(value);
+    } catch {
+      raw = String(value);
+    }
+  }
+  const normalized = raw.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) {
+    return { text: normalized, truncated: false };
+  }
+  return { text: `${normalized.slice(0, maxChars)}…`, truncated: true };
+}
+
+function serializeToolArguments(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+const MAX_IMAGE_ATTACHMENTS = 4;
+const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = reader.result;
+      if (typeof value !== 'string') {
+        reject(new Error('Failed to read file'));
+        return;
+      }
+      const comma = value.indexOf(',');
+      resolve(comma >= 0 ? value.slice(comma + 1) : value);
+    };
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function extractImageAttachments(metadata: Record<string, unknown> | null | undefined): MessageAttachment[] {
+  const raw = metadata?.attachments;
+  if (!Array.isArray(raw)) return [];
+  const out: MessageAttachment[] = [];
+  for (const item of raw) {
+    if (!isObjectRecord(item)) continue;
+    const mime = typeof item.mime_type === 'string' ? item.mime_type : '';
+    const base64 = typeof item.base64 === 'string' ? item.base64 : '';
+    if (!mime || !base64) continue;
+    const filename = typeof item.filename === 'string' ? item.filename : null;
+    const sizeBytes = typeof item.size_bytes === 'number' ? item.size_bytes : undefined;
+    out.push({ mime_type: mime, base64, filename, size_bytes: sizeBytes });
+  }
+  return out;
+}
+
+function ToolPayloadView({
+  raw,
+  emptyLabel,
+  showRawJson = true,
+}: {
+  raw: string;
+  emptyLabel: string;
+  showRawJson?: boolean;
+}) {
+  const parsed = useMemo(() => tryParseJson(raw), [raw]);
+  if (!raw.trim()) {
+    return <p className="text-sky-500/60 italic">{emptyLabel}</p>;
+  }
+
+  if (isObjectRecord(parsed)) {
+    const entries = Object.entries(parsed);
+    return (
+      <div className="space-y-2">
+        {entries.map(([key, value]) => (
+          <div key={key} className="rounded-lg border border-sky-500/10 bg-sky-500/5 p-2">
+            <p className="text-[9px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">{key}</p>
+            {(() => {
+              const preview = previewPayloadValue(value);
+              return (
+                <>
+                  <p className="mt-1 font-mono text-[12px] break-words text-[color:var(--text-primary)]">{preview.text || '""'}</p>
+                  {preview.truncated && (
+                    <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Truncated in preview</p>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        ))}
+        {showRawJson ? (
+          <details className="group">
+            <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-sky-600/80 dark:text-sky-400/80">
+              <ChevronDown size={12} className="group-open:rotate-180 transition-transform" />
+              Raw JSON
+            </summary>
+            <JsonBlock value={JSON.stringify(parsed, null, 2)} className="mt-2 bg-transparent border-sky-500/10 p-2 max-h-[220px]" />
+          </details>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (parsed !== null) {
+    const preview = previewPayloadValue(parsed, 260);
+    return (
+      <div className="space-y-2">
+        <div className="rounded-lg border border-sky-500/10 bg-sky-500/5 p-2">
+          <p className="font-mono text-[12px] break-words text-[color:var(--text-primary)]">{preview.text || '""'}</p>
+          {preview.truncated && (
+            <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Truncated in preview</p>
+          )}
+        </div>
+        {showRawJson ? (
+          <details className="group">
+            <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-sky-600/80 dark:text-sky-400/80">
+              <ChevronDown size={12} className="group-open:rotate-180 transition-transform" />
+              Raw JSON
+            </summary>
+            <JsonBlock value={JSON.stringify(parsed, null, 2)} className="mt-2 bg-transparent border-sky-500/10 p-2 max-h-[220px]" />
+          </details>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <details className="group">
+      <summary className="cursor-pointer list-none flex items-center gap-2 text-sky-600 dark:text-sky-400">
+        <ChevronDown size={14} className="group-open:rotate-180 transition-transform" />
+        <span className="font-bold uppercase tracking-widest text-[10px]">Execution Telemetry</span>
+      </summary>
+      <div className="mt-3 overflow-auto">
+        <div className="markdown-body">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {raw}
+          </ReactMarkdown>
+        </div>
+      </div>
+    </details>
+  );
 }
 
 // --- Memoized Components ---
@@ -166,11 +331,27 @@ const SourceChip = memo(({ metadata }: { metadata: Record<string, unknown> }) =>
 });
 SourceChip.displayName = 'SourceChip';
 
-const MessageCard = memo(({ message }: { message: Message }) => {
+const MessageCard = memo(({
+  message,
+  toolArgumentsByCallId,
+}: {
+  message: Message;
+  toolArgumentsByCallId: Map<string, string>;
+}) => {
   const isUser = message.role === 'user';
   const isToolResult = message.role === 'tool_result';
+  const userAttachments = isUser ? extractImageAttachments(message.metadata) : [];
   const attachments = (message.metadata?.attachments as Array<{ base64: string }> | undefined) ?? [];
   const screenshotBase64 = isToolResult ? (attachments.find(a => a.base64)?.base64 ?? null) : null;
+  const isScreenshotTool =
+    isToolResult &&
+    (Boolean(screenshotBase64) || String(message.tool_name ?? '').toLowerCase().includes('screenshot'));
+  const toolInputRaw =
+    isToolResult && message.tool_call_id
+      ? (toolArgumentsByCallId.get(message.tool_call_id) ?? '')
+      : '';
+  const toolFailed = Boolean(isToolResult && message.metadata?.is_error);
+  const [toolExpanded, setToolExpanded] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -195,6 +376,12 @@ const MessageCard = memo(({ message }: { message: Message }) => {
 
   function onMouseUp() { dragRef.current = null; }
 
+  useEffect(() => {
+    if (isScreenshotTool) {
+      setToolExpanded(true);
+    }
+  }, [isScreenshotTool]);
+
   return (
       <div className={`flex w-full flex-col gap-1.5 animate-in ${isUser ? 'items-end' : 'items-start'}`}>
         <div className="flex items-center gap-2 px-1">
@@ -208,7 +395,7 @@ const MessageCard = memo(({ message }: { message: Message }) => {
         </div>
 
       <div
-        className={`max-w-[90%] rounded-2xl px-4 py-1.5 text-xs shadow-sm border ${
+        className={`${isToolResult ? (toolExpanded ? 'w-full max-w-[90%]' : 'w-fit') : 'max-w-[90%]'} ${isToolResult ? 'inline-flex flex-col' : ''} rounded-2xl px-4 py-1.5 text-xs shadow-sm border ${
           isUser
             ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent rounded-tr-none font-medium'
             : isToolResult
@@ -216,84 +403,118 @@ const MessageCard = memo(({ message }: { message: Message }) => {
             : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] rounded-tl-none font-medium'
         }`}
       >
-          {isToolResult && message.tool_name && (
-              <div className="mb-2 flex items-center gap-1.5 border-b border-sky-500/10 pb-2">
-                <Wrench size={12} className="text-sky-600 dark:text-sky-400" />
-                <span className="font-bold uppercase tracking-wide text-sky-600 dark:text-sky-400">{message.tool_name}</span>
-              </div>
-          )}
-
           {isToolResult ? (
-            screenshotBase64 ? (
-              <>
-                <img
-                  src={`data:image/png;base64,${screenshotBase64}`}
-                  alt="Browser screenshot"
-                  onClick={openLightbox}
-                  className="rounded-lg max-w-full border border-sky-500/20 mt-1 cursor-zoom-in hover:opacity-90 transition-opacity"
-                  style={{ maxHeight: '400px', objectFit: 'contain' }}
-                />
-                {lightboxOpen && (
-                  <div
-                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
-                    onClick={() => setLightboxOpen(false)}
-                    onMouseMove={onMouseMove}
-                    onMouseUp={onMouseUp}
-                  >
-                    <div
-                      className="relative overflow-hidden"
-                      style={{ width: '90vw', height: '90vh' }}
-                      onClick={e => e.stopPropagation()}
-                      onWheel={onWheel}
-                      onMouseDown={onMouseDown}
-                    >
-                      <img
-                        src={`data:image/png;base64,${screenshotBase64}`}
-                        alt="Browser screenshot"
-                        className="absolute rounded-xl shadow-2xl border border-white/10 select-none"
-                        style={{
-                          maxWidth: 'none',
-                          transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom})`,
-                          top: '50%', left: '50%',
-                          cursor: zoom > 1 ? 'grab' : 'zoom-in',
-                          transformOrigin: 'center',
-                        }}
-                        draggable={false}
-                      />
-                      <button
-                        onClick={() => setLightboxOpen(false)}
-                        className="absolute top-3 right-3 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors z-10"
-                      >
-                        <X size={16} />
-                      </button>
-                      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/50 text-white text-[10px] font-mono">
-                        {Math.round(zoom * 100)}% · scroll to zoom · drag to pan
-                      </div>
+            <>
+              <button
+                type="button"
+                onClick={() => setToolExpanded((prev) => !prev)}
+                className={`${toolExpanded ? 'w-full' : 'w-auto'} flex items-center justify-between gap-3 text-left`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Wrench size={12} className="text-sky-600 dark:text-sky-400 shrink-0" />
+                  <span className="font-bold uppercase tracking-wide text-sky-600 dark:text-sky-400 truncate">
+                    {message.tool_name || 'tool_result'}
+                  </span>
+                </div>
+                <ChevronDown size={14} className={`text-sky-600 dark:text-sky-400 shrink-0 transition-transform ${toolExpanded ? 'rotate-180' : ''}`} />
+              </button>
+              {toolExpanded ? (
+                <div className={`mt-3 border-t border-sky-500/10 pt-3 grid ${isScreenshotTool ? 'grid-cols-1' : 'grid-cols-2'} gap-3 animate-in fade-in duration-200`}>
+                  {!isScreenshotTool ? (
+                    <div className="min-w-0">
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Input</p>
+                      <ToolPayloadView raw={toolInputRaw} emptyLabel="No input payload." />
                     </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <details className="group">
-                <summary className="cursor-pointer list-none flex items-center gap-2 text-sky-600 dark:text-sky-400">
-                  <ChevronDown size={14} className="group-open:rotate-180 transition-transform" />
-                  <span className="font-bold uppercase tracking-widest text-[10px]">Execution Telemetry</span>
-                </summary>
-                <div className="mt-3 overflow-auto">
-                  <div className="markdown-body">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {message.content}
-                    </ReactMarkdown>
+                  ) : null}
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Output</p>
+                      {toolFailed && (
+                        <span className="inline-flex items-center rounded-full border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-500">
+                          Error
+                        </span>
+                      )}
+                    </div>
+                    {screenshotBase64 ? (
+                      <>
+                        <img
+                          src={`data:image/png;base64,${screenshotBase64}`}
+                          alt="Browser screenshot"
+                          onClick={openLightbox}
+                          className="rounded-lg max-w-full border border-sky-500/20 mt-1 cursor-zoom-in hover:opacity-90 transition-opacity"
+                          style={{ maxHeight: '400px', objectFit: 'contain' }}
+                        />
+                        {lightboxOpen && (
+                          <div
+                            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
+                            onClick={() => setLightboxOpen(false)}
+                            onMouseMove={onMouseMove}
+                            onMouseUp={onMouseUp}
+                          >
+                            <div
+                              className="relative overflow-hidden"
+                              style={{ width: '90vw', height: '90vh' }}
+                              onClick={e => e.stopPropagation()}
+                              onWheel={onWheel}
+                              onMouseDown={onMouseDown}
+                            >
+                              <img
+                                src={`data:image/png;base64,${screenshotBase64}`}
+                                alt="Browser screenshot"
+                                className="absolute rounded-xl shadow-2xl border border-white/10 select-none"
+                                style={{
+                                  maxWidth: 'none',
+                                  transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom})`,
+                                  top: '50%', left: '50%',
+                                  cursor: zoom > 1 ? 'grab' : 'zoom-in',
+                                  transformOrigin: 'center',
+                                }}
+                                draggable={false}
+                              />
+                              <button
+                                onClick={() => setLightboxOpen(false)}
+                                className="absolute top-3 right-3 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors z-10"
+                              >
+                                <X size={16} />
+                              </button>
+                              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/50 text-white text-[10px] font-mono">
+                                {Math.round(zoom * 100)}% · scroll to zoom · drag to pan
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <ToolPayloadView
+                        raw={message.content}
+                        emptyLabel="No output payload."
+                        showRawJson={!isScreenshotTool}
+                      />
+                    )}
                   </div>
                 </div>
-              </details>
-            )
+              ) : null}
+            </>
           ) : (
+            <div className="space-y-2">
               <div className={`markdown-body ${isUser ? 'prose-invert' : ''}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {message.content}
                 </ReactMarkdown>
               </div>
+              {userAttachments.length > 0 ? (
+                <div className="grid grid-cols-2 gap-2">
+                  {userAttachments.map((item, index) => (
+                    <img
+                      key={`${item.base64.slice(0, 24)}-${index}`}
+                      src={`data:${item.mime_type};base64,${item.base64}`}
+                      alt={item.filename || `attachment-${index + 1}`}
+                      className="rounded-lg border border-white/10 bg-black/10 object-cover max-h-[180px]"
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
           )}
         </div>
       </div>
@@ -314,10 +535,20 @@ const BrowserPreview = memo(({
   // Sanitize URL to prevent accidental character injection and FORCE 127.0.0.1
   const cleanUrl = useMemo(() => {
     if (!url) return null;
-    return url
+    const normalized = url
         .replace(/["']/g, '')
         .replace('localhost', '127.0.0.1')
         .trim();
+    try {
+      const parsed = new URL(normalized);
+      // Force fit-to-container behavior in embedded noVNC.
+      parsed.searchParams.set('resize', 'scale');
+      parsed.searchParams.set('autoconnect', '1');
+      parsed.searchParams.set('view_only', '0');
+      return parsed.toString();
+    } catch {
+      return normalized;
+    }
   }, [url]);
 
   if (!cleanUrl) {
@@ -388,13 +619,18 @@ interface StreamingToolCall {
   id: string;
   name: string;
   argumentsJson: string;
+  outputJson: string;
+  isError: boolean;
+  metadata: Record<string, unknown>;
   complete: boolean;
+  contentIndex: number | null;
 }
 
 interface StreamingState {
   connection: WsConnectionState;
   isThinking: boolean;
   isStreaming: boolean;
+  isCompactingContext: boolean;
   text: string;
   activeToolCalls: StreamingToolCall[];
   completedToolCalls: StreamingToolCall[];
@@ -406,6 +642,7 @@ const defaultStreamingState: StreamingState = {
   connection: 'disconnected',
   isThinking: false,
   isStreaming: false,
+  isCompactingContext: false,
   text: '',
   activeToolCalls: [],
   completedToolCalls: [],
@@ -416,7 +653,18 @@ const defaultStreamingState: StreamingState = {
 // --- Sub-Components ---
 
 function StreamToolCard({ call, active }: { call: StreamingToolCall; active: boolean }) {
-  const pretty = formatToolArguments(call.argumentsJson);
+  const [expanded, setExpanded] = useState(active);
+  const isScreenshotCall = call.name.toLowerCase().includes('screenshot');
+
+  useEffect(() => {
+    if (active) setExpanded(true);
+  }, [active]);
+
+  useEffect(() => {
+    if (call.name.toLowerCase().includes('screenshot')) {
+      setExpanded(true);
+    }
+  }, [call.name]);
 
   return (
       <div className="flex flex-col gap-1.5 animate-in items-start w-full">
@@ -425,15 +673,46 @@ function StreamToolCard({ call, active }: { call: StreamingToolCall; active: boo
           tool_call • {active ? 'running' : 'complete'}
         </span>
         </div>
-        <div className="w-full max-w-[90%] rounded-2xl rounded-tl-none border border-sky-500/20 bg-sky-500/5 px-4 py-1.5 text-[12px] shadow-sm">
-          <div className="mb-2 flex items-center justify-between border-b border-sky-500/10 pb-2">
-            <div className="flex items-center gap-2 font-mono font-bold text-sky-600 dark:text-sky-400">
-              <Wrench size={14} />
-              {call.name}
+        <div className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit'} inline-flex flex-col rounded-2xl rounded-tl-none border border-sky-500/20 bg-sky-500/5 px-4 py-1.5 text-[12px] shadow-sm`}>
+          <button
+            type="button"
+            onClick={() => setExpanded((prev) => !prev)}
+            className={`${expanded ? 'w-full' : 'w-auto'} flex items-center justify-between gap-3 text-left`}
+          >
+            <div className="flex items-center gap-2 font-mono font-bold text-sky-600 dark:text-sky-400 min-w-0">
+              <Wrench size={14} className="shrink-0" />
+              <span className="truncate">{call.name}</span>
             </div>
-            {active && <Loader2 size={12} className="animate-spin text-sky-500" />}
-          </div>
-          {pretty ? <JsonBlock value={pretty} className="bg-transparent border-none p-0 max-h-[200px]" /> : <p className="text-sky-500/60 italic">Preparing arguments...</p>}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {active && <Loader2 size={12} className="animate-spin text-sky-500" />}
+              <ChevronDown size={14} className={`text-sky-600 dark:text-sky-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+            </div>
+          </button>
+          {expanded ? (
+            <div className={`mt-3 border-t border-sky-500/10 pt-3 grid ${isScreenshotCall ? 'grid-cols-1' : 'grid-cols-2'} gap-3 animate-in fade-in duration-200`}>
+              {!isScreenshotCall ? (
+                <div className="min-w-0">
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Input</p>
+                  <ToolPayloadView raw={call.argumentsJson} emptyLabel="No input payload." />
+                </div>
+              ) : null}
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Output</p>
+                  {call.isError && (
+                    <span className="inline-flex items-center rounded-full border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-500">
+                      Error
+                    </span>
+                  )}
+                </div>
+                <ToolPayloadView
+                  raw={call.outputJson}
+                  emptyLabel={active ? 'Running tool...' : 'No output payload.'}
+                  showRawJson={!isScreenshotCall}
+                />
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
   );
@@ -455,12 +734,16 @@ export function SessionsPage() {
   const [selectedModel, setSelectedModel] = useState(
     () => localStorage.getItem('sentinel-selected-model') ?? 'hint:normal',
   );
+  const [isEffortDropdownOpen, setIsEffortDropdownOpen] = useState(false);
   const [maxIterations, setMaxIterations] = useState(50);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const [composer, setComposer] = useState('');
+  const [composerAttachments, setComposerAttachments] = useState<MessageAttachment[]>([]);
 
   const [streaming, setStreaming] = useState<StreamingState>(defaultStreamingState);
 
@@ -500,22 +783,151 @@ export function SessionsPage() {
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
+  const autoScrollRafRef = useRef<number | null>(null);
+  const autoScrollTimerShortRef = useRef<number | null>(null);
+  const autoScrollTimerLongRef = useRef<number | null>(null);
+  const prependScrollAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  const oldestServerMessageIdRef = useRef<string | null>(null);
+  const loadingOlderRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const fullscreenFrameRef = useRef<HTMLIFrameElement | null>(null);
   const intentionalCloseRef = useRef(false);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const activeSessionIdRef = useRef<string | null>(routeSessionId ?? null);
+  const wsInstanceRef = useRef(0);
 
   // Keep refs in sync so WS callbacks can read current values
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
 
-  const streamBusy = streaming.isThinking || streaming.isStreaming || isCompacting;
+  const streamBusy =
+    streaming.isThinking ||
+    streaming.isStreaming ||
+    streaming.isCompactingContext ||
+    streaming.activeToolCalls.length > 0 ||
+    streaming.agentIteration > 0 ||
+    isCompacting;
+
+  const activeToolPayloadChars = useMemo(
+    () =>
+      streaming.activeToolCalls.reduce(
+        (sum, call) => sum + call.argumentsJson.length + call.outputJson.length,
+        0
+      ),
+    [streaming.activeToolCalls]
+  );
+  const completedToolPayloadChars = useMemo(
+    () =>
+      streaming.completedToolCalls.reduce(
+        (sum, call) => sum + call.argumentsJson.length + call.outputJson.length,
+        0
+      ),
+    [streaming.completedToolCalls]
+  );
 
   const activeSession = useMemo(
       () => sessions.find((session) => session.id === activeSessionId) ?? null,
       [sessions, activeSessionId],
   );
+
+  const toolArgumentsByCallId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const message of messages) {
+      if (message.role !== 'assistant') continue;
+      const toolCalls = (message.metadata?.tool_calls as unknown[] | undefined) ?? [];
+      for (const item of toolCalls) {
+        if (!isObjectRecord(item)) continue;
+        const id = typeof item.id === 'string' ? item.id : '';
+        if (!id) continue;
+        map.set(id, serializeToolArguments(item.arguments));
+      }
+    }
+    return map;
+  }, [messages]);
+
+  const detectBottom = useCallback((el: HTMLDivElement) => {
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return distance <= 20;
+  }, []);
+
+  const stickToBottomNow = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight + 99999;
+    lastScrollTopRef.current = el.scrollTop;
+    shouldAutoScrollRef.current = true;
+    setIsPinnedToBottom(true);
+  }, []);
+
+  const scheduleStickToBottom = useCallback(() => {
+    stickToBottomNow();
+    if (autoScrollRafRef.current !== null) {
+      window.cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
+    }
+    autoScrollRafRef.current = window.requestAnimationFrame(() => {
+      stickToBottomNow();
+      autoScrollRafRef.current = null;
+    });
+    if (autoScrollTimerShortRef.current !== null) {
+      window.clearTimeout(autoScrollTimerShortRef.current);
+      autoScrollTimerShortRef.current = null;
+    }
+    if (autoScrollTimerLongRef.current !== null) {
+      window.clearTimeout(autoScrollTimerLongRef.current);
+      autoScrollTimerLongRef.current = null;
+    }
+    // Tool cards expand with transitions; run delayed pins to land at true bottom.
+    autoScrollTimerShortRef.current = window.setTimeout(() => {
+      stickToBottomNow();
+      autoScrollTimerShortRef.current = null;
+    }, 140);
+    autoScrollTimerLongRef.current = window.setTimeout(() => {
+      stickToBottomNow();
+      autoScrollTimerLongRef.current = null;
+    }, 420);
+  }, [stickToBottomNow]);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (behavior === 'smooth') {
+      el.scrollTo({ top: el.scrollHeight + 99999, behavior: 'smooth' });
+      shouldAutoScrollRef.current = true;
+      setIsPinnedToBottom(true);
+      lastScrollTopRef.current = el.scrollTop;
+      return;
+    }
+    scheduleStickToBottom();
+  }, [scheduleStickToBottom]);
+
+  const onMessagesScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const prevTop = lastScrollTopRef.current;
+    const currentTop = el.scrollTop;
+    const userScrolledUp = currentTop < prevTop - 2;
+    lastScrollTopRef.current = currentTop;
+
+    const atBottom = detectBottom(el);
+    if (atBottom) {
+      shouldAutoScrollRef.current = true;
+      setIsPinnedToBottom(true);
+    } else if (userScrolledUp) {
+      // Only disable auto-scroll when user explicitly scrolls up.
+      shouldAutoScrollRef.current = false;
+      setIsPinnedToBottom(false);
+    } else {
+      // Keep current state for non-user drift (e.g. streaming content growth).
+      setIsPinnedToBottom(shouldAutoScrollRef.current);
+    }
+    if (!atBottom && el.scrollTop <= 120 && hasMoreMessages && !loadingOlderRef.current) {
+      void loadOlderMessages();
+    }
+  }, [detectBottom, hasMoreMessages, activeSessionId, messages.length]);
 
   const filteredSessions = useMemo(() => {
     const q = sessionFilter.trim().toLowerCase();
@@ -581,19 +993,16 @@ export function SessionsPage() {
   }, []);
 
   useEffect(() => {
-    if (liveView?.url) {
-      console.log('--- DEBUG: RAW BROWSER URL FROM API ---');
-      console.log(liveView.url);
-      console.log('---------------------------------------');
-    }
-  }, [liveView?.url]);
-
-  useEffect(() => {
     if (!activeSessionId) {
       setMessages([]);
       setTasks([]);
       setStreaming(defaultStreamingState);
       shouldAutoScrollRef.current = true;
+      lastScrollTopRef.current = 0;
+      setIsPinnedToBottom(true);
+      oldestServerMessageIdRef.current = null;
+      loadingOlderRef.current = false;
+      setIsLoadingOlderMessages(false);
       disconnectWs();
       return;
     }
@@ -602,8 +1011,14 @@ export function SessionsPage() {
     setMessages([]);
     setTasks([]);
     setStreaming(defaultStreamingState);
+    setHasMoreMessages(false);
+    oldestServerMessageIdRef.current = null;
+    loadingOlderRef.current = false;
+    setIsLoadingOlderMessages(false);
 
     shouldAutoScrollRef.current = true;
+    lastScrollTopRef.current = 0;
+    setIsPinnedToBottom(true);
     void loadMessages(activeSessionId);
     void fetchTasks(activeSessionId);
     void connectWs(activeSessionId);
@@ -613,13 +1028,44 @@ export function SessionsPage() {
     };
   }, [activeSessionId]);
 
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (prependScrollAnchorRef.current) {
+      const anchor = prependScrollAnchorRef.current;
+      const heightDelta = el.scrollHeight - anchor.scrollHeight;
+      el.scrollTop = anchor.scrollTop + heightDelta;
+      prependScrollAnchorRef.current = null;
+      return;
+    }
+    if (shouldAutoScrollRef.current) {
+      scheduleStickToBottom();
+    }
+  }, [messages, streaming.text, streaming.activeToolCalls.length, streaming.completedToolCalls.length, activeToolPayloadChars, completedToolPayloadChars, scheduleStickToBottom]);
+
+  useEffect(() => {
+    return () => {
+      if (autoScrollRafRef.current !== null) {
+        window.cancelAnimationFrame(autoScrollRafRef.current);
+      }
+      if (autoScrollTimerShortRef.current !== null) {
+        window.clearTimeout(autoScrollTimerShortRef.current);
+      }
+      if (autoScrollTimerLongRef.current !== null) {
+        window.clearTimeout(autoScrollTimerLongRef.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    if (shouldAutoScrollRef.current) {
-      el.scrollTop = el.scrollHeight;
+    if (!activeSessionId || messagesLoading || isLoadingOlderMessages) return;
+    if (!hasMoreMessages || messages.length === 0) return;
+    if (el.scrollHeight <= el.clientHeight + 12) {
+      void loadOlderMessages();
     }
-  }, [messages, streaming.text, streaming.activeToolCalls.length, streaming.completedToolCalls.length]);
+  }, [activeSessionId, messages, hasMoreMessages, messagesLoading, isLoadingOlderMessages]);
 
   // API Actions
   async function fetchSessions() {
@@ -652,9 +1098,9 @@ export function SessionsPage() {
       if (!saved && payload.default) setSelectedModel(payload.default);
     } catch {
       setModels([
-        { id: 'hint:fast', label: 'Fast', description: 'Quick responses' },
-        { id: 'hint:normal', label: 'Normal', description: 'Balanced quality and speed' },
-        { id: 'hint:hard', label: 'Deep Think', description: 'Extended reasoning' },
+        { id: 'hint:fast', label: 'Fast', description: 'Quick responses', tier: 'fast' },
+        { id: 'hint:normal', label: 'Normal', description: 'Balanced quality and speed', tier: 'normal' },
+        { id: 'hint:hard', label: 'Deep Think', description: 'Extended reasoning', tier: 'hard' },
       ]);
     }
   }
@@ -704,19 +1150,24 @@ export function SessionsPage() {
     }
   }
 
-  async function loadMessages(sessionId: string, before?: string) {
-    if (!before) setMessagesLoading(true);
+  async function loadMessages(sessionId: string, beforeMessageId?: string) {
+    if (!beforeMessageId) setMessagesLoading(true);
     try {
-      const path = before
-          ? `/sessions/${sessionId}/messages?limit=50&before=${encodeURIComponent(before)}`
+      const path = beforeMessageId
+          ? `/sessions/${sessionId}/messages?limit=50&before=${encodeURIComponent(beforeMessageId)}`
           : `/sessions/${sessionId}/messages?limit=50`;
       const payload = await api.get<MessageListResponse>(path);
       const fetched = sortMessages(payload.items);
       setHasMoreMessages(payload.has_more);
+      if (fetched.length > 0) {
+        oldestServerMessageIdRef.current = fetched[0].id;
+      } else if (!beforeMessageId) {
+        oldestServerMessageIdRef.current = null;
+      }
 
       setMessages((current) => {
         let next;
-        if (!before) {
+        if (!beforeMessageId) {
           next = fetched;
         } else {
           const merged = new Map<string, Message>();
@@ -728,7 +1179,7 @@ export function SessionsPage() {
 
       // CRITICAL: Only clear streaming UI state AFTER the official messages are loaded.
       // This prevents the "flash" where tool calls disappear before the API responds.
-      if (!before) {
+      if (!beforeMessageId) {
         setStreaming((prev) => ({
           ...prev,
           text: '',
@@ -739,9 +1190,36 @@ export function SessionsPage() {
         }));
       }
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : 'Failed to load messages';
+      if (beforeMessageId && errMsg.toLowerCase().includes('message not found')) {
+        setHasMoreMessages(false);
+        oldestServerMessageIdRef.current = null;
+        return;
+      }
       toast.error(error instanceof Error ? error.message : 'Failed to load messages');
     } finally {
-      if (!before) setMessagesLoading(false);
+      if (!beforeMessageId) setMessagesLoading(false);
+    }
+  }
+
+  async function loadOlderMessages() {
+    if (!activeSessionId || !hasMoreMessages || messages.length === 0 || messagesLoading || loadingOlderRef.current) return;
+    const beforeId = oldestServerMessageIdRef.current;
+    if (!beforeId) return;
+    loadingOlderRef.current = true;
+    setIsLoadingOlderMessages(true);
+    const el = scrollRef.current;
+    const preservePinnedToBottom = el ? detectBottom(el) : shouldAutoScrollRef.current;
+    if (el) {
+      prependScrollAnchorRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    }
+    shouldAutoScrollRef.current = preservePinnedToBottom;
+    setIsPinnedToBottom(preservePinnedToBottom);
+    try {
+      await loadMessages(activeSessionId, beforeId);
+    } finally {
+      loadingOlderRef.current = false;
+      setIsLoadingOlderMessages(false);
     }
   }
 
@@ -801,11 +1279,15 @@ export function SessionsPage() {
   // WebSocket Logic
   function disconnectWs() {
     intentionalCloseRef.current = true;
+    wsInstanceRef.current += 1;
     if (reconnectTimerRef.current) {
       window.clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
     if (wsRef.current) {
+      wsRef.current.onopen = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.onclose = null;
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -824,15 +1306,18 @@ export function SessionsPage() {
       connection: reconnectAttemptsRef.current > 0 ? 'reconnecting' : 'connecting',
     }));
 
+    const instanceId = ++wsInstanceRef.current;
     const ws = new WebSocket(`${WS_BASE_URL}/ws/sessions/${sessionId}/stream?token=${encodeURIComponent(token)}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (instanceId !== wsInstanceRef.current || ws !== wsRef.current) return;
       reconnectAttemptsRef.current = 0;
       setStreaming((current) => ({ ...current, connection: 'connected' }));
     };
 
     ws.onmessage = (event) => {
+      if (instanceId !== wsInstanceRef.current || ws !== wsRef.current) return;
       try {
         const payload = JSON.parse(event.data) as WsEvent;
         onStreamEvent(sessionId, payload);
@@ -840,6 +1325,7 @@ export function SessionsPage() {
     };
 
     ws.onclose = () => {
+      if (instanceId !== wsInstanceRef.current || ws !== wsRef.current) return;
       wsRef.current = null;
       if (!intentionalCloseRef.current) scheduleReconnect(sessionId);
     };
@@ -861,7 +1347,14 @@ export function SessionsPage() {
 
     switch (event.type) {
       case 'connected':
-        setMessages(sortMessages((event.history as Message[]) ?? []));
+        setMessages((current) => {
+          const incoming = sortMessages((event.history as Message[]) ?? []);
+          const merged = new Map<string, Message>();
+          [...current, ...incoming].forEach((item) => merged.set(item.id, item));
+          const next = sortMessages([...merged.values()]);
+          oldestServerMessageIdRef.current = next.length > 0 ? next[0].id : null;
+          return next;
+        });
         break;
       case 'message_ack':
         setMessages((current) => {
@@ -869,12 +1362,13 @@ export function SessionsPage() {
           if (!messageId) return current;
           if (current.some((item) => item.id === messageId)) return current;
           const createdAt = (event.created_at as string | undefined) || new Date().toISOString();
+          const metadata = isObjectRecord(event.metadata) ? event.metadata : { source: 'web' };
           const ackMessage: Message = {
             id: messageId,
             session_id: sessionId,
             role: 'user',
             content: (event.content as string) || '',
-            metadata: { source: 'web' },
+            metadata,
             token_count: null,
             tool_call_id: null,
             tool_name: null,
@@ -893,24 +1387,129 @@ export function SessionsPage() {
         setStreaming((current) => ({ ...current, isThinking: false, isStreaming: true, text: current.text + (event.delta ?? '') }));
         break;
       case 'toolcall_start':
-        const call = { id: (event.tool_call as any)?.id ?? `tool-${Date.now()}`, name: (event.tool_call as any)?.name ?? 'unknown', argumentsJson: '', complete: false };
-        setStreaming((current) => ({ ...current, isThinking: false, activeToolCalls: [...current.activeToolCalls, call] }));
+        setStreaming((current) => {
+          const callId = String((event.tool_call as any)?.id ?? `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+          const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
+          if (current.activeToolCalls.some((item) => item.id === callId && item.contentIndex === contentIndex)) {
+            return { ...current, isThinking: false };
+          }
+          const initialArguments = serializeToolArguments((event.tool_call as any)?.arguments);
+          const call = {
+            id: callId,
+            name: String((event.tool_call as any)?.name ?? 'unknown'),
+            argumentsJson: initialArguments,
+            outputJson: '',
+            isError: false,
+            metadata: {},
+            complete: false,
+            contentIndex,
+          };
+          return { ...current, isThinking: false, activeToolCalls: [...current.activeToolCalls, call] };
+        });
         break;
       case 'toolcall_delta':
         setStreaming((current) => {
+          const delta = event.delta ?? '';
+          if (!delta) return current;
           const next = [...current.activeToolCalls];
-          if (next.length) next[next.length - 1].argumentsJson += (event.delta ?? '');
+          if (!next.length) return current;
+          const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
+          let targetIndex = -1;
+          if (contentIndex !== null) {
+            targetIndex = next.findIndex((item) => item.contentIndex === contentIndex);
+          }
+          if (targetIndex < 0) targetIndex = next.length - 1;
+          const call = next[targetIndex];
+          next[targetIndex] = { ...call, argumentsJson: `${call.argumentsJson}${delta}` };
           return { ...current, activeToolCalls: next };
         });
         break;
       case 'toolcall_end':
         setStreaming((current) => {
           if (!current.activeToolCalls.length) return current;
-          const last = current.activeToolCalls[current.activeToolCalls.length - 1];
+          const nextActive = [...current.activeToolCalls];
+          const callId = String((event.tool_call as any)?.id ?? '');
+          const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
+          let targetIndex = -1;
+          if (callId) {
+            targetIndex = nextActive.findIndex((item) => item.id === callId);
+          }
+          if (targetIndex < 0 && contentIndex !== null) {
+            targetIndex = nextActive.findIndex((item) => item.contentIndex === contentIndex);
+          }
+          if (targetIndex < 0) targetIndex = nextActive.length - 1;
+          const doneCall = nextActive[targetIndex];
+          nextActive.splice(targetIndex, 1);
+          const alreadyDone = current.completedToolCalls.some((item) => item.id === doneCall.id && item.contentIndex === doneCall.contentIndex);
+          if (alreadyDone) {
+            return { ...current, activeToolCalls: nextActive };
+          }
           return {
             ...current,
-            activeToolCalls: current.activeToolCalls.slice(0, -1),
-            completedToolCalls: [...current.completedToolCalls, { ...last, complete: true }],
+            activeToolCalls: nextActive,
+            completedToolCalls: [...current.completedToolCalls, { ...doneCall, complete: true }],
+          };
+        });
+        break;
+      case 'tool_result':
+        setStreaming((current) => {
+          const payload = (event.tool_result as Record<string, unknown> | undefined) ?? {};
+          const callId = String(payload.tool_call_id ?? (event.tool_call as any)?.id ?? '');
+          const toolName = String(payload.tool_name ?? (event.tool_call as any)?.name ?? 'unknown');
+          const rawContent = payload.content;
+          const outputJson =
+            typeof rawContent === 'string'
+              ? rawContent
+              : serializeToolArguments(rawContent);
+          const isError = Boolean(payload.is_error);
+          const metadata = isObjectRecord(payload.metadata) ? payload.metadata : {};
+
+          const hydrate = (call: StreamingToolCall): StreamingToolCall => ({
+            ...call,
+            outputJson,
+            isError,
+            metadata,
+          });
+
+          let touched = false;
+          const nextActive = current.activeToolCalls.map((call) => {
+            if (callId && call.id === callId) {
+              touched = true;
+              return hydrate(call);
+            }
+            return call;
+          });
+          const nextCompleted = current.completedToolCalls.map((call) => {
+            if (callId && call.id === callId) {
+              touched = true;
+              return hydrate(call);
+            }
+            return call;
+          });
+
+          if (touched) {
+            return {
+              ...current,
+              activeToolCalls: nextActive,
+              completedToolCalls: nextCompleted,
+            };
+          }
+
+          return {
+            ...current,
+            completedToolCalls: [
+              ...nextCompleted,
+              {
+                id: callId || `tool-result-${Date.now()}`,
+                name: toolName,
+                argumentsJson: '',
+                outputJson,
+                isError,
+                metadata,
+                complete: true,
+                contentIndex: null,
+              },
+            ],
           };
         });
         break;
@@ -923,6 +1522,23 @@ export function SessionsPage() {
       case 'sub_agent_completed':
         void fetchTasks(sessionId);
         break;
+      case 'compaction_started':
+        setStreaming((current) => ({ ...current, isCompactingContext: true }));
+        break;
+      case 'compaction_completed': {
+        const raw = Number(event.raw_token_count ?? 0);
+        const compressed = Number(event.compressed_token_count ?? 0);
+        setStreaming((current) => ({ ...current, isCompactingContext: false }));
+        if (raw > 0) {
+          toast.success(`Context compacted ${raw} -> ${compressed} tokens`);
+          void loadMessages(sessionId);
+        }
+        break;
+      }
+      case 'compaction_failed':
+        setStreaming((current) => ({ ...current, isCompactingContext: false }));
+        toast.error((event.error as string) || 'Auto-compaction failed');
+        break;
       case 'done': {
         const stopReason = event.stop_reason as string | undefined;
         if (stopReason === 'tool_use') {
@@ -930,7 +1546,7 @@ export function SessionsPage() {
           setStreaming((current) => ({ ...current, isThinking: false, isStreaming: false, text: '' }));
         } else {
           // Final done — agent turn complete, reset everything
-          setStreaming((current) => ({ ...current, isThinking: false, isStreaming: false, agentIteration: 0, agentMaxIterations: 0 }));
+          setStreaming((current) => ({ ...current, isThinking: false, isStreaming: false, isCompactingContext: false, agentIteration: 0, agentMaxIterations: 0 }));
           void loadMessages(sessionId);
         }
         break;
@@ -940,19 +1556,96 @@ export function SessionsPage() {
         const raw = (event.error as string) || (event.message as string) || 'Stream error';
         toast.error(humanizeAgentError(raw), { duration: 8000 });
         // Reset streaming state so UI doesn't stay stuck in "thinking" mode
-        setStreaming((current) => ({ ...current, isThinking: false, isStreaming: false }));
+        setStreaming((current) => ({ ...current, isThinking: false, isStreaming: false, isCompactingContext: false }));
         break;
       }
     }
   }
 
+  async function appendImageFiles(files: File[]) {
+    if (!files.length) return;
+    const slotsLeft = MAX_IMAGE_ATTACHMENTS - composerAttachments.length;
+    if (slotsLeft <= 0) {
+      toast.error(`Maximum ${MAX_IMAGE_ATTACHMENTS} images per message`);
+      return;
+    }
+
+    const nextFiles = files.slice(0, slotsLeft);
+    if (files.length > slotsLeft) {
+      toast.error(`Only ${slotsLeft} more image${slotsLeft === 1 ? '' : 's'} can be added`);
+    }
+
+    const parsed: MessageAttachment[] = [];
+    for (const file of nextFiles) {
+      const mimeType = file.type.toLowerCase();
+      if (!ALLOWED_IMAGE_MIME_TYPES.has(mimeType)) {
+        toast.error(`Unsupported file type: ${file.name}`);
+        continue;
+      }
+      if (file.size > MAX_IMAGE_ATTACHMENT_BYTES) {
+        toast.error(`Image too large (max 5MB): ${file.name}`);
+        continue;
+      }
+      try {
+        const base64 = await fileToBase64(file);
+        parsed.push({
+          mime_type: mimeType,
+          base64,
+          filename: file.name,
+          size_bytes: file.size,
+        });
+      } catch {
+        toast.error(`Failed to read image: ${file.name}`);
+      }
+    }
+    if (parsed.length) {
+      setComposerAttachments((current) => [...current, ...parsed].slice(0, MAX_IMAGE_ATTACHMENTS));
+    }
+  }
+
+  async function onSelectImages(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    await appendImageFiles(files);
+    event.target.value = '';
+  }
+
+  function onComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    const imageFiles: File[] = [];
+    for (const item of Array.from(clipboard.items)) {
+      if (item.kind !== 'file') continue;
+      const file = item.getAsFile();
+      if (!file) continue;
+      if (!ALLOWED_IMAGE_MIME_TYPES.has(file.type.toLowerCase())) continue;
+      imageFiles.push(file);
+    }
+    if (!imageFiles.length) return;
+
+    const pastedText = clipboard.getData('text/plain');
+    event.preventDefault();
+    if (pastedText) {
+      const target = event.currentTarget;
+      const start = target.selectionStart ?? composer.length;
+      const end = target.selectionEnd ?? composer.length;
+      setComposer((current) => `${current.slice(0, start)}${pastedText}${current.slice(end)}`);
+      const caret = start + pastedText.length;
+      window.requestAnimationFrame(() => {
+        target.selectionStart = caret;
+        target.selectionEnd = caret;
+      });
+    }
+    void appendImageFiles(imageFiles);
+  }
+
+  function removeComposerAttachment(index: number) {
+    setComposerAttachments((current) => current.filter((_, i) => i !== index));
+  }
+
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const content = composer.trim();
-    if (!content || streamBusy || !activeSessionId) return;
-
-    setComposer('');
-    shouldAutoScrollRef.current = true;
+    if ((!content && composerAttachments.length === 0) || streamBusy || !activeSessionId) return;
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       // Prepend time context if conversation has been idle for >30 minutes
@@ -962,7 +1655,19 @@ export function SessionsPage() {
       const idleNote = idleMs > 30 * 60 * 1000
         ? `[Resuming after ${Math.round(idleMs / 60000)} min — current time: ${now}]\n\n`
         : '';
-      wsRef.current.send(JSON.stringify({ type: 'message', content: idleNote + content, model: selectedModel, max_iterations: maxIterations }));
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'message',
+          content: idleNote + content,
+          attachments: composerAttachments,
+          model: selectedModel,
+          max_iterations: maxIterations,
+        })
+      );
+      setComposer('');
+      setComposerAttachments([]);
+      shouldAutoScrollRef.current = true;
+      setIsPinnedToBottom(true);
     } else {
       toast.error('Connection lost. Reconnecting...');
     }
@@ -1051,16 +1756,6 @@ export function SessionsPage() {
                   </button>
               )}
 
-              {streamBusy && (
-                  <button
-                      onClick={stopCurrent}
-                      disabled={isStopping}
-                      className="btn-primary bg-rose-500 hover:bg-rose-600 h-9 px-3 gap-2 text-xs"
-                  >
-                    <Square size={14} fill="currentColor" />
-                    Stop
-                  </button>
-              )}
             </div>
           }
       >
@@ -1131,6 +1826,15 @@ export function SessionsPage() {
                     </div>
                   </>
                 )}
+                {streaming.isCompactingContext && (
+                  <>
+                    <div className="w-px h-3 bg-[color:var(--border)]" />
+                    <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-500">
+                      <Loader2 size={10} className="animate-spin" />
+                      Compacting context
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="flex items-center gap-4">
@@ -1180,68 +1884,96 @@ export function SessionsPage() {
 
                 <div className="w-px h-3 bg-[color:var(--border)]" />
 
-                {/* --- Effort selector (Fast / Normal / Hard) --- */}
+                {/* --- Effort selector (Fast / Normal / Deep Think) --- */}
                 <div className="flex items-center gap-1.5">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Effort:</span>
-                  <div className="flex items-center rounded-lg bg-[color:var(--surface-2)] p-0.5 gap-0.5">
-                    {models.map(m => {
-                      const active = selectedModel === m.id;
-                      const tier = m.tier ?? 'normal';
-                      const colors: Record<string, { text: string; bg: string }> = {
-                        fast: { text: 'text-emerald-500', bg: 'bg-emerald-500/10 border-emerald-500/30' },
-                        normal: { text: 'text-sky-500', bg: 'bg-sky-500/10 border-sky-500/30' },
-                        hard: { text: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/30' },
-                      };
-                      const c = colors[tier] ?? { text: 'text-[color:var(--text-primary)]', bg: 'bg-[color:var(--surface-0)]' };
-                      return (
-                        <button
-                          key={m.id}
-                          onClick={() => setSelectedModel(m.id)}
-                          className={`px-2.5 h-6 text-[10px] font-bold uppercase tracking-widest rounded-md transition-all duration-200 border ${
-                            active
-                              ? `${c.bg} ${c.text} shadow-sm`
-                              : 'border-transparent text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-0)]/50'
-                          }`}
-                        >
-                          {m.label}
-                        </button>
-                      );
-                    })}
+                  <div className="relative">
+                    {(() => {
+                        const active = models.find(m => m.id === selectedModel) || models[0];
+                        const tier = active?.tier ?? 'normal';
+                        const icons: Record<string, any> = {
+                          fast: <Zap size={10} />,
+                          normal: <Sparkles size={10} />,
+                          hard: <Brain size={10} />,
+                        };
+                        const themes: Record<string, string> = {
+                          fast: 'bg-emerald-600 dark:bg-emerald-500/40 border-emerald-600/20 dark:border-emerald-500/50 text-white dark:text-white/90 hover:bg-emerald-500 dark:hover:bg-emerald-500/50',
+                          normal: 'bg-sky-600 dark:bg-sky-500/40 border-sky-600/20 dark:border-sky-500/50 text-white dark:text-white/90 hover:bg-sky-500 dark:hover:bg-sky-500/50',
+                          hard: 'bg-rose-600 dark:bg-rose-500/40 border-rose-600/20 dark:border-rose-500/50 text-white dark:text-white/90 hover:bg-rose-500 dark:hover:bg-rose-500/50',
+                        };
+                        return (
+                          <button
+                            onClick={() => setIsEffortDropdownOpen(!isEffortDropdownOpen)}
+                            className={`flex items-center gap-2 px-2.5 h-6 text-[10px] font-bold uppercase tracking-widest rounded-lg transition-all duration-200 border shadow-sm ${themes[tier] || 'bg-[color:var(--surface-2)] border-[color:var(--border-subtle)] text-[color:var(--text-primary)]'}`}
+                          >
+                            <span className="opacity-90">{icons[tier] || <Activity size={10} />}</span>
+                            <span>{active?.label || 'Select'}</span>
+                            <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
+                          </button>
+                        );
+                      })()}
+
+                    {isEffortDropdownOpen && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-40"
+                          onClick={() => setIsEffortDropdownOpen(false)}
+                        />
+                        <div className="absolute top-full left-0 mt-1 w-64 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1 animate-in fade-in zoom-in-95 duration-100">
+                          {models.map(m => {
+                            const active = selectedModel === m.id;
+                            const tier = m.tier ?? 'normal';
+                            const icons: Record<string, any> = {
+                              fast: <Zap size={14} className={active ? 'text-white/90' : 'text-emerald-500'} />,
+                              normal: <Sparkles size={14} className={active ? 'text-white/90' : 'text-sky-500'} />,
+                              hard: <Brain size={14} className={active ? 'text-white/90' : 'text-rose-500'} />,
+                            };
+                            const bgColors: Record<string, string> = {
+                              fast: 'bg-emerald-600 dark:bg-emerald-500/40',
+                              normal: 'bg-sky-600 dark:bg-sky-500/40',
+                              hard: 'bg-rose-600 dark:bg-rose-500/40',
+                            };
+                            return (
+                              <button
+                                key={m.id}
+                                onClick={() => {
+                                  setSelectedModel(m.id);
+                                  setIsEffortDropdownOpen(false);
+                                }}
+                                className={`w-full flex items-start gap-3 px-4 py-3 transition-all text-left group ${
+                                  active
+                                    ? `text-white ${bgColors[tier] || ''}`
+                                    : 'hover:bg-[color:var(--surface-1)]'
+                                }`}
+                              >
+                                <div className="mt-0.5 shrink-0 transition-transform group-hover:scale-110 duration-200">
+                                  {icons[tier] || <Activity size={14} />}
+                                </div>
+                                <div className="flex flex-col gap-0.5 min-w-0">
+                                  <div className={`text-[10px] font-bold uppercase tracking-widest ${active ? 'text-white' : 'text-[color:var(--text-primary)] group-hover:text-[color:var(--text-primary)]'}`}>
+                                    {m.label}
+                                  </div>
+                                  <div className={`text-[9px] font-medium leading-tight ${active ? 'text-white/80' : 'text-[color:var(--text-muted)]'}`}>
+                                    {m.description}
+                                  </div>
+                                  {m.primary_provider && (
+                                    <div className="mt-1.5 flex items-center gap-1.5">
+                                      <span className={`text-[8px] font-mono px-1 rounded uppercase ${active ? 'bg-black/20 text-white/90' : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] opacity-60'}`}>{m.primary_provider}</span>
+                                      <span className={`text-[8px] font-mono truncate ${active ? 'text-white/40' : 'text-[color:var(--text-muted)] opacity-40'}`}>{m.primary_model}</span>
+                                    </div>
+                                  )}
+                                </div>
+                                {active && (
+                                  <div className="ml-auto w-1 h-1 rounded-full bg-white/60 mt-1.5 shadow-[0_0_8px_rgba(255,255,255,0.2)]" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
-
-                <div className="w-px h-3 bg-[color:var(--border)]" />
-
-                {/* --- Provider + Model (read-only, resolved from effort) --- */}
-                {(() => {
-                  const active = models.find(m => m.id === selectedModel);
-                  if (!active?.primary_provider) return null;
-                  const providerLabel = active.primary_provider === 'anthropic' ? 'Anthropic' : active.primary_provider === 'openai' ? 'OpenAI' : active.primary_provider;
-                  const thinkLabel = active.thinking_budget ? `thinking:${(active.thinking_budget / 1000).toFixed(0)}k` : null;
-                  const effortLabel = active.reasoning_effort ? `effort:${active.reasoning_effort}` : null;
-                  return (
-                    <div className="relative flex items-center gap-2 group cursor-default">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Provider:</span>
-                        <span className="text-[10px] font-bold text-[color:var(--text-primary)]">{providerLabel}</span>
-                        <span className="text-[9px] font-mono text-[color:var(--text-muted)] opacity-60">{active.primary_model}</span>
-                        {thinkLabel && (
-                          <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20">{thinkLabel}</span>
-                        )}
-                      </div>
-                      {/* Tooltip with full provider breakdown */}
-                      <div className="absolute top-full right-0 mt-2 px-3 py-2.5 rounded-lg bg-[color:var(--surface-0)] border border-[color:var(--border)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-50 space-y-1.5">
-                        <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Provider Config</div>
-                        <div><span className="text-[color:var(--text-muted)]">primary: </span><span className="font-bold text-[color:var(--text-primary)]">{active.primary_provider}/{active.primary_model}</span></div>
-                        {active.fallback_provider && (
-                          <div><span className="text-[color:var(--text-muted)]">fallback: </span><span className="font-bold text-[color:var(--text-primary)]">{active.fallback_provider}/{active.fallback_model}</span></div>
-                        )}
-                        {thinkLabel && <div><span className="text-[color:var(--text-muted)]">anthropic: </span><span className="text-amber-500 font-bold">{thinkLabel}</span></div>}
-                        {effortLabel && <div><span className="text-[color:var(--text-muted)]">openai: </span><span className="text-amber-500 font-bold">{effortLabel}</span></div>}
-                      </div>
-                    </div>
-                  );
-                })()}
 
                 <div className="w-px h-3 bg-[color:var(--border)]" />
 
@@ -1263,6 +1995,7 @@ export function SessionsPage() {
             {/* Messages */}
             <div
                 ref={scrollRef}
+                onScroll={onMessagesScroll}
                 className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 scroll-smooth"
             >
               {messagesLoading && messages.length === 0 ? (
@@ -1282,13 +2015,22 @@ export function SessionsPage() {
                         </div>
                     )}
 
+                    {messages.length > 0 && isLoadingOlderMessages && (
+                      <div className="flex justify-center">
+                        <div className="inline-flex items-center gap-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                          <Loader2 size={11} className="animate-spin" />
+                          Loading older messages
+                        </div>
+                      </div>
+                    )}
+
                     {messages
                       .filter(m => m.role !== 'system')
                       .filter(m => !(m.role === 'assistant' && !m.content?.trim() && !m.tool_name))
-                      .map(m => <MessageCard key={m.id} message={m} />)}
+                      .map(m => <MessageCard key={m.id} message={m} toolArgumentsByCallId={toolArgumentsByCallId} />)}
 
-                    {streaming.completedToolCalls.map(c => <StreamToolCard key={c.id} call={c} active={false} />)}
-                    {streaming.activeToolCalls.map(c => <StreamToolCard key={c.id} call={c} active={true} />)}
+                    {streaming.completedToolCalls.map((c, idx) => <StreamToolCard key={`${c.id}-${c.contentIndex ?? 'na'}-${idx}`} call={c} active={false} />)}
+                    {streaming.activeToolCalls.map((c, idx) => <StreamToolCard key={`${c.id}-${c.contentIndex ?? 'na'}-${idx}`} call={c} active={true} />)}
 
                     {streaming.text && (
                         <div className="flex flex-col gap-1.5 animate-in items-start w-full">
@@ -1313,6 +2055,40 @@ export function SessionsPage() {
                           Sentinel is thinking...
                         </div>
                     )}
+
+                    {streaming.isCompactingContext && (
+                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-amber-500 animate-pulse">
+                          <Loader2 size={14} className="animate-spin" />
+                          Compacting context...
+                        </div>
+                    )}
+
+                    {streaming.agentIteration > 0 || streaming.isThinking || streaming.isStreaming || streaming.activeToolCalls.length > 0 ? (
+                      <div className="sticky bottom-2 z-20 flex justify-center pointer-events-none">
+                        <button
+                          type="button"
+                          onClick={stopCurrent}
+                          disabled={isStopping}
+                          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-rose-500/40 bg-rose-500/10 px-4 py-1.5 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500/20 disabled:opacity-60 shadow-lg"
+                        >
+                          <Square size={12} fill="currentColor" />
+                          {isStopping ? 'Stopping...' : 'Stop'}
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {!isPinnedToBottom && (
+                      <div className="sticky bottom-2 z-20 flex justify-end pointer-events-none">
+                        <button
+                          type="button"
+                          onClick={() => scrollToBottom('smooth')}
+                          className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] shadow-lg hover:border-[color:var(--accent-solid)] hover:text-[color:var(--accent-solid)] transition-colors"
+                        >
+                          <ArrowDown size={12} />
+                          Back to bottom
+                        </button>
+                      </div>
+                    )}
                   </>
               )}
             </div>
@@ -1327,34 +2103,75 @@ export function SessionsPage() {
               ) : (
                   <>
                     <form onSubmit={sendMessage} className="relative group">
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        multiple
+                        onChange={onSelectImages}
+                        className="hidden"
+                    />
                     <textarea
                         value={composer}
                         onChange={(e) => setComposer(e.target.value)}
+                        onPaste={onComposerPaste}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' && !e.shiftKey) {
                             e.preventDefault();
                             sendMessage(e as any);
                           }
                         }}
-                        disabled={isCompacting}
-                        placeholder={isCompacting ? 'Compacting context…' : 'Ask Sentinel anything...'}
-                        className="input-field min-h-[100px] py-4 pr-14 resize-none text-[14px] leading-relaxed shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={isCompacting || streaming.isCompactingContext}
+                        placeholder={isCompacting || streaming.isCompactingContext ? 'Compacting context…' : 'Ask Sentinel anything...'}
+                        className="input-field min-h-[100px] py-4 pr-24 resize-none text-[14px] leading-relaxed shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                     />
-                      <button
-                          type="submit"
-                          disabled={!composer.trim() || streamBusy}
-                          className={`absolute right-3 bottom-3 p-2 rounded-lg transition-all ${
-                              composer.trim() && !streamBusy
-                                  ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] shadow-md'
-                                  : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] cursor-not-allowed'
-                          }`}
-                      >
-                        <Send size={18} />
-                      </button>
+                      <div className="absolute right-3 bottom-3 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={streamBusy || composerAttachments.length >= MAX_IMAGE_ATTACHMENTS}
+                          className="p-2 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                          title="Attach image"
+                        >
+                          <Paperclip size={16} />
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={(composer.trim().length === 0 && composerAttachments.length === 0) || streamBusy}
+                            className={`p-2 rounded-lg transition-all ${
+                                (composer.trim().length > 0 || composerAttachments.length > 0) && !streamBusy
+                                    ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] shadow-md'
+                                    : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] cursor-not-allowed'
+                            }`}
+                        >
+                          <Send size={18} />
+                        </button>
+                      </div>
                     </form>
+                    {composerAttachments.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {composerAttachments.map((item, index) => (
+                          <div key={`${item.base64.slice(0, 24)}-${index}`} className="relative rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-1.5">
+                            <img
+                              src={`data:${item.mime_type};base64,${item.base64}`}
+                              alt={item.filename || `upload-${index + 1}`}
+                              className="h-14 w-20 rounded object-cover"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeComposerAttachment(index)}
+                              className="absolute -top-2 -right-2 rounded-full border border-rose-500/40 bg-black/80 p-0.5 text-rose-400 hover:text-rose-300"
+                              title="Remove image"
+                            >
+                              <X size={11} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                     <div className="mt-2 flex items-center justify-between text-[10px] text-[color:var(--text-muted)] font-medium">
                       <p>Press Enter to send, Shift+Enter for new line</p>
-                      <p>Realtime streaming enabled</p>
+                      <p>Realtime streaming enabled · up to 4 images (5MB each)</p>
                     </div>
                   </>
               )}

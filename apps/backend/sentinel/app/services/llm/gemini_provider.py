@@ -19,6 +19,7 @@ from app.services.llm.types import (
     AgentEvent,
     AgentMessage,
     AssistantMessage,
+    ImageContent,
     ReasoningConfig,
     SystemMessage,
     TextContent,
@@ -289,15 +290,26 @@ class GeminiProvider(LLMProvider):
 
             # --- UserMessage ---
             if isinstance(message, UserMessage):
-                text = ""
+                parts: list[dict[str, Any]] = []
                 if isinstance(message.content, str):
                     text = message.content
+                    if text.strip():
+                        parts.append({"text": text})
                 elif isinstance(message.content, list):
-                    text = "\n".join(
-                        item.text for item in message.content if isinstance(item, TextContent)
-                    )
-                if text.strip():
-                    raw_contents.append({"role": "user", "parts": [{"text": text}]})
+                    for item in message.content:
+                        if isinstance(item, TextContent) and item.text:
+                            parts.append({"text": item.text})
+                        elif isinstance(item, ImageContent) and item.data:
+                            parts.append(
+                                {
+                                    "inlineData": {
+                                        "mimeType": item.media_type,
+                                        "data": item.data,
+                                    }
+                                }
+                            )
+                if parts:
+                    raw_contents.append({"role": "user", "parts": parts})
                 continue
 
             # --- AssistantMessage ---
@@ -379,6 +391,24 @@ class GeminiProvider(LLMProvider):
                     args = fc.get("args") if isinstance(fc.get("args"), dict) else {}
                     parts_out.append({"functionCall": {"name": fc["name"], "args": args}})
                     continue
+                inline = part.get("inlineData")
+                if (
+                    mapped_role == "user"
+                    and isinstance(inline, dict)
+                    and isinstance(inline.get("data"), str)
+                    and inline.get("data")
+                ):
+                    mime = inline.get("mimeType")
+                    mime_type = mime if isinstance(mime, str) and mime else "image/png"
+                    parts_out.append(
+                        {
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": inline["data"],
+                            }
+                        }
+                    )
+                    continue
                 fr = part.get("functionResponse")
                 if (
                     mapped_role == "user"
@@ -448,6 +478,18 @@ class GeminiProvider(LLMProvider):
                     and p["functionResponse"]["name"]
                 )
             ]
+            image_parts = [
+                {"inlineData": {"mimeType": p["inlineData"]["mimeType"], "data": p["inlineData"]["data"]}}
+                for p in parts
+                if (
+                    isinstance(p, dict)
+                    and isinstance(p.get("inlineData"), dict)
+                    and isinstance(p["inlineData"].get("mimeType"), str)
+                    and p["inlineData"]["mimeType"]
+                    and isinstance(p["inlineData"].get("data"), str)
+                    and p["inlineData"]["data"]
+                )
+            ]
 
             if role == "model":
                 if function_call_parts:
@@ -477,8 +519,8 @@ class GeminiProvider(LLMProvider):
                     sanitized.append({"role": "user", "parts": text_parts})
                 continue
 
-            if text_parts:
-                sanitized.append({"role": "user", "parts": text_parts})
+            if text_parts or image_parts:
+                sanitized.append({"role": "user", "parts": [*text_parts, *image_parts]})
 
         # Gemini payloads should not start with a model turn.
         while sanitized and sanitized[0]["role"] != "user":

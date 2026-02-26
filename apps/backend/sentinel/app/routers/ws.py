@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
+from typing import Any
 from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
@@ -56,6 +59,7 @@ async def stream_session(
 
     history = await _load_history(db, id)
     await websocket.send_json({"type": "connected", "session_id": session_key, "history": history})
+    session_has_messages = len(history) > 0
 
     try:
         while True:
@@ -64,29 +68,30 @@ async def stream_session(
             if result is None:
                 await websocket.send_json({"type": "error", "code": "invalid_payload"})
                 continue
-            parsed, model_hint, max_iterations = result
+            parsed, model_hint, max_iterations, attachments = result
 
-            # Check before insert whether this is the first user message
-            count_result = await db.execute(
-                select(func.count()).select_from(Message).where(Message.session_id == id)
-            )
-            is_first_message = count_result.scalar_one() == 0
+            is_first_message = not session_has_messages
 
+            metadata: dict[str, Any] = {"source": "web"}
+            if attachments:
+                metadata["attachments"] = attachments
             message = Message(
                 session_id=id,
                 role="user",
                 content=parsed,
-                metadata_json={"source": "web"},
+                metadata_json=metadata,
             )
             db.add(message)
             await db.commit()
             await db.refresh(message)
+            session_has_messages = True
 
             await manager.broadcast_message_ack(
                 session_key,
                 str(message.id),
                 message.content,
                 message.created_at,
+                metadata=metadata,
             )
 
             agent_loop = getattr(websocket.app.state, "agent_loop", None)
@@ -95,7 +100,7 @@ async def stream_session(
                 await manager.broadcast_done(session_key, "error")
                 continue
 
-            if is_first_message and agent_loop is not None:
+            if is_first_message and parsed and agent_loop is not None:
                 asyncio.create_task(_name_session(id, parsed, manager, agent_loop))
 
             await manager.broadcast_agent_thinking(session_key)
@@ -103,11 +108,27 @@ async def stream_session(
             async def _broadcast_event(event: AgentEvent) -> None:
                 await manager.broadcast_agent_event(session_key, event)
 
+            from app.services.llm.types import ImageContent, TextContent
+            if attachments:
+                user_blocks: list[TextContent | ImageContent] = []
+                if parsed:
+                    user_blocks.append(TextContent(text=parsed))
+                for item in attachments:
+                    user_blocks.append(
+                        ImageContent(
+                            media_type=str(item.get("mime_type", "image/png")),
+                            data=str(item.get("base64", "")),
+                        )
+                    )
+                user_payload: str | list[TextContent | ImageContent] = user_blocks
+            else:
+                user_payload = parsed
+
             run_task = asyncio.create_task(
                 agent_loop.run(
                     db,
                     id,
-                    parsed,
+                    user_payload,
                     persist_user_message=False,
                     on_event=_broadcast_event,
                     model=model_hint or "hint:reasoning",
@@ -138,9 +159,34 @@ async def stream_session(
             if not cancelled:
                 try:
                     compaction_svc = CompactionService(provider=agent_loop.provider)
-                    await compaction_svc.auto_compact_if_needed(db, session_id=id)
+                    should_compact = await compaction_svc.should_auto_compact(db, session_id=id)
+                    if should_compact:
+                        await manager.broadcast(
+                            session_key,
+                            {"type": "compaction_started", "session_id": session_key},
+                        )
+                        result = await compaction_svc.auto_compact_if_needed(db, session_id=id)
+                        if result is not None:
+                            await manager.broadcast(
+                                session_key,
+                                {
+                                    "type": "compaction_completed",
+                                    "session_id": session_key,
+                                    "raw_token_count": result.raw_token_count,
+                                    "compressed_token_count": result.compressed_token_count,
+                                    "summary_preview": result.summary_preview,
+                                },
+                            )
                 except Exception:  # noqa: BLE001
                     logger.warning("Auto-compaction failed for session %s", id, exc_info=True)
+                    await manager.broadcast(
+                        session_key,
+                        {
+                            "type": "compaction_failed",
+                            "session_id": session_key,
+                            "error": "Auto-compaction failed",
+                        },
+                    )
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
@@ -170,7 +216,17 @@ async def _load_history(db: AsyncSession, session_id: UUID) -> list[dict]:
     ]
 
 
-def _parse_message(payload: str) -> tuple[str, str | None, int] | None:
+_ALLOWED_IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+}
+_MAX_MESSAGE_ATTACHMENTS = 4
+_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+
+
+def _parse_message(payload: str) -> tuple[str, str | None, int, list[dict[str, Any]]] | None:
     try:
         parsed = json.loads(payload)
     except json.JSONDecodeError:
@@ -184,14 +240,59 @@ def _parse_message(payload: str) -> tuple[str, str | None, int] | None:
     if not isinstance(content, str):
         return None
     trimmed = content.strip()
-    if not trimmed:
+    attachments = _normalize_attachments(parsed.get("attachments"))
+    if attachments is None:
+        return None
+    if not trimmed and not attachments:
         return None
     model = parsed.get("model")
     if not isinstance(model, str) or not model.strip():
         model = None
     raw_iters = parsed.get("max_iterations")
     max_iterations = int(raw_iters) if isinstance(raw_iters, int) and 1 <= raw_iters <= 100 else 25
-    return (trimmed, model, max_iterations)
+    return (trimmed, model, max_iterations, attachments)
+
+
+def _normalize_attachments(value: Any) -> list[dict[str, Any]] | None:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return None
+    if len(value) > _MAX_MESSAGE_ATTACHMENTS:
+        return None
+
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        mime_type = str(item.get("mime_type") or "").strip().lower()
+        if mime_type not in _ALLOWED_IMAGE_MIME_TYPES:
+            return None
+        raw_base64 = item.get("base64")
+        if not isinstance(raw_base64, str):
+            return None
+        base64_data = raw_base64.strip()
+        if ";base64," in base64_data:
+            _, _, base64_data = base64_data.partition(";base64,")
+        if not base64_data:
+            return None
+        try:
+            decoded = base64.b64decode(base64_data, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+        if len(decoded) > _MAX_ATTACHMENT_BYTES:
+            return None
+        filename_raw = item.get("filename")
+        filename = filename_raw.strip() if isinstance(filename_raw, str) else None
+        normalized.append(
+            {
+                "mime_type": mime_type,
+                "base64": base64_data,
+                "filename": filename[:200] if filename else None,
+                "size_bytes": len(decoded),
+            }
+        )
+    return normalized
 
 
 def _resolve_manager(websocket: WebSocket) -> ConnectionManager:

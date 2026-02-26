@@ -5,7 +5,15 @@ import asyncio
 from app.models import Message, Session
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
 from app.services.llm.base import LLMProvider
-from app.services.llm.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent, TokenUsage
+from app.services.llm.types import (
+    AgentEvent,
+    AssistantMessage,
+    ImageContent,
+    TextContent,
+    ToolCallContent,
+    TokenUsage,
+    UserMessage,
+)
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolDefinition, ToolRegistry
 from tests.fake_db import FakeDB
@@ -19,6 +27,7 @@ class _SequenceProvider(LLMProvider):
     def __init__(self, responses: list[AssistantMessage]) -> None:
         self._responses = responses
         self.calls = 0
+        self.message_batches: list[list] = []
 
     @property
     def name(self) -> str:
@@ -26,6 +35,7 @@ class _SequenceProvider(LLMProvider):
 
     async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None):
         idx = min(self.calls, len(self._responses) - 1)
+        self.message_batches.append(list(messages))
         self.calls += 1
         return self._responses[idx]
 
@@ -211,6 +221,67 @@ def test_agent_loop_tool_use_path_runs_tool_and_finishes_second_iteration():
     assert event_types.count("done") == 1
 
 
+def test_agent_loop_reinjects_tool_screenshot_as_image_content():
+    db = FakeDB()
+    session = _new_session(db)
+
+    registry = ToolRegistry()
+    png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s8bVgAAAABJRU5ErkJggg=="
+
+    async def _screenshot_tool(_payload):
+        return {"image_base64": png_b64}
+
+    registry.register(
+        ToolDefinition(
+            name="browser_screenshot",
+            description="Screenshot",
+            risk_level="low",
+            parameters_schema={"type": "object", "additionalProperties": True},
+            execute=_screenshot_tool,
+        )
+    )
+
+    provider = _SequenceProvider(
+        [
+            AssistantMessage(
+                content=[ToolCallContent(id="call_img_1", name="browser_screenshot", arguments={})],
+                model="m1",
+                provider="p1",
+                usage=TokenUsage(),
+                stop_reason="tool_use",
+            ),
+            AssistantMessage(
+                content=[TextContent(text="I reviewed the screenshot.")],
+                model="m1",
+                provider="p1",
+                usage=TokenUsage(),
+                stop_reason="stop",
+            ),
+        ]
+    )
+    loop = _build_loop(provider, registry)
+
+    _run(loop.run(db, session.id, "inspect page", stream=False))
+    assert len(provider.message_batches) >= 2
+
+    second_call_messages = provider.message_batches[1]
+    reinjected = [
+        msg
+        for msg in second_call_messages
+        if isinstance(msg, UserMessage)
+        and isinstance(msg.content, list)
+        and msg.metadata.get("source") == "tool_image_reinjection"
+    ]
+    assert reinjected, "expected tool image reinjection message in second provider call"
+    image_blocks = [
+        block
+        for block in reinjected[0].content
+        if isinstance(block, ImageContent)
+    ]
+    assert image_blocks
+    assert image_blocks[0].data == png_b64
+
+
 def test_agent_loop_auto_injects_session_id_for_tools_that_declare_it():
     db = FakeDB()
     session = _new_session(db)
@@ -265,7 +336,7 @@ def test_agent_loop_auto_injects_session_id_for_tools_that_declare_it():
     assert captured["session_id"] == str(session.id)
 
 
-def test_agent_loop_stops_at_max_iterations_when_tool_use_never_finishes():
+def test_agent_loop_runs_finalization_round_after_max_iterations():
     db = FakeDB()
     session = _new_session(db)
 
@@ -288,9 +359,10 @@ def test_agent_loop_stops_at_max_iterations_when_tool_use_never_finishes():
         events.append(event)
 
     result = _run(loop.run(db, session.id, "loop", max_iterations=3, stream=False, on_event=_capture))
-    assert result.iterations == 3
-    assert provider.calls == 3
-    assert any(event.type == "done" and event.stop_reason == "length" for event in events)
+    assert result.iterations == 4
+    assert provider.calls == 4
+    assert any(event.type == "done" and event.stop_reason == "stop" for event in events)
+    assert result.final_text
 
 
 def test_agent_loop_tool_errors_do_not_crash_and_are_persisted_as_error():
