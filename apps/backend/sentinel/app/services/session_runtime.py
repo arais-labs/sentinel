@@ -1,0 +1,436 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import os
+import signal
+import shutil
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.models import Session
+
+logger = logging.getLogger(__name__)
+
+_RUNTIME_BASE_DIR = Path(
+    os.environ.get("SESSION_RUNTIME_BASE_DIR", "/tmp/sentinel/session_runtime")
+).expanduser()
+_LEGACY_PYTHON_XAGENT_BASE_DIR = Path(
+    os.environ.get("PYTHON_XAGENT_BASE_DIR", "/tmp/sentinel/python_xagent")
+).expanduser()
+_RUNTIME_META_FILENAME = ".runtime_meta.json"
+_RUNTIME_ACTIONS_FILENAME = ".runtime_actions.jsonl"
+_DEFAULT_RUNTIME_ACTION_LIMIT = 40
+_runtime_meta_lock = asyncio.Lock()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _parse_seconds(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(1, value)
+
+
+def runtime_root_dir(session_id: UUID | str) -> Path:
+    return _RUNTIME_BASE_DIR / str(session_id)
+
+
+def runtime_workspace_dir(session_id: UUID | str) -> Path:
+    return runtime_root_dir(session_id) / "workspace"
+
+
+def runtime_venv_dir(session_id: UUID | str) -> Path:
+    return runtime_root_dir(session_id) / "venv"
+
+
+async def ensure_runtime_layout(session_id: UUID | str) -> Path:
+    root = runtime_root_dir(session_id)
+    workspace = root / "workspace"
+    created = not root.exists()
+    root.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir(parents=True, exist_ok=True)
+    await mark_runtime_state(session_id, active=False, command=None, pid=None)
+    if created:
+        async with _runtime_meta_lock:
+            _append_runtime_action(
+                root / _RUNTIME_ACTIONS_FILENAME,
+                {
+                    "timestamp": _utc_now().isoformat(),
+                    "action": "runtime_initialized",
+                    "details": {"workspace": str(workspace)},
+                },
+            )
+    return root
+
+
+async def mark_runtime_state(
+    session_id: UUID | str,
+    *,
+    active: bool,
+    command: str | None,
+    pid: int | None,
+) -> None:
+    now = _utc_now().isoformat()
+    root = runtime_root_dir(session_id)
+    root.mkdir(parents=True, exist_ok=True)
+    meta_path = root / _RUNTIME_META_FILENAME
+    actions_path = root / _RUNTIME_ACTIONS_FILENAME
+    async with _runtime_meta_lock:
+        metadata = _read_runtime_metadata(meta_path)
+        previous_active = bool(metadata.get("active"))
+        if not metadata.get("created_at"):
+            metadata["created_at"] = now
+        metadata["session_id"] = str(session_id)
+        metadata["active"] = bool(active)
+        metadata["active_pid"] = int(pid) if isinstance(pid, int) and pid > 0 else None
+        metadata["last_used_at"] = now
+        if active:
+            metadata["last_active_at"] = now
+        if command is not None:
+            metadata["last_command"] = command
+        _write_runtime_metadata(meta_path, metadata)
+        if active and not previous_active and command:
+            _append_runtime_action(
+                actions_path,
+                {
+                    "timestamp": now,
+                    "action": "command_started",
+                    "details": {
+                        "command": command,
+                        "pid": int(pid) if isinstance(pid, int) and pid > 0 else None,
+                    },
+                },
+            )
+        elif not active and previous_active:
+            _append_runtime_action(
+                actions_path,
+                {
+                    "timestamp": now,
+                    "action": "command_finished",
+                    "details": {
+                        "command": command if isinstance(command, str) and command else metadata.get("last_command"),
+                        "pid": int(pid) if isinstance(pid, int) and pid > 0 else None,
+                    },
+                },
+            )
+
+
+def get_session_runtime_snapshot(
+    session_id: UUID | str,
+    *,
+    action_limit: int = _DEFAULT_RUNTIME_ACTION_LIMIT,
+) -> dict[str, Any]:
+    session_key = str(session_id)
+    root = runtime_root_dir(session_key)
+    workspace = runtime_workspace_dir(session_key)
+    venv = runtime_venv_dir(session_key)
+    metadata = _read_runtime_metadata(root / _RUNTIME_META_FILENAME)
+    return {
+        "session_id": session_key,
+        "runtime_exists": root.exists(),
+        "workspace_exists": workspace.exists(),
+        "venv_exists": venv.exists(),
+        "active": bool(metadata.get("active")),
+        "active_pid": _int_or_none(metadata.get("active_pid")),
+        "last_command": _string_or_none(metadata.get("last_command")),
+        "created_at": _iso_or_none(metadata.get("created_at")),
+        "last_used_at": _iso_or_none(metadata.get("last_used_at")),
+        "last_active_at": _iso_or_none(metadata.get("last_active_at")),
+        "actions": _read_runtime_actions(
+            root / _RUNTIME_ACTIONS_FILENAME,
+            limit=_normalize_action_limit(action_limit),
+        ),
+    }
+
+
+async def cleanup_session_runtime(
+    session_id: UUID | str,
+    *,
+    remove_legacy_python_xagent: bool = True,
+) -> dict[str, bool]:
+    session_key = str(session_id)
+    runtime_removed = await _remove_runtime_root(runtime_root_dir(session_key))
+    legacy_removed = False
+    if remove_legacy_python_xagent:
+        legacy_removed = await _remove_tree(_LEGACY_PYTHON_XAGENT_BASE_DIR / session_key)
+    return {"runtime_removed": runtime_removed, "legacy_removed": legacy_removed}
+
+
+async def sweep_session_runtimes(
+    db_factory: async_sessionmaker[AsyncSession],
+) -> dict[str, int]:
+    """
+    Remove stale/orphan session runtimes.
+
+    Policy:
+    - orphan session dir => delete immediately
+    - active metadata older than stale-active TTL => delete
+    - inactive metadata older than idle TTL => delete
+    - legacy python_xagent dirs are cleaned by TTL/orphan based on directory mtime
+    """
+    idle_ttl_seconds = _parse_seconds("SESSION_RUNTIME_IDLE_TTL_SECONDS", 2700)
+    stale_active_ttl_seconds = _parse_seconds(
+        "SESSION_RUNTIME_STALE_ACTIVE_TTL_SECONDS", 10800
+    )
+    now = _utc_now()
+
+    async with db_factory() as db:
+        result = await db.execute(select(Session))
+        sessions = result.scalars().all()
+    existing_sessions = {str(item.id): item for item in sessions}
+
+    removed = 0
+    removed_orphans = 0
+    removed_idle = 0
+    removed_stale_active = 0
+
+    for root in _list_runtime_dirs(_RUNTIME_BASE_DIR):
+        session_key = root.name
+        session = existing_sessions.get(session_key)
+        if session is None:
+            if await _remove_runtime_root(root):
+                removed += 1
+                removed_orphans += 1
+            continue
+
+        meta = _read_runtime_metadata(root / _RUNTIME_META_FILENAME)
+        active = bool(meta.get("active"))
+        last_used = _parse_dt(meta.get("last_used_at")) or _mtime_dt(root)
+        last_active = _parse_dt(meta.get("last_active_at")) or last_used
+        if active:
+            age = (now - last_active).total_seconds()
+            if age > stale_active_ttl_seconds and await _remove_runtime_root(root):
+                removed += 1
+                removed_stale_active += 1
+            continue
+
+        idle_age = (now - last_used).total_seconds()
+        if idle_age > idle_ttl_seconds and await _remove_runtime_root(root):
+            removed += 1
+            removed_idle += 1
+
+    for root in _list_runtime_dirs(_LEGACY_PYTHON_XAGENT_BASE_DIR):
+        session_key = root.name
+        session = existing_sessions.get(session_key)
+        if session is None:
+            if await _remove_tree(root):
+                removed += 1
+                removed_orphans += 1
+            continue
+        idle_age = (now - _mtime_dt(root)).total_seconds()
+        if idle_age > idle_ttl_seconds and await _remove_tree(root):
+            removed += 1
+            removed_idle += 1
+
+    return {
+        "removed": removed,
+        "removed_orphans": removed_orphans,
+        "removed_idle": removed_idle,
+        "removed_stale_active": removed_stale_active,
+    }
+
+
+async def run_session_runtime_janitor(
+    *,
+    stop_event: asyncio.Event,
+    db_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    interval_seconds = _parse_seconds("SESSION_RUNTIME_SWEEP_INTERVAL_SECONDS", 60)
+    while not stop_event.is_set():
+        try:
+            stats = await sweep_session_runtimes(db_factory)
+            if stats["removed"] > 0:
+                logger.info("Session runtime janitor removed %s runtime(s): %s", stats["removed"], stats)
+        except Exception:  # noqa: BLE001
+            logger.warning("Session runtime janitor sweep failed", exc_info=True)
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=float(interval_seconds))
+        except TimeoutError:
+            continue
+
+
+def _list_runtime_dirs(base_dir: Path) -> list[Path]:
+    if not base_dir.exists():
+        return []
+    roots: list[Path] = []
+    for item in base_dir.iterdir():
+        if not item.is_dir():
+            continue
+        try:
+            UUID(item.name)
+        except ValueError:
+            continue
+        roots.append(item)
+    return roots
+
+
+def _read_runtime_metadata(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def _write_runtime_metadata(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=True, separators=(",", ":")), encoding="utf-8")
+
+
+def _append_runtime_action(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, separators=(",", ":")))
+        handle.write("\n")
+
+
+def _normalize_action_limit(limit: int) -> int:
+    if isinstance(limit, bool):
+        return _DEFAULT_RUNTIME_ACTION_LIMIT
+    if not isinstance(limit, int):
+        return _DEFAULT_RUNTIME_ACTION_LIMIT
+    return max(1, min(limit, 200))
+
+
+def _read_runtime_actions(path: Path, *, limit: int) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    entries: list[dict[str, Any]] = []
+    for raw in lines[-limit:]:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        action = _string_or_none(payload.get("action"))
+        if not action:
+            continue
+        details = payload.get("details")
+        entries.append(
+            {
+                "timestamp": _iso_or_none(payload.get("timestamp")),
+                "action": action,
+                "details": details if isinstance(details, dict) else {},
+            }
+        )
+    return entries
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _iso_or_none(value: Any) -> str | None:
+    parsed = _parse_dt(value)
+    return parsed.isoformat() if parsed else None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _string_or_none(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def _mtime_dt(path: Path) -> datetime:
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return _utc_now()
+    return datetime.fromtimestamp(mtime, tz=UTC)
+
+
+async def _remove_tree(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        await asyncio.to_thread(shutil.rmtree, path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.warning("Failed to remove runtime path: %s", path, exc_info=True)
+        return False
+
+
+async def _remove_runtime_root(path: Path) -> bool:
+    await _terminate_runtime_process(path)
+    return await _remove_tree(path)
+
+
+async def _terminate_runtime_process(path: Path) -> None:
+    meta = _read_runtime_metadata(path / _RUNTIME_META_FILENAME)
+    pid_value = meta.get("active_pid")
+    if isinstance(pid_value, bool):
+        return
+    try:
+        pid = int(pid_value)
+    except (TypeError, ValueError):
+        return
+    if pid <= 0:
+        return
+
+    try:
+        if os.name == "nt":
+            proc = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/PID",
+                str(pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            return
+
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pid, signal.SIGKILL)
+            return
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to terminate runtime process pid=%s for %s", pid, path, exc_info=True)

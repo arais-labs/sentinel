@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow known synthetic credential fixtures"
+paths = [
+  '''^apps/backend/sentinel/tests/test_credential_scrubber\.py$''',
+  '''^apps/backend/sentinel/tests/test_agent_loop\.py$'''
+]

@@ -1,0 +1,39 @@
+{
+  "name": "github",
+  "label": "GitHub",
+  "description": "Search and query public GitHub repositories (no auth required)",
+  "icon": "GitBranch",
+  "type": "tool",
+  "order": 75,
+  "fields": [],
+  "list_config": {},
+  "secrets": [],
+  "actions": [
+    {
+      "id": "search_repos",
+      "label": "Search Repositories",
+      "description": "Search public GitHub repositories (no auth required)",
+      "type": "tool",
+      "params": [
+        {"key": "q",        "label": "Query",   "type": "text",   "required": true,
+         "placeholder": "e.g. arais language:python stars:>100"},
+        {"key": "per_page", "label": "Results", "type": "number", "required": false,
+         "placeholder": "10"}
+      ],
+      "code": "import httpx, json\nqs = {'q': params['q'], 'per_page': int(params.get('per_page') or 10)}\nr = httpx.get('https://api.github.com/search/repositories', params=qs,\n              headers={'Accept': 'application/vnd.github+json'})\ndata = r.json()\nresult = {'ok': r.status_code == 200,\n          'total': data.get('total_count', 0),\n          'items': [{'name': i['full_name'], 'stars': i['stargazers_count'],\n                     'url': i['html_url'], 'description': i.get('description')}\n                    for i in data.get('items', [])]}"
+    },
+    {
+      "id": "get_repo",
+      "label": "Get Repository",
+      "description": "Get details about a specific public repository",
+      "type": "tool",
+      "params": [
+        {"key": "owner", "label": "Owner", "type": "text", "required": true,
+         "placeholder": "e.g. anthropics"},
+        {"key": "repo",  "label": "Repo",  "type": "text", "required": true,
+         "placeholder": "e.g. claude-code"}
+      ],
+      "code": "import httpx\nr = httpx.get(f\"https://api.github.com/repos/{params['owner']}/{params['repo']}\",\n              headers={'Accept': 'application/vnd.github+json'})\nd = r.json()\nresult = {'ok': r.status_code == 200, 'name': d.get('full_name'),\n          'stars': d.get('stargazers_count'), 'forks': d.get('forks_count'),\n          'language': d.get('language'), 'description': d.get('description'),\n          'url': d.get('html_url')}"
+    }
+  ]
+}
