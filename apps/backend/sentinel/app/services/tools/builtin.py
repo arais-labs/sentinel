@@ -96,6 +96,9 @@ def build_default_registry(
     registry.register(_browser_tab_open_tool(manager))
     registry.register(_browser_tab_focus_tool(manager))
     registry.register(_browser_tab_close_tool(manager))
+    registry.register(_browser_get_attribute_tool(manager))
+    registry.register(_browser_hover_tool(manager))
+    registry.register(_browser_wait_for_navigation_tool(manager))
 
     if session_factory is not None:
         registry.register(_araios_api_tool(session_factory=session_factory))
@@ -1067,6 +1070,121 @@ def python_xagent_tool(
         execute=_execute,
     )
 
+
+
+def _browser_get_attribute_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        selector = payload.get("selector")
+        if not isinstance(selector, str) or not selector.strip():
+            raise ToolValidationError("Field 'selector' must be a non-empty string")
+        attribute = payload.get("attribute")
+        if not isinstance(attribute, str) or not attribute.strip():
+            raise ToolValidationError("Field 'attribute' must be a non-empty string")
+        return await manager.get_attribute(selector.strip(), attribute.strip())
+
+    return ToolDefinition(
+        name="browser_get_attribute",
+        description=(
+            "Read the raw value of a DOM attribute (e.g. href, src, alt, data-*) from a "
+            "matched element. Use this when you need an HTML attribute that is not exposed "
+            "through accessibility text or form values — for example, reading the href of "
+            "a link, the src of an image, or a data-* tracking attribute. "
+            "Returns attribute_value=null and found=false when the attribute does not exist "
+            "on the element. Supports the same selectors as browser_click: CSS, "
+            "'button: Accept', 'link: Sign in', aria/Name."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["selector", "attribute"],
+            "properties": {
+                "selector": {
+                    "type": "string",
+                    "description": (
+                        "CSS selector or snapshot-style selector (e.g. 'link: Sign in', "
+                        "'button: Submit') identifying the element."
+                    ),
+                },
+                "attribute": {
+                    "type": "string",
+                    "description": "The HTML attribute name to read, e.g. 'href', 'src', 'data-id'.",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_hover_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        selector = payload.get("selector")
+        if not isinstance(selector, str) or not selector.strip():
+            raise ToolValidationError("Field 'selector' must be a non-empty string")
+        return await manager.hover(selector.strip())
+
+    return ToolDefinition(
+        name="browser_hover",
+        description=(
+            "Move the mouse over an element to trigger hover-only UI states such as "
+            "tooltips, dropdown arrows, or reveal buttons. After hovering, call "
+            "browser_snapshot or browser_screenshot to observe the revealed content, "
+            "then interact normally."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["selector"],
+            "properties": {
+                "selector": {
+                    "type": "string",
+                    "description": "CSS or snapshot-style selector of the element to hover over.",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_wait_for_navigation_tool(manager: BrowserManager) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        timeout_ms = payload.get("timeout_ms")
+        if timeout_ms is not None and (
+            not isinstance(timeout_ms, int)
+            or isinstance(timeout_ms, bool)
+            or timeout_ms <= 0
+        ):
+            raise ToolValidationError("Field 'timeout_ms' must be a positive integer")
+        return await manager.wait_for_navigation(timeout_ms=timeout_ms)
+
+    return ToolDefinition(
+        name="browser_wait_for_navigation",
+        description=(
+            "Block until the current page finishes navigating (domcontentloaded). "
+            "Call this AFTER an action that triggers a full-page navigation "
+            "(form submit, link click, redirect) to ensure the next page is ready before "
+            "reading or interacting with it. "
+            "If the page is already settled it returns immediately. "
+            "Do NOT call this before the triggering action — it will return immediately "
+            "against the current already-loaded page. "
+            "Prefer browser_wait_for(condition='visible') when waiting for a specific "
+            "element rather than a full page load."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Max milliseconds to wait. Defaults to the browser timeout (15,000 ms).",
+                },
+            },
+        },
+        execute=_execute,
+    )
 
 def _memory_search_tool(
     *,

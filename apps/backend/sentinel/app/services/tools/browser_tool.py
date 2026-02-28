@@ -653,6 +653,89 @@ class BrowserManager:
             "active_tab_id": self._active_tab_id,
         }
 
+
+    async def get_attribute(self, selector: str, attribute: str) -> dict[str, Any]:
+        """Return the value of a single DOM attribute on the matched element.
+
+        Useful for reading ``href``, ``src``, ``data-*`` and other attributes
+        that are not exposed through the accessibility tree or inner-text APIs.
+        Returns ``None`` for ``attribute_value`` when the attribute is absent.
+        """
+        if not isinstance(selector, str) or not selector.strip():
+            raise ValueError("selector must be a non-empty string")
+        if not isinstance(attribute, str) or not attribute.strip():
+            raise ValueError("attribute must be a non-empty string")
+        resolved = selector.strip()
+        attr = attribute.strip()
+        page = await self._ensure_page()
+
+        locator: Any = self._locator_from_selector(page, resolved)
+        value = await locator.get_attribute(attr, timeout=self._timeout_ms)
+        return {
+            "selector": resolved,
+            "attribute": attr,
+            "attribute_value": value,
+            "found": value is not None,
+        }
+
+    async def hover(self, selector: str) -> dict[str, Any]:
+        """Move the mouse over an element to trigger hover-only UI states.
+
+        Use this before interacting with elements that only appear on hover
+        (tooltips, dropdown arrows, reveal buttons). After hovering, call
+        ``browser_snapshot`` or ``browser_screenshot`` to observe the revealed
+        state, then interact normally.
+        """
+        if not isinstance(selector, str) or not selector.strip():
+            raise ValueError("selector must be a non-empty string")
+        resolved = selector.strip()
+        page = await self._ensure_page()
+
+        semantic = self._parse_semantic_selector(resolved)
+        if semantic is not None:
+            role, name = semantic
+            for candidate in self._name_candidates(name):
+                try:
+                    await page.get_by_role(role, name=candidate, exact=False).first.hover(
+                        timeout=self._timeout_ms
+                    )
+                    state = await self._page_state()
+                    return {"hovered": True, "selector": resolved, **state}
+                except Exception:  # noqa: BLE001
+                    pass
+
+        if resolved.lower().startswith("aria/"):
+            await page.locator(f"aria={resolved[5:].strip()}").first.hover(
+                timeout=self._timeout_ms
+            )
+        else:
+            await page.locator(resolved).first.hover(timeout=self._timeout_ms)
+
+        state = await self._page_state()
+        return {"hovered": True, "selector": resolved, **state}
+
+    async def wait_for_navigation(self, *, timeout_ms: int | None = None) -> dict[str, Any]:
+        """Block until the current page finishes navigating (domcontentloaded).
+
+        Call this immediately after an action that triggers a full-page
+        navigation (form submit, link click, redirect) when you need to be
+        certain the next page is ready before reading or interacting with it.
+
+        Resolves as soon as ``domcontentloaded`` fires. If the page is already
+        settled it returns immediately without error.
+        """
+        timeout = timeout_ms if timeout_ms is not None else self._timeout_ms
+        if not isinstance(timeout, int) or timeout <= 0:
+            raise ValueError("timeout_ms must be a positive integer")
+        page = await self._ensure_page()
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=timeout)
+        except Exception:  # noqa: BLE001
+            # If navigation already completed the call raises; treat as success.
+            pass
+        state = await self._page_state()
+        return {"navigation_settled": True, **state}
+
     def _parse_semantic_selector(self, selector: str) -> tuple[str, str] | None:
         # Accept snapshot-friendly selectors such as "textbox: Email" and "button: Accept".
         match = re.match(r"^\s*([a-zA-Z_][a-zA-Z0-9_-]*)\s*:\s*(.+?)\s*$", selector)

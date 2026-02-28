@@ -133,6 +133,31 @@ class _StubBrowserManager:
             "active_tab_id": "t1",
         }
 
+    async def get_attribute(self, selector: str, attribute: str):
+        return {
+            "selector": selector,
+            "attribute": attribute,
+            "attribute_value": "https://example.com" if attribute == "href" else None,
+            "found": attribute == "href",
+        }
+
+    async def hover(self, selector: str):
+        return {
+            "hovered": True,
+            "selector": selector,
+            "url": "https://example.com",
+            "title": "Example",
+            "tab_id": "t1",
+        }
+
+    async def wait_for_navigation(self, *, timeout_ms=None):
+        return {
+            "navigation_settled": True,
+            "url": "https://example.com",
+            "title": "Example",
+            "tab_id": "t1",
+        }
+
 
 def test_browser_tools_registered_with_expected_risk_levels():
     registry = build_default_registry(browser_manager=_StubBrowserManager())
@@ -153,6 +178,9 @@ def test_browser_tools_registered_with_expected_risk_levels():
     assert by_name["browser_tab_open"].risk_level == "medium"
     assert by_name["browser_tab_focus"].risk_level == "low"
     assert by_name["browser_tab_close"].risk_level == "medium"
+    assert by_name["browser_get_attribute"].risk_level == "low"
+    assert by_name["browser_hover"].risk_level == "low"
+    assert by_name["browser_wait_for_navigation"].risk_level == "low"
 
 
 def test_browser_manager_lazy_init_and_actions():
@@ -572,6 +600,17 @@ class _SemanticLocator:
             }
         )
 
+    async def hover(self, timeout: int):
+        _ = timeout
+        self._page.actions.append(
+            {
+                "action": "hover",
+                "role": self._role,
+                "name": self._name,
+                "query": self._query,
+            }
+        )
+
     async def inner_text(self, timeout: int):
         _ = timeout
         return "semantic text"
@@ -646,6 +685,10 @@ class _SemanticPage:
         self.last_wait = None
         self.actions = []
         self.url = "https://example.com"
+
+    async def wait_for_load_state(self, state: str, timeout: int):
+        _ = state, timeout
+        self.actions.append({"action": "wait_for_load_state", "state": state})
 
     def get_by_role(self, role: str, name: str, exact: bool = False):
         _ = exact
@@ -874,3 +917,176 @@ def test_browser_fill_form_can_continue_after_step_error():
     assert result["completed"] == 1
     assert result["steps"][0]["ok"] is False
     assert result["steps"][1]["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Tests for the three new browser tools
+# ---------------------------------------------------------------------------
+
+def test_browser_get_attribute_returns_value_for_known_attr():
+    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    executor = ToolExecutor(registry)
+
+    result, _ = _run(
+        executor.execute(
+            "browser_get_attribute",
+            {"selector": "link: Sign in", "attribute": "href"},
+            allow_high_risk=True,
+        )
+    )
+    assert result["found"] is True
+    assert result["attribute"] == "href"
+    assert result["attribute_value"] == "https://example.com"
+
+
+def test_browser_get_attribute_returns_not_found_for_absent_attr():
+    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    executor = ToolExecutor(registry)
+
+    result, _ = _run(
+        executor.execute(
+            "browser_get_attribute",
+            {"selector": "img.logo", "attribute": "data-missing"},
+            allow_high_risk=True,
+        )
+    )
+    assert result["found"] is False
+    assert result["attribute_value"] is None
+
+
+def test_browser_get_attribute_requires_selector_and_attribute():
+    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    executor = ToolExecutor(registry)
+
+    # Missing both
+    try:
+        _run(executor.execute("browser_get_attribute", {}, allow_high_risk=True))
+        raised = False
+    except ToolValidationError:
+        raised = True
+    assert raised is True
+
+    # Missing attribute
+    try:
+        _run(
+            executor.execute(
+                "browser_get_attribute",
+                {"selector": "link: Sign in"},
+                allow_high_risk=True,
+            )
+        )
+        raised = False
+    except ToolValidationError:
+        raised = True
+    assert raised is True
+
+
+def test_browser_hover_succeeds_and_returns_page_state():
+    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    executor = ToolExecutor(registry)
+
+    result, _ = _run(
+        executor.execute(
+            "browser_hover",
+            {"selector": "button: More options"},
+            allow_high_risk=True,
+        )
+    )
+    assert result["hovered"] is True
+    assert result["selector"] == "button: More options"
+    assert "url" in result
+    assert "tab_id" in result
+
+
+def test_browser_hover_requires_selector():
+    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    executor = ToolExecutor(registry)
+
+    try:
+        _run(executor.execute("browser_hover", {}, allow_high_risk=True))
+        raised = False
+    except ToolValidationError:
+        raised = True
+    assert raised is True
+
+
+def test_browser_wait_for_navigation_resolves():
+    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    executor = ToolExecutor(registry)
+
+    result, _ = _run(
+        executor.execute("browser_wait_for_navigation", {}, allow_high_risk=True)
+    )
+    assert result["navigation_settled"] is True
+    assert "url" in result
+
+
+def test_browser_wait_for_navigation_accepts_timeout_ms():
+    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    executor = ToolExecutor(registry)
+
+    result, _ = _run(
+        executor.execute(
+            "browser_wait_for_navigation",
+            {"timeout_ms": 5000},
+            allow_high_risk=True,
+        )
+    )
+    assert result["navigation_settled"] is True
+
+
+def test_browser_wait_for_navigation_rejects_invalid_timeout():
+    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    executor = ToolExecutor(registry)
+
+    try:
+        _run(
+            executor.execute(
+                "browser_wait_for_navigation",
+                {"timeout_ms": -1},
+                allow_high_risk=True,
+            )
+        )
+        raised = False
+    except ToolValidationError:
+        raised = True
+    assert raised is True
+
+
+def test_browser_hover_triggers_accessible_name_fallback():
+    """Hover on a semantic selector uses get_by_role resolution internally."""
+    manager = BrowserManager()
+    manager._page = _SemanticPage()
+
+    result = _run(manager.hover("button: More options"))
+    assert result["hovered"] is True
+
+
+def test_browser_get_attribute_invalid_selector_raises():
+    manager = BrowserManager()
+    try:
+        _run(manager.get_attribute("   ", "href"))
+        raised = False
+    except ValueError:
+        raised = True
+    assert raised is True
+
+
+def test_browser_get_attribute_invalid_attribute_raises():
+    manager = BrowserManager()
+    try:
+        _run(manager.get_attribute("a.link", ""))
+        raised = False
+    except ValueError:
+        raised = True
+    assert raised is True
+
+
+def test_browser_wait_for_navigation_invalid_timeout_raises():
+    manager = BrowserManager()
+    try:
+        _run(manager.wait_for_navigation(timeout_ms=0))
+        raised = False
+    except ValueError:
+        raised = True
+    assert raised is True
