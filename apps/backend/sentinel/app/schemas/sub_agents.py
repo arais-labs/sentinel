@@ -50,6 +50,7 @@ class SubAgentTaskResponse(BaseModel):
     status: str
     allowed_tools: list[str] = Field(default_factory=list)
     turns_used: int = 0
+    grace_turns_used: int = 0
     tokens_used: int = 0
     result: dict[str, Any] | None = None
     created_at: datetime

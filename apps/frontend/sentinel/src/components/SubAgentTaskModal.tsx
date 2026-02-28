@@ -23,7 +23,12 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
   const [liveTask, setLiveTask] = useState<SubAgentTask>(task);
   const isRunning = liveTask.status === 'running' || liveTask.status === 'pending';
   const childSessionId = (liveTask.result?.child_session_id as string) ?? null;
-  const progressPercent = Math.min((liveTask.turns_used / Math.max(liveTask.max_steps, 1)) * 100, 100);
+  const graceTurnsUsed = Math.max(
+    Number(liveTask.grace_turns_used ?? 0),
+    Math.max(liveTask.turns_used - liveTask.max_steps, 0)
+  );
+  const budgetTurnsUsed = Math.max(liveTask.turns_used - graceTurnsUsed, 0);
+  const progressPercent = Math.min((budgetTurnsUsed / Math.max(liveTask.max_steps, 1)) * 100, 100);
   const toolAccessLabel = liveTask.allowed_tools.length > 0 ? `Scoped (${liveTask.allowed_tools.length})` : 'Full access';
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -147,7 +152,10 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
               <div className="space-y-2">
                 <div className="flex justify-between text-[10px]">
                   <span className="text-[color:var(--text-muted)] font-bold uppercase">Steps</span>
-                  <span className="font-mono font-bold">{liveTask.turns_used} / {liveTask.max_steps}</span>
+                  <span className="font-mono font-bold">
+                    {budgetTurnsUsed} / {liveTask.max_steps}
+                    {graceTurnsUsed > 0 ? ` (+${graceTurnsUsed} grace)` : ''}
+                  </span>
                 </div>
                 <div className="w-full bg-[color:var(--surface-2)] h-1 rounded-full overflow-hidden">
                   <div className="bg-[color:var(--accent-solid)] h-full transition-all duration-500" style={{ width: `${progressPercent}%` }} />

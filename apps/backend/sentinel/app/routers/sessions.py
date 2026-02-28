@@ -17,6 +17,7 @@ from app.schemas.sessions import (
     MessageListResponse,
     MessageResponse,
     SessionListResponse,
+    SessionContextUsageResponse,
     SessionRuntimeCleanupResponse,
     SessionRuntimeResponse,
     SessionResponse,
@@ -202,6 +203,24 @@ async def get_session_runtime(
         _raise_http_for_session_error(exc)
         raise
     return SessionRuntimeResponse(**snapshot)
+
+
+@router.get("/{id}/context-usage", response_model=SessionContextUsageResponse)
+async def get_session_context_usage(
+    id: UUID,
+    request: Request,
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionContextUsageResponse:
+    service = _resolve_session_service(request)
+    try:
+        usage = await service.get_context_usage(
+            db, session_id=id, user_id=user.sub
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    return SessionContextUsageResponse(**usage)
 
 
 @router.post("/{id}/runtime/cleanup")

@@ -48,6 +48,7 @@ import type {
   ModelsResponse,
   PlaywrightLiveView,
   Session,
+  SessionContextUsage,
   SessionListResponse,
   SubAgentTask,
   SubAgentTaskListResponse,
@@ -903,6 +904,8 @@ export function SessionsPage() {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [contextTokenBudget, setContextTokenBudget] = useState<number | null>(null);
+  const [contextTokenEstimate, setContextTokenEstimate] = useState<number | null>(null);
+  const [contextTokenPercent, setContextTokenPercent] = useState<number | null>(null);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
@@ -1210,6 +1213,8 @@ export function SessionsPage() {
   useEffect(() => {
     if (!activeSessionId) {
       setMessages([]);
+      setContextTokenEstimate(null);
+      setContextTokenPercent(null);
       setTasks([]);
       setStreaming(defaultStreamingState);
       shouldAutoScrollRef.current = true;
@@ -1224,6 +1229,8 @@ export function SessionsPage() {
 
     // Clear messages immediately to avoid showing stale content
     setMessages([]);
+    setContextTokenEstimate(null);
+    setContextTokenPercent(null);
     setTasks([]);
     setStreaming(defaultStreamingState);
     setHasMoreMessages(false);
@@ -1235,6 +1242,7 @@ export function SessionsPage() {
     lastScrollTopRef.current = 0;
     setIsPinnedToBottom(true);
     void loadMessages(activeSessionId);
+    void fetchContextUsage(activeSessionId);
     void fetchTasks(activeSessionId);
     void connectWs(activeSessionId);
 
@@ -1492,6 +1500,27 @@ export function SessionsPage() {
     }
   }
 
+  async function fetchContextUsage(sessionId: string) {
+    try {
+      const payload = await api.get<SessionContextUsage>(`/sessions/${sessionId}/context-usage`);
+      if (typeof payload.context_token_budget === 'number' && Number.isFinite(payload.context_token_budget) && payload.context_token_budget > 0) {
+        setContextTokenBudget(Math.floor(payload.context_token_budget));
+      }
+      if (typeof payload.estimated_context_tokens === 'number' && Number.isFinite(payload.estimated_context_tokens) && payload.estimated_context_tokens >= 0) {
+        setContextTokenEstimate(Math.floor(payload.estimated_context_tokens));
+      } else {
+        setContextTokenEstimate(null);
+      }
+      if (typeof payload.estimated_context_percent === 'number' && Number.isFinite(payload.estimated_context_percent) && payload.estimated_context_percent >= 0) {
+        setContextTokenPercent(Math.max(0, Math.min(100, Math.floor(payload.estimated_context_percent))));
+      } else {
+        setContextTokenPercent(null);
+      }
+    } catch {
+      // Keep last-known values if this lightweight endpoint fails.
+    }
+  }
+
   async function loadMessages(sessionId: string, beforeMessageId?: string) {
     if (!beforeMessageId) setMessagesLoading(true);
     try {
@@ -1695,6 +1724,7 @@ export function SessionsPage() {
         if (typeof event.context_token_budget === 'number' && Number.isFinite(event.context_token_budget) && event.context_token_budget > 0) {
           setContextTokenBudget(Math.floor(event.context_token_budget));
         }
+        void fetchContextUsage(sessionId);
         setMessages((current) => {
           const incoming = sortMessages((event.history as Message[]) ?? []);
           const merged = new Map<string, Message>();
@@ -1918,10 +1948,17 @@ export function SessionsPage() {
         const raw = Number(event.raw_token_count ?? 0);
         const compressed = Number(event.compressed_token_count ?? 0);
         setStreaming((current) => ({ ...current, isCompactingContext: false }));
+        if (compressed > 0) {
+          setContextTokenEstimate(Math.floor(compressed));
+          if (typeof contextTokenBudget === 'number' && contextTokenBudget > 0) {
+            setContextTokenPercent(Math.max(0, Math.min(100, Math.round((compressed / contextTokenBudget) * 100))));
+          }
+        }
         if (raw > 0) {
           toast.success(`Context compacted ${raw} -> ${compressed} tokens`);
           void loadMessages(sessionId);
         }
+        void fetchContextUsage(sessionId);
         break;
       }
       case 'compaction_failed':
@@ -1951,6 +1988,7 @@ export function SessionsPage() {
           // Final done — agent turn complete, reset everything
           setStreaming((current) => ({ ...current, isThinking: false, isStreaming: false, isCompactingContext: false, agentIteration: 0, agentMaxIterations: 0 }));
           void loadMessages(sessionId);
+          void fetchContextUsage(sessionId);
         }
         break;
       }
@@ -2103,10 +2141,19 @@ export function SessionsPage() {
         toast.success(
           `Compacted ${result.raw_token_count} → ${result.compressed_token_count} tokens`
         );
+        if (result.compressed_token_count > 0) {
+          setContextTokenEstimate(Math.floor(result.compressed_token_count));
+          if (typeof contextTokenBudget === 'number' && contextTokenBudget > 0) {
+            setContextTokenPercent(
+              Math.max(0, Math.min(100, Math.round((result.compressed_token_count / contextTokenBudget) * 100)))
+            );
+          }
+        }
         // Re-fetch messages so the UI reflects deleted old messages
         setMessages([]);
         void loadMessages(activeSessionId);
       }
+      void fetchContextUsage(activeSessionId);
     } catch { toast.error('Compaction failed'); }
     finally { setIsCompacting(false); }
   }
@@ -2331,20 +2378,26 @@ export function SessionsPage() {
               <div className="flex items-center gap-4">
                 {/* Context ring indicator */}
                 {(() => {
-                  // Estimate tokens: use stored token_count when available, fall back to chars/4
-                  const estimatedTokens = messages.reduce((sum, m) => {
-                    return sum + (m.token_count ?? Math.round((m.content?.length ?? 0) / 4));
-                  }, 0);
+                  const estimatedTokens =
+                    typeof contextTokenEstimate === 'number' && Number.isFinite(contextTokenEstimate)
+                      ? contextTokenEstimate
+                      : null;
                   const hasBudget = typeof contextTokenBudget === 'number' && contextTokenBudget > 0;
+                  const hasEstimate = typeof estimatedTokens === 'number';
                   const CTX_CEILING = hasBudget ? contextTokenBudget : 1;
-                  const fill = hasBudget ? Math.min(estimatedTokens / CTX_CEILING, 1) : 0;
-                  const pct = Math.round(fill * 100);
+                  const fill = hasBudget && hasEstimate ? Math.min(estimatedTokens / CTX_CEILING, 1) : 0;
+                  const pct =
+                    typeof contextTokenPercent === 'number' && Number.isFinite(contextTokenPercent)
+                      ? Math.max(0, Math.min(100, Math.floor(contextTokenPercent)))
+                      : Math.round(fill * 100);
                   const r = 7;
                   const circ = 2 * Math.PI * r;
                   const dash = circ * fill;
                   const ringColor = fill < 0.5 ? '#10b981' : fill < 0.8 ? '#f59e0b' : '#ef4444';
-                  const warn = hasBudget && estimatedTokens >= CTX_CEILING;
-                  const kTokens = estimatedTokens >= 1000 ? `${(estimatedTokens / 1000).toFixed(1)}k` : `${estimatedTokens}`;
+                  const warn = hasBudget && hasEstimate && estimatedTokens >= CTX_CEILING;
+                  const kTokens = hasEstimate
+                    ? (estimatedTokens >= 1000 ? `${(estimatedTokens / 1000).toFixed(1)}k` : `${estimatedTokens}`)
+                    : '—';
                   const ceilingLabel = hasBudget ? `${Math.round(CTX_CEILING / 1000)}k tokens` : '…';
                   return (
                     <div className="relative flex items-center gap-1.5 group cursor-default">
@@ -2367,7 +2420,9 @@ export function SessionsPage() {
                       <div className="absolute top-full right-0 mt-2 px-3 py-2 rounded-lg bg-[color:var(--surface-0)] border border-[color:var(--border)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-50 space-y-1">
                         <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Context Window</div>
                         <div><span className="font-bold" style={{ color: ringColor }}>~{kTokens}</span><span className="text-[color:var(--text-muted)]"> / {ceilingLabel}</span></div>
-                        <div className="text-[color:var(--text-muted)]">{messages.length} messages · {pct}% used</div>
+                        <div className="text-[color:var(--text-muted)]">
+                          {hasEstimate ? `${pct}% used` : 'Awaiting backend runtime snapshot'}
+                        </div>
                         {warn && <div className="text-amber-500 font-bold">Auto-compaction should trigger on next turn</div>}
                       </div>
                     </div>

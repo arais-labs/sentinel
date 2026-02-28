@@ -51,6 +51,15 @@ export interface SessionRuntimeCleanupResponse {
   legacy_removed: boolean;
 }
 
+export interface SessionContextUsage {
+  session_id: string;
+  context_token_budget: number;
+  estimated_context_tokens: number | null;
+  estimated_context_percent: number | null;
+  snapshot_created_at: string | null;
+  source: string;
+}
+
 export interface Message {
   id: string;
   session_id: string;
@@ -114,6 +123,7 @@ export interface SubAgentTask {
   status: string;
   allowed_tools: string[];
   turns_used: number;
+  grace_turns_used?: number;
   tokens_used: number;
   result: Record<string, unknown> | null;
   created_at: string;

@@ -10,6 +10,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import Memory, Message, Session
 from app.services import session_bindings
@@ -211,6 +212,60 @@ class SessionService:
     ) -> dict[str, Any]:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
         return get_session_runtime_snapshot(session.id, action_limit=action_limit)
+
+    async def get_context_usage(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        budget = max(1, int(settings.context_token_budget))
+        result = await db.execute(
+            select(Message)
+            .where(
+                Message.session_id == session.id,
+                Message.role == "system",
+            )
+            .order_by(Message.created_at.desc())
+            .limit(100)
+        )
+        messages = result.scalars().all()
+
+        usage_tokens: int | None = None
+        usage_percent: int | None = None
+        snapshot_created_at: datetime | None = None
+        for message in messages:
+            metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
+            if str(metadata.get("source") or "").strip().lower() != "runtime_context":
+                continue
+            run_context = metadata.get("run_context")
+            if not isinstance(run_context, dict):
+                continue
+
+            raw_tokens = run_context.get("estimated_context_tokens")
+            raw_percent = run_context.get("estimated_context_percent")
+            raw_budget = run_context.get("context_token_budget")
+            if isinstance(raw_budget, int) and raw_budget > 0:
+                budget = int(raw_budget)
+            if isinstance(raw_tokens, int) and raw_tokens >= 0:
+                usage_tokens = int(raw_tokens)
+                if isinstance(raw_percent, int):
+                    usage_percent = max(0, min(int(raw_percent), 100))
+                else:
+                    usage_percent = max(0, min(int(round((usage_tokens / budget) * 100)), 100))
+            snapshot_created_at = message.created_at
+            break
+
+        return {
+            "session_id": session.id,
+            "context_token_budget": budget,
+            "estimated_context_tokens": usage_tokens,
+            "estimated_context_percent": usage_percent,
+            "snapshot_created_at": snapshot_created_at,
+            "source": "runtime_context",
+        }
 
     async def cleanup_runtime(
         self,

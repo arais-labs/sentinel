@@ -1008,6 +1008,12 @@ class AgentLoop:
                     title = first_line.replace("## Memory (pinned):", "").strip()
                     pinned_memories.append({"title": title or "Untitled", "content": remainder.strip()})
 
+        context_token_budget = max(1, int(settings.context_token_budget))
+        estimated_context_tokens = AgentLoop._estimate_context_tokens(messages)
+        estimated_context_percent = int(
+            min(100, round((estimated_context_tokens / context_token_budget) * 100))
+        )
+
         return {
             "timestamp": datetime.now(UTC).isoformat(),
             "model": model,
@@ -1024,6 +1030,9 @@ class AgentLoop:
                 "layer_count": len(layered_context),
                 "memory_block_count": len(memory_blocks),
             },
+            "context_token_budget": context_token_budget,
+            "estimated_context_tokens": estimated_context_tokens,
+            "estimated_context_percent": estimated_context_percent,
             "tool_count": len(tools),
             "tools": [
                 {
@@ -1067,6 +1076,44 @@ class AgentLoop:
             return content
         parts = [block.text for block in content if isinstance(block, TextContent) and block.text]
         return "\n".join(parts)
+
+    @staticmethod
+    def _estimate_text_tokens(text: str) -> int:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return 0
+        return max(1, len(cleaned) // 4)
+
+    @classmethod
+    def _estimate_message_tokens(cls, message: AgentMessage) -> int:
+        if isinstance(message, (SystemMessage, UserMessage)):
+            if isinstance(message.content, str):
+                return cls._estimate_text_tokens(message.content)
+            total = 0
+            for block in message.content:
+                if isinstance(block, TextContent):
+                    total += cls._estimate_text_tokens(block.text)
+                elif isinstance(block, ImageContent):
+                    total += cls._estimate_text_tokens(block.data)
+            return total
+        if isinstance(message, AssistantMessage):
+            total = 0
+            for block in message.content:
+                if isinstance(block, (TextContent, ThinkingContent)):
+                    total += cls._estimate_text_tokens(
+                        block.text if isinstance(block, TextContent) else block.thinking
+                    )
+                elif isinstance(block, ToolCallContent):
+                    total += cls._estimate_text_tokens(block.name)
+                    total += cls._estimate_text_tokens(json.dumps(block.arguments or {}))
+            return total
+        if isinstance(message, ToolResultMessage):
+            return cls._estimate_text_tokens(message.content or "")
+        return 0
+
+    @classmethod
+    def _estimate_context_tokens(cls, messages: list[AgentMessage]) -> int:
+        return sum(cls._estimate_message_tokens(message) for message in messages)
 
     @staticmethod
     def _summarize_response_blocks(response: AssistantMessage) -> list[str]:

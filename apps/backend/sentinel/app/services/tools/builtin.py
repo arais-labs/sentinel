@@ -1768,12 +1768,17 @@ def check_sub_agent_tool(
                     "Retry by spawning a new sub-agent with a refined objective/scope "
                     "or adjusted max_steps/timeout."
                 )
+            turns_used = int(task.turns_used or 0)
+            max_steps = int(task.max_turns or 0)
+            grace_turns_used = max(0, turns_used - max_steps)
 
             return {
                 "task_id": str(task.id),
                 "objective": task.objective,
                 "status": status,
-                "turns_used": task.turns_used or 0,
+                "max_steps": max_steps,
+                "turns_used": turns_used,
+                "grace_turns_used": grace_turns_used,
                 "tokens_used": task.tokens_used or 0,
                 "result": result_payload,
                 "retry_recommended": retry_recommended,
@@ -1830,7 +1835,9 @@ def list_sub_agents_tool(
                         "task_id": str(t.id),
                         "objective": t.objective,
                         "status": t.status,
-                        "turns_used": t.turns_used or 0,
+                        "max_steps": int(t.max_turns or 0),
+                        "turns_used": int(t.turns_used or 0),
+                        "grace_turns_used": max(0, int(t.turns_used or 0) - int(t.max_turns or 0)),
                         "tokens_used": t.tokens_used or 0,
                     }
                     for t in tasks
@@ -2136,7 +2143,9 @@ def _python_xagent_sub_agent_result(task: SubAgentTask) -> dict[str, Any]:
         "browser_tab_id": browser_tab_id,
         "final_text": final_text,
         "result": raw_result,
+        "max_steps": int(task.max_turns or 0),
         "turns_used": int(task.turns_used or 0),
+        "grace_turns_used": max(0, int(task.turns_used or 0) - int(task.max_turns or 0)),
         "tokens_used": int(task.tokens_used or 0),
     }
 

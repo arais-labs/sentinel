@@ -146,16 +146,20 @@ async def _active_task_count(db: AsyncSession, session_id: UUID) -> int:
 
 
 def _task_response(task: SubAgentTask) -> SubAgentTaskResponse:
+    turns_used = int(task.turns_used or 0)
+    max_steps = int(task.max_turns or 0)
+    grace_turns_used = max(0, turns_used - max_steps)
     return SubAgentTaskResponse(
         id=task.id,
         session_id=task.session_id,
         name=task.objective,
         scope=task.context,
         browser_tab_id=_extract_browser_tab_id(task),
-        max_steps=task.max_turns,
+        max_steps=max_steps,
         status=task.status,
         allowed_tools=task.allowed_tools if isinstance(task.allowed_tools, list) else [],
-        turns_used=task.turns_used or 0,
+        turns_used=turns_used,
+        grace_turns_used=grace_turns_used,
         tokens_used=task.tokens_used or 0,
         result=task.result,
         created_at=task.created_at,

@@ -69,6 +69,15 @@ class SessionRuntimeCleanupResponse(BaseModel):
     legacy_removed: bool
 
 
+class SessionContextUsageResponse(BaseModel):
+    session_id: UUID
+    context_token_budget: int
+    estimated_context_tokens: int | None = None
+    estimated_context_percent: int | None = None
+    snapshot_created_at: datetime | None = None
+    source: str = "runtime_context"
+
+
 class CreateMessageRequest(BaseModel):
     role: Literal["user", "system"]
     content: str = Field(min_length=1, max_length=50_000)
@@ -155,4 +164,3 @@ class ChatResponse(BaseModel):
     iterations: int
     usage: ChatUsage
     error: str | None = None
-
