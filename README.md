@@ -34,30 +34,42 @@ Sentinel is built to handle all of that.
 ## Architecture
 
 ```
-+-------------------------------------------------------+
-|                     Operator UI                        |
-|    Chat   Memory Explorer   Triggers   Admin Panel     |
-+-------------------------+-----------------------------+
-                          |  WebSocket + REST
-              +-----------v-----------+
-              |   Sentinel Backend    |  <- Agent loop, tool registry,
-              |  (Python agent runtime)|    memory, triggers, sub-agents
-              +-----------+-----------+
-                          |  araios_api tool (authenticated)
-              +-----------v-----------+
-              |    araiOS Backend     |  <- Auth, permissions, approval
-              | (operator control     |     gates, session bindings,
-              |  plane + central auth)|     admin controls
-              +-----------+-----------+
-                          |
-              +-----------v-----------+
-              |   Playwright Runtime  |  <- Live browser, VNC stream
-              +-----------------------+
++---------------------------+     +---------------------------+
+|     Sentinel Operator UI  |     |      araiOS Admin UI      |
+|  Chat · Memory · Triggers |     |  Auth · Approvals · Perms |
++-------------+-------------+     +-------------+-------------+
+              |  WebSocket + REST               |  REST
+              +---------------+-----------------+
+                              |
+              +---------------v---------------+
+              |       Sentinel Backend        |  <- Agent loop, tool registry,
+              |    (Python agent runtime)     |    memory, triggers, sub-agents
+              +---------------+---------------+
+                              |  araios_api tool (authenticated)
+              +---------------v---------------+
+              |       araiOS Backend          |  <- Auth, permissions, approval
+              |   (operator control plane     |     gates, session bindings,
+              |    + central auth)            |     admin controls
+              +---------------+---------------+
+                              |
+              +---------------v---------------+
+              |      Playwright Runtime       |  <- Live browser, VNC stream
+              +-------------------------------+
 ```
 
 **Sentinel** is the agent runtime. It runs the LLM loop, executes tools, manages memory, and fires triggers.
 
 **araiOS** is the control plane. It owns authentication (agent API keys, admin API keys, bearer token exchange with auto-refresh), per-action approval gates, and operator-level controls. Agent credentials and admin credentials are always separate.
+
+---
+
+## Screenshots
+
+### Sentinel — Operator UI
+![Sentinel UI](docs/images/sentinel.png)
+
+### araiOS — Control Plane
+![araiOS UI](docs/images/araios.png)
 
 ---
 
