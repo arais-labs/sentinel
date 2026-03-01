@@ -6,7 +6,6 @@ import jwt
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.dependencies import get_db
 from app.main import app
@@ -50,7 +49,7 @@ def test_admin_estop_audit_and_config():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         admin_token = login.json()["access_token"]
         admin_headers = {"Authorization": f"Bearer {admin_token}"}
@@ -87,7 +86,6 @@ def test_admin_estop_audit_and_config():
         payload = config.json()
         assert payload["estop_active"] is False
         assert payload["jwt_secret_key"] == "***"
-        assert payload["dev_token"] == "***"
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
@@ -112,7 +110,7 @@ def test_estop_state_persists_across_client_restart():
     try:
         first_client = TestClient(app)
         first_login = first_client.post(
-            "/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"}
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
         )
         first_headers = {"Authorization": f"Bearer {first_login.json()['access_token']}"}
 
@@ -121,7 +119,7 @@ def test_estop_state_persists_across_client_restart():
 
         second_client = TestClient(app)
         second_login = second_client.post(
-            "/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"}
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
         )
         second_headers = {"Authorization": f"Bearer {second_login.json()['access_token']}"}
         config = second_client.get("/api/v1/admin/config", headers=second_headers)
@@ -158,7 +156,7 @@ def test_admin_audit_serializes_inet_ip_address():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         response = client.get("/api/v1/admin/audit", headers=headers)
         assert response.status_code == 200

@@ -6,7 +6,6 @@ import uuid
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.dependencies import get_db
 from app.main import app
@@ -32,7 +31,7 @@ def test_triggers_crud_fire_logs_and_webhook():
 
     try:
         client = TestClient(app)
-        token_resp = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        token_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert token_resp.status_code == 200
         token = token_resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}

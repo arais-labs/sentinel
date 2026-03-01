@@ -182,6 +182,167 @@ compose_instance() {
   docker compose --project-name "$(instance_project_name "$inst")" --env-file "$(instance_env_file "$inst")" "$@"
 }
 
+trim_lower() {
+  echo "$1" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | tr '[:upper:]' '[:lower:]'
+}
+
+hash_auth_secret() {
+  local plain="$1"
+  if ! require_cmd python3; then
+    error "python3 is required for password hashing."
+    return 1
+  fi
+  AUTH_PASSWORD="$plain" python3 - <<'PY'
+import hashlib
+import os
+import secrets
+
+password = os.environ["AUTH_PASSWORD"]
+salt = secrets.token_hex(16)
+digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 240_000)
+print(f"{salt}${digest.hex()}")
+PY
+}
+
+sql_quote_literal() {
+  local value="$1"
+  value="${value//\'/\'\'}"
+  printf "'%s'" "$value"
+}
+
+auth_sql_for_target() {
+  local target="$1"
+  local auth_user_lit="$2"
+  local auth_hash_lit="$3"
+  local sql=""
+  if [[ "$target" == "both" || "$target" == "sentinel" ]]; then
+    sql+="WITH up AS (UPDATE system_settings SET value = ${auth_user_lit} WHERE key = 'sentinel.auth.username' RETURNING 1) "
+    sql+="INSERT INTO system_settings(key, value) SELECT 'sentinel.auth.username', ${auth_user_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
+    sql+="WITH up AS (UPDATE system_settings SET value = ${auth_hash_lit} WHERE key = 'sentinel.auth.password_hash' RETURNING 1) "
+    sql+="INSERT INTO system_settings(key, value) SELECT 'sentinel.auth.password_hash', ${auth_hash_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
+  fi
+  if [[ "$target" == "both" || "$target" == "araios" ]]; then
+    sql+="WITH up AS (UPDATE system_settings SET value = ${auth_user_lit} WHERE key = 'araios.auth.username' RETURNING 1) "
+    sql+="INSERT INTO system_settings(key, value) SELECT 'araios.auth.username', ${auth_user_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
+    sql+="WITH up AS (UPDATE system_settings SET value = ${auth_hash_lit} WHERE key = 'araios.auth.password_hash' RETURNING 1) "
+    sql+="INSERT INTO system_settings(key, value) SELECT 'araios.auth.password_hash', ${auth_hash_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
+  fi
+  echo "$sql"
+}
+
+choose_auth_target() {
+  local options=("Both apps (Recommended)" "Sentinel only" "araiOS only" "⬅️  Go Back")
+  # Keep menu rendering on the terminal, not in command-substitution output.
+  select_option "AUTH TARGET" "${options[@]}" > /dev/tty
+  local idx=$?
+  case "$idx" in
+    0) echo "both"; return 0 ;;
+    1) echo "sentinel"; return 0 ;;
+    2) echo "araios"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+apply_auth_managed_instance() {
+  local inst="$1"
+  local target="$2"
+  local username_raw="$3"
+  local password_raw="$4"
+  local ef="$(instance_env_file "$inst")"
+  local db_name="$(read_env_value "$ef" "POSTGRES_DB" || true)"
+  local db_user="$(read_env_value "$ef" "POSTGRES_USER" || true)"
+  local db_password="$(read_env_value "$ef" "POSTGRES_PASSWORD" || true)"
+
+  if [[ -z "$db_name" || -z "$db_user" || -z "$db_password" ]]; then
+    error "Missing DB credentials in '$ef'."
+    return 1
+  fi
+
+  local username="$(trim_lower "$username_raw")"
+  local password="$(echo "$password_raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  if [[ -z "$username" || -z "$password" ]]; then
+    error "Username/password cannot be empty."
+    return 1
+  fi
+
+  local password_hash
+  password_hash="$(hash_auth_secret "$password")" || return 1
+  local auth_user_lit auth_hash_lit
+  auth_user_lit="$(sql_quote_literal "$username")"
+  auth_hash_lit="$(sql_quote_literal "$password_hash")"
+  local sql
+  sql="$(auth_sql_for_target "$target" "$auth_user_lit" "$auth_hash_lit")"
+  if [[ -z "$sql" ]]; then
+    error "Invalid auth target."
+    return 1
+  fi
+
+  local last_error=""
+  for _ in {1..30}; do
+    local output
+    if output="$(
+      compose_instance "$inst" exec -T postgres env PGPASSWORD="$db_password" \
+        psql -X -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" -c "$sql" 2>&1
+    )"; then
+      success "Auth credentials updated in DB ($target)."
+      return 0
+    fi
+    last_error="$(echo "$output" | tail -n 3 | tr '\n' ' ')"
+    sleep 1
+  done
+
+  error "Could not update auth credentials for '$inst'. Ensure DB is up and schema is initialized."
+  [[ -n "$last_error" ]] && warn "Last DB error: $last_error"
+  return 1
+}
+
+apply_auth_custom_instance() {
+  local pg_host="$1"
+  local pg_port="$2"
+  local pg_db="$3"
+  local pg_user="$4"
+  local pg_password="$5"
+  local pg_sslmode="$6"
+  local target="$7"
+  local username_raw="$8"
+  local password_raw="$9"
+
+  local username="$(trim_lower "$username_raw")"
+  local password="$(echo "$password_raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  if [[ -z "$username" || -z "$password" ]]; then
+    error "Username/password cannot be empty."
+    return 1
+  fi
+
+  local password_hash
+  password_hash="$(hash_auth_secret "$password")" || return 1
+  local auth_user_lit auth_hash_lit
+  auth_user_lit="$(sql_quote_literal "$username")"
+  auth_hash_lit="$(sql_quote_literal "$password_hash")"
+  local sql
+  sql="$(auth_sql_for_target "$target" "$auth_user_lit" "$auth_hash_lit")"
+  if [[ -z "$sql" ]]; then
+    error "Invalid auth target."
+    return 1
+  fi
+
+  local host="$pg_host"
+  if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+    host="host.docker.internal"
+  fi
+
+  if docker run --rm --add-host host.docker.internal:host-gateway -e PGPASSWORD="$pg_password" \
+    postgres:16-alpine psql -X -v ON_ERROR_STOP=1 \
+    "host=$host port=$pg_port dbname=$pg_db user=$pg_user sslmode=$pg_sslmode" \
+    -c "$sql" >/dev/null; then
+    success "Custom instance auth credentials updated in DB ($target)."
+    return 0
+  fi
+
+  error "Could not update custom instance credentials. Verify DB connectivity and schema."
+  return 1
+}
+
 action_create() {
   echo -n "$CURSOR_ON"
   printf "\n${CYAN}SETTING UP NEW INSTANCE${RESET}\n"
@@ -209,7 +370,8 @@ action_create() {
   local u="$(prompt_default "DB User" "arai_stack")"
   local pw="$(prompt_default "DB Pass" "$(generate_secret 12)")"
   local jwt="$(prompt_default "JWT Secret" "$(generate_secret 32)")"
-  local b="$(prompt_default "Bootstrap API Key" "$(generate_secret 16)")"
+  local auth_user="$(prompt_default "Admin Username (both apps)" "admin")"
+  local auth_password="$(prompt_default "Admin Password (both apps)" "$(generate_secret 12)")"
 
   cat > "$ef" <<EOF
 STACK_PORT=$p
@@ -218,17 +380,20 @@ POSTGRES_USER=$u
 POSTGRES_PASSWORD=$pw
 JWT_SECRET_KEY=$jwt
 JWT_ALGORITHM=HS256
-PLATFORM_BOOTSTRAP_API_KEY=$b
 EOF
   chmod 600 "$ef"
   success "Config saved for '$inst'."
-  action_up "$inst"
+  action_up "$inst" "$auth_user" "$auth_password" "both"
   return 0
 }
 
 action_up() {
   ensure_docker_ready || return 0
   local inst="${1:-}"
+  local seed_user="${2:-}"
+  local seed_password="${3:-}"
+  local seed_target="${4:-both}"
+  local seed_status="not_requested"
   if [[ -z "$inst" ]]; then
     rm -f "$TMP_PICK"
     if pick_instance_interactive; then
@@ -240,17 +405,31 @@ action_up() {
   info "${ICON_START} Launching '$inst'..."
   if compose_instance "$inst" up --build -d; then
     success "'$inst' is running."
+    if [[ -n "$seed_user" && -n "$seed_password" ]]; then
+      info "Initializing auth credentials in DB..."
+      if apply_auth_managed_instance "$inst" "$seed_target" "$seed_user" "$seed_password"; then
+        seed_status="ok"
+      else
+        seed_status="failed"
+      fi
+    fi
     
     local ef="$(instance_env_file "$inst")"
     local p="$(read_env_value "$ef" "STACK_PORT" || echo "4747")"
-    local token="$(read_env_value "$ef" "PLATFORM_BOOTSTRAP_API_KEY" || echo "UNKNOWN")"
     
     printf "\n${CYAN}${BOLD}🚀  S T A C K   O N B O A R D I N G${RESET}\n"
     printf "${DIM}---------------------------------------${RESET}\n"
     printf "1. Open the Gateway: ${MAGENTA}http://localhost:$p/${RESET}\n"
-    printf "2. Log in using your ${BOLD}TEMPORARY Bootstrap Token${RESET}:\n"
-    printf "   🔑 ${YELLOW}${BOLD}${token}${RESET}\n"
-    printf "3. After login, you will receive your ${BOLD}final administrative credentials${RESET}.\n"
+    if [[ -n "$seed_user" && "$seed_status" == "ok" ]]; then
+      printf "2. Log in with your configured admin credentials.\n"
+      printf "   👤 Username: ${YELLOW}${BOLD}%s${RESET}\n" "$(trim_lower "$seed_user")"
+    elif [[ -n "$seed_user" && "$seed_status" == "failed" ]]; then
+      printf "2. Auth initialization failed; use existing credentials or run ${BOLD}Reset Auth${RESET}.\n"
+      printf "   ${YELLOW}Configured username may not be active yet:${RESET} %s\n" "$(trim_lower "$seed_user")"
+    else
+      printf "2. Log in with your existing DB credentials.\n"
+    fi
+    printf "3. Use the gateway controls to rotate Sentinel/araiOS passwords or manage araiOS agent tokens.\n"
     printf "${DIM}---------------------------------------${RESET}\n"
   else
     error "Failed to start '$inst'."
@@ -317,6 +496,64 @@ action_logs() {
   return 0
 }
 
+action_reset_auth_managed() {
+  ensure_docker_ready || return 0
+  local inst=""
+  rm -f "$TMP_PICK"
+  if pick_instance_interactive; then
+    inst=$(cat "$TMP_PICK")
+  fi
+  [[ -z "$inst" ]] && return 0
+
+  local target
+  target="$(choose_auth_target)" || return 0
+
+  echo -n "$CURSOR_ON"
+  printf "\n${CYAN}RESET MANAGED INSTANCE AUTH${RESET}\n"
+  local auth_user auth_password
+  auth_user="$(prompt_default "Admin Username" "admin")"
+  auth_password="$(prompt_default "Admin Password" "$(generate_secret 12)")"
+
+  if apply_auth_managed_instance "$inst" "$target" "$auth_user" "$auth_password"; then
+    success "Managed auth reset completed for '$inst'."
+  fi
+  return 0
+}
+
+action_manage_custom_auth() {
+  ensure_docker_ready || return 0
+  echo -n "$CURSOR_ON"
+  printf "\n${CYAN}MANAGE CUSTOM INSTANCE AUTH${RESET}\n"
+  printf "${DIM}Provide direct PostgreSQL connection values.${RESET}\n"
+
+  local pg_host pg_port pg_db pg_user pg_sslmode pg_password
+  pg_host="$(prompt_default "Postgres Host" "localhost")"
+  pg_port="$(prompt_default "Postgres Port" "5432")"
+  pg_db="$(prompt_default "Postgres DB Name" "arai_stack")"
+  pg_user="$(prompt_default "Postgres User" "arai_stack")"
+  pg_sslmode="$(prompt_default "SSL Mode (disable|prefer|require)" "prefer")"
+
+  printf "%s" "$CURSOR_ON"
+  read -r -s -p "${BOLD}Postgres Password${RESET}: " pg_password < /dev/tty
+  printf "\n%s" "$CURSOR_OFF"
+  if [[ -z "$pg_password" ]]; then
+    warn "Empty DB password; aborting."
+    return 0
+  fi
+
+  local target
+  target="$(choose_auth_target)" || return 0
+
+  local auth_user auth_password
+  auth_user="$(prompt_default "Admin Username" "admin")"
+  auth_password="$(prompt_default "Admin Password" "$(generate_secret 12)")"
+
+  apply_auth_custom_instance \
+    "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" "$pg_sslmode" \
+    "$target" "$auth_user" "$auth_password"
+  return 0
+}
+
 action_delete() {
   local inst=""
   rm -f "$TMP_PICK"
@@ -344,6 +581,8 @@ menu_loop() {
     "${ICON_CONFIG}  New/Edit Instance"
     "${ICON_START}  Start Instance"
     "${ICON_STOP}  Stop Instance"
+    "🔐  Reset Auth (Managed Instance)"
+    "🧩  Manage Custom Instance Auth"
     "${ICON_LIST}  Global Status"
     "📜  Tail Logs"
     "🗑️   Delete Instance"
@@ -361,10 +600,12 @@ menu_loop() {
       0) action_create "" ;;
       1) action_up "" ;;
       2) action_down ;;
-      3) action_list ;;
-      4) action_logs ;;
-      5) action_delete ;;
-      6) echo "Goodbye!"; exit 0 ;;
+      3) action_reset_auth_managed ;;
+      4) action_manage_custom_auth ;;
+      5) action_list ;;
+      6) action_logs ;;
+      7) action_delete ;;
+      8) echo "Goodbye!"; exit 0 ;;
     esac
     
     # BUFFER FLUSH: Prevents skipping the "Press Enter" prompt due to trailing characters from Docker

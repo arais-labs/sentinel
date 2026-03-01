@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Literal
 
 from app.services.llm.ids import ProviderChoice
 from app.services.onboarding_defaults import DEFAULT_SYSTEM_PROMPT
@@ -14,10 +15,12 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_ttl_seconds: int = 3600
     refresh_token_ttl_seconds: int = 604800
+    auth_cookie_secure: bool = False
+    auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+    sentinel_auth_username: str = "admin"
+    sentinel_auth_password: str = "admin"
     araios_url: str | None = None
-    dev_token: str = "disabled"
     dev_user_id: str = "dev-admin"
-    dev_agent_id: str = "dev-agent"
     anthropic_oauth_token: str | None = None
     anthropic_api_key: str | None = None
     openai_oauth_token: str | None = None
