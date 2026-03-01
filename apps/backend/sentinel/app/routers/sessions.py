@@ -98,8 +98,12 @@ async def list_sessions(
         limit=limit,
         offset=offset,
     )
+    unread_flags = await service.compute_unread_flags(db, page.items)
     items = [
-        await _session_response(item, service, main_session_id=main_session_id)
+        await _session_response(
+            item, service, main_session_id=main_session_id,
+            has_unread=unread_flags.get(item.id, False),
+        )
         for item in page.items
     ]
     return SessionListResponse(items=items, total=page.total)
@@ -275,6 +279,22 @@ async def stop_session_generation(
     return {"status": "stopping" if cancelled else "idle"}
 
 
+@router.post("/{id}/read")
+async def mark_session_read(
+    id: UUID,
+    request: Request,
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    service = _resolve_session_service(request)
+    try:
+        await service.mark_as_read(db, session_id=id, user_id=user.sub)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    return {"status": "ok"}
+
+
 @router.post("/{id}/messages")
 async def create_message(
     id: UUID,
@@ -366,6 +386,7 @@ async def _session_response(
     service: SessionService,
     *,
     main_session_id: UUID | None = None,
+    has_unread: bool = False,
 ) -> SessionResponse:
     is_running = await service.is_session_running(session.id)
     return SessionResponse(
@@ -379,6 +400,7 @@ async def _session_response(
         started_at=session.started_at,
         is_running=is_running,
         is_main=bool(main_session_id and session.id == main_session_id),
+        has_unread=has_unread,
     )
 
 

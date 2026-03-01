@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func as sa_func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
@@ -443,6 +443,52 @@ class SessionService:
 
     async def is_session_running(self, session_id: UUID) -> bool:
         return await self._run_registry.is_running(str(session_id))
+
+    async def compute_unread_flags(
+        self,
+        db: AsyncSession,
+        sessions: list[Session],
+    ) -> dict[UUID, bool]:
+        if not sessions:
+            return {}
+        session_ids = [s.id for s in sessions]
+        result = await db.execute(
+            select(
+                Message.session_id,
+                sa_func.max(Message.created_at).label("latest_msg"),
+            )
+            .where(
+                Message.session_id.in_(session_ids),
+                Message.role.in_(["assistant", "tool_result"]),
+            )
+            .group_by(Message.session_id)
+        )
+        latest_by_session: dict[UUID, datetime] = {
+            row.session_id: row.latest_msg for row in result
+        }
+        flags: dict[UUID, bool] = {}
+        for session in sessions:
+            latest_msg = latest_by_session.get(session.id)
+            if latest_msg is None:
+                flags[session.id] = False
+            elif session.last_read_at is None:
+                flags[session.id] = True
+            else:
+                flags[session.id] = latest_msg > session.last_read_at
+        return flags
+
+    async def mark_as_read(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+    ) -> Session:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        session.last_read_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(session)
+        return session
 
     async def get_main_session_id(self, db: AsyncSession, *, user_id: str) -> UUID | None:
         return await self._get_main_session_id(db, user_id=user_id)

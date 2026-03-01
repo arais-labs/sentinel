@@ -18,6 +18,7 @@ export interface Session {
   started_at: string;
   is_running: boolean;
   is_main?: boolean;
+  has_unread?: boolean;
 }
 
 export interface SessionListResponse {
