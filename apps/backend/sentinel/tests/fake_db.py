@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -47,6 +48,18 @@ class FakeDB:
 
     def __init__(self):
         self.storage = defaultdict(list)
+        self._seed_auth_settings()
+
+    def _seed_auth_settings(self) -> None:
+        # Test-only convenience so login-based tests don't rely on app startup hooks.
+        try:
+            from app.services.auth_service import ensure_default_auth_settings
+        except Exception:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(ensure_default_auth_settings(self))
 
     def add(self, obj):
         now = datetime.now(UTC)

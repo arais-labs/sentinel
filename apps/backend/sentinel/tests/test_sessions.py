@@ -5,7 +5,6 @@ import jwt
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.dependencies import get_db
 from app.main import app
@@ -49,7 +48,7 @@ def test_sessions_crud_and_ownership():
 
     try:
         client = TestClient(app)
-        user1_token_resp = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        user1_token_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert user1_token_resp.status_code == 200
         user1_token = user1_token_resp.json()["access_token"]
 
@@ -161,7 +160,7 @@ def test_cannot_set_telegram_channel_session_as_main():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}

@@ -4,11 +4,8 @@ import { AUTH_BASE_URL } from '../lib/env';
 import { decodeJwt, tokenExpiresSoon } from '../lib/jwt';
 import type { AuthStatus, TokenResponse } from '../types/api';
 
-const storageKey = 'sentinel.araios.auth.session';
-
 interface AuthSnapshot {
   accessToken: string;
-  refreshToken: string;
   tokenType: string;
   expiresIn: number;
 }
@@ -19,7 +16,7 @@ interface AuthState extends AuthSnapshot {
   role: string | null;
   errorMessage: string | null;
   initialize: () => void;
-  login: (apiKey: string) => Promise<boolean>;
+  login: (username: string, password: string) => Promise<boolean>;
   refresh: () => Promise<boolean>;
   logout: () => Promise<void>;
   clearSession: () => void;
@@ -29,36 +26,9 @@ interface AuthState extends AuthSnapshot {
 function emptySession() {
   return {
     accessToken: '',
-    refreshToken: '',
     tokenType: 'bearer',
     expiresIn: 0,
   };
-}
-
-function persist(snapshot: AuthSnapshot) {
-  localStorage.setItem(storageKey, JSON.stringify(snapshot));
-}
-
-function readPersisted(): AuthSnapshot | null {
-  const raw = localStorage.getItem(storageKey);
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<AuthSnapshot>;
-    if (!parsed.accessToken || !parsed.refreshToken) {
-      return null;
-    }
-    return {
-      accessToken: parsed.accessToken,
-      refreshToken: parsed.refreshToken,
-      tokenType: parsed.tokenType ?? 'bearer',
-      expiresIn: parsed.expiresIn ?? 0,
-    };
-  } catch {
-    return null;
-  }
 }
 
 function parseAuthError(payload: unknown, fallback: string) {
@@ -76,13 +46,19 @@ function parseAuthError(payload: unknown, fallback: string) {
   return fallback;
 }
 
-async function authRequest(path: string, body: Record<string, unknown>) {
+interface MeResponse {
+  sub: string;
+  role: string;
+}
+
+async function authRequest(path: string, body?: Record<string, unknown>) {
   const response = await fetch(`${AUTH_BASE_URL}${path}`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
 
   const payload = (await response.json().catch(() => ({}))) as unknown;
@@ -94,16 +70,25 @@ async function authRequest(path: string, body: Record<string, unknown>) {
   return payload as TokenResponse;
 }
 
+async function fetchMe(): Promise<MeResponse | null> {
+  const response = await fetch(`${AUTH_BASE_URL}/me`, {
+    method: 'GET',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    return null;
+  }
+  return (await response.json()) as MeResponse;
+}
+
 function applySession(setter: (partial: Partial<AuthState>) => void, session: TokenResponse) {
   const claims = decodeJwt(session.access_token);
   const snapshot: AuthSnapshot = {
     accessToken: session.access_token,
-    refreshToken: session.refresh_token,
     tokenType: session.token_type ?? 'bearer',
     expiresIn: session.expires_in ?? 0,
   };
 
-  persist(snapshot);
   setter({
     ...snapshot,
     status: 'authenticated',
@@ -121,36 +106,52 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   errorMessage: null,
 
   initialize: () => {
-    const persisted = readPersisted();
-    if (!persisted) {
+    void (async () => {
+      const me = await fetchMe();
+      if (me) {
+        set({
+          ...emptySession(),
+          status: 'authenticated',
+          userId: me.sub,
+          role: me.role,
+          errorMessage: null,
+        });
+        return;
+      }
+      const refreshed = await get().refresh();
+      if (refreshed) {
+        const meAfterRefresh = await fetchMe();
+        if (meAfterRefresh) {
+          set({
+            status: 'authenticated',
+            userId: meAfterRefresh.sub,
+            role: meAfterRefresh.role,
+            errorMessage: null,
+          });
+          return;
+        }
+      }
       set({
         ...emptySession(),
         status: 'unauthenticated',
         userId: null,
         role: null,
+        errorMessage: null,
       });
-      return;
-    }
-
-    const claims = decodeJwt(persisted.accessToken);
-    set({
-      ...persisted,
-      status: 'authenticated',
-      userId: claims.sub ?? 'unknown',
-      role: claims.role ?? 'agent',
-      errorMessage: null,
-    });
+    })();
   },
 
-  login: async (apiKey: string) => {
+  login: async (username: string, password: string) => {
     set({ status: 'loading', errorMessage: null });
 
     try {
-      const session = await authRequest('/token', { api_key: apiKey.trim() });
+      const session = await authRequest('/login', {
+        username: username.trim(),
+        password: password.trim(),
+      });
       applySession(set, session);
       return true;
     } catch (error) {
-      localStorage.removeItem(storageKey);
       set({
         ...emptySession(),
         status: 'unauthenticated',
@@ -163,13 +164,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   refresh: async () => {
-    const refreshToken = get().refreshToken;
-    if (!refreshToken) {
-      return false;
-    }
-
     try {
-      const session = await authRequest('/refresh', { refresh_token: refreshToken });
+      // Refresh token is stored in an HttpOnly cookie; do not keep it in runtime state.
+      const session = await authRequest('/refresh');
       applySession(set, session);
       return true;
     } catch {
@@ -179,25 +176,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
-    const accessToken = get().accessToken;
-    if (accessToken) {
-      try {
-        await fetch(`${AUTH_BASE_URL}/session`, {
-          method: 'DELETE',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        });
-      } catch {
-        // Ignore network failures during logout cleanup.
-      }
+    try {
+      await fetch(`${AUTH_BASE_URL}/session`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+    } catch {
+      // Ignore network failures during logout cleanup.
     }
 
     get().clearSession();
   },
 
   clearSession: () => {
-    localStorage.removeItem(storageKey);
     set({
       ...emptySession(),
       status: 'unauthenticated',

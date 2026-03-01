@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Key, LogIn, Moon, Sun, Loader2 } from 'lucide-react';
+import { KeyRound, LogIn, Moon, Sun, Loader2, UserRound } from 'lucide-react';
 import { Logo } from './Icons';
-import { setSession, setToken } from '../lib/api';
+import { setSession } from '../lib/api';
 
 export default function AuthGate({ onAuth }) {
-  const [value, setValue] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [testing, setTesting] = useState(false);
   const [theme, setTheme] = useState('dark');
@@ -17,50 +18,39 @@ export default function AuthGate({ onAuth }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const trimmed = value.trim();
-    if (!trimmed) return;
+    const normalizedUsername = username.trim();
+    const normalizedPassword = password.trim();
+    if (!normalizedUsername || !normalizedPassword) return;
 
     setTesting(true);
     setError('');
 
     try {
-      // API keys (sk-arais-*) must be exchanged for JWT access/refresh tokens.
-      if (trimmed.startsWith('sk-arais-')) {
-        const tokenRes = await fetch('/platform/auth/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ api_key: trimmed }),
-        });
-        if (!tokenRes.ok) {
-          setError('Invalid API key provided');
-          setTesting(false);
-          return;
-        }
-        const tokens = await tokenRes.json();
-        if (!tokens?.access_token) {
-          setError('Token exchange failed');
-          setTesting(false);
-          return;
-        }
-        setSession({
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token || '',
-          tokenType: tokens.token_type || 'bearer',
-        });
-        onAuth();
-        return;
-      }
-
-      // Bearer JWT path
-      const meRes = await fetch('/platform/auth/me', {
-        headers: { 'Authorization': `Bearer ${trimmed}` },
+      const tokenRes = await fetch('/platform/auth/login', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: normalizedUsername,
+          password: normalizedPassword,
+        }),
       });
-      if (!meRes.ok) {
-        setError('Invalid access token provided');
+      if (!tokenRes.ok) {
+        setError('Invalid credentials provided');
         setTesting(false);
         return;
       }
-      setToken(trimmed);
+      const tokens = await tokenRes.json();
+      if (!tokens?.access_token) {
+        setError('Login failed');
+        setTesting(false);
+        return;
+      }
+      setSession({
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token || '',
+        tokenType: tokens.token_type || 'bearer',
+      });
       onAuth();
     } catch {
       setError('Cannot reach operator backend');
@@ -94,23 +84,40 @@ export default function AuthGate({ onAuth }) {
                 Welcome to araiOS
               </h1>
               <p className="text-sm text-[color:var(--text-secondary)]">
-                Sign in with your API key or bearer access token.
+                Sign in with your araiOS credentials.
               </p>
             </div>
 
             <div className="space-y-2">
               <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                API Key or Access Token
+                Username
               </label>
               <div className="relative">
-                <Key size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                <UserRound size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                <input
+                  type="text"
+                  className="input-field pl-10 h-12"
+                  placeholder="admin"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoFocus
+                  disabled={testing}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                Password
+              </label>
+              <div className="relative">
+                <KeyRound size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
                 <input
                   type="password"
                   className="input-field pl-10 h-12"
-                  placeholder="sk-arais-... or JWT bearer token"
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  autoFocus
+                  placeholder="Enter your password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                   disabled={testing}
                 />
               </div>
@@ -125,7 +132,7 @@ export default function AuthGate({ onAuth }) {
             <div>
               <button
                 type="submit"
-                disabled={testing || !value.trim()}
+                disabled={testing || !username.trim() || !password.trim()}
                 className="btn-primary h-12 w-full text-xs uppercase tracking-widest gap-2"
               >
                 {testing ? <Loader2 size={18} className="animate-spin" /> : <LogIn size={18} />}

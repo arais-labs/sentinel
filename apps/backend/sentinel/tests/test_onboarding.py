@@ -4,7 +4,6 @@ import asyncio
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.config import settings
 from app.dependencies import get_db
@@ -18,7 +17,7 @@ from tests.fake_db import FakeDB
 
 
 def _auth_headers(client: TestClient) -> dict[str, str]:
-    login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+    login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
     assert login.status_code == 200
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
 

@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.dependencies import get_db
 from app.main import app
@@ -50,7 +49,7 @@ def test_ws_connect_send_ack_and_rejections():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
@@ -98,8 +97,9 @@ def test_ws_connect_send_ack_and_rejections():
         assert stored["metadata"]["source"] == "web"
         assert len(stored["metadata"]["attachments"]) == 1
 
+        anon_client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as missing_token:
-            with client.websocket_connect(f"/ws/sessions/{session_id}/stream"):
+            with anon_client.websocket_connect(f"/ws/sessions/{session_id}/stream"):
                 pass
         assert missing_token.value.code == 4001
 
