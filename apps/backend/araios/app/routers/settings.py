@@ -7,7 +7,7 @@ from app.database.models import Setting
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("")
 async def get_settings(db: Session = Depends(get_db), _=Depends(require_permission("settings.manage"))):
     rows = db.query(Setting).all()
     return {"settings": {r.key: r.value for r in rows}}
