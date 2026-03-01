@@ -5,7 +5,6 @@ import jwt
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.dependencies import get_db
 from app.main import app
@@ -62,7 +61,7 @@ def test_sub_agents_crud_ownership_and_concurrency_cap():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}

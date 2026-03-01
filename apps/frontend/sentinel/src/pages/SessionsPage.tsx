@@ -39,7 +39,6 @@ import { StatusChip } from '../components/ui/StatusChip';
 import { WS_BASE_URL } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
 import { api } from '../lib/api';
-import { useAuthStore } from '../store/auth-store';
 import type {
   Message,
   MessageAttachment,
@@ -886,7 +885,6 @@ export function SessionsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { id: routeSessionId } = useParams<{ id: string }>();
-  const auth = useAuthStore();
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
@@ -1686,16 +1684,13 @@ export function SessionsPage() {
     disconnectWs();
     intentionalCloseRef.current = false;
 
-    const token = await auth.getValidAccessToken();
-    if (!token) return;
-
     setStreaming((current) => ({
       ...current,
       connection: reconnectAttemptsRef.current > 0 ? 'reconnecting' : 'connecting',
     }));
 
     const instanceId = ++wsInstanceRef.current;
-    const ws = new WebSocket(`${WS_BASE_URL}/ws/sessions/${sessionId}/stream?token=${encodeURIComponent(token)}`);
+    const ws = new WebSocket(`${WS_BASE_URL}/ws/sessions/${sessionId}/stream`);
     wsRef.current = ws;
 
     ws.onopen = () => {

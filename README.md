@@ -111,33 +111,33 @@ docker compose up --build
 
 ## Authentication and Onboarding
 
-The gateway onboarding is auth-agnostic and routes users into one shared session model.
+### First Login
 
-### Token Login (enabled by default)
+1. Start an instance with `bash ./sentinel-cli.sh`.
+2. Open the printed Gateway URL (default `http://localhost:4747/`).
+3. Log in with the admin username/password shown by the CLI.
+4. Choose `Sentinel` or `araiOS`.
 
-- user enters `PLATFORM_BOOTSTRAP_API_KEY`
-- gateway calls `/platform/auth/token`
-- on first boot only, gateway finalizes bootstrap and rotates credentials:
-  - generates one `admin` API key
-  - generates one `agent` API key
-  - revokes/deletes the bootstrap key
-  - shows the two new keys once so the user can store them securely
-- platform returns shared access + refresh JWTs
-- both Sentinel and araiOS accept the same JWT
-- if keys are lost after first-boot rotation, recovery is manual DB intervention
+### Change Passwords
 
-### OAuth Login (optional deployment mode)
+Use the CLI when you need to reset credentials:
 
-- the same onboarding gateway can expose OAuth provider login when connected to your IdP/provider
-- after OAuth identity is validated, it should issue the same shared JWT session model used by both apps
+- `Reset Auth (Managed Instance)` for instances under `.instances/*`
+- `Manage Custom Instance Auth` for any reachable PostgreSQL-backed deployment
 
-Note: this repository ships token-based onboarding out of the box.
+### araiOS Agent Tokens
+
+For agent-to-araiOS access:
+
+1. Open Gateway `Manage Credentials`.
+2. Create or revoke araiOS agent tokens.
+3. Use those tokens for agent integrations.
 
 ## What You Get in This Repo
 
 - `apps/backend/sentinel` -> Sentinel backend
 - `apps/frontend/sentinel` -> Sentinel frontend
-- `apps/backend/araios` -> araiOS backend + centralized auth
+- `apps/backend/araios` -> araiOS backend + its own auth
 - `apps/frontend/araios` -> araiOS frontend
 - `infra/` -> gateway and Docker wiring
 - `docker-compose.yml` -> production-style local runtime

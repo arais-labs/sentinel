@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.dependencies import get_db
 from app.middleware.auth import require_permission
-from app.database.models import Module, Permission, Setting
+from app.database.models import Module, Permission, SystemSetting
 
 router = APIRouter()
 
@@ -10,7 +10,7 @@ router = APIRouter()
 @router.get("")
 async def get_manifest(db: Session = Depends(get_db), _=Depends(require_permission("manifest.read"))):
     # Get base_url from settings
-    setting = db.query(Setting).filter(Setting.key == "manifest_base_url").first()
+    setting = db.query(SystemSetting).filter(SystemSetting.key == "manifest_base_url").first()
     base_url = (setting.value if setting else "").rstrip("/")
 
     # Get all permissions

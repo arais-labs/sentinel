@@ -5,7 +5,6 @@ import jwt
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.dependencies import get_db
 from app.main import app
@@ -53,7 +52,7 @@ def test_error_response_format_consistency():
         assert unauthorized.status_code == 401
         assert unauthorized.json()["error"]["code"] == "unauthorized"
 
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
@@ -84,7 +83,7 @@ def test_error_response_format_consistency():
         RateLimitMiddleware._buckets.clear()
         last = None
         for _ in range(11):
-            last = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+            last = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert last is not None
         assert last.status_code == 429
         assert last.json()["error"]["code"] == "rate_limited"
