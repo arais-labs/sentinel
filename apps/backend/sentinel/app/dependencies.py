@@ -4,14 +4,15 @@ from typing import cast
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import Settings, settings
 from app.database.database import get_db_session
 from app.services.llm.generic.base import LLMProvider
 from app.services.onboarding_service import OnboardingService
 from app.services.runtime_rebuild import RuntimeRebuildService
 from app.services.settings_service import SettingsService
 
-def get_settings() -> object:
+
+def get_settings() -> Settings:
     """Dependency accessor to keep settings wiring centralized."""
     return settings
 
@@ -35,9 +36,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 def get_llm_provider(request: Request) -> LLMProvider:
     """Typed accessor for runtime LLM provider stored on app state."""
+    if not hasattr(request.app.state, "llm_provider"):
+        raise RuntimeError("LLM provider is missing from app state; startup is incomplete")
     provider = cast(LLMProvider | None, request.app.state.llm_provider)
     if provider is None:
-        raise RuntimeError()
+        raise RuntimeError("LLM provider is not configured; check provider credentials and runtime rebuild")
     return provider
 
 

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import get_db
 from app.middleware.auth import require_permission
-from app.database.models import Module, Setting
+from app.database.models import Module, SystemSetting
 
 router = APIRouter()
 
@@ -32,7 +32,7 @@ async def agent_guide(
     db: Session = Depends(get_db),
     _=Depends(require_permission("manifest.read")),
 ):
-    setting = db.query(Setting).filter(Setting.key == "manifest_base_url").first()
+    setting = db.query(SystemSetting).filter(SystemSetting.key == "manifest_base_url").first()
     base_url = (setting.value if setting else "").rstrip("/")
 
     modules = db.query(Module).order_by(Module.order, Module.name).all()

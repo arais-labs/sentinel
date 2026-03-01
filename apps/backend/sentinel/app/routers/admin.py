@@ -127,7 +127,6 @@ async def get_config(
         context_token_budget=settings.context_token_budget,
         araios_url=settings.araios_url,
         jwt_secret_key="***",
-        dev_token="***",
     )
 
 
@@ -154,5 +153,4 @@ async def update_config(
         context_token_budget=settings.context_token_budget,
         araios_url=settings.araios_url,
         jwt_secret_key="***",
-        dev_token="***",
     )

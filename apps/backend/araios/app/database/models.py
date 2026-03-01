@@ -236,12 +236,12 @@ class ModuleSecret(Base):
     updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
-# ── Settings ──
+# ── System Settings ──
 
-class Setting(Base):
-    __tablename__ = "settings"
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
 
-    key        = Column(String, primary_key=True)
+    key        = Column(String(100), primary_key=True)
     value      = Column(Text, nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -277,3 +277,11 @@ class PlatformApiKey(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class RevokedToken(Base):
+    __tablename__ = "revoked_tokens"
+
+    jti = Column(String, primary_key=True)
+    revoked_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)

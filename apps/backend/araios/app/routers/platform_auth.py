@@ -8,24 +8,71 @@ from sqlalchemy.orm import Session
 
 from app.database.models import PlatformApiKey
 from app.dependencies import get_db
-from app.middleware.auth import TokenPayload, get_current_user
+from app.middleware.auth import (
+    ACCESS_TOKEN_COOKIE_NAME,
+    REFRESH_TOKEN_COOKIE_NAME,
+    TokenPayload,
+    decode_and_validate_token,
+    get_current_user,
+    revoke_token,
+)
 from app.platform_auth import (
     PlatformIdentity,
     create_access_token,
     create_refresh_token,
-    decode_token,
     hash_api_key,
     verify_api_key,
 )
+from app.services.auth_settings import authenticate_user, change_user_password
 from config import (
     ACCESS_TOKEN_TTL_SECONDS,
-    PLATFORM_BOOTSTRAP_AGENT_ID,
-    PLATFORM_BOOTSTRAP_LABEL,
-    PLATFORM_BOOTSTRAP_ROLE,
-    PLATFORM_BOOTSTRAP_SUB,
+    AUTH_COOKIE_SAMESITE,
+    AUTH_COOKIE_SECURE,
+    REFRESH_TOKEN_TTL_SECONDS,
 )
 
 router = APIRouter()
+
+
+def _set_auth_cookies(response: Response, *, access_token: str, refresh_token: str) -> None:
+    secure = AUTH_COOKIE_SECURE
+    samesite = AUTH_COOKIE_SAMESITE
+    response.set_cookie(
+        key=ACCESS_TOKEN_COOKIE_NAME,
+        value=access_token,
+        httponly=True,
+        secure=secure,
+        samesite=samesite,
+        max_age=ACCESS_TOKEN_TTL_SECONDS,
+        path="/",
+    )
+    response.set_cookie(
+        key=REFRESH_TOKEN_COOKIE_NAME,
+        value=refresh_token,
+        httponly=True,
+        secure=secure,
+        samesite=samesite,
+        max_age=REFRESH_TOKEN_TTL_SECONDS,
+        path="/",
+    )
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    response.delete_cookie(ACCESS_TOKEN_COOKIE_NAME, path="/")
+    response.delete_cookie(REFRESH_TOKEN_COOKIE_NAME, path="/")
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+    @field_validator("username", "password")
+    @classmethod
+    def _normalize_required(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("Fields must not be empty")
+        return trimmed
 
 
 class TokenRequest(BaseModel):
@@ -52,6 +99,19 @@ class RefreshRequest(BaseModel):
         return trimmed
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=1)
+
+    @field_validator("current_password", "new_password")
+    @classmethod
+    def _normalize_password_fields(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("password fields must not be empty")
+        return trimmed
+
+
 class TokenPairResponse(BaseModel):
     access_token: str
     refresh_token: str
@@ -64,12 +124,6 @@ class MeResponse(BaseModel):
     role: str
     agent_id: str | None = None
     label: str | None = None
-
-
-class BootstrapFinalizeResponse(BaseModel):
-    rotated: bool
-    admin_api_key: str
-    agent_api_key: str
 
 
 class AgentKeySummary(BaseModel):
@@ -113,23 +167,6 @@ def _identity_from_key(record: PlatformApiKey) -> PlatformIdentity:
     )
 
 
-def _is_bootstrap_record(record: PlatformApiKey) -> bool:
-    return (
-        record.label == PLATFORM_BOOTSTRAP_LABEL
-        and record.role == PLATFORM_BOOTSTRAP_ROLE
-        and record.subject == PLATFORM_BOOTSTRAP_SUB
-        and (record.agent_id or "") == (PLATFORM_BOOTSTRAP_AGENT_ID or "")
-    )
-
-
-def _is_bootstrap_identity(user: TokenPayload) -> bool:
-    return (
-        user.role == PLATFORM_BOOTSTRAP_ROLE
-        and user.sub == PLATFORM_BOOTSTRAP_SUB
-        and (user.agent_id or "") == (PLATFORM_BOOTSTRAP_AGENT_ID or "")
-    )
-
-
 def _new_platform_api_key(kind: str) -> str:
     return f"sk-arais-{kind}-{secrets.token_urlsafe(32)}"
 
@@ -150,6 +187,34 @@ def _require_admin(user: TokenPayload) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
 
 
+def _token_response_for_identity(identity: PlatformIdentity) -> TokenPairResponse:
+    return TokenPairResponse(
+        access_token=create_access_token(identity),
+        refresh_token=create_refresh_token(identity),
+        token_type="bearer",
+        expires_in=ACCESS_TOKEN_TTL_SECONDS,
+    )
+
+
+@router.post("/login", response_model=TokenPairResponse)
+async def login(
+    body: LoginRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> TokenPairResponse:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+    auth = authenticate_user(db, username=body.username, password=body.password)
+    if auth is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    tokens = _token_response_for_identity(
+        PlatformIdentity(sub=auth[0], role=auth[1], agent_id="admin", label="Primary Admin")
+    )
+    _set_auth_cookies(response, access_token=tokens.access_token, refresh_token=tokens.refresh_token)
+    return tokens
+
+
 @router.post("/token", response_model=TokenPairResponse)
 async def issue_tokens(
     body: TokenRequest,
@@ -168,68 +233,62 @@ async def issue_tokens(
 
     if identity is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-
-    return TokenPairResponse(
-        access_token=create_access_token(identity),
-        refresh_token=create_refresh_token(identity),
-        token_type="bearer",
-        expires_in=ACCESS_TOKEN_TTL_SECONDS,
-    )
+    tokens = _token_response_for_identity(identity)
+    _set_auth_cookies(response, access_token=tokens.access_token, refresh_token=tokens.refresh_token)
+    return tokens
 
 
-@router.post("/bootstrap/finalize", response_model=BootstrapFinalizeResponse)
-async def finalize_bootstrap(
+@router.post("/refresh", response_model=TokenPairResponse)
+async def refresh_tokens(
+    request: Request,
     response: Response,
-    user: TokenPayload = Depends(get_current_user),
+    body: RefreshRequest | None = None,
     db: Session = Depends(get_db),
-) -> BootstrapFinalizeResponse:
+) -> TokenPairResponse:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
+    token = ""
+    if body is not None:
+        token = body.refresh_token.strip()
+    if not token:
+        token = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME, "").strip()
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token")
 
-    if not _is_bootstrap_identity(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Bootstrap session required")
-
-    query = db.query(PlatformApiKey).filter(PlatformApiKey.is_active == True)  # noqa: E712
-    bind = db.get_bind()
-    if bind is not None and bind.dialect.name == "postgresql":
-        query = query.with_for_update()
-    keys = query.all()
-
-    if len(keys) != 1 or not _is_bootstrap_record(keys[0]):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap already finalized")
-
-    bootstrap_record = keys[0]
-    admin_api_key = _new_platform_api_key("admin")
-    agent_api_key = _new_platform_api_key("agent")
-
-    db.add(
-        PlatformApiKey(
-            label="Primary Admin",
-            role="admin",
-            subject="admin",
-            agent_id="admin",
-            key_hash=hash_api_key(admin_api_key),
-            is_active=True,
+    payload = decode_and_validate_token(token, db, expected_type="refresh")
+    tokens = _token_response_for_identity(
+        PlatformIdentity(
+            sub=payload.sub,
+            role=payload.role,
+            agent_id=payload.agent_id,
+            label=payload.label,
         )
     )
-    db.add(
-        PlatformApiKey(
-            label="Primary Agent",
-            role="agent",
-            subject="agent",
-            agent_id="agent",
-            key_hash=hash_api_key(agent_api_key),
-            is_active=True,
-        )
-    )
-    db.delete(bootstrap_record)
-    db.commit()
+    _set_auth_cookies(response, access_token=tokens.access_token, refresh_token=tokens.refresh_token)
+    return tokens
 
-    return BootstrapFinalizeResponse(
-        rotated=True,
-        admin_api_key=admin_api_key,
-        agent_api_key=agent_api_key,
+
+@router.get("/me", response_model=MeResponse)
+async def me(user: TokenPayload = Depends(get_current_user)) -> MeResponse:
+    return MeResponse(sub=user.sub, role=user.role, agent_id=user.agent_id, label=user.label)
+
+
+@router.post("/change-password")
+async def change_password(
+    body: ChangePasswordRequest,
+    user: TokenPayload = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    _require_admin(user)
+    changed = change_user_password(
+        db,
+        username=user.sub,
+        current_password=body.current_password,
+        new_password=body.new_password,
     )
+    if not changed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is invalid")
+    return {"success": True}
 
 
 @router.get("/agents", response_model=AgentKeyListResponse)
@@ -292,29 +351,47 @@ async def create_agent_key(
     return CreateAgentKeyResponse(agent=_to_agent_summary(record), api_key=api_key)
 
 
-@router.post("/refresh", response_model=TokenPairResponse)
-async def refresh_tokens(body: RefreshRequest) -> TokenPairResponse:
-    payload = decode_token(body.refresh_token, expected_type="refresh")
-    identity = PlatformIdentity(
-        sub=payload["sub"],
-        role=payload["role"],
-        agent_id=payload.get("agent_id"),
-        label=payload.get("label"),
+@router.delete("/agents/{agent_key_id}")
+async def deactivate_agent_key(
+    agent_key_id: str,
+    user: TokenPayload = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    _require_admin(user)
+    record = (
+        db.query(PlatformApiKey)
+        .filter(
+            PlatformApiKey.id == agent_key_id,
+            PlatformApiKey.role == "agent",
+        )
+        .first()
     )
-    return TokenPairResponse(
-        access_token=create_access_token(identity),
-        refresh_token=create_refresh_token(identity),
-        token_type="bearer",
-        expires_in=ACCESS_TOKEN_TTL_SECONDS,
-    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent key not found")
 
+    if record.is_active:
+        record.is_active = False
+        db.commit()
 
-@router.get("/me", response_model=MeResponse)
-async def me(user: TokenPayload = Depends(get_current_user)) -> MeResponse:
-    return MeResponse(sub=user.sub, role=user.role, agent_id=user.agent_id, label=user.label)
+    return {"success": True}
 
 
 @router.delete("/session")
-async def logout(_request: Request) -> dict[str, str]:
-    # Stateless JWT for now; client-side token deletion performs logout.
+async def logout(
+    request: Request,
+    response: Response,
+    user: TokenPayload = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    revoke_token(db, user)
+    refresh_cookie = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME, "").strip()
+    if refresh_cookie:
+        try:
+            refresh_payload = decode_and_validate_token(refresh_cookie, db, expected_type="refresh")
+            revoke_token(db, refresh_payload)
+        except Exception:
+            pass
+    _clear_auth_cookies(response)
     return {"status": "ok"}
