@@ -7,7 +7,7 @@ from app.database.models import Module, Permission, Setting
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("")
 async def get_manifest(db: Session = Depends(get_db), _=Depends(require_permission("manifest.read"))):
     # Get base_url from settings
     setting = db.query(Setting).filter(Setting.key == "manifest_base_url").first()

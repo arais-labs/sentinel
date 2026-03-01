@@ -162,8 +162,8 @@ export function TriggersPage() {
     setLoading(true);
     try {
       const [triggerPayload, sessionPayload] = await Promise.all([
-        api.get<TriggerListResponse>('/triggers/?limit=100&offset=0'),
-        api.get<SessionListResponse>('/sessions/?limit=300&offset=0'),
+        api.get<TriggerListResponse>('/triggers?limit=100&offset=0'),
+        api.get<SessionListResponse>('/sessions?limit=300&offset=0'),
       ]);
       setTriggers(triggerPayload.items);
       setSessions(sessionPayload.items.filter((session) => !session.parent_session_id));
@@ -217,7 +217,7 @@ export function TriggersPage() {
 
     try {
       if (modal.mode === 'create') {
-        const created = await api.post<Trigger>('/triggers/', {
+        const created = await api.post<Trigger>('/triggers', {
           name: modal.name.trim(),
           type: modal.type,
           config,
