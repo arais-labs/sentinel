@@ -25,6 +25,9 @@ class _FakeResult:
     def __init__(self, rows: list):
         self._rows = rows
 
+    def __iter__(self):
+        return iter(self._rows)
+
     def scalars(self):
         return _FakeScalarResult(self._rows)
 
