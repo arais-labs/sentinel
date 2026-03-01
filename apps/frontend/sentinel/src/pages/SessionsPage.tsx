@@ -1304,7 +1304,7 @@ export function SessionsPage() {
   async function fetchSessions() {
     try {
       const [payload, defaultSession] = await Promise.all([
-        api.get<SessionListResponse>('/sessions/?limit=100&offset=0&include_sub_agents=true'),
+        api.get<SessionListResponse>('/sessions?limit=100&offset=0&include_sub_agents=true'),
         api.get<Session>('/sessions/default'),
       ]);
       setDefaultSessionId(defaultSession.id);
@@ -1437,7 +1437,7 @@ export function SessionsPage() {
 
   async function fetchModels() {
     try {
-      const payload = await api.get<ModelsResponse>('/models/');
+      const payload = await api.get<ModelsResponse>('/models');
       setModels(payload.models);
       if (payload.models.length === 0) return;
       const availableTiers = new Set(payload.models.map((m) => m.tier));

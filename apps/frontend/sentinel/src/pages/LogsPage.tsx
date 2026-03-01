@@ -1038,7 +1038,7 @@ export function LogsPage() {
       const all: Session[] = [];
       while (true) {
         const payload = await api.get<SessionListResponse>(
-          `/sessions/?limit=${pageSize}&offset=${offset}&include_sub_agents=true`,
+          `/sessions?limit=${pageSize}&offset=${offset}&include_sub_agents=true`,
         );
         const items = Array.isArray(payload?.items) ? payload.items : [];
         all.push(...items);
