@@ -30,6 +30,5 @@ Then run:
 VITE_BASE_PATH=/sentinel/ \
 VITE_ROUTER_BASENAME=/sentinel \
 VITE_SENTINEL_API_BASE_URL=/sentinel/api/v1 \
-VITE_PLATFORM_AUTH_BASE_URL=/platform/auth \
 npm run dev -- --host --port 5173
 ```

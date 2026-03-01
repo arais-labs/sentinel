@@ -53,13 +53,6 @@ export async function requestJson<T>(path: string, options: RequestOptions = {})
   const headers = new Headers();
   headers.set('Content-Type', 'application/json');
 
-  if (authenticated) {
-    const token = await useAuthStore.getState().getValidAccessToken();
-    if (token) {
-      headers.set('Authorization', `Bearer ${token}`);
-    }
-  }
-
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
@@ -67,6 +60,7 @@ export async function requestJson<T>(path: string, options: RequestOptions = {})
     const response = await fetch(`${API_BASE_URL}${path}`, {
       method,
       headers,
+      credentials: 'include',
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
     });

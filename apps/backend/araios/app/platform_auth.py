@@ -25,23 +25,31 @@ class PlatformIdentity:
     label: str | None = None
 
 
-def _hash_api_key(api_key: str, salt: str | None = None) -> str:
+def _hash_secret(value: str, salt: str | None = None) -> str:
     salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", api_key.encode("utf-8"), salt.encode("utf-8"), 240_000)
+    digest = hashlib.pbkdf2_hmac("sha256", value.encode("utf-8"), salt.encode("utf-8"), 240_000)
     return f"{salt}${digest.hex()}"
 
 
-def hash_api_key(api_key: str) -> str:
-    return _hash_api_key(api_key)
+def hash_secret(value: str) -> str:
+    return _hash_secret(value)
 
 
-def verify_api_key(api_key: str, stored_hash: str) -> bool:
+def verify_secret(value: str, stored_hash: str) -> bool:
     try:
         salt, _ = stored_hash.split("$", 1)
     except ValueError:
         return False
-    candidate = _hash_api_key(api_key, salt=salt)
+    candidate = _hash_secret(value, salt=salt)
     return secrets.compare_digest(candidate, stored_hash)
+
+
+def hash_api_key(api_key: str) -> str:
+    return hash_secret(api_key)
+
+
+def verify_api_key(api_key: str, stored_hash: str) -> bool:
+    return verify_secret(api_key, stored_hash)
 
 
 def _encode_token(*, identity: PlatformIdentity, token_type: str, ttl_seconds: int) -> str:
