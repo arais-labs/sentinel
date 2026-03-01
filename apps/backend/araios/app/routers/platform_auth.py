@@ -158,6 +158,20 @@ class CreateAgentKeyResponse(BaseModel):
     api_key: str
 
 
+class UpdateAgentKeyRequest(BaseModel):
+    label: str | None = None
+    subject: str | None = None
+    agent_id: str | None = None
+
+    @field_validator("label", "subject", "agent_id")
+    @classmethod
+    def _normalize_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
 def _identity_from_key(record: PlatformApiKey) -> PlatformIdentity:
     return PlatformIdentity(
         sub=record.subject,
@@ -167,8 +181,8 @@ def _identity_from_key(record: PlatformApiKey) -> PlatformIdentity:
     )
 
 
-def _new_platform_api_key(kind: str) -> str:
-    return f"sk-arais-{kind}-{secrets.token_urlsafe(32)}"
+def _new_agent_api_key() -> str:
+    return f"sk-arais-agent-{secrets.token_urlsafe(32)}"
 
 
 def _to_agent_summary(record: PlatformApiKey) -> AgentKeySummary:
@@ -180,6 +194,31 @@ def _to_agent_summary(record: PlatformApiKey) -> AgentKeySummary:
         is_active=record.is_active,
         created_at=record.created_at.isoformat() if record.created_at else None,
     )
+
+
+def _active_agent_keys(db: Session) -> list[PlatformApiKey]:
+    return (
+        db.query(PlatformApiKey)
+        .filter(
+            PlatformApiKey.role == "agent",
+            PlatformApiKey.is_active.is_(True),
+        )
+        .all()
+    )
+
+
+def _get_agent_key_or_404(db: Session, agent_key_id: str) -> PlatformApiKey:
+    record = (
+        db.query(PlatformApiKey)
+        .filter(
+            PlatformApiKey.id == agent_key_id,
+            PlatformApiKey.role == "agent",
+        )
+        .first()
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent key not found")
+    return record
 
 
 def _require_admin(user: TokenPayload) -> None:
@@ -224,7 +263,7 @@ async def issue_tokens(
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
 
-    keys = db.query(PlatformApiKey).filter(PlatformApiKey.is_active == True).all()  # noqa: E712
+    keys = _active_agent_keys(db)
     identity: PlatformIdentity | None = None
     for record in keys:
         if verify_api_key(body.api_key, record.key_hash):
@@ -301,7 +340,7 @@ async def list_agent_keys(
         db.query(PlatformApiKey)
         .filter(
             PlatformApiKey.role == "agent",
-            PlatformApiKey.is_active == True,  # noqa: E712
+            PlatformApiKey.is_active.is_(True),
         )
         .order_by(PlatformApiKey.created_at.desc())
         .all()
@@ -328,7 +367,7 @@ async def create_agent_key(
         db.query(PlatformApiKey)
         .filter(
             PlatformApiKey.role == "agent",
-            PlatformApiKey.is_active == True,  # noqa: E712
+            PlatformApiKey.is_active.is_(True),
             PlatformApiKey.agent_id == agent_id,
         )
         .first()
@@ -336,7 +375,7 @@ async def create_agent_key(
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="agent_id already exists")
 
-    api_key = _new_platform_api_key("agent")
+    api_key = _new_agent_api_key()
     record = PlatformApiKey(
         label=label,
         role="agent",
@@ -351,6 +390,68 @@ async def create_agent_key(
     return CreateAgentKeyResponse(agent=_to_agent_summary(record), api_key=api_key)
 
 
+@router.patch("/agents/{agent_key_id}", response_model=AgentKeySummary)
+async def update_agent_key(
+    agent_key_id: str,
+    body: UpdateAgentKeyRequest,
+    user: TokenPayload = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentKeySummary:
+    _require_admin(user)
+    record = _get_agent_key_or_404(db, agent_key_id)
+
+    fields = body.model_fields_set
+    if "agent_id" in fields:
+        if body.agent_id is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="agent_id cannot be empty")
+        existing = (
+            db.query(PlatformApiKey)
+            .filter(
+                PlatformApiKey.role == "agent",
+                PlatformApiKey.is_active.is_(True),
+                PlatformApiKey.agent_id == body.agent_id,
+                PlatformApiKey.id != record.id,
+            )
+            .first()
+        )
+        if existing is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="agent_id already exists")
+        record.agent_id = body.agent_id
+
+    if "label" in fields:
+        if body.label is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label cannot be empty")
+        record.label = body.label
+    if "subject" in fields:
+        if body.subject is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="subject cannot be empty")
+        record.subject = body.subject
+
+    db.commit()
+    db.refresh(record)
+    return _to_agent_summary(record)
+
+
+@router.post("/agents/{agent_key_id}/rotate", response_model=CreateAgentKeyResponse)
+async def rotate_agent_key(
+    agent_key_id: str,
+    response: Response,
+    user: TokenPayload = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CreateAgentKeyResponse:
+    _require_admin(user)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    record = _get_agent_key_or_404(db, agent_key_id)
+
+    api_key = _new_agent_api_key()
+    record.key_hash = hash_api_key(api_key)
+    record.is_active = True
+    db.commit()
+    db.refresh(record)
+    return CreateAgentKeyResponse(agent=_to_agent_summary(record), api_key=api_key)
+
+
 @router.delete("/agents/{agent_key_id}")
 async def deactivate_agent_key(
     agent_key_id: str,
@@ -358,16 +459,7 @@ async def deactivate_agent_key(
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
     _require_admin(user)
-    record = (
-        db.query(PlatformApiKey)
-        .filter(
-            PlatformApiKey.id == agent_key_id,
-            PlatformApiKey.role == "agent",
-        )
-        .first()
-    )
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent key not found")
+    record = _get_agent_key_or_404(db, agent_key_id)
 
     if record.is_active:
         record.is_active = False

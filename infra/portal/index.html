@@ -755,39 +755,118 @@
         row.style.borderRadius = "10px";
         row.style.padding = "10px";
         row.style.background = "var(--surface-0)";
+        row.style.display = "grid";
+        row.style.gap = "8px";
 
-        const title = document.createElement("div");
-        title.style.fontSize = "12px";
-        title.style.fontWeight = "700";
-        title.style.color = "var(--text-primary)";
-        title.textContent = `${agent.label || "Agent"} (${agent.agent_id || "no-agent-id"})`;
-        row.appendChild(title);
+        const labelInput = document.createElement("input");
+        labelInput.value = agent.label || "";
+        labelInput.placeholder = "Label";
+        row.appendChild(labelInput);
 
-        const sub = document.createElement("div");
-        sub.style.fontSize = "11px";
-        sub.style.color = "var(--text-muted)";
-        sub.style.marginTop = "4px";
-        sub.textContent = `subject: ${agent.subject || "—"}`;
-        row.appendChild(sub);
+        const agentIdInput = document.createElement("input");
+        agentIdInput.value = agent.agent_id || "";
+        agentIdInput.placeholder = "Agent ID";
+        row.appendChild(agentIdInput);
 
-        const deactivateBtn = document.createElement("button");
-        deactivateBtn.className = "copy-btn";
-        deactivateBtn.type = "button";
-        deactivateBtn.style.marginTop = "8px";
-        deactivateBtn.style.width = "100%";
-        deactivateBtn.textContent = "Deactivate";
-        deactivateBtn.addEventListener("click", async () => {
-          deactivateBtn.disabled = true;
+        const subjectInput = document.createElement("input");
+        subjectInput.value = agent.subject || "";
+        subjectInput.placeholder = "Subject";
+        row.appendChild(subjectInput);
+
+        const actions = document.createElement("div");
+        actions.style.display = "flex";
+        actions.style.gap = "8px";
+        actions.style.flexWrap = "wrap";
+
+        const saveBtn = document.createElement("button");
+        saveBtn.className = "copy-btn";
+        saveBtn.type = "button";
+        saveBtn.textContent = "Save";
+
+        const rotateBtn = document.createElement("button");
+        rotateBtn.className = "copy-btn";
+        rotateBtn.type = "button";
+        rotateBtn.textContent = "Rotate";
+
+        const revokeBtn = document.createElement("button");
+        revokeBtn.className = "copy-btn";
+        revokeBtn.type = "button";
+        revokeBtn.textContent = "Revoke";
+
+        function setBusy(busy) {
+          saveBtn.disabled = busy;
+          rotateBtn.disabled = busy;
+          revokeBtn.disabled = busy;
+        }
+
+        saveBtn.addEventListener("click", async () => {
+          const label = labelInput.value.trim();
+          const agentId = agentIdInput.value.trim();
+          const subject = subjectInput.value.trim();
+          if (!label || !agentId || !subject) {
+            whoamiEl.textContent = "Label, Agent ID, and Subject are required";
+            return;
+          }
+          setBusy(true);
+          try {
+            await authorizedAraiosRequest(`/platform/auth/agents/${agent.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({
+                label,
+                agent_id: agentId,
+                subject,
+              }),
+            });
+            await loadAgentTokens();
+            whoamiEl.textContent = "Agent token updated";
+          } catch (err) {
+            whoamiEl.textContent = err.message || "Could not update token";
+          } finally {
+            setBusy(false);
+          }
+        });
+
+        rotateBtn.addEventListener("click", async () => {
+          setBusy(true);
+          try {
+            const data = await authorizedAraiosRequest(`/platform/auth/agents/${agent.id}/rotate`, { method: "POST" });
+            createdAgentKeyInput.value = data.api_key || "";
+            if (data.api_key) {
+              sessionStorage.setItem(
+                ONBOARDING_PREFILL_KEY,
+                JSON.stringify({
+                  base_url: window.location.origin,
+                  agent_api_key: data.api_key,
+                  created_at: Date.now(),
+                }),
+              );
+            }
+            whoamiEl.textContent = "Agent token rotated";
+            await loadAgentTokens();
+          } catch (err) {
+            whoamiEl.textContent = err.message || "Could not rotate token";
+          } finally {
+            setBusy(false);
+          }
+        });
+
+        revokeBtn.addEventListener("click", async () => {
+          setBusy(true);
           try {
             await authorizedAraiosRequest(`/platform/auth/agents/${agent.id}`, { method: "DELETE" });
             await loadAgentTokens();
+            whoamiEl.textContent = "Agent token revoked";
           } catch (err) {
-            whoamiEl.textContent = err.message || "Could not deactivate token";
+            whoamiEl.textContent = err.message || "Could not revoke token";
           } finally {
-            deactivateBtn.disabled = false;
+            setBusy(false);
           }
         });
-        row.appendChild(deactivateBtn);
+
+        actions.appendChild(saveBtn);
+        actions.appendChild(rotateBtn);
+        actions.appendChild(revokeBtn);
+        row.appendChild(actions);
         agentListEl.appendChild(row);
       }
     }
