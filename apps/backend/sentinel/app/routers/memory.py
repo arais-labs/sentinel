@@ -44,7 +44,7 @@ def _raise_http_for_memory_error(exc: MemoryServiceError) -> None:
     raise exc
 
 
-@router.get("/")
+@router.get("")
 async def list_memory(
     request: Request,
     query: str | None = Query(default=None),
@@ -74,7 +74,7 @@ async def list_memory(
     )
 
 
-@router.post("/")
+@router.post("")
 async def store_memory(
     payload: StoreMemoryRequest,
     request: Request,

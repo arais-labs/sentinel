@@ -10,7 +10,7 @@ from app.services.llm.factory import build_models_response
 router = APIRouter()
 
 
-@router.get("/", response_model=ModelsResponse)
+@router.get("", response_model=ModelsResponse)
 async def list_models(
     provider: LLMProvider = Depends(get_llm_provider),
 ) -> ModelsResponse:

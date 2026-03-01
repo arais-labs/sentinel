@@ -23,7 +23,7 @@ _executor = ToolExecutor(_registry)
 _estop = EstopService()
 
 
-@router.get("/")
+@router.get("")
 async def list_tools(
     request: Request,
     user: TokenPayload = Depends(require_auth),
