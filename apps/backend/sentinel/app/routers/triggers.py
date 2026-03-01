@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("")
 async def list_triggers(
     type: str | None = Query(default=None),
     enabled: bool | None = Query(default=None),
@@ -51,7 +51,7 @@ async def list_triggers(
     return TriggerListResponse(items=[_trigger_response(t) for t in paged], total=total)
 
 
-@router.post("/")
+@router.post("")
 async def create_trigger(
     payload: CreateTriggerRequest,
     user: TokenPayload = Depends(require_auth),

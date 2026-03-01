@@ -80,7 +80,7 @@ def _raise_http_for_session_error(exc: Exception) -> None:
     raise exc
 
 
-@router.get("/")
+@router.get("")
 async def list_sessions(
     request: Request,
     include_sub_agents: bool = Query(default=False),
@@ -109,7 +109,7 @@ async def list_sessions(
     return SessionListResponse(items=items, total=page.total)
 
 
-@router.post("/")
+@router.post("")
 async def create_session(
     request: Request,
     payload: CreateSessionRequest,

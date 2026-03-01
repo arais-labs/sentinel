@@ -158,7 +158,7 @@ def _seed_module_permissions(name: str, db: Session):
 
 # ── Module CRUD ──
 
-@router.get("/")
+@router.get("")
 async def list_modules(
     db: Session = Depends(get_db),
     _: None = Depends(require_permission("modules.list")),
