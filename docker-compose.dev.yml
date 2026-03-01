@@ -24,7 +24,8 @@ services:
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-3600}
       REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-604800}
-      PLATFORM_BOOTSTRAP_API_KEY: ${PLATFORM_BOOTSTRAP_API_KEY}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      AUTH_COOKIE_SAMESITE: ${AUTH_COOKIE_SAMESITE:-lax}
     volumes:
       - ./apps/backend/araios:/app
     depends_on:
@@ -42,8 +43,9 @@ services:
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-3600}
       REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-604800}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      AUTH_COOKIE_SAMESITE: ${AUTH_COOKIE_SAMESITE:-lax}
       ARAIOS_URL: http://araios-backend:9000
-      DEV_TOKEN: disabled
       SSRF_ALLOW_HOSTS: araios-backend
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -88,7 +90,7 @@ services:
   sentinel-frontend:
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "if [ ! -d node_modules ]; then npm ci; fi && VITE_BASE_PATH=/sentinel/ VITE_ROUTER_BASENAME=/sentinel VITE_SENTINEL_API_BASE_URL=/sentinel/api/v1 VITE_PLATFORM_AUTH_BASE_URL=/platform/auth npm run dev -- --host --port 5173"
+    command: sh -c "if [ ! -d node_modules ]; then npm ci; fi && VITE_BASE_PATH=/sentinel/ VITE_ROUTER_BASENAME=/sentinel VITE_SENTINEL_API_BASE_URL=/sentinel/api/v1 npm run dev -- --host --port 5173"
     volumes:
       - ./apps/frontend/sentinel:/app
     healthcheck:

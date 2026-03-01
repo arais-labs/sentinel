@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.database.models import Approval, Permission, gen_id
+from app.database.models import Approval, Permission, RevokedToken, gen_id
 from app.dependencies import get_db
 from app.platform_auth import decode_token
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/platform/auth/token")
+ACCESS_TOKEN_COOKIE_NAME = "araios_access_token"
+REFRESH_TOKEN_COOKIE_NAME = "araios_refresh_token"
 
 
 class TokenPayload(BaseModel):
@@ -23,43 +26,58 @@ class TokenPayload(BaseModel):
     token_type: str
 
 
-def _bearer_token_from_request(request: Request) -> str:
+def _token_from_request(request: Request, *, token_type: str) -> str:
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-    token = auth[7:].strip()
+    token = auth[7:].strip() if auth.startswith("Bearer ") else ""
     if not token:
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+        cookie_key = ACCESS_TOKEN_COOKIE_NAME if token_type == "access" else REFRESH_TOKEN_COOKIE_NAME
+        token = request.cookies.get(cookie_key, "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
     return token
 
 
-def _parse_access_token(token: str) -> TokenPayload:
-    payload = decode_token(token, expected_type="access")
-    return TokenPayload.model_validate(payload)
+def _is_revoked(db: Session, jti: str) -> bool:
+    row = db.execute(select(RevokedToken).where(RevokedToken.jti == jti)).scalar_one_or_none()
+    return row is not None
 
 
-def get_role(request: Request) -> str:
-    token = _bearer_token_from_request(request)
-    payload = _parse_access_token(token)
-    return payload.role
-
-
-def get_agent_id(request: Request) -> str:
-    token = _bearer_token_from_request(request)
-    payload = _parse_access_token(token)
-    return payload.agent_id or payload.sub
-
-
-def get_subject(request: Request) -> str:
-    token = _bearer_token_from_request(request)
-    payload = _parse_access_token(token)
-    return payload.sub
-
-
-async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+def decode_and_validate_token(
+    token: str, db: Session, *, expected_type: str | None = None
 ) -> TokenPayload:
-    return _parse_access_token(token)
+    payload = decode_token(token, expected_type=expected_type)
+    parsed = TokenPayload.model_validate(payload)
+    if _is_revoked(db, parsed.jti):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return parsed
+
+
+def get_current_user(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> TokenPayload:
+    token = _token_from_request(request, token_type="access")
+    return decode_and_validate_token(token, db, expected_type="access")
+
+
+def get_role(user: TokenPayload = Depends(get_current_user)) -> str:
+    return user.role
+
+
+def get_agent_id(user: TokenPayload = Depends(get_current_user)) -> str:
+    return user.agent_id or user.sub
+
+
+def get_subject(user: TokenPayload = Depends(get_current_user)) -> str:
+    return user.sub
+
+
+def revoke_token(db: Session, payload: TokenPayload) -> None:
+    expires_at = datetime.fromtimestamp(payload.exp, tz=UTC)
+    if _is_revoked(db, payload.jti):
+        return
+    db.add(RevokedToken(jti=payload.jti, expires_at=expires_at))
+    db.commit()
 
 
 def require_permission(action: str):

@@ -116,7 +116,7 @@ export default function SettingsModal({ open, onClose, notify }) {
         <div className="form-field">
           <label className="form-label">Agent Senders</label>
           <p className="text-xs text-[color:var(--text-muted)] mt-1" style={{ marginBottom: '10px' }}>
-            Bootstrap creates one default agent key. Add more senders here so each agent has a distinct identity.
+            Create dedicated agent keys so each agent has a distinct identity and can be revoked independently.
           </p>
           {loadingAgents ? (
             <p className="text-xs text-[color:var(--text-muted)]">Loading agent senders…</p>

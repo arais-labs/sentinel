@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { isAuthenticated, clearToken, api } from './lib/api';
+import { checkSession, clearToken, api } from './lib/api';
 import Toast from './components/Toast';
 import { AppShell } from './components/AppShell';
 import { IconRefresh, IconSettings } from './components/Icons';
@@ -25,20 +25,8 @@ const SYSTEM_MODULES = [
 
 const LS_KEY = 'araios_active_module';
 
-function RedirectToGateway() {
-  useEffect(() => {
-    window.location.assign('/');
-  }, []);
-  return null;
-}
-
-function shouldUseGatewayRedirect() {
-  const path = (window.location.pathname || '/').toLowerCase();
-  return path === '/araios' || path.startsWith('/araios/');
-}
-
 function App() {
-  const [authed, setAuthed] = useState(isAuthenticated());
+  const [authed, setAuthed] = useState(false);
   const [activeModule, setActiveModule] = useState(() => localStorage.getItem(LS_KEY) || null);
   const [toast, setToast] = useState(null);
   const [pendingCount, setPendingCount] = useState(0);
@@ -92,7 +80,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    setAuthed(isAuthenticated());
+    checkSession().then(setAuthed).catch(() => setAuthed(false));
   }, []);
 
   useEffect(() => {
@@ -115,11 +103,18 @@ function App() {
   }, [authed]);
 
   if (!authed) {
-    if (shouldUseGatewayRedirect()) return <RedirectToGateway />;
     return <AuthGate onAuth={() => setAuthed(true)} />;
   }
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await fetch('/platform/auth/session', {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+    } catch {
+      // no-op
+    }
     clearToken();
     window.location.assign('/');
   };
