@@ -238,7 +238,6 @@ export interface ConfigResponse {
   context_token_budget: number;
   araios_url: string;
   jwt_secret_key: string;
-  dev_token: string;
 }
 
 export interface AuditLog {

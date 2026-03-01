@@ -3,7 +3,6 @@ import os
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.dependencies import get_db
 from app.main import app
@@ -48,7 +47,7 @@ def test_chat_endpoint_calls_agent_loop_and_returns_response():
         client = TestClient(app)
         old_agent_loop = getattr(app.state, "agent_loop", None)
         app.state.agent_loop = fake_loop
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -95,7 +94,7 @@ def test_chat_endpoint_returns_503_when_no_provider_configured():
         client = TestClient(app)
         old_agent_loop = getattr(app.state, "agent_loop", None)
         app.state.agent_loop = None
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 

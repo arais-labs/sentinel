@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react';
-import { Key, LogIn, Moon, Sun, Loader2 } from 'lucide-react';
+import { KeyRound, UserRound, LogIn, Moon, Sun, Loader2 } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
 
 import { API_BASE_URL } from '../lib/env';
@@ -14,7 +14,8 @@ export function LoginPage() {
   const theme = useThemeStore((state) => state.theme);
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
 
-  const [token, setToken] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
 
   if (status === 'authenticated') {
     return <Navigate to="/sessions" replace />;
@@ -24,9 +25,10 @@ export function LoginPage() {
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
-    const value = token.trim();
-    if (!value) return;
-    await login(value);
+    const normalizedUsername = username.trim();
+    const normalizedPassword = password.trim();
+    if (!normalizedUsername || !normalizedPassword) return;
+    await login(normalizedUsername, normalizedPassword);
   }
 
   return (
@@ -55,23 +57,40 @@ export function LoginPage() {
                 Welcome to Sentinel
               </h1>
               <p className="text-sm text-[color:var(--text-secondary)]">
-                Sign in with your araiOS operator token to access the control plane.
+                Sign in with your Sentinel credentials to access the control plane.
               </p>
             </div>
 
             <div className="space-y-2">
               <label className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                Access Token
+                Username
               </label>
               <div className="relative">
-                <Key size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                <UserRound size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                <input
+                  type="text"
+                  className="input-field pl-10 h-12"
+                  placeholder="admin"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoFocus
+                  disabled={isLoading}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                Password
+              </label>
+              <div className="relative">
+                <KeyRound size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
                 <input
                   type="password"
                   className="input-field pl-10 h-12"
-                  placeholder="Paste your token here..."
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  autoFocus
+                  placeholder="Enter your password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                   disabled={isLoading}
                 />
               </div>
@@ -86,7 +105,7 @@ export function LoginPage() {
             <div>
               <button
                 type="submit"
-                disabled={isLoading || !token.trim()}
+                disabled={isLoading || !username.trim() || !password.trim()}
                 className="btn-primary h-12 w-full"
               >
                 {isLoading ? <Loader2 size={18} className="animate-spin" /> : <LogIn size={18} />}
