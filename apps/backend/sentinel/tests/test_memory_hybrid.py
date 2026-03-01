@@ -5,7 +5,6 @@ import os
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.dependencies import get_db
 from app.main import app
@@ -57,7 +56,7 @@ def test_memory_store_auto_embeds_when_embedding_service_available():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
@@ -99,7 +98,7 @@ def test_memory_store_works_without_embedding_service():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
@@ -140,7 +139,7 @@ def test_memory_list_uses_hybrid_search_service_when_available():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 

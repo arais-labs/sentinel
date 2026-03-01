@@ -35,11 +35,23 @@
       overflow: hidden;
     }
 
+    html.manage-view,
+    html.manage-view body {
+      height: auto;
+      min-height: 100%;
+      overflow: auto;
+    }
+
     body {
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 24px;
+    }
+
+    html.manage-view body {
+      align-items: flex-start;
+      padding: 16px 12px;
     }
 
     /* Subtle background decor matching LoginPage.tsx */
@@ -84,6 +96,78 @@
       box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
       overflow: hidden;
       animation: fade-in 400ms ease-out;
+    }
+
+    html.manage-view .layout {
+      max-width: 1180px;
+      grid-template-columns: 1fr;
+      margin: 8px 0 12px;
+    }
+
+    html.manage-view .hero {
+      display: none;
+    }
+
+    html.manage-view .auth {
+      padding: 22px;
+    }
+
+    html.manage-view #management-card {
+      grid-template-columns: 1fr 1fr;
+      column-gap: 10px;
+      row-gap: 10px;
+      align-items: start;
+    }
+
+    html.manage-view #management-card > h3,
+    html.manage-view #management-card > p {
+      grid-column: 1 / -1;
+    }
+
+    html.manage-view #management-card .sentinel-section,
+    html.manage-view #management-card .agent-list-section,
+    html.manage-view #management-card .btn-secondary {
+      grid-column: 1 / -1;
+    }
+
+    html.manage-view #management-card .araios-section {
+      grid-column: 1 / 2;
+    }
+
+    html.manage-view #management-card .agent-create-section {
+      grid-column: 2 / 3;
+    }
+
+    html.manage-view #management-card input {
+      height: 34px;
+      font-size: 11px;
+    }
+
+    html.manage-view #management-card .copy-btn {
+      height: 34px;
+      font-size: 10px;
+      padding: 7px 9px;
+    }
+
+    html.manage-view #management-card .form-group {
+      margin-bottom: 0;
+    }
+
+    html.manage-view #agent-list {
+      max-height: 110px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    html.manage-view .footer-meta {
+      margin-top: 12px;
+      padding-top: 10px;
+    }
+
+    html.manage-view #management-card .btn-secondary {
+      width: 100%;
+      height: 34px;
+      font-size: 10px;
     }
 
     @keyframes fade-in {
@@ -252,7 +336,7 @@
       margin-top: 8px;
     }
 
-    button, .app-btn {
+    button, .app-btn, .btn-primary, .btn-secondary {
       height: 44px;
       display: inline-flex;
       align-items: center;
@@ -280,6 +364,7 @@
       background: var(--surface-1);
       border-color: var(--border-subtle);
       color: var(--text-primary);
+      text-decoration: none;
     }
     .btn-secondary:hover { background: var(--surface-2); border-color: var(--border-strong); }
 
@@ -341,13 +426,13 @@
     .hidden { display: none !important; }
 
     .bootstrap-card {
-      margin-top: 20px;
+      margin-top: 14px;
       padding: 16px;
       border-radius: 12px;
       border: 1px solid color-mix(in srgb, #f59e0b 55%, var(--border-subtle));
       background: color-mix(in srgb, #f59e0b 10%, transparent);
       display: grid;
-      gap: 10px;
+      gap: 8px;
     }
     .bootstrap-card h3 {
       margin: 0;
@@ -399,6 +484,9 @@
       .layout { grid-template-columns: 1fr; }
       .hero { border-right: none; border-bottom: 1px solid var(--border-subtle); padding: 32px; }
       .auth { padding: 32px; }
+      html.manage-view #management-card {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -439,16 +527,27 @@
 
       <div id="login-area">
         <h2>System Gateway</h2>
-        <p>Authorize with your platform key to proceed.</p>
+        <p>Sign in once to connect Sentinel and araiOS sessions.</p>
 
         <div class="form-group">
-          <label class="field-label" for="api-key">Platform API Key</label>
+          <label class="field-label" for="username">Username</label>
+          <div class="input-wrap">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21a8 8 0 1 0-16 0"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            <input id="username" type="text" placeholder="admin" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="field-label" for="password">Password</label>
           <div class="input-wrap">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
-            <input id="api-key" type="password" placeholder="sk-platform-..." />
+            <input id="password" type="password" placeholder="Enter password" />
           </div>
         </div>
 
@@ -460,10 +559,10 @@
       </div>
 
       <div id="app-area" class="hidden">
-        <h2>Control Plane</h2>
+        <h2 id="app-title">Control Plane</h2>
         <div id="whoami" class="status"></div>
 
-        <div class="app-grid">
+        <div id="app-grid" class="app-grid">
           <a class="app-btn" href="/sentinel/">
             <strong>Launch Sentinel</strong>
             <span>Active agent threads, browser tasks, and memory.</span>
@@ -472,22 +571,43 @@
             <strong>Open araiOS</strong>
             <span>Modular engine for custom tool design, gated data access, and module control.</span>
           </a>
+          <a class="app-btn" href="/manage/">
+            <strong>Manage Credentials</strong>
+            <span>Update passwords and manage araiOS agent tokens.</span>
+          </a>
         </div>
 
-        <div id="bootstrap-card" class="bootstrap-card hidden">
-          <h3>Bootstrap Finalized</h3>
-          <p>Bootstrap key is now revoked. Store these keys securely now. They are shown only once.</p>
-          <div class="key-row">
-            <input id="admin-key-output" class="key-output" readonly />
-            <button class="copy-btn" type="button" data-copy-target="admin-key-output">Copy Admin</button>
+        <div id="management-card" class="bootstrap-card hidden">
+          <h3>Credentials & Agent Tokens</h3>
+          <p>Manage Sentinel password, araiOS password, and araiOS agent API keys.</p>
+          <div class="form-group sentinel-section">
+            <label class="field-label" for="sentinel-current-password">Sentinel Password</label>
+            <input id="sentinel-current-password" type="password" placeholder="Current password" />
+            <input id="sentinel-new-password" type="password" placeholder="New password" style="margin-top: 8px;" />
+            <button id="sentinel-password-btn" class="copy-btn" type="button" style="width: 100%; margin-top: 8px;">Update Sentinel Password</button>
           </div>
-          <div class="key-row">
-            <input id="agent-key-output" class="key-output" readonly />
-            <button class="copy-btn" type="button" data-copy-target="agent-key-output">Copy Agent</button>
+          <div class="form-group araios-section">
+            <label class="field-label" for="araios-current-password">araiOS Password</label>
+            <input id="araios-current-password" type="password" placeholder="Current password" />
+            <input id="araios-new-password" type="password" placeholder="New password" style="margin-top: 8px;" />
+            <button id="araios-password-btn" class="copy-btn" type="button" style="width: 100%; margin-top: 8px;">Update araiOS Password</button>
           </div>
-          <button id="copy-both-btn" class="copy-btn" type="button" style="width: 100%;">Copy Both</button>
-          <p>Recovery/reset requires manual DB intervention.</p>
-          <button id="bootstrap-done-btn" class="btn-primary" type="button">I Stored These Keys</button>
+          <div class="form-group agent-create-section">
+            <label class="field-label" for="agent-label">Create araiOS Agent Token</label>
+            <input id="agent-label" type="text" placeholder="Label (optional)" />
+            <input id="agent-id" type="text" placeholder="Agent ID (optional)" style="margin-top: 8px;" />
+            <input id="agent-subject" type="text" placeholder="Subject (optional)" style="margin-top: 8px;" />
+            <button id="create-agent-btn" class="copy-btn" type="button" style="width: 100%; margin-top: 8px;">Create Agent Token</button>
+            <div class="key-row" style="margin-top: 8px;">
+              <input id="created-agent-key" class="key-output" readonly />
+              <button id="copy-created-agent-key" class="copy-btn" type="button">Copy</button>
+            </div>
+          </div>
+          <div class="form-group agent-list-section">
+            <label class="field-label">Active araiOS Agent Tokens</label>
+            <div id="agent-list" style="display: grid; gap: 8px;"></div>
+          </div>
+          <a class="btn-secondary" href="/">Back To Launch Page</a>
         </div>
 
         <button id="logout-btn" class="btn-secondary" type="button" style="margin-top: 24px; width: 100%;">Sign Out</button>
@@ -504,282 +624,330 @@
   </main>
 
   <script>
-    const SESSION_KEY = "sentinel.araios.auth.session";
-    const BOOTSTRAP_PENDING_KEY = "sentinel.araios.bootstrap.pending";
     const ONBOARDING_PREFILL_KEY = "sentinel.onboarding.araios.prefill";
+
+    const normalizedPath = window.location.pathname.replace(/\/+$/, "") || "/";
+    const isManageView = normalizedPath === "/manage";
+    function setManageViewEnabled(enabled) {
+      document.documentElement.classList.toggle("manage-view", enabled);
+    }
 
     const loginArea = document.getElementById("login-area");
     const appArea = document.getElementById("app-area");
-    const apiKeyInput = document.getElementById("api-key");
+    const appTitle = document.getElementById("app-title");
+    const appGrid = document.getElementById("app-grid");
+    const managementCard = document.getElementById("management-card");
+    const usernameInput = document.getElementById("username");
+    const passwordInput = document.getElementById("password");
     const loginBtn = document.getElementById("login-btn");
     const logoutBtn = document.getElementById("logout-btn");
     const statusEl = document.getElementById("status");
     const whoamiEl = document.getElementById("whoami");
-    const appGrid = appArea.querySelector(".app-grid");
-    const bootstrapCard = document.getElementById("bootstrap-card");
-    const adminKeyOutput = document.getElementById("admin-key-output");
-    const agentKeyOutput = document.getElementById("agent-key-output");
-    const copyBothBtn = document.getElementById("copy-both-btn");
-    const bootstrapDoneBtn = document.getElementById("bootstrap-done-btn");
-
+    const sentinelCurrentPasswordInput = document.getElementById("sentinel-current-password");
+    const sentinelNewPasswordInput = document.getElementById("sentinel-new-password");
+    const araiosCurrentPasswordInput = document.getElementById("araios-current-password");
+    const araiosNewPasswordInput = document.getElementById("araios-new-password");
+    const sentinelPasswordBtn = document.getElementById("sentinel-password-btn");
+    const araiosPasswordBtn = document.getElementById("araios-password-btn");
+    const agentLabelInput = document.getElementById("agent-label");
+    const agentIdInput = document.getElementById("agent-id");
+    const agentSubjectInput = document.getElementById("agent-subject");
+    const createAgentBtn = document.getElementById("create-agent-btn");
+    const createdAgentKeyInput = document.getElementById("created-agent-key");
+    const copyCreatedAgentKeyBtn = document.getElementById("copy-created-agent-key");
+    const agentListEl = document.getElementById("agent-list");
     function setStatus(message, isError = false) {
       statusEl.textContent = message || "";
       statusEl.className = isError ? "status error" : "status";
     }
 
-    function readSession() {
-      const raw = localStorage.getItem(SESSION_KEY);
-      if (!raw) return null;
+    async function clearAuthSessions() {
       try {
-        return JSON.parse(raw);
-      } catch {
-        return null;
-      }
-    }
-
-    function writeSession(tokenPair) {
-      localStorage.setItem(SESSION_KEY, JSON.stringify({
-        accessToken: tokenPair.access_token,
-        refreshToken: tokenPair.refresh_token,
-        tokenType: tokenPair.token_type || "bearer",
-        expiresIn: tokenPair.expires_in || 0,
-      }));
-    }
-
-    function clearSession() {
-      localStorage.removeItem(SESSION_KEY);
-    }
-
-    function readPendingBootstrap() {
-      const raw = sessionStorage.getItem(BOOTSTRAP_PENDING_KEY);
-      if (!raw) return null;
+        await fetch("/sentinel/api/v1/auth/session", { method: "DELETE", credentials: "include" });
+      } catch (_) {}
       try {
-        const parsed = JSON.parse(raw);
-        if (!parsed?.admin_api_key || !parsed?.agent_api_key) return null;
-        return parsed;
-      } catch {
-        return null;
+        await fetch("/platform/auth/session", { method: "DELETE", credentials: "include" });
+      } catch (_) {}
+    }
+
+    async function parseError(res, fallback) {
+      const body = await res.json().catch(() => ({}));
+      return body?.detail || body?.error?.message || fallback;
+    }
+
+    async function loginSentinel(username, password) {
+      const res = await fetch("/sentinel/api/v1/auth/login", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        throw new Error(`Sentinel: ${await parseError(res, "Login failed")}`);
       }
+      return res.json();
     }
 
-    function writePendingBootstrap(payload) {
-      sessionStorage.setItem(
-        BOOTSTRAP_PENDING_KEY,
-        JSON.stringify({
-          admin_api_key: payload.admin_api_key,
-          agent_api_key: payload.agent_api_key,
-        }),
-      );
+    async function loginAraios(username, password) {
+      const res = await fetch("/platform/auth/login", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        throw new Error(`araiOS: ${await parseError(res, "Login failed")}`);
+      }
+      return res.json();
     }
 
-    function clearPendingBootstrap() {
-      sessionStorage.removeItem(BOOTSTRAP_PENDING_KEY);
-    }
-
-    function writeOnboardingPrefill(payload) {
-      if (!payload?.agent_api_key) return;
-      sessionStorage.setItem(
-        ONBOARDING_PREFILL_KEY,
-        JSON.stringify({
-          agent_api_key: payload.agent_api_key,
-          created_at: Date.now(),
-        }),
-      );
-    }
-
-    function setLaunchLocked(locked) {
-      appGrid.classList.toggle("hidden", locked);
-    }
-
-    function hideBootstrapCard() {
-      bootstrapCard.classList.add("hidden");
-      adminKeyOutput.value = "";
-      agentKeyOutput.value = "";
-      setLaunchLocked(false);
-    }
-
-    function showBootstrapCard(payload) {
-      adminKeyOutput.value = payload.admin_api_key || "";
-      agentKeyOutput.value = payload.agent_api_key || "";
-      bootstrapCard.classList.remove("hidden");
-      setLaunchLocked(true);
-    }
-
-    async function fetchMe(accessToken) {
-      const res = await fetch("/platform/auth/me", {
-        headers: { Authorization: `Bearer ${accessToken}` },
+    async function fetchSentinelMe() {
+      const res = await fetch("/sentinel/api/v1/auth/me", {
+        credentials: "include",
       });
       if (!res.ok) return null;
       return res.json();
     }
 
+    async function fetchAraiosMe() {
+      const res = await fetch("/platform/auth/me", {
+        credentials: "include",
+      });
+      if (!res.ok) return null;
+      return res.json();
+    }
+
+    async function authorizedAraiosRequest(path, options = {}) {
+      const headers = Object.assign({}, options.headers || {});
+      if (!headers["Content-Type"] && options.body) {
+        headers["Content-Type"] = "application/json";
+      }
+      const res = await fetch(path, { ...options, headers, credentials: "include" });
+      if (!res.ok) {
+        throw new Error(await parseError(res, "Request failed"));
+      }
+      return res.json().catch(() => ({}));
+    }
+
+    async function authorizedSentinelRequest(path, options = {}) {
+      const headers = Object.assign({}, options.headers || {});
+      if (!headers["Content-Type"] && options.body) {
+        headers["Content-Type"] = "application/json";
+      }
+      const res = await fetch(path, { ...options, headers, credentials: "include" });
+      if (!res.ok) {
+        throw new Error(await parseError(res, "Request failed"));
+      }
+      return res.json().catch(() => ({}));
+    }
+
+    function renderAgentList(agents) {
+      agentListEl.innerHTML = "";
+      if (!Array.isArray(agents) || agents.length === 0) {
+        agentListEl.innerHTML = "<div style='font-size:11px;color:var(--text-muted);'>No active agent tokens.</div>";
+        return;
+      }
+      for (const agent of agents) {
+        const row = document.createElement("div");
+        row.style.border = "1px solid var(--border-subtle)";
+        row.style.borderRadius = "10px";
+        row.style.padding = "10px";
+        row.style.background = "var(--surface-0)";
+
+        const title = document.createElement("div");
+        title.style.fontSize = "12px";
+        title.style.fontWeight = "700";
+        title.style.color = "var(--text-primary)";
+        title.textContent = `${agent.label || "Agent"} (${agent.agent_id || "no-agent-id"})`;
+        row.appendChild(title);
+
+        const sub = document.createElement("div");
+        sub.style.fontSize = "11px";
+        sub.style.color = "var(--text-muted)";
+        sub.style.marginTop = "4px";
+        sub.textContent = `subject: ${agent.subject || "—"}`;
+        row.appendChild(sub);
+
+        const deactivateBtn = document.createElement("button");
+        deactivateBtn.className = "copy-btn";
+        deactivateBtn.type = "button";
+        deactivateBtn.style.marginTop = "8px";
+        deactivateBtn.style.width = "100%";
+        deactivateBtn.textContent = "Deactivate";
+        deactivateBtn.addEventListener("click", async () => {
+          deactivateBtn.disabled = true;
+          try {
+            await authorizedAraiosRequest(`/platform/auth/agents/${agent.id}`, { method: "DELETE" });
+            await loadAgentTokens();
+          } catch (err) {
+            whoamiEl.textContent = err.message || "Could not deactivate token";
+          } finally {
+            deactivateBtn.disabled = false;
+          }
+        });
+        row.appendChild(deactivateBtn);
+        agentListEl.appendChild(row);
+      }
+    }
+
+    async function loadAgentTokens() {
+      try {
+        const data = await authorizedAraiosRequest("/platform/auth/agents");
+        renderAgentList(data.agents || []);
+      } catch (err) {
+        renderAgentList([]);
+        whoamiEl.textContent = err.message || "Could not load agent tokens";
+      }
+    }
+
     async function renderFromSession() {
-      const pending = readPendingBootstrap();
-      if (pending) {
-        loginArea.classList.add("hidden");
-        appArea.classList.remove("hidden");
-        whoamiEl.textContent = "STORE KEYS TO UNLOCK APPS";
-        showBootstrapCard(pending);
-        setStatus("");
-        return;
-      }
-
-      const session = readSession();
-      if (!session?.accessToken) {
+      const [sentinelMe, araiosMe] = await Promise.all([
+        fetchSentinelMe(),
+        fetchAraiosMe(),
+      ]);
+      if (!sentinelMe || !araiosMe) {
+        setManageViewEnabled(false);
         loginArea.classList.remove("hidden");
         appArea.classList.add("hidden");
-        hideBootstrapCard();
         setStatus("");
         return;
       }
 
-      const me = await fetchMe(session.accessToken);
-      if (!me) {
-        clearSession();
-        loginArea.classList.remove("hidden");
-        appArea.classList.add("hidden");
-        hideBootstrapCard();
-        setStatus("");
-        return;
-      }
-
+      setManageViewEnabled(isManageView);
       loginArea.classList.add("hidden");
       appArea.classList.remove("hidden");
-      hideBootstrapCard();
-      whoamiEl.textContent = `AUTHENTICATED AS ${me.sub.toUpperCase()} (${me.role.toUpperCase()})`;
+      if (isManageView) {
+        appTitle.textContent = "Credential Management";
+        appGrid.classList.add("hidden");
+        managementCard.classList.remove("hidden");
+      } else {
+        appTitle.textContent = "Control Plane";
+        appGrid.classList.remove("hidden");
+        managementCard.classList.add("hidden");
+      }
+      whoamiEl.textContent = `Sentinel: ${sentinelMe.sub} (${sentinelMe.role}) | araiOS: ${araiosMe.sub} (${araiosMe.role})`;
       setStatus("");
-    }
-
-    async function exchangeApiKey(apiKey) {
-      const res = await fetch("/platform/auth/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: apiKey }),
-        cache: "no-store",
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(body.detail || "Handshake failed");
+      if (isManageView) {
+        await loadAgentTokens();
       }
-      return body;
-    }
-
-    async function finalizeBootstrap(accessToken) {
-      const res = await fetch("/platform/auth/bootstrap/finalize", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}` },
-        cache: "no-store",
-      });
-      if (res.status === 409) {
-        return null;
-      }
-      if (res.status === 403) {
-        return null;
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.detail || "Bootstrap finalization failed");
-      }
-      return res.json().catch(() => null);
     }
 
     loginBtn.addEventListener("click", async () => {
-      const apiKey = apiKeyInput.value.trim();
-      if (!apiKey) return;
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value.trim();
+      if (!username || !password) return;
 
       loginBtn.disabled = true;
-      setStatus("Establishing handshake...");
-
+      setStatus("Signing into Sentinel and araiOS...");
       try {
-        const body = await exchangeApiKey(apiKey);
-        apiKeyInput.value = "";
-        const finalized = await finalizeBootstrap(body.access_token);
-        if (finalized?.rotated) {
-          clearSession();
-          writePendingBootstrap(finalized);
-          await renderFromSession();
-        } else {
-          clearPendingBootstrap();
-          writeSession(body);
-          await renderFromSession();
-        }
+        await Promise.all([
+          loginSentinel(username, password),
+          loginAraios(username, password),
+        ]);
+        passwordInput.value = "";
+        await renderFromSession();
       } catch (err) {
+        await clearAuthSessions();
         setStatus(err.message || "Authorization failed", true);
       } finally {
         loginBtn.disabled = false;
       }
     });
 
-    logoutBtn.addEventListener("click", async () => {
-      const session = readSession();
-      if (session?.accessToken) {
-        try {
-          await fetch("/platform/auth/session", {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${session.accessToken}` },
-          });
-        } catch (_) {}
-      }
-      clearSession();
-      clearPendingBootstrap();
-      hideBootstrapCard();
-      await renderFromSession();
-    });
-
-    bootstrapDoneBtn.addEventListener("click", async () => {
-      const pending = readPendingBootstrap();
-      if (!pending?.admin_api_key) {
-        clearPendingBootstrap();
-        await renderFromSession();
-        return;
-      }
-
-      bootstrapDoneBtn.disabled = true;
-      setStatus("Activating admin session...");
+    sentinelPasswordBtn.addEventListener("click", async () => {
+      const currentPassword = sentinelCurrentPasswordInput.value.trim();
+      const newPassword = sentinelNewPasswordInput.value.trim();
+      if (!currentPassword || !newPassword) return;
+      sentinelPasswordBtn.disabled = true;
       try {
-        const body = await exchangeApiKey(pending.admin_api_key);
-        writeOnboardingPrefill(pending);
-        writeSession(body);
-        clearPendingBootstrap();
-        await renderFromSession();
+        await authorizedSentinelRequest("/sentinel/api/v1/auth/change-password", {
+          method: "POST",
+          body: JSON.stringify({
+            current_password: currentPassword,
+            new_password: newPassword,
+          }),
+        });
+        sentinelCurrentPasswordInput.value = "";
+        sentinelNewPasswordInput.value = "";
+        whoamiEl.textContent = "Sentinel password updated successfully";
       } catch (err) {
-        setStatus(err.message || "Could not activate admin session", true);
+        whoamiEl.textContent = err.message || "Sentinel password update failed";
       } finally {
-        bootstrapDoneBtn.disabled = false;
+        sentinelPasswordBtn.disabled = false;
       }
     });
 
-    document.querySelectorAll("[data-copy-target]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const id = btn.getAttribute("data-copy-target");
-        const target = id ? document.getElementById(id) : null;
-        if (!target || !target.value) return;
-        try {
-          await navigator.clipboard.writeText(target.value);
-          setStatus("Copied to clipboard.");
-        } catch {
-          setStatus("Could not copy automatically. Copy manually.", true);
-        }
-      });
-    });
-
-    copyBothBtn.addEventListener("click", async () => {
-      const admin = adminKeyOutput.value || "";
-      const agent = agentKeyOutput.value || "";
-      if (!admin || !agent) return;
-      const payload = `ADMIN_API_KEY=${admin}\nAGENT_API_KEY=${agent}`;
+    araiosPasswordBtn.addEventListener("click", async () => {
+      const currentPassword = araiosCurrentPasswordInput.value.trim();
+      const newPassword = araiosNewPasswordInput.value.trim();
+      if (!currentPassword || !newPassword) return;
+      araiosPasswordBtn.disabled = true;
       try {
-        await navigator.clipboard.writeText(payload);
-        setStatus("Both keys copied to clipboard.");
-      } catch {
-        setStatus("Could not copy automatically. Copy manually.", true);
+        await authorizedAraiosRequest("/platform/auth/change-password", {
+          method: "POST",
+          body: JSON.stringify({
+            current_password: currentPassword,
+            new_password: newPassword,
+          }),
+        });
+        araiosCurrentPasswordInput.value = "";
+        araiosNewPasswordInput.value = "";
+        whoamiEl.textContent = "araiOS password updated successfully";
+      } catch (err) {
+        whoamiEl.textContent = err.message || "araiOS password update failed";
+      } finally {
+        araiosPasswordBtn.disabled = false;
       }
     });
 
-    window.addEventListener("beforeunload", (event) => {
-      if (!readPendingBootstrap()) return;
-      event.preventDefault();
-      event.returnValue = "";
+    createAgentBtn.addEventListener("click", async () => {
+      createAgentBtn.disabled = true;
+      try {
+        const data = await authorizedAraiosRequest("/platform/auth/agents", {
+          method: "POST",
+          body: JSON.stringify({
+            label: agentLabelInput.value.trim() || undefined,
+            agent_id: agentIdInput.value.trim() || undefined,
+            subject: agentSubjectInput.value.trim() || undefined,
+          }),
+        });
+        createdAgentKeyInput.value = data.api_key || "";
+        if (data.api_key) {
+          sessionStorage.setItem(
+            ONBOARDING_PREFILL_KEY,
+            JSON.stringify({
+              base_url: window.location.origin,
+              agent_api_key: data.api_key,
+              created_at: Date.now(),
+            }),
+          );
+        }
+        agentLabelInput.value = "";
+        agentIdInput.value = "";
+        agentSubjectInput.value = "";
+        await loadAgentTokens();
+      } catch (err) {
+        whoamiEl.textContent = err.message || "Could not create agent token";
+      } finally {
+        createAgentBtn.disabled = false;
+      }
+    });
+
+    copyCreatedAgentKeyBtn.addEventListener("click", async () => {
+      if (!createdAgentKeyInput.value) return;
+      try {
+        await navigator.clipboard.writeText(createdAgentKeyInput.value);
+        whoamiEl.textContent = "Agent API key copied";
+      } catch {
+        whoamiEl.textContent = "Could not copy agent API key";
+      }
+    });
+
+    logoutBtn.addEventListener("click", async () => {
+      await clearAuthSessions();
+      await renderFromSession();
     });
 
     renderFromSession();

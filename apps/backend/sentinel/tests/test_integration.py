@@ -5,7 +5,6 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
 
 from app.dependencies import get_db
@@ -33,7 +32,7 @@ def test_full_integration_happy_path():
     try:
         client = TestClient(app)
 
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}

@@ -6,7 +6,6 @@ from uuid import UUID
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.config import settings
 from app.dependencies import get_db
@@ -53,7 +52,7 @@ def test_ws_streams_agent_loop_events_when_provider_available():
         client = TestClient(app)
         old_agent_loop = getattr(app.state, "agent_loop", None)
         app.state.agent_loop = _FakeLoop()
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -114,7 +113,7 @@ def test_ws_auto_resumes_after_compaction():
         old_agent_loop = getattr(app.state, "agent_loop", None)
         fake_loop = _FakeLoop(deltas_by_run=[["first run"], ["resumed run"]])
         app.state.agent_loop = fake_loop
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}

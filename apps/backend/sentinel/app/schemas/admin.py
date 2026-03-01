@@ -33,7 +33,6 @@ class ConfigResponse(BaseModel):
     context_token_budget: int
     araios_url: str | None = None
     jwt_secret_key: str = "***"
-    dev_token: str = "***"
 
 
 class UpdateConfigRequest(BaseModel):

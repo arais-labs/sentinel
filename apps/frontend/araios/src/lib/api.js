@@ -1,56 +1,55 @@
-const SHARED_SESSION_KEY = 'sentinel.araios.auth.session';
-
-function parseSession() {
-  const raw = localStorage.getItem(SHARED_SESSION_KEY);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
+let sessionHint = false;
 
 export function getToken() {
-  const session = parseSession();
-  return session?.accessToken || '';
+  return '';
 }
 
 export function getRefreshToken() {
-  const session = parseSession();
-  return session?.refreshToken || '';
+  return '';
 }
 
 export function setSession(session) {
-  const existing = parseSession() || {};
-  localStorage.setItem(
-    SHARED_SESSION_KEY,
-    JSON.stringify({
-      ...existing,
-      ...session,
-      tokenType: (session && session.tokenType) || existing.tokenType || 'bearer',
-    }),
-  );
+  sessionHint = Boolean(session?.accessToken || session?.refreshToken);
 }
 
 export function setToken(token) {
-  setSession({ accessToken: token, tokenType: 'bearer' });
+  sessionHint = Boolean(token);
 }
 
 export function clearToken() {
-  localStorage.removeItem(SHARED_SESSION_KEY);
+  sessionHint = false;
 }
 
 export function isAuthenticated() {
-  return !!getToken();
+  return sessionHint;
+}
+
+export async function checkSession() {
+  const res = await fetch('/platform/auth/me', { credentials: 'include' });
+  sessionHint = res.ok;
+  return sessionHint;
+}
+
+async function tryRefresh() {
+  const res = await fetch('/platform/auth/refresh', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  sessionHint = res.ok;
+  return res.ok;
 }
 
 export async function api(path, opts = {}) {
-  const token = getToken();
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(path, { headers, ...opts });
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+
+  let res = await fetch(path, { ...opts, headers, credentials: 'include' });
+  if (res.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      res = await fetch(path, { ...opts, headers, credentials: 'include' });
+    }
+  }
   if (res.status === 401) {
     clearToken();
     window.location.assign('/');
