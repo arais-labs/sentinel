@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+message_file="${1:-}"
+if [[ -z "$message_file" || ! -f "$message_file" ]]; then
+  echo "commit-msg hook error: missing commit message file."
+  exit 1
+fi
+
+subject="$(grep -m1 -Ev '^\s*$' "$message_file" || true)"
+if [[ -z "$subject" ]]; then
+  echo "Commit message cannot be empty."
+  exit 1
+fi
+
+# Skip merge/revert auto messages.
+if [[ "$subject" =~ ^Merge[[:space:]] ]] || [[ "$subject" =~ ^Revert[[:space:]] ]]; then
+  exit 0
+fi
+
+subject_len="${#subject}"
+if [[ "$subject_len" -gt 72 ]]; then
+  echo "Commit message subject is too long ($subject_len > 72)."
+  exit 1
+fi
+
+if echo "$subject" | grep -Eiq '^(wip|fixup!|squash!)'; then
+  echo "Commit message subject uses a temporary prefix (wip/fixup!/squash!)."
+  exit 1
+fi
+
+if ! grep -Eiq '^Signed-off-by:[[:space:]]+.+<.+>$' "$message_file"; then
+  echo "Missing DCO sign-off. Commit with: git commit -s"
+  exit 1
+fi

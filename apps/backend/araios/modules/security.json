@@ -1,0 +1,30 @@
+{
+  "name": "security",
+  "label": "Security",
+  "description": "Track security findings and remediation progress",
+  "icon": "Shield",
+  "type": "data",
+  "order": 50,
+  "fields": [
+    {"key": "title",       "label": "Title",       "type": "text",     "required": true},
+    {"key": "description", "label": "Description", "type": "textarea"},
+    {"key": "severity",    "label": "Severity",    "type": "select",
+     "options": ["critical", "high", "medium", "low"]},
+    {"key": "status",      "label": "Status",      "type": "select",
+     "options": ["open", "in-progress", "fixed", "wont-fix"]},
+    {"key": "category",    "label": "Category",    "type": "text"},
+    {"key": "fix_notes",   "label": "Fix Notes",   "type": "textarea"}
+  ],
+  "list_config": {
+    "titleField":    "title",
+    "subtitleField": "category",
+    "badgeField":    "severity",
+    "metaField":     "status",
+    "filterField":   "severity"
+  },
+  "actions": [
+    {"id": "create", "label": "New Finding", "placement": "sub-header", "type": "create"},
+    {"id": "delete", "label": "Delete",      "placement": "detail",     "type": "delete", "confirm": true}
+  ],
+  "secrets": []
+}

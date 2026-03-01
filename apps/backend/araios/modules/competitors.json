@@ -1,0 +1,27 @@
+{
+  "name": "competitors",
+  "label": "Competitors",
+  "description": "Monitor the competitor landscape and positioning",
+  "icon": "Target",
+  "type": "data",
+  "order": 40,
+  "fields": [
+    {"key": "name",     "label": "Name",     "type": "text", "required": true},
+    {"key": "website",  "label": "Website",  "type": "url"},
+    {"key": "category", "label": "Category", "type": "select",
+     "options": ["direct", "adjacent", "indirect"]},
+    {"key": "notes",    "label": "Notes",    "type": "textarea"}
+  ],
+  "list_config": {
+    "titleField":    "name",
+    "subtitleField": "website",
+    "badgeField":    "category",
+    "metaField":     "created_at",
+    "filterField":   "category"
+  },
+  "actions": [
+    {"id": "create", "label": "New Competitor", "placement": "sub-header", "type": "create"},
+    {"id": "delete", "label": "Delete",         "placement": "detail",     "type": "delete", "confirm": true}
+  ],
+  "secrets": []
+}
