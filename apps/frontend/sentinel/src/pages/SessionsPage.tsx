@@ -372,6 +372,9 @@ const SessionRow = memo(({
       } ${multiSelectMode ? 'pl-10 pr-3' : 'pr-10'}`}
     >
       <div className="flex items-center justify-between gap-2">
+        {session.has_unread && !isActive ? (
+          <span className="h-2 w-2 shrink-0 rounded-full bg-sky-500" />
+        ) : null}
         <span className="min-w-0 flex-1 text-xs font-semibold truncate">{session.title || 'Session'}</span>
         <div className="flex shrink-0 items-center gap-1">
           {sessionChannelKind(session) === 'telegram_group' ? (
@@ -1152,6 +1155,11 @@ export function SessionsPage() {
   const onSessionClick = useCallback((id: string) => {
     setActiveSessionId(id);
     navigate(`/sessions/${id}`);
+    // Mark as read locally + server-side
+    setSessions((current) =>
+      current.map((s) => s.id === id ? { ...s, has_unread: false } : s),
+    );
+    api.post(`/sessions/${id}/read`, {}).catch(() => {/* best-effort */});
   }, [navigate]);
 
   const startResizing = useCallback((e: React.MouseEvent) => {
@@ -1198,6 +1206,12 @@ export function SessionsPage() {
     void fetchSessions();
     void fetchModels();
     void fetchLiveView();
+  }, []);
+
+  // Poll sessions every 30s to pick up unread changes
+  useEffect(() => {
+    const interval = setInterval(() => { void fetchSessions(); }, 30_000);
+    return () => clearInterval(interval);
   }, []);
 
   // Populate composer with first message from onboarding
