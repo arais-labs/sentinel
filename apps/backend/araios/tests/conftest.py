@@ -43,11 +43,13 @@ def setup_db():
     """Create all tables before each test, seed permissions, drop after."""
     from app.database.models import Permission
     from app.permissions import AGENT_PERMISSIONS
+    from app.services.auth_settings import ensure_default_auth_settings
 
     Base.metadata.create_all(bind=engine)
 
     # Seed default permissions so agent role works correctly in tests
     db = TestSession()
+    ensure_default_auth_settings(db)
     for action, level in AGENT_PERMISSIONS.items():
         db.add(Permission(action=action, level=level))
     db.commit()

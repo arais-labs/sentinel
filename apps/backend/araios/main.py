@@ -7,7 +7,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.middleware.auth import get_agent_id, get_role, get_subject
-from app.platform_auth import hash_api_key
 
 from app.database.database import init_db
 from app.routers import (
@@ -23,19 +22,12 @@ from app.routers import modules as modules_router
 from app.routers import settings as settings_router
 from app.routers import manifest as manifest_router
 from app.routers import platform_auth as platform_auth_router
-from config import (
-    PLATFORM_BOOTSTRAP_AGENT_ID,
-    PLATFORM_BOOTSTRAP_API_KEY,
-    PLATFORM_BOOTSTRAP_LABEL,
-    PLATFORM_BOOTSTRAP_ROLE,
-    PLATFORM_BOOTSTRAP_SUB,
-)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.database.database import SessionLocal
-    from app.database.models import Permission, PlatformApiKey, Setting
+    from app.database.models import Permission, SystemSetting
     from sqlalchemy import text
 
     init_db()
@@ -48,31 +40,14 @@ async def lifespan(app: FastAPI):
         except Exception:
             db.rollback()
         # Seed default settings
-        if not db.query(Setting).filter(Setting.key == "manifest_base_url").first():
-            db.add(Setting(key="manifest_base_url", value="http://localhost:9000"))
+        if not db.query(SystemSetting).filter(SystemSetting.key == "manifest_base_url").first():
+            db.add(SystemSetting(key="manifest_base_url", value="http://localhost:9000"))
             db.commit()
         # Seed permissions
         for action, level in [("manifest.read", "allow"), ("settings.manage", "allow")]:
             if not db.query(Permission).filter(Permission.action == action).first():
                 db.add(Permission(action=action, level=level))
         db.commit()
-        if not db.query(PlatformApiKey).first():
-            if not PLATFORM_BOOTSTRAP_API_KEY:
-                raise RuntimeError(
-                    "No platform API keys found and PLATFORM_BOOTSTRAP_API_KEY is empty. "
-                    "Set PLATFORM_BOOTSTRAP_API_KEY to initialize auth."
-                )
-            db.add(
-                PlatformApiKey(
-                    label=PLATFORM_BOOTSTRAP_LABEL,
-                    role=PLATFORM_BOOTSTRAP_ROLE,
-                    subject=PLATFORM_BOOTSTRAP_SUB,
-                    agent_id=PLATFORM_BOOTSTRAP_AGENT_ID,
-                    key_hash=hash_api_key(PLATFORM_BOOTSTRAP_API_KEY),
-                    is_active=True,
-                )
-            )
-            db.commit()
         # Fix permissions for tool modules: keep only permissions that match current action IDs
         from app.database.models import Module
         from app.routers.modules import _seed_module_permissions
@@ -97,7 +72,8 @@ app = FastAPI(title="araiOS", lifespan=lifespan, redirect_slashes=False)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

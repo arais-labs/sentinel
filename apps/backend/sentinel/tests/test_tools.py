@@ -9,7 +9,6 @@ import jwt
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
 
 from app.dependencies import get_db
@@ -90,7 +89,7 @@ def test_tools_registry_and_execution():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -199,7 +198,7 @@ def test_runtime_exec_runs_command():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
             "/api/v1/sessions",
@@ -243,7 +242,7 @@ def test_file_read_path_traversal_blocked():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.post(
@@ -278,7 +277,7 @@ def test_http_request_ssrf_blocked():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.post(
@@ -385,7 +384,7 @@ def test_araios_api_tool_executes_with_configured_integration():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         with patch("app.services.tools.builtin.httpx.AsyncClient", _FakeAraiOSAsyncClient):
             response = client.post(
@@ -422,7 +421,7 @@ def test_araios_api_tool_requires_integration_configuration():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         response = client.post(
             "/api/v1/tools/araios_api/execute",

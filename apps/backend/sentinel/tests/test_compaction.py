@@ -5,7 +5,6 @@ import jwt
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.dependencies import get_db, get_llm_provider
 from app.main import app
@@ -66,7 +65,7 @@ def test_compaction_create_idempotent_and_ownership():
     try:
         client = TestClient(app)
 
-        owner_login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        owner_login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         owner_headers = {"Authorization": f"Bearer {owner_login.json()['access_token']}"}
         other_headers = {"Authorization": f"Bearer {_make_token(sub='other-user')}"}
 
@@ -129,7 +128,7 @@ def test_compaction_noop_when_context_is_small():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         session = client.post("/api/v1/sessions", json={"title": "small-context"}, headers=headers)
