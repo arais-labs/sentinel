@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.dependencies import get_db
 from app.logging_context import reset_log_session, set_log_session
-from app.middleware.auth import decode_and_validate_token
+from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
 from app.services.ws_manager import ConnectionManager
@@ -42,6 +42,8 @@ async def stream_session(
     run_registry = _resolve_run_registry(websocket)
 
     token = websocket.query_params.get("token")
+    if not token:
+        token = websocket.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
     if not token:
         await websocket.close(code=4001, reason="Missing token")
         return

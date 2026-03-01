@@ -2,7 +2,6 @@ import os
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-os.environ.setdefault("DEV_TOKEN", "sentinel-dev-token")
 
 from app.dependencies import get_db
 from app.main import app
@@ -36,7 +35,7 @@ def test_playwright_live_view_payload(monkeypatch):
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.get("/api/v1/playwright/live-view", headers=headers)
@@ -71,7 +70,7 @@ def test_playwright_live_view_uses_origin_header(monkeypatch):
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {
             "Authorization": f"Bearer {login.json()['access_token']}",
             "Origin": "http://localhost:4747",
@@ -106,7 +105,7 @@ def test_playwright_live_view_uses_referer_when_origin_missing(monkeypatch):
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {
             "Authorization": f"Bearer {login.json()['access_token']}",
             "Referer": "http://localhost:4747/sentinel/sessions",
@@ -151,7 +150,7 @@ def test_playwright_reset_browser_endpoint(monkeypatch):
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/token", json={"araios_token": "sentinel-dev-token"})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.post("/api/v1/playwright/reset-browser", headers=headers)

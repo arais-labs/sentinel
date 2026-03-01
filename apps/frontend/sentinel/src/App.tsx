@@ -76,14 +76,7 @@ function PublicLoginRoute() {
     return <Navigate to="/sessions" replace />;
   }
 
-  return <ExternalGatewayRedirect />;
-}
-
-function ExternalGatewayRedirect() {
-  useEffect(() => {
-    window.location.assign('/');
-  }, []);
-  return null;
+  return <LoginPage />;
 }
 
 export default function App() {

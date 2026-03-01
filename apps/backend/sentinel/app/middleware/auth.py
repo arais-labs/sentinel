@@ -3,9 +3,8 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-import httpx
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -15,7 +14,9 @@ from app.config import settings
 from app.dependencies import get_db
 from app.models import RevokedToken
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+ACCESS_TOKEN_COOKIE_NAME = "sentinel_access_token"
+REFRESH_TOKEN_COOKIE_NAME = "sentinel_refresh_token"
 
 
 class TokenPayload(BaseModel):
@@ -57,12 +58,7 @@ def create_refresh_token(identity: Identity) -> str:
 
 
 async def _is_revoked(db: AsyncSession, jti: str) -> bool:
-    try:
-        token_id = uuid.UUID(jti)
-    except ValueError:
-        return True
-
-    result = await db.execute(select(RevokedToken).where(RevokedToken.jti == token_id))
+    result = await db.execute(select(RevokedToken).where(RevokedToken.jti == jti))
     return result.scalar_one_or_none() is not None
 
 
@@ -90,8 +86,20 @@ async def decode_and_validate_token(
 
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)
+    request: Request, db: AsyncSession = Depends(get_db)
 ) -> TokenPayload:
+    auth_header = request.headers.get("Authorization", "")
+    token = ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        token = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME, "").strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return await decode_and_validate_token(token, db, expected_type="access")
 
 
@@ -107,31 +115,6 @@ async def require_admin(user: TokenPayload = Depends(get_current_user)) -> Token
 
 async def revoke_token(db: AsyncSession, payload: TokenPayload) -> None:
     expires_at = datetime.fromtimestamp(payload.exp, tz=UTC)
-    record = RevokedToken(jti=uuid.UUID(payload.jti), expires_at=expires_at)
+    record = RevokedToken(jti=payload.jti, expires_at=expires_at)
     db.add(record)
     await db.commit()
-
-
-async def resolve_identity_from_araios(araios_token: str) -> Identity:
-    if not settings.araios_url:
-        if araios_token != settings.dev_token:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid dev token")
-        return Identity(user_id=settings.dev_user_id, role="admin", agent_id=settings.dev_agent_id)
-
-    verify_url = f"{settings.araios_url.rstrip('/')}/api/verify"
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get(
-            verify_url,
-            headers={"Authorization": f"Bearer {araios_token}"},
-        )
-
-    if response.status_code != status.HTTP_200_OK:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid araiOS token")
-
-    data = response.json()
-    user_id = data.get("user_id") or data.get("sub")
-    role = data.get("role", "agent")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid araiOS verify payload")
-    return Identity(user_id=user_id, role=role, agent_id=data.get("agent_id"))
-
