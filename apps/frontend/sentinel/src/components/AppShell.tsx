@@ -17,7 +17,7 @@ import {
   Activity,
 } from 'lucide-react';
 
-import { APP_VERSION } from '../lib/env';
+import { APP_VERSION, SENTINEL_APP_URL } from '../lib/env';
 import { api } from '../lib/api';
 import {
   ARAIOS_SWITCH_URL_EVENT,
@@ -132,7 +132,7 @@ export function AppShell({
   const renderAppSwitcher = (currentApp: 'araios' | 'sentinel') => {
     const appSwitchItems: AppSwitchItem[] = [
       { id: 'araios', label: 'araiOS', href: araiosHref },
-      { id: 'sentinel', label: 'Sentinel', href: '/sentinel/' },
+      { id: 'sentinel', label: 'Sentinel', href: SENTINEL_APP_URL },
     ];
 
     return (
