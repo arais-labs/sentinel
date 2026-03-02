@@ -60,7 +60,7 @@ jobs:
         run: |
           cd apps/backend/araios
           python -m compileall app tests main.py
-          python -m pytest tests/test_health.py tests/test_documents.py tests/test_coordination.py tests/test_github_tasks.py -q
+          python -m pytest tests/test_health.py tests/test_documents.py tests/test_coordination.py tests/test_tasks.py -q
 
   frontend-build:
     name: Frontend Build (${{ matrix.frontend.name }})
