@@ -12,9 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import Memory, Message, Session
+from app.models import GitPushApproval, Memory, Message, Session
 from app.services.context_usage import (
     build_context_usage_metrics,
+    estimate_agent_messages_tokens,
     estimate_db_messages_tokens,
     extract_runtime_context_metrics,
     normalize_context_budget,
@@ -262,20 +263,31 @@ class SessionService:
             break
 
         if usage_tokens is None:
-            message_result = await db.execute(
-                select(Message)
-                .where(Message.session_id == session.id)
-                .order_by(Message.created_at.asc())
-            )
-            messages = message_result.scalars().all()
-            fallback = build_context_usage_metrics(
-                estimated_tokens=estimate_db_messages_tokens(messages),
+            rebuilt = await self._estimate_rebuilt_context_usage(
+                db,
+                session_id=session.id,
                 context_budget=budget,
             )
-            budget = fallback.context_token_budget
-            usage_tokens = fallback.estimated_context_tokens
-            usage_percent = fallback.estimated_context_percent
-            source = "db_messages_fallback"
+            if rebuilt is not None:
+                budget = rebuilt.context_token_budget
+                usage_tokens = rebuilt.estimated_context_tokens
+                usage_percent = rebuilt.estimated_context_percent
+                source = "rebuilt_context_estimate"
+            else:
+                message_result = await db.execute(
+                    select(Message)
+                    .where(Message.session_id == session.id)
+                    .order_by(Message.created_at.asc())
+                )
+                messages = message_result.scalars().all()
+                fallback = build_context_usage_metrics(
+                    estimated_tokens=estimate_db_messages_tokens(messages),
+                    context_budget=budget,
+                )
+                budget = fallback.context_token_budget
+                usage_tokens = fallback.estimated_context_tokens
+                usage_percent = fallback.estimated_context_percent
+                source = "db_messages_fallback"
 
         return {
             "session_id": session.id,
@@ -285,6 +297,31 @@ class SessionService:
             "snapshot_created_at": snapshot_created_at,
             "source": source,
         }
+
+    async def _estimate_rebuilt_context_usage(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        context_budget: int,
+    ):
+        """Estimate context using the same builder path used before actual runs."""
+        context_builder = getattr(self._agent_loop, "context_builder", None)
+        if context_builder is None or not hasattr(context_builder, "build"):
+            return None
+        try:
+            built = await context_builder.build(
+                db,
+                session_id,
+                system_prompt=None,
+                pending_user_message=None,
+            )
+        except Exception:
+            return None
+        return build_context_usage_metrics(
+            estimated_tokens=estimate_agent_messages_tokens(built),
+            context_budget=context_budget,
+        )
 
     async def cleanup_runtime(
         self,
@@ -326,7 +363,22 @@ class SessionService:
         user_id: str,
     ) -> bool:
         _ = await self.get_session(db, session_id=session_id, user_id=user_id)
-        return await self._run_registry.cancel(str(session_id))
+        cancelled = await self._run_registry.cancel(str(session_id))
+        now = datetime.now(UTC)
+        pending_result = await db.execute(
+            select(GitPushApproval).where(
+                GitPushApproval.session_id == session_id,
+                GitPushApproval.status == "pending",
+            )
+        )
+        pending_rows = pending_result.scalars().all()
+        if pending_rows:
+            for row in pending_rows:
+                row.status = "cancelled"
+                row.decision_note = "Cancelled by user via stop"
+                row.resolved_at = now
+            await db.commit()
+        return cancelled
 
     async def create_message(
         self,
