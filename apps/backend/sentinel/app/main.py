@@ -25,6 +25,7 @@ from app.middleware import (
 from app.routers import (
     admin,
     auth,
+    git as git_router,
     health,
     memory,
     models,
@@ -443,6 +444,7 @@ app.include_router(sub_agents.router, prefix="/api/v1/sessions", tags=["sub-agen
 app.include_router(triggers.router, prefix="/api/v1/triggers", tags=["triggers"])
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(tools.router, prefix="/api/v1/tools", tags=["tools"])
+app.include_router(git_router.router, prefix="/api/v1/git", tags=["git"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
 app.include_router(models.router, prefix="/api/v1/models", tags=["models"])
 app.include_router(onboarding.router, prefix="/api/v1/onboarding", tags=["onboarding"])
