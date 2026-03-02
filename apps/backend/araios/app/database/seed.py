@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from app.database.database import SessionLocal, init_db
 from app.database.models import (
-    Lead, Competitor, Client, Proposal, GithubTask,
+    Lead, Competitor, Client, Proposal, Task,
     LaunchPrepTask, Positioning, SecurityFinding,
 )
 
@@ -25,7 +25,18 @@ _LEAD_MAP = {"linkedinUrl": "linkedin_url", "lastContact": "last_contact", "next
 _COMPETITOR_MAP = {"lastUpdated": "last_updated"}
 _CLIENT_MAP = {"linkedIn": "linked_in", "engagementType": "engagement_type", "phaseProgress": "phase_progress", "healthStatus": "health_status", "contractValue": "contract_value", "startDate": "start_date", "createdAt": "created_at", "updatedAt": "updated_at"}
 _PROPOSAL_MAP = {"leadName": "lead_name", "proposalTitle": "proposal_title", "sentAt": "sent_at", "createdAt": "created_at", "updatedAt": "updated_at"}
-_GITHUB_MAP = {"prUrl": "pr_url", "workPackage": "work_package", "detectedAt": "detected_at", "readyAt": "ready_at", "handedOffAt": "handed_off_at", "closedAt": "closed_at", "updatedAt": "updated_at"}
+_TASK_MAP = {
+    "prUrl": "pr_url",
+    "workPackage": "work_package",
+    "detectedAt": "detected_at",
+    "readyAt": "ready_at",
+    "handedOffAt": "handed_off_at",
+    "closedAt": "closed_at",
+    "createdBy": "created_by",
+    "updatedBy": "updated_by",
+    "handoffTo": "handoff_to",
+    "updatedAt": "updated_at",
+}
 _LAUNCH_MAP = {"createdAt": "created_at", "updatedAt": "updated_at"}
 _POSITION_MAP = {"valueProps": "value_props"}
 _SECURITY_MAP = {"fixNotes": "fix_notes", "createdAt": "created_at", "updatedAt": "updated_at"}
@@ -83,12 +94,14 @@ def seed():
                 db.add(Proposal(**_map_fields(item, _PROPOSAL_MAP, Proposal)))
         print(f"  Seeded {len(data.get('proposals', []))} proposals")
 
-        # GitHub Tasks
-        data = _load_json("github-tasks.json")
+        # Tasks
+        data = _load_json("tasks.json")
+        if not data:
+            data = _load_json("github-tasks.json")
         for item in data.get("tasks", []):
-            if not db.query(GithubTask).filter(GithubTask.id == item["id"]).first():
-                db.add(GithubTask(**_map_fields(item, _GITHUB_MAP, GithubTask)))
-        print(f"  Seeded {len(data.get('tasks', []))} github tasks")
+            if not db.query(Task).filter(Task.id == item["id"]).first():
+                db.add(Task(**_map_fields(item, _TASK_MAP, Task)))
+        print(f"  Seeded {len(data.get('tasks', []))} tasks")
 
         # Launch Prep
         data = _load_json("launch-prep.json")

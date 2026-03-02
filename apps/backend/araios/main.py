@@ -16,7 +16,7 @@ from app.routers import (
     permissions,
     coordination,
     documents,
-    github_tasks,
+    tasks,
 )
 from app.routers import modules as modules_router
 from app.routers import settings as settings_router
@@ -39,6 +39,19 @@ async def lifespan(app: FastAPI):
             db.commit()
         except Exception:
             db.rollback()
+        # Add task collaboration columns if missing (idempotent migration)
+        for query in (
+            "ALTER TABLE github_tasks ADD COLUMN IF NOT EXISTS priority VARCHAR",
+            "ALTER TABLE github_tasks ADD COLUMN IF NOT EXISTS owner VARCHAR",
+            "ALTER TABLE github_tasks ADD COLUMN IF NOT EXISTS created_by VARCHAR",
+            "ALTER TABLE github_tasks ADD COLUMN IF NOT EXISTS updated_by VARCHAR",
+            "ALTER TABLE github_tasks ADD COLUMN IF NOT EXISTS handoff_to VARCHAR",
+        ):
+            try:
+                db.execute(text(query))
+                db.commit()
+            except Exception:
+                db.rollback()
         # Seed default settings
         if not db.query(SystemSetting).filter(SystemSetting.key == "manifest_base_url").first():
             db.add(SystemSetting(key="manifest_base_url", value="http://localhost:9000"))
@@ -84,7 +97,7 @@ app.include_router(approvals.router, prefix="/api/approvals", tags=["approvals"]
 app.include_router(permissions.router, prefix="/api/permissions", tags=["permissions"])
 app.include_router(coordination.router, prefix="/api/coordination", tags=["coordination"])
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
-app.include_router(github_tasks.router, prefix="/api/github-tasks", tags=["github-tasks"])
+app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 # Module engine router
 app.include_router(modules_router.router, prefix="/api/modules", tags=["modules"])
 

@@ -1,4 +1,6 @@
-const DEFAULT_ARAIOS_SWITCH_URL = '/araios/';
+import { ARAIOS_APP_URL } from './env';
+
+const DEFAULT_ARAIOS_SWITCH_URL = ARAIOS_APP_URL;
 const ARAIOS_SWITCH_URL_STORAGE_KEY = 'sentinel.araios.switch.url';
 export const ARAIOS_SWITCH_URL_EVENT = 'sentinel:araios-switch-url-updated';
 
