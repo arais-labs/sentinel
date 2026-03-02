@@ -749,7 +749,72 @@ def test_tool_result_content_is_truncated_before_persist():
 
     saved = [m for m in db.storage[Message] if m.session_id == session.id]
     tool_record = next(m for m in saved if m.role == "tool_result")
-    assert "[TRUNCATED - " in tool_record.content
+    assert (
+        "[TRUNCATED - " in tool_record.content
+        or "[TRUNCATED_FOR_STORAGE - " in tool_record.content
+    )
+    assert tool_record.metadata_json.get("storage_truncated") is True
+    assert int(tool_record.metadata_json.get("original_chars") or 0) > len(tool_record.content)
+
+
+def test_assistant_tool_call_arguments_are_sanitized_when_oversized():
+    db = FakeDB()
+    session = _new_session(db)
+
+    registry = ToolRegistry()
+
+    async def _noop(_payload):
+        return {"ok": True}
+
+    registry.register(
+        ToolDefinition(
+            name="big",
+            description="Big",
+            risk_level="low",
+            parameters_schema={"type": "object", "additionalProperties": True},
+            execute=_noop,
+        )
+    )
+
+    provider = _SequenceProvider(
+        [
+            AssistantMessage(
+                content=[
+                    ToolCallContent(
+                        id="call_big",
+                        name="big",
+                        arguments={"payload": "x" * 10_000},
+                    )
+                ],
+                model="m1",
+                provider="p1",
+                usage=TokenUsage(),
+                stop_reason="tool_use",
+            ),
+            AssistantMessage(
+                content=[TextContent(text="done")],
+                model="m1",
+                provider="p1",
+                usage=TokenUsage(),
+                stop_reason="stop",
+            ),
+        ]
+    )
+
+    loop = _build_loop(provider, registry)
+    _run(loop.run(db, session.id, "go", stream=False))
+
+    assistants = [
+        m for m in db.storage[Message]
+        if m.session_id == session.id and m.role == "assistant"
+    ]
+    first_assistant = assistants[0]
+    tool_calls = (first_assistant.metadata_json or {}).get("tool_calls") or []
+    assert isinstance(tool_calls, list) and tool_calls
+    args = tool_calls[0].get("arguments")
+    assert isinstance(args, dict)
+    assert args.get("_truncated") is True
+    assert isinstance(args.get("preview"), str) and len(args["preview"]) > 0
 
 
 def test_agent_loop_timeout_emits_done_timeout_and_persists_partial_state():
@@ -828,3 +893,19 @@ def test_agent_loop_persists_distinct_created_at_order_and_iteration_metadata():
     assistants = [item for item in saved if item.role == "assistant"]
     assert assistants[0].metadata_json.get("iteration") == 1
     assert assistants[1].metadata_json.get("iteration") == 2
+
+
+def test_stream_assemble_keeps_error_stop_reason_over_done():
+    provider = _StreamingProvider(scripts=[])
+    loop = _build_loop(provider)
+
+    message = loop._assemble_message_from_events(  # noqa: SLF001
+        [
+            AgentEvent(type="error", error="Overloaded"),
+            AgentEvent(type="done", stop_reason="stop"),
+        ],
+        fallback_model="m",
+        fallback_provider="p",
+    )
+
+    assert message.stop_reason == "error"

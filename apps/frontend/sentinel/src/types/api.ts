@@ -220,6 +220,46 @@ export interface ToolExecutionResponse {
   duration_ms: number;
 }
 
+export interface GitAccount {
+  id: string;
+  name: string;
+  host: string;
+  scope_pattern: string;
+  author_name: string;
+  author_email: string;
+  has_read_token: boolean;
+  has_write_token: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface GitAccountListResponse {
+  items: GitAccount[];
+  total: number;
+}
+
+export interface GitPushApproval {
+  id: string;
+  account_id: string;
+  session_id: string | null;
+  repo_url: string;
+  remote_name: string;
+  command: string;
+  status: 'pending' | 'approved' | 'rejected' | 'timed_out' | 'cancelled' | string;
+  requested_by: string | null;
+  decision_by: string | null;
+  decision_note: string | null;
+  expires_at: string;
+  resolved_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface GitPushApprovalListResponse {
+  items: GitPushApproval[];
+  total: number;
+}
+
 export interface PlaywrightLiveView {
   enabled: boolean;
   available: boolean;
