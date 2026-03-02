@@ -48,6 +48,7 @@ from app.services.tools.trigger_tools import (
     trigger_list_tool,
     trigger_update_tool,
 )
+from app.services.tools.git_exec import git_exec_tool
 
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
 _ALLOWED_MEMORY_CATEGORIES = {"core", "preference", "project", "correction"}
@@ -86,6 +87,7 @@ def build_default_registry(
     registry.register(_http_request_tool())
     if session_factory is not None:
         registry.register(_runtime_exec_tool(session_factory=session_factory))
+        registry.register(git_exec_tool(session_factory=session_factory))
     registry.register(_browser_navigate_tool(manager))
     registry.register(_browser_screenshot_tool(manager))
     registry.register(_browser_click_tool(manager))

@@ -40,6 +40,7 @@ import { WS_BASE_URL } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
 import { api } from '../lib/api';
 import type {
+  GitPushApprovalListResponse,
   Message,
   MessageAttachment,
   MessageListResponse,
@@ -118,6 +119,32 @@ function humanizeAgentError(raw: string): string {
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeCommand(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function isGitPushCommand(command: string): boolean {
+  return /^git\s+push(?:\s|$)/i.test(command.trim());
+}
+
+function gitPushCommandFromToolArgs(value: unknown): string | null {
+  if (!isObjectRecord(value)) return null;
+  const command = typeof value.command === 'string' ? value.command.trim() : '';
+  if (!command || !isGitPushCommand(command)) return null;
+  return command;
+}
+
+function pendingApprovalIdFromMetadata(metadata: Record<string, unknown>): string | null {
+  const approvalId = metadata.approval_id;
+  if (typeof approvalId !== 'string') return null;
+  const trimmed = approvalId.trim();
+  return trimmed || null;
+}
+
+function isWaitingApproval(metadata: Record<string, unknown>): boolean {
+  return metadata.pending === true;
 }
 
 function parseTier(value: string | null): ModelOption['tier'] | null {
@@ -456,12 +483,17 @@ SourceChip.displayName = 'SourceChip';
 const MessageCard = memo(({
   message,
   toolArgumentsByCallId,
+  onResolveGitApproval,
+  resolvingApprovalId,
 }: {
   message: Message;
   toolArgumentsByCallId: Map<string, string>;
+  onResolveGitApproval: (approvalId: string, decision: 'approve' | 'reject') => void;
+  resolvingApprovalId: string | null;
 }) => {
   const isUser = message.role === 'user';
   const isToolResult = message.role === 'tool_result';
+  const toolMetadata = isObjectRecord(message.metadata) ? message.metadata : {};
   const isTelegramGroupResponse = !isUser && !isToolResult && isTelegramGroupAuditMessage(message);
   const telegramGroupLabel = parseTelegramGroupResponseLabel(message.content ?? '');
   const renderedAssistantContent = isTelegramGroupResponse
@@ -478,6 +510,13 @@ const MessageCard = memo(({
       ? (toolArgumentsByCallId.get(message.tool_call_id) ?? '')
       : '';
   const toolFailed = Boolean(isToolResult && message.metadata?.is_error);
+  const pendingApproval = Boolean(
+    isToolResult &&
+    message.tool_name === 'git_exec' &&
+    isWaitingApproval(toolMetadata),
+  );
+  const pendingApprovalId = pendingApproval ? pendingApprovalIdFromMetadata(toolMetadata) : null;
+  const approvalActionBusy = pendingApprovalId !== null && resolvingApprovalId === pendingApprovalId;
   const [toolExpanded, setToolExpanded] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -526,7 +565,9 @@ const MessageCard = memo(({
           isUser
             ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent rounded-tr-none font-medium'
             : isToolResult
-            ? 'bg-sky-500/5 border-sky-500/20 font-mono text-[12px] rounded-tl-none'
+            ? pendingApproval
+              ? 'bg-rose-500/10 border-rose-500/35 font-mono text-[12px] rounded-tl-none'
+              : 'bg-sky-500/5 border-sky-500/20 font-mono text-[12px] rounded-tl-none'
             : isTelegramGroupResponse
             ? 'bg-emerald-500/8 border-emerald-500/25 rounded-tl-none font-medium'
             : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] rounded-tl-none font-medium'
@@ -540,12 +581,17 @@ const MessageCard = memo(({
                 className={`${toolExpanded ? 'w-full' : 'w-auto'} flex items-center justify-between gap-3 text-left`}
               >
                 <div className="flex items-center gap-2 min-w-0">
-                  <Wrench size={12} className="text-sky-600 dark:text-sky-400 shrink-0" />
-                  <span className="font-bold uppercase tracking-wide text-sky-600 dark:text-sky-400 truncate">
+                  <Wrench size={12} className={`${pendingApproval ? 'text-rose-400' : 'text-sky-600 dark:text-sky-400'} shrink-0`} />
+                  <span className={`font-bold uppercase tracking-wide truncate ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
                     {message.tool_name || 'tool_result'}
                   </span>
+                  {pendingApproval ? (
+                    <span className="inline-flex items-center rounded-full border border-rose-500/35 bg-rose-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-300">
+                      Waiting Approval
+                    </span>
+                  ) : null}
                 </div>
-                <ChevronDown size={14} className={`text-sky-600 dark:text-sky-400 shrink-0 transition-transform ${toolExpanded ? 'rotate-180' : ''}`} />
+                <ChevronDown size={14} className={`${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'} shrink-0 transition-transform ${toolExpanded ? 'rotate-180' : ''}`} />
               </button>
               {toolExpanded ? (
                 <div className={`mt-3 border-t border-sky-500/10 pt-3 grid ${isScreenshotTool ? 'grid-cols-1' : 'grid-cols-2'} gap-3 animate-in fade-in duration-200`}>
@@ -614,11 +660,35 @@ const MessageCard = memo(({
                         )}
                       </>
                     ) : (
-                      <ToolPayloadView
-                        raw={message.content}
-                        emptyLabel="No output payload."
-                        showRawJson={!isScreenshotTool}
-                      />
+                      <div className="space-y-2">
+                        <ToolPayloadView
+                          raw={message.content}
+                          emptyLabel="No output payload."
+                          showRawJson={!isScreenshotTool}
+                        />
+                        {pendingApproval && pendingApprovalId ? (
+                          <div className="flex items-center gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => onResolveGitApproval(pendingApprovalId, 'reject')}
+                              disabled={approvalActionBusy}
+                              className="inline-flex items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-500/20 disabled:opacity-60"
+                            >
+                              {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                              Reject
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onResolveGitApproval(pendingApprovalId, 'approve')}
+                              disabled={approvalActionBusy}
+                              className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-60"
+                            >
+                              {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                              Approve
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -813,9 +883,22 @@ function streamingCallKey(call: StreamingToolCall): string {
 
 // --- Sub-Components ---
 
-function StreamToolCard({ call, active }: { call: StreamingToolCall; active: boolean }) {
+function StreamToolCard({
+  call,
+  active,
+  onResolveGitApproval,
+  resolvingApprovalId,
+}: {
+  call: StreamingToolCall;
+  active: boolean;
+  onResolveGitApproval: (approvalId: string, decision: 'approve' | 'reject') => void;
+  resolvingApprovalId: string | null;
+}) {
   const [expanded, setExpanded] = useState(active);
   const isScreenshotCall = call.name.toLowerCase().includes('screenshot');
+  const pendingApproval = call.name === 'git_exec' && isWaitingApproval(call.metadata);
+  const pendingApprovalId = pendingApproval ? pendingApprovalIdFromMetadata(call.metadata) : null;
+  const approvalActionBusy = pendingApprovalId !== null && resolvingApprovalId === pendingApprovalId;
 
   useEffect(() => {
     if (active) setExpanded(true);
@@ -830,23 +913,28 @@ function StreamToolCard({ call, active }: { call: StreamingToolCall; active: boo
   return (
       <div className="flex flex-col gap-1.5 animate-in items-start w-full">
         <div className="flex items-center gap-2 px-1">
-        <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-sky-600 dark:text-sky-400">
-          tool_call • {active ? 'running' : 'complete'}
+        <span className={`text-[9px] font-bold uppercase tracking-[0.2em] ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
+          {pendingApproval ? 'tool_call • waiting approval' : `tool_call • ${active ? 'running' : 'complete'}`}
         </span>
         </div>
-        <div className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit'} inline-flex flex-col rounded-2xl rounded-tl-none border border-sky-500/20 bg-sky-500/5 px-4 py-1.5 text-[12px] shadow-sm`}>
+        <div className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit'} inline-flex flex-col rounded-2xl rounded-tl-none border ${pendingApproval ? 'border-rose-500/35 bg-rose-500/10' : 'border-sky-500/20 bg-sky-500/5'} px-4 py-1.5 text-[12px] shadow-sm`}>
           <button
             type="button"
             onClick={() => setExpanded((prev) => !prev)}
             className={`${expanded ? 'w-full' : 'w-auto'} flex items-center justify-between gap-3 text-left`}
           >
-            <div className="flex items-center gap-2 font-mono font-bold text-sky-600 dark:text-sky-400 min-w-0">
+            <div className={`flex items-center gap-2 font-mono font-bold min-w-0 ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
               <Wrench size={14} className="shrink-0" />
               <span className="truncate">{call.name}</span>
+              {pendingApproval ? (
+                <span className="inline-flex items-center rounded-full border border-rose-500/35 bg-rose-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-300">
+                  Pending
+                </span>
+              ) : null}
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
-              {active && <Loader2 size={12} className="animate-spin text-sky-500" />}
-              <ChevronDown size={14} className={`text-sky-600 dark:text-sky-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+              {active && <Loader2 size={12} className={`animate-spin ${pendingApproval ? 'text-rose-300' : 'text-sky-500'}`} />}
+              <ChevronDown size={14} className={`${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'} transition-transform ${expanded ? 'rotate-180' : ''}`} />
             </div>
           </button>
           {expanded ? (
@@ -866,11 +954,35 @@ function StreamToolCard({ call, active }: { call: StreamingToolCall; active: boo
                     </span>
                   )}
                 </div>
-                <ToolPayloadView
-                  raw={call.outputJson}
-                  emptyLabel={active ? 'Running tool...' : 'No output payload.'}
-                  showRawJson={!isScreenshotCall}
-                />
+                <div className="space-y-2">
+                  <ToolPayloadView
+                    raw={call.outputJson}
+                    emptyLabel={active ? 'Running tool...' : 'No output payload.'}
+                    showRawJson={!isScreenshotCall}
+                  />
+                  {pendingApproval && pendingApprovalId ? (
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => onResolveGitApproval(pendingApprovalId, 'reject')}
+                        disabled={approvalActionBusy}
+                        className="inline-flex items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-500/20 disabled:opacity-60"
+                      >
+                        {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                        Reject
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onResolveGitApproval(pendingApprovalId, 'approve')}
+                        disabled={approvalActionBusy}
+                        className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-60"
+                      >
+                        {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                        Approve
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
           ) : null}
@@ -915,6 +1027,7 @@ export function SessionsPage() {
   const [composerAttachments, setComposerAttachments] = useState<MessageAttachment[]>([]);
 
   const [streaming, setStreaming] = useState<StreamingState>(defaultStreamingState);
+  const [resolvingGitApprovalId, setResolvingGitApprovalId] = useState<string | null>(null);
 
   const [tasks, setTasks] = useState<SubAgentTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
@@ -967,7 +1080,9 @@ export function SessionsPage() {
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const activeSessionIdRef = useRef<string | null>(routeSessionId ?? null);
+  const contextUsageRequestRef = useRef(0);
   const wsInstanceRef = useRef(0);
+  const approvalLookupInFlightRef = useRef<Set<string>>(new Set());
 
   // Keep refs in sync so WS callbacks can read current values
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
@@ -1046,6 +1161,21 @@ export function SessionsPage() {
     return distance <= 20;
   }, []);
 
+  const cancelScheduledAutoScroll = useCallback(() => {
+    if (autoScrollRafRef.current !== null) {
+      window.cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
+    }
+    if (autoScrollTimerShortRef.current !== null) {
+      window.clearTimeout(autoScrollTimerShortRef.current);
+      autoScrollTimerShortRef.current = null;
+    }
+    if (autoScrollTimerLongRef.current !== null) {
+      window.clearTimeout(autoScrollTimerLongRef.current);
+      autoScrollTimerLongRef.current = null;
+    }
+  }, []);
+
   const stickToBottomNow = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -1057,22 +1187,11 @@ export function SessionsPage() {
 
   const scheduleStickToBottom = useCallback(() => {
     stickToBottomNow();
-    if (autoScrollRafRef.current !== null) {
-      window.cancelAnimationFrame(autoScrollRafRef.current);
-      autoScrollRafRef.current = null;
-    }
+    cancelScheduledAutoScroll();
     autoScrollRafRef.current = window.requestAnimationFrame(() => {
       stickToBottomNow();
       autoScrollRafRef.current = null;
     });
-    if (autoScrollTimerShortRef.current !== null) {
-      window.clearTimeout(autoScrollTimerShortRef.current);
-      autoScrollTimerShortRef.current = null;
-    }
-    if (autoScrollTimerLongRef.current !== null) {
-      window.clearTimeout(autoScrollTimerLongRef.current);
-      autoScrollTimerLongRef.current = null;
-    }
     // Tool cards expand with transitions; run delayed pins to land at true bottom.
     autoScrollTimerShortRef.current = window.setTimeout(() => {
       stickToBottomNow();
@@ -1082,7 +1201,7 @@ export function SessionsPage() {
       stickToBottomNow();
       autoScrollTimerLongRef.current = null;
     }, 420);
-  }, [stickToBottomNow]);
+  }, [cancelScheduledAutoScroll, stickToBottomNow]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const el = scrollRef.current;
@@ -1112,6 +1231,7 @@ export function SessionsPage() {
       setIsPinnedToBottom(true);
     } else if (userScrolledUp) {
       // Only disable auto-scroll when user explicitly scrolls up.
+      cancelScheduledAutoScroll();
       shouldAutoScrollRef.current = false;
       setIsPinnedToBottom(false);
     } else {
@@ -1121,7 +1241,7 @@ export function SessionsPage() {
     if (!atBottom && el.scrollTop <= 120 && hasMoreMessages && !loadingOlderRef.current) {
       void loadOlderMessages();
     }
-  }, [detectBottom, hasMoreMessages, activeSessionId, messages.length]);
+  }, [cancelScheduledAutoScroll, detectBottom, hasMoreMessages, activeSessionId, messages.length]);
 
   const sessionsInTab = useMemo(() => {
     if (historyTab === 'sub_agents') {
@@ -1201,14 +1321,14 @@ export function SessionsPage() {
   }, [sessions]);
 
   useEffect(() => {
-    void fetchSessions();
+    void fetchSessions({ autoSelectIfEmpty: true });
     void fetchModels();
     void fetchLiveView();
   }, []);
 
   // Poll sessions every 30s to pick up unread changes
   useEffect(() => {
-    const interval = setInterval(() => { void fetchSessions(); }, 30_000);
+    const interval = setInterval(() => { void fetchSessions({ autoSelectIfEmpty: false }); }, 30_000);
     return () => clearInterval(interval);
   }, []);
 
@@ -1290,17 +1410,9 @@ export function SessionsPage() {
 
   useEffect(() => {
     return () => {
-      if (autoScrollRafRef.current !== null) {
-        window.cancelAnimationFrame(autoScrollRafRef.current);
-      }
-      if (autoScrollTimerShortRef.current !== null) {
-        window.clearTimeout(autoScrollTimerShortRef.current);
-      }
-      if (autoScrollTimerLongRef.current !== null) {
-        window.clearTimeout(autoScrollTimerLongRef.current);
-      }
+      cancelScheduledAutoScroll();
     };
-  }, []);
+  }, [cancelScheduledAutoScroll]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -1313,7 +1425,8 @@ export function SessionsPage() {
   }, [activeSessionId, messages, hasMoreMessages, messagesLoading, isLoadingOlderMessages]);
 
   // API Actions
-  async function fetchSessions() {
+  async function fetchSessions(options?: { autoSelectIfEmpty?: boolean }) {
+    const autoSelectIfEmpty = options?.autoSelectIfEmpty ?? false;
     try {
       const [payload, defaultSession] = await Promise.all([
         api.get<SessionListResponse>('/sessions?limit=100&offset=0&include_sub_agents=true'),
@@ -1321,13 +1434,15 @@ export function SessionsPage() {
       ]);
       setDefaultSessionId(defaultSession.id);
       const payloadItems = Array.isArray(payload?.items) ? payload.items : [];
-      setSessions((current) => {
-        const exists = payloadItems.find((s) => s.id === defaultSession.id);
-        const merged = exists ? payloadItems : [defaultSession, ...payloadItems];
-        return merged.map((item) => ({ ...item, is_main: item.id === defaultSession.id }));
-      });
-      if (!activeSessionId) {
+      const exists = payloadItems.find((s) => s.id === defaultSession.id);
+      const merged = (exists ? payloadItems : [defaultSession, ...payloadItems]).map((item) => ({
+        ...item,
+        is_main: item.id === defaultSession.id,
+      }));
+      setSessions(merged);
+      if (autoSelectIfEmpty && !activeSessionIdRef.current) {
         setActiveSessionId(defaultSession.id);
+        activeSessionIdRef.current = defaultSession.id;
         navigate(`/sessions/${defaultSession.id}`, { replace: true });
       }
     } catch (error) {
@@ -1513,8 +1628,12 @@ export function SessionsPage() {
   }
 
   async function fetchContextUsage(sessionId: string) {
+    const requestId = ++contextUsageRequestRef.current;
     try {
       const payload = await api.get<SessionContextUsage>(`/sessions/${sessionId}/context-usage`);
+      if (sessionId !== activeSessionIdRef.current || requestId !== contextUsageRequestRef.current) {
+        return;
+      }
       if (typeof payload.context_token_budget === 'number' && Number.isFinite(payload.context_token_budget) && payload.context_token_budget > 0) {
         setContextTokenBudget(Math.floor(payload.context_token_budget));
       }
@@ -1529,6 +1648,9 @@ export function SessionsPage() {
         setContextTokenPercent(null);
       }
     } catch {
+      if (sessionId !== activeSessionIdRef.current || requestId !== contextUsageRequestRef.current) {
+        return;
+      }
       // Keep last-known values if this lightweight endpoint fails.
     }
   }
@@ -1564,16 +1686,28 @@ export function SessionsPage() {
       // CRITICAL: Only clear streaming UI state AFTER the official messages are loaded.
       // This prevents the "flash" where tool calls disappear before the API responds.
       if (!beforeMessageId) {
-        setStreaming((prev) => ({
-          ...prev,
-          text: '',
-          timeline: [],
-          interimTextSeq: 0,
-          activeToolCalls: [],
-          completedToolCalls: [],
-          isThinking: false,
-          isStreaming: false,
-        }));
+        setStreaming((prev) => {
+          const hasPendingApprovalCard = [...prev.activeToolCalls, ...prev.completedToolCalls].some(
+            (call) => call.name === 'git_exec' && isWaitingApproval(call.metadata),
+          );
+          if (hasPendingApprovalCard) {
+            return {
+              ...prev,
+              isThinking: false,
+              isStreaming: false,
+            };
+          }
+          return {
+            ...prev,
+            text: '',
+            timeline: [],
+            interimTextSeq: 0,
+            activeToolCalls: [],
+            completedToolCalls: [],
+            isThinking: false,
+            isStreaming: false,
+          };
+        });
       }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : 'Failed to load messages';
@@ -1659,6 +1793,92 @@ export function SessionsPage() {
       toast.error('Failed to spawn sub-agent');
     } finally {
       setIsSpawning(false);
+    }
+  }
+
+  function updateStreamingCallApproval(
+    approvalId: string,
+    updates: { pending?: boolean; approval_status?: string; decision_note?: string },
+  ) {
+    setStreaming((current) => {
+      const patchCall = (call: StreamingToolCall): StreamingToolCall => {
+        const callApprovalId = pendingApprovalIdFromMetadata(call.metadata);
+        if (!callApprovalId || callApprovalId !== approvalId) return call;
+        return {
+          ...call,
+          metadata: {
+            ...call.metadata,
+            ...updates,
+          },
+        };
+      };
+      return {
+        ...current,
+        activeToolCalls: current.activeToolCalls.map(patchCall),
+        completedToolCalls: current.completedToolCalls.map(patchCall),
+      };
+    });
+  }
+
+  async function resolveGitApprovalInline(approvalId: string, decision: 'approve' | 'reject') {
+    setResolvingGitApprovalId(approvalId);
+    try {
+      await api.post(`/git/push-approvals/${approvalId}/${decision}`, {
+        note: decision === 'approve' ? 'Approved from session tool card' : 'Rejected from session tool card',
+      });
+      updateStreamingCallApproval(approvalId, {
+        pending: false,
+        approval_status: decision === 'approve' ? 'approved' : 'rejected',
+      });
+      toast.success(decision === 'approve' ? 'Push approved' : 'Push rejected');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to resolve push approval');
+    } finally {
+      setResolvingGitApprovalId(null);
+    }
+  }
+
+  async function hydrateGitPushApprovalForCall(
+    sessionId: string,
+    callId: string,
+    contentIndex: number | null,
+    command: string,
+  ) {
+    const lookupKey = streamingCallKeyFromParts(callId, contentIndex);
+    if (approvalLookupInFlightRef.current.has(lookupKey)) return;
+    approvalLookupInFlightRef.current.add(lookupKey);
+    try {
+      const payload = await api.get<GitPushApprovalListResponse>('/git/push-approvals?status=pending&limit=200&offset=0');
+      const normalizedCommand = normalizeCommand(command);
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      const matched =
+        items.find((item) => item.session_id === sessionId && normalizeCommand(item.command) === normalizedCommand)
+        ?? items.find((item) => item.session_id === sessionId)
+        ?? null;
+      if (!matched) return;
+
+      setStreaming((current) => {
+        const patchCall = (call: StreamingToolCall): StreamingToolCall => {
+          if (call.id !== callId || call.contentIndex !== contentIndex) return call;
+          return {
+            ...call,
+            metadata: {
+              ...call.metadata,
+              pending: true,
+              approval_id: matched.id,
+            },
+          };
+        };
+        return {
+          ...current,
+          activeToolCalls: current.activeToolCalls.map(patchCall),
+          completedToolCalls: current.completedToolCalls.map(patchCall),
+        };
+      });
+    } catch {
+      // best effort hydration
+    } finally {
+      approvalLookupInFlightRef.current.delete(lookupKey);
     }
   }
 
@@ -1791,13 +2011,19 @@ export function SessionsPage() {
             return { ...current, isThinking: false };
           }
           const initialArguments = serializeToolArguments((event.tool_call as any)?.arguments);
+          const pushCommand = gitPushCommandFromToolArgs((event.tool_call as any)?.arguments);
+          const initialMetadata: Record<string, unknown> = pushCommand
+            ? { pending: true, git_push: true }
+            : {};
           const call = {
             id: callId,
             name: String((event.tool_call as any)?.name ?? 'unknown'),
             argumentsJson: initialArguments,
-            outputJson: '',
+            outputJson: pushCommand
+              ? '{"status":"pending","message":"Waiting for push approval..."}'
+              : '',
             isError: false,
-            metadata: {},
+            metadata: initialMetadata,
             complete: false,
             contentIndex,
           };
@@ -1814,6 +2040,14 @@ export function SessionsPage() {
               : [...current.timeline, { kind: 'tool', key: `tool-${callKey}`, callKey }],
           };
         });
+        {
+          const callId = String((event.tool_call as any)?.id ?? '');
+          const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
+          const pushCommand = gitPushCommandFromToolArgs((event.tool_call as any)?.arguments);
+          if (callId && pushCommand) {
+            void hydrateGitPushApprovalForCall(sessionId, callId, contentIndex, pushCommand);
+          }
+        }
         break;
       case 'toolcall_delta':
         setStreaming((current) => {
@@ -2552,7 +2786,7 @@ export function SessionsPage() {
             <div
                 ref={scrollRef}
                 onScroll={onMessagesScroll}
-                className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 scroll-smooth"
+            className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6"
             >
               {messagesLoading && messages.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center gap-4 text-[color:var(--text-muted)] animate-in">
@@ -2588,6 +2822,8 @@ export function SessionsPage() {
                           key={m.id}
                           message={m}
                           toolArgumentsByCallId={toolArgumentsByCallId}
+                          onResolveGitApproval={resolveGitApprovalInline}
+                          resolvingApprovalId={resolvingGitApprovalId}
                         />
                       ))}
 
@@ -2613,6 +2849,8 @@ export function SessionsPage() {
                           key={item.key}
                           call={call}
                           active={activeToolCallKeys.has(item.callKey)}
+                          onResolveGitApproval={resolveGitApprovalInline}
+                          resolvingApprovalId={resolvingGitApprovalId}
                         />
                       );
                     })}
@@ -2620,12 +2858,24 @@ export function SessionsPage() {
                     {streaming.completedToolCalls
                       .filter((call) => !timelineToolKeys.has(streamingCallKey(call)))
                       .map((c, idx) => (
-                        <StreamToolCard key={`${c.id}-${c.contentIndex ?? 'na'}-fallback-complete-${idx}`} call={c} active={false} />
+                        <StreamToolCard
+                          key={`${c.id}-${c.contentIndex ?? 'na'}-fallback-complete-${idx}`}
+                          call={c}
+                          active={false}
+                          onResolveGitApproval={resolveGitApprovalInline}
+                          resolvingApprovalId={resolvingGitApprovalId}
+                        />
                       ))}
                     {streaming.activeToolCalls
                       .filter((call) => !timelineToolKeys.has(streamingCallKey(call)))
                       .map((c, idx) => (
-                        <StreamToolCard key={`${c.id}-${c.contentIndex ?? 'na'}-fallback-active-${idx}`} call={c} active={true} />
+                        <StreamToolCard
+                          key={`${c.id}-${c.contentIndex ?? 'na'}-fallback-active-${idx}`}
+                          call={c}
+                          active={true}
+                          onResolveGitApproval={resolveGitApprovalInline}
+                          resolvingApprovalId={resolvingGitApprovalId}
+                        />
                       ))}
 
                     {streaming.text && (

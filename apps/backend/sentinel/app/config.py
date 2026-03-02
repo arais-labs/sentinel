@@ -91,7 +91,10 @@ class Settings(BaseSettings):
     browser_prewarm_on_start: bool = False
     browser_vnc_password: str | None = None
     context_token_budget: int = 200_000
+    stored_tool_result_max_chars: int = 4_000
+    stored_tool_call_args_max_chars: int = 1_200
     compaction_auto_resume_enabled: bool = True
+    git_push_approval_timeout_seconds: int = 600
 
     # --- Telegram ---
     telegram_bot_token: str | None = None

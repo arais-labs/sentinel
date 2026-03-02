@@ -9,6 +9,7 @@ import {
   Send,
   MonitorPlay,
   Settings,
+  GitBranch,
   Moon,
   Sun,
   Menu,
@@ -52,6 +53,7 @@ const navItems: NavItem[] = [
   { label: 'Memory', path: '/memory', icon: Database },
   { label: 'Triggers', path: '/triggers', icon: Zap },
   { label: 'Tools', path: '/tools', icon: Wrench },
+  { label: 'Git', path: '/git', icon: GitBranch },
   { label: 'Telegram', path: '/telegram', icon: Send },
   { label: 'Showcase', path: '/showcase', icon: MonitorPlay },
   { label: 'Settings', path: '/settings', icon: Settings },
@@ -69,6 +71,9 @@ function isActive(pathname: string, candidate: string) {
   }
   if (candidate === '/telegram') {
     return pathname.startsWith('/telegram');
+  }
+  if (candidate === '/git') {
+    return pathname.startsWith('/git');
   }
   return pathname === candidate;
 }

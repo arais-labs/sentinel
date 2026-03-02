@@ -92,8 +92,8 @@ class CompactionService:
     async def _compact(self, db: AsyncSession, session: Session) -> CompactionResult:
         """Summarize older messages, persist summary payload, and trim historical rows."""
         messages = await self._session_messages(db, session_id=session.id)
-
-        if len(messages) <= ACTIVE_CONTEXT_MESSAGE_COUNT:
+        active_context = self._select_active_context_messages(messages)
+        if len(messages) <= len(active_context):
             return CompactionResult(
                 session_id=session.id,
                 raw_token_count=0,
@@ -101,7 +101,15 @@ class CompactionService:
                 summary_preview="No compaction needed yet.",
             )
 
-        older = messages[:-ACTIVE_CONTEXT_MESSAGE_COUNT]
+        active_ids = {item.id for item in active_context}
+        older = [item for item in messages if item.id not in active_ids]
+        if not older:
+            return CompactionResult(
+                session_id=session.id,
+                raw_token_count=0,
+                compressed_token_count=0,
+                summary_preview="No compaction needed yet.",
+            )
         context_start = older[0].created_at or datetime.now(UTC)
         context_end = older[-1].created_at or datetime.now(UTC)
 
@@ -128,7 +136,7 @@ class CompactionService:
         payload["summary_text"] = summary_text
         payload["context_window_start"] = context_start.isoformat()
         payload["context_window_end"] = context_end.isoformat()
-        payload["active_message_count"] = ACTIVE_CONTEXT_MESSAGE_COUNT
+        payload["active_message_count"] = len(active_context)
         payload["compacted_message_count"] = len(older)
         if summary is None:
             summary = SessionSummary(
@@ -157,6 +165,51 @@ class CompactionService:
             compressed_token_count=compressed_token_count,
             summary_preview=preview,
         )
+
+    def _select_active_context_messages(self, messages: list[Message]) -> list[Message]:
+        """Keep a coherent recent tail (turn-aware), not arbitrary trailing rows."""
+        if not messages:
+            return []
+        if len(messages) <= ACTIVE_CONTEXT_MESSAGE_COUNT:
+            return list(messages)
+
+        turn_buckets: list[tuple[bool, list[Message]]] = []
+        current: list[Message] = []
+        current_has_user = False
+        for message in messages:
+            if message.role == "user":
+                if current:
+                    turn_buckets.append((current_has_user, current))
+                current = [message]
+                current_has_user = True
+                continue
+            if not current:
+                current = [message]
+                current_has_user = False
+                continue
+            current.append(message)
+        if current:
+            turn_buckets.append((current_has_user, current))
+
+        has_user_turn = any(has_user for has_user, _ in turn_buckets)
+        selected_reversed: list[list[Message]] = []
+        selected_count = 0
+        selected_user_turns = 0
+        for has_user, bucket in reversed(turn_buckets):
+            selected_reversed.append(bucket)
+            selected_count += len(bucket)
+            if has_user:
+                selected_user_turns += 1
+            enough_rows = selected_count >= ACTIVE_CONTEXT_MESSAGE_COUNT
+            enough_users = selected_user_turns >= 1 if has_user_turn else True
+            if enough_rows and enough_users:
+                break
+
+        selected_reversed.reverse()
+        retained = [item for bucket in selected_reversed for item in bucket]
+        if not retained:
+            return messages[-ACTIVE_CONTEXT_MESSAGE_COUNT:]
+        return retained
 
     async def _get_owned_session(
         self, db: AsyncSession, *, session_id: UUID, user_id: str

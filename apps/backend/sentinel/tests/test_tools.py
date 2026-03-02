@@ -97,7 +97,7 @@ def test_tools_registry_and_execution():
         listed = client.get("/api/v1/tools", headers=headers)
         assert listed.status_code == 200
         names = {item["name"] for item in listed.json()["items"]}
-        assert {"file_read", "http_request", "runtime_exec"} <= names
+        assert {"file_read", "http_request", "runtime_exec", "git_exec"} <= names
         assert "browser_reset" in names
         assert "araios_api" in names
 
