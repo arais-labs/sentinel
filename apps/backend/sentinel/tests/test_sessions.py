@@ -169,16 +169,18 @@ def test_cannot_set_telegram_channel_session_as_main():
 
         main_resp = client.get("/api/v1/sessions/default", headers=headers)
         assert main_resp.status_code == 200
-        user_id = main_resp.json()["user_id"]
         main_session_id = main_resp.json()["id"]
 
         channel_resp = client.post("/api/v1/sessions", json={"title": "TG Group · Ops"}, headers=headers)
         assert channel_resp.status_code == 200
         channel_session_id = channel_resp.json()["id"]
 
+        import jwt as _jwt
+        _decoded = _jwt.decode(token, options={"verify_signature": False})
+        _actual_user_id = _decoded["sub"]
         fake_db.add(
             SessionBinding(
-                user_id=user_id,
+                user_id=_actual_user_id,
                 binding_type="telegram_group",
                 binding_key="group:-100123",
                 session_id=uuid.UUID(channel_session_id),
