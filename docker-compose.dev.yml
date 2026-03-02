@@ -75,7 +75,7 @@ services:
   araios-frontend:
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "npm ci && VITE_BASE_PATH=/araios/ npm run dev -- --host --port 5174"
+    command: sh -c "npm ci && APP_SENTINEL_URL=${APP_SENTINEL_URL:-/sentinel/} APP_ARAIOS_URL=${APP_ARAIOS_URL:-/araios/} VITE_BASE_PATH=/araios/ npm run dev -- --host --port 5174"
     volumes:
       - ./apps/frontend/araios:/app
     healthcheck:
@@ -90,7 +90,7 @@ services:
   sentinel-frontend:
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "if [ ! -d node_modules ]; then npm ci; fi && VITE_BASE_PATH=/sentinel/ VITE_ROUTER_BASENAME=/sentinel VITE_SENTINEL_API_BASE_URL=/sentinel/api/v1 npm run dev -- --host --port 5173"
+    command: sh -c "if [ ! -d node_modules ]; then npm ci; fi && APP_SENTINEL_URL=${APP_SENTINEL_URL:-/sentinel/} APP_ARAIOS_URL=${APP_ARAIOS_URL:-/araios/} VITE_BASE_PATH=/sentinel/ VITE_ROUTER_BASENAME=/sentinel VITE_SENTINEL_API_BASE_URL=/sentinel/api/v1 npm run dev -- --host --port 5173"
     volumes:
       - ./apps/frontend/sentinel:/app
     healthcheck:
