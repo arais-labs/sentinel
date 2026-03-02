@@ -1,6 +1,7 @@
 from app.routers import (
     admin,
     auth,
+    git,
     health,
     memory,
     models,
@@ -20,6 +21,7 @@ from app.routers import (
 __all__ = [
     "admin",
     "auth",
+    "git",
     "health",
     "memory",
     "models",

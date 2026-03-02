@@ -176,7 +176,6 @@ def test_anthropic_stream_emits_all_event_types():
         'data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call_1","name":"lookup","input":{}}}',
         'data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\\"a\\":1}"}}',
         'data: {"type":"content_block_stop","index":2,"content_block":{"type":"tool_use"}}',
-        'data: {"type":"error","error":{"message":"boom"}}',
         'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
@@ -206,8 +205,32 @@ def test_anthropic_stream_emits_all_event_types():
         "toolcall_delta",
         "toolcall_end",
         "done",
-        "error",
     }
+
+
+def test_anthropic_stream_raises_on_sse_error_event():
+    stream_lines = [
+        'data: {"type":"message_start"}',
+        'data: {"type":"error","error":{"message":"boom"}}',
+    ]
+    fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
+    provider = AnthropicProvider(
+        api_key="test-key",
+        base_url="https://anthropic.example",
+        client_factory=lambda: fake_client,
+    )
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="hello")],
+            model="claude-sonnet-4-20250514",
+        ):
+            events.append(event)
+        return events
+
+    with pytest.raises(RuntimeError, match="Anthropic stream sse_error: boom"):
+        _run(_collect())
 
 
 def test_openai_chat_with_custom_base_url():

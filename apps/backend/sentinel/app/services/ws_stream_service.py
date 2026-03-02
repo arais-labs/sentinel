@@ -44,6 +44,7 @@ class AgentLoopProtocol(Protocol):
         model: str,
         max_iterations: int,
         allow_high_risk: bool,
+        persist_incremental: bool,
     ) -> Any: ...
 
 
@@ -71,6 +72,49 @@ async def load_history(db: AsyncSession, session_id: UUID) -> list[dict[str, Any
         }
         for message in messages
     ]
+
+
+def unresolved_tool_calls_from_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    resolved_ids: set[str] = set()
+    pending_order: list[str] = []
+    pending: dict[str, dict[str, Any]] = {}
+
+    for item in history:
+        role = str(item.get("role") or "")
+        if role == "assistant":
+            metadata = item.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            tool_calls = metadata.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for raw_call in tool_calls:
+                if not isinstance(raw_call, dict):
+                    continue
+                call_id = str(raw_call.get("id") or "").strip()
+                if not call_id or call_id in resolved_ids:
+                    continue
+                if call_id in pending:
+                    continue
+                name = str(raw_call.get("name") or "unknown")
+                arguments = raw_call.get("arguments")
+                pending[call_id] = {
+                    "id": call_id,
+                    "name": name,
+                    "arguments": arguments if isinstance(arguments, dict) else {},
+                }
+                pending_order.append(call_id)
+            continue
+
+        if role not in {"tool", "tool_result"}:
+            continue
+        call_id = str(item.get("tool_call_id") or "").strip()
+        if not call_id:
+            continue
+        resolved_ids.add(call_id)
+        pending.pop(call_id, None)
+
+    return [pending[call_id] for call_id in pending_order if call_id in pending]
 
 
 async def persist_user_message(
@@ -142,6 +186,7 @@ async def run_agent_once(
             model=(tier or TierName.NORMAL).value,
             max_iterations=max_iterations,
             allow_high_risk=True,
+            persist_incremental=True,
         )
     )
     registered = await run_registry.register(session_key, run_task)
