@@ -185,15 +185,26 @@ class ProposalListResponse(BaseModel):
     proposals: List[ProposalOut]
 
 
-# ── GitHub Tasks ──
+# ── Tasks ──
 
-class GithubTaskCreate(BaseModel):
-    """Create a new GitHub task."""
+class TaskCreate(BaseModel):
+    """Create a new collaborative task."""
     client: Optional[str] = Field(None, description="Client name this task belongs to")
-    repo: Optional[str] = Field(None, description="GitHub repository (e.g. 'org/repo')")
-    type: Optional[str] = Field(None, description="Task type: issue, pr, bug, feature")
-    status: Optional[str] = Field("open", description="Task status: open, in_progress, review, handed_off, closed")
+    repo: Optional[str] = Field(None, description="Project or repository identifier (optional)")
+    type: Optional[str] = Field(None, description="Task type/category (e.g. task, feature, bug, research, pr_review)")
+    priority: Optional[str] = Field("medium", description="Task priority: low, medium, high, critical")
+    status: Optional[str] = Field(
+        "todo",
+        description=(
+            "Task lifecycle status. Recommended: backlog, todo, in_progress, in_review, blocked, "
+            "handoff, done, cancelled. Legacy statuses are still accepted."
+        ),
+    )
     title: Optional[str] = Field(None, description="Task title")
+    owner: Optional[str] = Field(None, description="Current owner (human/agent)")
+    createdBy: Optional[str] = Field(None, description="Creator identity")
+    updatedBy: Optional[str] = Field(None, description="Last editor identity")
+    handoffTo: Optional[str] = Field(None, description="Target owner for handoff")
     source: Optional[str] = Field(None, description="Where the task originated (e.g. 'github', 'manual')")
     prUrl: Optional[str] = Field(None, description="Pull request URL")
     summary: Optional[str] = Field(None, description="Task summary / description")
@@ -204,13 +215,24 @@ class GithubTaskCreate(BaseModel):
     closedAt: Optional[str] = Field(None, description="When the task was closed (ISO string)")
     notes: Optional[str] = Field(None, description="Free-form notes")
 
-class GithubTaskUpdate(BaseModel):
-    """Update a GitHub task. All fields optional."""
+class TaskUpdate(BaseModel):
+    """Update a task. All fields optional."""
     client: Optional[str] = Field(None, description="Client name")
-    repo: Optional[str] = Field(None, description="GitHub repository")
-    type: Optional[str] = Field(None, description="Task type")
-    status: Optional[str] = Field(None, description="Task status: open, in_progress, review, handed_off, closed")
+    repo: Optional[str] = Field(None, description="Project or repository identifier")
+    type: Optional[str] = Field(None, description="Task type/category")
+    priority: Optional[str] = Field(None, description="Task priority")
+    status: Optional[str] = Field(
+        None,
+        description=(
+            "Task lifecycle status. Recommended: backlog, todo, in_progress, in_review, blocked, "
+            "handoff, done, cancelled. Legacy statuses are still accepted."
+        ),
+    )
     title: Optional[str] = Field(None, description="Task title")
+    owner: Optional[str] = Field(None, description="Current owner")
+    createdBy: Optional[str] = Field(None, description="Creator identity")
+    updatedBy: Optional[str] = Field(None, description="Last editor identity")
+    handoffTo: Optional[str] = Field(None, description="Target owner for handoff")
     source: Optional[str] = Field(None, description="Task origin")
     prUrl: Optional[str] = Field(None, description="Pull request URL")
     summary: Optional[str] = Field(None, description="Task summary")
@@ -221,13 +243,18 @@ class GithubTaskUpdate(BaseModel):
     closedAt: Optional[str] = Field(None, description="When the task was closed")
     notes: Optional[str] = Field(None, description="Free-form notes")
 
-class GithubTaskOut(BaseModel):
+class TaskOut(BaseModel):
     id: str
     client: Optional[str] = None
     repo: Optional[str] = None
     type: Optional[str] = None
+    priority: Optional[str] = None
     status: Optional[str] = None
     title: Optional[str] = None
+    owner: Optional[str] = None
+    createdBy: Optional[str] = None
+    updatedBy: Optional[str] = None
+    handoffTo: Optional[str] = None
     source: Optional[str] = None
     prUrl: Optional[str] = None
     summary: Optional[str] = None
@@ -239,8 +266,8 @@ class GithubTaskOut(BaseModel):
     notes: Optional[str] = None
     updatedAt: Optional[str] = None
 
-class GithubTaskListResponse(BaseModel):
-    tasks: List[GithubTaskOut]
+class TaskListResponse(BaseModel):
+    tasks: List[TaskOut]
 
 
 # ── Launch Prep ──

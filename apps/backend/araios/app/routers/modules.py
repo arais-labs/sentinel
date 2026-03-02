@@ -1,11 +1,10 @@
 """Generic module registry + record CRUD router."""
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db
-from fastapi import Request
 from app.middleware.auth import require_permission, get_role
 from app.database.models import Module, ModuleRecord, ModuleSecret, Permission, Approval, gen_id
 from app.services.executor import execute_action
@@ -16,7 +15,15 @@ router = APIRouter()
 # ── Helpers ──
 
 
-async def _check_action_permission(action: str, role: str, db: Session, body: dict = None):
+async def _check_action_permission(
+    action: str,
+    role: str,
+    db: Session,
+    body: dict | None = None,
+    *,
+    resource: str | None = None,
+    resource_id: str | None = None,
+):
     """Check permission for a dynamic action string.
 
     - Admin: always allowed
@@ -37,13 +44,15 @@ async def _check_action_permission(action: str, role: str, db: Session, body: di
         raise HTTPException(status_code=403, detail=f"Action '{action}' is not allowed for agent role")
 
     if perm == "approval":
-        resource = action.rsplit(".", 1)[0] if "." in action else action
+        approval_resource = resource or (action.rsplit(".", 1)[0] if "." in action else action)
+        description = f"Agent requested: {action}" + (f" on {resource_id}" if resource_id else "")
         approval = Approval(
             id=gen_id(),
             status="pending",
             action=action,
-            resource=resource,
-            description=f"Agent requested: {action}",
+            resource=approval_resource,
+            resource_id=resource_id,
+            description=description,
             payload=body,
         )
         db.add(approval)
@@ -68,6 +77,103 @@ def _module_or_404(name: str, db: Session) -> Module:
     if not mod:
         raise HTTPException(status_code=404, detail=f"Module '{name}' not found")
     return mod
+
+
+_MODULE_MUTABLE_FIELDS = (
+    "label",
+    "icon",
+    "type",
+    "fields",
+    "list_config",
+    "actions",
+    "secrets",
+    "description",
+    "order",
+)
+
+
+def _normalize_module_name(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
+
+
+def _extract_module_updates(body: dict[str, Any]) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    for field in _MODULE_MUTABLE_FIELDS:
+        if field in body:
+            value = body[field]
+            if field == "actions":
+                value = _validate_action_updates(value)
+            updates[field] = value
+    if not updates:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "At least one editable module field is required "
+                f"({', '.join(_MODULE_MUTABLE_FIELDS)})"
+            ),
+        )
+    return updates
+
+
+def _validate_action_updates(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="'actions' must be a list")
+
+    validated: list[dict[str, Any]] = []
+    for action in value:
+        if not isinstance(action, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="Each action in 'actions' must be an object",
+            )
+        action_id = action.get("id")
+        if not isinstance(action_id, str) or not action_id.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Each action in 'actions' requires a non-empty 'id'",
+            )
+        validated.append(action)
+    return validated
+
+
+def _merge_action_updates(
+    existing_actions: list[Any],
+    patch_actions: list[dict[str, Any]],
+) -> list[Any]:
+    merged: list[Any] = list(existing_actions)
+    action_index: dict[str, int] = {}
+
+    for idx, action in enumerate(merged):
+        if not isinstance(action, dict):
+            continue
+        action_id = action.get("id")
+        if isinstance(action_id, str) and action_id and action_id not in action_index:
+            action_index[action_id] = idx
+
+    for action in patch_actions:
+        action_id = action["id"]
+        existing_idx = action_index.get(action_id)
+        if existing_idx is None:
+            action_index[action_id] = len(merged)
+            merged.append(action)
+            continue
+        merged[existing_idx] = action
+
+    return merged
+
+
+def _apply_module_updates(mod: Module, updates: dict[str, Any]) -> None:
+    resolved_updates = dict(updates)
+    if "actions" in resolved_updates:
+        resolved_updates["actions"] = _merge_action_updates(
+            list(mod.actions or []),
+            resolved_updates["actions"],
+        )
+
+    for field, value in resolved_updates.items():
+        setattr(mod, field, value)
 
 
 def _record_or_404(module_name: str, record_id: str, db: Session) -> ModuleRecord:
@@ -128,6 +234,23 @@ def _serialize_record(r: ModuleRecord) -> dict:
     return d
 
 
+def _normalize_action_params(body: dict | None) -> dict:
+    """Accept both flat action payloads and legacy {params:{...}} wrappers."""
+    if not isinstance(body, dict):
+        return {}
+
+    nested = body.get("params")
+    if isinstance(nested, dict):
+        merged = dict(nested)
+        for key, value in body.items():
+            if key == "params":
+                continue
+            merged[key] = value
+        return merged
+
+    return body
+
+
 def _seed_module_permissions(name: str, db: Session):
     """Create default permission entries for a newly registered module."""
     mod = db.query(Module).filter(Module.name == name).first()
@@ -171,13 +294,22 @@ async def list_modules(
 async def create_module(
     body: dict,
     db: Session = Depends(get_db),
-    _: None = Depends(require_permission("modules.create")),
+    role: str = Depends(get_role),
 ):
-    name = body.get("name", "").strip().lower()
+    name = _normalize_module_name(body.get("name"))
     if not name:
         raise HTTPException(status_code=400, detail="Module name is required")
     if db.query(Module).filter(Module.name == name).first():
         raise HTTPException(status_code=409, detail=f"Module '{name}' already exists")
+
+    await _check_action_permission(
+        "modules.create",
+        role,
+        db,
+        body,
+        resource="modules",
+        resource_id=name,
+    )
 
     mod = Module(
         name=name,
@@ -216,12 +348,21 @@ async def update_module(
     name: str,
     body: dict,
     db: Session = Depends(get_db),
-    _: None = Depends(require_permission("modules.create")),
+    role: str = Depends(get_role),
 ):
     mod = _module_or_404(name, db)
-    for field in ("label", "icon", "type", "fields", "list_config", "actions", "secrets", "description", "order"):
-        if field in body:
-            setattr(mod, field, body[field])
+    updates = _extract_module_updates(body)
+
+    await _check_action_permission(
+        "modules.update",
+        role,
+        db,
+        body,
+        resource="modules",
+        resource_id=mod.name,
+    )
+
+    _apply_module_updates(mod, updates)
     db.commit()
     db.refresh(mod)
     return _serialize_module(mod)
@@ -231,11 +372,21 @@ async def update_module(
 async def delete_module(
     name: str,
     db: Session = Depends(get_db),
-    _: None = Depends(require_permission("modules.create")),
+    role: str = Depends(get_role),
 ):
     mod = _module_or_404(name, db)
     if mod.is_system:
         raise HTTPException(status_code=400, detail="Cannot delete a system module")
+
+    await _check_action_permission(
+        "modules.delete",
+        role,
+        db,
+        {},
+        resource="modules",
+        resource_id=mod.name,
+    )
+
     db.delete(mod)
     db.commit()
     return {"ok": True}
@@ -383,12 +534,13 @@ async def run_record_action(
     name: str,
     record_id: str,
     action_id: str,
-    body: dict = {},
+    body: dict | None = None,
     db: Session = Depends(get_db),
     role: str = Depends(get_role),
 ):
     """Execute a named action on a specific record (data/page modules)."""
-    await _check_action_permission(f"{name}.{action_id}", role, db, body)
+    params = _normalize_action_params(body)
+    await _check_action_permission(f"{name}.{action_id}", role, db, params)
     mod = _module_or_404(name, db)
     rec = _record_or_404(name, record_id, db)
     action = next((a for a in (mod.actions or []) if a.get("id") == action_id), None)
@@ -399,19 +551,23 @@ async def run_record_action(
         raise HTTPException(status_code=400, detail="Action has no executable code")
     secrets = _resolve_secrets(name, db)
     _check_required_secrets(mod, secrets)
-    return await execute_action(code, {"record": _serialize_record(rec), "params": body, "secrets": secrets})
+    return await execute_action(
+        code,
+        {"record": _serialize_record(rec), "params": params, "secrets": secrets},
+    )
 
 
 @router.post("/{name}/action/{action_id}")
 async def run_module_action(
     name: str,
     action_id: str,
-    body: dict = {},
+    body: dict | None = None,
     db: Session = Depends(get_db),
     role: str = Depends(get_role),
 ):
     """Execute a module-level action (api modules — no record context)."""
-    await _check_action_permission(f"{name}.{action_id}", role, db, body)
+    params = _normalize_action_params(body)
+    await _check_action_permission(f"{name}.{action_id}", role, db, params)
     mod = _module_or_404(name, db)
     action = next((a for a in (mod.actions or []) if a.get("id") == action_id), None)
     if not action:
@@ -421,4 +577,4 @@ async def run_module_action(
         raise HTTPException(status_code=400, detail="Action has no executable code")
     secrets = _resolve_secrets(name, db)
     _check_required_secrets(mod, secrets)
-    return await execute_action(code, {"params": body, "secrets": secrets})
+    return await execute_action(code, {"params": params, "secrets": secrets})

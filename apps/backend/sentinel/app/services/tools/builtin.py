@@ -355,8 +355,10 @@ def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> To
     return ToolDefinition(
         name="araios_api",
         description=(
-            "Call the configured araiOS backend using its integrated agent API key. "
-            "Handles API-key exchange to bearer tokens automatically."
+            "Call the configured araiOS backend using relative paths (for example: '/api/agent'). "
+            "Start discovery with path '/api/agent' to inspect available modules/endpoints. "
+            "Authentication is handled automatically via integrated agent API key exchange; "
+            "do not provide Authorization headers manually."
         ),
         risk_level="medium",
         parameters_schema={
