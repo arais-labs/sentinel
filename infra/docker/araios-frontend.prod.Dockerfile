@@ -8,7 +8,13 @@ COPY apps/frontend/araios/ ./
 
 ARG VITE_BASE_PATH=/araios/
 ARG VITE_BUILD_OUTDIR=dist
-RUN VITE_BASE_PATH=$VITE_BASE_PATH VITE_BUILD_OUTDIR=$VITE_BUILD_OUTDIR npm run build
+ARG APP_SENTINEL_URL=/sentinel/
+ARG APP_ARAIOS_URL=/araios/
+RUN VITE_BASE_PATH=$VITE_BASE_PATH \
+    VITE_BUILD_OUTDIR=$VITE_BUILD_OUTDIR \
+    APP_SENTINEL_URL=$APP_SENTINEL_URL \
+    APP_ARAIOS_URL=$APP_ARAIOS_URL \
+    npm run build
 
 FROM nginx:1.27-alpine
 COPY infra/nginx/frontend-spa.conf /etc/nginx/conf.d/default.conf

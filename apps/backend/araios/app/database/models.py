@@ -84,18 +84,23 @@ class Proposal(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
-# ── GitHub Tasks ──
+# ── Tasks ──
 
-class GithubTask(Base):
+class Task(Base):
     __tablename__ = "github_tasks"
 
     id = Column(String, primary_key=True, default=gen_id)
     client = Column(String)
     repo = Column(String)
     type = Column(String)
+    priority = Column(String, default="medium")
     status = Column(String, default="open")
     title = Column(String)
+    owner = Column(String)
     source = Column(String)
+    created_by = Column(String)
+    updated_by = Column(String)
+    handoff_to = Column(String)
     pr_url = Column(String)
     summary = Column(Text)
     work_package = Column(JSON, default=dict)

@@ -280,6 +280,64 @@ def test_context_builder_strips_orphan_tool_use_for_anthropic_compat():
     assert tool_blocks == []
 
 
+def test_context_builder_keeps_only_matching_tool_results_for_tool_use_turn():
+    db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="matching")
+    db.add(session)
+    db.add(
+        Message(
+            session_id=session.id,
+            role="assistant",
+            content="Using tool",
+            metadata_json={
+                "tool_calls": [
+                    {"id": "toolu_a", "name": "memory_search", "arguments": {"query": "alpha"}},
+                    {"id": "toolu_b", "name": "memory_search", "arguments": {"query": "beta"}},
+                ]
+            },
+        )
+    )
+    db.add(
+        Message(
+            session_id=session.id,
+            role="tool_result",
+            content='{"ok": true, "id": "a"}',
+            tool_call_id="toolu_a",
+            tool_name="memory_search",
+            metadata_json={},
+        )
+    )
+    db.add(
+        Message(
+            session_id=session.id,
+            role="tool_result",
+            content='{"ok": true, "id": "z"}',
+            tool_call_id="toolu_z",
+            tool_name="memory_search",
+            metadata_json={},
+        )
+    )
+    db.add(
+        Message(
+            session_id=session.id,
+            role="tool_result",
+            content='{"ok": true, "id": "b"}',
+            tool_call_id="toolu_b",
+            tool_name="memory_search",
+            metadata_json={},
+        )
+    )
+
+    builder = ContextBuilder(default_system_prompt="sys")
+    context = _run(builder.build(db, session.id))
+    tool_result_ids = [
+        getattr(item, "tool_call_id", "")
+        for item in context
+        if getattr(item, "role", "") == "tool_result"
+    ]
+    assert tool_result_ids == ["toolu_a", "toolu_b"]
+
+
 def test_context_builder_adds_delegation_policy_when_tools_available():
     db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="delegation")
