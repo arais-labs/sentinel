@@ -10,7 +10,7 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -27,6 +27,8 @@ _LEGACY_PYTHON_XAGENT_BASE_DIR = Path(
 ).expanduser()
 _RUNTIME_META_FILENAME = ".runtime_meta.json"
 _RUNTIME_ACTIONS_FILENAME = ".runtime_actions.jsonl"
+_RUNTIME_JOBS_FILENAME = ".runtime_jobs.json"
+_RUNTIME_LOGS_DIRNAME = "logs"
 _DEFAULT_RUNTIME_ACTION_LIMIT = 40
 _runtime_meta_lock = asyncio.Lock()
 
@@ -56,6 +58,10 @@ def runtime_workspace_dir(session_id: UUID | str) -> Path:
 
 def runtime_venv_dir(session_id: UUID | str) -> Path:
     return runtime_root_dir(session_id) / "venv"
+
+
+def runtime_logs_dir(session_id: UUID | str) -> Path:
+    return runtime_root_dir(session_id) / _RUNTIME_LOGS_DIRNAME
 
 
 async def ensure_runtime_layout(session_id: UUID | str) -> Path:
@@ -155,6 +161,262 @@ def get_session_runtime_snapshot(
             root / _RUNTIME_ACTIONS_FILENAME,
             limit=_normalize_action_limit(action_limit),
         ),
+    }
+
+
+async def register_detached_runtime_job(
+    session_id: UUID | str,
+    *,
+    command: str,
+    cwd: Path,
+    pid: int,
+    stdout_path: Path,
+    stderr_path: Path,
+) -> dict[str, Any]:
+    now = _utc_now().isoformat()
+    root = runtime_root_dir(session_id)
+    root.mkdir(parents=True, exist_ok=True)
+    jobs_path = root / _RUNTIME_JOBS_FILENAME
+    actions_path = root / _RUNTIME_ACTIONS_FILENAME
+    async with _runtime_meta_lock:
+        jobs = _read_runtime_jobs(jobs_path)
+        jobs = _refresh_runtime_jobs(jobs)
+        job = {
+            "id": uuid4().hex,
+            "status": "running",
+            "command": command,
+            "cwd": str(cwd),
+            "pid": int(pid),
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+            "created_at": now,
+            "updated_at": now,
+            "started_at": now,
+            "ended_at": None,
+            "returncode": None,
+            "termination_signal": None,
+            "termination_reason": None,
+        }
+        jobs.append(job)
+        _write_runtime_jobs(jobs_path, jobs)
+        _append_runtime_action(
+            actions_path,
+            {
+                "timestamp": now,
+                "action": "detached_job_started",
+                "details": {
+                    "job_id": job["id"],
+                    "pid": job["pid"],
+                    "command": command,
+                },
+            },
+        )
+    return job
+
+
+async def finalize_detached_runtime_job(
+    session_id: UUID | str,
+    *,
+    job_id: str,
+    returncode: int | None,
+    error: str | None = None,
+) -> dict[str, Any] | None:
+    root = runtime_root_dir(session_id)
+    jobs_path = root / _RUNTIME_JOBS_FILENAME
+    actions_path = root / _RUNTIME_ACTIONS_FILENAME
+    now = _utc_now().isoformat()
+    async with _runtime_meta_lock:
+        jobs = _read_runtime_jobs(jobs_path)
+        updated: dict[str, Any] | None = None
+        for item in jobs:
+            if str(item.get("id", "")).strip() != job_id:
+                continue
+            item["status"] = "completed" if returncode == 0 else "failed"
+            item["returncode"] = int(returncode) if isinstance(returncode, int) else None
+            item["ended_at"] = now
+            item["updated_at"] = now
+            if error:
+                item["termination_reason"] = error
+            updated = item
+            break
+        if updated is None:
+            return None
+        _write_runtime_jobs(jobs_path, jobs)
+        _append_runtime_action(
+            actions_path,
+            {
+                "timestamp": now,
+                "action": "detached_job_finished",
+                "details": {
+                    "job_id": updated["id"],
+                    "pid": updated.get("pid"),
+                    "status": updated["status"],
+                    "returncode": updated.get("returncode"),
+                },
+            },
+        )
+        return updated
+
+
+async def list_detached_runtime_jobs(
+    session_id: UUID | str,
+    *,
+    include_completed: bool = True,
+) -> list[dict[str, Any]]:
+    root = runtime_root_dir(session_id)
+    jobs_path = root / _RUNTIME_JOBS_FILENAME
+    async with _runtime_meta_lock:
+        jobs = _read_runtime_jobs(jobs_path)
+        jobs = _refresh_runtime_jobs(jobs)
+        _write_runtime_jobs(jobs_path, jobs)
+    jobs.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    if include_completed:
+        return jobs
+    return [item for item in jobs if str(item.get("status")) == "running"]
+
+
+async def get_detached_runtime_job(
+    session_id: UUID | str,
+    *,
+    job_id: str,
+) -> dict[str, Any] | None:
+    jobs = await list_detached_runtime_jobs(session_id, include_completed=True)
+    for item in jobs:
+        if str(item.get("id", "")).strip() == job_id:
+            return item
+    return None
+
+
+async def stop_detached_runtime_job(
+    session_id: UUID | str,
+    *,
+    job_id: str,
+    force: bool = False,
+    reason: str | None = None,
+) -> dict[str, Any] | None:
+    root = runtime_root_dir(session_id)
+    jobs_path = root / _RUNTIME_JOBS_FILENAME
+    actions_path = root / _RUNTIME_ACTIONS_FILENAME
+    now = _utc_now().isoformat()
+    async with _runtime_meta_lock:
+        jobs = _read_runtime_jobs(jobs_path)
+        jobs = _refresh_runtime_jobs(jobs)
+        target: dict[str, Any] | None = None
+        for item in jobs:
+            if str(item.get("id", "")).strip() == job_id:
+                target = item
+                break
+        if target is None:
+            return None
+
+        status = str(target.get("status") or "")
+        if status != "running":
+            _write_runtime_jobs(jobs_path, jobs)
+            return target
+
+        pid = _int_or_none(target.get("pid"))
+        if pid is None:
+            target["status"] = "cancelled"
+            target["updated_at"] = now
+            target["ended_at"] = now
+            target["termination_reason"] = reason or "stopped"
+            _write_runtime_jobs(jobs_path, jobs)
+            return target
+
+        signal_name = "SIGKILL" if force else "SIGTERM"
+        await _terminate_pid(pid, force=force)
+        if not force and _process_exists(pid):
+            await _terminate_pid(pid, force=True)
+            signal_name = "SIGKILL"
+
+        target["status"] = "cancelled"
+        target["updated_at"] = now
+        target["ended_at"] = now
+        target["termination_signal"] = signal_name
+        target["termination_reason"] = reason or "stopped"
+        _write_runtime_jobs(jobs_path, jobs)
+        _append_runtime_action(
+            actions_path,
+            {
+                "timestamp": now,
+                "action": "detached_job_stopped",
+                "details": {
+                    "job_id": target.get("id"),
+                    "pid": pid,
+                    "signal": signal_name,
+                    "reason": target.get("termination_reason"),
+                },
+            },
+        )
+        return target
+
+
+async def stop_all_detached_runtime_jobs(
+    session_id: UUID | str,
+    *,
+    reason: str | None = None,
+) -> int:
+    root = runtime_root_dir(session_id)
+    jobs_path = root / _RUNTIME_JOBS_FILENAME
+    if not root.exists() and not jobs_path.exists():
+        return 0
+    actions_path = root / _RUNTIME_ACTIONS_FILENAME
+    now = _utc_now().isoformat()
+    stopped = 0
+    async with _runtime_meta_lock:
+        jobs = _read_runtime_jobs(jobs_path)
+        jobs = _refresh_runtime_jobs(jobs)
+        for item in jobs:
+            if str(item.get("status") or "") != "running":
+                continue
+            pid = _int_or_none(item.get("pid"))
+            if pid is not None:
+                await _terminate_pid(pid, force=False)
+                if _process_exists(pid):
+                    await _terminate_pid(pid, force=True)
+            item["status"] = "cancelled"
+            item["updated_at"] = now
+            item["ended_at"] = now
+            item["termination_signal"] = "SIGKILL"
+            item["termination_reason"] = reason or "stopped"
+            stopped += 1
+            _append_runtime_action(
+                actions_path,
+                {
+                    "timestamp": now,
+                    "action": "detached_job_stopped",
+                    "details": {
+                        "job_id": item.get("id"),
+                        "pid": pid,
+                        "signal": "SIGKILL",
+                        "reason": item.get("termination_reason"),
+                    },
+                },
+            )
+        if stopped > 0:
+            _write_runtime_jobs(jobs_path, jobs)
+    return stopped
+
+
+async def read_detached_runtime_job_logs(
+    session_id: UUID | str,
+    *,
+    job_id: str,
+    tail_bytes: int = 8_000,
+) -> dict[str, Any] | None:
+    job = await get_detached_runtime_job(session_id, job_id=job_id)
+    if job is None:
+        return None
+    max_bytes = max(256, min(int(tail_bytes), 200_000))
+    stdout_path = Path(str(job.get("stdout_path") or ""))
+    stderr_path = Path(str(job.get("stderr_path") or ""))
+    stdout = _tail_text(stdout_path, max_bytes=max_bytes)
+    stderr = _tail_text(stderr_path, max_bytes=max_bytes)
+    return {
+        "job": job,
+        "stdout_tail": stdout,
+        "stderr_tail": stderr,
+        "tail_bytes": max_bytes,
     }
 
 
@@ -292,6 +554,47 @@ def _read_runtime_metadata(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _read_runtime_jobs(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    jobs: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        job_id = _string_or_none(item.get("id"))
+        status = _string_or_none(item.get("status"))
+        if not job_id or not status:
+            continue
+        jobs.append(dict(item))
+    return jobs
+
+
+def _write_runtime_jobs(path: Path, jobs: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(jobs, ensure_ascii=True, separators=(",", ":")), encoding="utf-8")
+
+
+def _refresh_runtime_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    now = _utc_now().isoformat()
+    for item in jobs:
+        if str(item.get("status") or "") != "running":
+            continue
+        pid = _int_or_none(item.get("pid"))
+        if pid is None or _process_exists(pid):
+            continue
+        item["status"] = "completed"
+        item["ended_at"] = item.get("ended_at") or now
+        item["updated_at"] = now
+        item["termination_reason"] = item.get("termination_reason") or "process_exited"
+    return jobs
+
+
 def _write_runtime_metadata(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, separators=(",", ":")), encoding="utf-8")
 
@@ -397,6 +700,7 @@ async def _remove_tree(path: Path) -> bool:
 
 async def _remove_runtime_root(path: Path) -> bool:
     await _terminate_runtime_process(path)
+    await _terminate_detached_runtime_jobs(path)
     return await _remove_tree(path)
 
 
@@ -434,3 +738,83 @@ async def _terminate_runtime_process(path: Path) -> None:
             os.kill(pid, signal.SIGKILL)
     except Exception:  # noqa: BLE001
         logger.warning("Failed to terminate runtime process pid=%s for %s", pid, path, exc_info=True)
+
+
+async def _terminate_detached_runtime_jobs(path: Path) -> None:
+    jobs_path = path / _RUNTIME_JOBS_FILENAME
+    async with _runtime_meta_lock:
+        jobs = _read_runtime_jobs(jobs_path)
+        if not jobs:
+            return
+        now = _utc_now().isoformat()
+        changed = False
+        for item in jobs:
+            if str(item.get("status") or "") != "running":
+                continue
+            pid = _int_or_none(item.get("pid"))
+            if pid is not None:
+                await _terminate_pid(pid, force=True)
+            item["status"] = "cancelled"
+            item["ended_at"] = now
+            item["updated_at"] = now
+            item["termination_signal"] = "SIGKILL"
+            item["termination_reason"] = "runtime_cleanup"
+            changed = True
+        if changed:
+            _write_runtime_jobs(jobs_path, jobs)
+
+
+async def _terminate_pid(pid: int, *, force: bool) -> None:
+    if pid <= 0:
+        return
+    try:
+        if os.name == "nt":
+            args = ["taskkill", "/PID", str(pid), "/T"]
+            if force:
+                args.append("/F")
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            return
+
+        sig = signal.SIGKILL if force else signal.SIGTERM
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pid, sig)
+            return
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, sig)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to terminate pid=%s force=%s", pid, force, exc_info=True)
+
+
+def _process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _tail_text(path: Path, *, max_bytes: int) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        size = path.stat().st_size
+        read_size = min(max_bytes, max(0, int(size)))
+        with path.open("rb") as handle:
+            if read_size > 0:
+                handle.seek(-read_size, os.SEEK_END)
+            data = handle.read(read_size if read_size > 0 else max_bytes)
+    except OSError:
+        return ""
+    return data.decode("utf-8", errors="replace")

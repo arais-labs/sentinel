@@ -152,6 +152,7 @@ class CodexProvider(LLMProvider):
         started = False
         text_started: set[int] = set()
         tool_indices: dict[str, int] = {}  # item_id → output_index
+        tool_argument_buffers: dict[str, str] = {}  # item_id → emitted arguments
 
         async with self._client_factory() as client:
             async with client.stream(
@@ -216,6 +217,7 @@ class CodexProvider(LLMProvider):
                             out_idx = event.get("output_index", 0)
                             item_id = item.get("id", "")
                             tool_indices[item_id] = out_idx
+                            tool_argument_buffers.setdefault(item_id, "")
                             yield AgentEvent(
                                 type="toolcall_start",
                                 content_index=out_idx,
@@ -225,23 +227,63 @@ class CodexProvider(LLMProvider):
                                     arguments={},
                                 ),
                             )
+                            initial_arguments = item.get("arguments")
+                            if isinstance(initial_arguments, str) and initial_arguments:
+                                if item_id:
+                                    tool_argument_buffers[item_id] = initial_arguments
+                                yield AgentEvent(
+                                    type="toolcall_delta",
+                                    content_index=out_idx,
+                                    delta=initial_arguments,
+                                )
 
                     elif etype == "response.function_call_arguments.delta":
                         item_id = event.get("item_id", "")
                         out_idx = tool_indices.get(item_id, event.get("output_index", 0))
                         delta = event.get("delta", "")
                         if delta:
+                            if item_id:
+                                tool_argument_buffers[item_id] = (
+                                    tool_argument_buffers.get(item_id, "") + delta
+                                )
                             yield AgentEvent(
                                 type="toolcall_delta",
                                 content_index=out_idx,
                                 delta=delta,
                             )
 
+                    elif etype == "response.function_call_arguments.done":
+                        item_id = event.get("item_id", "")
+                        arguments = event.get("arguments")
+                        if isinstance(arguments, str) and arguments:
+                            already_emitted = tool_argument_buffers.get(item_id, "")
+                            if not already_emitted:
+                                out_idx = tool_indices.get(item_id, event.get("output_index", 0))
+                                tool_argument_buffers[item_id] = arguments
+                                yield AgentEvent(
+                                    type="toolcall_delta",
+                                    content_index=out_idx,
+                                    delta=arguments,
+                                )
+
                     elif etype == "response.output_item.done":
                         item = event.get("item", {})
                         if item.get("type") == "function_call":
                             item_id = item.get("id", "")
                             out_idx = tool_indices.get(item_id, event.get("output_index", 0))
+                            arguments = item.get("arguments")
+                            already_emitted = tool_argument_buffers.get(item_id, "")
+                            if (
+                                isinstance(arguments, str)
+                                and arguments
+                                and not already_emitted
+                            ):
+                                tool_argument_buffers[item_id] = arguments
+                                yield AgentEvent(
+                                    type="toolcall_delta",
+                                    content_index=out_idx,
+                                    delta=arguments,
+                                )
                             yield AgentEvent(type="toolcall_end", content_index=out_idx)
 
                     # --- completion ---

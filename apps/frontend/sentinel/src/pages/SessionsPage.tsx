@@ -147,6 +147,65 @@ function isWaitingApproval(metadata: Record<string, unknown>): boolean {
   return metadata.pending === true;
 }
 
+function hasUnresolvedToolCalls(messages: Message[]): boolean {
+  const resolvedIds = new Set<string>();
+  const pendingIds = new Set<string>();
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+      const toolCalls = metadata.tool_calls;
+      if (!Array.isArray(toolCalls)) continue;
+      for (const rawCall of toolCalls) {
+        if (!isObjectRecord(rawCall)) continue;
+        const callId = typeof rawCall.id === 'string' ? rawCall.id.trim() : '';
+        if (!callId || resolvedIds.has(callId)) continue;
+        pendingIds.add(callId);
+      }
+      continue;
+    }
+    if (message.role !== 'tool' && message.role !== 'tool_result') {
+      continue;
+    }
+    const callId = typeof message.tool_call_id === 'string' ? message.tool_call_id.trim() : '';
+    if (!callId) continue;
+    resolvedIds.add(callId);
+    pendingIds.delete(callId);
+  }
+  return pendingIds.size > 0;
+}
+
+const GIT_APPROVAL_HYDRATION_MAX_ATTEMPTS = 12;
+const GIT_APPROVAL_HYDRATION_RETRY_MS = 750;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function selectMatchingPendingGitApproval(
+  items: GitPushApprovalListResponse['items'],
+  options: {
+    sessionId: string;
+    normalizedCommand: string;
+  },
+) {
+  const { sessionId, normalizedCommand } = options;
+  const matches = items.filter(
+    (item) => item.session_id === sessionId && normalizeCommand(item.command) === normalizedCommand,
+  );
+  if (!matches.length) return null;
+  const toEpoch = (value: string | null): number => {
+    if (!value) return 0;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  matches.sort((a, b) => {
+    const byCreated = toEpoch(b.created_at) - toEpoch(a.created_at);
+    if (byCreated !== 0) return byCreated;
+    return toEpoch(b.updated_at) - toEpoch(a.updated_at);
+  });
+  return matches[0];
+}
+
 function parseTier(value: string | null): ModelOption['tier'] | null {
   if (value === 'fast' || value === 'normal' || value === 'hard') {
     return value;
@@ -222,6 +281,47 @@ function serializeToolArguments(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function toolArgumentsFromToolResultPayload(payload: Record<string, unknown>): string {
+  const fromPayload = payload.tool_arguments;
+  if (fromPayload != null) {
+    return serializeToolArguments(fromPayload);
+  }
+  const metadata = isObjectRecord(payload.metadata) ? payload.metadata : null;
+  if (metadata && metadata.tool_arguments != null) {
+    return serializeToolArguments(metadata.tool_arguments);
+  }
+  return '';
+}
+
+function hasMeaningfulToolArguments(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  if (trimmed === '{}' || trimmed === 'null') return false;
+  return true;
+}
+
+function mergeStreamingToolArguments(current: string, delta: string): string {
+  if (!delta) return current;
+  const trimmedCurrent = current.trim();
+  const trimmedDelta = delta.trim();
+
+  if (!hasMeaningfulToolArguments(current) || trimmedCurrent === '{}') {
+    return delta;
+  }
+
+  const currentLooksCompleteJson =
+    (trimmedCurrent.startsWith('{') && trimmedCurrent.endsWith('}')) ||
+    (trimmedCurrent.startsWith('[') && trimmedCurrent.endsWith(']'));
+  const deltaLooksLikeFreshJson =
+    trimmedDelta.startsWith('{') || trimmedDelta.startsWith('[');
+
+  if (currentLooksCompleteJson && deltaLooksLikeFreshJson) {
+    return delta;
+  }
+
+  return `${current}${delta}`;
 }
 
 const MAX_IMAGE_ATTACHMENTS = 4;
@@ -1664,6 +1764,7 @@ export function SessionsPage() {
       const payload = await api.get<MessageListResponse>(path);
       const payloadItems = Array.isArray(payload?.items) ? payload.items : [];
       const fetched = sortMessages(payloadItems);
+      const serverHasUnresolvedToolCalls = hasUnresolvedToolCalls(fetched);
       setHasMoreMessages(Boolean(payload?.has_more));
       if (fetched.length > 0) {
         oldestServerMessageIdRef.current = fetched[0].id;
@@ -1687,10 +1788,10 @@ export function SessionsPage() {
       // This prevents the "flash" where tool calls disappear before the API responds.
       if (!beforeMessageId) {
         setStreaming((prev) => {
-          const hasPendingApprovalCard = [...prev.activeToolCalls, ...prev.completedToolCalls].some(
-            (call) => call.name === 'git_exec' && isWaitingApproval(call.metadata),
+          const hasPendingCallCard = [...prev.activeToolCalls, ...prev.completedToolCalls].some(
+            (call) => isWaitingApproval(call.metadata),
           );
-          if (hasPendingApprovalCard) {
+          if (hasPendingCallCard && serverHasUnresolvedToolCalls) {
             return {
               ...prev,
               isThinking: false,
@@ -1796,10 +1897,10 @@ export function SessionsPage() {
     }
   }
 
-  function updateStreamingCallApproval(
+  const updateStreamingCallApproval = useCallback((
     approvalId: string,
     updates: { pending?: boolean; approval_status?: string; decision_note?: string },
-  ) {
+  ) => {
     setStreaming((current) => {
       const patchCall = (call: StreamingToolCall): StreamingToolCall => {
         const callApprovalId = pendingApprovalIdFromMetadata(call.metadata);
@@ -1818,9 +1919,9 @@ export function SessionsPage() {
         completedToolCalls: current.completedToolCalls.map(patchCall),
       };
     });
-  }
+  }, []);
 
-  async function resolveGitApprovalInline(approvalId: string, decision: 'approve' | 'reject') {
+  const resolveGitApprovalInline = useCallback(async (approvalId: string, decision: 'approve' | 'reject') => {
     setResolvingGitApprovalId(approvalId);
     try {
       await api.post(`/git/push-approvals/${approvalId}/${decision}`, {
@@ -1836,7 +1937,7 @@ export function SessionsPage() {
     } finally {
       setResolvingGitApprovalId(null);
     }
-  }
+  }, [updateStreamingCallApproval]);
 
   async function hydrateGitPushApprovalForCall(
     sessionId: string,
@@ -1848,33 +1949,43 @@ export function SessionsPage() {
     if (approvalLookupInFlightRef.current.has(lookupKey)) return;
     approvalLookupInFlightRef.current.add(lookupKey);
     try {
-      const payload = await api.get<GitPushApprovalListResponse>('/git/push-approvals?status=pending&limit=200&offset=0');
       const normalizedCommand = normalizeCommand(command);
-      const items = Array.isArray(payload.items) ? payload.items : [];
-      const matched =
-        items.find((item) => item.session_id === sessionId && normalizeCommand(item.command) === normalizedCommand)
-        ?? items.find((item) => item.session_id === sessionId)
-        ?? null;
-      if (!matched) return;
-
-      setStreaming((current) => {
-        const patchCall = (call: StreamingToolCall): StreamingToolCall => {
-          if (call.id !== callId || call.contentIndex !== contentIndex) return call;
-          return {
-            ...call,
-            metadata: {
-              ...call.metadata,
-              pending: true,
-              approval_id: matched.id,
-            },
-          };
-        };
-        return {
-          ...current,
-          activeToolCalls: current.activeToolCalls.map(patchCall),
-          completedToolCalls: current.completedToolCalls.map(patchCall),
-        };
-      });
+      for (let attempt = 0; attempt < GIT_APPROVAL_HYDRATION_MAX_ATTEMPTS; attempt += 1) {
+        try {
+          const payload = await api.get<GitPushApprovalListResponse>('/git/push-approvals?status=pending&limit=200&offset=0');
+          const items = Array.isArray(payload.items) ? payload.items : [];
+          const matched = selectMatchingPendingGitApproval(items, {
+            sessionId,
+            normalizedCommand,
+          });
+          if (matched) {
+            setStreaming((current) => {
+              const patchCall = (call: StreamingToolCall): StreamingToolCall => {
+                if (call.id !== callId || call.contentIndex !== contentIndex) return call;
+                return {
+                  ...call,
+                  metadata: {
+                    ...call.metadata,
+                    pending: true,
+                    approval_id: matched.id,
+                  },
+                };
+              };
+              return {
+                ...current,
+                activeToolCalls: current.activeToolCalls.map(patchCall),
+                completedToolCalls: current.completedToolCalls.map(patchCall),
+              };
+            });
+            return;
+          }
+        } catch {
+          // best-effort retry until attempts are exhausted
+        }
+        if (attempt < GIT_APPROVAL_HYDRATION_MAX_ATTEMPTS - 1) {
+          await sleep(GIT_APPROVAL_HYDRATION_RETRY_MS);
+        }
+      }
     } catch {
       // best effort hydration
     } finally {
@@ -2010,7 +2121,10 @@ export function SessionsPage() {
           if (current.activeToolCalls.some((item) => item.id === callId && item.contentIndex === contentIndex)) {
             return { ...current, isThinking: false };
           }
-          const initialArguments = serializeToolArguments((event.tool_call as any)?.arguments);
+          const rawInitialArguments = serializeToolArguments((event.tool_call as any)?.arguments);
+          const initialArguments = hasMeaningfulToolArguments(rawInitialArguments)
+            ? rawInitialArguments
+            : '';
           const pushCommand = gitPushCommandFromToolArgs((event.tool_call as any)?.arguments);
           const initialMetadata: Record<string, unknown> = pushCommand
             ? { pending: true, git_push: true }
@@ -2051,7 +2165,7 @@ export function SessionsPage() {
         break;
       case 'toolcall_delta':
         setStreaming((current) => {
-          const delta = event.delta ?? '';
+          const delta = typeof event.delta === 'string' ? event.delta : '';
           if (!delta) return current;
           const next = [...current.activeToolCalls];
           if (!next.length) return current;
@@ -2062,7 +2176,10 @@ export function SessionsPage() {
           }
           if (targetIndex < 0) targetIndex = next.length - 1;
           const call = next[targetIndex];
-          next[targetIndex] = { ...call, argumentsJson: `${call.argumentsJson}${delta}` };
+          next[targetIndex] = {
+            ...call,
+            argumentsJson: mergeStreamingToolArguments(call.argumentsJson, delta),
+          };
           return { ...current, activeToolCalls: next };
         });
         break;
@@ -2114,11 +2231,15 @@ export function SessionsPage() {
             typeof rawContent === 'string'
               ? rawContent
               : serializeToolArguments(rawContent);
+          const fallbackArguments = toolArgumentsFromToolResultPayload(payload);
           const isError = Boolean(payload.is_error);
           const metadata = isObjectRecord(payload.metadata) ? payload.metadata : {};
 
           const hydrate = (call: StreamingToolCall): StreamingToolCall => ({
             ...call,
+            argumentsJson: hasMeaningfulToolArguments(call.argumentsJson)
+              ? call.argumentsJson
+              : fallbackArguments,
             outputJson,
             isError,
             metadata,
@@ -2151,7 +2272,7 @@ export function SessionsPage() {
           const syntheticCall: StreamingToolCall = {
             id: callId || `tool-result-${Date.now()}`,
             name: toolName,
-            argumentsJson: '',
+            argumentsJson: fallbackArguments,
             outputJson,
             isError,
             metadata,
@@ -2363,7 +2484,17 @@ export function SessionsPage() {
     try {
       await api.post(`/sessions/${activeSessionId}/stop`, {});
       toast.success('Stopping response');
-    } catch { toast.error('Failed to stop'); }
+      setStreaming((current) => ({
+        ...current,
+        isThinking: false,
+        isStreaming: false,
+        isCompactingContext: false,
+      }));
+      void loadMessages(activeSessionId);
+      void fetchContextUsage(activeSessionId);
+    } catch {
+      toast.error('Failed to stop');
+    }
     finally { setIsStopping(false); }
   }
 
