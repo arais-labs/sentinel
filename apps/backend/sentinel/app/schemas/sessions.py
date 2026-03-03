@@ -95,6 +95,56 @@ class SessionRuntimeFilePreviewResponse(BaseModel):
     max_bytes: int
 
 
+class SessionRuntimeGitRootResponse(BaseModel):
+    root_path: str
+    branch: str | None = None
+    detached_head: bool = False
+
+
+class SessionRuntimeGitRootsResponse(BaseModel):
+    session_id: UUID
+    runtime_exists: bool
+    workspace_exists: bool
+    path: str
+    roots: list[SessionRuntimeGitRootResponse] = Field(default_factory=list)
+
+
+class SessionRuntimeGitDiffResponse(BaseModel):
+    session_id: UUID
+    runtime_exists: bool
+    workspace_exists: bool
+    path: str
+    git_root: str
+    branch: str | None = None
+    detached_head: bool = False
+    base_ref: str
+    staged: bool = False
+    context_lines: int = 3
+    diff: str
+    truncated: bool = False
+    max_bytes: int
+
+
+class SessionRuntimeGitChangedFileResponse(BaseModel):
+    path: str
+    status: str
+    staged: bool = False
+    unstaged: bool = False
+    untracked: bool = False
+
+
+class SessionRuntimeGitChangedFilesResponse(BaseModel):
+    session_id: UUID
+    runtime_exists: bool
+    workspace_exists: bool
+    path: str
+    git_root: str
+    branch: str | None = None
+    detached_head: bool = False
+    entries: list[SessionRuntimeGitChangedFileResponse] = Field(default_factory=list)
+    truncated: bool = False
+
+
 class SessionRuntimeCleanupResponse(BaseModel):
     session_id: UUID
     runtime_removed: bool

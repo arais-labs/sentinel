@@ -19,6 +19,9 @@ from app.schemas.sessions import (
     SessionListResponse,
     SessionContextUsageResponse,
     SessionRuntimeCleanupResponse,
+    SessionRuntimeGitChangedFilesResponse,
+    SessionRuntimeGitDiffResponse,
+    SessionRuntimeGitRootsResponse,
     SessionRuntimeFilePreviewResponse,
     SessionRuntimeFilesResponse,
     SessionRuntimeResponse,
@@ -269,6 +272,84 @@ async def get_session_runtime_file(
         _raise_http_for_session_error(exc)
         raise
     return SessionRuntimeFilePreviewResponse(**payload)
+
+
+@router.get("/{id}/runtime/git/roots", response_model=SessionRuntimeGitRootsResponse)
+async def list_session_runtime_git_roots(
+    id: UUID,
+    request: Request,
+    path: str = Query(default=""),
+    limit: int = Query(default=200, ge=1, le=1000),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeGitRootsResponse:
+    service = _resolve_session_service(request)
+    try:
+        payload = await service.list_runtime_git_roots(
+            db,
+            session_id=id,
+            user_id=user.sub,
+            path=path,
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    return SessionRuntimeGitRootsResponse(**payload)
+
+
+@router.get("/{id}/runtime/git/diff", response_model=SessionRuntimeGitDiffResponse)
+async def get_session_runtime_git_diff(
+    id: UUID,
+    request: Request,
+    path: str = Query(..., min_length=1),
+    base_ref: str = Query(default="HEAD"),
+    staged: bool = Query(default=False),
+    context_lines: int = Query(default=3, ge=0, le=20),
+    max_bytes: int = Query(default=120000, ge=1024, le=500000),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeGitDiffResponse:
+    service = _resolve_session_service(request)
+    try:
+        payload = await service.get_runtime_git_diff(
+            db,
+            session_id=id,
+            user_id=user.sub,
+            path=path,
+            base_ref=base_ref,
+            staged=staged,
+            context_lines=context_lines,
+            max_bytes=max_bytes,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    return SessionRuntimeGitDiffResponse(**payload)
+
+
+@router.get("/{id}/runtime/git/changed", response_model=SessionRuntimeGitChangedFilesResponse)
+async def list_session_runtime_git_changed_files(
+    id: UUID,
+    request: Request,
+    path: str = Query(default=""),
+    limit: int = Query(default=200, ge=1, le=1000),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeGitChangedFilesResponse:
+    service = _resolve_session_service(request)
+    try:
+        payload = await service.get_runtime_git_changed_files(
+            db,
+            session_id=id,
+            user_id=user.sub,
+            path=path,
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    return SessionRuntimeGitChangedFilesResponse(**payload)
 
 
 @router.get("/{id}/context-usage", response_model=SessionContextUsageResponse)
