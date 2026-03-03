@@ -106,6 +106,14 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
             repo_url, remote_name = _resolve_network_repo_url(subcommand, subargs, run_dir)
             async with session_factory() as db:
                 account = await _resolve_git_account(db, repo_url=repo_url, require_write=network_mode == "write")
+            if account is None:
+                repo_target = _repo_target_label(repo_url)
+                required_token = "write token" if network_mode == "write" else "read token"
+                raise ToolValidationError(
+                    "No matching git account is configured for "
+                    f"'{repo_target}' ({network_mode} access). "
+                    f"Add/update a Git account with matching host/scope and a {required_token}."
+                )
 
             if network_mode == "write":
                 assert account is not None
@@ -174,7 +182,12 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
             async with session_factory() as db:
                 account = await _resolve_git_account(db, repo_url=origin_url, require_write=False)
             if account is None:
-                raise ToolValidationError("No git account matches this repository for commit attribution")
+                repo_target = _repo_target_label(origin_url)
+                raise ToolValidationError(
+                    "No matching git account is configured for "
+                    f"'{repo_target}' (commit attribution). "
+                    "Add/update a Git account with matching host/scope and a read token."
+                )
             result = await _run_local_git(
                 run_dir=run_dir,
                 tokens=tokens,
@@ -381,11 +394,33 @@ def _resolve_origin_url(run_dir: Path, remote_name: str = "origin") -> str:
     args = ["git", "remote", "get-url", remote_name]
     result = _run_blocking(args=args, cwd=run_dir, env=os.environ.copy(), timeout_seconds=30)
     if result["returncode"] != 0:
-        raise ToolValidationError("Unable to resolve repository remote URL for account matching")
+        raise ToolValidationError(_format_remote_resolution_error(result=result, remote_name=remote_name))
     repo_url = (result["stdout"] or "").strip()
     if not repo_url:
         raise ToolValidationError("Repository remote URL is empty")
     return repo_url
+
+
+def _format_remote_resolution_error(*, result: dict[str, Any], remote_name: str) -> str:
+    stderr = (result.get("stderr") or "").strip()
+    lowered = stderr.lower()
+    if "not a git repository" in lowered:
+        return (
+            "git fetch/pull requires a git repository in the selected cwd. "
+            "Run `git clone <repo>` first or set `cwd` to an existing repository in the session workspace."
+        )
+    if "no such remote" in lowered or "could not get url" in lowered:
+        return (
+            f"Git remote '{remote_name}' was not found in this repository. "
+            "Run `git remote -v` and use a valid remote name."
+        )
+    detail = stderr.splitlines()[0] if stderr else ""
+    suffix = f" (git: {detail})" if detail else ""
+    return (
+        "Unable to resolve repository remote URL for account matching. "
+        "Ensure the repository has a configured remote URL."
+        f"{suffix}"
+    )
 
 
 def _run_blocking(
@@ -589,6 +624,13 @@ def _parse_repo_ref(repo_url: str) -> _RepoRef:
     if not host or not path:
         raise ToolValidationError("Invalid repository URL for account matching")
     return _RepoRef(host=host, path=path.lower(), target=f"{host}/{path.lower()}")
+
+
+def _repo_target_label(repo_url: str) -> str:
+    try:
+        return _parse_repo_ref(repo_url).target
+    except ToolValidationError:
+        return repo_url.strip() or "<unknown-repository>"
 
 
 def _specificity(pattern: str) -> int:

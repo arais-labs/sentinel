@@ -321,7 +321,7 @@ async def lifespan(app: FastAPI):
             available_tools=available_tools,
             memory_search_service=memory_search_service,
         )
-        tool_adapter = ToolAdapter(registry, executor)
+        tool_adapter = ToolAdapter(registry, executor, session_factory=AsyncSessionLocal)
         app.state.agent_loop = AgentLoop(provider, context_builder, tool_adapter)
         app.state.sub_agent_orchestrator = SubAgentOrchestrator(
             agent_loop=app.state.agent_loop,
@@ -366,7 +366,7 @@ async def lifespan(app: FastAPI):
         # Rebuild executor and tool adapter with new tools
         executor = ToolExecutor(registry)
         app.state.tool_executor = executor
-        tool_adapter = ToolAdapter(registry, executor)
+        tool_adapter = ToolAdapter(registry, executor, session_factory=AsyncSessionLocal)
         app.state.agent_loop.tool_adapter = tool_adapter
         context_builder._available_tools = available_tools
 

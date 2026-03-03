@@ -14,6 +14,8 @@ import json
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.services.estop import EstopService
 from app.services.llm.generic.credential_scrubber import scrub
 from app.services.llm.generic.types import ToolCallContent, ToolResultMessage, ToolSchema
@@ -32,10 +34,12 @@ class ToolAdapter:
         registry: ToolRegistry,
         executor: ToolExecutor,
         estop_service: EstopService | None = None,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._registry = registry
         self._executor = executor
         self._estop = estop_service or EstopService()
+        self._session_factory = session_factory
 
     def get_tool_schemas(self) -> list[ToolSchema]:
         schemas: list[ToolSchema] = []
@@ -110,7 +114,11 @@ class ToolAdapter:
             if tool is None:
                 raise KeyError(call.name)
 
-            await self._estop.enforce_tool(db, call.name, tool.risk_level)
+            if self._session_factory is not None:
+                async with self._session_factory() as estop_db:
+                    await self._estop.enforce_tool(estop_db, call.name, tool.risk_level)
+            else:
+                await self._estop.enforce_tool(db, call.name, tool.risk_level)
             arguments = call.arguments if isinstance(call.arguments, dict) else {}
             payload = dict(arguments)
             schema_properties = tool.parameters_schema.get("properties", {}) if tool.parameters_schema else {}
