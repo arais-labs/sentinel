@@ -291,7 +291,11 @@ class SubAgentOrchestrator:
             available_tools=available_tools,
             memory_search_service=getattr(base_context, "_memory_search_service", None),
         )
-        tool_adapter = ToolAdapter(scoped_registry, ToolExecutor(scoped_registry))
+        tool_adapter = ToolAdapter(
+            scoped_registry,
+            ToolExecutor(scoped_registry),
+            session_factory=self._db_factory,
+        )
         return AgentLoop(self._agent_loop.provider, context_builder, tool_adapter)
 
     def _tool_with_optional_tab_scope(
