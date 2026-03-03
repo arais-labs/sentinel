@@ -203,6 +203,7 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             replay_pending = ws.receive_json()
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_1"
+            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "git push origin main"}
             assert replay_pending["tool_result"]["metadata"]["pending"] is True
             assert isinstance(replay_pending["tool_result"]["metadata"].get("approval_id"), str)
     finally:
@@ -210,5 +211,157 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             delattr(app.state, "agent_run_registry")
         else:
             app.state.agent_run_registry = old_run_registry
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    old_run_registry = getattr(app.state, "agent_run_registry", None)
+    app.state.agent_run_registry = _AlwaysRunningRegistry()
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        owner_token = login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "ws-runtime-pending"}, headers=owner_headers)
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
+        fake_db.add(
+            Message(
+                session_id=uuid.UUID(session_id),
+                role="assistant",
+                content="",
+                metadata_json={
+                    "tool_calls": [
+                        {
+                            "id": "toolu_pending_runtime",
+                            "name": "runtime_exec",
+                            "arguments": {"command": "sleep 10"},
+                        }
+                    ]
+                },
+            )
+        )
+
+        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+            connected = ws.receive_json()
+            assert connected["type"] == "connected"
+            assert connected["session_id"] == session_id
+
+            replay_start = ws.receive_json()
+            assert replay_start["type"] == "toolcall_start"
+            assert replay_start["tool_call"]["id"] == "toolu_pending_runtime"
+            assert replay_start["tool_call"]["name"] == "runtime_exec"
+
+            replay_pending = ws.receive_json()
+            assert replay_pending["type"] == "tool_result"
+            assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_runtime"
+            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "sleep 10"}
+            assert replay_pending["tool_result"]["metadata"]["pending"] is True
+            assert "approval_id" not in replay_pending["tool_result"]["metadata"]
+    finally:
+        if old_run_registry is None:
+            delattr(app.state, "agent_run_registry")
+        else:
+            app.state.agent_run_registry = old_run_registry
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        owner_token = login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "ws-stale-pending"}, headers=owner_headers)
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
+        fake_db.add(
+            Message(
+                session_id=uuid.UUID(session_id),
+                role="assistant",
+                content="",
+                metadata_json={
+                    "tool_calls": [
+                        {
+                            "id": "toolu_stale_1",
+                            "name": "git_exec",
+                            "arguments": {"command": "git push origin main"},
+                        }
+                    ]
+                },
+            )
+        )
+        pending_approval = GitPushApproval(
+            account_id=uuid.uuid4(),
+            session_id=uuid.UUID(session_id),
+            repo_url="https://github.com/ARAI/example",
+            remote_name="origin",
+            command="git push origin main",
+            status="pending",
+            requested_by="session:test",
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        fake_db.add(pending_approval)
+
+        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+            connected = ws.receive_json()
+            assert connected["type"] == "connected"
+            history = connected.get("history") or []
+            reconciled = next(
+                (
+                    item
+                    for item in history
+                    if item.get("role") == "tool_result"
+                    and item.get("tool_call_id") == "toolu_stale_1"
+                    and item.get("tool_name") == "git_exec"
+                ),
+                None,
+            )
+            assert reconciled is not None
+            metadata = reconciled.get("metadata") or {}
+            assert metadata.get("interrupted") is True
+            assert metadata.get("pending") is False
+
+        assert pending_approval.status == "cancelled"
+        assert pending_approval.resolved_at is not None
+    finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init

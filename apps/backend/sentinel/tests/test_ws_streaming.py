@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
-from app.services.llm.generic.types import AgentEvent, ToolCallContent
+from app.services.llm.generic.types import AgentEvent, ToolCallContent, ToolResultContent
 from app.services.ws_manager import ConnectionManager
 
 
@@ -57,6 +57,17 @@ def test_broadcast_agent_event_converts_all_event_types():
         AgentEvent(type="toolcall_start", tool_call=ToolCallContent(id="c1", name="tool", arguments={"x": 1})),
         AgentEvent(type="toolcall_delta", delta="{", content_index=2),
         AgentEvent(type="toolcall_end", content_index=2),
+        AgentEvent(
+            type="tool_result",
+            tool_result=ToolResultContent(
+                tool_call_id="c1",
+                tool_name="tool",
+                content='{"ok":true}',
+                is_error=False,
+                metadata={"source": "test"},
+                tool_arguments={"x": 1},
+            ),
+        ),
         AgentEvent(type="done", stop_reason="stop"),
         AgentEvent(type="error", error="boom"),
     ]
@@ -67,12 +78,13 @@ def test_broadcast_agent_event_converts_all_event_types():
             await manager.broadcast_agent_event("session-2", event)
 
     _run(_scenario())
-    assert len(socket.messages) == 12
+    assert len(socket.messages) == 13
     assert [item["type"] for item in socket.messages] == [event.type for event in events]
     assert socket.messages[2]["delta"] == "hello"
     assert socket.messages[7]["tool_call"]["name"] == "tool"
-    assert socket.messages[10]["stop_reason"] == "stop"
-    assert socket.messages[11]["error"] == "boom"
+    assert socket.messages[10]["tool_result"]["tool_arguments"] == {"x": 1}
+    assert socket.messages[11]["stop_reason"] == "stop"
+    assert socket.messages[12]["error"] == "boom"
 
 
 def test_sub_agent_events_payloads():

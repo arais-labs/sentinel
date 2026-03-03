@@ -457,6 +457,11 @@ class AgentLoop:
                     [tc.name for tc in tool_calls],
                     session_id,
                 )
+                tool_arguments_by_call_id = {
+                    call.id: call.arguments
+                    for call in tool_calls
+                    if isinstance(call.id, str) and call.id
+                }
 
                 # Persist assistant tool-call rows immediately so reconnect/load can
                 # reconstruct in-flight tool executions while they are still running.
@@ -516,6 +521,14 @@ class AgentLoop:
                                     content=tool_result.content,
                                     is_error=tool_result.is_error,
                                     metadata=self._stream_safe_tool_metadata(tool_result.metadata),
+                                    tool_arguments=(
+                                        tool_arguments_by_call_id.get(tool_result.tool_call_id)
+                                        if isinstance(
+                                            tool_arguments_by_call_id.get(tool_result.tool_call_id),
+                                            dict,
+                                        )
+                                        else None
+                                    ),
                                 ),
                             )
                         )

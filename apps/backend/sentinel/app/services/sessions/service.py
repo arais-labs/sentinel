@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -24,7 +25,11 @@ from app.services import session_bindings
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
 from app.services.llm.ids import TierName
-from app.services.session_runtime import cleanup_session_runtime, get_session_runtime_snapshot
+from app.services.session_runtime import (
+    cleanup_session_runtime,
+    get_session_runtime_snapshot,
+    stop_all_detached_runtime_jobs,
+)
 from app.services.sessions.errors import (
     AgentLoopUnavailableError,
     ChatPayloadRequiredError,
@@ -365,6 +370,7 @@ class SessionService:
         _ = await self.get_session(db, session_id=session_id, user_id=user_id)
         cancelled = await self._run_registry.cancel(str(session_id))
         now = datetime.now(UTC)
+        has_mutations = False
         pending_result = await db.execute(
             select(GitPushApproval).where(
                 GitPushApproval.session_id == session_id,
@@ -377,8 +383,79 @@ class SessionService:
                 row.status = "cancelled"
                 row.decision_note = "Cancelled by user via stop"
                 row.resolved_at = now
+            has_mutations = True
+
+        unresolved_tool_calls = await self._unresolved_tool_calls(db, session_id=session_id)
+        if unresolved_tool_calls:
+            content = json.dumps(
+                {
+                    "status": "cancelled",
+                    "message": "Tool call cancelled by user via stop.",
+                }
+            )
+            for call in unresolved_tool_calls:
+                db.add(
+                    Message(
+                        session_id=session_id,
+                        role="tool_result",
+                        content=content,
+                        metadata_json={"pending": False, "cancelled_by_stop": True},
+                        tool_call_id=call["id"],
+                        tool_name=call["name"],
+                    )
+                )
+            has_mutations = True
+
+        if has_mutations:
             await db.commit()
+        await stop_all_detached_runtime_jobs(
+            session_id,
+            reason="Cancelled by user via stop",
+        )
         return cancelled
+
+    async def _unresolved_tool_calls(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+    ) -> list[dict[str, str]]:
+        result = await db.execute(
+            select(Message).where(Message.session_id == session_id).order_by(Message.created_at.asc())
+        )
+        messages = result.scalars().all()
+
+        resolved_ids: set[str] = set()
+        pending_order: list[str] = []
+        pending: dict[str, dict[str, str]] = {}
+
+        for item in messages:
+            role = str(item.role or "")
+            if role == "assistant":
+                metadata = item.metadata_json if isinstance(item.metadata_json, dict) else {}
+                tool_calls = metadata.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+                for raw_call in tool_calls:
+                    if not isinstance(raw_call, dict):
+                        continue
+                    call_id = str(raw_call.get("id") or "").strip()
+                    if not call_id or call_id in resolved_ids or call_id in pending:
+                        continue
+                    call_name = str(raw_call.get("name") or "unknown").strip() or "unknown"
+                    pending[call_id] = {"id": call_id, "name": call_name}
+                    pending_order.append(call_id)
+                continue
+
+            if role not in {"tool", "tool_result"}:
+                continue
+            call_id = str(item.tool_call_id or "").strip()
+            if not call_id:
+                continue
+            resolved_ids.add(call_id)
+            pending.pop(call_id, None)
+
+        return [pending[call_id] for call_id in pending_order if call_id in pending]
 
     async def create_message(
         self,
