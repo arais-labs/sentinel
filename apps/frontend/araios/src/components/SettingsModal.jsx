@@ -12,10 +12,18 @@ export default function SettingsModal({ open, onClose, notify }) {
   const [agentId, setAgentId] = useState('');
   const [agentSubject, setAgentSubject] = useState('');
   const [createdApiKey, setCreatedApiKey] = useState('');
+  const [editingAgents, setEditingAgents] = useState({});
+  const [savingAgents, setSavingAgents] = useState({});
+  const [revokingAgents, setRevokingAgents] = useState({});
+  const [rotatingAgents, setRotatingAgents] = useState({});
 
   useEffect(() => {
     if (!open) return;
     setCreatedApiKey('');
+    setEditingAgents({});
+    setSavingAgents({});
+    setRevokingAgents({});
+    setRotatingAgents({});
     api('/api/settings')
       .then((data) => {
         setBaseUrl(data.settings?.manifest_base_url || '');
@@ -27,7 +35,7 @@ export default function SettingsModal({ open, onClose, notify }) {
         setAgents(Array.isArray(data.agents) ? data.agents : []);
       })
       .catch((err) => {
-        notify(err.message || 'Could not load agent senders', 'warn');
+        notify(err.message || 'Could not load agent tokens', 'warn');
       })
       .finally(() => {
         setLoadingAgents(false);
@@ -50,7 +58,7 @@ export default function SettingsModal({ open, onClose, notify }) {
     }
   };
 
-  const createAgentSender = async () => {
+  const createAgentToken = async () => {
     try {
       setCreatingAgent(true);
       setCreatedApiKey('');
@@ -70,9 +78,9 @@ export default function SettingsModal({ open, onClose, notify }) {
         const next = [data.agent, ...prev.filter((row) => row.id !== data.agent?.id)];
         return next;
       });
-      notify('Agent sender created');
+      notify('Agent token created');
     } catch (err) {
-      notify(err.message || 'Could not create agent sender', 'warn');
+      notify(err.message || 'Could not create agent token', 'warn');
     } finally {
       setCreatingAgent(false);
     }
@@ -85,6 +93,92 @@ export default function SettingsModal({ open, onClose, notify }) {
       notify('Agent API key copied');
     } catch {
       notify('Could not copy key', 'warn');
+    }
+  };
+
+  const startEditAgent = (agent) => {
+    setEditingAgents((prev) => ({
+      ...prev,
+      [agent.id]: {
+        label: agent.label || '',
+        agent_id: agent.agent_id || '',
+        subject: agent.subject || '',
+      },
+    }));
+  };
+
+  const cancelEditAgent = (agentIdToCancel) => {
+    setEditingAgents((prev) => {
+      const next = { ...prev };
+      delete next[agentIdToCancel];
+      return next;
+    });
+  };
+
+  const updateEditField = (agentIdToUpdate, field, value) => {
+    setEditingAgents((prev) => ({
+      ...prev,
+      [agentIdToUpdate]: {
+        ...(prev[agentIdToUpdate] || {}),
+        [field]: value,
+      },
+    }));
+  };
+
+  const saveAgent = async (agentIdToSave) => {
+    const draft = editingAgents[agentIdToSave];
+    if (!draft) return;
+    if (!draft.label.trim() || !draft.agent_id.trim() || !draft.subject.trim()) {
+      notify('Label, Agent ID, and Subject are required', 'warn');
+      return;
+    }
+    try {
+      setSavingAgents((prev) => ({ ...prev, [agentIdToSave]: true }));
+      const updated = await api(`/platform/auth/agents/${agentIdToSave}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          label: draft.label.trim(),
+          agent_id: draft.agent_id.trim(),
+          subject: draft.subject.trim(),
+        }),
+      });
+      setAgents((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
+      cancelEditAgent(agentIdToSave);
+      notify('Agent token updated');
+    } catch (err) {
+      notify(err.message || 'Could not update agent token', 'warn');
+    } finally {
+      setSavingAgents((prev) => ({ ...prev, [agentIdToSave]: false }));
+    }
+  };
+
+  const revokeAgent = async (agentIdToRevoke) => {
+    try {
+      setRevokingAgents((prev) => ({ ...prev, [agentIdToRevoke]: true }));
+      await api(`/platform/auth/agents/${agentIdToRevoke}`, { method: 'DELETE' });
+      setAgents((prev) => prev.filter((row) => row.id !== agentIdToRevoke));
+      cancelEditAgent(agentIdToRevoke);
+      notify('Agent token revoked');
+    } catch (err) {
+      notify(err.message || 'Could not revoke agent token', 'warn');
+    } finally {
+      setRevokingAgents((prev) => ({ ...prev, [agentIdToRevoke]: false }));
+    }
+  };
+
+  const rotateAgent = async (agentIdToRotate) => {
+    try {
+      setRotatingAgents((prev) => ({ ...prev, [agentIdToRotate]: true }));
+      const rotated = await api(`/platform/auth/agents/${agentIdToRotate}/rotate`, { method: 'POST' });
+      setAgents((prev) =>
+        prev.map((row) => (row.id === rotated.agent?.id ? rotated.agent : row))
+      );
+      setCreatedApiKey(rotated.api_key || '');
+      notify('Agent token rotated');
+    } catch (err) {
+      notify(err.message || 'Could not rotate agent token', 'warn');
+    } finally {
+      setRotatingAgents((prev) => ({ ...prev, [agentIdToRotate]: false }));
     }
   };
 
@@ -114,16 +208,16 @@ export default function SettingsModal({ open, onClose, notify }) {
         <hr className="detail-divider" />
 
         <div className="form-field">
-          <label className="form-label">Agent Senders</label>
+          <label className="form-label">Agent Tokens</label>
           <p className="text-xs text-[color:var(--text-muted)] mt-1" style={{ marginBottom: '10px' }}>
-            Create dedicated agent keys so each agent has a distinct identity and can be revoked independently.
+            Create dedicated keys so each agent has a distinct identity. You can edit metadata, rotate, and revoke keys.
           </p>
           {loadingAgents ? (
-            <p className="text-xs text-[color:var(--text-muted)]">Loading agent senders…</p>
+            <p className="text-xs text-[color:var(--text-muted)]">Loading agent tokens...</p>
           ) : (
             <div style={{ display: 'grid', gap: '8px', marginBottom: '14px' }}>
               {agents.length === 0 ? (
-                <p className="text-xs text-[color:var(--text-muted)]">No active agent senders found.</p>
+                <p className="text-xs text-[color:var(--text-muted)]">No active agent tokens found.</p>
               ) : (
                 agents.map((agent) => (
                   <div
@@ -133,14 +227,94 @@ export default function SettingsModal({ open, onClose, notify }) {
                       borderRadius: '8px',
                       padding: '10px 12px',
                       background: 'var(--surface-1)',
+                      display: 'grid',
+                      gap: '8px',
                     }}
                   >
-                    <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                      {agent.label}
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                      agent_id: {agent.agent_id || '—'} | subject: {agent.subject}
-                    </div>
+                    {editingAgents[agent.id] ? (
+                      <>
+                        <div className="form-row">
+                          <div className="form-field">
+                            <label className="form-label">Label</label>
+                            <input
+                              className="form-input"
+                              value={editingAgents[agent.id].label}
+                              onChange={(e) => updateEditField(agent.id, 'label', e.target.value)}
+                            />
+                          </div>
+                          <div className="form-field">
+                            <label className="form-label">Agent ID</label>
+                            <input
+                              className="form-input"
+                              value={editingAgents[agent.id].agent_id}
+                              onChange={(e) => updateEditField(agent.id, 'agent_id', e.target.value)}
+                            />
+                          </div>
+                        </div>
+                        <div className="form-field">
+                          <label className="form-label">Subject</label>
+                          <input
+                            className="form-input"
+                            value={editingAgents[agent.id].subject}
+                            onChange={(e) => updateEditField(agent.id, 'subject', e.target.value)}
+                          />
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          <button
+                            className="btn-primary"
+                            onClick={() => saveAgent(agent.id)}
+                            disabled={savingAgents[agent.id]}
+                          >
+                            {savingAgents[agent.id] ? 'Saving…' : 'Save'}
+                          </button>
+                          <button className="btn-secondary" onClick={() => cancelEditAgent(agent.id)}>
+                            Cancel
+                          </button>
+                          <button
+                            className="btn-secondary"
+                            onClick={() => rotateAgent(agent.id)}
+                            disabled={rotatingAgents[agent.id]}
+                          >
+                            {rotatingAgents[agent.id] ? 'Rotating…' : 'Rotate Key'}
+                          </button>
+                          <button
+                            className="btn-secondary"
+                            onClick={() => revokeAgent(agent.id)}
+                            disabled={revokingAgents[agent.id]}
+                          >
+                            {revokingAgents[agent.id] ? 'Revoking…' : 'Revoke'}
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                          {agent.label}
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                          agent_id: {agent.agent_id || '—'} | subject: {agent.subject}
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          <button className="btn-secondary" onClick={() => startEditAgent(agent)}>
+                            Edit
+                          </button>
+                          <button
+                            className="btn-secondary"
+                            onClick={() => rotateAgent(agent.id)}
+                            disabled={rotatingAgents[agent.id]}
+                          >
+                            {rotatingAgents[agent.id] ? 'Rotating…' : 'Rotate Key'}
+                          </button>
+                          <button
+                            className="btn-secondary"
+                            onClick={() => revokeAgent(agent.id)}
+                            disabled={revokingAgents[agent.id]}
+                          >
+                            {revokingAgents[agent.id] ? 'Revoking…' : 'Revoke'}
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 ))
               )}
@@ -154,7 +328,7 @@ export default function SettingsModal({ open, onClose, notify }) {
                 className="form-input"
                 value={agentLabel}
                 onChange={(e) => setAgentLabel(e.target.value)}
-                placeholder="Agent Sender"
+                placeholder="Agent Token"
               />
             </div>
             <div className="form-field">
@@ -176,8 +350,8 @@ export default function SettingsModal({ open, onClose, notify }) {
               placeholder="Defaults to Agent ID"
             />
           </div>
-          <button className="btn-primary" onClick={createAgentSender} disabled={creatingAgent}>
-            {creatingAgent ? 'Creating…' : 'Create Agent Sender Key'}
+          <button className="btn-primary" onClick={createAgentToken} disabled={creatingAgent}>
+            {creatingAgent ? 'Creating...' : 'Create Agent Token'}
           </button>
 
           {createdApiKey && (

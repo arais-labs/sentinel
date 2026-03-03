@@ -62,10 +62,8 @@ async def execute_action(code: str, context: dict) -> dict:
     context keys typically include: params, secrets, record (optional).
     Returns whatever the code sets as `result`, or {"ok": True}.
     """
-    local_ns: dict[str, Any] = {}
-
     async with httpx.AsyncClient(timeout=30) as client:
-        sandbox_globals = {
+        sandbox_ns: dict[str, Any] = {
             "__builtins__": _BUILTINS,
             # Stdlib conveniences
             "json": json,
@@ -88,9 +86,12 @@ async def execute_action(code: str, context: dict) -> dict:
             # Run in thread so blocking code doesn't stall the event loop
             await loop.run_in_executor(
                 None,
-                lambda: exec(compile(code, "<action>", "exec"), sandbox_globals, local_ns),
+                # Use one namespace for globals+locals so closures/comprehensions can
+                # reliably resolve names created inside action code.
+                lambda: exec(compile(code, "<action>", "exec"), sandbox_ns, sandbox_ns),
             )
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    return local_ns.get("result", {"ok": True})
+    result = sandbox_ns.get("result")
+    return result if isinstance(result, dict) else {"ok": True}

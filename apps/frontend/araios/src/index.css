@@ -480,6 +480,220 @@ body {
   margin: 4px 0;
 }
 
+/* ── Tasks page ── */
+.task-detail-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background:
+    radial-gradient(1200px 340px at 90% -20%, color-mix(in srgb, var(--accent-solid) 10%, transparent), transparent 60%),
+    var(--surface-0);
+}
+
+.task-hero {
+  padding: 10px 14px;
+  gap: 10px;
+}
+
+.task-title-input {
+  height: 40px;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 2px 8px;
+  margin-bottom: 4px;
+}
+
+.task-title-input:focus {
+  border-color: var(--border-subtle);
+  background-color: var(--surface-1);
+}
+
+.task-meta-line {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-hero-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.task-detail-content {
+  padding: 12px;
+  gap: 12px;
+}
+
+.task-quick-card {
+  padding: 10px;
+}
+
+.task-quick-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.task-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background-color: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+.task-control-wide {
+  grid-column: span 2 / span 2;
+}
+
+.task-editor-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.task-editor-card {
+  padding: 10px;
+}
+
+.task-collapsible {
+  padding: 8px 10px;
+}
+
+.task-collapsible-summary {
+  cursor: pointer;
+  user-select: none;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--text-muted);
+}
+
+.task-collapsible-summary::marker {
+  color: var(--text-muted);
+}
+
+.task-collapsible[open] .task-collapsible-summary {
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.task-collapsible-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.task-collapsible-grid-wide {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.task-copy-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  background: transparent;
+}
+
+.task-copy-btn:hover {
+  background-color: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.task-danger-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 0 0;
+}
+
+.task-danger-row .btn-danger {
+  min-width: 170px;
+}
+
+.tasks-page .input-field {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background-color: var(--surface-1);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.tasks-page .input-field:focus {
+  border-color: var(--border-strong);
+  background-color: var(--surface-0);
+}
+
+@media (max-width: 1280px) {
+  .task-quick-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .task-collapsible-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 960px) {
+  .task-editor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .task-title-input {
+    font-size: 22px;
+  }
+
+  .task-quick-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .task-quick-grid,
+  .task-collapsible-grid,
+  .task-collapsible-grid-wide {
+    grid-template-columns: 1fr;
+  }
+
+  .task-control-wide {
+    grid-column: auto;
+  }
+}
+
 /* ── Editor ── */
 .editor-textarea {
   width: 100%;

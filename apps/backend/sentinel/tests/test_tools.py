@@ -97,7 +97,8 @@ def test_tools_registry_and_execution():
         listed = client.get("/api/v1/tools", headers=headers)
         assert listed.status_code == 200
         names = {item["name"] for item in listed.json()["items"]}
-        assert {"file_read", "http_request", "runtime_exec"} <= names
+        assert {"file_read", "http_request", "runtime_exec", "git_exec"} <= names
+        assert {"runtime_jobs_list", "runtime_job_status", "runtime_job_logs", "runtime_job_stop"} <= names
         assert "browser_reset" in names
         assert "araios_api" in names
 
@@ -217,6 +218,84 @@ def test_runtime_exec_runs_command():
         payload = run.json()["result"]
         assert payload["ok"] is True
         assert "hello" in payload["stdout"]
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_exec_detached_job_lifecycle():
+    fake_db = FakeDB()
+    previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-exec-detached"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = client.post(
+            "/api/v1/tools/runtime_exec/execute",
+            json={"input": {"command": "sleep 30", "session_id": session_id, "detached": True}},
+            headers=headers,
+        )
+        assert run.status_code == 200
+        payload = run.json()["result"]
+        assert payload["ok"] is True
+        assert payload["detached"] is True
+        job_id = payload["job"]["id"]
+
+        listed = client.post(
+            "/api/v1/tools/runtime_jobs_list/execute",
+            json={"input": {"session_id": session_id}},
+            headers=headers,
+        )
+        assert listed.status_code == 200
+        jobs = listed.json()["result"]["jobs"]
+        assert any(item["id"] == job_id for item in jobs)
+
+        status = client.post(
+            "/api/v1/tools/runtime_job_status/execute",
+            json={"input": {"session_id": session_id, "job_id": job_id}},
+            headers=headers,
+        )
+        assert status.status_code == 200
+        assert status.json()["result"]["job"]["id"] == job_id
+
+        logs = client.post(
+            "/api/v1/tools/runtime_job_logs/execute",
+            json={"input": {"session_id": session_id, "job_id": job_id}},
+            headers=headers,
+        )
+        assert logs.status_code == 200
+        assert "stdout_tail" in logs.json()["result"]
+
+        stopped = client.post(
+            "/api/v1/tools/runtime_job_stop/execute",
+            json={"input": {"session_id": session_id, "job_id": job_id}},
+            headers=headers,
+        )
+        assert stopped.status_code == 200
+        assert stopped.json()["result"]["job"]["status"] in {"cancelled", "completed", "failed"}
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()

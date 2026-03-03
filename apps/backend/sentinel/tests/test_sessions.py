@@ -1,5 +1,9 @@
 import os
+import tempfile
 import uuid
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from unittest.mock import patch
 
 import jwt
 from fastapi.testclient import TestClient
@@ -9,7 +13,8 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.models import Session, SessionBinding
+from app.models import GitPushApproval, Message, Session, SessionBinding
+from app.services.llm.generic.types import AssistantMessage, SystemMessage, TextContent, UserMessage
 from tests.fake_db import FakeDB
 
 
@@ -203,3 +208,246 @@ def test_cannot_set_telegram_channel_session_as_main():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
+
+
+def test_stop_session_generation_cancels_pending_git_push_approvals():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "stop-cancels-approvals"}, headers=headers)
+        assert session_resp.status_code == 200
+        session_id = uuid.UUID(session_resp.json()["id"])
+
+        pending = GitPushApproval(
+            account_id=uuid.uuid4(),
+            session_id=session_id,
+            repo_url="https://github.com/acme/repo",
+            remote_name="origin",
+            command="git push origin main",
+            status="pending",
+            requested_by="session:test",
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        fake_db.add(pending)
+
+        stop_resp = client.post(f"/api/v1/sessions/{session_id}/stop", headers=headers)
+        assert stop_resp.status_code == 200
+        assert stop_resp.json()["status"] in {"stopping", "idle"}
+        assert pending.status == "cancelled"
+        assert pending.resolved_at is not None
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_stop_session_generation_materializes_unresolved_tool_calls():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "stop-materializes-tool-result"}, headers=headers)
+        assert session_resp.status_code == 200
+        session_id = uuid.UUID(session_resp.json()["id"])
+
+        fake_db.add(
+            Message(
+                session_id=session_id,
+                role="assistant",
+                content="",
+                metadata_json={
+                    "tool_calls": [
+                        {
+                            "id": "toolu_pending_runtime",
+                            "name": "runtime_exec",
+                            "arguments": {"command": "sleep 20"},
+                        }
+                    ]
+                },
+            )
+        )
+
+        stop_resp = client.post(f"/api/v1/sessions/{session_id}/stop", headers=headers)
+        assert stop_resp.status_code == 200
+        assert stop_resp.json()["status"] in {"stopping", "idle"}
+
+        messages_resp = client.get(f"/api/v1/sessions/{session_id}/messages", headers=headers)
+        assert messages_resp.status_code == 200
+        items = messages_resp.json()["items"]
+        materialized = next(
+            (
+                item
+                for item in items
+                if item["role"] == "tool_result"
+                and item.get("tool_call_id") == "toolu_pending_runtime"
+                and item.get("tool_name") == "runtime_exec"
+            ),
+            None,
+        )
+        assert materialized is not None
+        assert materialized["metadata"]["cancelled_by_stop"] is True
+        assert materialized["metadata"]["pending"] is False
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    class _FakeContextBuilder:
+        async def build(self, db, session_id, system_prompt=None, pending_user_message=None):
+            _ = (db, session_id, system_prompt, pending_user_message)
+            return [
+                SystemMessage(content="You are Sentinel."),
+                UserMessage(content="latest user"),
+                AssistantMessage(content=[TextContent(text="latest answer")]),
+            ]
+
+    class _FakeLoop:
+        def __init__(self):
+            self.context_builder = _FakeContextBuilder()
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        old_agent_loop = getattr(app.state, "agent_loop", None)
+        app.state.agent_loop = _FakeLoop()
+
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "usage-rebuild"}, headers=headers)
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
+        usage_resp = client.get(f"/api/v1/sessions/{session_id}/context-usage", headers=headers)
+        assert usage_resp.status_code == 200
+        payload = usage_resp.json()
+        assert payload["source"] == "rebuilt_context_estimate"
+        assert isinstance(payload["estimated_context_tokens"], int)
+        assert payload["estimated_context_tokens"] > 0
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_file_explorer_endpoints():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        created = client.post("/api/v1/sessions", json={"title": "runtime-explorer"}, headers=headers)
+        assert created.status_code == 200
+        session_id = created.json()["id"]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_base = Path(temp_dir)
+            workspace = runtime_base / session_id / "workspace"
+            (workspace / "src").mkdir(parents=True, exist_ok=True)
+            (workspace / "src" / "main.py").write_text("print('ok')\n", encoding="utf-8")
+            (workspace / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with patch("app.services.session_runtime._RUNTIME_BASE_DIR", runtime_base):
+                files_root = client.get(f"/api/v1/sessions/{session_id}/runtime/files", headers=headers)
+                assert files_root.status_code == 200
+                root_payload = files_root.json()
+                names = {item["name"] for item in root_payload["entries"]}
+                assert {"src", "README.md"} <= names
+
+                files_src = client.get(
+                    f"/api/v1/sessions/{session_id}/runtime/files?path=src",
+                    headers=headers,
+                )
+                assert files_src.status_code == 200
+                src_payload = files_src.json()
+                assert src_payload["path"] == "src"
+                assert src_payload["parent_path"] == ""
+                assert any(item["name"] == "main.py" and item["kind"] == "file" for item in src_payload["entries"])
+
+                preview = client.get(
+                    f"/api/v1/sessions/{session_id}/runtime/file?path=src/main.py",
+                    headers=headers,
+                )
+                assert preview.status_code == 200
+                preview_payload = preview.json()
+                assert preview_payload["name"] == "main.py"
+                assert "print('ok')" in preview_payload["content"]
+
+                forbidden = client.get(
+                    f"/api/v1/sessions/{session_id}/runtime/files?path=../secrets",
+                    headers=headers,
+                )
+                assert forbidden.status_code == 400
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+        if "old_agent_loop" in locals():
+            app.state.agent_loop = old_agent_loop

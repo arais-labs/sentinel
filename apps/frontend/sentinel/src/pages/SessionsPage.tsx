@@ -24,6 +24,11 @@ import {
   Brain,
   Sparkles,
   Paperclip,
+  Folder,
+  FileCode2,
+  ChevronRight,
+  ArrowUp,
+  Clock3,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
@@ -34,12 +39,12 @@ import { SubAgentTaskModal } from '../components/SubAgentTaskModal';
 import { SpawnSubAgentModal } from '../components/SpawnSubAgentModal';
 import { JsonBlock } from '../components/ui/JsonBlock';
 import { Markdown } from '../components/ui/Markdown';
-import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { WS_BASE_URL } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
 import { api } from '../lib/api';
 import type {
+  GitPushApprovalListResponse,
   Message,
   MessageAttachment,
   MessageListResponse,
@@ -48,7 +53,15 @@ import type {
   PlaywrightLiveView,
   Session,
   SessionContextUsage,
+  SessionRuntimeFileEntry,
+  SessionRuntimeFilePreviewResponse,
+  SessionRuntimeFilesResponse,
+  SessionRuntimeGitChangedFilesResponse,
+  SessionRuntimeGitDiffResponse,
+  SessionRuntimeGitRoot,
+  SessionRuntimeGitRootsResponse,
   SessionListResponse,
+  SessionRuntimeStatus,
   SubAgentTask,
   SubAgentTaskListResponse,
   WsConnectionState,
@@ -77,6 +90,59 @@ function taskStatusTone(status: string): 'default' | 'good' | 'warn' | 'danger' 
 
 function sortMessages(items: Message[]) {
   return [...items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+}
+
+function formatBytes(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '—';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function inferCodeLanguageFromName(name: string): string {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return 'text';
+  if (normalized.endsWith('.ts') || normalized.endsWith('.tsx')) return 'typescript';
+  if (normalized.endsWith('.js') || normalized.endsWith('.mjs') || normalized.endsWith('.cjs')) return 'javascript';
+  if (normalized.endsWith('.py')) return 'python';
+  if (normalized.endsWith('.rs')) return 'rust';
+  if (normalized.endsWith('.go')) return 'go';
+  if (normalized.endsWith('.java')) return 'java';
+  if (normalized.endsWith('.kt')) return 'kotlin';
+  if (normalized.endsWith('.rb')) return 'ruby';
+  if (normalized.endsWith('.php')) return 'php';
+  if (normalized.endsWith('.sh') || normalized.endsWith('.bash') || normalized.endsWith('.zsh')) return 'bash';
+  if (normalized.endsWith('.css')) return 'css';
+  if (normalized.endsWith('.scss')) return 'scss';
+  if (normalized.endsWith('.html') || normalized.endsWith('.htm')) return 'html';
+  if (normalized.endsWith('.json')) return 'json';
+  if (normalized.endsWith('.md')) return 'markdown';
+  if (normalized.endsWith('.yaml') || normalized.endsWith('.yml')) return 'yaml';
+  if (normalized.endsWith('.toml')) return 'toml';
+  if (normalized.endsWith('.sql')) return 'sql';
+  if (normalized.endsWith('.xml')) return 'xml';
+  if (normalized.endsWith('.diff') || normalized.endsWith('.patch')) return 'diff';
+  return 'text';
+}
+
+function toMarkdownCodeFence(content: string, language: string): string {
+  let fence = '```';
+  while (content.includes(fence)) {
+    fence += '`';
+  }
+  return `${fence}${language}\n${content}\n${fence}`;
+}
+
+function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
+  if (!runtime) return 'Unavailable';
+  if (!runtime.runtime_exists) return 'Missing';
+  return runtime.active ? 'Active' : 'Idle';
+}
+
+function runtimeActionCommand(entry: { action: string; details: Record<string, unknown> }): string | null {
+  if (!entry || !entry.details || typeof entry.details !== 'object') return null;
+  const command = entry.details.command;
+  return typeof command === 'string' && command.trim().length > 0 ? command.trim() : null;
 }
 
 function tryParseJson(raw: string): unknown | null {
@@ -118,6 +184,107 @@ function humanizeAgentError(raw: string): string {
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeCommand(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function isGitPushCommand(command: string): boolean {
+  return /^git\s+push(?:\s|$)/i.test(command.trim());
+}
+
+function gitPushCommandFromToolArgs(value: unknown): string | null {
+  if (!isObjectRecord(value)) return null;
+  const command = typeof value.command === 'string' ? value.command.trim() : '';
+  if (!command || !isGitPushCommand(command)) return null;
+  return command;
+}
+
+function parseToolArgumentsObject(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return isObjectRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function gitPushCommandFromSerializedArgs(raw: string): string | null {
+  const parsed = parseToolArgumentsObject(raw);
+  return parsed ? gitPushCommandFromToolArgs(parsed) : null;
+}
+
+function pendingApprovalIdFromMetadata(metadata: Record<string, unknown>): string | null {
+  const approvalId = metadata.approval_id;
+  if (typeof approvalId !== 'string') return null;
+  const trimmed = approvalId.trim();
+  return trimmed || null;
+}
+
+function isWaitingApproval(metadata: Record<string, unknown>): boolean {
+  return metadata.pending === true;
+}
+
+function hasUnresolvedToolCalls(messages: Message[]): boolean {
+  const resolvedIds = new Set<string>();
+  const pendingIds = new Set<string>();
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+      const toolCalls = metadata.tool_calls;
+      if (!Array.isArray(toolCalls)) continue;
+      for (const rawCall of toolCalls) {
+        if (!isObjectRecord(rawCall)) continue;
+        const callId = typeof rawCall.id === 'string' ? rawCall.id.trim() : '';
+        if (!callId || resolvedIds.has(callId)) continue;
+        pendingIds.add(callId);
+      }
+      continue;
+    }
+    if (message.role !== 'tool' && message.role !== 'tool_result') {
+      continue;
+    }
+    const callId = typeof message.tool_call_id === 'string' ? message.tool_call_id.trim() : '';
+    if (!callId) continue;
+    resolvedIds.add(callId);
+    pendingIds.delete(callId);
+  }
+  return pendingIds.size > 0;
+}
+
+const GIT_APPROVAL_HYDRATION_MAX_ATTEMPTS = 12;
+const GIT_APPROVAL_HYDRATION_RETRY_MS = 750;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function selectMatchingPendingGitApproval(
+  items: GitPushApprovalListResponse['items'],
+  options: {
+    sessionId: string;
+    normalizedCommand: string;
+  },
+) {
+  const { sessionId, normalizedCommand } = options;
+  const matches = items.filter(
+    (item) => item.session_id === sessionId && normalizeCommand(item.command) === normalizedCommand,
+  );
+  if (!matches.length) return null;
+  const toEpoch = (value: string | null): number => {
+    if (!value) return 0;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  matches.sort((a, b) => {
+    const byCreated = toEpoch(b.created_at) - toEpoch(a.created_at);
+    if (byCreated !== 0) return byCreated;
+    return toEpoch(b.updated_at) - toEpoch(a.updated_at);
+  });
+  return matches[0];
 }
 
 function parseTier(value: string | null): ModelOption['tier'] | null {
@@ -195,6 +362,47 @@ function serializeToolArguments(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function toolArgumentsFromToolResultPayload(payload: Record<string, unknown>): string {
+  const fromPayload = payload.tool_arguments;
+  if (fromPayload != null) {
+    return serializeToolArguments(fromPayload);
+  }
+  const metadata = isObjectRecord(payload.metadata) ? payload.metadata : null;
+  if (metadata && metadata.tool_arguments != null) {
+    return serializeToolArguments(metadata.tool_arguments);
+  }
+  return '';
+}
+
+function hasMeaningfulToolArguments(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  if (trimmed === '{}' || trimmed === 'null') return false;
+  return true;
+}
+
+function mergeStreamingToolArguments(current: string, delta: string): string {
+  if (!delta) return current;
+  const trimmedCurrent = current.trim();
+  const trimmedDelta = delta.trim();
+
+  if (!hasMeaningfulToolArguments(current) || trimmedCurrent === '{}') {
+    return delta;
+  }
+
+  const currentLooksCompleteJson =
+    (trimmedCurrent.startsWith('{') && trimmedCurrent.endsWith('}')) ||
+    (trimmedCurrent.startsWith('[') && trimmedCurrent.endsWith(']'));
+  const deltaLooksLikeFreshJson =
+    trimmedDelta.startsWith('{') || trimmedDelta.startsWith('[');
+
+  if (currentLooksCompleteJson && deltaLooksLikeFreshJson) {
+    return delta;
+  }
+
+  return `${current}${delta}`;
 }
 
 const MAX_IMAGE_ATTACHMENTS = 4;
@@ -456,12 +664,17 @@ SourceChip.displayName = 'SourceChip';
 const MessageCard = memo(({
   message,
   toolArgumentsByCallId,
+  onResolveGitApproval,
+  resolvingApprovalId,
 }: {
   message: Message;
   toolArgumentsByCallId: Map<string, string>;
+  onResolveGitApproval: (approvalId: string, decision: 'approve' | 'reject') => void;
+  resolvingApprovalId: string | null;
 }) => {
   const isUser = message.role === 'user';
   const isToolResult = message.role === 'tool_result';
+  const toolMetadata = isObjectRecord(message.metadata) ? message.metadata : {};
   const isTelegramGroupResponse = !isUser && !isToolResult && isTelegramGroupAuditMessage(message);
   const telegramGroupLabel = parseTelegramGroupResponseLabel(message.content ?? '');
   const renderedAssistantContent = isTelegramGroupResponse
@@ -478,6 +691,13 @@ const MessageCard = memo(({
       ? (toolArgumentsByCallId.get(message.tool_call_id) ?? '')
       : '';
   const toolFailed = Boolean(isToolResult && message.metadata?.is_error);
+  const pendingApproval = Boolean(
+    isToolResult &&
+    message.tool_name === 'git_exec' &&
+    isWaitingApproval(toolMetadata),
+  );
+  const pendingApprovalId = pendingApproval ? pendingApprovalIdFromMetadata(toolMetadata) : null;
+  const approvalActionBusy = pendingApprovalId !== null && resolvingApprovalId === pendingApprovalId;
   const [toolExpanded, setToolExpanded] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -526,7 +746,9 @@ const MessageCard = memo(({
           isUser
             ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent rounded-tr-none font-medium'
             : isToolResult
-            ? 'bg-sky-500/5 border-sky-500/20 font-mono text-[12px] rounded-tl-none'
+            ? pendingApproval
+              ? 'bg-rose-500/10 border-rose-500/35 font-mono text-[12px] rounded-tl-none'
+              : 'bg-sky-500/5 border-sky-500/20 font-mono text-[12px] rounded-tl-none'
             : isTelegramGroupResponse
             ? 'bg-emerald-500/8 border-emerald-500/25 rounded-tl-none font-medium'
             : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] rounded-tl-none font-medium'
@@ -540,12 +762,17 @@ const MessageCard = memo(({
                 className={`${toolExpanded ? 'w-full' : 'w-auto'} flex items-center justify-between gap-3 text-left`}
               >
                 <div className="flex items-center gap-2 min-w-0">
-                  <Wrench size={12} className="text-sky-600 dark:text-sky-400 shrink-0" />
-                  <span className="font-bold uppercase tracking-wide text-sky-600 dark:text-sky-400 truncate">
+                  <Wrench size={12} className={`${pendingApproval ? 'text-rose-400' : 'text-sky-600 dark:text-sky-400'} shrink-0`} />
+                  <span className={`font-bold uppercase tracking-wide truncate ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
                     {message.tool_name || 'tool_result'}
                   </span>
+                  {pendingApproval ? (
+                    <span className="inline-flex items-center rounded-full border border-rose-500/35 bg-rose-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-300">
+                      Waiting Approval
+                    </span>
+                  ) : null}
                 </div>
-                <ChevronDown size={14} className={`text-sky-600 dark:text-sky-400 shrink-0 transition-transform ${toolExpanded ? 'rotate-180' : ''}`} />
+                <ChevronDown size={14} className={`${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'} shrink-0 transition-transform ${toolExpanded ? 'rotate-180' : ''}`} />
               </button>
               {toolExpanded ? (
                 <div className={`mt-3 border-t border-sky-500/10 pt-3 grid ${isScreenshotTool ? 'grid-cols-1' : 'grid-cols-2'} gap-3 animate-in fade-in duration-200`}>
@@ -614,11 +841,35 @@ const MessageCard = memo(({
                         )}
                       </>
                     ) : (
-                      <ToolPayloadView
-                        raw={message.content}
-                        emptyLabel="No output payload."
-                        showRawJson={!isScreenshotTool}
-                      />
+                      <div className="space-y-2">
+                        <ToolPayloadView
+                          raw={message.content}
+                          emptyLabel="No output payload."
+                          showRawJson={!isScreenshotTool}
+                        />
+                        {pendingApproval && pendingApprovalId ? (
+                          <div className="flex items-center gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => onResolveGitApproval(pendingApprovalId, 'reject')}
+                              disabled={approvalActionBusy}
+                              className="inline-flex items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-500/20 disabled:opacity-60"
+                            >
+                              {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                              Reject
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onResolveGitApproval(pendingApprovalId, 'approve')}
+                              disabled={approvalActionBusy}
+                              className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-60"
+                            >
+                              {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                              Approve
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -789,6 +1040,16 @@ interface StreamingState {
   agentMaxIterations: number;
 }
 
+interface WorkbenchTab {
+  path: string;
+  name: string;
+  size_bytes: number;
+  modified_at: string | null;
+  content: string;
+  truncated: boolean;
+  max_bytes: number;
+}
+
 const defaultStreamingState: StreamingState = {
   connection: 'disconnected',
   isThinking: false,
@@ -813,9 +1074,22 @@ function streamingCallKey(call: StreamingToolCall): string {
 
 // --- Sub-Components ---
 
-function StreamToolCard({ call, active }: { call: StreamingToolCall; active: boolean }) {
+function StreamToolCard({
+  call,
+  active,
+  onResolveGitApproval,
+  resolvingApprovalId,
+}: {
+  call: StreamingToolCall;
+  active: boolean;
+  onResolveGitApproval: (approvalId: string, decision: 'approve' | 'reject') => void;
+  resolvingApprovalId: string | null;
+}) {
   const [expanded, setExpanded] = useState(active);
   const isScreenshotCall = call.name.toLowerCase().includes('screenshot');
+  const pendingApproval = call.name === 'git_exec' && isWaitingApproval(call.metadata);
+  const pendingApprovalId = pendingApproval ? pendingApprovalIdFromMetadata(call.metadata) : null;
+  const approvalActionBusy = pendingApprovalId !== null && resolvingApprovalId === pendingApprovalId;
 
   useEffect(() => {
     if (active) setExpanded(true);
@@ -830,23 +1104,28 @@ function StreamToolCard({ call, active }: { call: StreamingToolCall; active: boo
   return (
       <div className="flex flex-col gap-1.5 animate-in items-start w-full">
         <div className="flex items-center gap-2 px-1">
-        <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-sky-600 dark:text-sky-400">
-          tool_call • {active ? 'running' : 'complete'}
+        <span className={`text-[9px] font-bold uppercase tracking-[0.2em] ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
+          {pendingApproval ? 'tool_call • waiting approval' : `tool_call • ${active ? 'running' : 'complete'}`}
         </span>
         </div>
-        <div className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit'} inline-flex flex-col rounded-2xl rounded-tl-none border border-sky-500/20 bg-sky-500/5 px-4 py-1.5 text-[12px] shadow-sm`}>
+        <div className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit'} inline-flex flex-col rounded-2xl rounded-tl-none border ${pendingApproval ? 'border-rose-500/35 bg-rose-500/10' : 'border-sky-500/20 bg-sky-500/5'} px-4 py-1.5 text-[12px] shadow-sm`}>
           <button
             type="button"
             onClick={() => setExpanded((prev) => !prev)}
             className={`${expanded ? 'w-full' : 'w-auto'} flex items-center justify-between gap-3 text-left`}
           >
-            <div className="flex items-center gap-2 font-mono font-bold text-sky-600 dark:text-sky-400 min-w-0">
+            <div className={`flex items-center gap-2 font-mono font-bold min-w-0 ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
               <Wrench size={14} className="shrink-0" />
               <span className="truncate">{call.name}</span>
+              {pendingApproval ? (
+                <span className="inline-flex items-center rounded-full border border-rose-500/35 bg-rose-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-300">
+                  Pending
+                </span>
+              ) : null}
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
-              {active && <Loader2 size={12} className="animate-spin text-sky-500" />}
-              <ChevronDown size={14} className={`text-sky-600 dark:text-sky-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+              {active && <Loader2 size={12} className={`animate-spin ${pendingApproval ? 'text-rose-300' : 'text-sky-500'}`} />}
+              <ChevronDown size={14} className={`${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'} transition-transform ${expanded ? 'rotate-180' : ''}`} />
             </div>
           </button>
           {expanded ? (
@@ -866,11 +1145,35 @@ function StreamToolCard({ call, active }: { call: StreamingToolCall; active: boo
                     </span>
                   )}
                 </div>
-                <ToolPayloadView
-                  raw={call.outputJson}
-                  emptyLabel={active ? 'Running tool...' : 'No output payload.'}
-                  showRawJson={!isScreenshotCall}
-                />
+                <div className="space-y-2">
+                  <ToolPayloadView
+                    raw={call.outputJson}
+                    emptyLabel={active ? 'Running tool...' : 'No output payload.'}
+                    showRawJson={!isScreenshotCall}
+                  />
+                  {pendingApproval && pendingApprovalId ? (
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => onResolveGitApproval(pendingApprovalId, 'reject')}
+                        disabled={approvalActionBusy}
+                        className="inline-flex items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-500/20 disabled:opacity-60"
+                      >
+                        {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                        Reject
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onResolveGitApproval(pendingApprovalId, 'approve')}
+                        disabled={approvalActionBusy}
+                        className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-60"
+                      >
+                        {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                        Approve
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
           ) : null}
@@ -915,9 +1218,30 @@ export function SessionsPage() {
   const [composerAttachments, setComposerAttachments] = useState<MessageAttachment[]>([]);
 
   const [streaming, setStreaming] = useState<StreamingState>(defaultStreamingState);
+  const [resolvingGitApprovalId, setResolvingGitApprovalId] = useState<string | null>(null);
 
   const [tasks, setTasks] = useState<SubAgentTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
+  const [rightRailTab, setRightRailTab] = useState<'browser' | 'sub_agents' | 'runtime'>('browser');
+  const [runtimeStatus, setRuntimeStatus] = useState<SessionRuntimeStatus | null>(null);
+  const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
+  const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
+  const [runtimeInspectorTab, setRuntimeInspectorTab] = useState<'files' | 'git' | 'commands'>('files');
+  const [runtimePath, setRuntimePath] = useState('');
+  const [runtimeChangedFiles, setRuntimeChangedFiles] = useState<SessionRuntimeGitChangedFilesResponse | null>(null);
+  const [runtimeChangedFilesLoading, setRuntimeChangedFilesLoading] = useState(false);
+  const [workbenchTabs, setWorkbenchTabs] = useState<WorkbenchTab[]>([]);
+  const [activeWorkbenchPath, setActiveWorkbenchPath] = useState<string | null>(null);
+  const [workbenchLoadingPath, setWorkbenchLoadingPath] = useState<string | null>(null);
+  const [workbenchWidth, setWorkbenchWidth] = useState(520);
+  const [isWorkbenchResizing, setIsWorkbenchResizing] = useState(false);
+  const [workbenchShowDiffByPath, setWorkbenchShowDiffByPath] = useState<Record<string, boolean>>({});
+  const [workbenchDiffBaseRefByPath, setWorkbenchDiffBaseRefByPath] = useState<Record<string, string>>({});
+  const [workbenchDiffStagedByPath, setWorkbenchDiffStagedByPath] = useState<Record<string, boolean>>({});
+  const [workbenchDiffByPath, setWorkbenchDiffByPath] = useState<Record<string, SessionRuntimeGitDiffResponse | null>>({});
+  const [workbenchDiffErrorByPath, setWorkbenchDiffErrorByPath] = useState<Record<string, string | null>>({});
+  const [workbenchDiffLoadingPath, setWorkbenchDiffLoadingPath] = useState<string | null>(null);
+  const [workbenchGitRootsByPath, setWorkbenchGitRootsByPath] = useState<Record<string, SessionRuntimeGitRoot[]>>({});
   const [spawnObjective, setSpawnObjective] = useState('');
   const [spawnScope, setSpawnScope] = useState('');
   const [spawnMaxSteps, setSpawnMaxSteps] = useState(5);
@@ -930,10 +1254,10 @@ export function SessionsPage() {
   const [confirmTerminateTaskId, setConfirmTerminateTaskId] = useState<string | null>(null);
 
   const [liveView, setLiveView] = useState<PlaywrightLiveView | null>(null);
-
   const [mode, setMode] = useState<'solo' | 'advanced'>(
       () => (localStorage.getItem('sentinel-mode') as 'solo' | 'advanced') ?? 'solo',
   );
+
   const hasActiveSubAgentTasks = tasks.some((task) => task.status === 'running' || task.status === 'pending');
 
   useEffect(() => {
@@ -967,7 +1291,9 @@ export function SessionsPage() {
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const activeSessionIdRef = useRef<string | null>(routeSessionId ?? null);
+  const contextUsageRequestRef = useRef(0);
   const wsInstanceRef = useRef(0);
+  const approvalLookupInFlightRef = useRef<Set<string>>(new Set());
 
   // Keep refs in sync so WS callbacks can read current values
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
@@ -1026,6 +1352,38 @@ export function SessionsPage() {
       [sessions, activeSessionId],
   );
 
+  const runtimeCommandActions = useMemo(() => {
+    if (!runtimeStatus) return [];
+    return runtimeStatus.actions
+      .filter((entry) => Boolean(runtimeActionCommand(entry)))
+      .slice()
+      .reverse();
+  }, [runtimeStatus]);
+
+  const workbenchVisible = workbenchTabs.length > 0;
+  const activeWorkbenchTab = useMemo(() => {
+    if (!workbenchTabs.length) return null;
+    if (!activeWorkbenchPath) return workbenchTabs[0];
+    return workbenchTabs.find((tab) => tab.path === activeWorkbenchPath) ?? workbenchTabs[0];
+  }, [workbenchTabs, activeWorkbenchPath]);
+  const activeWorkbenchDiff = activeWorkbenchTab ? workbenchDiffByPath[activeWorkbenchTab.path] ?? null : null;
+  const activeWorkbenchDiffError = activeWorkbenchTab ? workbenchDiffErrorByPath[activeWorkbenchTab.path] ?? null : null;
+  const activeWorkbenchGitRoots = activeWorkbenchTab ? workbenchGitRootsByPath[activeWorkbenchTab.path] ?? [] : [];
+
+  const browserToolResults = useMemo(
+    () =>
+      messages
+        .filter(
+          (message) =>
+            message.role === 'tool_result' &&
+            typeof message.tool_name === 'string' &&
+            message.tool_name.startsWith('browser_')
+        )
+        .slice(-25)
+        .reverse(),
+    [messages],
+  );
+
   const toolArgumentsByCallId = useMemo(() => {
     const map = new Map<string, string>();
     for (const message of messages) {
@@ -1046,6 +1404,21 @@ export function SessionsPage() {
     return distance <= 20;
   }, []);
 
+  const cancelScheduledAutoScroll = useCallback(() => {
+    if (autoScrollRafRef.current !== null) {
+      window.cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
+    }
+    if (autoScrollTimerShortRef.current !== null) {
+      window.clearTimeout(autoScrollTimerShortRef.current);
+      autoScrollTimerShortRef.current = null;
+    }
+    if (autoScrollTimerLongRef.current !== null) {
+      window.clearTimeout(autoScrollTimerLongRef.current);
+      autoScrollTimerLongRef.current = null;
+    }
+  }, []);
+
   const stickToBottomNow = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -1057,22 +1430,11 @@ export function SessionsPage() {
 
   const scheduleStickToBottom = useCallback(() => {
     stickToBottomNow();
-    if (autoScrollRafRef.current !== null) {
-      window.cancelAnimationFrame(autoScrollRafRef.current);
-      autoScrollRafRef.current = null;
-    }
+    cancelScheduledAutoScroll();
     autoScrollRafRef.current = window.requestAnimationFrame(() => {
       stickToBottomNow();
       autoScrollRafRef.current = null;
     });
-    if (autoScrollTimerShortRef.current !== null) {
-      window.clearTimeout(autoScrollTimerShortRef.current);
-      autoScrollTimerShortRef.current = null;
-    }
-    if (autoScrollTimerLongRef.current !== null) {
-      window.clearTimeout(autoScrollTimerLongRef.current);
-      autoScrollTimerLongRef.current = null;
-    }
     // Tool cards expand with transitions; run delayed pins to land at true bottom.
     autoScrollTimerShortRef.current = window.setTimeout(() => {
       stickToBottomNow();
@@ -1082,7 +1444,7 @@ export function SessionsPage() {
       stickToBottomNow();
       autoScrollTimerLongRef.current = null;
     }, 420);
-  }, [stickToBottomNow]);
+  }, [cancelScheduledAutoScroll, stickToBottomNow]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const el = scrollRef.current;
@@ -1112,6 +1474,7 @@ export function SessionsPage() {
       setIsPinnedToBottom(true);
     } else if (userScrolledUp) {
       // Only disable auto-scroll when user explicitly scrolls up.
+      cancelScheduledAutoScroll();
       shouldAutoScrollRef.current = false;
       setIsPinnedToBottom(false);
     } else {
@@ -1121,7 +1484,7 @@ export function SessionsPage() {
     if (!atBottom && el.scrollTop <= 120 && hasMoreMessages && !loadingOlderRef.current) {
       void loadOlderMessages();
     }
-  }, [detectBottom, hasMoreMessages, activeSessionId, messages.length]);
+  }, [cancelScheduledAutoScroll, detectBottom, hasMoreMessages, activeSessionId, messages.length]);
 
   const sessionsInTab = useMemo(() => {
     if (historyTab === 'sub_agents') {
@@ -1165,29 +1528,43 @@ export function SessionsPage() {
     setIsResizing(true);
   }, []);
 
+  const startWorkbenchResizing = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWorkbenchResizing(true);
+  }, []);
+
   const stopResizing = useCallback(() => {
     setIsResizing(false);
+    setIsWorkbenchResizing(false);
   }, []);
 
   const resize = useCallback((e: MouseEvent) => {
-    if (isResizing) {
-      const newWidth = window.innerWidth - e.clientX;
-      if (newWidth > 300 && newWidth < 800) {
-        setRightPanelWidth(newWidth);
-      }
-    }
+    if (!isResizing) return;
+    const newWidth = window.innerWidth - e.clientX;
+    const clamped = Math.max(300, Math.min(800, newWidth));
+    setRightPanelWidth(clamped);
   }, [isResizing]);
 
+  const resizeWorkbench = useCallback((e: MouseEvent) => {
+    if (!isWorkbenchResizing) return;
+    const maxWidth = Math.max(420, window.innerWidth - rightPanelWidth - 360);
+    const newWidth = window.innerWidth - rightPanelWidth - e.clientX;
+    const clamped = Math.max(360, Math.min(maxWidth, newWidth));
+    setWorkbenchWidth(clamped);
+  }, [isWorkbenchResizing, rightPanelWidth]);
+
   useEffect(() => {
-    if (isResizing) {
+    if (isResizing || isWorkbenchResizing) {
       window.addEventListener('mousemove', resize);
+      window.addEventListener('mousemove', resizeWorkbench);
       window.addEventListener('mouseup', stopResizing);
     }
     return () => {
       window.removeEventListener('mousemove', resize);
+      window.removeEventListener('mousemove', resizeWorkbench);
       window.removeEventListener('mouseup', stopResizing);
     };
-  }, [isResizing, resize, stopResizing]);
+  }, [isResizing, isWorkbenchResizing, resize, resizeWorkbench, stopResizing]);
 
   // Effects
   useEffect(() => {
@@ -1201,14 +1578,14 @@ export function SessionsPage() {
   }, [sessions]);
 
   useEffect(() => {
-    void fetchSessions();
+    void fetchSessions({ autoSelectIfEmpty: true });
     void fetchModels();
     void fetchLiveView();
   }, []);
 
   // Poll sessions every 30s to pick up unread changes
   useEffect(() => {
-    const interval = setInterval(() => { void fetchSessions(); }, 30_000);
+    const interval = setInterval(() => { void fetchSessions({ autoSelectIfEmpty: false }); }, 30_000);
     return () => clearInterval(interval);
   }, []);
 
@@ -1228,6 +1605,19 @@ export function SessionsPage() {
       setContextTokenEstimate(null);
       setContextTokenPercent(null);
       setTasks([]);
+      setRuntimeStatus(null);
+      setRuntimeFiles(null);
+      setRuntimePath('');
+      setRuntimeChangedFiles(null);
+      setRuntimeChangedFilesLoading(false);
+      setWorkbenchTabs([]);
+      setActiveWorkbenchPath(null);
+      setWorkbenchShowDiffByPath({});
+      setWorkbenchDiffByPath({});
+      setWorkbenchDiffErrorByPath({});
+      setWorkbenchDiffBaseRefByPath({});
+      setWorkbenchDiffStagedByPath({});
+      setWorkbenchGitRootsByPath({});
       setStreaming(defaultStreamingState);
       shouldAutoScrollRef.current = true;
       lastScrollTopRef.current = 0;
@@ -1244,6 +1634,19 @@ export function SessionsPage() {
     setContextTokenEstimate(null);
     setContextTokenPercent(null);
     setTasks([]);
+    setRuntimeStatus(null);
+    setRuntimeFiles(null);
+    setRuntimePath('');
+    setRuntimeChangedFiles(null);
+    setRuntimeChangedFilesLoading(false);
+    setWorkbenchTabs([]);
+    setActiveWorkbenchPath(null);
+    setWorkbenchShowDiffByPath({});
+    setWorkbenchDiffByPath({});
+    setWorkbenchDiffErrorByPath({});
+    setWorkbenchDiffBaseRefByPath({});
+    setWorkbenchDiffStagedByPath({});
+    setWorkbenchGitRootsByPath({});
     setStreaming(defaultStreamingState);
     setHasMoreMessages(false);
     oldestServerMessageIdRef.current = null;
@@ -1256,6 +1659,8 @@ export function SessionsPage() {
     void loadMessages(activeSessionId);
     void fetchContextUsage(activeSessionId);
     void fetchTasks(activeSessionId);
+    void fetchRuntimeStatus(activeSessionId);
+    void fetchRuntimeFiles(activeSessionId, '');
     void connectWs(activeSessionId);
 
     return () => {
@@ -1272,6 +1677,21 @@ export function SessionsPage() {
       window.clearInterval(timer);
     };
   }, [activeSessionId, hasActiveSubAgentTasks]);
+
+  useEffect(() => {
+    if (!activeSessionId || rightRailTab !== 'runtime') return;
+    const timer = window.setInterval(() => {
+      void fetchRuntimeStatus(activeSessionId, 120);
+    }, 2500);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activeSessionId, rightRailTab]);
+
+  useEffect(() => {
+    if (!activeSessionId || rightRailTab !== 'runtime') return;
+    void fetchRuntimeChangedFilesForExplorer(activeSessionId, runtimePath);
+  }, [activeSessionId, rightRailTab, runtimePath]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -1290,17 +1710,9 @@ export function SessionsPage() {
 
   useEffect(() => {
     return () => {
-      if (autoScrollRafRef.current !== null) {
-        window.cancelAnimationFrame(autoScrollRafRef.current);
-      }
-      if (autoScrollTimerShortRef.current !== null) {
-        window.clearTimeout(autoScrollTimerShortRef.current);
-      }
-      if (autoScrollTimerLongRef.current !== null) {
-        window.clearTimeout(autoScrollTimerLongRef.current);
-      }
+      cancelScheduledAutoScroll();
     };
-  }, []);
+  }, [cancelScheduledAutoScroll]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -1313,7 +1725,8 @@ export function SessionsPage() {
   }, [activeSessionId, messages, hasMoreMessages, messagesLoading, isLoadingOlderMessages]);
 
   // API Actions
-  async function fetchSessions() {
+  async function fetchSessions(options?: { autoSelectIfEmpty?: boolean }) {
+    const autoSelectIfEmpty = options?.autoSelectIfEmpty ?? false;
     try {
       const [payload, defaultSession] = await Promise.all([
         api.get<SessionListResponse>('/sessions?limit=100&offset=0&include_sub_agents=true'),
@@ -1321,13 +1734,15 @@ export function SessionsPage() {
       ]);
       setDefaultSessionId(defaultSession.id);
       const payloadItems = Array.isArray(payload?.items) ? payload.items : [];
-      setSessions((current) => {
-        const exists = payloadItems.find((s) => s.id === defaultSession.id);
-        const merged = exists ? payloadItems : [defaultSession, ...payloadItems];
-        return merged.map((item) => ({ ...item, is_main: item.id === defaultSession.id }));
-      });
-      if (!activeSessionId) {
+      const exists = payloadItems.find((s) => s.id === defaultSession.id);
+      const merged = (exists ? payloadItems : [defaultSession, ...payloadItems]).map((item) => ({
+        ...item,
+        is_main: item.id === defaultSession.id,
+      }));
+      setSessions(merged);
+      if (autoSelectIfEmpty && !activeSessionIdRef.current) {
         setActiveSessionId(defaultSession.id);
+        activeSessionIdRef.current = defaultSession.id;
         navigate(`/sessions/${defaultSession.id}`, { replace: true });
       }
     } catch (error) {
@@ -1513,8 +1928,12 @@ export function SessionsPage() {
   }
 
   async function fetchContextUsage(sessionId: string) {
+    const requestId = ++contextUsageRequestRef.current;
     try {
       const payload = await api.get<SessionContextUsage>(`/sessions/${sessionId}/context-usage`);
+      if (sessionId !== activeSessionIdRef.current || requestId !== contextUsageRequestRef.current) {
+        return;
+      }
       if (typeof payload.context_token_budget === 'number' && Number.isFinite(payload.context_token_budget) && payload.context_token_budget > 0) {
         setContextTokenBudget(Math.floor(payload.context_token_budget));
       }
@@ -1529,6 +1948,9 @@ export function SessionsPage() {
         setContextTokenPercent(null);
       }
     } catch {
+      if (sessionId !== activeSessionIdRef.current || requestId !== contextUsageRequestRef.current) {
+        return;
+      }
       // Keep last-known values if this lightweight endpoint fails.
     }
   }
@@ -1542,6 +1964,7 @@ export function SessionsPage() {
       const payload = await api.get<MessageListResponse>(path);
       const payloadItems = Array.isArray(payload?.items) ? payload.items : [];
       const fetched = sortMessages(payloadItems);
+      const serverHasUnresolvedToolCalls = hasUnresolvedToolCalls(fetched);
       setHasMoreMessages(Boolean(payload?.has_more));
       if (fetched.length > 0) {
         oldestServerMessageIdRef.current = fetched[0].id;
@@ -1564,16 +1987,28 @@ export function SessionsPage() {
       // CRITICAL: Only clear streaming UI state AFTER the official messages are loaded.
       // This prevents the "flash" where tool calls disappear before the API responds.
       if (!beforeMessageId) {
-        setStreaming((prev) => ({
-          ...prev,
-          text: '',
-          timeline: [],
-          interimTextSeq: 0,
-          activeToolCalls: [],
-          completedToolCalls: [],
-          isThinking: false,
-          isStreaming: false,
-        }));
+        setStreaming((prev) => {
+          const hasPendingCallCard = [...prev.activeToolCalls, ...prev.completedToolCalls].some(
+            (call) => isWaitingApproval(call.metadata),
+          );
+          if (hasPendingCallCard && serverHasUnresolvedToolCalls) {
+            return {
+              ...prev,
+              isThinking: false,
+              isStreaming: false,
+            };
+          }
+          return {
+            ...prev,
+            text: '',
+            timeline: [],
+            interimTextSeq: 0,
+            activeToolCalls: [],
+            completedToolCalls: [],
+            isThinking: false,
+            isStreaming: false,
+          };
+        });
       }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : 'Failed to load messages';
@@ -1618,6 +2053,213 @@ export function SessionsPage() {
     finally { setTasksLoading(false); }
   }
 
+  async function fetchRuntimeStatus(sessionId: string, actionLimit = 80) {
+    try {
+      const payload = await api.get<SessionRuntimeStatus>(`/sessions/${sessionId}/runtime?action_limit=${actionLimit}`);
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeStatus(payload);
+    } catch {
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeStatus(null);
+    }
+  }
+
+  async function fetchRuntimeFiles(sessionId: string, path = '') {
+    setRuntimeFilesLoading(true);
+    try {
+      const query = new URLSearchParams();
+      if (path.trim().length > 0) query.set('path', path.trim());
+      query.set('limit', '400');
+      const suffix = query.toString();
+      const payload = await api.get<SessionRuntimeFilesResponse>(`/sessions/${sessionId}/runtime/files${suffix ? `?${suffix}` : ''}`);
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeFiles(payload);
+      setRuntimePath(payload.path || '');
+      if (rightRailTab === 'runtime') {
+        void fetchRuntimeChangedFilesForExplorer(sessionId, payload.path || '');
+      }
+    } catch {
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeFiles(null);
+      setRuntimePath(path);
+      setRuntimeChangedFiles(null);
+    } finally {
+      if (sessionId === activeSessionIdRef.current) {
+        setRuntimeFilesLoading(false);
+      }
+    }
+  }
+
+  async function fetchRuntimeChangedFilesForExplorer(sessionId: string, path: string) {
+    setRuntimeChangedFilesLoading(true);
+    try {
+      const payload = await api.get<SessionRuntimeGitChangedFilesResponse>(
+        `/sessions/${sessionId}/runtime/git/changed?path=${encodeURIComponent(path)}&limit=200`,
+      );
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeChangedFiles(payload);
+    } catch {
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeChangedFiles(null);
+    } finally {
+      if (sessionId === activeSessionIdRef.current) {
+        setRuntimeChangedFilesLoading(false);
+      }
+    }
+  }
+
+  async function openRuntimeDirectory(path: string) {
+    if (!activeSessionId) return;
+    await fetchRuntimeFiles(activeSessionId, path);
+  }
+
+  async function openRuntimeFile(path: string) {
+    if (!activeSessionId) return;
+    setWorkbenchLoadingPath(path);
+    try {
+      const payload = await api.get<SessionRuntimeFilePreviewResponse>(
+        `/sessions/${activeSessionId}/runtime/file?path=${encodeURIComponent(path)}&max_bytes=32000`,
+      );
+      if (activeSessionId !== activeSessionIdRef.current) return;
+      const nextTab: WorkbenchTab = {
+        path: payload.path,
+        name: payload.name,
+        size_bytes: payload.size_bytes,
+        modified_at: payload.modified_at,
+        content: payload.content,
+        truncated: payload.truncated,
+        max_bytes: payload.max_bytes,
+      };
+      setWorkbenchTabs((current) => {
+        const existing = current.find((tab) => tab.path === nextTab.path);
+        if (existing) {
+          return current.map((tab) => (tab.path === nextTab.path ? nextTab : tab));
+        }
+        return [...current, nextTab];
+      });
+      setActiveWorkbenchPath(nextTab.path);
+      setWorkbenchDiffBaseRefByPath((current) =>
+        current[nextTab.path] ? current : { ...current, [nextTab.path]: 'HEAD' },
+      );
+      setWorkbenchDiffStagedByPath((current) =>
+        Object.prototype.hasOwnProperty.call(current, nextTab.path)
+          ? current
+          : { ...current, [nextTab.path]: false },
+      );
+      setWorkbenchDiffErrorByPath((current) => ({ ...current, [nextTab.path]: null }));
+      setWorkbenchShowDiffByPath((current) =>
+        Object.prototype.hasOwnProperty.call(current, nextTab.path)
+          ? current
+          : { ...current, [nextTab.path]: false },
+      );
+      void fetchRuntimeGitRoots(activeSessionId, nextTab.path);
+    } catch {
+      toast.error('Failed to open runtime file');
+    } finally {
+      if (activeSessionId === activeSessionIdRef.current) {
+        setWorkbenchLoadingPath((current) => (current === path ? null : current));
+      }
+    }
+  }
+
+  async function openRuntimeFileDiff(path: string) {
+    if (!activeSessionId) return;
+    await openRuntimeFile(path);
+    setWorkbenchShowDiffByPath((current) => ({ ...current, [path]: true }));
+    void fetchRuntimeGitDiff(activeSessionId, path);
+  }
+
+  function closeWorkbenchTab(path: string) {
+    setWorkbenchTabs((current) => {
+      const targetIndex = current.findIndex((tab) => tab.path === path);
+      const next = current.filter((tab) => tab.path !== path);
+      setActiveWorkbenchPath((previous) => {
+        if (previous !== path) return previous;
+        if (!next.length) return null;
+        const fallbackIndex = Math.min(Math.max(targetIndex - 1, 0), next.length - 1);
+        return next[fallbackIndex]?.path ?? next[next.length - 1].path;
+      });
+      return next;
+    });
+    setWorkbenchShowDiffByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchDiffByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchDiffErrorByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchDiffBaseRefByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchDiffStagedByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchGitRootsByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchLoadingPath((current) => (current === path ? null : current));
+    setWorkbenchDiffLoadingPath((current) => (current === path ? null : current));
+  }
+
+  async function fetchRuntimeGitRoots(sessionId: string, path: string) {
+    try {
+      const payload = await api.get<SessionRuntimeGitRootsResponse>(
+        `/sessions/${sessionId}/runtime/git/roots?path=${encodeURIComponent(path)}&limit=200`,
+      );
+      if (sessionId !== activeSessionIdRef.current) return;
+      setWorkbenchGitRootsByPath((current) => ({ ...current, [path]: payload.roots || [] }));
+    } catch {
+      if (sessionId !== activeSessionIdRef.current) return;
+      setWorkbenchGitRootsByPath((current) => ({ ...current, [path]: [] }));
+    }
+  }
+
+  async function fetchRuntimeGitDiff(sessionId: string, path: string) {
+    const baseRefRaw = workbenchDiffBaseRefByPath[path];
+    const baseRef = (typeof baseRefRaw === 'string' && baseRefRaw.trim().length > 0) ? baseRefRaw.trim() : 'HEAD';
+    const staged = Boolean(workbenchDiffStagedByPath[path]);
+    setWorkbenchDiffLoadingPath(path);
+    setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: null }));
+    try {
+      const query = new URLSearchParams();
+      query.set('path', path);
+      query.set('base_ref', baseRef);
+      query.set('staged', staged ? 'true' : 'false');
+      query.set('context_lines', '3');
+      query.set('max_bytes', '120000');
+      const payload = await api.get<SessionRuntimeGitDiffResponse>(
+        `/sessions/${sessionId}/runtime/git/diff?${query.toString()}`,
+      );
+      if (sessionId !== activeSessionIdRef.current) return;
+      setWorkbenchDiffByPath((current) => ({ ...current, [path]: payload }));
+      setWorkbenchShowDiffByPath((current) => ({ ...current, [path]: true }));
+      if (!workbenchGitRootsByPath[path]?.length) {
+        void fetchRuntimeGitRoots(sessionId, path);
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Failed to load git diff';
+      setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: detail }));
+    } finally {
+      if (sessionId === activeSessionIdRef.current) {
+        setWorkbenchDiffLoadingPath((current) => (current === path ? null : current));
+      }
+    }
+  }
+
   async function terminateTask(taskId: string) {
     if (!activeSessionId || isTerminatingTask) return;
     setConfirmTerminateTaskId(taskId);
@@ -1659,6 +2301,102 @@ export function SessionsPage() {
       toast.error('Failed to spawn sub-agent');
     } finally {
       setIsSpawning(false);
+    }
+  }
+
+  const updateStreamingCallApproval = useCallback((
+    approvalId: string,
+    updates: { pending?: boolean; approval_status?: string; decision_note?: string },
+  ) => {
+    setStreaming((current) => {
+      const patchCall = (call: StreamingToolCall): StreamingToolCall => {
+        const callApprovalId = pendingApprovalIdFromMetadata(call.metadata);
+        if (!callApprovalId || callApprovalId !== approvalId) return call;
+        return {
+          ...call,
+          metadata: {
+            ...call.metadata,
+            ...updates,
+          },
+        };
+      };
+      return {
+        ...current,
+        activeToolCalls: current.activeToolCalls.map(patchCall),
+        completedToolCalls: current.completedToolCalls.map(patchCall),
+      };
+    });
+  }, []);
+
+  const resolveGitApprovalInline = useCallback(async (approvalId: string, decision: 'approve' | 'reject') => {
+    setResolvingGitApprovalId(approvalId);
+    try {
+      await api.post(`/git/push-approvals/${approvalId}/${decision}`, {
+        note: decision === 'approve' ? 'Approved from session tool card' : 'Rejected from session tool card',
+      });
+      updateStreamingCallApproval(approvalId, {
+        pending: false,
+        approval_status: decision === 'approve' ? 'approved' : 'rejected',
+      });
+      toast.success(decision === 'approve' ? 'Push approved' : 'Push rejected');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to resolve push approval');
+    } finally {
+      setResolvingGitApprovalId(null);
+    }
+  }, [updateStreamingCallApproval]);
+
+  async function hydrateGitPushApprovalForCall(
+    sessionId: string,
+    callId: string,
+    contentIndex: number | null,
+    command: string,
+  ) {
+    const lookupKey = streamingCallKeyFromParts(callId, contentIndex);
+    if (approvalLookupInFlightRef.current.has(lookupKey)) return;
+    approvalLookupInFlightRef.current.add(lookupKey);
+    try {
+      const normalizedCommand = normalizeCommand(command);
+      for (let attempt = 0; attempt < GIT_APPROVAL_HYDRATION_MAX_ATTEMPTS; attempt += 1) {
+        try {
+          const payload = await api.get<GitPushApprovalListResponse>('/git/push-approvals?status=pending&limit=200&offset=0');
+          const items = Array.isArray(payload.items) ? payload.items : [];
+          const matched = selectMatchingPendingGitApproval(items, {
+            sessionId,
+            normalizedCommand,
+          });
+          if (matched) {
+            setStreaming((current) => {
+              const patchCall = (call: StreamingToolCall): StreamingToolCall => {
+                if (call.id !== callId || call.contentIndex !== contentIndex) return call;
+                return {
+                  ...call,
+                  metadata: {
+                    ...call.metadata,
+                    pending: true,
+                    approval_id: matched.id,
+                  },
+                };
+              };
+              return {
+                ...current,
+                activeToolCalls: current.activeToolCalls.map(patchCall),
+                completedToolCalls: current.completedToolCalls.map(patchCall),
+              };
+            });
+            return;
+          }
+        } catch {
+          // best-effort retry until attempts are exhausted
+        }
+        if (attempt < GIT_APPROVAL_HYDRATION_MAX_ATTEMPTS - 1) {
+          await sleep(GIT_APPROVAL_HYDRATION_RETRY_MS);
+        }
+      }
+    } catch {
+      // best effort hydration
+    } finally {
+      approvalLookupInFlightRef.current.delete(lookupKey);
     }
   }
 
@@ -1790,14 +2528,23 @@ export function SessionsPage() {
           if (current.activeToolCalls.some((item) => item.id === callId && item.contentIndex === contentIndex)) {
             return { ...current, isThinking: false };
           }
-          const initialArguments = serializeToolArguments((event.tool_call as any)?.arguments);
+          const rawInitialArguments = serializeToolArguments((event.tool_call as any)?.arguments);
+          const initialArguments = hasMeaningfulToolArguments(rawInitialArguments)
+            ? rawInitialArguments
+            : '';
+          const pushCommand = gitPushCommandFromToolArgs((event.tool_call as any)?.arguments);
+          const initialMetadata: Record<string, unknown> = pushCommand
+            ? { pending: true, git_push: true }
+            : {};
           const call = {
             id: callId,
             name: String((event.tool_call as any)?.name ?? 'unknown'),
             argumentsJson: initialArguments,
-            outputJson: '',
+            outputJson: pushCommand
+              ? '{"status":"pending","message":"Waiting for push approval..."}'
+              : '',
             isError: false,
-            metadata: {},
+            metadata: initialMetadata,
             complete: false,
             contentIndex,
           };
@@ -1814,10 +2561,18 @@ export function SessionsPage() {
               : [...current.timeline, { kind: 'tool', key: `tool-${callKey}`, callKey }],
           };
         });
+        {
+          const callId = String((event.tool_call as any)?.id ?? '');
+          const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
+          const pushCommand = gitPushCommandFromToolArgs((event.tool_call as any)?.arguments);
+          if (callId && pushCommand) {
+            void hydrateGitPushApprovalForCall(sessionId, callId, contentIndex, pushCommand);
+          }
+        }
         break;
       case 'toolcall_delta':
         setStreaming((current) => {
-          const delta = event.delta ?? '';
+          const delta = typeof event.delta === 'string' ? event.delta : '';
           if (!delta) return current;
           const next = [...current.activeToolCalls];
           if (!next.length) return current;
@@ -1828,36 +2583,75 @@ export function SessionsPage() {
           }
           if (targetIndex < 0) targetIndex = next.length - 1;
           const call = next[targetIndex];
-          next[targetIndex] = { ...call, argumentsJson: `${call.argumentsJson}${delta}` };
+          next[targetIndex] = {
+            ...call,
+            argumentsJson: mergeStreamingToolArguments(call.argumentsJson, delta),
+          };
           return { ...current, activeToolCalls: next };
         });
         break;
       case 'toolcall_end':
-        setStreaming((current) => {
-          if (!current.activeToolCalls.length) return current;
-          const nextActive = [...current.activeToolCalls];
-          const callId = String((event.tool_call as any)?.id ?? '');
-          const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
-          let targetIndex = -1;
-          if (callId) {
-            targetIndex = nextActive.findIndex((item) => item.id === callId);
+        {
+          const hydrationCandidates: Array<{ callId: string; contentIndex: number | null; command: string }> = [];
+          const eventCallId = String((event.tool_call as any)?.id ?? '');
+          const eventContentIndex = typeof event.content_index === 'number' ? event.content_index : null;
+          const eventPushCommand = gitPushCommandFromToolArgs((event.tool_call as any)?.arguments);
+          setStreaming((current) => {
+            if (!current.activeToolCalls.length) return current;
+            const nextActive = [...current.activeToolCalls];
+            let targetIndex = -1;
+            if (eventCallId) {
+              targetIndex = nextActive.findIndex((item) => item.id === eventCallId);
+            }
+            if (targetIndex < 0 && eventContentIndex !== null) {
+              targetIndex = nextActive.findIndex((item) => item.contentIndex === eventContentIndex);
+            }
+            if (targetIndex < 0) targetIndex = nextActive.length - 1;
+            const doneCall = nextActive[targetIndex];
+            nextActive.splice(targetIndex, 1);
+            const pushCommand = eventPushCommand ?? gitPushCommandFromSerializedArgs(doneCall.argumentsJson);
+            const isPendingGitPush = doneCall.name === 'git_exec' && Boolean(pushCommand);
+            const callApprovalId = pendingApprovalIdFromMetadata(doneCall.metadata);
+            const hydratedDoneCall: StreamingToolCall = isPendingGitPush
+              ? {
+                ...doneCall,
+                outputJson: doneCall.outputJson || '{"status":"pending","message":"Waiting for push approval..."}',
+                metadata: {
+                  ...doneCall.metadata,
+                  pending: true,
+                  git_push: true,
+                },
+              }
+              : doneCall;
+            const alreadyDone = current.completedToolCalls.some(
+              (item) => item.id === hydratedDoneCall.id && item.contentIndex === hydratedDoneCall.contentIndex,
+            );
+            if (isPendingGitPush && !callApprovalId && pushCommand) {
+              hydrationCandidates.push({
+                callId: hydratedDoneCall.id,
+                contentIndex: hydratedDoneCall.contentIndex,
+                command: pushCommand,
+              });
+            }
+            if (alreadyDone) {
+              return { ...current, activeToolCalls: nextActive };
+            }
+            return {
+              ...current,
+              activeToolCalls: nextActive,
+              completedToolCalls: [...current.completedToolCalls, { ...hydratedDoneCall, complete: true }],
+            };
+          });
+          const pendingHydration = hydrationCandidates[0];
+          if (pendingHydration) {
+            void hydrateGitPushApprovalForCall(
+              sessionId,
+              pendingHydration.callId,
+              pendingHydration.contentIndex,
+              pendingHydration.command,
+            );
           }
-          if (targetIndex < 0 && contentIndex !== null) {
-            targetIndex = nextActive.findIndex((item) => item.contentIndex === contentIndex);
-          }
-          if (targetIndex < 0) targetIndex = nextActive.length - 1;
-          const doneCall = nextActive[targetIndex];
-          nextActive.splice(targetIndex, 1);
-          const alreadyDone = current.completedToolCalls.some((item) => item.id === doneCall.id && item.contentIndex === doneCall.contentIndex);
-          if (alreadyDone) {
-            return { ...current, activeToolCalls: nextActive };
-          }
-          return {
-            ...current,
-            activeToolCalls: nextActive,
-            completedToolCalls: [...current.completedToolCalls, { ...doneCall, complete: true }],
-          };
-        });
+        }
         break;
       case 'tool_result':
         {
@@ -1870,6 +2664,16 @@ export function SessionsPage() {
           ) {
             void fetchTasks(sessionId);
           }
+          if (
+            toolNameForRefresh === 'runtime_exec' ||
+            toolNameForRefresh === 'pythonXagent' ||
+            toolNameForRefresh === 'git_exec'
+          ) {
+            void fetchRuntimeStatus(sessionId, 120);
+            if (rightRailTab === 'runtime') {
+              void fetchRuntimeFiles(sessionId, runtimePath);
+            }
+          }
         }
         setStreaming((current) => {
           const payload = (event.tool_result as Record<string, unknown> | undefined) ?? {};
@@ -1880,11 +2684,15 @@ export function SessionsPage() {
             typeof rawContent === 'string'
               ? rawContent
               : serializeToolArguments(rawContent);
+          const fallbackArguments = toolArgumentsFromToolResultPayload(payload);
           const isError = Boolean(payload.is_error);
           const metadata = isObjectRecord(payload.metadata) ? payload.metadata : {};
 
           const hydrate = (call: StreamingToolCall): StreamingToolCall => ({
             ...call,
+            argumentsJson: hasMeaningfulToolArguments(call.argumentsJson)
+              ? call.argumentsJson
+              : fallbackArguments,
             outputJson,
             isError,
             metadata,
@@ -1917,7 +2725,7 @@ export function SessionsPage() {
           const syntheticCall: StreamingToolCall = {
             id: callId || `tool-result-${Date.now()}`,
             name: toolName,
-            argumentsJson: '',
+            argumentsJson: fallbackArguments,
             outputJson,
             isError,
             metadata,
@@ -2129,7 +2937,17 @@ export function SessionsPage() {
     try {
       await api.post(`/sessions/${activeSessionId}/stop`, {});
       toast.success('Stopping response');
-    } catch { toast.error('Failed to stop'); }
+      setStreaming((current) => ({
+        ...current,
+        isThinking: false,
+        isStreaming: false,
+        isCompactingContext: false,
+      }));
+      void loadMessages(activeSessionId);
+      void fetchContextUsage(activeSessionId);
+    } catch {
+      toast.error('Failed to stop');
+    }
     finally { setIsStopping(false); }
   }
 
@@ -2172,55 +2990,52 @@ export function SessionsPage() {
           title={activeSession?.title || 'Untitled Session'}
           subtitle={activeSession ? `ID: ${activeSession.id.slice(0, 8)}` : 'Operator Workspace'}
           contentClassName="h-full !p-0 overflow-hidden"
+          hideSidebar={mode === 'solo'}
+          hideHeader={mode === 'solo'}
           actions={
-            <div className="flex items-center gap-2">
-                        {/* Mode toggle */}
-                        <div className="flex items-center rounded-lg bg-[color:var(--surface-2)] p-0.5">
-                          {[
-                            { id: 'solo', label: 'Focus' },
-                            { id: 'advanced', label: 'History' }
-                          ].map((m) => (
-                            <button
-                              key={m.id}
-                              onClick={() => setMode(m.id as any)}
-                              className={`px-3 h-7 text-xs font-bold uppercase tracking-widest rounded-md transition-all duration-200 ${
-                                mode === m.id
-                                  ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)] shadow-sm'
-                                  : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                              }`}
-                            >
-                              {m.label}
-                            </button>
-                          ))}
-                        </div>
-                            <div className="h-6 w-px bg-[color:var(--border-subtle)] mx-1" />
-
-              <button
-                  onClick={resetSession}
-                  title="Start fresh (memories preserved)"
-                  className="btn-secondary h-9 px-3 gap-2 text-xs"
-              >
-                <RefreshCw size={14} />
-                New Chat
-              </button>
-
-              {mode === 'advanced' && (
-                  <button
-                      onClick={compactContext}
-                      disabled={isCompacting}
-                      className="btn-secondary h-9 px-3 gap-2 text-xs"
-                  >
-                    <Wand2 size={14} className={isCompacting ? 'animate-spin' : ''} />
-                    Compact
-                  </button>
-              )}
-
-            </div>
+            mode === 'advanced' ? (
+              <div className="flex items-center gap-1.5">
+                <button
+                    onClick={() => setMode('solo')}
+                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]"
+                >
+                  <Expand size={14} className="text-emerald-500" />
+                  Focus
+                </button>
+                <div className="h-5 w-px bg-[color:var(--border-subtle)] mx-0.5" />
+                <button
+                    onClick={resetSession}
+                    title="Start fresh (memories preserved)"
+                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]"
+                >
+                  <RefreshCw size={14} className="text-sky-500" />
+                  New Chat
+                </button>
+                <button
+                    onClick={compactContext}
+                    disabled={isCompacting}
+                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-400`} />
+                  Compact
+                </button>
+              </div>
+            ) : null
           }
       >
-        <div className="flex h-full w-full overflow-hidden">
-          {/* Session History Sidebar — advanced mode only */}
-          <aside 
+        <div className="relative flex h-full w-full overflow-hidden">
+          {mode === 'solo' ? (
+            <div className="absolute top-3 left-3 z-40">
+              <button
+                type="button"
+                onClick={() => setMode('advanced')}
+                className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/90 backdrop-blur px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]"
+              >
+                Exit Focus
+              </button>
+            </div>
+          ) : null}
+          <aside
             className={`hidden lg:flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shrink-0 transition-all duration-300 ease-in-out ${
               mode === 'advanced' ? 'w-64 opacity-100' : 'w-0 opacity-0 pointer-events-none border-none'
             }`}
@@ -2342,6 +3157,7 @@ export function SessionsPage() {
           {/* Chat Area */}
           <main className="flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)]">
             {/* Model Selector / Status Header */}
+            {mode === 'advanced' ? (
             <div className="flex items-center justify-between px-4 py-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
               <div className="flex items-center gap-3">
                 <div className="relative flex items-center gap-1.5 group cursor-default">
@@ -2547,12 +3363,13 @@ export function SessionsPage() {
                 </div>
               </div>
             </div>
+            ) : null}
 
             {/* Messages */}
             <div
                 ref={scrollRef}
                 onScroll={onMessagesScroll}
-                className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 scroll-smooth"
+            className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6"
             >
               {messagesLoading && messages.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center gap-4 text-[color:var(--text-muted)] animate-in">
@@ -2588,6 +3405,8 @@ export function SessionsPage() {
                           key={m.id}
                           message={m}
                           toolArgumentsByCallId={toolArgumentsByCallId}
+                          onResolveGitApproval={resolveGitApprovalInline}
+                          resolvingApprovalId={resolvingGitApprovalId}
                         />
                       ))}
 
@@ -2613,6 +3432,8 @@ export function SessionsPage() {
                           key={item.key}
                           call={call}
                           active={activeToolCallKeys.has(item.callKey)}
+                          onResolveGitApproval={resolveGitApprovalInline}
+                          resolvingApprovalId={resolvingGitApprovalId}
                         />
                       );
                     })}
@@ -2620,12 +3441,24 @@ export function SessionsPage() {
                     {streaming.completedToolCalls
                       .filter((call) => !timelineToolKeys.has(streamingCallKey(call)))
                       .map((c, idx) => (
-                        <StreamToolCard key={`${c.id}-${c.contentIndex ?? 'na'}-fallback-complete-${idx}`} call={c} active={false} />
+                        <StreamToolCard
+                          key={`${c.id}-${c.contentIndex ?? 'na'}-fallback-complete-${idx}`}
+                          call={c}
+                          active={false}
+                          onResolveGitApproval={resolveGitApprovalInline}
+                          resolvingApprovalId={resolvingGitApprovalId}
+                        />
                       ))}
                     {streaming.activeToolCalls
                       .filter((call) => !timelineToolKeys.has(streamingCallKey(call)))
                       .map((c, idx) => (
-                        <StreamToolCard key={`${c.id}-${c.contentIndex ?? 'na'}-fallback-active-${idx}`} call={c} active={true} />
+                        <StreamToolCard
+                          key={`${c.id}-${c.contentIndex ?? 'na'}-fallback-active-${idx}`}
+                          call={c}
+                          active={true}
+                          onResolveGitApproval={resolveGitApprovalInline}
+                          resolvingApprovalId={resolvingGitApprovalId}
+                        />
                       ))}
 
                     {streaming.text && (
@@ -2763,64 +3596,379 @@ export function SessionsPage() {
             </div>
           </main>
 
+          {workbenchVisible ? (
+            <>
+              <div
+                className={`hidden xl:block w-1 cursor-col-resize hover:bg-[color:var(--accent-solid)] transition-colors ${isWorkbenchResizing ? 'bg-[color:var(--accent-solid)]' : 'bg-transparent'}`}
+                onMouseDown={startWorkbenchResizing}
+              />
+              <aside
+                style={{ width: `${workbenchWidth}px` }}
+                className="hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden min-w-[360px]"
+              >
+                <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Open Files</div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWorkbenchTabs([]);
+                        setActiveWorkbenchPath(null);
+                        setWorkbenchShowDiffByPath({});
+                        setWorkbenchDiffByPath({});
+                        setWorkbenchDiffErrorByPath({});
+                        setWorkbenchDiffBaseRefByPath({});
+                        setWorkbenchDiffStagedByPath({});
+                        setWorkbenchGitRootsByPath({});
+                        setWorkbenchLoadingPath(null);
+                        setWorkbenchDiffLoadingPath(null);
+                      }}
+                      className="text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-rose-400"
+                    >
+                      Close All
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+                    {workbenchTabs.map((tab) => (
+                      <button
+                        key={tab.path}
+                        type="button"
+                        onClick={() => setActiveWorkbenchPath(tab.path)}
+                        className={`group inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-semibold max-w-[240px] shrink-0 ${
+                          activeWorkbenchTab?.path === tab.path
+                            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                            : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] text-[color:var(--text-secondary)]'
+                        }`}
+                        title={tab.path}
+                      >
+                        <span className="truncate">{tab.name}</span>
+                        <span
+                          role="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeWorkbenchTab(tab.path);
+                          }}
+                          className="inline-flex h-4 w-4 items-center justify-center rounded hover:bg-rose-500/20 hover:text-rose-300"
+                          title="Close tab"
+                        >
+                          <X size={11} />
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {activeWorkbenchTab ? (
+                  <div className="flex-1 min-h-0 flex flex-col">
+                    <div className="border-b border-[color:var(--border-subtle)] px-3 py-2 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-semibold truncate">{activeWorkbenchTab.name}</div>
+                          <div className="text-[9px] text-[color:var(--text-muted)] font-mono truncate" title={activeWorkbenchTab.path}>
+                            {activeWorkbenchTab.path}
+                          </div>
+                        </div>
+                        <div className="text-[9px] text-[color:var(--text-muted)]">{formatBytes(activeWorkbenchTab.size_bytes)}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setWorkbenchShowDiffByPath((current) => ({ ...current, [activeWorkbenchTab.path]: false }))}
+                          className={`rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                            !workbenchShowDiffByPath[activeWorkbenchTab.path]
+                              ? 'border-sky-500/40 bg-sky-500/15 text-sky-300'
+                              : 'border-[color:var(--border-subtle)] text-[color:var(--text-muted)]'
+                          }`}
+                        >
+                          Content
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setWorkbenchShowDiffByPath((current) => ({ ...current, [activeWorkbenchTab.path]: true }));
+                            if (activeSessionId && !workbenchDiffByPath[activeWorkbenchTab.path]) {
+                              void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
+                            }
+                          }}
+                          className={`rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                            workbenchShowDiffByPath[activeWorkbenchTab.path]
+                              ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+                              : 'border-[color:var(--border-subtle)] text-[color:var(--text-muted)]'
+                          }`}
+                        >
+                          Diff
+                        </button>
+                        <div className="ml-auto flex items-center gap-1.5">
+                          <input
+                            value={workbenchDiffBaseRefByPath[activeWorkbenchTab.path] ?? 'HEAD'}
+                            onChange={(event) =>
+                              setWorkbenchDiffBaseRefByPath((current) => ({
+                                ...current,
+                                [activeWorkbenchTab.path]: event.target.value,
+                              }))
+                            }
+                            className="h-7 w-24 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 text-[10px] font-mono"
+                            placeholder="HEAD"
+                            title="Base ref (for diff)"
+                          />
+                          <label className="inline-flex items-center gap-1 text-[10px] text-[color:var(--text-muted)]">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(workbenchDiffStagedByPath[activeWorkbenchTab.path])}
+                              onChange={(event) =>
+                                setWorkbenchDiffStagedByPath((current) => ({
+                                  ...current,
+                                  [activeWorkbenchTab.path]: event.target.checked,
+                                }))
+                              }
+                            />
+                            staged
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!activeSessionId) return;
+                              void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
+                          >
+                            <RefreshCw size={11} className={workbenchDiffLoadingPath === activeWorkbenchTab.path ? 'animate-spin' : ''} />
+                            Load
+                          </button>
+                        </div>
+                      </div>
+                      {activeWorkbenchGitRoots.length > 0 ? (
+                        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                          {activeWorkbenchGitRoots.slice(0, 6).map((root) => (
+                            <span
+                              key={`${activeWorkbenchTab.path}:${root.root_path || '.'}:${root.branch ?? 'detached'}`}
+                              className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-300"
+                            >
+                              <span>{root.root_path || '.'}</span>
+                              <span>{root.detached_head ? 'detached' : root.branch || 'unknown'}</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="flex-1 min-h-0 overflow-auto p-3">
+                      {workbenchShowDiffByPath[activeWorkbenchTab.path] ? (
+                        workbenchDiffLoadingPath === activeWorkbenchTab.path ? (
+                          <div className="flex items-center gap-2 text-[11px] text-[color:var(--text-muted)]">
+                            <Loader2 size={13} className="animate-spin" />
+                            Loading diff…
+                          </div>
+                        ) : activeWorkbenchDiff ? (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between text-[10px] text-[color:var(--text-muted)]">
+                              <span>root: {activeWorkbenchDiff.git_root || '.'}</span>
+                              <span>{activeWorkbenchDiff.truncated ? 'truncated' : 'full'}</span>
+                            </div>
+                            <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2">
+                              <Markdown
+                                content={toMarkdownCodeFence(activeWorkbenchDiff.diff || '[no diff output]', 'diff')}
+                                className="!text-[11px]"
+                              />
+                            </div>
+                          </div>
+                        ) : activeWorkbenchDiffError ? (
+                          <div className="rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-[10px] text-rose-300">
+                            {activeWorkbenchDiffError}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                            Click Load to fetch git diff for this file.
+                          </div>
+                        )
+                      ) : (
+                        <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2">
+                          <Markdown
+                            content={toMarkdownCodeFence(
+                              activeWorkbenchTab.content || '[empty file]',
+                              inferCodeLanguageFromName(activeWorkbenchTab.name),
+                            )}
+                            className="!text-[11px]"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-[10px] text-[color:var(--text-muted)]">
+                    No file selected.
+                  </div>
+                )}
+              </aside>
+            </>
+          ) : null}
+
           {/* Resize Handle */}
           <div
               className={`hidden xl:block w-1 cursor-col-resize hover:bg-[color:var(--accent-solid)] transition-colors ${isResizing ? 'bg-[color:var(--accent-solid)]' : 'bg-transparent'}`}
               onMouseDown={startResizing}
           />
 
-          {/* Right Rail (Tools & Browser) */}
+          {/* Right Rail */}
           <aside
               style={{ width: `${rightPanelWidth}px` }}
               className="hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
           >
-                       {/* Browser Preview */}
-                       <div className="flex flex-col min-h-0 border-b border-[color:var(--border-subtle)]">
-                          <div className="flex items-center justify-between p-4 border-b border-[color:var(--border-subtle)]">
-                            <div className="flex items-center gap-2">
-                              <Globe size={16} className="text-sky-500" />
-                              <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Live Browser</h2>
+            <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
+              <div className="grid grid-cols-3 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
+                <button
+                  type="button"
+                  onClick={() => setRightRailTab('browser')}
+                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                    rightRailTab === 'browser'
+                      ? 'bg-sky-500/15 text-sky-400'
+                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                  }`}
+                >
+                  Browser
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRightRailTab('sub_agents')}
+                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                    rightRailTab === 'sub_agents'
+                      ? 'bg-emerald-500/15 text-emerald-400'
+                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                  }`}
+                >
+                  Sub-Agents
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRightRailTab('runtime')}
+                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                    rightRailTab === 'runtime'
+                      ? 'bg-amber-500/15 text-amber-400'
+                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                  }`}
+                >
+                  Runtime
+                </button>
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                  {rightRailTab === 'browser'
+                    ? 'Live Browser'
+                    : rightRailTab === 'sub_agents'
+                      ? 'Sub-Agent Tasks'
+                      : 'Workspace Runtime'}
+                </div>
+                {rightRailTab === 'sub_agents' ? (
+                  <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-1.5 py-0.5 rounded font-bold">
+                    {tasks.filter((task) => task.status === 'running' || task.status === 'pending').length} Active
+                  </span>
+                ) : rightRailTab === 'runtime' ? (
+                  <span className="text-[10px] bg-sky-500/10 text-sky-500 px-1.5 py-0.5 rounded font-bold">
+                    {runtimeStatusLabel(runtimeStatus)}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            {rightRailTab === 'browser' ? (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex items-center justify-between p-3 border-b border-[color:var(--border-subtle)]">
+                  <div className="flex items-center gap-2">
+                    <Globe size={15} className="text-sky-500" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                      Interactive View
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => resetBrowser()}
+                      disabled={isResettingBrowser}
+                      className="p-1.5 rounded-md hover:bg-rose-500/10 transition-colors text-rose-500 disabled:opacity-50"
+                      title="Reset browser runtime"
+                    >
+                      <RotateCcw size={14} className={isResettingBrowser ? 'animate-spin' : ''} />
+                    </button>
+                    <button
+                      onClick={() => setIsBrowserFullscreen(true)}
+                      className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-sky-500"
+                      title="Open fullscreen"
+                    >
+                      <Expand size={14} />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                  <div className="relative w-full aspect-video overflow-hidden border-b border-[color:var(--border-subtle)] bg-black">
+                    <BrowserPreview
+                      url={liveView?.url ?? null}
+                      isFullscreen={isBrowserFullscreen}
+                      onClose={() => setIsBrowserFullscreen(false)}
+                    />
+                  </div>
+
+                  <div className="px-3 pb-3 space-y-2">
+                    <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2.5">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Browser Status</div>
+                      <div className="grid grid-cols-1 gap-2 text-[10px]">
+                        <div className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
+                          <div className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Connection</div>
+                          <div className="font-semibold text-[color:var(--text-secondary)]">
+                            {liveView?.enabled
+                              ? liveView.available
+                                ? 'Connected'
+                                : 'Runtime unreachable'
+                              : 'Disabled'}
+                          </div>
+                        </div>
+                        <div className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
+                          <div className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Stream URL</div>
+                          <div className="font-mono text-[10px] text-[color:var(--text-secondary)] break-all">
+                            {liveView?.url ?? 'No URL'}
+                          </div>
+                        </div>
+                        {liveView?.reason ? (
+                          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-300">
+                            {liveView.reason}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2.5">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Recent Browser Actions</div>
+                      {browserToolResults.length > 0 ? (
+                        <div className="space-y-1.5">
+                          {browserToolResults.slice(0, 8).map((item) => (
+                            <div
+                              key={item.id}
+                              className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2 py-1.5"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-semibold text-[color:var(--text-primary)]">
+                                  {item.tool_name?.replace('browser_', '').replaceAll('_', ' ') || 'browser action'}
+                                </span>
+                                <span className="text-[9px] text-[color:var(--text-muted)]">
+                                  {formatCompactDate(item.created_at)}
+                                </span>
+                              </div>
                             </div>
-                                            <div className="flex items-center gap-1">
-                                                                                  <button 
-                                                                                    onClick={() => resetBrowser()} 
-                                                                                    disabled={isResettingBrowser}
-                                                                                    className="p-1.5 rounded-md hover:bg-rose-500/10 transition-colors text-rose-500 disabled:opacity-50"
-                                                                                    title="Reset browser runtime"
-                                                                                  >
-                                                                
-                                                                  <RotateCcw size={14} className={isResettingBrowser ? 'animate-spin' : ''} />
-                                                                </button>
-                                              
-                                              <button onClick={() => setIsBrowserFullscreen(true)} className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-sky-500">
-                                                <Expand size={14} />
-                                              </button>
-                                            </div>
-                            
-                          </div>
-                          <div className="flex-1 min-h-0">
-                             <div className="relative aspect-video w-full bg-black overflow-hidden border-b border-[color:var(--border-subtle)]">
-                                <BrowserPreview 
-                                  url={liveView?.url ?? null} 
-                                  isFullscreen={isBrowserFullscreen}
-                                  onClose={() => setIsBrowserFullscreen(false)}
-                                />
-                             </div>
-                          </div>
-                       </div>
-            
-                       {/* Sub-Agents Panel */}
-                       <div className="flex-1 flex flex-col min-h-0">
-                          <div className="flex items-center justify-between p-4 border-b border-[color:var(--border-subtle)]">
-                            <div className="flex items-center gap-2">
-                              <Terminal size={16} className="text-emerald-500" />
-                              <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Sub-Agents</h2>
-                            </div>
-                            <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-1.5 py-0.5 rounded font-bold">{tasks.length} Active</span>
-                          </div>
-            
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                {tasks.map(t => (
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                          No browser tool activity yet.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {rightRailTab === 'sub_agents' ? (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                  {tasks.map(t => (
                     <div key={t.id} className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] shadow-sm space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-xs font-bold truncate">{t.name}</span>
@@ -2831,8 +3979,8 @@ export function SessionsPage() {
                       </p>
                       <div className="flex items-center gap-2 pt-1">
                         <button
-                            onClick={() => { setSelectedTask(t); setIsTaskModalOpen(true); }}
-                            className="text-[10px] font-bold text-[color:var(--accent-solid)] hover:underline uppercase tracking-wide"
+                          onClick={() => { setSelectedTask(t); setIsTaskModalOpen(true); }}
+                          className="text-[10px] font-bold text-[color:var(--accent-solid)] hover:underline uppercase tracking-wide"
                         >
                           View Task
                         </button>
@@ -2840,8 +3988,8 @@ export function SessionsPage() {
                           <>
                             <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
                             <button
-                                onClick={() => terminateTask(t.id)}
-                                className="text-[10px] font-bold text-rose-500 hover:underline uppercase tracking-wide"
+                              onClick={() => terminateTask(t.id)}
+                              className="text-[10px] font-bold text-rose-500 hover:underline uppercase tracking-wide"
                             >
                               Terminate
                             </button>
@@ -2849,24 +3997,255 @@ export function SessionsPage() {
                         )}
                       </div>
                     </div>
-                ))}
-                {tasks.length === 0 && (
+                  ))}
+                  {tasks.length === 0 && (
                     <div className="h-32 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-50 gap-2">
                       <Terminal size={24} strokeWidth={1} />
                       <p className="text-[10px] font-medium uppercase tracking-widest">Idle</p>
                     </div>
-                )}
-              </div>
-              <div className="p-4 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
-                <button
+                  )}
+                </div>
+                <div className="p-4 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
+                  <button
                     onClick={() => setIsSpawnModalOpen(true)}
                     className="btn-primary w-full h-10 text-xs shadow-sm"
-                >
-                  <Plus size={14} />
-                  Spawn Sub-Agent
-                </button>
+                  >
+                    <Plus size={14} />
+                    Spawn Sub-Agent
+                  </button>
+                </div>
               </div>
-            </div>
+            ) : null}
+
+            {rightRailTab === 'runtime' ? (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                      Workspace
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!activeSessionId) return;
+                        void fetchRuntimeStatus(activeSessionId, 120);
+                        void fetchRuntimeFiles(activeSessionId, runtimePath);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
+                    >
+                      <RefreshCw size={11} className={runtimeFilesLoading ? 'animate-spin' : ''} />
+                      Refresh
+                    </button>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!activeSessionId || !runtimeFiles || runtimeFiles.parent_path === null) return;
+                        void openRuntimeDirectory(runtimeFiles.parent_path);
+                      }}
+                      disabled={!runtimeFiles || runtimeFiles.parent_path === null || runtimeFilesLoading}
+                      className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] disabled:opacity-40"
+                    >
+                      <ArrowUp size={11} />
+                      Up
+                    </button>
+                    <div className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-mono text-[color:var(--text-secondary)] truncate">
+                      /workspace{runtimePath ? `/${runtimePath}` : ''}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <div className="border-b border-[color:var(--border-subtle)] px-4 py-2">
+                    <div className="grid grid-cols-3 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
+                      <button
+                        type="button"
+                        onClick={() => setRuntimeInspectorTab('files')}
+                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                          runtimeInspectorTab === 'files'
+                            ? 'bg-sky-500/15 text-sky-400'
+                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                        }`}
+                      >
+                        Files
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRuntimeInspectorTab('git')}
+                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                          runtimeInspectorTab === 'git'
+                            ? 'bg-violet-500/15 text-violet-300'
+                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                        }`}
+                      >
+                        Git Changed
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRuntimeInspectorTab('commands')}
+                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                          runtimeInspectorTab === 'commands'
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                        }`}
+                      >
+                        Commands
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 min-h-0 overflow-y-auto p-4">
+                    {runtimeInspectorTab === 'files' ? (
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Files</div>
+                        {runtimeFilesLoading ? (
+                          <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
+                            <Loader2 size={12} className="animate-spin" />
+                            Loading workspace…
+                          </div>
+                        ) : runtimeFiles?.entries?.length ? (
+                          <div className="space-y-1.5">
+                            {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
+                              <button
+                                key={`${entry.path}:${entry.kind}`}
+                                type="button"
+                                onClick={() => {
+                                  if (entry.kind === 'directory') {
+                                    void openRuntimeDirectory(entry.path);
+                                  } else {
+                                    void openRuntimeFile(entry.path);
+                                  }
+                                }}
+                                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  {entry.kind === 'directory' ? (
+                                    <Folder size={13} className="text-sky-500 shrink-0" />
+                                  ) : (
+                                    <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
+                                  )}
+                                  <span className="text-[11px] font-semibold truncate">{entry.name}</span>
+                                  <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
+                                </div>
+                                <div className="mt-1 text-[9px] text-[color:var(--text-muted)] flex items-center gap-2">
+                                  <span>{entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}</span>
+                                  {entry.modified_at ? <span>{formatCompactDate(entry.modified_at)}</span> : null}
+                                </div>
+                              </button>
+                            ))}
+                            {runtimeFiles.truncated ? (
+                              <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated to 400 entries</p>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                            Workspace is empty.
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+
+                    {runtimeInspectorTab === 'git' ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Changed Files</div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!activeSessionId) return;
+                              void fetchRuntimeChangedFilesForExplorer(activeSessionId, runtimePath);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
+                          >
+                            <RefreshCw size={11} className={runtimeChangedFilesLoading ? 'animate-spin' : ''} />
+                            Refresh
+                          </button>
+                        </div>
+                        {runtimeChangedFilesLoading ? (
+                          <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
+                            <Loader2 size={12} className="animate-spin" />
+                            Scanning git changes…
+                          </div>
+                        ) : runtimeChangedFiles?.entries?.length ? (
+                          <div className="space-y-1.5">
+                            {runtimeChangedFiles.entries.map((entry) => (
+                              <button
+                                key={`runtime-change-tab:${entry.path}:${entry.status}`}
+                                type="button"
+                                onClick={() => void openRuntimeFileDiff(entry.path)}
+                                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
+                                title={entry.path}
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-[9px] font-bold text-[color:var(--text-muted)] w-8 shrink-0">{entry.status}</span>
+                                  <span className="text-[10px] font-mono truncate">{entry.path}</span>
+                                  <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
+                                </div>
+                              </button>
+                            ))}
+                            {runtimeChangedFiles.truncated ? (
+                              <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated</p>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                            No changed files in this directory’s git root.
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+
+                    {runtimeInspectorTab === 'commands' ? (
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Recent Commands</div>
+                        {runtimeCommandActions.length > 0 ? (
+                          <div className="space-y-1.5">
+                            {runtimeCommandActions.slice(0, 25).map((entry, index) => {
+                              const command = runtimeActionCommand(entry) || '';
+                              return (
+                                <div
+                                  key={`${entry.timestamp ?? 'na'}-${entry.action}-${index}`}
+                                  className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2"
+                                >
+                                  <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                    <Clock3 size={10} />
+                                    <span>{entry.action.replaceAll('_', ' ')}</span>
+                                    <span className="ml-auto">{entry.timestamp ? formatCompactDate(entry.timestamp) : '—'}</span>
+                                  </div>
+                                  <div className="mt-1 text-[10px] font-mono text-[color:var(--text-secondary)] break-all">
+                                    {command}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                            No runtime commands yet.
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="border-t border-[color:var(--border-subtle)] p-4 bg-[color:var(--surface-2)]/20">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Workbench</div>
+                  <div className="text-[10px] text-[color:var(--text-muted)] opacity-80">
+                    {workbenchVisible
+                      ? `${workbenchTabs.length} file tab${workbenchTabs.length === 1 ? '' : 's'} open in the file workbench.`
+                      : 'Open a file from the workspace list to create a file tab in the workbench pane.'}
+                  </div>
+                  {workbenchLoadingPath ? (
+                    <div className="mt-2 flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
+                      <Loader2 size={12} className="animate-spin" />
+                      Opening {workbenchLoadingPath}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
           </aside>
         </div>
 

@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 
 export default defineConfig({
   base: process.env.VITE_BASE_PATH || '/',
+  envPrefix: ['VITE_', 'APP_'],
   plugins: [react()],
   publicDir: 'public',
   build: {
