@@ -77,6 +77,56 @@ export interface SessionRuntimeFilePreviewResponse {
   max_bytes: number;
 }
 
+export interface SessionRuntimeGitRoot {
+  root_path: string;
+  branch: string | null;
+  detached_head: boolean;
+}
+
+export interface SessionRuntimeGitRootsResponse {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  path: string;
+  roots: SessionRuntimeGitRoot[];
+}
+
+export interface SessionRuntimeGitDiffResponse {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  path: string;
+  git_root: string;
+  branch: string | null;
+  detached_head: boolean;
+  base_ref: string;
+  staged: boolean;
+  context_lines: number;
+  diff: string;
+  truncated: boolean;
+  max_bytes: number;
+}
+
+export interface SessionRuntimeGitChangedFile {
+  path: string;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+}
+
+export interface SessionRuntimeGitChangedFilesResponse {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  path: string;
+  git_root: string;
+  branch: string | null;
+  detached_head: boolean;
+  entries: SessionRuntimeGitChangedFile[];
+  truncated: boolean;
+}
+
 export interface SessionRuntimeCleanupResponse {
   session_id: string;
   runtime_removed: boolean;
