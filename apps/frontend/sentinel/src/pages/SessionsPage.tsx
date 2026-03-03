@@ -1159,7 +1159,7 @@ export function SessionsPage() {
 
   const [tasks, setTasks] = useState<SubAgentTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [rightRailView, setRightRailView] = useState<'sub_agents' | 'runtime'>('sub_agents');
+  const [rightRailTab, setRightRailTab] = useState<'browser' | 'sub_agents' | 'runtime'>('browser');
   const [runtimeStatus, setRuntimeStatus] = useState<SessionRuntimeStatus | null>(null);
   const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
   const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
@@ -1283,6 +1283,20 @@ export function SessionsPage() {
       .slice()
       .reverse();
   }, [runtimeStatus]);
+
+  const browserToolResults = useMemo(
+    () =>
+      messages
+        .filter(
+          (message) =>
+            message.role === 'tool_result' &&
+            typeof message.tool_name === 'string' &&
+            message.tool_name.startsWith('browser_')
+        )
+        .slice(-25)
+        .reverse(),
+    [messages],
+  );
 
   const toolArgumentsByCallId = useMemo(() => {
     const map = new Map<string, string>();
@@ -1433,12 +1447,10 @@ export function SessionsPage() {
   }, []);
 
   const resize = useCallback((e: MouseEvent) => {
-    if (isResizing) {
-      const newWidth = window.innerWidth - e.clientX;
-      if (newWidth > 300 && newWidth < 800) {
-        setRightPanelWidth(newWidth);
-      }
-    }
+    if (!isResizing) return;
+    const newWidth = window.innerWidth - e.clientX;
+    const clamped = Math.max(300, Math.min(800, newWidth));
+    setRightPanelWidth(clamped);
   }, [isResizing]);
 
   useEffect(() => {
@@ -1547,14 +1559,14 @@ export function SessionsPage() {
   }, [activeSessionId, hasActiveSubAgentTasks]);
 
   useEffect(() => {
-    if (!activeSessionId || rightRailView !== 'runtime') return;
+    if (!activeSessionId || rightRailTab !== 'runtime') return;
     const timer = window.setInterval(() => {
       void fetchRuntimeStatus(activeSessionId, 120);
     }, 2500);
     return () => {
       window.clearInterval(timer);
     };
-  }, [activeSessionId, rightRailView]);
+  }, [activeSessionId, rightRailTab]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -2352,7 +2364,7 @@ export function SessionsPage() {
             toolNameForRefresh === 'git_exec'
           ) {
             void fetchRuntimeStatus(sessionId, 120);
-            if (rightRailView === 'runtime') {
+            if (rightRailTab === 'runtime') {
               void fetchRuntimeFiles(sessionId, runtimePath);
             }
           }
@@ -3285,281 +3297,369 @@ export function SessionsPage() {
               onMouseDown={startResizing}
           />
 
-          {/* Right Rail (Tools & Browser) */}
+          {/* Right Rail */}
           <aside
               style={{ width: `${rightPanelWidth}px` }}
               className="hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
           >
-                       {/* Browser Preview */}
-                       <div className="flex flex-col min-h-0 border-b border-[color:var(--border-subtle)]">
-                          <div className="flex items-center justify-between p-4 border-b border-[color:var(--border-subtle)]">
-                            <div className="flex items-center gap-2">
-                              <Globe size={16} className="text-sky-500" />
-                              <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Live Browser</h2>
-                            </div>
-                                            <div className="flex items-center gap-1">
-                                                                                  <button 
-                                                                                    onClick={() => resetBrowser()} 
-                                                                                    disabled={isResettingBrowser}
-                                                                                    className="p-1.5 rounded-md hover:bg-rose-500/10 transition-colors text-rose-500 disabled:opacity-50"
-                                                                                    title="Reset browser runtime"
-                                                                                  >
-                                                                
-                                                                  <RotateCcw size={14} className={isResettingBrowser ? 'animate-spin' : ''} />
-                                                                </button>
-                                              
-                                              <button onClick={() => setIsBrowserFullscreen(true)} className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-sky-500">
-                                                <Expand size={14} />
-                                              </button>
-                                            </div>
-                            
+            <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
+              <div className="grid grid-cols-3 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
+                <button
+                  type="button"
+                  onClick={() => setRightRailTab('browser')}
+                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                    rightRailTab === 'browser'
+                      ? 'bg-sky-500/15 text-sky-400'
+                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                  }`}
+                >
+                  Browser
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRightRailTab('sub_agents')}
+                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                    rightRailTab === 'sub_agents'
+                      ? 'bg-emerald-500/15 text-emerald-400'
+                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                  }`}
+                >
+                  Sub-Agents
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRightRailTab('runtime')}
+                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                    rightRailTab === 'runtime'
+                      ? 'bg-amber-500/15 text-amber-400'
+                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                  }`}
+                >
+                  Runtime
+                </button>
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                  {rightRailTab === 'browser'
+                    ? 'Live Browser'
+                    : rightRailTab === 'sub_agents'
+                      ? 'Sub-Agent Tasks'
+                      : 'Workspace Runtime'}
+                </div>
+                {rightRailTab === 'sub_agents' ? (
+                  <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-1.5 py-0.5 rounded font-bold">
+                    {tasks.filter((task) => task.status === 'running' || task.status === 'pending').length} Active
+                  </span>
+                ) : rightRailTab === 'runtime' ? (
+                  <span className="text-[10px] bg-sky-500/10 text-sky-500 px-1.5 py-0.5 rounded font-bold">
+                    {runtimeStatusLabel(runtimeStatus)}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            {rightRailTab === 'browser' ? (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex items-center justify-between p-3 border-b border-[color:var(--border-subtle)]">
+                  <div className="flex items-center gap-2">
+                    <Globe size={15} className="text-sky-500" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                      Interactive View
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => resetBrowser()}
+                      disabled={isResettingBrowser}
+                      className="p-1.5 rounded-md hover:bg-rose-500/10 transition-colors text-rose-500 disabled:opacity-50"
+                      title="Reset browser runtime"
+                    >
+                      <RotateCcw size={14} className={isResettingBrowser ? 'animate-spin' : ''} />
+                    </button>
+                    <button
+                      onClick={() => setIsBrowserFullscreen(true)}
+                      className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-sky-500"
+                      title="Open fullscreen"
+                    >
+                      <Expand size={14} />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                  <div className="relative w-full aspect-video overflow-hidden border-b border-[color:var(--border-subtle)] bg-black">
+                    <BrowserPreview
+                      url={liveView?.url ?? null}
+                      isFullscreen={isBrowserFullscreen}
+                      onClose={() => setIsBrowserFullscreen(false)}
+                    />
+                  </div>
+
+                  <div className="px-3 pb-3 space-y-2">
+                    <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2.5">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Browser Status</div>
+                      <div className="grid grid-cols-1 gap-2 text-[10px]">
+                        <div className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
+                          <div className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Connection</div>
+                          <div className="font-semibold text-[color:var(--text-secondary)]">
+                            {liveView?.enabled
+                              ? liveView.available
+                                ? 'Connected'
+                                : 'Runtime unreachable'
+                              : 'Disabled'}
                           </div>
-                          <div className="flex-1 min-h-0">
-                             <div className="relative aspect-video w-full bg-black overflow-hidden border-b border-[color:var(--border-subtle)]">
-                                <BrowserPreview 
-                                  url={liveView?.url ?? null} 
-                                  isFullscreen={isBrowserFullscreen}
-                                  onClose={() => setIsBrowserFullscreen(false)}
-                                />
-                             </div>
-                          </div>
-                       </div>
-            
-                       {/* Sub-Agents / Runtime Panel */}
-                       <div className="flex-1 flex flex-col min-h-0">
-                          <div className="flex items-center justify-between p-4 border-b border-[color:var(--border-subtle)] gap-3">
-                            <div className="inline-flex rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-1">
-                              <button
-                                type="button"
-                                onClick={() => setRightRailView('sub_agents')}
-                                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide transition-colors ${
-                                  rightRailView === 'sub_agents'
-                                    ? 'bg-emerald-500/15 text-emerald-400'
-                                    : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
-                                }`}
-                              >
-                                <Terminal size={12} />
-                                Sub-Agents
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setRightRailView('runtime')}
-                                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide transition-colors ${
-                                  rightRailView === 'runtime'
-                                    ? 'bg-sky-500/15 text-sky-400'
-                                    : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
-                                }`}
-                              >
-                                <Folder size={12} />
-                                Runtime
-                              </button>
-                            </div>
-                            {rightRailView === 'sub_agents' ? (
-                              <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-1.5 py-0.5 rounded font-bold">
-                                {tasks.filter((task) => task.status === 'running' || task.status === 'pending').length} Active
-                              </span>
-                            ) : (
-                              <span className="text-[10px] bg-sky-500/10 text-sky-500 px-1.5 py-0.5 rounded font-bold">
-                                {runtimeStatusLabel(runtimeStatus)}
-                              </span>
-                            )}
-                          </div>
-
-                          {rightRailView === 'sub_agents' ? (
-                            <>
-                              <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                                {tasks.map(t => (
-                                  <div key={t.id} className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] shadow-sm space-y-2">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <span className="text-xs font-bold truncate">{t.name}</span>
-                                      <StatusChip label={t.status} tone={taskStatusTone(t.status)} className="scale-75 origin-right" />
-                                    </div>
-                                    <p className="text-[10px] text-[color:var(--text-secondary)] line-clamp-2 leading-relaxed">
-                                      {t.scope || 'No scope defined.'}
-                                    </p>
-                                    <div className="flex items-center gap-2 pt-1">
-                                      <button
-                                        onClick={() => { setSelectedTask(t); setIsTaskModalOpen(true); }}
-                                        className="text-[10px] font-bold text-[color:var(--accent-solid)] hover:underline uppercase tracking-wide"
-                                      >
-                                        View Task
-                                      </button>
-                                      {(t.status === 'running' || t.status === 'pending') && (
-                                        <>
-                                          <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
-                                          <button
-                                            onClick={() => terminateTask(t.id)}
-                                            className="text-[10px] font-bold text-rose-500 hover:underline uppercase tracking-wide"
-                                          >
-                                            Terminate
-                                          </button>
-                                        </>
-                                      )}
-                                    </div>
-                                  </div>
-                                ))}
-                                {tasks.length === 0 && (
-                                  <div className="h-32 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-50 gap-2">
-                                    <Terminal size={24} strokeWidth={1} />
-                                    <p className="text-[10px] font-medium uppercase tracking-widest">Idle</p>
-                                  </div>
-                                )}
-                              </div>
-                              <div className="p-4 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
-                                <button
-                                  onClick={() => setIsSpawnModalOpen(true)}
-                                  className="btn-primary w-full h-10 text-xs shadow-sm"
-                                >
-                                  <Plus size={14} />
-                                  Spawn Sub-Agent
-                                </button>
-                              </div>
-                            </>
-                          ) : (
-                            <div className="flex-1 min-h-0 flex flex-col">
-                              <div className="px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
-                                <div className="flex items-center justify-between gap-2">
-                                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                                    Workspace
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (!activeSessionId) return;
-                                      void fetchRuntimeStatus(activeSessionId, 120);
-                                      void fetchRuntimeFiles(activeSessionId, runtimePath);
-                                    }}
-                                    className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
-                                  >
-                                    <RefreshCw size={11} className={runtimeFilesLoading ? 'animate-spin' : ''} />
-                                    Refresh
-                                  </button>
-                                </div>
-                                <div className="mt-2 flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (!activeSessionId || !runtimeFiles || runtimeFiles.parent_path === null) return;
-                                      void openRuntimeDirectory(runtimeFiles.parent_path);
-                                    }}
-                                    disabled={!runtimeFiles || runtimeFiles.parent_path === null || runtimeFilesLoading}
-                                    className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] disabled:opacity-40"
-                                  >
-                                    <ArrowUp size={11} />
-                                    Up
-                                  </button>
-                                  <div className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-mono text-[color:var(--text-secondary)] truncate">
-                                    /workspace{runtimePath ? `/${runtimePath}` : ''}
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-                                <div className="space-y-2">
-                                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Files</div>
-                                  {runtimeFilesLoading ? (
-                                    <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
-                                      <Loader2 size={12} className="animate-spin" />
-                                      Loading workspace…
-                                    </div>
-                                  ) : runtimeFiles?.entries?.length ? (
-                                    <div className="space-y-1.5">
-                                      {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
-                                        <button
-                                          key={`${entry.path}:${entry.kind}`}
-                                          type="button"
-                                          onClick={() => {
-                                            if (entry.kind === 'directory') {
-                                              void openRuntimeDirectory(entry.path);
-                                            } else {
-                                              void openRuntimeFile(entry.path);
-                                            }
-                                          }}
-                                          className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
-                                        >
-                                          <div className="flex items-center gap-2 min-w-0">
-                                            {entry.kind === 'directory' ? (
-                                              <Folder size={13} className="text-sky-500 shrink-0" />
-                                            ) : (
-                                              <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
-                                            )}
-                                            <span className="text-[11px] font-semibold truncate">{entry.name}</span>
-                                            <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
-                                          </div>
-                                          <div className="mt-1 text-[9px] text-[color:var(--text-muted)] flex items-center gap-2">
-                                            <span>{entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}</span>
-                                            {entry.modified_at ? <span>{formatCompactDate(entry.modified_at)}</span> : null}
-                                          </div>
-                                        </button>
-                                      ))}
-                                      {runtimeFiles.truncated ? (
-                                        <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated to 400 entries</p>
-                                      ) : null}
-                                    </div>
-                                  ) : (
-                                    <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                                      Workspace is empty.
-                                    </div>
-                                  )}
-                                </div>
-
-                                <div className="space-y-2">
-                                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Recent Commands</div>
-                                  {runtimeCommandActions.length > 0 ? (
-                                    <div className="space-y-1.5">
-                                      {runtimeCommandActions.slice(0, 25).map((entry, index) => {
-                                        const command = runtimeActionCommand(entry) || '';
-                                        return (
-                                          <div
-                                            key={`${entry.timestamp ?? 'na'}-${entry.action}-${index}`}
-                                            className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2"
-                                          >
-                                            <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                                              <Clock3 size={10} />
-                                              <span>{entry.action.replaceAll('_', ' ')}</span>
-                                              <span className="ml-auto">{entry.timestamp ? formatCompactDate(entry.timestamp) : '—'}</span>
-                                            </div>
-                                            <div className="mt-1 text-[10px] font-mono text-[color:var(--text-secondary)] break-all">
-                                              {command}
-                                            </div>
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
-                                  ) : (
-                                    <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                                      No runtime commands yet.
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div className="border-t border-[color:var(--border-subtle)] p-4 bg-[color:var(--surface-2)]/20">
-                                <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">File Preview</div>
-                                {runtimePreviewLoading ? (
-                                  <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
-                                    <Loader2 size={12} className="animate-spin" />
-                                    Loading file…
-                                  </div>
-                                ) : runtimeFilePreview ? (
-                                  <div className="space-y-2">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <div className="text-[11px] font-semibold truncate">{runtimeFilePreview.name}</div>
-                                      <div className="text-[9px] text-[color:var(--text-muted)]">{formatBytes(runtimeFilePreview.size_bytes)}</div>
-                                    </div>
-                                    <pre className="max-h-36 overflow-auto rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2 text-[10px] text-[color:var(--text-secondary)] whitespace-pre-wrap break-words">
-                                      {runtimeFilePreview.content || '[empty file]'}
-                                    </pre>
-                                  </div>
-                                ) : (
-                                  <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                                    Select a file to preview its content.
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
                         </div>
+                        <div className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
+                          <div className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Stream URL</div>
+                          <div className="font-mono text-[10px] text-[color:var(--text-secondary)] break-all">
+                            {liveView?.url ?? 'No URL'}
+                          </div>
+                        </div>
+                        {liveView?.reason ? (
+                          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-300">
+                            {liveView.reason}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2.5">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Recent Browser Actions</div>
+                      {browserToolResults.length > 0 ? (
+                        <div className="space-y-1.5">
+                          {browserToolResults.slice(0, 8).map((item) => (
+                            <div
+                              key={item.id}
+                              className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2 py-1.5"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-semibold text-[color:var(--text-primary)]">
+                                  {item.tool_name?.replace('browser_', '').replaceAll('_', ' ') || 'browser action'}
+                                </span>
+                                <span className="text-[9px] text-[color:var(--text-muted)]">
+                                  {formatCompactDate(item.created_at)}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                          No browser tool activity yet.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {rightRailTab === 'sub_agents' ? (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                  {tasks.map(t => (
+                    <div key={t.id} className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] shadow-sm space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold truncate">{t.name}</span>
+                        <StatusChip label={t.status} tone={taskStatusTone(t.status)} className="scale-75 origin-right" />
+                      </div>
+                      <p className="text-[10px] text-[color:var(--text-secondary)] line-clamp-2 leading-relaxed">
+                        {t.scope || 'No scope defined.'}
+                      </p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          onClick={() => { setSelectedTask(t); setIsTaskModalOpen(true); }}
+                          className="text-[10px] font-bold text-[color:var(--accent-solid)] hover:underline uppercase tracking-wide"
+                        >
+                          View Task
+                        </button>
+                        {(t.status === 'running' || t.status === 'pending') && (
+                          <>
+                            <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
+                            <button
+                              onClick={() => terminateTask(t.id)}
+                              className="text-[10px] font-bold text-rose-500 hover:underline uppercase tracking-wide"
+                            >
+                              Terminate
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {tasks.length === 0 && (
+                    <div className="h-32 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-50 gap-2">
+                      <Terminal size={24} strokeWidth={1} />
+                      <p className="text-[10px] font-medium uppercase tracking-widest">Idle</p>
+                    </div>
+                  )}
+                </div>
+                <div className="p-4 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
+                  <button
+                    onClick={() => setIsSpawnModalOpen(true)}
+                    className="btn-primary w-full h-10 text-xs shadow-sm"
+                  >
+                    <Plus size={14} />
+                    Spawn Sub-Agent
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {rightRailTab === 'runtime' ? (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                      Workspace
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!activeSessionId) return;
+                        void fetchRuntimeStatus(activeSessionId, 120);
+                        void fetchRuntimeFiles(activeSessionId, runtimePath);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
+                    >
+                      <RefreshCw size={11} className={runtimeFilesLoading ? 'animate-spin' : ''} />
+                      Refresh
+                    </button>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!activeSessionId || !runtimeFiles || runtimeFiles.parent_path === null) return;
+                        void openRuntimeDirectory(runtimeFiles.parent_path);
+                      }}
+                      disabled={!runtimeFiles || runtimeFiles.parent_path === null || runtimeFilesLoading}
+                      className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] disabled:opacity-40"
+                    >
+                      <ArrowUp size={11} />
+                      Up
+                    </button>
+                    <div className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-mono text-[color:var(--text-secondary)] truncate">
+                      /workspace{runtimePath ? `/${runtimePath}` : ''}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+                  <div className="space-y-2">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Files</div>
+                    {runtimeFilesLoading ? (
+                      <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
+                        <Loader2 size={12} className="animate-spin" />
+                        Loading workspace…
+                      </div>
+                    ) : runtimeFiles?.entries?.length ? (
+                      <div className="space-y-1.5">
+                        {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
+                          <button
+                            key={`${entry.path}:${entry.kind}`}
+                            type="button"
+                            onClick={() => {
+                              if (entry.kind === 'directory') {
+                                void openRuntimeDirectory(entry.path);
+                              } else {
+                                void openRuntimeFile(entry.path);
+                              }
+                            }}
+                            className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              {entry.kind === 'directory' ? (
+                                <Folder size={13} className="text-sky-500 shrink-0" />
+                              ) : (
+                                <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
+                              )}
+                              <span className="text-[11px] font-semibold truncate">{entry.name}</span>
+                              <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
+                            </div>
+                            <div className="mt-1 text-[9px] text-[color:var(--text-muted)] flex items-center gap-2">
+                              <span>{entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}</span>
+                              {entry.modified_at ? <span>{formatCompactDate(entry.modified_at)}</span> : null}
+                            </div>
+                          </button>
+                        ))}
+                        {runtimeFiles.truncated ? (
+                          <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated to 400 entries</p>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                        Workspace is empty.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Recent Commands</div>
+                    {runtimeCommandActions.length > 0 ? (
+                      <div className="space-y-1.5">
+                        {runtimeCommandActions.slice(0, 25).map((entry, index) => {
+                          const command = runtimeActionCommand(entry) || '';
+                          return (
+                            <div
+                              key={`${entry.timestamp ?? 'na'}-${entry.action}-${index}`}
+                              className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2"
+                            >
+                              <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                <Clock3 size={10} />
+                                <span>{entry.action.replaceAll('_', ' ')}</span>
+                                <span className="ml-auto">{entry.timestamp ? formatCompactDate(entry.timestamp) : '—'}</span>
+                              </div>
+                              <div className="mt-1 text-[10px] font-mono text-[color:var(--text-secondary)] break-all">
+                                {command}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                        No runtime commands yet.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="border-t border-[color:var(--border-subtle)] p-4 bg-[color:var(--surface-2)]/20">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">File Preview</div>
+                    {runtimeFilePreview ? (
+                      <button
+                        type="button"
+                        onClick={() => setRuntimeFilePreview(null)}
+                        className="text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-rose-400"
+                      >
+                        Close
+                      </button>
+                    ) : null}
+                  </div>
+                  {runtimePreviewLoading ? (
+                    <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
+                      <Loader2 size={12} className="animate-spin" />
+                      Loading file…
+                    </div>
+                  ) : runtimeFilePreview ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[11px] font-semibold truncate">{runtimeFilePreview.name}</div>
+                        <div className="text-[9px] text-[color:var(--text-muted)]">{formatBytes(runtimeFilePreview.size_bytes)}</div>
+                      </div>
+                      <pre className="max-h-36 overflow-auto rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2 text-[10px] text-[color:var(--text-secondary)] whitespace-pre-wrap break-words">
+                        {runtimeFilePreview.content || '[empty file]'}
+                      </pre>
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                      Select a file to preview its content.
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
           </aside>
         </div>
 
