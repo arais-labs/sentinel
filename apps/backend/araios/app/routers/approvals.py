@@ -8,7 +8,7 @@ from app.dependencies import get_db
 from app.middleware.auth import require_permission, get_role
 from app.database.models import (
     Approval, gen_id,
-    Lead, Competitor, Client, Proposal, GithubTask,
+    Lead, Competitor, Client, Proposal, Task,
     LaunchPrepTask, Positioning, SecurityFinding, Document,
 )
 from app.schemas import ApprovalCreate, ApprovalOut, ApprovalListResponse
@@ -21,7 +21,8 @@ _RESOURCE_MODELS = {
     "competitors": Competitor,
     "clients": Client,
     "proposals": Proposal,
-    "github-tasks": GithubTask,
+    "tasks": Task,
+    "github-tasks": Task,
     "launch-prep": LaunchPrepTask,
     "positioning": Positioning,
     "security-audit": SecurityFinding,
@@ -34,7 +35,28 @@ _RESOURCE_FIELD_MAPS = {
     "competitors": {"lastUpdated": "last_updated"},
     "clients": {"linkedIn": "linked_in", "engagementType": "engagement_type", "phaseProgress": "phase_progress", "healthStatus": "health_status", "contractValue": "contract_value", "startDate": "start_date"},
     "proposals": {"leadName": "lead_name", "proposalTitle": "proposal_title", "sentAt": "sent_at"},
-    "github-tasks": {"prUrl": "pr_url", "workPackage": "work_package", "detectedAt": "detected_at", "readyAt": "ready_at", "handedOffAt": "handed_off_at", "closedAt": "closed_at"},
+    "tasks": {
+        "prUrl": "pr_url",
+        "workPackage": "work_package",
+        "detectedAt": "detected_at",
+        "readyAt": "ready_at",
+        "handedOffAt": "handed_off_at",
+        "closedAt": "closed_at",
+        "createdBy": "created_by",
+        "updatedBy": "updated_by",
+        "handoffTo": "handoff_to",
+    },
+    "github-tasks": {
+        "prUrl": "pr_url",
+        "workPackage": "work_package",
+        "detectedAt": "detected_at",
+        "readyAt": "ready_at",
+        "handedOffAt": "handed_off_at",
+        "closedAt": "closed_at",
+        "createdBy": "created_by",
+        "updatedBy": "updated_by",
+        "handoffTo": "handoff_to",
+    },
     "launch-prep": {},
     "positioning": {"valueProps": "value_props"},
     "security-audit": {"fixNotes": "fix_notes"},
@@ -73,6 +95,7 @@ async def _execute_approval(db: Session, approval: Approval):
     parts = action.split(".")
     if len(parts) == 2:
         from app.database.models import Module, ModuleSecret
+        from app.routers.modules import _normalize_action_params
         from app.services.executor import execute_action
         mod = db.query(Module).filter(Module.name == parts[0]).first()
         if mod and mod.type == "tool":
@@ -81,7 +104,8 @@ async def _execute_approval(db: Session, approval: Approval):
                 secrets = {}
                 for s in db.query(ModuleSecret).filter(ModuleSecret.module_name == mod.name).all():
                     secrets[s.key] = s.value
-                result = await execute_action(action_def["code"], {"params": payload, "secrets": secrets})
+                params = _normalize_action_params(payload if isinstance(payload, dict) else {})
+                result = await execute_action(action_def["code"], {"params": params, "secrets": secrets})
                 if not result.get("ok", True):
                     raise HTTPException(status_code=502, detail=result.get("error", "Action failed"))
                 return
@@ -89,17 +113,22 @@ async def _execute_approval(db: Session, approval: Approval):
     # ── Module engine executors ──
     action_verb = action.split(".")[-1] if "." in action else action
     if resource == "modules":
-        from app.database.models import Module, Permission
-        from app.routers.modules import _seed_module_permissions
+        from app.database.models import Module
+        from app.routers.modules import (
+            _apply_module_updates,
+            _extract_module_updates,
+            _normalize_module_name,
+            _seed_module_permissions,
+        )
+        module_name = _normalize_module_name(resource_id or payload.get("name"))
         if action_verb == "create":
-            name = payload.get("name", "").strip().lower()
-            if not name:
+            if not module_name:
                 raise HTTPException(status_code=400, detail="Module name is required")
-            if db.query(Module).filter(Module.name == name).first():
-                raise HTTPException(status_code=409, detail=f"Module '{name}' already exists")
+            if db.query(Module).filter(Module.name == module_name).first():
+                raise HTTPException(status_code=409, detail=f"Module '{module_name}' already exists")
             mod = Module(
-                name=name,
-                label=payload.get("label", name.title()),
+                name=module_name,
+                label=payload.get("label", module_name.title()),
                 description=payload.get("description", ""),
                 icon=payload.get("icon", "box"),
                 type=payload.get("type", "data"),
@@ -112,7 +141,28 @@ async def _execute_approval(db: Session, approval: Approval):
             )
             db.add(mod)
             db.commit()
-            _seed_module_permissions(name, db)
+            _seed_module_permissions(module_name, db)
+            return
+        if action_verb == "update":
+            if not module_name:
+                raise HTTPException(status_code=400, detail="Module name is required for update")
+            mod = db.query(Module).filter(Module.name == module_name).first()
+            if not mod:
+                raise HTTPException(status_code=404, detail=f"Module '{module_name}' not found")
+            updates = _extract_module_updates(payload)
+            _apply_module_updates(mod, updates)
+            db.commit()
+            return
+        if action_verb == "delete":
+            if not module_name:
+                raise HTTPException(status_code=400, detail="Module name is required for delete")
+            mod = db.query(Module).filter(Module.name == module_name).first()
+            if not mod:
+                raise HTTPException(status_code=404, detail=f"Module '{module_name}' not found")
+            if mod.is_system:
+                raise HTTPException(status_code=400, detail="Cannot delete a system module")
+            db.delete(mod)
+            db.commit()
         return
 
     # ── DB CRUD executors ──

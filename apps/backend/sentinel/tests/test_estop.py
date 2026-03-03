@@ -167,6 +167,51 @@ def test_tool_adapter_checks_estop_before_execution():
     assert "Emergency stop" in results[0].content
 
 
+def test_tool_adapter_enforces_estop_per_call_not_once_per_batch():
+    class _PerCallEstop(EstopService):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def enforce_tool(self, db, tool_name: str, risk_level: str) -> None:  # noqa: ARG002
+            self.calls += 1
+            if self.calls >= 2:
+                raise PermissionError("Emergency stop TOOL_FREEZE blocks all tool execution")
+
+    db = FakeDB()
+    registry = ToolRegistry()
+
+    async def _echo(payload):
+        return payload
+
+    registry.register(
+        ToolDefinition(
+            name="echo",
+            description="echo",
+            risk_level="low",
+            parameters_schema={"type": "object", "additionalProperties": True},
+            execute=_echo,
+        )
+    )
+
+    estop = _PerCallEstop()
+    adapter = ToolAdapter(registry, ToolExecutor(registry), estop_service=estop)
+    results = _run(
+        adapter.execute_tool_calls(
+            [
+                ToolCallContent(id="c1", name="echo", arguments={"v": 1}),
+                ToolCallContent(id="c2", name="echo", arguments={"v": 2}),
+            ],
+            db,
+            allow_high_risk=True,
+        )
+    )
+
+    assert len(results) == 2
+    assert sum(1 for item in results if item.is_error) == 1
+    assert sum(1 for item in results if not item.is_error) == 1
+    assert estop.calls == 2
+
+
 def test_agent_loop_aborts_when_kill_all_active():
     db = FakeDB()
     service = EstopService()

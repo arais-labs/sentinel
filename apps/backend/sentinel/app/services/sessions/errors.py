@@ -27,3 +27,11 @@ class AgentLoopUnavailableError(SessionServiceError):
 
 class ChatPayloadRequiredError(SessionServiceError):
     """Chat requires text and/or attachments."""
+
+
+class RuntimePathInvalidError(SessionServiceError):
+    """Requested runtime path is invalid."""
+
+
+class RuntimePathNotFoundError(SessionServiceError):
+    """Requested runtime path does not exist."""
