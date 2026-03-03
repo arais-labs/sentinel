@@ -10,7 +10,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.models import GitPushApproval, Session, SessionBinding
+from app.models import GitPushApproval, Message, Session, SessionBinding
 from app.services.llm.generic.types import AssistantMessage, SystemMessage, TextContent, UserMessage
 from tests.fake_db import FakeDB
 
@@ -251,6 +251,75 @@ def test_stop_session_generation_cancels_pending_git_push_approvals():
         assert stop_resp.json()["status"] in {"stopping", "idle"}
         assert pending.status == "cancelled"
         assert pending.resolved_at is not None
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_stop_session_generation_materializes_unresolved_tool_calls():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "stop-materializes-tool-result"}, headers=headers)
+        assert session_resp.status_code == 200
+        session_id = uuid.UUID(session_resp.json()["id"])
+
+        fake_db.add(
+            Message(
+                session_id=session_id,
+                role="assistant",
+                content="",
+                metadata_json={
+                    "tool_calls": [
+                        {
+                            "id": "toolu_pending_runtime",
+                            "name": "runtime_exec",
+                            "arguments": {"command": "sleep 20"},
+                        }
+                    ]
+                },
+            )
+        )
+
+        stop_resp = client.post(f"/api/v1/sessions/{session_id}/stop", headers=headers)
+        assert stop_resp.status_code == 200
+        assert stop_resp.json()["status"] in {"stopping", "idle"}
+
+        messages_resp = client.get(f"/api/v1/sessions/{session_id}/messages", headers=headers)
+        assert messages_resp.status_code == 200
+        items = messages_resp.json()["items"]
+        materialized = next(
+            (
+                item
+                for item in items
+                if item["role"] == "tool_result"
+                and item.get("tool_call_id") == "toolu_pending_runtime"
+                and item.get("tool_name") == "runtime_exec"
+            ),
+            None,
+        )
+        assert materialized is not None
+        assert materialized["metadata"]["cancelled_by_stop"] is True
+        assert materialized["metadata"]["pending"] is False
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init

@@ -134,13 +134,16 @@ class ConnectionManager:
         if event.tool_call is not None:
             payload["tool_call"] = self._tool_call_payload(event.tool_call)
         if event.tool_result is not None:
-            payload["tool_result"] = {
+            tool_result_payload: dict[str, object] = {
                 "tool_call_id": event.tool_result.tool_call_id,
                 "tool_name": event.tool_result.tool_name,
                 "content": event.tool_result.content,
                 "is_error": event.tool_result.is_error,
                 "metadata": event.tool_result.metadata,
             }
+            if event.tool_result.tool_arguments is not None:
+                tool_result_payload["tool_arguments"] = event.tool_result.tool_arguments
+            payload["tool_result"] = tool_result_payload
         if event.iteration is not None:
             payload["iteration"] = event.iteration
         if event.max_iterations is not None:
