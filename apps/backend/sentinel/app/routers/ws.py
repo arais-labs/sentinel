@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.dependencies import get_db
 from app.logging_context import reset_log_session, set_log_session
 from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
+from app.models import GitPushApproval, Message
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
 from app.services.ws_manager import ConnectionManager
@@ -18,6 +22,7 @@ from app.services.ws_stream_service import (
     build_user_payload,
     get_owned_session,
     load_history,
+    unresolved_tool_calls_from_history,
     maybe_auto_compact_and_resume,
     name_session,
     persist_user_message,
@@ -65,6 +70,13 @@ async def stream_session(
     await manager.connect(session_key, websocket)
 
     history = await load_history(db, id)
+    unresolved_calls = unresolved_tool_calls_from_history(history)
+    session_running = await run_registry.is_running(session_key)
+    if unresolved_calls and not session_running:
+        await _materialize_interrupted_tool_results(db, session_id=id, unresolved_calls=unresolved_calls)
+        history = await load_history(db, id)
+        unresolved_calls = []
+
     await websocket.send_json(
         {
             "type": "connected",
@@ -73,6 +85,81 @@ async def stream_session(
             "context_token_budget": int(settings.context_token_budget),
         }
     )
+    pending_result = await db.execute(
+        select(GitPushApproval).where(
+            GitPushApproval.session_id == id,
+            GitPushApproval.status == "pending",
+        )
+    )
+    pending_rows = pending_result.scalars().all()
+    pending_rows.sort(
+        key=lambda item: item.created_at or item.updated_at,
+        reverse=True,
+    )
+    pending_by_command: dict[str, list[GitPushApproval]] = {}
+    pending_pool: list[GitPushApproval] = []
+    for row in pending_rows:
+        pending_pool.append(row)
+        key = _normalize_git_command(row.command)
+        pending_by_command.setdefault(key, []).append(row)
+
+    def _match_pending_for_call(call: dict[str, object]) -> str | None:
+        if call.get("name") != "git_exec":
+            return None
+        arguments = call.get("arguments")
+        if not isinstance(arguments, dict):
+            return None
+        command = arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return None
+        key = _normalize_git_command(command)
+        bucket = pending_by_command.get(key)
+        while bucket:
+            candidate = bucket.pop(0)
+            if candidate in pending_pool:
+                pending_pool.remove(candidate)
+                return str(candidate.id)
+        return None
+
+    for call in unresolved_calls:
+        approval_id = _match_pending_for_call(call)
+        pending_metadata: dict[str, object] = {
+            "pending": True,
+            "rehydrated": True,
+        }
+        pending_content = {
+            "status": "pending",
+            "message": "Tool call is still running or waiting for completion.",
+        }
+        if approval_id is not None:
+            pending_metadata["approval_id"] = approval_id
+            pending_content["approval_id"] = approval_id
+            pending_content["message"] = "Tool call still running or waiting for approval."
+        await websocket.send_json(
+            {
+                "type": "toolcall_start",
+                "session_id": session_key,
+                "tool_call": {
+                    "id": call["id"],
+                    "name": call["name"],
+                    "arguments": call["arguments"],
+                },
+            }
+        )
+        await websocket.send_json(
+            {
+                "type": "tool_result",
+                "session_id": session_key,
+                "tool_result": {
+                    "tool_call_id": call["id"],
+                    "tool_name": call["name"],
+                    "content": pending_content,
+                    "is_error": False,
+                    "metadata": pending_metadata,
+                    "tool_arguments": call["arguments"],
+                },
+            }
+        )
     session_has_messages = len(history) > 0
 
     try:
@@ -167,3 +254,57 @@ def _resolve_run_registry(websocket: WebSocket) -> AgentRunRegistry:
     if isinstance(registry, AgentRunRegistry):
         return registry
     raise RuntimeError("Agent run registry is not initialized on app.state")
+
+
+def _normalize_git_command(command: str) -> str:
+    return " ".join(command.strip().split()).lower()
+
+
+async def _materialize_interrupted_tool_results(
+    db: AsyncSession,
+    *,
+    session_id: UUID,
+    unresolved_calls: list[dict[str, object]],
+) -> None:
+    now = datetime.now(UTC)
+    pending_result = await db.execute(
+        select(GitPushApproval).where(
+            GitPushApproval.session_id == session_id,
+            GitPushApproval.status == "pending",
+        )
+    )
+    pending_rows = pending_result.scalars().all()
+    for row in pending_rows:
+        row.status = "cancelled"
+        row.decision_note = "Cancelled automatically: backend run not active after reconnect"
+        row.resolved_at = now
+
+    payload = json.dumps(
+        {
+            "status": "interrupted",
+            "message": (
+                "Tool call was interrupted because no active run was found for this session "
+                "(server restart or stop). Please retry."
+            ),
+        }
+    )
+    for call in unresolved_calls:
+        call_id = str(call.get("id") or "").strip()
+        if not call_id:
+            continue
+        call_name = str(call.get("name") or "unknown").strip() or "unknown"
+        db.add(
+            Message(
+                session_id=session_id,
+                role="tool_result",
+                content=payload,
+                metadata_json={
+                    "pending": False,
+                    "interrupted": True,
+                    "interrupted_reason": "run_not_active",
+                },
+                tool_call_id=call_id,
+                tool_name=call_name,
+            )
+        )
+    await db.commit()

@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     tier_normal_max_tokens: int = 8192
     tier_normal_temperature: float = 0.7
     tier_normal_anthropic_thinking_budget: int = 5000
-    tier_normal_openai_reasoning_effort: str = ""
+    tier_normal_openai_reasoning_effort: str = "medium"
     tier_normal_gemini_thinking_budget: int = 0
 
     # --- Tier: Hard ---
@@ -91,7 +91,10 @@ class Settings(BaseSettings):
     browser_prewarm_on_start: bool = False
     browser_vnc_password: str | None = None
     context_token_budget: int = 200_000
+    stored_tool_result_max_chars: int = 4_000
+    stored_tool_call_args_max_chars: int = 1_200
     compaction_auto_resume_enabled: bool = True
+    git_push_approval_timeout_seconds: int = 600
 
     # --- Telegram ---
     telegram_bot_token: str | None = None

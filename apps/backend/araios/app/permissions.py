@@ -5,6 +5,12 @@
 # "deny"     → return 403
 
 AGENT_PERMISSIONS: dict[str, str] = {
+    # Native Tasks plugin — collaborative by default
+    "tasks.list": "allow",
+    "tasks.create": "allow",
+    "tasks.update": "allow",
+    "tasks.delete": "approval",
+
     # Documents (custom system page)
     "documents.list":   "allow",
     "documents.create": "approval",
@@ -16,7 +22,9 @@ AGENT_PERMISSIONS: dict[str, str] = {
     "approvals.create": "allow",
     "approvals.resolve": "deny",
 
-    # Module engine — list/read free, register goes through approval
+    # Module engine — list/read free, mutations go through approval
     "modules.list":   "allow",
     "modules.create": "approval",
+    "modules.update": "approval",
+    "modules.delete": "approval",
 }

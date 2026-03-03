@@ -27,7 +27,14 @@ def _maybe_truncate_action(action: dict, module_name: str, base_url: str) -> dic
     return short
 
 
-@router.get("", summary="Agent system guide", description="Returns complete instructions for an agent: auth, endpoints, module creation, and current module catalog.")
+@router.get(
+    "",
+    summary="Agent system guide",
+    description=(
+        "Returns complete instructions for an agent: endpoints, module creation, "
+        "and current module catalog."
+    ),
+)
 async def agent_guide(
     db: Session = Depends(get_db),
     _=Depends(require_permission("manifest.read")),
@@ -76,19 +83,7 @@ async def agent_guide(
             },
         },
 
-        # ── 2. AUTH ─────────────────────────────────────────────────────────────
-        "auth": {
-            "scheme": "Bearer",
-            "header": "Authorization: Bearer <your_agent_token>",
-            "note": "Every request must carry your agent token. The token determines your permission level.",
-            "permission_levels": {
-                "allow":    "Request executes immediately and returns the result.",
-                "approval": "Request is queued (HTTP 202). An admin must approve before it executes.",
-                "deny":     "Request is rejected with HTTP 403.",
-            },
-        },
-
-        # ── 3. SYSTEM ENDPOINTS ─────────────────────────────────────────────────
+        # ── 2. SYSTEM ENDPOINTS ─────────────────────────────────────────────────
         "system_endpoints": [
             {
                 "method": "GET", "url": f"{base_url}/api/agent",
@@ -116,8 +111,29 @@ async def agent_guide(
                 "description": "List documents.",
             },
             {
-                "method": "GET", "url": f"{base_url}/api/github-tasks",
-                "description": "List GitHub tasks.",
+                "method": "GET", "url": f"{base_url}/api/tasks",
+                "description": "List collaborative tasks. Optional filters: ?client=&status=&owner=",
+            },
+            {
+                "method": "POST", "url": f"{base_url}/api/tasks",
+                "description": "Create a collaborative task.",
+                "body": {
+                    "title": "str",
+                    "summary": "str",
+                    "status": "backlog|todo|in_progress|in_review|blocked|handoff|done|cancelled (legacy also accepted)",
+                    "priority": "low|medium|high|critical",
+                    "owner": "str",
+                    "handoffTo": "str",
+                    "workPackage": "object (generic plan/artifacts; GitHub fields optional)",
+                },
+            },
+            {
+                "method": "PATCH", "url": f"{base_url}/api/tasks/:task_id",
+                "description": "Update task fields and handoffs. workPackage is deep-merged.",
+            },
+            {
+                "method": "DELETE", "url": f"{base_url}/api/tasks/:task_id",
+                "description": "Delete a task (agent role usually requires approval).",
             },
             {
                 "method": "GET", "url": f"{base_url}/api/coordination",
@@ -130,14 +146,14 @@ async def agent_guide(
             },
         ],
 
-        # ── 4. MODULE ENGINE ENDPOINTS ──────────────────────────────────────────
+        # ── 3. MODULE ENGINE ENDPOINTS ──────────────────────────────────────────
         "module_engine": {
             "description": "Generic API for all data and tool modules. Replace :name with the module slug.",
             "endpoints": [
                 {"method": "GET",    "url": f"{base_url}/api/modules",                                     "description": "List all registered modules."},
                 {"method": "GET",    "url": f"{base_url}/api/modules/:name",                               "description": "Get full module config including fields, actions, and secrets schema."},
                 {"method": "POST",   "url": f"{base_url}/api/modules",                                     "description": "Register a new module (see module_creation below). Subject to approval.", "body": "see module_creation.schema"},
-                {"method": "PATCH",  "url": f"{base_url}/api/modules/:name",                               "description": "Update a module config (label, fields, actions, etc.)."},
+                {"method": "PATCH",  "url": f"{base_url}/api/modules/:name",                               "description": "Patch module config fields. For 'actions', only referenced action IDs are updated; omitted actions are preserved."},
                 {"method": "DELETE", "url": f"{base_url}/api/modules/:name",                               "description": "Delete a non-system module."},
                 {"method": "GET",    "url": f"{base_url}/api/modules/:name/records",                       "description": "List records. Optional filters: ?filter_field=<field>&filter_value=<value>"},
                 {"method": "POST",   "url": f"{base_url}/api/modules/:name/records",                       "description": "Create a record. Body is a flat JSON object matching the module's fields."},
@@ -149,7 +165,7 @@ async def agent_guide(
             ],
         },
 
-        # ── 5. MODULE CREATION ──────────────────────────────────────────────────
+        # ── 4. MODULE CREATION ──────────────────────────────────────────────────
         "module_creation": {
             "process": [
                 "1. POST /api/modules with the module definition below.",
@@ -238,7 +254,7 @@ async def agent_guide(
             },
         },
 
-        # ── 6. MODULE CATALOG ───────────────────────────────────────────────────
+        # ── 5. MODULE CATALOG ───────────────────────────────────────────────────
         "modules": catalog,
         "catalog_note": (
             f"Action code longer than {_CODE_TRUNCATE_THRESHOLD} chars is truncated. "

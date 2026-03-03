@@ -40,7 +40,33 @@ def estimate_text_tokens(text: str) -> int:
 def estimate_db_message_tokens(message: Message) -> int:
     if isinstance(message.token_count, int) and message.token_count > 0:
         return int(message.token_count)
-    return estimate_text_tokens(message.content or "")
+    content_tokens = estimate_text_tokens(message.content or "")
+    metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
+
+    if message.role == "assistant":
+        tool_calls = metadata.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            tool_tokens = 0
+            for item in tool_calls:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if isinstance(name, str):
+                    tool_tokens += estimate_text_tokens(name)
+                arguments = item.get("arguments")
+                if arguments is not None:
+                    tool_tokens += estimate_text_tokens(str(arguments))
+            # Preserve structural assistant/tool-call turns even when assistant text is empty.
+            if tool_tokens <= 0:
+                tool_tokens = 1
+            return max(content_tokens, tool_tokens)
+
+    if message.role in {"tool", "tool_result"}:
+        # Preserve structural tool-result rows even when content is empty.
+        if content_tokens <= 0 and (message.tool_call_id or message.tool_name):
+            return 1
+
+    return content_tokens
 
 
 def estimate_db_messages_tokens(messages: list[Message]) -> int:
@@ -121,4 +147,3 @@ def extract_runtime_context_metrics(
         estimated_tokens=raw_tokens,
         context_budget=budget,
     )
-

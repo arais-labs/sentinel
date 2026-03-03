@@ -30,9 +30,39 @@ const ICON_MAP = {
   GitBranch, CheckCircle, Lock, MessageCircle, MessageSquare, FileCode, Box,
 };
 
+const DEFAULT_ARAIOS_APP_URL = '/araios/';
+const DEFAULT_SENTINEL_APP_URL = '/sentinel/';
+
+function resolveAppUrl(value, fallback) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (!trimmed) {
+    return fallback;
+  }
+  if (trimmed.startsWith('/')) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+  } catch {
+    // Fall through to fallback.
+  }
+  return fallback;
+}
+
 const APP_SWITCH_ITEMS = [
-  { id: 'araios', label: 'araiOS', href: '/araios/' },
-  { id: 'sentinel', label: 'Sentinel', href: '/sentinel/' },
+  {
+    id: 'araios',
+    label: 'araiOS',
+    href: resolveAppUrl(import.meta.env.APP_ARAIOS_URL, DEFAULT_ARAIOS_APP_URL),
+  },
+  {
+    id: 'sentinel',
+    label: 'Sentinel',
+    href: resolveAppUrl(import.meta.env.APP_SENTINEL_URL, DEFAULT_SENTINEL_APP_URL),
+  },
 ];
 
 function NavIcon({ name, size = 18, className }) {

@@ -46,6 +46,87 @@ export interface SessionRuntimeStatus {
   actions: SessionRuntimeAction[];
 }
 
+export interface SessionRuntimeFileEntry {
+  name: string;
+  path: string;
+  kind: 'file' | 'directory';
+  size_bytes: number | null;
+  modified_at: string | null;
+}
+
+export interface SessionRuntimeFilesResponse {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  path: string;
+  parent_path: string | null;
+  entries: SessionRuntimeFileEntry[];
+  truncated: boolean;
+}
+
+export interface SessionRuntimeFilePreviewResponse {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  path: string;
+  name: string;
+  size_bytes: number;
+  modified_at: string | null;
+  content: string;
+  truncated: boolean;
+  max_bytes: number;
+}
+
+export interface SessionRuntimeGitRoot {
+  root_path: string;
+  branch: string | null;
+  detached_head: boolean;
+}
+
+export interface SessionRuntimeGitRootsResponse {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  path: string;
+  roots: SessionRuntimeGitRoot[];
+}
+
+export interface SessionRuntimeGitDiffResponse {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  path: string;
+  git_root: string;
+  branch: string | null;
+  detached_head: boolean;
+  base_ref: string;
+  staged: boolean;
+  context_lines: number;
+  diff: string;
+  truncated: boolean;
+  max_bytes: number;
+}
+
+export interface SessionRuntimeGitChangedFile {
+  path: string;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+}
+
+export interface SessionRuntimeGitChangedFilesResponse {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  path: string;
+  git_root: string;
+  branch: string | null;
+  detached_head: boolean;
+  entries: SessionRuntimeGitChangedFile[];
+  truncated: boolean;
+}
+
 export interface SessionRuntimeCleanupResponse {
   session_id: string;
   runtime_removed: boolean;
@@ -218,6 +299,46 @@ export interface ToolDetail extends ToolSummary {
 export interface ToolExecutionResponse {
   result: Record<string, unknown>;
   duration_ms: number;
+}
+
+export interface GitAccount {
+  id: string;
+  name: string;
+  host: string;
+  scope_pattern: string;
+  author_name: string;
+  author_email: string;
+  has_read_token: boolean;
+  has_write_token: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface GitAccountListResponse {
+  items: GitAccount[];
+  total: number;
+}
+
+export interface GitPushApproval {
+  id: string;
+  account_id: string;
+  session_id: string | null;
+  repo_url: string;
+  remote_name: string;
+  command: string;
+  status: 'pending' | 'approved' | 'rejected' | 'timed_out' | 'cancelled' | string;
+  requested_by: string | null;
+  decision_by: string | null;
+  decision_note: string | null;
+  expires_at: string;
+  resolved_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface GitPushApprovalListResponse {
+  items: GitPushApproval[];
+  total: number;
 }
 
 export interface PlaywrightLiveView {
