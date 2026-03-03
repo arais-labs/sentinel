@@ -8,7 +8,7 @@ import SettingsModal from './components/SettingsModal';
 import AuthGate from './components/AuthGate';
 
 // System modules with custom pages
-import GithubTasksPage from './pages/GithubTasksPage';
+import TasksPage from './pages/TasksPage';
 import ApprovalsPage from './pages/ApprovalsPage';
 import PermissionsPage from './pages/PermissionsPage';
 import CoordinationPage from './pages/CoordinationPage';
@@ -16,7 +16,7 @@ import DocumentsPage from './pages/DocumentsPage';
 
 // System modules that always appear in nav (fixed order)
 const SYSTEM_MODULES = [
-  { id: 'github-tasks', label: 'GitHub Tasks', icon: 'GitBranch',    isSystem: true },
+  { id: 'tasks',        label: 'Tasks',        icon: 'GitBranch',    isSystem: true },
   { id: 'approvals',    label: 'Approvals',    icon: 'CheckCircle',  isSystem: true },
   { id: 'permissions',  label: 'Permissions',  icon: 'Lock',         isSystem: true },
   { id: 'coordination', label: 'Coordination', icon: 'MessageCircle',isSystem: true },
@@ -72,10 +72,10 @@ function App() {
         if (prev && valid.includes(prev)) return prev;
         const saved = localStorage.getItem(LS_KEY);
         if (saved && valid.includes(saved)) return saved;
-        return mods[0]?.id || 'github-tasks';
+        return mods[0]?.id || 'tasks';
       });
     } catch {
-      setActiveModule(prev => prev || 'github-tasks');
+      setActiveModule(prev => prev || 'tasks');
     }
   }, []);
 
@@ -124,7 +124,7 @@ function App() {
   const renderPage = () => {
     // System modules with custom pages
     switch (activeModule) {
-      case 'github-tasks': return <GithubTasksPage {...pageProps} />;
+      case 'tasks':        return <TasksPage {...pageProps} />;
       case 'approvals':    return <ApprovalsPage {...pageProps} onApprovalResolved={loadModules} />;
       case 'permissions':  return <PermissionsPage {...pageProps} />;
       case 'coordination': return <CoordinationPage {...pageProps} />;

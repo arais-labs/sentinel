@@ -474,7 +474,7 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken, autoFilled, co
               </button>
             </div>
             <p className="text-[10px] text-[color:var(--text-muted)]">
-              Use the long-lived <span className="font-bold text-[color:var(--text-primary)]">agent API key</span>, not an admin key.
+              Use the long-lived <span className="font-bold text-[color:var(--text-primary)]">agent API key</span>.
               Sentinel stores it securely in your workspace and the <span className="font-mono">araios_api</span> tool handles token exchange automatically.
             </p>
           </div>

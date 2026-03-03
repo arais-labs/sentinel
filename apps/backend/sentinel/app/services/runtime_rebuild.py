@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.config import settings
+from app.database import AsyncSessionLocal
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
 from app.services.llm.factory import build_tier_provider_from_settings
 
@@ -30,7 +31,7 @@ class RuntimeRebuildService:
             available_tools=available_tools,
             memory_search_service=memory_search_service,
         )
-        tool_adapter = ToolAdapter(tool_registry, tool_executor)
+        tool_adapter = ToolAdapter(tool_registry, tool_executor, session_factory=AsyncSessionLocal)
         app_state.agent_loop = AgentLoop(provider, context_builder, tool_adapter)
 
         bridge = getattr(app_state, "telegram_bridge", None)

@@ -109,6 +109,7 @@ class ToolResultContent:
     content: str = ""
     is_error: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    tool_arguments: dict[str, Any] | None = None
 
 
 AgentMessage: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage

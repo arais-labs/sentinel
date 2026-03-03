@@ -116,6 +116,7 @@ def require_permission(action: str):
 
             resource_id = (
                 request.path_params.get("id")
+                or request.path_params.get("name")
                 or request.path_params.get("slug")
                 or request.path_params.get(
                     next((k for k in request.path_params if k.endswith("_id")), ""), None

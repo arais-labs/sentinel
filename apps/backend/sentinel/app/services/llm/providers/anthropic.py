@@ -192,6 +192,9 @@ class AnthropicProvider(LLMProvider):
                     except json.JSONDecodeError:
                         continue
                     for parsed in _parse_anthropic_stream_event(event):
+                        if parsed.type == "error":
+                            detail = str(parsed.error or "Provider stream error")
+                            raise RuntimeError(f"Anthropic stream sse_error: {detail}")
                         yield parsed
 
     def _headers(self, *, thinking: bool = False) -> dict[str, str]:

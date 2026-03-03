@@ -1,5 +1,6 @@
 from app.models.audit import AuditLog
 from app.models.base import Base
+from app.models.git import GitAccount, GitPushApproval
 from app.models.memory import Memory, SessionSummary
 from app.models.session_bindings import SessionBinding
 from app.models.sessions import Message, Session
@@ -11,6 +12,8 @@ from app.models.triggers import Trigger, TriggerLog
 __all__ = [
     "AuditLog",
     "Base",
+    "GitAccount",
+    "GitPushApproval",
     "Memory",
     "Message",
     "RevokedToken",

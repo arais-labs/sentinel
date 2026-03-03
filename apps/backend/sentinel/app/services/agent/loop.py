@@ -355,15 +355,30 @@ class AgentLoop:
                         except asyncio.QueueEmpty:
                             break
                 try:
+                    streamed_tool_call_ids: set[str] = set()
                     if stream:
                         partial_out: list[AssistantMessage] = []
+                        event_sink = on_event
+                        if on_event is not None:
+                            async def _stream_event_sink(event: AgentEvent) -> None:
+                                tool_call = event.tool_call
+                                if (
+                                    event.type == "toolcall_start"
+                                    and tool_call is not None
+                                    and isinstance(tool_call.id, str)
+                                    and tool_call.id
+                                ):
+                                    streamed_tool_call_ids.add(tool_call.id)
+                                await on_event(event)
+
+                            event_sink = _stream_event_sink
                         try:
                             response = await self._stream_response(
                                 messages,
                                 model=model,
                                 tools=tools,
                                 temperature=temperature,
-                                on_event=on_event,
+                                on_event=event_sink,
                                 partial_out=partial_out,
                             )
                         except asyncio.CancelledError:
@@ -442,9 +457,23 @@ class AgentLoop:
                     [tc.name for tc in tool_calls],
                     session_id,
                 )
+                tool_arguments_by_call_id = {
+                    call.id: call.arguments
+                    for call in tool_calls
+                    if isinstance(call.id, str) and call.id
+                }
+
+                # Persist assistant tool-call rows immediately so reconnect/load can
+                # reconstruct in-flight tool executions while they are still running.
+                await _persist_new_messages()
 
                 for tool_call in tool_calls:
-                    if on_event is not None and not stream:
+                    should_emit_start = (
+                        not stream
+                        or not tool_call.id
+                        or tool_call.id not in streamed_tool_call_ids
+                    )
+                    if on_event is not None and should_emit_start:
                         await on_event(AgentEvent(type="toolcall_start", tool_call=tool_call))
 
                 tool_results = await self.tool_adapter.execute_tool_calls(
@@ -492,6 +521,14 @@ class AgentLoop:
                                     content=tool_result.content,
                                     is_error=tool_result.is_error,
                                     metadata=self._stream_safe_tool_metadata(tool_result.metadata),
+                                    tool_arguments=(
+                                        tool_arguments_by_call_id.get(tool_result.tool_call_id)
+                                        if isinstance(
+                                            tool_arguments_by_call_id.get(tool_result.tool_call_id),
+                                            dict,
+                                        )
+                                        else None
+                                    ),
                                 ),
                             )
                         )
@@ -720,7 +757,8 @@ class AgentLoop:
             elif event.type == "error":
                 stop_reason = "error"
             elif event.type == "done":
-                stop_reason = event.stop_reason or stop_reason
+                if stop_reason != "error":
+                    stop_reason = event.stop_reason or stop_reason
 
         # --- DEBUG: log what we collected from stream ---
         logger.debug(
@@ -878,7 +916,7 @@ class AgentLoop:
                     {
                         "id": block.id,
                         "name": block.name,
-                        "arguments": block.arguments,
+                        "arguments": self._sanitize_tool_call_arguments(block.arguments),
                         "thought_signature": block.thought_signature,
                     }
                     for block in message.content
@@ -909,10 +947,15 @@ class AgentLoop:
                 metadata = {"is_error": message.is_error}
                 if message.metadata:
                     metadata.update(message.metadata)
+                stored_content, truncation_meta = self._truncate_tool_result_for_storage(
+                    message.content or ""
+                )
+                if truncation_meta:
+                    metadata.update(truncation_meta)
                 record = Message(
                     session_id=session_id,
                     role="tool_result",
-                    content=message.content,
+                    content=stored_content,
                     metadata_json=metadata,
                     tool_call_id=message.tool_call_id or None,
                     tool_name=message.tool_name or None,
@@ -1071,6 +1114,33 @@ class AgentLoop:
         """Extract concatenated text blocks from an assistant message."""
         parts = [block.text for block in message.content if isinstance(block, TextContent) and block.text]
         return "\n".join(parts)
+
+    def _sanitize_tool_call_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Keep tool-call args compact in persisted assistant metadata."""
+        max_chars = max(200, int(settings.stored_tool_call_args_max_chars))
+        try:
+            serialized = json.dumps(arguments, ensure_ascii=False)
+        except Exception:
+            serialized = str(arguments)
+        if len(serialized) <= max_chars:
+            return arguments
+        return {
+            "_truncated": True,
+            "preview": serialized[:max_chars],
+            "original_chars": len(serialized),
+        }
+
+    def _truncate_tool_result_for_storage(self, content: str) -> tuple[str, dict[str, Any]]:
+        """Cap stored tool-result payload size while preserving debug metadata."""
+        max_chars = max(200, int(settings.stored_tool_result_max_chars))
+        if len(content) <= max_chars:
+            return content, {}
+        truncated = content[:max_chars] + f"\n...[TRUNCATED_FOR_STORAGE - {len(content)} chars]"
+        return truncated, {
+            "storage_truncated": True,
+            "original_chars": len(content),
+            "stored_chars": len(truncated),
+        }
 
     @staticmethod
     def _user_text(content: str | list[TextContent | ImageContent]) -> str:
