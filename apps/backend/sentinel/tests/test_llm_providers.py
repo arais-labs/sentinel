@@ -79,11 +79,19 @@ class _FakeStreamResponse:
 
 
 class _FakeAsyncClient:
-    def __init__(self, *, post_response: _FakeResponse | None = None, stream_response: _FakeStreamResponse | None = None):
+    def __init__(
+        self,
+        *,
+        post_response: _FakeResponse | None = None,
+        stream_response: _FakeStreamResponse | None = None,
+        get_response: _FakeResponse | None = None,
+    ):
         self.post_response = post_response or _FakeResponse({})
         self.stream_response = stream_response or _FakeStreamResponse([])
+        self.get_response = get_response or _FakeResponse({})
         self.post_calls: list[dict] = []
         self.stream_calls: list[dict] = []
+        self.get_calls: list[dict] = []
 
     async def __aenter__(self):
         return self
@@ -94,6 +102,16 @@ class _FakeAsyncClient:
     async def post(self, url: str, *, json: dict, headers: dict[str, str]):
         self.post_calls.append({"url": url, "json": json, "headers": headers})
         return self.post_response
+
+    async def get(
+        self,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ):
+        self.get_calls.append({"url": url, "params": params or {}, "headers": headers or {}})
+        return self.get_response
 
     def stream(self, method: str, url: str, *, json: dict, headers: dict[str, str]):
         self.stream_calls.append(
@@ -1506,6 +1524,58 @@ def test_codex_formats_user_image_blocks():
     assert content[1]["image_url"] == "data:image/png;base64,GGGHHH"
 
 
+def test_codex_stream_emits_text_from_output_item_done_when_no_delta():
+    stream_lines = [
+        'data: {"type":"response.created"}',
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","id":"msg_1","content":[{"type":"output_text","text":"Hello from done."}]}}',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[]}}',
+    ]
+    fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
+    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="Say hello")],
+            model="gpt-5.3-codex-spark",
+        ):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+    assert [event.delta for event in events if event.type == "text_delta"] == ["Hello from done."]
+    assert any(event.type == "text_start" for event in events)
+    assert any(event.type == "text_end" for event in events)
+    assert events[-1].type == "done"
+    assert events[-1].stop_reason == "stop"
+
+
+def test_codex_stream_does_not_duplicate_text_when_delta_and_output_item_done_both_present():
+    stream_lines = [
+        'data: {"type":"response.created"}',
+        'data: {"type":"response.output_text.delta","content_index":0,"delta":"Hello"}',
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","id":"msg_2","content":[{"type":"output_text","text":"Hello world"}]}}',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[]}}',
+    ]
+    fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
+    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="Say hello")],
+            model="gpt-5.3-codex-spark",
+        ):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+    assert [event.delta for event in events if event.type == "text_delta"] == ["Hello"]
+    assert len([event for event in events if event.type == "text_end"]) == 1
+    assert events[-1].type == "done"
+    assert events[-1].stop_reason == "stop"
+
+
 def test_codex_stream_emits_tool_arguments_from_function_call_done():
     stream_lines = [
         'data: {"type":"response.created"}',
@@ -1587,3 +1657,117 @@ def test_codex_stream_emits_tool_arguments_when_present_on_output_item_added():
     assert deltas == ['{"command":"ls"}']
     assert events[-1].type == "done"
     assert events[-1].stop_reason == "tool_use"
+
+
+def test_codex_stream_payload_includes_parity_fields_and_prompt_cache_key():
+    stream_lines = [
+        'data: {"type":"response.created"}',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[]}}',
+    ]
+    fake_client = _FakeAsyncClient(
+        stream_response=_FakeStreamResponse(stream_lines),
+        get_response=_FakeResponse(
+            {
+                "models": [
+                    {"slug": "gpt-5.3-codex", "supports_parallel_tool_calls": False},
+                ]
+            }
+        ),
+    )
+    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    tools = [ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})]
+    rc = ReasoningConfig(reasoning_effort="high")
+
+    async def _run_once():
+        async for _ in provider.stream(
+            [UserMessage(content="Run command")],
+            model="gpt-5.3-codex",
+            tools=tools,
+            reasoning_config=rc,
+            tool_choice="required",
+        ):
+            pass
+
+    _run(_run_once())
+    _run(_run_once())
+
+    first_payload = fake_client.stream_calls[0]["json"]
+    second_payload = fake_client.stream_calls[1]["json"]
+
+    assert first_payload["tool_choice"] == "required"
+    assert first_payload["parallel_tool_calls"] is False
+    assert "temperature" not in first_payload
+    assert "max_output_tokens" not in first_payload
+    assert "You are Codex, a coding agent running in Sentinel." in first_payload["instructions"]
+    assert "Keep acting until the task is complete." in first_payload["instructions"]
+    assert first_payload["reasoning"] == {"effort": "high"}
+    assert first_payload["include"] == ["reasoning.encrypted_content"]
+    assert isinstance(first_payload.get("prompt_cache_key"), str)
+    assert first_payload["prompt_cache_key"] == second_payload["prompt_cache_key"]
+
+
+def test_codex_stream_raises_on_sse_error_event():
+    stream_lines = [
+        "event: error",
+        'data: {"error":{"message":"Overloaded"}}',
+    ]
+    fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
+    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="Run command")],
+            model="gpt-5.3-codex",
+            tools=[ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})],
+        ):
+            events.append(event)
+        return events
+
+    with pytest.raises(RuntimeError, match="Overloaded"):
+        _run(_collect())
+
+
+def test_codex_stream_keeps_requested_model_when_catalog_does_not_include_it():
+    stream_lines = [
+        'data: {"type":"response.created"}',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[]}}',
+    ]
+    fake_client = _FakeAsyncClient(
+        stream_response=_FakeStreamResponse(stream_lines),
+        get_response=_FakeResponse(
+            {
+                "models": [
+                    {"slug": "gpt-5.2-codex", "supports_parallel_tool_calls": False},
+                    {"slug": "gpt-5.1-codex", "supports_parallel_tool_calls": False},
+                ]
+            }
+        ),
+    )
+    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="Run command")],
+            model="gpt-5.3-codex",
+            tools=[ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})],
+        ):
+            events.append(event)
+        return events
+
+    _run(_collect())
+    payload = fake_client.stream_calls[0]["json"]
+    assert payload["model"] == "gpt-5.3-codex"
+    assert payload["parallel_tool_calls"] is False
+
+
+def test_codex_execution_prelude_not_duplicated_when_already_present():
+    provider = CodexProvider(oauth_token="test-token")
+    instructions = (
+        "You are Codex, a coding agent running in Sentinel.\n\n"
+        "Keep acting until the task is complete.\n\n"
+        "User-specific system guidance."
+    )
+    rendered = provider._with_codex_execution_prelude(instructions)  # type: ignore[attr-defined]
+    assert rendered == instructions
