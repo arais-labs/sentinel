@@ -28,6 +28,8 @@ from app.services.llm.ids import TierName
 from app.services.session_runtime import (
     cleanup_session_runtime,
     get_session_runtime_snapshot,
+    list_runtime_workspace_entries,
+    read_runtime_workspace_file_preview,
     stop_all_detached_runtime_jobs,
 )
 from app.services.sessions.errors import (
@@ -36,6 +38,8 @@ from app.services.sessions.errors import (
     MainSessionDeletionError,
     MainSessionTargetInvalidError,
     MessageNotFoundError,
+    RuntimePathInvalidError,
+    RuntimePathNotFoundError,
     SessionNotFoundError,
 )
 
@@ -224,6 +228,52 @@ class SessionService:
     ) -> dict[str, Any]:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
         return get_session_runtime_snapshot(session.id, action_limit=action_limit)
+
+    async def list_runtime_files(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return list_runtime_workspace_entries(
+                session.id,
+                path=path,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
+        except NotADirectoryError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime path is not a directory") from exc
+
+    async def get_runtime_file_preview(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+        max_bytes: int,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return read_runtime_workspace_file_preview(
+                session.id,
+                path=path,
+                max_bytes=max_bytes,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
+        except IsADirectoryError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime path is a directory") from exc
 
     async def get_context_usage(
         self,

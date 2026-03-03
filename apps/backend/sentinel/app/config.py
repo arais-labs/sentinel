@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     tier_normal_max_tokens: int = 8192
     tier_normal_temperature: float = 0.7
     tier_normal_anthropic_thinking_budget: int = 5000
-    tier_normal_openai_reasoning_effort: str = ""
+    tier_normal_openai_reasoning_effort: str = "medium"
     tier_normal_gemini_thinking_budget: int = 0
 
     # --- Tier: Hard ---

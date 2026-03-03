@@ -64,6 +64,37 @@ class SessionRuntimeResponse(BaseModel):
     actions: list[SessionRuntimeActionResponse] = Field(default_factory=list)
 
 
+class SessionRuntimeFileEntryResponse(BaseModel):
+    name: str
+    path: str
+    kind: Literal["file", "directory"]
+    size_bytes: int | None = None
+    modified_at: datetime | None = None
+
+
+class SessionRuntimeFilesResponse(BaseModel):
+    session_id: UUID
+    runtime_exists: bool
+    workspace_exists: bool
+    path: str
+    parent_path: str | None = None
+    entries: list[SessionRuntimeFileEntryResponse] = Field(default_factory=list)
+    truncated: bool = False
+
+
+class SessionRuntimeFilePreviewResponse(BaseModel):
+    session_id: UUID
+    runtime_exists: bool
+    workspace_exists: bool
+    path: str
+    name: str
+    size_bytes: int
+    modified_at: datetime | None = None
+    content: str
+    truncated: bool = False
+    max_bytes: int
+
+
 class SessionRuntimeCleanupResponse(BaseModel):
     session_id: UUID
     runtime_removed: bool

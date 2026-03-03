@@ -19,6 +19,8 @@ from app.schemas.sessions import (
     SessionListResponse,
     SessionContextUsageResponse,
     SessionRuntimeCleanupResponse,
+    SessionRuntimeFilePreviewResponse,
+    SessionRuntimeFilesResponse,
     SessionRuntimeResponse,
     SessionResponse,
 )
@@ -29,6 +31,8 @@ from app.services.sessions import (
     MainSessionDeletionError,
     MainSessionTargetInvalidError,
     MessageNotFoundError,
+    RuntimePathInvalidError,
+    RuntimePathNotFoundError,
     SessionNotFoundError,
     SessionService,
 )
@@ -76,6 +80,16 @@ def _raise_http_for_session_error(exc: Exception) -> None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="content or attachments required",
+        ) from exc
+    if isinstance(exc, RuntimePathInvalidError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc) or "Invalid runtime path",
+        ) from exc
+    if isinstance(exc, RuntimePathNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc) or "Runtime path not found",
         ) from exc
     raise exc
 
@@ -207,6 +221,54 @@ async def get_session_runtime(
         _raise_http_for_session_error(exc)
         raise
     return SessionRuntimeResponse(**snapshot)
+
+
+@router.get("/{id}/runtime/files", response_model=SessionRuntimeFilesResponse)
+async def list_session_runtime_files(
+    id: UUID,
+    request: Request,
+    path: str = Query(default=""),
+    limit: int = Query(default=400, ge=1, le=2000),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeFilesResponse:
+    service = _resolve_session_service(request)
+    try:
+        payload = await service.list_runtime_files(
+            db,
+            session_id=id,
+            user_id=user.sub,
+            path=path,
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    return SessionRuntimeFilesResponse(**payload)
+
+
+@router.get("/{id}/runtime/file", response_model=SessionRuntimeFilePreviewResponse)
+async def get_session_runtime_file(
+    id: UUID,
+    request: Request,
+    path: str = Query(..., min_length=1),
+    max_bytes: int = Query(default=32000, ge=256, le=200000),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeFilePreviewResponse:
+    service = _resolve_session_service(request)
+    try:
+        payload = await service.get_runtime_file_preview(
+            db,
+            session_id=id,
+            user_id=user.sub,
+            path=path,
+            max_bytes=max_bytes,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    return SessionRuntimeFilePreviewResponse(**payload)
 
 
 @router.get("/{id}/context-usage", response_model=SessionContextUsageResponse)
