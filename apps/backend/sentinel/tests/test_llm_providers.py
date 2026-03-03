@@ -1504,3 +1504,86 @@ def test_codex_formats_user_image_blocks():
     assert content[0]["type"] == "input_text"
     assert content[1]["type"] == "input_image"
     assert content[1]["image_url"] == "data:image/png;base64,GGGHHH"
+
+
+def test_codex_stream_emits_tool_arguments_from_function_call_done():
+    stream_lines = [
+        'data: {"type":"response.created"}',
+        'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime_exec","arguments":""}}',
+        'data: {"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_1","arguments":"{\\"command\\":\\"echo hello\\"}"}',
+        'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime_exec","arguments":"{\\"command\\":\\"echo hello\\"}"}}',
+        'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
+    ]
+    fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
+    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="Run command")],
+            model="gpt-5.3-codex-spark",
+            tools=[ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})],
+        ):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+    deltas = [event.delta for event in events if event.type == "toolcall_delta"]
+    assert deltas == ['{"command":"echo hello"}']
+    assert events[-1].type == "done"
+    assert events[-1].stop_reason == "tool_use"
+
+
+def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta():
+    stream_lines = [
+        'data: {"type":"response.created"}',
+        'data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime_exec","arguments":""}}',
+        'data: {"type":"response.function_call_arguments.done","output_index":2,"item_id":"fc_2"}',
+        'data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime_exec","arguments":"{\\"command\\":\\"pwd\\"}"}}',
+        'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
+    ]
+    fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
+    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="Run command")],
+            model="gpt-5.3-codex-spark",
+            tools=[ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})],
+        ):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+    deltas = [event.delta for event in events if event.type == "toolcall_delta"]
+    assert deltas == ['{"command":"pwd"}']
+    assert events[-1].type == "done"
+    assert events[-1].stop_reason == "tool_use"
+
+
+def test_codex_stream_emits_tool_arguments_when_present_on_output_item_added():
+    stream_lines = [
+        'data: {"type":"response.created"}',
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime_exec","arguments":"{\\"command\\":\\"ls\\"}"}}',
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime_exec","arguments":"{\\"command\\":\\"ls\\"}"}}',
+        'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
+    ]
+    fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
+    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="Run command")],
+            model="gpt-5.3-codex-spark",
+            tools=[ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})],
+        ):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+    deltas = [event.delta for event in events if event.type == "toolcall_delta"]
+    assert deltas == ['{"command":"ls"}']
+    assert events[-1].type == "done"
+    assert events[-1].stop_reason == "tool_use"
