@@ -46,6 +46,37 @@ export interface SessionRuntimeStatus {
   actions: SessionRuntimeAction[];
 }
 
+export interface SessionRuntimeFileEntry {
+  name: string;
+  path: string;
+  kind: 'file' | 'directory';
+  size_bytes: number | null;
+  modified_at: string | null;
+}
+
+export interface SessionRuntimeFilesResponse {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  path: string;
+  parent_path: string | null;
+  entries: SessionRuntimeFileEntry[];
+  truncated: boolean;
+}
+
+export interface SessionRuntimeFilePreviewResponse {
+  session_id: string;
+  runtime_exists: boolean;
+  workspace_exists: boolean;
+  path: string;
+  name: string;
+  size_bytes: number;
+  modified_at: string | null;
+  content: string;
+  truncated: boolean;
+  max_bytes: number;
+}
+
 export interface SessionRuntimeCleanupResponse {
   session_id: string;
   runtime_removed: boolean;

@@ -30,6 +30,10 @@ _RUNTIME_ACTIONS_FILENAME = ".runtime_actions.jsonl"
 _RUNTIME_JOBS_FILENAME = ".runtime_jobs.json"
 _RUNTIME_LOGS_DIRNAME = "logs"
 _DEFAULT_RUNTIME_ACTION_LIMIT = 40
+_DEFAULT_RUNTIME_FILE_LIMIT = 400
+_MAX_RUNTIME_FILE_LIMIT = 2_000
+_DEFAULT_RUNTIME_FILE_PREVIEW_BYTES = 32_000
+_MAX_RUNTIME_FILE_PREVIEW_BYTES = 200_000
 _runtime_meta_lock = asyncio.Lock()
 
 
@@ -161,6 +165,97 @@ def get_session_runtime_snapshot(
             root / _RUNTIME_ACTIONS_FILENAME,
             limit=_normalize_action_limit(action_limit),
         ),
+    }
+
+
+def list_runtime_workspace_entries(
+    session_id: UUID | str,
+    *,
+    path: str = "",
+    limit: int = _DEFAULT_RUNTIME_FILE_LIMIT,
+) -> dict[str, Any]:
+    session_key = str(session_id)
+    root = runtime_root_dir(session_key)
+    workspace = runtime_workspace_dir(session_key).resolve()
+    normalized_path = _normalize_runtime_relative_path(path)
+    resolved_path = _resolve_workspace_child_path(workspace, normalized_path)
+    if not resolved_path.exists():
+        raise FileNotFoundError(normalized_path or ".")
+    if not resolved_path.is_dir():
+        raise NotADirectoryError(normalized_path or ".")
+
+    normalized_limit = _normalize_file_limit(limit)
+    entries: list[dict[str, Any]] = []
+    truncated = False
+    children = sorted(
+        resolved_path.iterdir(),
+        key=lambda item: (item.is_file(), item.name.lower()),
+    )
+    for index, child in enumerate(children):
+        if index >= normalized_limit:
+            truncated = True
+            break
+        entry_path = child.relative_to(workspace).as_posix()
+        if entry_path == ".":
+            entry_path = ""
+        stats = child.stat()
+        entries.append(
+            {
+                "name": child.name,
+                "path": entry_path,
+                "kind": "directory" if child.is_dir() else "file",
+                "size_bytes": None if child.is_dir() else int(stats.st_size),
+                "modified_at": datetime.fromtimestamp(stats.st_mtime, tz=UTC).isoformat(),
+            }
+        )
+
+    parent_path = _runtime_parent_path(normalized_path)
+    return {
+        "session_id": session_key,
+        "runtime_exists": root.exists(),
+        "workspace_exists": workspace.exists(),
+        "path": normalized_path,
+        "parent_path": parent_path,
+        "entries": entries,
+        "truncated": truncated,
+    }
+
+
+def read_runtime_workspace_file_preview(
+    session_id: UUID | str,
+    *,
+    path: str,
+    max_bytes: int = _DEFAULT_RUNTIME_FILE_PREVIEW_BYTES,
+) -> dict[str, Any]:
+    session_key = str(session_id)
+    root = runtime_root_dir(session_key)
+    workspace = runtime_workspace_dir(session_key).resolve()
+    normalized_path = _normalize_runtime_relative_path(path)
+    if not normalized_path:
+        raise IsADirectoryError("workspace root")
+    resolved_path = _resolve_workspace_child_path(workspace, normalized_path)
+    if not resolved_path.exists():
+        raise FileNotFoundError(normalized_path)
+    if not resolved_path.is_file():
+        raise IsADirectoryError(normalized_path)
+
+    normalized_max_bytes = _normalize_file_preview_bytes(max_bytes)
+    raw = resolved_path.read_bytes()
+    truncated = len(raw) > normalized_max_bytes
+    snippet = raw[:normalized_max_bytes]
+    content = snippet.decode("utf-8", errors="replace")
+    stats = resolved_path.stat()
+    return {
+        "session_id": session_key,
+        "runtime_exists": root.exists(),
+        "workspace_exists": workspace.exists(),
+        "path": normalized_path,
+        "name": resolved_path.name,
+        "size_bytes": int(stats.st_size),
+        "modified_at": datetime.fromtimestamp(stats.st_mtime, tz=UTC).isoformat(),
+        "content": content,
+        "truncated": truncated,
+        "max_bytes": normalized_max_bytes,
     }
 
 
@@ -612,6 +707,43 @@ def _normalize_action_limit(limit: int) -> int:
     if not isinstance(limit, int):
         return _DEFAULT_RUNTIME_ACTION_LIMIT
     return max(1, min(limit, 200))
+
+
+def _normalize_file_limit(limit: int) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        return _DEFAULT_RUNTIME_FILE_LIMIT
+    return max(1, min(limit, _MAX_RUNTIME_FILE_LIMIT))
+
+
+def _normalize_file_preview_bytes(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return _DEFAULT_RUNTIME_FILE_PREVIEW_BYTES
+    return max(256, min(value, _MAX_RUNTIME_FILE_PREVIEW_BYTES))
+
+
+def _normalize_runtime_relative_path(path: str | None) -> str:
+    raw = (path or "").strip().replace("\\", "/")
+    if not raw or raw == ".":
+        return ""
+    parts = [part for part in raw.split("/") if part not in {"", "."}]
+    if any(part == ".." for part in parts):
+        raise ValueError("Path traversal is not allowed")
+    return "/".join(parts)
+
+
+def _resolve_workspace_child_path(workspace: Path, normalized_path: str) -> Path:
+    target = (workspace / normalized_path).resolve() if normalized_path else workspace.resolve()
+    workspace_resolved = workspace.resolve()
+    if target != workspace_resolved and workspace_resolved not in target.parents:
+        raise ValueError("Path must stay within runtime workspace")
+    return target
+
+
+def _runtime_parent_path(path: str) -> str | None:
+    if not path:
+        return None
+    parent = Path(path).parent.as_posix()
+    return "" if parent in {"", "."} else parent
 
 
 def _read_runtime_actions(path: Path, *, limit: int) -> list[dict[str, Any]]:
