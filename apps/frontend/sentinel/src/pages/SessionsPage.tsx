@@ -201,6 +201,22 @@ function gitPushCommandFromToolArgs(value: unknown): string | null {
   return command;
 }
 
+function parseToolArgumentsObject(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return isObjectRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function gitPushCommandFromSerializedArgs(raw: string): string | null {
+  const parsed = parseToolArgumentsObject(raw);
+  return parsed ? gitPushCommandFromToolArgs(parsed) : null;
+}
+
 function pendingApprovalIdFromMetadata(metadata: Record<string, unknown>): string | null {
   const approvalId = metadata.approval_id;
   if (typeof approvalId !== 'string') return null;
@@ -2575,31 +2591,67 @@ export function SessionsPage() {
         });
         break;
       case 'toolcall_end':
-        setStreaming((current) => {
-          if (!current.activeToolCalls.length) return current;
-          const nextActive = [...current.activeToolCalls];
-          const callId = String((event.tool_call as any)?.id ?? '');
-          const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
-          let targetIndex = -1;
-          if (callId) {
-            targetIndex = nextActive.findIndex((item) => item.id === callId);
+        {
+          const hydrationCandidates: Array<{ callId: string; contentIndex: number | null; command: string }> = [];
+          const eventCallId = String((event.tool_call as any)?.id ?? '');
+          const eventContentIndex = typeof event.content_index === 'number' ? event.content_index : null;
+          const eventPushCommand = gitPushCommandFromToolArgs((event.tool_call as any)?.arguments);
+          setStreaming((current) => {
+            if (!current.activeToolCalls.length) return current;
+            const nextActive = [...current.activeToolCalls];
+            let targetIndex = -1;
+            if (eventCallId) {
+              targetIndex = nextActive.findIndex((item) => item.id === eventCallId);
+            }
+            if (targetIndex < 0 && eventContentIndex !== null) {
+              targetIndex = nextActive.findIndex((item) => item.contentIndex === eventContentIndex);
+            }
+            if (targetIndex < 0) targetIndex = nextActive.length - 1;
+            const doneCall = nextActive[targetIndex];
+            nextActive.splice(targetIndex, 1);
+            const pushCommand = eventPushCommand ?? gitPushCommandFromSerializedArgs(doneCall.argumentsJson);
+            const isPendingGitPush = doneCall.name === 'git_exec' && Boolean(pushCommand);
+            const callApprovalId = pendingApprovalIdFromMetadata(doneCall.metadata);
+            const hydratedDoneCall: StreamingToolCall = isPendingGitPush
+              ? {
+                ...doneCall,
+                outputJson: doneCall.outputJson || '{"status":"pending","message":"Waiting for push approval..."}',
+                metadata: {
+                  ...doneCall.metadata,
+                  pending: true,
+                  git_push: true,
+                },
+              }
+              : doneCall;
+            const alreadyDone = current.completedToolCalls.some(
+              (item) => item.id === hydratedDoneCall.id && item.contentIndex === hydratedDoneCall.contentIndex,
+            );
+            if (isPendingGitPush && !callApprovalId && pushCommand) {
+              hydrationCandidates.push({
+                callId: hydratedDoneCall.id,
+                contentIndex: hydratedDoneCall.contentIndex,
+                command: pushCommand,
+              });
+            }
+            if (alreadyDone) {
+              return { ...current, activeToolCalls: nextActive };
+            }
+            return {
+              ...current,
+              activeToolCalls: nextActive,
+              completedToolCalls: [...current.completedToolCalls, { ...hydratedDoneCall, complete: true }],
+            };
+          });
+          const pendingHydration = hydrationCandidates[0];
+          if (pendingHydration) {
+            void hydrateGitPushApprovalForCall(
+              sessionId,
+              pendingHydration.callId,
+              pendingHydration.contentIndex,
+              pendingHydration.command,
+            );
           }
-          if (targetIndex < 0 && contentIndex !== null) {
-            targetIndex = nextActive.findIndex((item) => item.contentIndex === contentIndex);
-          }
-          if (targetIndex < 0) targetIndex = nextActive.length - 1;
-          const doneCall = nextActive[targetIndex];
-          nextActive.splice(targetIndex, 1);
-          const alreadyDone = current.completedToolCalls.some((item) => item.id === doneCall.id && item.contentIndex === doneCall.contentIndex);
-          if (alreadyDone) {
-            return { ...current, activeToolCalls: nextActive };
-          }
-          return {
-            ...current,
-            activeToolCalls: nextActive,
-            completedToolCalls: [...current.completedToolCalls, { ...doneCall, complete: true }],
-          };
-        });
+        }
         break;
       case 'tool_result':
         {
