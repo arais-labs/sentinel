@@ -28,7 +28,10 @@ from app.services.llm.ids import TierName
 from app.services.session_runtime import (
     cleanup_session_runtime,
     get_session_runtime_snapshot,
+    list_runtime_workspace_git_changed_files,
+    list_runtime_workspace_git_roots,
     list_runtime_workspace_entries,
+    read_runtime_workspace_git_diff,
     read_runtime_workspace_file_preview,
     stop_all_detached_runtime_jobs,
 )
@@ -274,6 +277,83 @@ class SessionService:
             raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
         except IsADirectoryError as exc:
             raise RuntimePathInvalidError(str(exc) or "Runtime path is a directory") from exc
+
+    async def list_runtime_git_roots(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return list_runtime_workspace_git_roots(
+                session.id,
+                path=path,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
+        except NotADirectoryError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime path is not a directory") from exc
+
+    async def get_runtime_git_diff(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+        base_ref: str,
+        staged: bool,
+        context_lines: int,
+        max_bytes: int,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return read_runtime_workspace_git_diff(
+                session.id,
+                path=path,
+                base_ref=base_ref,
+                staged=staged,
+                context_lines=context_lines,
+                max_bytes=max_bytes,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
+        except IsADirectoryError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime path is a directory") from exc
+        except RuntimeError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime git diff failed") from exc
+
+    async def get_runtime_git_changed_files(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return list_runtime_workspace_git_changed_files(
+                session.id,
+                path=path,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
+        except RuntimeError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime git status failed") from exc
 
     async def get_context_usage(
         self,

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +35,9 @@ _DEFAULT_RUNTIME_FILE_LIMIT = 400
 _MAX_RUNTIME_FILE_LIMIT = 2_000
 _DEFAULT_RUNTIME_FILE_PREVIEW_BYTES = 32_000
 _MAX_RUNTIME_FILE_PREVIEW_BYTES = 200_000
+_DEFAULT_RUNTIME_GIT_ROOT_LIMIT = 200
+_DEFAULT_RUNTIME_GIT_DIFF_BYTES = 120_000
+_MAX_RUNTIME_GIT_DIFF_BYTES = 500_000
 _runtime_meta_lock = asyncio.Lock()
 
 
@@ -256,6 +260,208 @@ def read_runtime_workspace_file_preview(
         "content": content,
         "truncated": truncated,
         "max_bytes": normalized_max_bytes,
+    }
+
+
+def list_runtime_workspace_git_roots(
+    session_id: UUID | str,
+    *,
+    path: str = "",
+    limit: int = _DEFAULT_RUNTIME_GIT_ROOT_LIMIT,
+) -> dict[str, Any]:
+    session_key = str(session_id)
+    root = runtime_root_dir(session_key)
+    workspace = runtime_workspace_dir(session_key).resolve()
+    normalized_path = _normalize_runtime_relative_path(path)
+    normalized_limit = _normalize_git_root_limit(limit)
+    roots: list[dict[str, Any]] = []
+
+    if not workspace.exists():
+        return {
+            "session_id": session_key,
+            "runtime_exists": root.exists(),
+            "workspace_exists": False,
+            "path": normalized_path,
+            "roots": roots,
+        }
+
+    if normalized_path:
+        resolved_path = _resolve_workspace_child_path(workspace, normalized_path)
+        if not resolved_path.exists():
+            raise FileNotFoundError(normalized_path)
+        probe_dir = resolved_path if resolved_path.is_dir() else resolved_path.parent
+        git_root = _resolve_git_root(probe_dir, workspace)
+        if git_root is not None:
+            roots.append(_build_git_root_payload(git_root, workspace))
+    else:
+        for repo_dir in _scan_workspace_git_roots(workspace, limit=normalized_limit):
+            payload = _build_git_root_payload(repo_dir, workspace)
+            if payload["root_path"] in {item["root_path"] for item in roots}:
+                continue
+            roots.append(payload)
+            if len(roots) >= normalized_limit:
+                break
+
+    return {
+        "session_id": session_key,
+        "runtime_exists": root.exists(),
+        "workspace_exists": workspace.exists(),
+        "path": normalized_path,
+        "roots": roots,
+    }
+
+
+def read_runtime_workspace_git_diff(
+    session_id: UUID | str,
+    *,
+    path: str,
+    base_ref: str = "HEAD",
+    staged: bool = False,
+    context_lines: int = 3,
+    max_bytes: int = _DEFAULT_RUNTIME_GIT_DIFF_BYTES,
+) -> dict[str, Any]:
+    session_key = str(session_id)
+    root = runtime_root_dir(session_key)
+    workspace = runtime_workspace_dir(session_key).resolve()
+    normalized_path = _normalize_runtime_relative_path(path)
+    if not normalized_path:
+        raise IsADirectoryError("workspace root")
+    resolved_path = _resolve_workspace_child_path(workspace, normalized_path)
+    if not resolved_path.exists():
+        raise FileNotFoundError(normalized_path)
+    if not resolved_path.is_file():
+        raise IsADirectoryError(normalized_path)
+
+    git_root = _resolve_git_root(resolved_path.parent, workspace)
+    if git_root is None:
+        raise ValueError("Path is not inside a git repository within runtime workspace")
+
+    root_payload = _build_git_root_payload(git_root, workspace)
+    file_rel_to_repo = resolved_path.relative_to(git_root).as_posix()
+    normalized_base_ref = (base_ref or "HEAD").strip() or "HEAD"
+    normalized_context_lines = _normalize_git_context_lines(context_lines)
+    normalized_max_bytes = _normalize_git_diff_bytes(max_bytes)
+
+    command = [
+        "git",
+        "-C",
+        str(git_root),
+        "diff",
+        f"--unified={normalized_context_lines}",
+    ]
+    if bool(staged):
+        command.append("--staged")
+    if normalized_base_ref:
+        command.append(normalized_base_ref)
+    command.extend(["--", file_rel_to_repo])
+
+    code, stdout, stderr = _run_command(command, timeout_seconds=8)
+    if code not in {0}:
+        detail = stderr.strip() or stdout.strip() or "git diff failed"
+        raise RuntimeError(detail)
+
+    diff_text, truncated = _truncate_utf8(stdout, max_bytes=normalized_max_bytes)
+    return {
+        "session_id": session_key,
+        "runtime_exists": root.exists(),
+        "workspace_exists": workspace.exists(),
+        "path": normalized_path,
+        "git_root": root_payload["root_path"],
+        "branch": root_payload["branch"],
+        "detached_head": root_payload["detached_head"],
+        "base_ref": normalized_base_ref,
+        "staged": bool(staged),
+        "context_lines": normalized_context_lines,
+        "diff": diff_text,
+        "truncated": truncated,
+        "max_bytes": normalized_max_bytes,
+    }
+
+
+def list_runtime_workspace_git_changed_files(
+    session_id: UUID | str,
+    *,
+    path: str = "",
+    limit: int = 200,
+) -> dict[str, Any]:
+    session_key = str(session_id)
+    root = runtime_root_dir(session_key)
+    workspace = runtime_workspace_dir(session_key).resolve()
+    normalized_path = _normalize_runtime_relative_path(path)
+    normalized_limit = _normalize_git_root_limit(limit)
+
+    if not workspace.exists():
+        return {
+            "session_id": session_key,
+            "runtime_exists": root.exists(),
+            "workspace_exists": False,
+            "path": normalized_path,
+            "git_root": "",
+            "branch": None,
+            "detached_head": False,
+            "entries": [],
+            "truncated": False,
+        }
+
+    probe = workspace
+    if normalized_path:
+        resolved_path = _resolve_workspace_child_path(workspace, normalized_path)
+        if not resolved_path.exists():
+            raise FileNotFoundError(normalized_path)
+        probe = resolved_path if resolved_path.is_dir() else resolved_path.parent
+    git_root = _resolve_git_root(probe, workspace)
+    if git_root is None:
+        raise ValueError("Path is not inside a git repository within runtime workspace")
+    root_payload = _build_git_root_payload(git_root, workspace)
+
+    code, stdout, stderr = _run_command(
+        ["git", "-C", str(git_root), "status", "--porcelain", "--untracked-files=all", "--", "."],
+        timeout_seconds=8,
+    )
+    if code != 0:
+        detail = stderr.strip() or stdout.strip() or "git status failed"
+        raise RuntimeError(detail)
+
+    entries: list[dict[str, Any]] = []
+    truncated = False
+    for index, line in enumerate(stdout.splitlines()):
+        if not line.strip():
+            continue
+        if index >= normalized_limit:
+            truncated = True
+            break
+        status_raw = line[:2] if len(line) >= 2 else line
+        file_part = line[3:] if len(line) >= 3 else ""
+        if " -> " in file_part:
+            file_part = file_part.split(" -> ", 1)[1]
+        file_path = file_part.strip()
+        if not file_path:
+            continue
+        root_prefix = (root_payload["root_path"] or "").strip().strip("/")
+        workspace_path = f"{root_prefix}/{file_path}" if root_prefix else file_path
+        staged = status_raw[0] != " "
+        unstaged = len(status_raw) > 1 and status_raw[1] != " "
+        untracked = status_raw == "??"
+        entries.append(
+            {
+                "path": workspace_path,
+                "status": status_raw.strip() or status_raw,
+                "staged": bool(staged),
+                "unstaged": bool(unstaged),
+                "untracked": bool(untracked),
+            }
+        )
+
+    return {
+        "session_id": session_key,
+        "runtime_exists": root.exists(),
+        "workspace_exists": workspace.exists(),
+        "path": normalized_path,
+        "git_root": root_payload["root_path"],
+        "branch": root_payload["branch"],
+        "detached_head": root_payload["detached_head"],
+        "entries": entries,
+        "truncated": truncated,
     }
 
 
@@ -721,6 +927,24 @@ def _normalize_file_preview_bytes(value: int) -> int:
     return max(256, min(value, _MAX_RUNTIME_FILE_PREVIEW_BYTES))
 
 
+def _normalize_git_root_limit(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return _DEFAULT_RUNTIME_GIT_ROOT_LIMIT
+    return max(1, min(value, 1_000))
+
+
+def _normalize_git_context_lines(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 3
+    return max(0, min(value, 20))
+
+
+def _normalize_git_diff_bytes(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return _DEFAULT_RUNTIME_GIT_DIFF_BYTES
+    return max(1_024, min(value, _MAX_RUNTIME_GIT_DIFF_BYTES))
+
+
 def _normalize_runtime_relative_path(path: str | None) -> str:
     raw = (path or "").strip().replace("\\", "/")
     if not raw or raw == ".":
@@ -737,6 +961,98 @@ def _resolve_workspace_child_path(workspace: Path, normalized_path: str) -> Path
     if target != workspace_resolved and workspace_resolved not in target.parents:
         raise ValueError("Path must stay within runtime workspace")
     return target
+
+
+def _scan_workspace_git_roots(workspace: Path, *, limit: int) -> list[Path]:
+    if not workspace.exists():
+        return []
+    results: list[Path] = []
+    skip_dirs = {
+        ".venv",
+        "node_modules",
+        "dist",
+        "build",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+    }
+    for current, dirs, _files in os.walk(workspace):
+        if len(results) >= limit:
+            break
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        if ".git" in dirs:
+            repo_dir = Path(current).resolve()
+            if _is_within_path(base=workspace, target=repo_dir):
+                results.append(repo_dir)
+            dirs.remove(".git")
+    return results
+
+
+def _resolve_git_root(start_dir: Path, workspace: Path) -> Path | None:
+    code, stdout, _stderr = _run_command(
+        ["git", "-C", str(start_dir), "rev-parse", "--show-toplevel"],
+        timeout_seconds=4,
+    )
+    if code != 0:
+        return None
+    value = stdout.strip()
+    if not value:
+        return None
+    resolved = Path(value).resolve()
+    if not _is_within_path(base=workspace, target=resolved):
+        return None
+    return resolved
+
+
+def _build_git_root_payload(git_root: Path, workspace: Path) -> dict[str, Any]:
+    root_rel = ""
+    try:
+        root_rel = git_root.relative_to(workspace).as_posix()
+    except ValueError:
+        root_rel = ""
+    code, stdout, _stderr = _run_command(
+        ["git", "-C", str(git_root), "rev-parse", "--abbrev-ref", "HEAD"],
+        timeout_seconds=4,
+    )
+    branch_raw = stdout.strip() if code == 0 else ""
+    detached_head = branch_raw == "HEAD" or not branch_raw
+    branch = None if detached_head else branch_raw
+    return {
+        "root_path": root_rel,
+        "branch": branch,
+        "detached_head": detached_head,
+    }
+
+
+def _is_within_path(*, base: Path, target: Path) -> bool:
+    base_resolved = base.resolve()
+    target_resolved = target.resolve()
+    return target_resolved == base_resolved or base_resolved in target_resolved.parents
+
+
+def _run_command(command: list[str], *, timeout_seconds: float) -> tuple[int, str, str]:
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 1, "", "command failed"
+    return completed.returncode, completed.stdout or "", completed.stderr or ""
+
+
+def _truncate_utf8(text: str, *, max_bytes: int) -> tuple[str, bool]:
+    raw = text.encode("utf-8", errors="replace")
+    if len(raw) <= max_bytes:
+        return text, False
+    clipped = raw[:max_bytes]
+    return clipped.decode("utf-8", errors="replace"), True
 
 
 def _runtime_parent_path(path: str) -> str | None:

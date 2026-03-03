@@ -39,7 +39,6 @@ import { SubAgentTaskModal } from '../components/SubAgentTaskModal';
 import { SpawnSubAgentModal } from '../components/SpawnSubAgentModal';
 import { JsonBlock } from '../components/ui/JsonBlock';
 import { Markdown } from '../components/ui/Markdown';
-import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { WS_BASE_URL } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
@@ -57,6 +56,10 @@ import type {
   SessionRuntimeFileEntry,
   SessionRuntimeFilePreviewResponse,
   SessionRuntimeFilesResponse,
+  SessionRuntimeGitChangedFilesResponse,
+  SessionRuntimeGitDiffResponse,
+  SessionRuntimeGitRoot,
+  SessionRuntimeGitRootsResponse,
   SessionListResponse,
   SessionRuntimeStatus,
   SubAgentTask,
@@ -94,6 +97,40 @@ function formatBytes(value: number | null | undefined): string {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function inferCodeLanguageFromName(name: string): string {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return 'text';
+  if (normalized.endsWith('.ts') || normalized.endsWith('.tsx')) return 'typescript';
+  if (normalized.endsWith('.js') || normalized.endsWith('.mjs') || normalized.endsWith('.cjs')) return 'javascript';
+  if (normalized.endsWith('.py')) return 'python';
+  if (normalized.endsWith('.rs')) return 'rust';
+  if (normalized.endsWith('.go')) return 'go';
+  if (normalized.endsWith('.java')) return 'java';
+  if (normalized.endsWith('.kt')) return 'kotlin';
+  if (normalized.endsWith('.rb')) return 'ruby';
+  if (normalized.endsWith('.php')) return 'php';
+  if (normalized.endsWith('.sh') || normalized.endsWith('.bash') || normalized.endsWith('.zsh')) return 'bash';
+  if (normalized.endsWith('.css')) return 'css';
+  if (normalized.endsWith('.scss')) return 'scss';
+  if (normalized.endsWith('.html') || normalized.endsWith('.htm')) return 'html';
+  if (normalized.endsWith('.json')) return 'json';
+  if (normalized.endsWith('.md')) return 'markdown';
+  if (normalized.endsWith('.yaml') || normalized.endsWith('.yml')) return 'yaml';
+  if (normalized.endsWith('.toml')) return 'toml';
+  if (normalized.endsWith('.sql')) return 'sql';
+  if (normalized.endsWith('.xml')) return 'xml';
+  if (normalized.endsWith('.diff') || normalized.endsWith('.patch')) return 'diff';
+  return 'text';
+}
+
+function toMarkdownCodeFence(content: string, language: string): string {
+  let fence = '```';
+  while (content.includes(fence)) {
+    fence += '`';
+  }
+  return `${fence}${language}\n${content}\n${fence}`;
 }
 
 function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
@@ -987,6 +1024,16 @@ interface StreamingState {
   agentMaxIterations: number;
 }
 
+interface WorkbenchTab {
+  path: string;
+  name: string;
+  size_bytes: number;
+  modified_at: string | null;
+  content: string;
+  truncated: boolean;
+  max_bytes: number;
+}
+
 const defaultStreamingState: StreamingState = {
   connection: 'disconnected',
   isThinking: false,
@@ -1163,9 +1210,22 @@ export function SessionsPage() {
   const [runtimeStatus, setRuntimeStatus] = useState<SessionRuntimeStatus | null>(null);
   const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
   const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
-  const [runtimeFilePreview, setRuntimeFilePreview] = useState<SessionRuntimeFilePreviewResponse | null>(null);
-  const [runtimePreviewLoading, setRuntimePreviewLoading] = useState(false);
+  const [runtimeInspectorTab, setRuntimeInspectorTab] = useState<'files' | 'git' | 'commands'>('files');
   const [runtimePath, setRuntimePath] = useState('');
+  const [runtimeChangedFiles, setRuntimeChangedFiles] = useState<SessionRuntimeGitChangedFilesResponse | null>(null);
+  const [runtimeChangedFilesLoading, setRuntimeChangedFilesLoading] = useState(false);
+  const [workbenchTabs, setWorkbenchTabs] = useState<WorkbenchTab[]>([]);
+  const [activeWorkbenchPath, setActiveWorkbenchPath] = useState<string | null>(null);
+  const [workbenchLoadingPath, setWorkbenchLoadingPath] = useState<string | null>(null);
+  const [workbenchWidth, setWorkbenchWidth] = useState(520);
+  const [isWorkbenchResizing, setIsWorkbenchResizing] = useState(false);
+  const [workbenchShowDiffByPath, setWorkbenchShowDiffByPath] = useState<Record<string, boolean>>({});
+  const [workbenchDiffBaseRefByPath, setWorkbenchDiffBaseRefByPath] = useState<Record<string, string>>({});
+  const [workbenchDiffStagedByPath, setWorkbenchDiffStagedByPath] = useState<Record<string, boolean>>({});
+  const [workbenchDiffByPath, setWorkbenchDiffByPath] = useState<Record<string, SessionRuntimeGitDiffResponse | null>>({});
+  const [workbenchDiffErrorByPath, setWorkbenchDiffErrorByPath] = useState<Record<string, string | null>>({});
+  const [workbenchDiffLoadingPath, setWorkbenchDiffLoadingPath] = useState<string | null>(null);
+  const [workbenchGitRootsByPath, setWorkbenchGitRootsByPath] = useState<Record<string, SessionRuntimeGitRoot[]>>({});
   const [spawnObjective, setSpawnObjective] = useState('');
   const [spawnScope, setSpawnScope] = useState('');
   const [spawnMaxSteps, setSpawnMaxSteps] = useState(5);
@@ -1178,10 +1238,10 @@ export function SessionsPage() {
   const [confirmTerminateTaskId, setConfirmTerminateTaskId] = useState<string | null>(null);
 
   const [liveView, setLiveView] = useState<PlaywrightLiveView | null>(null);
-
   const [mode, setMode] = useState<'solo' | 'advanced'>(
       () => (localStorage.getItem('sentinel-mode') as 'solo' | 'advanced') ?? 'solo',
   );
+
   const hasActiveSubAgentTasks = tasks.some((task) => task.status === 'running' || task.status === 'pending');
 
   useEffect(() => {
@@ -1283,6 +1343,16 @@ export function SessionsPage() {
       .slice()
       .reverse();
   }, [runtimeStatus]);
+
+  const workbenchVisible = workbenchTabs.length > 0;
+  const activeWorkbenchTab = useMemo(() => {
+    if (!workbenchTabs.length) return null;
+    if (!activeWorkbenchPath) return workbenchTabs[0];
+    return workbenchTabs.find((tab) => tab.path === activeWorkbenchPath) ?? workbenchTabs[0];
+  }, [workbenchTabs, activeWorkbenchPath]);
+  const activeWorkbenchDiff = activeWorkbenchTab ? workbenchDiffByPath[activeWorkbenchTab.path] ?? null : null;
+  const activeWorkbenchDiffError = activeWorkbenchTab ? workbenchDiffErrorByPath[activeWorkbenchTab.path] ?? null : null;
+  const activeWorkbenchGitRoots = activeWorkbenchTab ? workbenchGitRootsByPath[activeWorkbenchTab.path] ?? [] : [];
 
   const browserToolResults = useMemo(
     () =>
@@ -1442,8 +1512,14 @@ export function SessionsPage() {
     setIsResizing(true);
   }, []);
 
+  const startWorkbenchResizing = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWorkbenchResizing(true);
+  }, []);
+
   const stopResizing = useCallback(() => {
     setIsResizing(false);
+    setIsWorkbenchResizing(false);
   }, []);
 
   const resize = useCallback((e: MouseEvent) => {
@@ -1453,16 +1529,26 @@ export function SessionsPage() {
     setRightPanelWidth(clamped);
   }, [isResizing]);
 
+  const resizeWorkbench = useCallback((e: MouseEvent) => {
+    if (!isWorkbenchResizing) return;
+    const maxWidth = Math.max(420, window.innerWidth - rightPanelWidth - 360);
+    const newWidth = window.innerWidth - rightPanelWidth - e.clientX;
+    const clamped = Math.max(360, Math.min(maxWidth, newWidth));
+    setWorkbenchWidth(clamped);
+  }, [isWorkbenchResizing, rightPanelWidth]);
+
   useEffect(() => {
-    if (isResizing) {
+    if (isResizing || isWorkbenchResizing) {
       window.addEventListener('mousemove', resize);
+      window.addEventListener('mousemove', resizeWorkbench);
       window.addEventListener('mouseup', stopResizing);
     }
     return () => {
       window.removeEventListener('mousemove', resize);
+      window.removeEventListener('mousemove', resizeWorkbench);
       window.removeEventListener('mouseup', stopResizing);
     };
-  }, [isResizing, resize, stopResizing]);
+  }, [isResizing, isWorkbenchResizing, resize, resizeWorkbench, stopResizing]);
 
   // Effects
   useEffect(() => {
@@ -1505,8 +1591,17 @@ export function SessionsPage() {
       setTasks([]);
       setRuntimeStatus(null);
       setRuntimeFiles(null);
-      setRuntimeFilePreview(null);
       setRuntimePath('');
+      setRuntimeChangedFiles(null);
+      setRuntimeChangedFilesLoading(false);
+      setWorkbenchTabs([]);
+      setActiveWorkbenchPath(null);
+      setWorkbenchShowDiffByPath({});
+      setWorkbenchDiffByPath({});
+      setWorkbenchDiffErrorByPath({});
+      setWorkbenchDiffBaseRefByPath({});
+      setWorkbenchDiffStagedByPath({});
+      setWorkbenchGitRootsByPath({});
       setStreaming(defaultStreamingState);
       shouldAutoScrollRef.current = true;
       lastScrollTopRef.current = 0;
@@ -1525,8 +1620,17 @@ export function SessionsPage() {
     setTasks([]);
     setRuntimeStatus(null);
     setRuntimeFiles(null);
-    setRuntimeFilePreview(null);
     setRuntimePath('');
+    setRuntimeChangedFiles(null);
+    setRuntimeChangedFilesLoading(false);
+    setWorkbenchTabs([]);
+    setActiveWorkbenchPath(null);
+    setWorkbenchShowDiffByPath({});
+    setWorkbenchDiffByPath({});
+    setWorkbenchDiffErrorByPath({});
+    setWorkbenchDiffBaseRefByPath({});
+    setWorkbenchDiffStagedByPath({});
+    setWorkbenchGitRootsByPath({});
     setStreaming(defaultStreamingState);
     setHasMoreMessages(false);
     oldestServerMessageIdRef.current = null;
@@ -1567,6 +1671,11 @@ export function SessionsPage() {
       window.clearInterval(timer);
     };
   }, [activeSessionId, rightRailTab]);
+
+  useEffect(() => {
+    if (!activeSessionId || rightRailTab !== 'runtime') return;
+    void fetchRuntimeChangedFilesForExplorer(activeSessionId, runtimePath);
+  }, [activeSessionId, rightRailTab, runtimePath]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -1950,19 +2059,35 @@ export function SessionsPage() {
       if (sessionId !== activeSessionIdRef.current) return;
       setRuntimeFiles(payload);
       setRuntimePath(payload.path || '');
-      if (runtimeFilePreview && runtimeFilePreview.path.startsWith((payload.path || '').trim())) {
-        // keep preview visible while navigating nearby directories
-      } else {
-        setRuntimeFilePreview(null);
+      if (rightRailTab === 'runtime') {
+        void fetchRuntimeChangedFilesForExplorer(sessionId, payload.path || '');
       }
     } catch {
       if (sessionId !== activeSessionIdRef.current) return;
       setRuntimeFiles(null);
       setRuntimePath(path);
-      setRuntimeFilePreview(null);
+      setRuntimeChangedFiles(null);
     } finally {
       if (sessionId === activeSessionIdRef.current) {
         setRuntimeFilesLoading(false);
+      }
+    }
+  }
+
+  async function fetchRuntimeChangedFilesForExplorer(sessionId: string, path: string) {
+    setRuntimeChangedFilesLoading(true);
+    try {
+      const payload = await api.get<SessionRuntimeGitChangedFilesResponse>(
+        `/sessions/${sessionId}/runtime/git/changed?path=${encodeURIComponent(path)}&limit=200`,
+      );
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeChangedFiles(payload);
+    } catch {
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeChangedFiles(null);
+    } finally {
+      if (sessionId === activeSessionIdRef.current) {
+        setRuntimeChangedFilesLoading(false);
       }
     }
   }
@@ -1974,18 +2099,147 @@ export function SessionsPage() {
 
   async function openRuntimeFile(path: string) {
     if (!activeSessionId) return;
-    setRuntimePreviewLoading(true);
+    setWorkbenchLoadingPath(path);
     try {
       const payload = await api.get<SessionRuntimeFilePreviewResponse>(
         `/sessions/${activeSessionId}/runtime/file?path=${encodeURIComponent(path)}&max_bytes=32000`,
       );
       if (activeSessionId !== activeSessionIdRef.current) return;
-      setRuntimeFilePreview(payload);
+      const nextTab: WorkbenchTab = {
+        path: payload.path,
+        name: payload.name,
+        size_bytes: payload.size_bytes,
+        modified_at: payload.modified_at,
+        content: payload.content,
+        truncated: payload.truncated,
+        max_bytes: payload.max_bytes,
+      };
+      setWorkbenchTabs((current) => {
+        const existing = current.find((tab) => tab.path === nextTab.path);
+        if (existing) {
+          return current.map((tab) => (tab.path === nextTab.path ? nextTab : tab));
+        }
+        return [...current, nextTab];
+      });
+      setActiveWorkbenchPath(nextTab.path);
+      setWorkbenchDiffBaseRefByPath((current) =>
+        current[nextTab.path] ? current : { ...current, [nextTab.path]: 'HEAD' },
+      );
+      setWorkbenchDiffStagedByPath((current) =>
+        Object.prototype.hasOwnProperty.call(current, nextTab.path)
+          ? current
+          : { ...current, [nextTab.path]: false },
+      );
+      setWorkbenchDiffErrorByPath((current) => ({ ...current, [nextTab.path]: null }));
+      setWorkbenchShowDiffByPath((current) =>
+        Object.prototype.hasOwnProperty.call(current, nextTab.path)
+          ? current
+          : { ...current, [nextTab.path]: false },
+      );
+      void fetchRuntimeGitRoots(activeSessionId, nextTab.path);
     } catch {
       toast.error('Failed to open runtime file');
     } finally {
       if (activeSessionId === activeSessionIdRef.current) {
-        setRuntimePreviewLoading(false);
+        setWorkbenchLoadingPath((current) => (current === path ? null : current));
+      }
+    }
+  }
+
+  async function openRuntimeFileDiff(path: string) {
+    if (!activeSessionId) return;
+    await openRuntimeFile(path);
+    setWorkbenchShowDiffByPath((current) => ({ ...current, [path]: true }));
+    void fetchRuntimeGitDiff(activeSessionId, path);
+  }
+
+  function closeWorkbenchTab(path: string) {
+    setWorkbenchTabs((current) => {
+      const targetIndex = current.findIndex((tab) => tab.path === path);
+      const next = current.filter((tab) => tab.path !== path);
+      setActiveWorkbenchPath((previous) => {
+        if (previous !== path) return previous;
+        if (!next.length) return null;
+        const fallbackIndex = Math.min(Math.max(targetIndex - 1, 0), next.length - 1);
+        return next[fallbackIndex]?.path ?? next[next.length - 1].path;
+      });
+      return next;
+    });
+    setWorkbenchShowDiffByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchDiffByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchDiffErrorByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchDiffBaseRefByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchDiffStagedByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchGitRootsByPath((current) => {
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setWorkbenchLoadingPath((current) => (current === path ? null : current));
+    setWorkbenchDiffLoadingPath((current) => (current === path ? null : current));
+  }
+
+  async function fetchRuntimeGitRoots(sessionId: string, path: string) {
+    try {
+      const payload = await api.get<SessionRuntimeGitRootsResponse>(
+        `/sessions/${sessionId}/runtime/git/roots?path=${encodeURIComponent(path)}&limit=200`,
+      );
+      if (sessionId !== activeSessionIdRef.current) return;
+      setWorkbenchGitRootsByPath((current) => ({ ...current, [path]: payload.roots || [] }));
+    } catch {
+      if (sessionId !== activeSessionIdRef.current) return;
+      setWorkbenchGitRootsByPath((current) => ({ ...current, [path]: [] }));
+    }
+  }
+
+  async function fetchRuntimeGitDiff(sessionId: string, path: string) {
+    const baseRefRaw = workbenchDiffBaseRefByPath[path];
+    const baseRef = (typeof baseRefRaw === 'string' && baseRefRaw.trim().length > 0) ? baseRefRaw.trim() : 'HEAD';
+    const staged = Boolean(workbenchDiffStagedByPath[path]);
+    setWorkbenchDiffLoadingPath(path);
+    setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: null }));
+    try {
+      const query = new URLSearchParams();
+      query.set('path', path);
+      query.set('base_ref', baseRef);
+      query.set('staged', staged ? 'true' : 'false');
+      query.set('context_lines', '3');
+      query.set('max_bytes', '120000');
+      const payload = await api.get<SessionRuntimeGitDiffResponse>(
+        `/sessions/${sessionId}/runtime/git/diff?${query.toString()}`,
+      );
+      if (sessionId !== activeSessionIdRef.current) return;
+      setWorkbenchDiffByPath((current) => ({ ...current, [path]: payload }));
+      setWorkbenchShowDiffByPath((current) => ({ ...current, [path]: true }));
+      if (!workbenchGitRootsByPath[path]?.length) {
+        void fetchRuntimeGitRoots(sessionId, path);
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Failed to load git diff';
+      setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: detail }));
+    } finally {
+      if (sessionId === activeSessionIdRef.current) {
+        setWorkbenchDiffLoadingPath((current) => (current === path ? null : current));
       }
     }
   }
@@ -2684,55 +2938,52 @@ export function SessionsPage() {
           title={activeSession?.title || 'Untitled Session'}
           subtitle={activeSession ? `ID: ${activeSession.id.slice(0, 8)}` : 'Operator Workspace'}
           contentClassName="h-full !p-0 overflow-hidden"
+          hideSidebar={mode === 'solo'}
+          hideHeader={mode === 'solo'}
           actions={
-            <div className="flex items-center gap-2">
-                        {/* Mode toggle */}
-                        <div className="flex items-center rounded-lg bg-[color:var(--surface-2)] p-0.5">
-                          {[
-                            { id: 'solo', label: 'Focus' },
-                            { id: 'advanced', label: 'History' }
-                          ].map((m) => (
-                            <button
-                              key={m.id}
-                              onClick={() => setMode(m.id as any)}
-                              className={`px-3 h-7 text-xs font-bold uppercase tracking-widest rounded-md transition-all duration-200 ${
-                                mode === m.id
-                                  ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)] shadow-sm'
-                                  : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                              }`}
-                            >
-                              {m.label}
-                            </button>
-                          ))}
-                        </div>
-                            <div className="h-6 w-px bg-[color:var(--border-subtle)] mx-1" />
-
-              <button
-                  onClick={resetSession}
-                  title="Start fresh (memories preserved)"
-                  className="btn-secondary h-9 px-3 gap-2 text-xs"
-              >
-                <RefreshCw size={14} />
-                New Chat
-              </button>
-
-              {mode === 'advanced' && (
-                  <button
-                      onClick={compactContext}
-                      disabled={isCompacting}
-                      className="btn-secondary h-9 px-3 gap-2 text-xs"
-                  >
-                    <Wand2 size={14} className={isCompacting ? 'animate-spin' : ''} />
-                    Compact
-                  </button>
-              )}
-
-            </div>
+            mode === 'advanced' ? (
+              <div className="flex items-center gap-1.5">
+                <button
+                    onClick={() => setMode('solo')}
+                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]"
+                >
+                  <Expand size={14} className="text-emerald-500" />
+                  Focus
+                </button>
+                <div className="h-5 w-px bg-[color:var(--border-subtle)] mx-0.5" />
+                <button
+                    onClick={resetSession}
+                    title="Start fresh (memories preserved)"
+                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]"
+                >
+                  <RefreshCw size={14} className="text-sky-500" />
+                  New Chat
+                </button>
+                <button
+                    onClick={compactContext}
+                    disabled={isCompacting}
+                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-400`} />
+                  Compact
+                </button>
+              </div>
+            ) : null
           }
       >
-        <div className="flex h-full w-full overflow-hidden">
-          {/* Session History Sidebar — advanced mode only */}
-          <aside 
+        <div className="relative flex h-full w-full overflow-hidden">
+          {mode === 'solo' ? (
+            <div className="absolute top-3 left-3 z-40">
+              <button
+                type="button"
+                onClick={() => setMode('advanced')}
+                className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/90 backdrop-blur px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]"
+              >
+                Exit Focus
+              </button>
+            </div>
+          ) : null}
+          <aside
             className={`hidden lg:flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shrink-0 transition-all duration-300 ease-in-out ${
               mode === 'advanced' ? 'w-64 opacity-100' : 'w-0 opacity-0 pointer-events-none border-none'
             }`}
@@ -2854,6 +3105,7 @@ export function SessionsPage() {
           {/* Chat Area */}
           <main className="flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)]">
             {/* Model Selector / Status Header */}
+            {mode === 'advanced' ? (
             <div className="flex items-center justify-between px-4 py-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
               <div className="flex items-center gap-3">
                 <div className="relative flex items-center gap-1.5 group cursor-default">
@@ -3059,6 +3311,7 @@ export function SessionsPage() {
                 </div>
               </div>
             </div>
+            ) : null}
 
             {/* Messages */}
             <div
@@ -3290,6 +3543,213 @@ export function SessionsPage() {
               </>
             </div>
           </main>
+
+          {workbenchVisible ? (
+            <>
+              <div
+                className={`hidden xl:block w-1 cursor-col-resize hover:bg-[color:var(--accent-solid)] transition-colors ${isWorkbenchResizing ? 'bg-[color:var(--accent-solid)]' : 'bg-transparent'}`}
+                onMouseDown={startWorkbenchResizing}
+              />
+              <aside
+                style={{ width: `${workbenchWidth}px` }}
+                className="hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden min-w-[360px]"
+              >
+                <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Open Files</div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWorkbenchTabs([]);
+                        setActiveWorkbenchPath(null);
+                        setWorkbenchShowDiffByPath({});
+                        setWorkbenchDiffByPath({});
+                        setWorkbenchDiffErrorByPath({});
+                        setWorkbenchDiffBaseRefByPath({});
+                        setWorkbenchDiffStagedByPath({});
+                        setWorkbenchGitRootsByPath({});
+                        setWorkbenchLoadingPath(null);
+                        setWorkbenchDiffLoadingPath(null);
+                      }}
+                      className="text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-rose-400"
+                    >
+                      Close All
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+                    {workbenchTabs.map((tab) => (
+                      <button
+                        key={tab.path}
+                        type="button"
+                        onClick={() => setActiveWorkbenchPath(tab.path)}
+                        className={`group inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-semibold max-w-[240px] shrink-0 ${
+                          activeWorkbenchTab?.path === tab.path
+                            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                            : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] text-[color:var(--text-secondary)]'
+                        }`}
+                        title={tab.path}
+                      >
+                        <span className="truncate">{tab.name}</span>
+                        <span
+                          role="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeWorkbenchTab(tab.path);
+                          }}
+                          className="inline-flex h-4 w-4 items-center justify-center rounded hover:bg-rose-500/20 hover:text-rose-300"
+                          title="Close tab"
+                        >
+                          <X size={11} />
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {activeWorkbenchTab ? (
+                  <div className="flex-1 min-h-0 flex flex-col">
+                    <div className="border-b border-[color:var(--border-subtle)] px-3 py-2 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-semibold truncate">{activeWorkbenchTab.name}</div>
+                          <div className="text-[9px] text-[color:var(--text-muted)] font-mono truncate" title={activeWorkbenchTab.path}>
+                            {activeWorkbenchTab.path}
+                          </div>
+                        </div>
+                        <div className="text-[9px] text-[color:var(--text-muted)]">{formatBytes(activeWorkbenchTab.size_bytes)}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setWorkbenchShowDiffByPath((current) => ({ ...current, [activeWorkbenchTab.path]: false }))}
+                          className={`rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                            !workbenchShowDiffByPath[activeWorkbenchTab.path]
+                              ? 'border-sky-500/40 bg-sky-500/15 text-sky-300'
+                              : 'border-[color:var(--border-subtle)] text-[color:var(--text-muted)]'
+                          }`}
+                        >
+                          Content
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setWorkbenchShowDiffByPath((current) => ({ ...current, [activeWorkbenchTab.path]: true }));
+                            if (activeSessionId && !workbenchDiffByPath[activeWorkbenchTab.path]) {
+                              void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
+                            }
+                          }}
+                          className={`rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                            workbenchShowDiffByPath[activeWorkbenchTab.path]
+                              ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+                              : 'border-[color:var(--border-subtle)] text-[color:var(--text-muted)]'
+                          }`}
+                        >
+                          Diff
+                        </button>
+                        <div className="ml-auto flex items-center gap-1.5">
+                          <input
+                            value={workbenchDiffBaseRefByPath[activeWorkbenchTab.path] ?? 'HEAD'}
+                            onChange={(event) =>
+                              setWorkbenchDiffBaseRefByPath((current) => ({
+                                ...current,
+                                [activeWorkbenchTab.path]: event.target.value,
+                              }))
+                            }
+                            className="h-7 w-24 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 text-[10px] font-mono"
+                            placeholder="HEAD"
+                            title="Base ref (for diff)"
+                          />
+                          <label className="inline-flex items-center gap-1 text-[10px] text-[color:var(--text-muted)]">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(workbenchDiffStagedByPath[activeWorkbenchTab.path])}
+                              onChange={(event) =>
+                                setWorkbenchDiffStagedByPath((current) => ({
+                                  ...current,
+                                  [activeWorkbenchTab.path]: event.target.checked,
+                                }))
+                              }
+                            />
+                            staged
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!activeSessionId) return;
+                              void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
+                          >
+                            <RefreshCw size={11} className={workbenchDiffLoadingPath === activeWorkbenchTab.path ? 'animate-spin' : ''} />
+                            Load
+                          </button>
+                        </div>
+                      </div>
+                      {activeWorkbenchGitRoots.length > 0 ? (
+                        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                          {activeWorkbenchGitRoots.slice(0, 6).map((root) => (
+                            <span
+                              key={`${activeWorkbenchTab.path}:${root.root_path || '.'}:${root.branch ?? 'detached'}`}
+                              className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-300"
+                            >
+                              <span>{root.root_path || '.'}</span>
+                              <span>{root.detached_head ? 'detached' : root.branch || 'unknown'}</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="flex-1 min-h-0 overflow-auto p-3">
+                      {workbenchShowDiffByPath[activeWorkbenchTab.path] ? (
+                        workbenchDiffLoadingPath === activeWorkbenchTab.path ? (
+                          <div className="flex items-center gap-2 text-[11px] text-[color:var(--text-muted)]">
+                            <Loader2 size={13} className="animate-spin" />
+                            Loading diff…
+                          </div>
+                        ) : activeWorkbenchDiff ? (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between text-[10px] text-[color:var(--text-muted)]">
+                              <span>root: {activeWorkbenchDiff.git_root || '.'}</span>
+                              <span>{activeWorkbenchDiff.truncated ? 'truncated' : 'full'}</span>
+                            </div>
+                            <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2">
+                              <Markdown
+                                content={toMarkdownCodeFence(activeWorkbenchDiff.diff || '[no diff output]', 'diff')}
+                                className="!text-[11px]"
+                              />
+                            </div>
+                          </div>
+                        ) : activeWorkbenchDiffError ? (
+                          <div className="rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-[10px] text-rose-300">
+                            {activeWorkbenchDiffError}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                            Click Load to fetch git diff for this file.
+                          </div>
+                        )
+                      ) : (
+                        <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2">
+                          <Markdown
+                            content={toMarkdownCodeFence(
+                              activeWorkbenchTab.content || '[empty file]',
+                              inferCodeLanguageFromName(activeWorkbenchTab.name),
+                            )}
+                            className="!text-[11px]"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-[10px] text-[color:var(--text-muted)]">
+                    No file selected.
+                  </div>
+                )}
+              </aside>
+            </>
+          ) : null}
 
           {/* Resize Handle */}
           <div
@@ -3544,119 +4004,193 @@ export function SessionsPage() {
                   </div>
                 </div>
 
-                <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-                  <div className="space-y-2">
-                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Files</div>
-                    {runtimeFilesLoading ? (
-                      <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
-                        <Loader2 size={12} className="animate-spin" />
-                        Loading workspace…
-                      </div>
-                    ) : runtimeFiles?.entries?.length ? (
-                      <div className="space-y-1.5">
-                        {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
-                          <button
-                            key={`${entry.path}:${entry.kind}`}
-                            type="button"
-                            onClick={() => {
-                              if (entry.kind === 'directory') {
-                                void openRuntimeDirectory(entry.path);
-                              } else {
-                                void openRuntimeFile(entry.path);
-                              }
-                            }}
-                            className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
-                          >
-                            <div className="flex items-center gap-2 min-w-0">
-                              {entry.kind === 'directory' ? (
-                                <Folder size={13} className="text-sky-500 shrink-0" />
-                              ) : (
-                                <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
-                              )}
-                              <span className="text-[11px] font-semibold truncate">{entry.name}</span>
-                              <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
-                            </div>
-                            <div className="mt-1 text-[9px] text-[color:var(--text-muted)] flex items-center gap-2">
-                              <span>{entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}</span>
-                              {entry.modified_at ? <span>{formatCompactDate(entry.modified_at)}</span> : null}
-                            </div>
-                          </button>
-                        ))}
-                        {runtimeFiles.truncated ? (
-                          <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated to 400 entries</p>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                        Workspace is empty.
-                      </div>
-                    )}
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <div className="border-b border-[color:var(--border-subtle)] px-4 py-2">
+                    <div className="grid grid-cols-3 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
+                      <button
+                        type="button"
+                        onClick={() => setRuntimeInspectorTab('files')}
+                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                          runtimeInspectorTab === 'files'
+                            ? 'bg-sky-500/15 text-sky-400'
+                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                        }`}
+                      >
+                        Files
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRuntimeInspectorTab('git')}
+                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                          runtimeInspectorTab === 'git'
+                            ? 'bg-violet-500/15 text-violet-300'
+                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                        }`}
+                      >
+                        Git Changed
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRuntimeInspectorTab('commands')}
+                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                          runtimeInspectorTab === 'commands'
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                        }`}
+                      >
+                        Commands
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Recent Commands</div>
-                    {runtimeCommandActions.length > 0 ? (
-                      <div className="space-y-1.5">
-                        {runtimeCommandActions.slice(0, 25).map((entry, index) => {
-                          const command = runtimeActionCommand(entry) || '';
-                          return (
-                            <div
-                              key={`${entry.timestamp ?? 'na'}-${entry.action}-${index}`}
-                              className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2"
-                            >
-                              <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                                <Clock3 size={10} />
-                                <span>{entry.action.replaceAll('_', ' ')}</span>
-                                <span className="ml-auto">{entry.timestamp ? formatCompactDate(entry.timestamp) : '—'}</span>
-                              </div>
-                              <div className="mt-1 text-[10px] font-mono text-[color:var(--text-secondary)] break-all">
-                                {command}
-                              </div>
-                            </div>
-                          );
-                        })}
+                  <div className="flex-1 min-h-0 overflow-y-auto p-4">
+                    {runtimeInspectorTab === 'files' ? (
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Files</div>
+                        {runtimeFilesLoading ? (
+                          <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
+                            <Loader2 size={12} className="animate-spin" />
+                            Loading workspace…
+                          </div>
+                        ) : runtimeFiles?.entries?.length ? (
+                          <div className="space-y-1.5">
+                            {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
+                              <button
+                                key={`${entry.path}:${entry.kind}`}
+                                type="button"
+                                onClick={() => {
+                                  if (entry.kind === 'directory') {
+                                    void openRuntimeDirectory(entry.path);
+                                  } else {
+                                    void openRuntimeFile(entry.path);
+                                  }
+                                }}
+                                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  {entry.kind === 'directory' ? (
+                                    <Folder size={13} className="text-sky-500 shrink-0" />
+                                  ) : (
+                                    <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
+                                  )}
+                                  <span className="text-[11px] font-semibold truncate">{entry.name}</span>
+                                  <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
+                                </div>
+                                <div className="mt-1 text-[9px] text-[color:var(--text-muted)] flex items-center gap-2">
+                                  <span>{entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}</span>
+                                  {entry.modified_at ? <span>{formatCompactDate(entry.modified_at)}</span> : null}
+                                </div>
+                              </button>
+                            ))}
+                            {runtimeFiles.truncated ? (
+                              <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated to 400 entries</p>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                            Workspace is empty.
+                          </div>
+                        )}
                       </div>
-                    ) : (
-                      <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                        No runtime commands yet.
+                    ) : null}
+
+                    {runtimeInspectorTab === 'git' ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Changed Files</div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!activeSessionId) return;
+                              void fetchRuntimeChangedFilesForExplorer(activeSessionId, runtimePath);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
+                          >
+                            <RefreshCw size={11} className={runtimeChangedFilesLoading ? 'animate-spin' : ''} />
+                            Refresh
+                          </button>
+                        </div>
+                        {runtimeChangedFilesLoading ? (
+                          <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
+                            <Loader2 size={12} className="animate-spin" />
+                            Scanning git changes…
+                          </div>
+                        ) : runtimeChangedFiles?.entries?.length ? (
+                          <div className="space-y-1.5">
+                            {runtimeChangedFiles.entries.map((entry) => (
+                              <button
+                                key={`runtime-change-tab:${entry.path}:${entry.status}`}
+                                type="button"
+                                onClick={() => void openRuntimeFileDiff(entry.path)}
+                                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
+                                title={entry.path}
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-[9px] font-bold text-[color:var(--text-muted)] w-8 shrink-0">{entry.status}</span>
+                                  <span className="text-[10px] font-mono truncate">{entry.path}</span>
+                                  <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
+                                </div>
+                              </button>
+                            ))}
+                            {runtimeChangedFiles.truncated ? (
+                              <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated</p>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                            No changed files in this directory’s git root.
+                          </div>
+                        )}
                       </div>
-                    )}
+                    ) : null}
+
+                    {runtimeInspectorTab === 'commands' ? (
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Recent Commands</div>
+                        {runtimeCommandActions.length > 0 ? (
+                          <div className="space-y-1.5">
+                            {runtimeCommandActions.slice(0, 25).map((entry, index) => {
+                              const command = runtimeActionCommand(entry) || '';
+                              return (
+                                <div
+                                  key={`${entry.timestamp ?? 'na'}-${entry.action}-${index}`}
+                                  className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2"
+                                >
+                                  <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                    <Clock3 size={10} />
+                                    <span>{entry.action.replaceAll('_', ' ')}</span>
+                                    <span className="ml-auto">{entry.timestamp ? formatCompactDate(entry.timestamp) : '—'}</span>
+                                  </div>
+                                  <div className="mt-1 text-[10px] font-mono text-[color:var(--text-secondary)] break-all">
+                                    {command}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                            No runtime commands yet.
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
                 <div className="border-t border-[color:var(--border-subtle)] p-4 bg-[color:var(--surface-2)]/20">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">File Preview</div>
-                    {runtimeFilePreview ? (
-                      <button
-                        type="button"
-                        onClick={() => setRuntimeFilePreview(null)}
-                        className="text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-rose-400"
-                      >
-                        Close
-                      </button>
-                    ) : null}
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Workbench</div>
+                  <div className="text-[10px] text-[color:var(--text-muted)] opacity-80">
+                    {workbenchVisible
+                      ? `${workbenchTabs.length} file tab${workbenchTabs.length === 1 ? '' : 's'} open in the file workbench.`
+                      : 'Open a file from the workspace list to create a file tab in the workbench pane.'}
                   </div>
-                  {runtimePreviewLoading ? (
-                    <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
+                  {workbenchLoadingPath ? (
+                    <div className="mt-2 flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
                       <Loader2 size={12} className="animate-spin" />
-                      Loading file…
+                      Opening {workbenchLoadingPath}
                     </div>
-                  ) : runtimeFilePreview ? (
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-[11px] font-semibold truncate">{runtimeFilePreview.name}</div>
-                        <div className="text-[9px] text-[color:var(--text-muted)]">{formatBytes(runtimeFilePreview.size_bytes)}</div>
-                      </div>
-                      <pre className="max-h-36 overflow-auto rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2 text-[10px] text-[color:var(--text-secondary)] whitespace-pre-wrap break-words">
-                        {runtimeFilePreview.content || '[empty file]'}
-                      </pre>
-                    </div>
-                  ) : (
-                    <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                      Select a file to preview its content.
-                    </div>
-                  )}
+                  ) : null}
                 </div>
               </div>
             ) : null}
