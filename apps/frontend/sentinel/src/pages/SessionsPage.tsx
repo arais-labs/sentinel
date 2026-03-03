@@ -24,6 +24,11 @@ import {
   Brain,
   Sparkles,
   Paperclip,
+  Folder,
+  FileCode2,
+  ChevronRight,
+  ArrowUp,
+  Clock3,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
@@ -49,7 +54,11 @@ import type {
   PlaywrightLiveView,
   Session,
   SessionContextUsage,
+  SessionRuntimeFileEntry,
+  SessionRuntimeFilePreviewResponse,
+  SessionRuntimeFilesResponse,
   SessionListResponse,
+  SessionRuntimeStatus,
   SubAgentTask,
   SubAgentTaskListResponse,
   WsConnectionState,
@@ -78,6 +87,25 @@ function taskStatusTone(status: string): 'default' | 'good' | 'warn' | 'danger' 
 
 function sortMessages(items: Message[]) {
   return [...items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+}
+
+function formatBytes(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '—';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
+  if (!runtime) return 'Unavailable';
+  if (!runtime.runtime_exists) return 'Missing';
+  return runtime.active ? 'Active' : 'Idle';
+}
+
+function runtimeActionCommand(entry: { action: string; details: Record<string, unknown> }): string | null {
+  if (!entry || !entry.details || typeof entry.details !== 'object') return null;
+  const command = entry.details.command;
+  return typeof command === 'string' && command.trim().length > 0 ? command.trim() : null;
 }
 
 function tryParseJson(raw: string): unknown | null {
@@ -1131,6 +1159,13 @@ export function SessionsPage() {
 
   const [tasks, setTasks] = useState<SubAgentTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
+  const [rightRailView, setRightRailView] = useState<'sub_agents' | 'runtime'>('sub_agents');
+  const [runtimeStatus, setRuntimeStatus] = useState<SessionRuntimeStatus | null>(null);
+  const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
+  const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
+  const [runtimeFilePreview, setRuntimeFilePreview] = useState<SessionRuntimeFilePreviewResponse | null>(null);
+  const [runtimePreviewLoading, setRuntimePreviewLoading] = useState(false);
+  const [runtimePath, setRuntimePath] = useState('');
   const [spawnObjective, setSpawnObjective] = useState('');
   const [spawnScope, setSpawnScope] = useState('');
   const [spawnMaxSteps, setSpawnMaxSteps] = useState(5);
@@ -1240,6 +1275,14 @@ export function SessionsPage() {
       () => sessions.find((session) => session.id === activeSessionId) ?? null,
       [sessions, activeSessionId],
   );
+
+  const runtimeCommandActions = useMemo(() => {
+    if (!runtimeStatus) return [];
+    return runtimeStatus.actions
+      .filter((entry) => Boolean(runtimeActionCommand(entry)))
+      .slice()
+      .reverse();
+  }, [runtimeStatus]);
 
   const toolArgumentsByCallId = useMemo(() => {
     const map = new Map<string, string>();
@@ -1448,6 +1491,10 @@ export function SessionsPage() {
       setContextTokenEstimate(null);
       setContextTokenPercent(null);
       setTasks([]);
+      setRuntimeStatus(null);
+      setRuntimeFiles(null);
+      setRuntimeFilePreview(null);
+      setRuntimePath('');
       setStreaming(defaultStreamingState);
       shouldAutoScrollRef.current = true;
       lastScrollTopRef.current = 0;
@@ -1464,6 +1511,10 @@ export function SessionsPage() {
     setContextTokenEstimate(null);
     setContextTokenPercent(null);
     setTasks([]);
+    setRuntimeStatus(null);
+    setRuntimeFiles(null);
+    setRuntimeFilePreview(null);
+    setRuntimePath('');
     setStreaming(defaultStreamingState);
     setHasMoreMessages(false);
     oldestServerMessageIdRef.current = null;
@@ -1476,6 +1527,8 @@ export function SessionsPage() {
     void loadMessages(activeSessionId);
     void fetchContextUsage(activeSessionId);
     void fetchTasks(activeSessionId);
+    void fetchRuntimeStatus(activeSessionId);
+    void fetchRuntimeFiles(activeSessionId, '');
     void connectWs(activeSessionId);
 
     return () => {
@@ -1492,6 +1545,16 @@ export function SessionsPage() {
       window.clearInterval(timer);
     };
   }, [activeSessionId, hasActiveSubAgentTasks]);
+
+  useEffect(() => {
+    if (!activeSessionId || rightRailView !== 'runtime') return;
+    const timer = window.setInterval(() => {
+      void fetchRuntimeStatus(activeSessionId, 120);
+    }, 2500);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activeSessionId, rightRailView]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -1851,6 +1914,68 @@ export function SessionsPage() {
       setTasks(Array.isArray(payload?.items) ? payload.items : []);
     } catch { /* ignore polling errors */ }
     finally { setTasksLoading(false); }
+  }
+
+  async function fetchRuntimeStatus(sessionId: string, actionLimit = 80) {
+    try {
+      const payload = await api.get<SessionRuntimeStatus>(`/sessions/${sessionId}/runtime?action_limit=${actionLimit}`);
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeStatus(payload);
+    } catch {
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeStatus(null);
+    }
+  }
+
+  async function fetchRuntimeFiles(sessionId: string, path = '') {
+    setRuntimeFilesLoading(true);
+    try {
+      const query = new URLSearchParams();
+      if (path.trim().length > 0) query.set('path', path.trim());
+      query.set('limit', '400');
+      const suffix = query.toString();
+      const payload = await api.get<SessionRuntimeFilesResponse>(`/sessions/${sessionId}/runtime/files${suffix ? `?${suffix}` : ''}`);
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeFiles(payload);
+      setRuntimePath(payload.path || '');
+      if (runtimeFilePreview && runtimeFilePreview.path.startsWith((payload.path || '').trim())) {
+        // keep preview visible while navigating nearby directories
+      } else {
+        setRuntimeFilePreview(null);
+      }
+    } catch {
+      if (sessionId !== activeSessionIdRef.current) return;
+      setRuntimeFiles(null);
+      setRuntimePath(path);
+      setRuntimeFilePreview(null);
+    } finally {
+      if (sessionId === activeSessionIdRef.current) {
+        setRuntimeFilesLoading(false);
+      }
+    }
+  }
+
+  async function openRuntimeDirectory(path: string) {
+    if (!activeSessionId) return;
+    await fetchRuntimeFiles(activeSessionId, path);
+  }
+
+  async function openRuntimeFile(path: string) {
+    if (!activeSessionId) return;
+    setRuntimePreviewLoading(true);
+    try {
+      const payload = await api.get<SessionRuntimeFilePreviewResponse>(
+        `/sessions/${activeSessionId}/runtime/file?path=${encodeURIComponent(path)}&max_bytes=32000`,
+      );
+      if (activeSessionId !== activeSessionIdRef.current) return;
+      setRuntimeFilePreview(payload);
+    } catch {
+      toast.error('Failed to open runtime file');
+    } finally {
+      if (activeSessionId === activeSessionIdRef.current) {
+        setRuntimePreviewLoading(false);
+      }
+    }
   }
 
   async function terminateTask(taskId: string) {
@@ -2220,6 +2345,16 @@ export function SessionsPage() {
             toolNameForRefresh === 'pythonXagent'
           ) {
             void fetchTasks(sessionId);
+          }
+          if (
+            toolNameForRefresh === 'runtime_exec' ||
+            toolNameForRefresh === 'pythonXagent' ||
+            toolNameForRefresh === 'git_exec'
+          ) {
+            void fetchRuntimeStatus(sessionId, 120);
+            if (rightRailView === 'runtime') {
+              void fetchRuntimeFiles(sessionId, runtimePath);
+            }
           }
         }
         setStreaming((current) => {
@@ -3190,64 +3325,241 @@ export function SessionsPage() {
                           </div>
                        </div>
             
-                       {/* Sub-Agents Panel */}
+                       {/* Sub-Agents / Runtime Panel */}
                        <div className="flex-1 flex flex-col min-h-0">
-                          <div className="flex items-center justify-between p-4 border-b border-[color:var(--border-subtle)]">
-                            <div className="flex items-center gap-2">
-                              <Terminal size={16} className="text-emerald-500" />
-                              <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Sub-Agents</h2>
+                          <div className="flex items-center justify-between p-4 border-b border-[color:var(--border-subtle)] gap-3">
+                            <div className="inline-flex rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-1">
+                              <button
+                                type="button"
+                                onClick={() => setRightRailView('sub_agents')}
+                                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide transition-colors ${
+                                  rightRailView === 'sub_agents'
+                                    ? 'bg-emerald-500/15 text-emerald-400'
+                                    : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
+                                }`}
+                              >
+                                <Terminal size={12} />
+                                Sub-Agents
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRightRailView('runtime')}
+                                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide transition-colors ${
+                                  rightRailView === 'runtime'
+                                    ? 'bg-sky-500/15 text-sky-400'
+                                    : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
+                                }`}
+                              >
+                                <Folder size={12} />
+                                Runtime
+                              </button>
                             </div>
-                            <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-1.5 py-0.5 rounded font-bold">{tasks.length} Active</span>
+                            {rightRailView === 'sub_agents' ? (
+                              <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-1.5 py-0.5 rounded font-bold">
+                                {tasks.filter((task) => task.status === 'running' || task.status === 'pending').length} Active
+                              </span>
+                            ) : (
+                              <span className="text-[10px] bg-sky-500/10 text-sky-500 px-1.5 py-0.5 rounded font-bold">
+                                {runtimeStatusLabel(runtimeStatus)}
+                              </span>
+                            )}
                           </div>
-            
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                {tasks.map(t => (
-                    <div key={t.id} className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] shadow-sm space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-bold truncate">{t.name}</span>
-                        <StatusChip label={t.status} tone={taskStatusTone(t.status)} className="scale-75 origin-right" />
-                      </div>
-                      <p className="text-[10px] text-[color:var(--text-secondary)] line-clamp-2 leading-relaxed">
-                        {t.scope || 'No scope defined.'}
-                      </p>
-                      <div className="flex items-center gap-2 pt-1">
-                        <button
-                            onClick={() => { setSelectedTask(t); setIsTaskModalOpen(true); }}
-                            className="text-[10px] font-bold text-[color:var(--accent-solid)] hover:underline uppercase tracking-wide"
-                        >
-                          View Task
-                        </button>
-                        {(t.status === 'running' || t.status === 'pending') && (
-                          <>
-                            <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
-                            <button
-                                onClick={() => terminateTask(t.id)}
-                                className="text-[10px] font-bold text-rose-500 hover:underline uppercase tracking-wide"
-                            >
-                              Terminate
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                ))}
-                {tasks.length === 0 && (
-                    <div className="h-32 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-50 gap-2">
-                      <Terminal size={24} strokeWidth={1} />
-                      <p className="text-[10px] font-medium uppercase tracking-widest">Idle</p>
-                    </div>
-                )}
-              </div>
-              <div className="p-4 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
-                <button
-                    onClick={() => setIsSpawnModalOpen(true)}
-                    className="btn-primary w-full h-10 text-xs shadow-sm"
-                >
-                  <Plus size={14} />
-                  Spawn Sub-Agent
-                </button>
-              </div>
-            </div>
+
+                          {rightRailView === 'sub_agents' ? (
+                            <>
+                              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                                {tasks.map(t => (
+                                  <div key={t.id} className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] shadow-sm space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-xs font-bold truncate">{t.name}</span>
+                                      <StatusChip label={t.status} tone={taskStatusTone(t.status)} className="scale-75 origin-right" />
+                                    </div>
+                                    <p className="text-[10px] text-[color:var(--text-secondary)] line-clamp-2 leading-relaxed">
+                                      {t.scope || 'No scope defined.'}
+                                    </p>
+                                    <div className="flex items-center gap-2 pt-1">
+                                      <button
+                                        onClick={() => { setSelectedTask(t); setIsTaskModalOpen(true); }}
+                                        className="text-[10px] font-bold text-[color:var(--accent-solid)] hover:underline uppercase tracking-wide"
+                                      >
+                                        View Task
+                                      </button>
+                                      {(t.status === 'running' || t.status === 'pending') && (
+                                        <>
+                                          <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
+                                          <button
+                                            onClick={() => terminateTask(t.id)}
+                                            className="text-[10px] font-bold text-rose-500 hover:underline uppercase tracking-wide"
+                                          >
+                                            Terminate
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                                {tasks.length === 0 && (
+                                  <div className="h-32 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-50 gap-2">
+                                    <Terminal size={24} strokeWidth={1} />
+                                    <p className="text-[10px] font-medium uppercase tracking-widest">Idle</p>
+                                  </div>
+                                )}
+                              </div>
+                              <div className="p-4 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
+                                <button
+                                  onClick={() => setIsSpawnModalOpen(true)}
+                                  className="btn-primary w-full h-10 text-xs shadow-sm"
+                                >
+                                  <Plus size={14} />
+                                  Spawn Sub-Agent
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="flex-1 min-h-0 flex flex-col">
+                              <div className="px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                    Workspace
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (!activeSessionId) return;
+                                      void fetchRuntimeStatus(activeSessionId, 120);
+                                      void fetchRuntimeFiles(activeSessionId, runtimePath);
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
+                                  >
+                                    <RefreshCw size={11} className={runtimeFilesLoading ? 'animate-spin' : ''} />
+                                    Refresh
+                                  </button>
+                                </div>
+                                <div className="mt-2 flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (!activeSessionId || !runtimeFiles || runtimeFiles.parent_path === null) return;
+                                      void openRuntimeDirectory(runtimeFiles.parent_path);
+                                    }}
+                                    disabled={!runtimeFiles || runtimeFiles.parent_path === null || runtimeFilesLoading}
+                                    className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] disabled:opacity-40"
+                                  >
+                                    <ArrowUp size={11} />
+                                    Up
+                                  </button>
+                                  <div className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-mono text-[color:var(--text-secondary)] truncate">
+                                    /workspace{runtimePath ? `/${runtimePath}` : ''}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+                                <div className="space-y-2">
+                                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Files</div>
+                                  {runtimeFilesLoading ? (
+                                    <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
+                                      <Loader2 size={12} className="animate-spin" />
+                                      Loading workspace…
+                                    </div>
+                                  ) : runtimeFiles?.entries?.length ? (
+                                    <div className="space-y-1.5">
+                                      {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
+                                        <button
+                                          key={`${entry.path}:${entry.kind}`}
+                                          type="button"
+                                          onClick={() => {
+                                            if (entry.kind === 'directory') {
+                                              void openRuntimeDirectory(entry.path);
+                                            } else {
+                                              void openRuntimeFile(entry.path);
+                                            }
+                                          }}
+                                          className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
+                                        >
+                                          <div className="flex items-center gap-2 min-w-0">
+                                            {entry.kind === 'directory' ? (
+                                              <Folder size={13} className="text-sky-500 shrink-0" />
+                                            ) : (
+                                              <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
+                                            )}
+                                            <span className="text-[11px] font-semibold truncate">{entry.name}</span>
+                                            <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
+                                          </div>
+                                          <div className="mt-1 text-[9px] text-[color:var(--text-muted)] flex items-center gap-2">
+                                            <span>{entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}</span>
+                                            {entry.modified_at ? <span>{formatCompactDate(entry.modified_at)}</span> : null}
+                                          </div>
+                                        </button>
+                                      ))}
+                                      {runtimeFiles.truncated ? (
+                                        <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated to 400 entries</p>
+                                      ) : null}
+                                    </div>
+                                  ) : (
+                                    <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                                      Workspace is empty.
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="space-y-2">
+                                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Recent Commands</div>
+                                  {runtimeCommandActions.length > 0 ? (
+                                    <div className="space-y-1.5">
+                                      {runtimeCommandActions.slice(0, 25).map((entry, index) => {
+                                        const command = runtimeActionCommand(entry) || '';
+                                        return (
+                                          <div
+                                            key={`${entry.timestamp ?? 'na'}-${entry.action}-${index}`}
+                                            className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2"
+                                          >
+                                            <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                              <Clock3 size={10} />
+                                              <span>{entry.action.replaceAll('_', ' ')}</span>
+                                              <span className="ml-auto">{entry.timestamp ? formatCompactDate(entry.timestamp) : '—'}</span>
+                                            </div>
+                                            <div className="mt-1 text-[10px] font-mono text-[color:var(--text-secondary)] break-all">
+                                              {command}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : (
+                                    <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                                      No runtime commands yet.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="border-t border-[color:var(--border-subtle)] p-4 bg-[color:var(--surface-2)]/20">
+                                <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">File Preview</div>
+                                {runtimePreviewLoading ? (
+                                  <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
+                                    <Loader2 size={12} className="animate-spin" />
+                                    Loading file…
+                                  </div>
+                                ) : runtimeFilePreview ? (
+                                  <div className="space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="text-[11px] font-semibold truncate">{runtimeFilePreview.name}</div>
+                                      <div className="text-[9px] text-[color:var(--text-muted)]">{formatBytes(runtimeFilePreview.size_bytes)}</div>
+                                    </div>
+                                    <pre className="max-h-36 overflow-auto rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2 text-[10px] text-[color:var(--text-secondary)] whitespace-pre-wrap break-words">
+                                      {runtimeFilePreview.content || '[empty file]'}
+                                    </pre>
+                                  </div>
+                                ) : (
+                                  <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                                    Select a file to preview its content.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
           </aside>
         </div>
 

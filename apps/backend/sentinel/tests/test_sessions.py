@@ -1,6 +1,9 @@
 import os
+import tempfile
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from unittest.mock import patch
 
 import jwt
 from fastapi.testclient import TestClient
@@ -373,6 +376,76 @@ def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
         assert payload["source"] == "rebuilt_context_estimate"
         assert isinstance(payload["estimated_context_tokens"], int)
         assert payload["estimated_context_tokens"] > 0
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_file_explorer_endpoints():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        created = client.post("/api/v1/sessions", json={"title": "runtime-explorer"}, headers=headers)
+        assert created.status_code == 200
+        session_id = created.json()["id"]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_base = Path(temp_dir)
+            workspace = runtime_base / session_id / "workspace"
+            (workspace / "src").mkdir(parents=True, exist_ok=True)
+            (workspace / "src" / "main.py").write_text("print('ok')\n", encoding="utf-8")
+            (workspace / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with patch("app.services.session_runtime._RUNTIME_BASE_DIR", runtime_base):
+                files_root = client.get(f"/api/v1/sessions/{session_id}/runtime/files", headers=headers)
+                assert files_root.status_code == 200
+                root_payload = files_root.json()
+                names = {item["name"] for item in root_payload["entries"]}
+                assert {"src", "README.md"} <= names
+
+                files_src = client.get(
+                    f"/api/v1/sessions/{session_id}/runtime/files?path=src",
+                    headers=headers,
+                )
+                assert files_src.status_code == 200
+                src_payload = files_src.json()
+                assert src_payload["path"] == "src"
+                assert src_payload["parent_path"] == ""
+                assert any(item["name"] == "main.py" and item["kind"] == "file" for item in src_payload["entries"])
+
+                preview = client.get(
+                    f"/api/v1/sessions/{session_id}/runtime/file?path=src/main.py",
+                    headers=headers,
+                )
+                assert preview.status_code == 200
+                preview_payload = preview.json()
+                assert preview_payload["name"] == "main.py"
+                assert "print('ok')" in preview_payload["content"]
+
+                forbidden = client.get(
+                    f"/api/v1/sessions/{session_id}/runtime/files?path=../secrets",
+                    headers=headers,
+                )
+                assert forbidden.status_code == 400
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
