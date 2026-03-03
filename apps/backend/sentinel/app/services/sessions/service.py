@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -12,9 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import Memory, Message, Session
+from app.models import GitPushApproval, Memory, Message, Session
 from app.services.context_usage import (
     build_context_usage_metrics,
+    estimate_agent_messages_tokens,
     estimate_db_messages_tokens,
     extract_runtime_context_metrics,
     normalize_context_budget,
@@ -23,13 +25,24 @@ from app.services import session_bindings
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
 from app.services.llm.ids import TierName
-from app.services.session_runtime import cleanup_session_runtime, get_session_runtime_snapshot
+from app.services.session_runtime import (
+    cleanup_session_runtime,
+    get_session_runtime_snapshot,
+    list_runtime_workspace_git_changed_files,
+    list_runtime_workspace_git_roots,
+    list_runtime_workspace_entries,
+    read_runtime_workspace_git_diff,
+    read_runtime_workspace_file_preview,
+    stop_all_detached_runtime_jobs,
+)
 from app.services.sessions.errors import (
     AgentLoopUnavailableError,
     ChatPayloadRequiredError,
     MainSessionDeletionError,
     MainSessionTargetInvalidError,
     MessageNotFoundError,
+    RuntimePathInvalidError,
+    RuntimePathNotFoundError,
     SessionNotFoundError,
 )
 
@@ -219,6 +232,129 @@ class SessionService:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
         return get_session_runtime_snapshot(session.id, action_limit=action_limit)
 
+    async def list_runtime_files(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return list_runtime_workspace_entries(
+                session.id,
+                path=path,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
+        except NotADirectoryError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime path is not a directory") from exc
+
+    async def get_runtime_file_preview(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+        max_bytes: int,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return read_runtime_workspace_file_preview(
+                session.id,
+                path=path,
+                max_bytes=max_bytes,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
+        except IsADirectoryError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime path is a directory") from exc
+
+    async def list_runtime_git_roots(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return list_runtime_workspace_git_roots(
+                session.id,
+                path=path,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
+        except NotADirectoryError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime path is not a directory") from exc
+
+    async def get_runtime_git_diff(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+        base_ref: str,
+        staged: bool,
+        context_lines: int,
+        max_bytes: int,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return read_runtime_workspace_git_diff(
+                session.id,
+                path=path,
+                base_ref=base_ref,
+                staged=staged,
+                context_lines=context_lines,
+                max_bytes=max_bytes,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
+        except IsADirectoryError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime path is a directory") from exc
+        except RuntimeError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime git diff failed") from exc
+
+    async def get_runtime_git_changed_files(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return list_runtime_workspace_git_changed_files(
+                session.id,
+                path=path,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
+        except RuntimeError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Runtime git status failed") from exc
+
     async def get_context_usage(
         self,
         db: AsyncSession,
@@ -262,20 +398,31 @@ class SessionService:
             break
 
         if usage_tokens is None:
-            message_result = await db.execute(
-                select(Message)
-                .where(Message.session_id == session.id)
-                .order_by(Message.created_at.asc())
-            )
-            messages = message_result.scalars().all()
-            fallback = build_context_usage_metrics(
-                estimated_tokens=estimate_db_messages_tokens(messages),
+            rebuilt = await self._estimate_rebuilt_context_usage(
+                db,
+                session_id=session.id,
                 context_budget=budget,
             )
-            budget = fallback.context_token_budget
-            usage_tokens = fallback.estimated_context_tokens
-            usage_percent = fallback.estimated_context_percent
-            source = "db_messages_fallback"
+            if rebuilt is not None:
+                budget = rebuilt.context_token_budget
+                usage_tokens = rebuilt.estimated_context_tokens
+                usage_percent = rebuilt.estimated_context_percent
+                source = "rebuilt_context_estimate"
+            else:
+                message_result = await db.execute(
+                    select(Message)
+                    .where(Message.session_id == session.id)
+                    .order_by(Message.created_at.asc())
+                )
+                messages = message_result.scalars().all()
+                fallback = build_context_usage_metrics(
+                    estimated_tokens=estimate_db_messages_tokens(messages),
+                    context_budget=budget,
+                )
+                budget = fallback.context_token_budget
+                usage_tokens = fallback.estimated_context_tokens
+                usage_percent = fallback.estimated_context_percent
+                source = "db_messages_fallback"
 
         return {
             "session_id": session.id,
@@ -285,6 +432,31 @@ class SessionService:
             "snapshot_created_at": snapshot_created_at,
             "source": source,
         }
+
+    async def _estimate_rebuilt_context_usage(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        context_budget: int,
+    ):
+        """Estimate context using the same builder path used before actual runs."""
+        context_builder = getattr(self._agent_loop, "context_builder", None)
+        if context_builder is None or not hasattr(context_builder, "build"):
+            return None
+        try:
+            built = await context_builder.build(
+                db,
+                session_id,
+                system_prompt=None,
+                pending_user_message=None,
+            )
+        except Exception:
+            return None
+        return build_context_usage_metrics(
+            estimated_tokens=estimate_agent_messages_tokens(built),
+            context_budget=context_budget,
+        )
 
     async def cleanup_runtime(
         self,
@@ -326,7 +498,94 @@ class SessionService:
         user_id: str,
     ) -> bool:
         _ = await self.get_session(db, session_id=session_id, user_id=user_id)
-        return await self._run_registry.cancel(str(session_id))
+        cancelled = await self._run_registry.cancel(str(session_id))
+        now = datetime.now(UTC)
+        has_mutations = False
+        pending_result = await db.execute(
+            select(GitPushApproval).where(
+                GitPushApproval.session_id == session_id,
+                GitPushApproval.status == "pending",
+            )
+        )
+        pending_rows = pending_result.scalars().all()
+        if pending_rows:
+            for row in pending_rows:
+                row.status = "cancelled"
+                row.decision_note = "Cancelled by user via stop"
+                row.resolved_at = now
+            has_mutations = True
+
+        unresolved_tool_calls = await self._unresolved_tool_calls(db, session_id=session_id)
+        if unresolved_tool_calls:
+            content = json.dumps(
+                {
+                    "status": "cancelled",
+                    "message": "Tool call cancelled by user via stop.",
+                }
+            )
+            for call in unresolved_tool_calls:
+                db.add(
+                    Message(
+                        session_id=session_id,
+                        role="tool_result",
+                        content=content,
+                        metadata_json={"pending": False, "cancelled_by_stop": True},
+                        tool_call_id=call["id"],
+                        tool_name=call["name"],
+                    )
+                )
+            has_mutations = True
+
+        if has_mutations:
+            await db.commit()
+        await stop_all_detached_runtime_jobs(
+            session_id,
+            reason="Cancelled by user via stop",
+        )
+        return cancelled
+
+    async def _unresolved_tool_calls(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+    ) -> list[dict[str, str]]:
+        result = await db.execute(
+            select(Message).where(Message.session_id == session_id).order_by(Message.created_at.asc())
+        )
+        messages = result.scalars().all()
+
+        resolved_ids: set[str] = set()
+        pending_order: list[str] = []
+        pending: dict[str, dict[str, str]] = {}
+
+        for item in messages:
+            role = str(item.role or "")
+            if role == "assistant":
+                metadata = item.metadata_json if isinstance(item.metadata_json, dict) else {}
+                tool_calls = metadata.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+                for raw_call in tool_calls:
+                    if not isinstance(raw_call, dict):
+                        continue
+                    call_id = str(raw_call.get("id") or "").strip()
+                    if not call_id or call_id in resolved_ids or call_id in pending:
+                        continue
+                    call_name = str(raw_call.get("name") or "unknown").strip() or "unknown"
+                    pending[call_id] = {"id": call_id, "name": call_name}
+                    pending_order.append(call_id)
+                continue
+
+            if role not in {"tool", "tool_result"}:
+                continue
+            call_id = str(item.tool_call_id or "").strip()
+            if not call_id:
+                continue
+            resolved_ids.add(call_id)
+            pending.pop(call_id, None)
+
+        return [pending[call_id] for call_id in pending_order if call_id in pending]
 
     async def create_message(
         self,

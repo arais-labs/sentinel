@@ -9,6 +9,7 @@ import {
   Send,
   MonitorPlay,
   Settings,
+  GitBranch,
   Moon,
   Sun,
   Menu,
@@ -17,7 +18,7 @@ import {
   Activity,
 } from 'lucide-react';
 
-import { APP_VERSION } from '../lib/env';
+import { APP_VERSION, SENTINEL_APP_URL } from '../lib/env';
 import { api } from '../lib/api';
 import {
   ARAIOS_SWITCH_URL_EVENT,
@@ -32,6 +33,8 @@ interface AppShellProps extends PropsWithChildren {
   subtitle?: string;
   actions?: ReactNode;
   contentClassName?: string;
+  hideSidebar?: boolean;
+  hideHeader?: boolean;
 }
 
 interface NavItem {
@@ -52,6 +55,7 @@ const navItems: NavItem[] = [
   { label: 'Memory', path: '/memory', icon: Database },
   { label: 'Triggers', path: '/triggers', icon: Zap },
   { label: 'Tools', path: '/tools', icon: Wrench },
+  { label: 'Git', path: '/git', icon: GitBranch },
   { label: 'Telegram', path: '/telegram', icon: Send },
   { label: 'Showcase', path: '/showcase', icon: MonitorPlay },
   { label: 'Settings', path: '/settings', icon: Settings },
@@ -70,6 +74,9 @@ function isActive(pathname: string, candidate: string) {
   if (candidate === '/telegram') {
     return pathname.startsWith('/telegram');
   }
+  if (candidate === '/git') {
+    return pathname.startsWith('/git');
+  }
   return pathname === candidate;
 }
 
@@ -79,6 +86,8 @@ export function AppShell({
   actions,
   children,
   contentClassName = '',
+  hideSidebar = false,
+  hideHeader = false,
 }: AppShellProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -132,7 +141,7 @@ export function AppShell({
   const renderAppSwitcher = (currentApp: 'araios' | 'sentinel') => {
     const appSwitchItems: AppSwitchItem[] = [
       { id: 'araios', label: 'araiOS', href: araiosHref },
-      { id: 'sentinel', label: 'Sentinel', href: '/sentinel/' },
+      { id: 'sentinel', label: 'Sentinel', href: SENTINEL_APP_URL },
     ];
 
     return (
@@ -166,6 +175,7 @@ export function AppShell({
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">
       {/* Sidebar Desktop */}
+      {!hideSidebar ? (
       <aside
         className={`hidden md:flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] transition-all duration-200 ease-in-out ${
           isSidebarExpanded ? 'w-64' : 'w-16'
@@ -222,10 +232,12 @@ export function AppShell({
           </button>
         </div>
       </aside>
+      ) : null}
 
       {/* Main Content Area */}
       <div className="flex flex-1 flex-col min-w-0">
         {/* Header */}
+        {!hideHeader ? (
         <header className="grid h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-4 md:px-6 gap-2">
           <div className="flex items-center gap-4 min-w-0">
             <button
@@ -250,6 +262,7 @@ export function AppShell({
             {actions}
           </div>
         </header>
+        ) : null}
 
         {/* Content */}
         <main className={`flex-1 overflow-y-auto p-4 md:p-6 ${contentClassName}`}>
@@ -258,7 +271,7 @@ export function AppShell({
       </div>
 
       {/* Mobile Menu Overlay */}
-      {isMobileMenuOpen && (
+      {!hideSidebar && isMobileMenuOpen && (
         <div className="fixed inset-0 z-50 flex md:hidden">
           <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)} />
           <div className="relative flex w-64 flex-col bg-[color:var(--surface-0)] animate-in slide-in-from-left duration-200">

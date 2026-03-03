@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 
 import jwt
 from fastapi.testclient import TestClient
@@ -9,10 +10,15 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 from app.dependencies import get_db, get_llm_provider
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.models import SessionSummary
+from app.models import Message, Session, SessionSummary
+from app.services.compaction import CompactionService
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent
 from tests.fake_db import FakeDB
+
+
+def _run(coro):
+    return asyncio.run(coro)
 
 
 def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") -> str:
@@ -150,3 +156,53 @@ def test_compaction_noop_when_context_is_small():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
+
+
+def test_compaction_retains_coherent_recent_turn_not_just_last_10_rows():
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="turn-aware-retain")
+    fake_db.add(session)
+
+    # Older turn to compact away
+    fake_db.add(Message(session_id=session.id, role="user", content="old-user-1", metadata_json={}))
+    fake_db.add(Message(session_id=session.id, role="assistant", content="old-assistant-1", metadata_json={}))
+
+    # Most recent turn: one user + many tool results + final assistant.
+    # Legacy row-count retention would drop this user row when trimming to last 10 rows.
+    fake_db.add(Message(session_id=session.id, role="user", content="latest-user-turn", metadata_json={}))
+    for idx in range(15):
+        fake_db.add(
+            Message(
+                session_id=session.id,
+                role="tool_result",
+                content=f'{{"status":"ok","idx":{idx}}}',
+                metadata_json={"is_error": False},
+                tool_call_id=f"tool_{idx}",
+                tool_name="araios_api",
+            )
+        )
+    fake_db.add(
+        Message(
+            session_id=session.id,
+            role="assistant",
+            content="latest assistant answer",
+            metadata_json={"stop_reason": "stop"},
+        )
+    )
+
+    service = CompactionService(provider=None)
+    result = _run(service.compact_session(fake_db, session_id=session.id, user_id="dev-admin"))
+    assert result.raw_token_count > 0
+
+    kept = [m for m in fake_db.storage[Message] if m.session_id == session.id]
+    kept.sort(key=lambda m: m.created_at)
+    assert len(kept) > 10
+    assert any(m.role == "user" and m.content == "latest-user-turn" for m in kept)
+    assert kept[0].role == "user"
+    assert kept[0].content == "latest-user-turn"
+
+    summaries = [s for s in fake_db.storage[SessionSummary] if s.session_id == session.id]
+    assert len(summaries) == 1
+    summary_payload = summaries[0].summary or {}
+    assert summary_payload.get("active_message_count") == len(kept)
+    assert summary_payload.get("compacted_message_count") == 2

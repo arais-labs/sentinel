@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from sqlalchemy import select
@@ -34,8 +34,15 @@ from app.services.memory import (
 )
 from app.services.memory.search import MemorySearchService
 from app.services.session_runtime import (
+    finalize_detached_runtime_job,
+    get_detached_runtime_job,
+    list_detached_runtime_jobs,
+    read_detached_runtime_job_logs,
+    register_detached_runtime_job,
     ensure_runtime_layout,
     mark_runtime_state,
+    runtime_logs_dir,
+    stop_detached_runtime_job,
     runtime_venv_dir,
     runtime_workspace_dir,
 )
@@ -48,6 +55,7 @@ from app.services.tools.trigger_tools import (
     trigger_list_tool,
     trigger_update_tool,
 )
+from app.services.tools.git_exec import git_exec_tool
 
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
 _ALLOWED_MEMORY_CATEGORIES = {"core", "preference", "project", "correction"}
@@ -86,6 +94,11 @@ def build_default_registry(
     registry.register(_http_request_tool())
     if session_factory is not None:
         registry.register(_runtime_exec_tool(session_factory=session_factory))
+        registry.register(_runtime_jobs_list_tool(session_factory=session_factory))
+        registry.register(_runtime_job_status_tool(session_factory=session_factory))
+        registry.register(_runtime_job_logs_tool(session_factory=session_factory))
+        registry.register(_runtime_job_stop_tool(session_factory=session_factory))
+        registry.register(git_exec_tool(session_factory=session_factory))
     registry.register(_browser_navigate_tool(manager))
     registry.register(_browser_screenshot_tool(manager))
     registry.register(_browser_click_tool(manager))
@@ -355,8 +368,10 @@ def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> To
     return ToolDefinition(
         name="araios_api",
         description=(
-            "Call the configured araiOS backend using its integrated agent API key. "
-            "Handles API-key exchange to bearer tokens automatically."
+            "Call the configured araiOS backend using relative paths (for example: '/api/agent'). "
+            "Start discovery with path '/api/agent' to inspect available modules/endpoints. "
+            "Authentication is handled automatically via integrated agent API key exchange; "
+            "do not provide Authorization headers manually."
         ),
         risk_level="medium",
         parameters_schema={
@@ -607,6 +622,10 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
             raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
         timeout_seconds = min(timeout_seconds, 1800)
 
+        detached = payload.get("detached", False)
+        if not isinstance(detached, bool):
+            raise ToolValidationError("Field 'detached' must be a boolean")
+
         use_python_venv = payload.get("use_python_venv", False)
         if not isinstance(use_python_venv, bool):
             raise ToolValidationError("Field 'use_python_venv' must be a boolean")
@@ -665,13 +684,75 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
             run_dir.mkdir(parents=True, exist_ok=True)
 
         proc: asyncio.subprocess.Process | None = None
+        detached_started = False
         await mark_runtime_state(session_id, active=True, command=command.strip(), pid=None)
         try:
+            command_text = command.strip()
+            if detached:
+                logs_dir = runtime_logs_dir(session_id)
+                logs_dir.mkdir(parents=True, exist_ok=True)
+                log_token = uuid4().hex[:10]
+                stdout_path = logs_dir / f"{log_token}.stdout.log"
+                stderr_path = logs_dir / f"{log_token}.stderr.log"
+                stdout_path.touch(exist_ok=True)
+                stderr_path.touch(exist_ok=True)
+                with stdout_path.open("ab") as stdout_handle, stderr_path.open("ab") as stderr_handle:
+                    if os.name == "nt":
+                        proc = await asyncio.create_subprocess_exec(
+                            "cmd",
+                            "/C",
+                            command_text,
+                            cwd=str(run_dir),
+                            env=env,
+                            stdin=asyncio.subprocess.DEVNULL,
+                            stdout=stdout_handle,
+                            stderr=stderr_handle,
+                        )
+                    else:
+                        proc = await asyncio.create_subprocess_exec(
+                            "/bin/bash",
+                            "-lc",
+                            command_text,
+                            cwd=str(run_dir),
+                            env=env,
+                            stdin=asyncio.subprocess.DEVNULL,
+                            stdout=stdout_handle,
+                            stderr=stderr_handle,
+                            start_new_session=True,
+                        )
+
+                await mark_runtime_state(session_id, active=True, command=command_text, pid=proc.pid)
+                job = await register_detached_runtime_job(
+                    session_id,
+                    command=command_text,
+                    cwd=run_dir,
+                    pid=proc.pid,
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                )
+                detached_started = True
+                await mark_runtime_state(
+                    session_id,
+                    active=False,
+                    command=command_text,
+                    pid=proc.pid,
+                )
+                _watch_detached_runtime_process(proc=proc, session_id=session_id, job_id=str(job["id"]))
+                return {
+                    "ok": True,
+                    "detached": True,
+                    "job": job,
+                    "session_id": str(session_id),
+                    "workspace": str(workspace_dir),
+                    "cwd": str(run_dir),
+                    "venv": str(venv_dir) if use_python_venv else None,
+                }
+
             if os.name == "nt":
                 proc = await asyncio.create_subprocess_exec(
                     "cmd",
                     "/C",
-                    command.strip(),
+                    command_text,
                     cwd=str(run_dir),
                     env=env,
                     stdout=asyncio.subprocess.PIPE,
@@ -681,7 +762,7 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                 proc = await asyncio.create_subprocess_exec(
                     "/bin/bash",
                     "-lc",
-                    command.strip(),
+                    command_text,
                     cwd=str(run_dir),
                     env=env,
                     stdout=asyncio.subprocess.PIPE,
@@ -689,7 +770,7 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                     start_new_session=True,
                 )
 
-            await mark_runtime_state(session_id, active=True, command=command.strip(), pid=proc.pid)
+            await mark_runtime_state(session_id, active=True, command=command_text, pid=proc.pid)
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
                 timed_out = False
@@ -715,12 +796,13 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                 "venv": str(venv_dir) if use_python_venv else None,
             }
         finally:
-            await mark_runtime_state(
-                session_id,
-                active=False,
-                command=command.strip(),
-                pid=proc.pid if proc is not None else None,
-            )
+            if not detached_started:
+                await mark_runtime_state(
+                    session_id,
+                    active=False,
+                    command=command.strip(),
+                    pid=proc.pid if proc is not None else None,
+                )
 
     return ToolDefinition(
         name="runtime_exec",
@@ -755,6 +837,198 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                     "type": "integer",
                     "description": "Execution timeout in seconds (default 300, max 1800)",
                 },
+                "detached": {
+                    "type": "boolean",
+                    "description": "If true, starts command in background and returns a tracked job immediately",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _watch_detached_runtime_process(
+    *,
+    proc: asyncio.subprocess.Process,
+    session_id: UUID,
+    job_id: str,
+) -> None:
+    async def _watch() -> None:
+        try:
+            returncode = await proc.wait()
+            await finalize_detached_runtime_job(
+                session_id,
+                job_id=job_id,
+                returncode=returncode,
+            )
+        except Exception as exc:  # noqa: BLE001
+            await finalize_detached_runtime_job(
+                session_id,
+                job_id=job_id,
+                returncode=None,
+                error=str(exc),
+            )
+
+    asyncio.create_task(_watch())
+
+
+def _runtime_jobs_list_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        session_id_raw = payload.get("session_id")
+        if not isinstance(session_id_raw, str) or not session_id_raw.strip():
+            raise ToolValidationError("Field 'session_id' must be a non-empty string")
+        try:
+            session_id = UUID(session_id_raw.strip())
+        except ValueError as exc:
+            raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+        include_completed = payload.get("include_completed", True)
+        if not isinstance(include_completed, bool):
+            raise ToolValidationError("Field 'include_completed' must be a boolean")
+        await _ensure_session_exists(session_factory, session_id)
+        jobs = await list_detached_runtime_jobs(session_id, include_completed=include_completed)
+        return {
+            "session_id": str(session_id),
+            "jobs": jobs,
+            "total": len(jobs),
+        }
+
+    return ToolDefinition(
+        name="runtime_jobs_list",
+        description="List tracked detached runtime_exec background jobs for the current session.",
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id"],
+            "properties": {
+                "session_id": {"type": "string", "description": "Current session ID"},
+                "include_completed": {"type": "boolean"},
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _runtime_job_status_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        session_id_raw = payload.get("session_id")
+        job_id = payload.get("job_id")
+        if not isinstance(session_id_raw, str) or not session_id_raw.strip():
+            raise ToolValidationError("Field 'session_id' must be a non-empty string")
+        if not isinstance(job_id, str) or not job_id.strip():
+            raise ToolValidationError("Field 'job_id' must be a non-empty string")
+        try:
+            session_id = UUID(session_id_raw.strip())
+        except ValueError as exc:
+            raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+        await _ensure_session_exists(session_factory, session_id)
+        job = await get_detached_runtime_job(session_id, job_id=job_id.strip())
+        if job is None:
+            raise ToolValidationError("Detached runtime job not found")
+        return {"session_id": str(session_id), "job": job}
+
+    return ToolDefinition(
+        name="runtime_job_status",
+        description="Get status for a detached runtime_exec background job by job_id.",
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id", "job_id"],
+            "properties": {
+                "session_id": {"type": "string", "description": "Current session ID"},
+                "job_id": {"type": "string"},
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _runtime_job_logs_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        session_id_raw = payload.get("session_id")
+        job_id = payload.get("job_id")
+        if not isinstance(session_id_raw, str) or not session_id_raw.strip():
+            raise ToolValidationError("Field 'session_id' must be a non-empty string")
+        if not isinstance(job_id, str) or not job_id.strip():
+            raise ToolValidationError("Field 'job_id' must be a non-empty string")
+        try:
+            session_id = UUID(session_id_raw.strip())
+        except ValueError as exc:
+            raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+        tail_bytes = payload.get("tail_bytes", 8000)
+        if (
+            not isinstance(tail_bytes, int)
+            or isinstance(tail_bytes, bool)
+            or tail_bytes < 256
+        ):
+            raise ToolValidationError("Field 'tail_bytes' must be an integer >= 256")
+        await _ensure_session_exists(session_factory, session_id)
+        data = await read_detached_runtime_job_logs(
+            session_id,
+            job_id=job_id.strip(),
+            tail_bytes=tail_bytes,
+        )
+        if data is None:
+            raise ToolValidationError("Detached runtime job not found")
+        return {"session_id": str(session_id), **data}
+
+    return ToolDefinition(
+        name="runtime_job_logs",
+        description="Read recent stdout/stderr logs for a detached runtime_exec job.",
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id", "job_id"],
+            "properties": {
+                "session_id": {"type": "string", "description": "Current session ID"},
+                "job_id": {"type": "string"},
+                "tail_bytes": {"type": "integer"},
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _runtime_job_stop_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        session_id_raw = payload.get("session_id")
+        job_id = payload.get("job_id")
+        if not isinstance(session_id_raw, str) or not session_id_raw.strip():
+            raise ToolValidationError("Field 'session_id' must be a non-empty string")
+        if not isinstance(job_id, str) or not job_id.strip():
+            raise ToolValidationError("Field 'job_id' must be a non-empty string")
+        try:
+            session_id = UUID(session_id_raw.strip())
+        except ValueError as exc:
+            raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+        force = payload.get("force", False)
+        if not isinstance(force, bool):
+            raise ToolValidationError("Field 'force' must be a boolean")
+        await _ensure_session_exists(session_factory, session_id)
+        job = await stop_detached_runtime_job(
+            session_id,
+            job_id=job_id.strip(),
+            force=force,
+            reason="Stopped by runtime_job_stop tool",
+        )
+        if job is None:
+            raise ToolValidationError("Detached runtime job not found")
+        return {"session_id": str(session_id), "job": job}
+
+    return ToolDefinition(
+        name="runtime_job_stop",
+        description="Stop a detached runtime_exec background job by job_id.",
+        risk_level="medium",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id", "job_id"],
+            "properties": {
+                "session_id": {"type": "string", "description": "Current session ID"},
+                "job_id": {"type": "string"},
+                "force": {"type": "boolean"},
             },
         },
         execute=_execute,

@@ -380,6 +380,8 @@ POSTGRES_USER=$u
 POSTGRES_PASSWORD=$pw
 JWT_SECRET_KEY=$jwt
 JWT_ALGORITHM=HS256
+APP_SENTINEL_URL=/sentinel/
+APP_ARAIOS_URL=/araios/
 EOF
   chmod 600 "$ef"
   success "Config saved for '$inst'."
