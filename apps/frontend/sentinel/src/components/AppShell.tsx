@@ -45,7 +45,6 @@ interface AppSwitchItem {
 }
 
 interface AraiosIntegrationStatus {
-  sentinel_frontend_url: string | null;
   araios_frontend_url: string | null;
 }
 
@@ -95,8 +94,9 @@ export function AppShell({
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const defaultSentinelHref = `${window.location.origin.replace(/\/+$/, '')}/sentinel`;
   const [switchLinks, setSwitchLinks] = useState<{ sentinelHref: string; araiosHref: string }>({
-    sentinelHref: '',
+    sentinelHref: defaultSentinelHref,
     araiosHref: '',
   });
 
@@ -127,7 +127,7 @@ export function AppShell({
         const integration = await api.get<AraiosIntegrationStatus>('/settings/araios');
         if (mounted) {
           setSwitchLinks({
-            sentinelHref: normalizeHref(integration.sentinel_frontend_url),
+            sentinelHref: defaultSentinelHref,
             araiosHref: normalizeHref(integration.araios_frontend_url),
           });
         }

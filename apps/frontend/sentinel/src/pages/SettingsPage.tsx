@@ -32,7 +32,6 @@ interface ProvidersStatusResponse {
 
 interface AraiOSIntegrationResponse {
   configured: boolean;
-  sentinel_frontend_url: string | null;
   araios_frontend_url: string | null;
   araios_backend_url: string | null;
   masked_agent_api_key: string | null;
@@ -245,7 +244,6 @@ export function SettingsPage() {
   const [araiosStatus, setAraiosStatus] = useState<AraiOSIntegrationResponse | null>(null);
   const [loadingAraiOS, setLoadingAraiOS] = useState(true);
   const [savingAraiOS, setSavingAraiOS] = useState(false);
-  const [sentinelFrontendUrl, setSentinelFrontendUrl] = useState('');
   const [araiosFrontendUrl, setAraiosFrontendUrl] = useState('');
   const [araiosBackendUrl, setAraiosBackendUrl] = useState('');
   const [araiosAgentApiKey, setAraiosAgentApiKey] = useState('');
@@ -259,7 +257,6 @@ export function SettingsPage() {
       ]);
       setProviderStatus(providers);
       setAraiosStatus(araios);
-      setSentinelFrontendUrl(araios.sentinel_frontend_url || '');
       setAraiosFrontendUrl(araios.araios_frontend_url || '');
       setAraiosBackendUrl(araios.araios_backend_url || '');
     } catch {
@@ -319,10 +316,6 @@ export function SettingsPage() {
   }
 
   async function handleSaveAraiOS() {
-    if (!sentinelFrontendUrl.trim()) {
-      toast.error('Sentinel frontend URL is required');
-      return;
-    }
     if (!araiosFrontendUrl.trim()) {
       toast.error('AraiOS frontend URL is required');
       return;
@@ -335,7 +328,6 @@ export function SettingsPage() {
     try {
       await api.post('/settings/araios', {
         enabled: true,
-        sentinel_frontend_url: sentinelFrontendUrl.trim(),
         araios_frontend_url: araiosFrontendUrl.trim(),
         araios_backend_url: araiosBackendUrl.trim(),
         agent_api_key: araiosAgentApiKey.trim() || undefined,
@@ -574,16 +566,6 @@ export function SettingsPage() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Sentinel Frontend URL</label>
-                <input
-                  value={sentinelFrontendUrl}
-                  onChange={(e) => setSentinelFrontendUrl(e.target.value)}
-                  placeholder="http://localhost:4747/sentinel/"
-                  className="input-field h-10 font-mono text-xs"
-                />
-              </div>
-
-              <div className="space-y-2">
                 <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Frontend URL</label>
                 <input
                   value={araiosFrontendUrl}
@@ -633,7 +615,6 @@ export function SettingsPage() {
                   onClick={handleSaveAraiOS}
                   disabled={
                     savingAraiOS
-                    || !sentinelFrontendUrl.trim()
                     || !araiosFrontendUrl.trim()
                     || !araiosBackendUrl.trim()
                   }

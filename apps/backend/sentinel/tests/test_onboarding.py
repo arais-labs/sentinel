@@ -455,7 +455,6 @@ def test_onboarding_araios_integration_configure_and_disable():
             "/api/v1/settings/araios",
             json={
                 "enabled": True,
-                "sentinel_frontend_url": "http://localhost:4747/sentinel",
                 "araios_frontend_url": "http://localhost:4747/araios",
                 "araios_backend_url": "http://araios-backend:9000",
                 "agent_api_key": "sk-arais-agent-test",
@@ -468,7 +467,7 @@ def test_onboarding_araios_integration_configure_and_disable():
         status = client.get("/api/v1/settings/araios", headers=headers)
         assert status.status_code == 200
         assert status.json()["configured"] is True
-        assert status.json()["sentinel_frontend_url"] == "http://localhost:4747/sentinel"
+        assert "sentinel_frontend_url" not in status.json()
         assert status.json()["araios_frontend_url"] == "http://localhost:4747/araios"
         assert status.json()["araios_backend_url"] == "http://araios-backend:9000"
         assert status.json()["masked_agent_api_key"] is not None
@@ -477,7 +476,6 @@ def test_onboarding_araios_integration_configure_and_disable():
             "/api/v1/settings/araios",
             json={
                 "enabled": False,
-                "sentinel_frontend_url": "http://localhost:4747/sentinel",
                 "araios_frontend_url": "http://localhost:4747/araios",
             },
             headers=headers,
@@ -488,7 +486,7 @@ def test_onboarding_araios_integration_configure_and_disable():
         status_after = client.get("/api/v1/settings/araios", headers=headers)
         assert status_after.status_code == 200
         assert status_after.json()["configured"] is False
-        assert status_after.json()["sentinel_frontend_url"] == "http://localhost:4747/sentinel"
+        assert "sentinel_frontend_url" not in status_after.json()
         assert status_after.json()["araios_frontend_url"] == "http://localhost:4747/araios"
         assert status_after.json()["araios_backend_url"] is None
     finally:
@@ -520,7 +518,6 @@ def test_onboarding_araios_integration_allows_backend_url_update_without_new_key
             "/api/v1/settings/araios",
             json={
                 "enabled": True,
-                "sentinel_frontend_url": "http://localhost:4747/sentinel",
                 "araios_frontend_url": "http://localhost:4747/araios",
                 "araios_backend_url": "http://araios-backend:9000",
                 "agent_api_key": "sk-arais-agent-test",
@@ -543,7 +540,7 @@ def test_onboarding_araios_integration_allows_backend_url_update_without_new_key
         status = client.get("/api/v1/settings/araios", headers=headers)
         assert status.status_code == 200
         assert status.json()["configured"] is True
-        assert status.json()["sentinel_frontend_url"] == "http://localhost:4747/sentinel"
+        assert "sentinel_frontend_url" not in status.json()
         assert status.json()["araios_frontend_url"] == "http://localhost:4747/araios"
         assert status.json()["araios_backend_url"] == "https://new-araios.example.com"
         assert status.json()["masked_agent_api_key"] is not None
