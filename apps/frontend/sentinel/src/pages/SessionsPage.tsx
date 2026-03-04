@@ -1653,15 +1653,22 @@ export function SessionsPage() {
     [selectableVisibleSessionIds, selectedSessionIdSet],
   );
 
+  const markSessionRead = useCallback((sessionId: string) => {
+    setSessions((current) =>
+      current.map((s) => s.id === sessionId ? { ...s, has_unread: false } : s),
+    );
+    api.post(`/sessions/${sessionId}/read`, {}).catch(() => {/* best-effort */});
+  }, []);
+
   const onSessionClick = useCallback((id: string) => {
+    const previousId = activeSessionIdRef.current;
+    if (previousId) {
+      markSessionRead(previousId);
+    }
     setActiveSessionId(id);
     navigate(`/sessions/${id}`);
-    // Mark as read locally + server-side
-    setSessions((current) =>
-      current.map((s) => s.id === id ? { ...s, has_unread: false } : s),
-    );
-    api.post(`/sessions/${id}/read`, {}).catch(() => {/* best-effort */});
-  }, [navigate]);
+    markSessionRead(id);
+  }, [markSessionRead, navigate]);
 
   const startResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -2944,6 +2951,7 @@ export function SessionsPage() {
         } else {
           // Final done — agent turn complete, reset everything
           setStreaming((current) => ({ ...current, isThinking: false, isStreaming: false, isCompactingContext: false, agentIteration: 0, agentMaxIterations: 0 }));
+          markSessionRead(sessionId);
           void loadMessages(sessionId);
           void fetchContextUsage(sessionId);
         }
