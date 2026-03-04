@@ -182,6 +182,12 @@ compose_instance() {
   docker compose --project-name "$(instance_project_name "$inst")" --env-file "$(instance_env_file "$inst")" "$@"
 }
 
+compose_instance_dev() {
+  local inst="$1"
+  shift
+  docker compose -f docker-compose.dev.yml --project-name "$(instance_project_name "$inst")" --env-file "$(instance_env_file "$inst")" "$@"
+}
+
 trim_lower() {
   echo "$1" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | tr '[:upper:]' '[:lower:]'
 }
@@ -248,6 +254,7 @@ apply_auth_managed_instance() {
   local target="$2"
   local username_raw="$3"
   local password_raw="$4"
+  local compose_runner="${5:-compose_instance}"
   local ef="$(instance_env_file "$inst")"
   local db_name="$(read_env_value "$ef" "POSTGRES_DB" || true)"
   local db_user="$(read_env_value "$ef" "POSTGRES_USER" || true)"
@@ -281,7 +288,7 @@ apply_auth_managed_instance() {
   for _ in {1..30}; do
     local output
     if output="$(
-      compose_instance "$inst" exec -T postgres env PGPASSWORD="$db_password" \
+      "$compose_runner" "$inst" exec -T postgres env PGPASSWORD="$db_password" \
         psql -X -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" -c "$sql" 2>&1
     )"; then
       success "Auth credentials updated in DB ($target)."
@@ -346,6 +353,7 @@ apply_auth_custom_instance() {
 seed_araios_url_settings_managed_instance() {
   local inst="$1"
   local gateway_port="$2"
+  local compose_runner="${3:-compose_instance}"
   local ef="$(instance_env_file "$inst")"
   local db_name="$(read_env_value "$ef" "POSTGRES_DB" || true)"
   local db_user="$(read_env_value "$ef" "POSTGRES_USER" || true)"
@@ -377,7 +385,7 @@ seed_araios_url_settings_managed_instance() {
   for _ in {1..30}; do
     local output
     if output="$(
-      compose_instance "$inst" exec -T postgres env PGPASSWORD="$db_password" \
+      "$compose_runner" "$inst" exec -T postgres env PGPASSWORD="$db_password" \
         psql -X -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" -c "$sql" 2>&1
     )"; then
       success "AraiOS URL settings seeded in DB."
@@ -784,6 +792,8 @@ action_up() {
   local seed_user="${2:-}"
   local seed_password="${3:-}"
   local seed_target="${4:-both}"
+  local compose_runner="${5:-compose_instance}"
+  local mode_label="${6:-}"
   local seed_status="not_requested"
   local bootstrap_agent_token=""
   local bootstrap_status="not_requested"
@@ -795,12 +805,12 @@ action_up() {
   fi
   [[ -z "$inst" ]] && return 0
 
-  info "${ICON_START} Launching '$inst'..."
-  if compose_instance "$inst" up --build -d; then
+  info "${ICON_START} Launching '$inst'${mode_label:+ (${mode_label})}..."
+  if "$compose_runner" "$inst" up --build -d; then
     success "'$inst' is running."
     if [[ -n "$seed_user" && -n "$seed_password" ]]; then
       info "Initializing auth credentials in DB..."
-      if apply_auth_managed_instance "$inst" "$seed_target" "$seed_user" "$seed_password"; then
+      if apply_auth_managed_instance "$inst" "$seed_target" "$seed_user" "$seed_password" "$compose_runner"; then
         seed_status="ok"
       else
         seed_status="failed"
@@ -825,10 +835,10 @@ action_up() {
         success "Cross-app URL settings seeded via service APIs."
       else
         warn "Could not seed cross-app URL settings via service APIs. Falling back to DB seeding."
-        seed_araios_url_settings_managed_instance "$inst" "$p" || true
+        seed_araios_url_settings_managed_instance "$inst" "$p" "$compose_runner" || true
       fi
     else
-      seed_araios_url_settings_managed_instance "$inst" "$p" || true
+      seed_araios_url_settings_managed_instance "$inst" "$p" "$compose_runner" || true
     fi
     
     printf "\n${CYAN}${BOLD}🚀  S T A C K   O N B O A R D I N G${RESET}\n"
@@ -857,6 +867,31 @@ action_up() {
     error "Failed to start '$inst'."
   fi
   return 0
+}
+
+action_advanced_mode() {
+  local options=(
+    "${ICON_START}  Start Instance (Dev Mode)"
+    "🧩  Manage Custom Instance Auth"
+    "⬅️  Back"
+  )
+
+  while true; do
+    echo -n "$CLEAR_SCREEN"
+    select_option "ADVANCED MODE" "${options[@]}"
+    local choice=$?
+
+    printf "\n\n"
+    case "$choice" in
+      0) action_up "" "" "" "both" "compose_instance_dev" "dev mode" ;;
+      1) action_manage_custom_auth ;;
+      2) return 0 ;;
+    esac
+
+    while read -r -t 0; do read -r; done < /dev/tty
+    printf "\n${DIM}Press Enter to return to Advanced Mode...${RESET}"
+    read -r _ < /dev/tty
+  done
 }
 
 action_down() {
@@ -1004,10 +1039,10 @@ menu_loop() {
     "${ICON_START}  Start Instance"
     "${ICON_STOP}  Stop Instance"
     "🔐  Reset Auth (Managed Instance)"
-    "🧩  Manage Custom Instance Auth"
     "${ICON_LIST}  Global Status"
     "📜  Tail Logs"
     "🗑️   Delete Instance"
+    "🛠️  Advanced Mode"
     "🚪  Exit"
   )
 
@@ -1023,10 +1058,10 @@ menu_loop() {
       1) action_up "" ;;
       2) action_down ;;
       3) action_reset_auth_managed ;;
-      4) action_manage_custom_auth ;;
-      5) action_list ;;
-      6) action_logs ;;
-      7) action_delete ;;
+      4) action_list ;;
+      5) action_logs ;;
+      6) action_delete ;;
+      7) action_advanced_mode ;;
       8) echo "Goodbye!"; exit 0 ;;
     esac
     
