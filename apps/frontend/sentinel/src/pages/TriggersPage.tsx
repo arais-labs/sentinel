@@ -32,7 +32,7 @@ import type {
   TriggerLogListResponse,
 } from '../types/api';
 
-const triggerTypes = ['cron', 'webhook', 'heartbeat', 'event'];
+const triggerTypes = ['cron', 'webhook', 'heartbeat'];
 const actionTypes = ['agent_message', 'tool_call', 'http_request'];
 
 interface ModalState {
@@ -657,7 +657,7 @@ export function TriggersPage() {
                             </div>
                           )}
 
-                          {(modal.type === 'webhook' || modal.type === 'event') && (
+                          {modal.type === 'webhook' && (
                             <div className="py-4 px-4 rounded-xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]">
                               <p className="text-[11px] text-[color:var(--text-muted)] text-center font-medium leading-relaxed">
                                 Assisted configuration is not available for <span className="text-[color:var(--text-primary)] font-bold">{modal.type.toUpperCase()}</span>.
