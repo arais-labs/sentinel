@@ -8,11 +8,11 @@ import {
 import { api } from '../lib/api';
 import {
   buildAgentIdentityMemoryContent,
-  buildSystemPrompt,
   buildUserProfileMemoryContent,
   resolveAgentIdentity,
   resolveUserProfile,
 } from '../lib/onboarding-defaults';
+import { ARAIOS_APP_URL } from '../lib/env';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -56,24 +56,10 @@ const STARTER_PROMPT_OPTIONS: StarterPromptOption[] = [
   },
 ];
 
-const ONBOARDING_ARAIOS_PREFILL_KEY = 'sentinel.onboarding.araios.prefill';
-
 // ── helper ───────────────────────────────────────────────────────────────────
 
 function normalizeAraisUrl(value: string): string {
   return value.trim().replace(/\/+$/, '');
-}
-
-function isLocalGatewayAraisUrl(value: string): boolean {
-  try {
-    const parsed = new URL(value);
-    const host = parsed.hostname.toLowerCase();
-    const isLoopbackHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
-    const path = parsed.pathname.replace(/\/+$/, '');
-    return isLoopbackHost && path === '/araios';
-  } catch {
-    return false;
-  }
 }
 
 // ── sub-components ───────────────────────────────────────────────────────────
@@ -405,14 +391,15 @@ function UserStep({ userName, setUserName, userContext, setUserContext }: {
   );
 }
 
-function AraisOSStep({ use, setUse, url, setUrl, token, setToken, autoFilled, configured }: {
+function AraisOSStep({ use, setUse, url, setUrl, token, setToken, configured }: {
   use: boolean | null; setUse: (v: boolean) => void;
   url: string; setUrl: (v: string) => void;
   token: string; setToken: (v: string) => void;
-  autoFilled: boolean;
   configured: boolean;
 }) {
   const [showToken, setShowToken] = useState(false);
+  const araiosAppUrl = ARAIOS_APP_URL;
+  const manageCredentialsUrl = '/manage/';
 
   return (
     <div className="flex flex-col gap-5 max-w-lg">
@@ -423,12 +410,7 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken, autoFilled, co
         </p>
       </div>
 
-      {autoFilled && (
-        <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/25 px-4 py-3 text-[11px] text-emerald-400">
-          Auto-filled from this stack (one-time handoff). Review and continue.
-        </div>
-      )}
-      {!autoFilled && configured && (
+      {configured && (
         <div className="rounded-lg bg-[color:var(--surface-2)] border border-[color:var(--border-subtle)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
           AraiOS integration is already configured for this workspace. Enter a new key only if you want to rotate it.
         </div>
@@ -477,6 +459,14 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken, autoFilled, co
               Use the long-lived <span className="font-bold text-[color:var(--text-primary)]">agent API key</span>.
               Sentinel stores it securely in your workspace and the <span className="font-mono">araios_api</span> tool handles token exchange automatically.
             </p>
+            <div className="rounded-lg bg-[color:var(--surface-2)] border border-[color:var(--border-subtle)] px-4 py-3 text-[11px] text-[color:var(--text-muted)] space-y-1.5">
+              <p>
+                First-time setup: use the agent token shown in the CLI when this instance was created.
+              </p>
+              <p>
+                If you do not have it, open <a href={araiosAppUrl} target="_blank" rel="noreferrer" className="font-mono text-[color:var(--text-primary)] underline underline-offset-2">{araiosAppUrl}</a> then manage tokens at <a href={manageCredentialsUrl} target="_blank" rel="noreferrer" className="font-mono text-[color:var(--text-primary)] underline underline-offset-2">{manageCredentialsUrl}</a>.
+              </p>
+            </div>
           </div>
           <div className="rounded-lg bg-[color:var(--surface-2)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
             After setup, ask Sentinel to call <span className="font-mono text-[color:var(--text-primary)]">araios_api</span> with path <span className="font-mono text-[color:var(--text-primary)]">/api/agent</span> to discover available modules and endpoints.
@@ -577,7 +567,6 @@ export function OnboardingPage() {
   const [useAraisOS, setUseAraisOS] = useState<boolean | null>(null);
   const [araisUrl, setAraisUrl] = useState('');
   const [araisToken, setAraisToken] = useState('');
-  const [araisAutoFilled, setAraisAutoFilled] = useState(false);
   const [araisConfigured, setAraisConfigured] = useState(false);
 
   // Done step
@@ -618,51 +607,11 @@ export function OnboardingPage() {
         persistedBaseUrl = '';
       }
 
-      let didAutofill = false;
-      try {
-        const raw = sessionStorage.getItem(ONBOARDING_ARAIOS_PREFILL_KEY);
-        if (!raw) {
-          if (mounted) {
-            const resolved = persistedBaseUrl || runtimeFallbackUrl;
-            setAraisUrl(resolved);
-            if (persistedConfigured) {
-              setUseAraisOS(true);
-              setAraisConfigured(true);
-              setAraisAutoFilled(true);
-            }
-          }
-          return;
-        }
-
-        const parsed = JSON.parse(raw) as { base_url?: string; agent_api_key?: string };
-        const prefillBaseUrl = normalizeAraisUrl(parsed.base_url || '');
-        const agentApiKey = (parsed.agent_api_key || '').trim();
-        const resolvedBaseUrl = prefillBaseUrl
-          ? (isLocalGatewayAraisUrl(prefillBaseUrl) ? runtimeFallbackUrl : prefillBaseUrl)
-          : runtimeFallbackUrl;
-
-        if (mounted && resolvedBaseUrl) {
-          setAraisUrl(resolvedBaseUrl);
-        }
-        if (mounted && agentApiKey) {
-          setAraisToken(agentApiKey);
+      if (mounted) {
+        const resolved = persistedBaseUrl || runtimeFallbackUrl;
+        setAraisUrl(resolved);
+        if (persistedConfigured) {
           setUseAraisOS(true);
-        }
-
-        if (prefillBaseUrl || agentApiKey) {
-          didAutofill = true;
-        }
-      } catch {
-        if (mounted) {
-          setAraisUrl(runtimeFallbackUrl);
-        }
-      } finally {
-        // One-time prefill only: remove immediately after first read.
-        sessionStorage.removeItem(ONBOARDING_ARAIOS_PREFILL_KEY);
-        if (mounted && didAutofill) {
-          setAraisAutoFilled(true);
-        }
-        if (mounted && persistedConfigured) {
           setAraisConfigured(true);
         }
       }
@@ -747,15 +696,18 @@ export function OnboardingPage() {
         await api.post('/settings/araios', { enabled: false });
       }
 
-      // 5. Mark onboarding complete + persist system prompt
+      // 5. Mark onboarding complete; backend composes and persists system prompt
       await api.post('/onboarding/complete', {
-        system_prompt: buildSystemPrompt(identity),
+        agent_name: identity.rawName || undefined,
+        agent_role: identity.rawRole || undefined,
+        agent_personality: identity.rawPersonality || undefined,
       });
       items.push('Workspace ready');
       setCompletedItems([...items]);
 
       await new Promise(r => setTimeout(r, 600)); // brief pause so user sees the checkmarks
 
+      localStorage.setItem('sentinel-mode', 'advanced');
       navigate('/sessions', { state: { firstMessage: firstMessage.trim() || undefined } });
     } catch (err) {
       toast.error('Setup failed — please try again');
@@ -801,7 +753,6 @@ export function OnboardingPage() {
                   setUrl={setAraisUrl}
                   token={araisToken}
                   setToken={setAraisToken}
-                  autoFilled={araisAutoFilled}
                   configured={araisConfigured}
                 />
               )}

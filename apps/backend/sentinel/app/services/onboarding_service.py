@@ -12,6 +12,7 @@ from app.services.onboarding_defaults import (
     DEFAULT_AGENT_IDENTITY_MEMORY,
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_USER_PROFILE_MEMORY,
+    build_system_prompt,
 )
 from app.services.system_settings import get_system_setting, upsert_system_setting
 
@@ -36,9 +37,16 @@ class OnboardingService:
         db: AsyncSession,
         *,
         user_id: str,
-        system_prompt: str | None,
+        agent_name: str | None,
+        agent_role: str | None,
+        agent_personality: str | None,
     ) -> None:
-        prompt = self._with_default(system_prompt, DEFAULT_SYSTEM_PROMPT)
+        prompt = build_system_prompt(
+            agent_name=agent_name,
+            agent_role=agent_role,
+            agent_personality=agent_personality,
+        )
+        prompt = self._with_default(prompt, DEFAULT_SYSTEM_PROMPT)
         settings.default_system_prompt = prompt
         await upsert_system_setting(db, key="default_system_prompt", value=prompt)
         await upsert_system_setting(

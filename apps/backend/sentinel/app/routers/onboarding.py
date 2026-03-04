@@ -17,7 +17,9 @@ router = APIRouter()
 
 
 class CompleteOnboardingRequest(BaseModel):
-    system_prompt: str | None = None
+    agent_name: str | None = None
+    agent_role: str | None = None
+    agent_personality: str | None = None
 
 
 @router.get("/status")
@@ -50,7 +52,9 @@ async def complete_onboarding(
     await onboarding_service.complete(
         db,
         user_id=user.sub,
-        system_prompt=payload.system_prompt,
+        agent_name=payload.agent_name,
+        agent_role=payload.agent_role,
+        agent_personality=payload.agent_personality,
     )
     runtime_rebuild_service.rebuild_agent_loop(request.app.state)
     return {"completed": True}
