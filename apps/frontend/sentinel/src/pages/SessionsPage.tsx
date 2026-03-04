@@ -732,11 +732,8 @@ const SessionRow = memo(({
 ));
 SessionRow.displayName = 'SessionRow';
 
-const SourceChip = memo(({ metadata }: { metadata: Record<string, unknown> }) => {
-  const source = metadata?.source as string | undefined;
-  if (!source) return null;
-
-  if (source === 'telegram') {
+const SOURCE_CHIP_RENDERERS: Record<string, (metadata: Record<string, unknown>) => JSX.Element> = {
+  telegram: (metadata) => {
     const chatType = metadata.telegram_chat_type as string | undefined;
     const userName = metadata.telegram_user_name as string | undefined;
     const chatTitle = metadata.telegram_chat_title as string | undefined;
@@ -749,18 +746,30 @@ const SourceChip = memo(({ metadata }: { metadata: Record<string, unknown> }) =>
         {label}
       </span>
     );
-  }
-
-  if (source === 'web') {
+  },
+  web: () => (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[9px] font-bold uppercase tracking-wide">
+      <Globe size={9} />
+      Web
+    </span>
+  ),
+  trigger: (metadata) => {
+    const triggerName = typeof metadata.trigger_name === 'string' ? metadata.trigger_name.trim() : '';
     return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[9px] font-bold uppercase tracking-wide">
-        <Globe size={9} />
-        Web
+      <span className="inline-flex max-w-[260px] items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-300 text-[9px] font-bold uppercase tracking-wide">
+        <Clock3 size={9} />
+        <span className="truncate">{triggerName ? `Trigger · ${triggerName}` : 'Trigger'}</span>
       </span>
     );
-  }
+  },
+};
 
-  return null;
+const SourceChip = memo(({ metadata }: { metadata: Record<string, unknown> }) => {
+  const rawSource = metadata?.source as string | undefined;
+  const source = typeof rawSource === 'string' ? rawSource.trim().toLowerCase() : '';
+  if (!source) return null;
+  const render = SOURCE_CHIP_RENDERERS[source];
+  return render ? render(metadata) : null;
 });
 SourceChip.displayName = 'SourceChip';
 

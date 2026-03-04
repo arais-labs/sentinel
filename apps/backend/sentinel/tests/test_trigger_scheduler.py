@@ -63,6 +63,30 @@ class _ToolExecutorStub:
         return {"ok": True}, 8
 
 
+class _WSManagerStub:
+    def __init__(self) -> None:
+        self.message_acks: list[dict] = []
+        self.thinking_events: list[str] = []
+        self.agent_events: list[dict] = []
+
+    async def broadcast_message_ack(self, session_key, message_id, content, created_at, metadata=None):
+        self.message_acks.append(
+            {
+                "session_key": session_key,
+                "message_id": message_id,
+                "content": content,
+                "created_at": created_at,
+                "metadata": metadata or {},
+            }
+        )
+
+    async def broadcast_agent_thinking(self, session_key):
+        self.thinking_events.append(session_key)
+
+    async def broadcast_agent_event(self, session_key, event):
+        self.agent_events.append({"session_key": session_key, "event": event})
+
+
 def test_compute_next_fire_at_for_cron_and_heartbeat():
     now = datetime(2026, 1, 1, tzinfo=UTC)
     cron_next = compute_next_fire_at("cron", {"expr": "*/5 * * * *"}, reference_time=now)
@@ -96,11 +120,50 @@ def test_scheduler_agent_message_action_calls_agent_loop():
     _run(scheduler._fire_trigger(trigger.id))
 
     assert agent.calls and agent.calls[0]["user_message"] == "ping"
+    user_metadata = agent.calls[0]["kwargs"].get("user_metadata")
+    assert isinstance(user_metadata, dict)
+    assert user_metadata.get("source") == "trigger"
+    assert user_metadata.get("trigger_name") == "agent-job"
+    assert user_metadata.get("trigger_id") == str(trigger.id)
     assert trigger.fire_count == 1
     assert trigger.consecutive_errors == 0
     logs = db.storage[TriggerLog]
     assert len(logs) == 1
     assert logs[0].status == "fired"
+
+
+def test_scheduler_agent_message_ack_uses_plain_content_and_trigger_metadata():
+    db = FakeDB()
+    session = Session(user_id="user-1", title="Main", status="active")
+    db.add(session)
+    trigger = Trigger(
+        name="heartbeat-job",
+        user_id="user-1",
+        type="heartbeat",
+        enabled=True,
+        config={"interval_seconds": 60},
+        action_type="agent_message",
+        action_config={"message": "   ping from trigger   ", "session_id": str(session.id)},
+        next_fire_at=datetime.now(UTC),
+    )
+    db.add(trigger)
+
+    agent = _AgentLoopStub()
+    ws = _WSManagerStub()
+    scheduler = TriggerScheduler(
+        agent_loop=agent,
+        tool_executor=None,
+        ws_manager=ws,
+        db_factory=_SessionFactory(db),
+        poll_interval_seconds=0.01,
+    )
+    _run(scheduler._fire_trigger(trigger.id))
+
+    assert ws.message_acks
+    ack = ws.message_acks[0]
+    assert ack["content"] == "ping from trigger"
+    assert ack["metadata"].get("source") == "trigger"
+    assert ack["metadata"].get("trigger_name") == "heartbeat-job"
 
 
 def test_scheduler_agent_loop_can_be_updated_after_init():

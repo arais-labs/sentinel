@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Session, Trigger, TriggerLog
 from app.services.agent import AgentLoop
+from app.services.messages import trigger_ingress_metadata
 from app.services.triggers.routing import (
     extract_agent_message_target_session_id,
     resolve_agent_message_route,
@@ -258,6 +259,12 @@ class TriggerScheduler:
         message = action.get("message")
         if not isinstance(message, str) or not message.strip():
             raise ValueError("agent_message action requires non-empty 'message'")
+        message_text = message.strip()
+        ingress_metadata = trigger_ingress_metadata(
+            trigger_id=trigger.id,
+            trigger_name=trigger.name or "",
+            trigger_type=trigger.type,
+        )
         effective_user_id = await self._resolve_effective_user_id(db, trigger, action)
         route = await resolve_agent_message_route(
             db,
@@ -283,18 +290,20 @@ class TriggerScheduler:
             await self._ws_manager.broadcast_message_ack(
                 session_key,
                 message_id=f"trig-{trigger.id}-{int(time.time())}",
-                content=f"[Trigger: {trigger.name}] {message.strip()}",
-                created_at=datetime.now(UTC)
+                content=message_text,
+                created_at=datetime.now(UTC),
+                metadata=ingress_metadata,
             )
             await self._ws_manager.broadcast_agent_thinking(session_key)
 
         result = await self._agent_loop.run(
             db, 
             session_id, 
-            message.strip(), 
+            message_text, 
             stream=True, # Enable streaming for real-time UI updates
             on_event=_on_event,
             allow_high_risk=True,
+            user_metadata=ingress_metadata,
         )
         return f"agent_message:{result.final_text[:500]}"
 
