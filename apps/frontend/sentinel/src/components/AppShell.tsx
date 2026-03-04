@@ -18,13 +18,8 @@ import {
   Activity,
 } from 'lucide-react';
 
-import { APP_VERSION, SENTINEL_APP_URL } from '../lib/env';
+import { APP_VERSION } from '../lib/env';
 import { api } from '../lib/api';
-import {
-  ARAIOS_SWITCH_URL_EVENT,
-  persistAraiosSwitchUrl,
-  readAraiosSwitchUrl,
-} from '../lib/araios-switch';
 import { useThemeStore } from '../store/theme-store';
 import { Logo } from './ui/Logo';
 
@@ -47,6 +42,11 @@ interface AppSwitchItem {
   id: 'araios' | 'sentinel';
   label: string;
   href: string;
+}
+
+interface AraiosIntegrationStatus {
+  sentinel_frontend_url: string | null;
+  araios_frontend_url: string | null;
 }
 
 const navItems: NavItem[] = [
@@ -95,53 +95,57 @@ export function AppShell({
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [araiosHref, setAraiosHref] = useState(() => readAraiosSwitchUrl());
+  const [switchLinks, setSwitchLinks] = useState<{ sentinelHref: string; araiosHref: string }>({
+    sentinelHref: '',
+    araiosHref: '',
+  });
 
   useEffect(() => {
     let mounted = true;
 
-    const syncAraiosHref = async () => {
+    const normalizeHref = (value: string | null | undefined): string => {
+      const trimmed = (value ?? '').trim().replace(/\/+$/, '');
+      if (!trimmed) {
+        return '';
+      }
+      if (trimmed.startsWith('/')) {
+        return trimmed;
+      }
       try {
-        const integration = await api.get<{ base_url: string | null }>('/settings/araios');
-        const next = persistAraiosSwitchUrl(integration.base_url);
-        if (mounted) {
-          setAraiosHref(next);
+        const parsed = new URL(trimmed);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+          return parsed.toString().replace(/\/+$/, '');
         }
       } catch {
-        // Keep fallback/default URL on read failure.
+        return '';
+      }
+      return '';
+    };
+
+    const syncSwitchLinks = async () => {
+      try {
+        const integration = await api.get<AraiosIntegrationStatus>('/settings/araios');
+        if (mounted) {
+          setSwitchLinks({
+            sentinelHref: normalizeHref(integration.sentinel_frontend_url),
+            araiosHref: normalizeHref(integration.araios_frontend_url),
+          });
+        }
+      } catch {
+        // Keep disabled links when URL settings cannot be loaded.
       }
     };
 
-    const handleAraiosSwitchUrlUpdated = (event: Event) => {
-      const detail = (event as CustomEvent<{ url?: string }>).detail;
-      if (!mounted) {
-        return;
-      }
-      if (detail?.url) {
-        setAraiosHref(detail.url);
-      } else {
-        setAraiosHref(readAraiosSwitchUrl());
-      }
-    };
-
-    void syncAraiosHref();
-    window.addEventListener(
-      ARAIOS_SWITCH_URL_EVENT,
-      handleAraiosSwitchUrlUpdated as EventListener,
-    );
+    void syncSwitchLinks();
     return () => {
       mounted = false;
-      window.removeEventListener(
-        ARAIOS_SWITCH_URL_EVENT,
-        handleAraiosSwitchUrlUpdated as EventListener,
-      );
     };
   }, []);
 
   const renderAppSwitcher = (currentApp: 'araios' | 'sentinel') => {
     const appSwitchItems: AppSwitchItem[] = [
-      { id: 'araios', label: 'araiOS', href: araiosHref },
-      { id: 'sentinel', label: 'Sentinel', href: SENTINEL_APP_URL },
+      { id: 'araios', label: 'araiOS', href: switchLinks.araiosHref },
+      { id: 'sentinel', label: 'Sentinel', href: switchLinks.sentinelHref },
     ];
 
     return (
@@ -153,6 +157,16 @@ export function AppShell({
             <span
               key={item.id}
               className="inline-flex h-7 items-center rounded px-3 text-[10px] font-bold uppercase tracking-wider bg-[color:var(--surface-0)] text-[color:var(--text-primary)]"
+            >
+              {item.label}
+            </span>
+          );
+        }
+        if (!item.href) {
+          return (
+            <span
+              key={item.id}
+              className="inline-flex h-7 items-center rounded px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)] opacity-50 cursor-not-allowed"
             >
               {item.label}
             </span>

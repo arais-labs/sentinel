@@ -14,14 +14,18 @@ from app.services.system_settings import (
     upsert_system_setting,
 )
 
-ARAIOS_BASE_URL_SETTING_KEY = "araios_integration_base_url"
+SENTINEL_FRONTEND_URL_SETTING_KEY = "sentinel_frontend_url"
+ARAIOS_FRONTEND_URL_SETTING_KEY = "araios_frontend_url"
+ARAIOS_BACKEND_URL_SETTING_KEY = "araios_backend_url"
 ARAIOS_AGENT_API_KEY_SETTING_KEY = "araios_integration_agent_api_key"
 
 
 @dataclass(frozen=True, slots=True)
 class AraiOSIntegrationStatus:
     configured: bool
-    base_url: str | None
+    sentinel_frontend_url: str | None
+    araios_frontend_url: str | None
+    araios_backend_url: str | None
     masked_agent_api_key: str | None
 
 
@@ -40,12 +44,21 @@ class ApiKeysStatus:
 
 class SettingsService:
     async def get_araios_integration(self, db: AsyncSession) -> AraiOSIntegrationStatus:
-        base_url = await get_system_setting(db, key=ARAIOS_BASE_URL_SETTING_KEY)
+        sentinel_frontend_url = await get_system_setting(db, key=SENTINEL_FRONTEND_URL_SETTING_KEY)
+        araios_frontend_url = await get_system_setting(db, key=ARAIOS_FRONTEND_URL_SETTING_KEY)
+        araios_backend_url = await get_system_setting(db, key=ARAIOS_BACKEND_URL_SETTING_KEY)
         agent_api_key = await get_system_setting(db, key=ARAIOS_AGENT_API_KEY_SETTING_KEY)
-        configured = bool((base_url or "").strip() and (agent_api_key or "").strip())
+        configured = bool(
+            (sentinel_frontend_url or "").strip()
+            and (araios_frontend_url or "").strip()
+            and (araios_backend_url or "").strip()
+            and (agent_api_key or "").strip()
+        )
         return AraiOSIntegrationStatus(
             configured=configured,
-            base_url=base_url,
+            sentinel_frontend_url=sentinel_frontend_url,
+            araios_frontend_url=araios_frontend_url,
+            araios_backend_url=araios_backend_url,
             masked_agent_api_key=self._mask_secret(agent_api_key),
         )
 
@@ -54,25 +67,85 @@ class SettingsService:
         db: AsyncSession,
         *,
         enabled: bool,
-        base_url: str | None,
+        sentinel_frontend_url: str | None,
+        araios_frontend_url: str | None,
+        araios_backend_url: str | None,
         agent_api_key: str | None,
     ) -> AraiOSIntegrationStatus:
         if not enabled:
-            await delete_system_setting(db, key=ARAIOS_BASE_URL_SETTING_KEY)
-            await delete_system_setting(db, key=ARAIOS_AGENT_API_KEY_SETTING_KEY)
-            return AraiOSIntegrationStatus(
-                configured=False,
-                base_url=None,
-                masked_agent_api_key=None,
-            )
+            if sentinel_frontend_url is not None:
+                resolved_sentinel_frontend_url = self._normalize_url(
+                    sentinel_frontend_url,
+                    missing_message="Sentinel frontend URL is required",
+                    invalid_message="Sentinel frontend URL must be a valid http/https URL",
+                )
+                await upsert_system_setting(
+                    db, key=SENTINEL_FRONTEND_URL_SETTING_KEY, value=resolved_sentinel_frontend_url
+                )
 
-        existing_base_url = await get_system_setting(db, key=ARAIOS_BASE_URL_SETTING_KEY)
+            if araios_frontend_url is not None:
+                resolved_araios_frontend_url = self._normalize_url(
+                    araios_frontend_url,
+                    missing_message="AraiOS frontend URL is required",
+                    invalid_message="AraiOS frontend URL must be a valid http/https URL",
+                )
+                await upsert_system_setting(
+                    db, key=ARAIOS_FRONTEND_URL_SETTING_KEY, value=resolved_araios_frontend_url
+                )
+
+            await delete_system_setting(db, key=ARAIOS_BACKEND_URL_SETTING_KEY)
+            await delete_system_setting(db, key=ARAIOS_AGENT_API_KEY_SETTING_KEY)
+            return await self.get_araios_integration(db)
+
+        existing_sentinel_frontend_url = await get_system_setting(
+            db, key=SENTINEL_FRONTEND_URL_SETTING_KEY
+        )
+        existing_araios_frontend_url = await get_system_setting(
+            db, key=ARAIOS_FRONTEND_URL_SETTING_KEY
+        )
+        existing_araios_backend_url = await get_system_setting(
+            db, key=ARAIOS_BACKEND_URL_SETTING_KEY
+        )
         existing_agent_api_key = await get_system_setting(db, key=ARAIOS_AGENT_API_KEY_SETTING_KEY)
 
-        resolved_base_url = (
-            self._normalize_base_url(base_url)
-            if base_url is not None
-            else self._normalize_base_url(existing_base_url)
+        resolved_sentinel_frontend_url = (
+            self._normalize_url(
+                sentinel_frontend_url,
+                missing_message="Sentinel frontend URL is required",
+                invalid_message="Sentinel frontend URL must be a valid http/https URL",
+            )
+            if sentinel_frontend_url is not None
+            else self._normalize_url(
+                existing_sentinel_frontend_url,
+                missing_message="Sentinel frontend URL is required",
+                invalid_message="Sentinel frontend URL must be a valid http/https URL",
+            )
+        )
+        resolved_araios_frontend_url = (
+            self._normalize_url(
+                araios_frontend_url,
+                missing_message="AraiOS frontend URL is required",
+                invalid_message="AraiOS frontend URL must be a valid http/https URL",
+            )
+            if araios_frontend_url is not None
+            else self._normalize_url(
+                existing_araios_frontend_url,
+                missing_message="AraiOS frontend URL is required",
+                invalid_message="AraiOS frontend URL must be a valid http/https URL",
+            )
+        )
+        resolved_araios_backend_url = (
+            self._normalize_url(
+                araios_backend_url,
+                missing_message="AraiOS backend URL is required",
+                invalid_message="AraiOS backend URL must be a valid http/https URL",
+            )
+            if araios_backend_url is not None
+            else self._normalize_url(
+                existing_araios_backend_url,
+                missing_message="AraiOS backend URL is required",
+                invalid_message="AraiOS backend URL must be a valid http/https URL",
+            )
         )
         resolved_agent_api_key = (
             self._strip_or_none(agent_api_key)
@@ -82,15 +155,34 @@ class SettingsService:
         if not resolved_agent_api_key:
             raise HTTPException(status_code=422, detail="AraiOS agent API key is required")
 
-        await upsert_system_setting(db, key=ARAIOS_BASE_URL_SETTING_KEY, value=resolved_base_url)
+        await upsert_system_setting(
+            db, key=SENTINEL_FRONTEND_URL_SETTING_KEY, value=resolved_sentinel_frontend_url
+        )
+        await upsert_system_setting(
+            db, key=ARAIOS_FRONTEND_URL_SETTING_KEY, value=resolved_araios_frontend_url
+        )
+        await upsert_system_setting(
+            db, key=ARAIOS_BACKEND_URL_SETTING_KEY, value=resolved_araios_backend_url
+        )
         await upsert_system_setting(
             db, key=ARAIOS_AGENT_API_KEY_SETTING_KEY, value=resolved_agent_api_key
         )
         return AraiOSIntegrationStatus(
             configured=True,
-            base_url=resolved_base_url,
+            sentinel_frontend_url=resolved_sentinel_frontend_url,
+            araios_frontend_url=resolved_araios_frontend_url,
+            araios_backend_url=resolved_araios_backend_url,
             masked_agent_api_key=self._mask_secret(resolved_agent_api_key),
         )
+
+    async def get_araios_runtime_credentials(self, db: AsyncSession) -> tuple[str, str]:
+        backend_url = await get_system_setting(db, key=ARAIOS_BACKEND_URL_SETTING_KEY)
+        agent_api_key = await get_system_setting(db, key=ARAIOS_AGENT_API_KEY_SETTING_KEY)
+        normalized_backend_url = self._normalize_runtime_url(backend_url)
+        normalized_agent_api_key = self._strip_or_none(agent_api_key)
+        if not normalized_agent_api_key:
+            raise ValueError("AraiOS integration is not configured: missing agent API key")
+        return normalized_backend_url, normalized_agent_api_key
 
     async def set_api_keys(
         self,
@@ -210,13 +302,28 @@ class SettingsService:
         return normalized or None
 
     @staticmethod
-    def _normalize_base_url(value: str | None) -> str:
+    def _normalize_url(
+        value: str | None,
+        *,
+        missing_message: str,
+        invalid_message: str,
+    ) -> str:
         normalized = (value or "").strip().rstrip("/")
         if not normalized:
-            raise HTTPException(status_code=422, detail="AraiOS base URL is required")
+            raise HTTPException(status_code=422, detail=missing_message)
         parsed = urlparse(normalized)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise HTTPException(status_code=422, detail="AraiOS base URL must be a valid http/https URL")
+            raise HTTPException(status_code=422, detail=invalid_message)
+        return normalized
+
+    @staticmethod
+    def _normalize_runtime_url(value: str | None) -> str:
+        normalized = (value or "").strip().rstrip("/")
+        if not normalized:
+            raise ValueError("AraiOS integration is not configured: missing backend URL")
+        parsed = urlparse(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("AraiOS integration is not configured: backend URL is invalid")
         return normalized
 
     @staticmethod

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -19,18 +18,10 @@ from app.services.system_settings import get_system_setting, upsert_system_setti
 ONBOARDING_COMPLETED_KEY_PREFIX = "onboarding_completed:"
 
 
-@dataclass(frozen=True, slots=True)
-class OnboardingDefaults:
-    araios_runtime_url: str | None
-
-
 class OnboardingService:
     async def is_completed(self, db: AsyncSession, *, user_id: str) -> bool:
         key = f"{ONBOARDING_COMPLETED_KEY_PREFIX}{user_id}"
         return (await get_system_setting(db, key=key)) is not None
-
-    def get_defaults(self) -> OnboardingDefaults:
-        return OnboardingDefaults(araios_runtime_url=settings.araios_url)
 
     async def complete(
         self,

@@ -357,7 +357,6 @@ export interface ConfigResponse {
   access_token_ttl_seconds: number;
   refresh_token_ttl_seconds: number;
   context_token_budget: number;
-  araios_url: string;
   jwt_secret_key: string;
 }
 

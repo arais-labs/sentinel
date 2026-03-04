@@ -31,7 +31,6 @@ class ConfigResponse(BaseModel):
     access_token_ttl_seconds: int
     refresh_token_ttl_seconds: int
     context_token_budget: int
-    araios_url: str | None = None
     jwt_secret_key: str = "***"
 
 

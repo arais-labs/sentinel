@@ -23,7 +23,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Memory, Session, SubAgentTask, SystemSetting
+from app.models import Memory, Session, SubAgentTask
 from app.services.embeddings import EmbeddingService
 from app.services.memory import (
     InvalidMemoryOperationError,
@@ -46,6 +46,7 @@ from app.services.session_runtime import (
     runtime_venv_dir,
     runtime_workspace_dir,
 )
+from app.services.settings_service import SettingsService
 from app.services.tools.browser_tool import BrowserManager
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolDefinition, ToolRegistry
@@ -59,8 +60,6 @@ from app.services.tools.git_exec import git_exec_tool
 
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
 _ALLOWED_MEMORY_CATEGORIES = {"core", "preference", "project", "correction"}
-_ARAIOS_BASE_URL_SETTING_KEY = "araios_integration_base_url"
-_ARAIOS_AGENT_API_KEY_SETTING_KEY = "araios_integration_agent_api_key"
 _ARAIOS_TOKEN_REFRESH_BUFFER_SECONDS = 30
 _PYTHON_XAGENT_BASE_DIR = Path(
     os.environ.get("PYTHON_XAGENT_BASE_DIR", "/tmp/sentinel/python_xagent")
@@ -397,30 +396,12 @@ def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> To
 async def _load_araios_integration_settings(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> tuple[str, str]:
+    settings_service = SettingsService()
     async with session_factory() as db:
-        base_url = await _get_system_setting_value(db, _ARAIOS_BASE_URL_SETTING_KEY)
-        agent_api_key = await _get_system_setting_value(db, _ARAIOS_AGENT_API_KEY_SETTING_KEY)
-    normalized_base_url = _normalize_araios_base_url(base_url)
-    normalized_api_key = (agent_api_key or "").strip()
-    if not normalized_api_key:
-        raise ToolValidationError("AraiOS integration is not configured: missing agent API key")
-    return normalized_base_url, normalized_api_key
-
-
-async def _get_system_setting_value(db: AsyncSession, key: str) -> str | None:
-    result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
-    setting = result.scalars().first()
-    return setting.value if setting is not None else None
-
-
-def _normalize_araios_base_url(raw_value: str | None) -> str:
-    value = (raw_value or "").strip().rstrip("/")
-    if not value:
-        raise ToolValidationError("AraiOS integration is not configured: missing base URL")
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ToolValidationError("Configured AraiOS base URL is invalid")
-    return value
+        try:
+            return await settings_service.get_araios_runtime_credentials(db)
+        except ValueError as exc:
+            raise ToolValidationError(str(exc)) from exc
 
 
 def _join_base_and_path(base_url: str, path: str) -> str:
