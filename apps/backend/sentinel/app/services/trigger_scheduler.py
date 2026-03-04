@@ -73,6 +73,26 @@ class TriggerScheduler:
         self._poll_interval_seconds = max(0.1, float(poll_interval_seconds))
         self._in_flight: set[str] = set()
 
+    def set_agent_loop(self, agent_loop: AgentLoop | None) -> None:
+        """Hot-swap the agent loop used for agent_message actions."""
+        self._agent_loop = agent_loop
+
+    async def fire_now(
+        self,
+        db: AsyncSession,
+        *,
+        trigger_id: UUID,
+        input_payload: dict | None = None,
+        force: bool = True,
+    ) -> TriggerLog | None:
+        """Execute a trigger immediately using the provided DB session."""
+        return await self._fire_trigger_with_db(
+            db,
+            trigger_id,
+            input_payload=input_payload,
+            force=force,
+        )
+
     async def start(self, stop_event: asyncio.Event) -> None:
         if self._db_factory is None:
             return
@@ -137,60 +157,74 @@ class TriggerScheduler:
         if self._db_factory is None:
             return
 
+        async with self._db_factory() as db:
+            await self._fire_trigger_with_db(db, trigger_id)
+
+    async def _fire_trigger_with_db(
+        self,
+        db: AsyncSession,
+        trigger_id: UUID,
+        *,
+        input_payload: dict | None = None,
+        force: bool = False,
+    ) -> TriggerLog | None:
         fired_at = datetime.now(UTC)
         started = time.perf_counter()
-        async with self._db_factory() as db:
-            trigger = await self._load_trigger(db, trigger_id)
-            if trigger is None or not trigger.enabled:
-                return
+        trigger = await self._load_trigger(db, trigger_id)
+        if trigger is None:
+            return None
+        if not trigger.enabled and not force:
+            return None
 
-            try:
-                output_summary = await self._execute_action(db, trigger)
-                duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+        log_entry: TriggerLog
+        try:
+            output_summary = await self._execute_action(db, trigger)
+            duration_ms = max(0, int((time.perf_counter() - started) * 1000))
 
-                trigger.last_fired_at = fired_at
-                trigger.fire_count = int(trigger.fire_count or 0) + 1
-                trigger.consecutive_errors = 0
-                trigger.last_error = None
+            trigger.last_fired_at = fired_at
+            trigger.fire_count = int(trigger.fire_count or 0) + 1
+            trigger.consecutive_errors = 0
+            trigger.last_error = None
+            if trigger.enabled:
                 trigger.next_fire_at = self._next_fire_after_success(trigger, fired_at)
 
-                db.add(
-                    TriggerLog(
-                        trigger_id=trigger.id,
-                        fired_at=fired_at,
-                        status="fired",
-                        duration_ms=duration_ms,
-                        output_summary=output_summary,
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001
-                duration_ms = max(0, int((time.perf_counter() - started) * 1000))
-                message = str(exc)
-                ownership_error = isinstance(exc, TriggerOwnershipError)
+            log_entry = TriggerLog(
+                trigger_id=trigger.id,
+                fired_at=fired_at,
+                status="fired",
+                duration_ms=duration_ms,
+                input_payload=input_payload,
+                output_summary=output_summary,
+            )
+        except Exception as exc:  # noqa: BLE001
+            duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+            message = str(exc)
+            ownership_error = isinstance(exc, TriggerOwnershipError)
 
-                trigger.error_count = int(trigger.error_count or 0) + 1
-                trigger.consecutive_errors = int(trigger.consecutive_errors or 0) + 1
-                trigger.last_error = message
-                if ownership_error:
-                    trigger.enabled = False
-                    trigger.next_fire_at = None
-                elif trigger.consecutive_errors >= 5:
-                    trigger.enabled = False
-                    trigger.next_fire_at = None
-                else:
-                    trigger.next_fire_at = self._next_fire_after_failure(trigger, fired_at)
+            trigger.error_count = int(trigger.error_count or 0) + 1
+            trigger.consecutive_errors = int(trigger.consecutive_errors or 0) + 1
+            trigger.last_error = message
+            if ownership_error:
+                trigger.enabled = False
+                trigger.next_fire_at = None
+            elif trigger.consecutive_errors >= 5:
+                trigger.enabled = False
+                trigger.next_fire_at = None
+            elif trigger.enabled:
+                trigger.next_fire_at = self._next_fire_after_failure(trigger, fired_at)
 
-                db.add(
-                    TriggerLog(
-                        trigger_id=trigger.id,
-                        fired_at=fired_at,
-                        status="failed",
-                        duration_ms=duration_ms,
-                        error_message=message[:1000],
-                    )
-                )
+            log_entry = TriggerLog(
+                trigger_id=trigger.id,
+                fired_at=fired_at,
+                status="failed",
+                duration_ms=duration_ms,
+                input_payload=input_payload,
+                error_message=message[:1000],
+            )
 
-            await db.commit()
+        db.add(log_entry)
+        await db.commit()
+        return log_entry
 
     async def _load_trigger(self, db: AsyncSession, trigger_id: UUID) -> Trigger | None:
         result = await db.execute(select(Trigger).where(Trigger.id == trigger_id))

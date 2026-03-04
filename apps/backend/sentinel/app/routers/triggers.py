@@ -21,7 +21,7 @@ from app.schemas.triggers import (
     TriggerResponse,
     UpdateTriggerRequest,
 )
-from app.services.trigger_scheduler import compute_next_fire_at
+from app.services.trigger_scheduler import TriggerScheduler, compute_next_fire_at
 from app.services.triggers.routing import resolve_agent_message_route
 
 logger = logging.getLogger(__name__)
@@ -166,26 +166,25 @@ async def fire_trigger(
     db: AsyncSession = Depends(get_db),
 ) -> TriggerLogResponse:
     trigger = await _get_trigger_or_404(db, id, user.sub)
-    now = datetime.now(UTC)
-    trigger.last_fired_at = now
-    trigger.fire_count += 1
-    trigger.consecutive_errors = 0
-    trigger.last_error = None
-    if trigger.enabled:
-        try:
-            trigger.next_fire_at = compute_next_fire_at(trigger.type, trigger.config, reference_time=now)
-        except ValueError:
-            trigger.next_fire_at = None
-
-    log = TriggerLog(
+    scheduler: TriggerScheduler | None = getattr(request.app.state, "trigger_scheduler", None)
+    if scheduler is None:
+        scheduler = TriggerScheduler(
+            agent_loop=getattr(request.app.state, "agent_loop", None),
+            tool_executor=getattr(request.app.state, "tool_executor", None),
+            ws_manager=getattr(request.app.state, "ws_manager", None),
+            db_factory=None,
+        )
+    log = await scheduler.fire_now(
+        db,
         trigger_id=trigger.id,
-        fired_at=now,
-        status="fired",
         input_payload=payload.input_payload,
+        force=True,
     )
-    db.add(log)
-    await db.commit()
-    await db.refresh(log)
+    if log is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Trigger could not be invoked",
+        )
 
     await log_audit(
         db,
