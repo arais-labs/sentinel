@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -27,6 +28,20 @@ logger = logging.getLogger(__name__)
 
 class TriggerOwnershipError(ValueError):
     """Raised when a trigger cannot be safely mapped to a real user owner."""
+
+
+@dataclass(slots=True)
+class TriggerActionOutcome:
+    output_summary: str
+    resolved_session_id: UUID | None = None
+    route_mode: str | None = None
+    used_fallback: bool | None = None
+
+
+@dataclass(slots=True)
+class TriggerFireOutcome:
+    log: TriggerLog
+    action: TriggerActionOutcome
 
 
 def compute_next_fire_at(
@@ -85,13 +100,91 @@ class TriggerScheduler:
         trigger_id: UUID,
         input_payload: dict | None = None,
         force: bool = True,
-    ) -> TriggerLog | None:
+    ) -> TriggerFireOutcome | None:
         """Execute a trigger immediately using the provided DB session."""
         return await self._fire_trigger_with_db(
             db,
             trigger_id,
             input_payload=input_payload,
             force=force,
+        )
+
+    async def fire_now_nonblocking(
+        self,
+        db: AsyncSession,
+        *,
+        trigger_id: UUID,
+        input_payload: dict | None = None,
+        force: bool = True,
+    ) -> TriggerFireOutcome | None:
+        """Dispatch a trigger and return quickly when possible.
+
+        For agent_message triggers backed by a real DB session + factory, this creates a queued
+        log row, resolves routing, and continues execution in the background so callers can
+        immediately navigate to the resolved session.
+        """
+        trigger = await self._load_trigger(db, trigger_id)
+        if trigger is None:
+            return None
+        if not trigger.enabled and not force:
+            return None
+
+        can_queue_async = (
+            trigger.action_type == "agent_message"
+            and self._db_factory is not None
+            and isinstance(db, AsyncSession)
+        )
+        if not can_queue_async:
+            return await self.fire_now(
+                db,
+                trigger_id=trigger_id,
+                input_payload=input_payload,
+                force=force,
+            )
+
+        action = trigger.action_config if isinstance(trigger.action_config, dict) else {}
+        message = action.get("message")
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("agent_message action requires non-empty 'message'")
+
+        effective_user_id = await self._resolve_effective_user_id(db, trigger, action)
+        route = await resolve_agent_message_route(
+            db,
+            user_id=effective_user_id,
+            action_config=action,
+        )
+        trigger.action_config = route.normalized_action_config
+        session_id = route.session_id
+        route_mode = route.normalized_action_config.get("route_mode")
+        normalized_route_mode = str(route_mode) if isinstance(route_mode, str) and route_mode else None
+
+        queued_log = TriggerLog(
+            trigger_id=trigger.id,
+            fired_at=datetime.now(UTC),
+            status="queued",
+            input_payload=input_payload,
+            output_summary="agent_message:queued",
+        )
+        db.add(queued_log)
+        await db.commit()
+
+        asyncio.create_task(
+            self._continue_queued_fire(
+                trigger_id=trigger.id,
+                trigger_log_id=queued_log.id,
+                input_payload=input_payload,
+                force=force,
+            )
+        )
+
+        return TriggerFireOutcome(
+            log=queued_log,
+            action=TriggerActionOutcome(
+                output_summary="agent_message:queued",
+                resolved_session_id=session_id,
+                route_mode=normalized_route_mode,
+                used_fallback=route.used_fallback,
+            ),
         )
 
     async def start(self, stop_event: asyncio.Event) -> None:
@@ -168,7 +261,8 @@ class TriggerScheduler:
         *,
         input_payload: dict | None = None,
         force: bool = False,
-    ) -> TriggerLog | None:
+        trigger_log_id: UUID | None = None,
+    ) -> TriggerFireOutcome | None:
         fired_at = datetime.now(UTC)
         started = time.perf_counter()
         trigger = await self._load_trigger(db, trigger_id)
@@ -177,9 +271,14 @@ class TriggerScheduler:
         if not trigger.enabled and not force:
             return None
 
-        log_entry: TriggerLog
+        log_entry: TriggerLog | None = None
+        if trigger_log_id is not None:
+            log_entry = await self._load_trigger_log(db, trigger_log_id)
+            if log_entry is not None and log_entry.trigger_id != trigger.id:
+                log_entry = None
+        action_outcome = TriggerActionOutcome(output_summary="")
         try:
-            output_summary = await self._execute_action(db, trigger)
+            action_outcome = await self._execute_action(db, trigger)
             duration_ms = max(0, int((time.perf_counter() - started) * 1000))
 
             trigger.last_fired_at = fired_at
@@ -189,14 +288,22 @@ class TriggerScheduler:
             if trigger.enabled:
                 trigger.next_fire_at = self._next_fire_after_success(trigger, fired_at)
 
-            log_entry = TriggerLog(
-                trigger_id=trigger.id,
-                fired_at=fired_at,
-                status="fired",
-                duration_ms=duration_ms,
-                input_payload=input_payload,
-                output_summary=output_summary,
-            )
+            if log_entry is None:
+                log_entry = TriggerLog(
+                    trigger_id=trigger.id,
+                    fired_at=fired_at,
+                    status="fired",
+                    duration_ms=duration_ms,
+                    input_payload=input_payload,
+                    output_summary=action_outcome.output_summary,
+                )
+            else:
+                log_entry.fired_at = fired_at
+                log_entry.status = "fired"
+                log_entry.duration_ms = duration_ms
+                log_entry.input_payload = input_payload
+                log_entry.output_summary = action_outcome.output_summary
+                log_entry.error_message = None
         except Exception as exc:  # noqa: BLE001
             duration_ms = max(0, int((time.perf_counter() - started) * 1000))
             message = str(exc)
@@ -214,22 +321,57 @@ class TriggerScheduler:
             elif trigger.enabled:
                 trigger.next_fire_at = self._next_fire_after_failure(trigger, fired_at)
 
-            log_entry = TriggerLog(
-                trigger_id=trigger.id,
-                fired_at=fired_at,
-                status="failed",
-                duration_ms=duration_ms,
-                input_payload=input_payload,
-                error_message=message[:1000],
-            )
+            if log_entry is None:
+                log_entry = TriggerLog(
+                    trigger_id=trigger.id,
+                    fired_at=fired_at,
+                    status="failed",
+                    duration_ms=duration_ms,
+                    input_payload=input_payload,
+                    error_message=message[:1000],
+                )
+            else:
+                log_entry.fired_at = fired_at
+                log_entry.status = "failed"
+                log_entry.duration_ms = duration_ms
+                log_entry.input_payload = input_payload
+                log_entry.error_message = message[:1000]
+                log_entry.output_summary = None
 
-        db.add(log_entry)
+        if trigger_log_id is None:
+            db.add(log_entry)
         await db.commit()
-        return log_entry
+        return TriggerFireOutcome(log=log_entry, action=action_outcome)
 
     async def _load_trigger(self, db: AsyncSession, trigger_id: UUID) -> Trigger | None:
         result = await db.execute(select(Trigger).where(Trigger.id == trigger_id))
         return result.scalars().first()
+
+    async def _load_trigger_log(self, db: AsyncSession, trigger_log_id: UUID) -> TriggerLog | None:
+        result = await db.execute(select(TriggerLog).where(TriggerLog.id == trigger_log_id))
+        return result.scalars().first()
+
+    async def _continue_queued_fire(
+        self,
+        *,
+        trigger_id: UUID,
+        trigger_log_id: UUID,
+        input_payload: dict | None,
+        force: bool,
+    ) -> None:
+        if self._db_factory is None:
+            return
+        try:
+            async with self._db_factory() as db:
+                await self._fire_trigger_with_db(
+                    db,
+                    trigger_id,
+                    input_payload=input_payload,
+                    force=force,
+                    trigger_log_id=trigger_log_id,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("queued trigger fire failed: trigger_id=%s log_id=%s", trigger_id, trigger_log_id)
 
     def _next_fire_after_success(self, trigger: Trigger, fired_at: datetime) -> datetime | None:
         next_fire = compute_next_fire_at(trigger.type, trigger.config, reference_time=fired_at)
@@ -243,7 +385,7 @@ class TriggerScheduler:
         except Exception:
             return None
 
-    async def _execute_action(self, db: AsyncSession, trigger: Trigger) -> str:
+    async def _execute_action(self, db: AsyncSession, trigger: Trigger) -> TriggerActionOutcome:
         if trigger.action_type == "agent_message":
             return await self._execute_agent_message(db, trigger)
         if trigger.action_type == "tool_call":
@@ -252,7 +394,7 @@ class TriggerScheduler:
             return await self._execute_http_request(trigger)
         raise ValueError(f"Unsupported action_type: {trigger.action_type}")
 
-    async def _execute_agent_message(self, db: AsyncSession, trigger: Trigger) -> str:
+    async def _execute_agent_message(self, db: AsyncSession, trigger: Trigger) -> TriggerActionOutcome:
         if self._agent_loop is None:
             raise RuntimeError("Agent loop unavailable")
         action = trigger.action_config if isinstance(trigger.action_config, dict) else {}
@@ -305,7 +447,14 @@ class TriggerScheduler:
             allow_high_risk=True,
             user_metadata=ingress_metadata,
         )
-        return f"agent_message:{result.final_text[:500]}"
+        route_mode = route.normalized_action_config.get("route_mode")
+        normalized_route_mode = str(route_mode) if isinstance(route_mode, str) and route_mode else None
+        return TriggerActionOutcome(
+            output_summary=f"agent_message:{result.final_text[:500]}",
+            resolved_session_id=session_id,
+            route_mode=normalized_route_mode,
+            used_fallback=route.used_fallback,
+        )
 
     async def _resolve_effective_user_id(
         self,
@@ -334,7 +483,7 @@ class TriggerScheduler:
             f"Trigger {trigger.id} has no owner user_id and no action_config target session"
         )
 
-    async def _execute_tool_call(self, trigger: Trigger) -> str:
+    async def _execute_tool_call(self, trigger: Trigger) -> TriggerActionOutcome:
         if self._tool_executor is None:
             raise RuntimeError("Tool executor unavailable")
         action = trigger.action_config if isinstance(trigger.action_config, dict) else {}
@@ -352,9 +501,11 @@ class TriggerScheduler:
             raise ValueError("tool_call action arguments must be an object")
 
         result, _ = await self._tool_executor.execute(tool_name.strip(), payload, allow_high_risk=True)
-        return f"tool_call:{tool_name.strip()}:{_truncate_json(result)}"
+        return TriggerActionOutcome(
+            output_summary=f"tool_call:{tool_name.strip()}:{_truncate_json(result)}",
+        )
 
-    async def _execute_http_request(self, trigger: Trigger) -> str:
+    async def _execute_http_request(self, trigger: Trigger) -> TriggerActionOutcome:
         action = trigger.action_config if isinstance(trigger.action_config, dict) else {}
         url = action.get("url")
         if not isinstance(url, str) or not url.strip():
@@ -386,7 +537,9 @@ class TriggerScheduler:
 
         async with httpx.AsyncClient(timeout=float(timeout_seconds)) as client:
             response = await client.request(method, url.strip(), **request_kwargs)
-        return f"http_request:{method} {url.strip()} => {response.status_code}"
+        return TriggerActionOutcome(
+            output_summary=f"http_request:{method} {url.strip()} => {response.status_code}",
+        )
 
 
 def _as_utc(value: datetime) -> datetime:

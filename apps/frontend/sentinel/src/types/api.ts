@@ -271,6 +271,13 @@ export interface TriggerLog {
   error_message: string | null;
 }
 
+export interface FireTriggerResponse {
+  log: TriggerLog;
+  resolved_session_id: string | null;
+  route_mode: string | null;
+  used_fallback: boolean | null;
+}
+
 export interface TriggerListResponse {
   items: Trigger[];
   total: number;

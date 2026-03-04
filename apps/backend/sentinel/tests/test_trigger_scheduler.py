@@ -216,11 +216,11 @@ def test_scheduler_fire_now_records_signal_payload():
         poll_interval_seconds=0.01,
     )
     signal = {"source": "manual", "signal": "force_invocation"}
-    log = _run(scheduler.fire_now(db, trigger_id=trigger.id, input_payload=signal, force=True))
+    outcome = _run(scheduler.fire_now(db, trigger_id=trigger.id, input_payload=signal, force=True))
 
-    assert log is not None
-    assert log.status == "fired"
-    assert log.input_payload == signal
+    assert outcome is not None
+    assert outcome.log.status == "fired"
+    assert outcome.log.input_payload == signal
     assert tools.calls
     assert trigger.fire_count == 1
 
