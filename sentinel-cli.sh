@@ -343,6 +343,55 @@ apply_auth_custom_instance() {
   return 1
 }
 
+seed_araios_url_settings_managed_instance() {
+  local inst="$1"
+  local gateway_port="$2"
+  local ef="$(instance_env_file "$inst")"
+  local db_name="$(read_env_value "$ef" "POSTGRES_DB" || true)"
+  local db_user="$(read_env_value "$ef" "POSTGRES_USER" || true)"
+  local db_password="$(read_env_value "$ef" "POSTGRES_PASSWORD" || true)"
+
+  if [[ -z "$db_name" || -z "$db_user" || -z "$db_password" ]]; then
+    error "Missing DB credentials in '$ef'."
+    return 1
+  fi
+
+  local sentinel_frontend_url="http://localhost:${gateway_port}/sentinel"
+  local araios_frontend_url="http://localhost:${gateway_port}/araios"
+  local araios_backend_url="http://araios-backend:9000"
+
+  local sentinel_frontend_lit araios_frontend_lit araios_backend_lit
+  sentinel_frontend_lit="$(sql_quote_literal "$sentinel_frontend_url")"
+  araios_frontend_lit="$(sql_quote_literal "$araios_frontend_url")"
+  araios_backend_lit="$(sql_quote_literal "$araios_backend_url")"
+
+  local sql=""
+  sql+="WITH up AS (UPDATE system_settings SET value = ${sentinel_frontend_lit} WHERE key = 'sentinel_frontend_url' RETURNING 1) "
+  sql+="INSERT INTO system_settings(key, value) SELECT 'sentinel_frontend_url', ${sentinel_frontend_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
+  sql+="WITH up AS (UPDATE system_settings SET value = ${araios_frontend_lit} WHERE key = 'araios_frontend_url' RETURNING 1) "
+  sql+="INSERT INTO system_settings(key, value) SELECT 'araios_frontend_url', ${araios_frontend_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
+  sql+="WITH up AS (UPDATE system_settings SET value = ${araios_backend_lit} WHERE key = 'araios_backend_url' RETURNING 1) "
+  sql+="INSERT INTO system_settings(key, value) SELECT 'araios_backend_url', ${araios_backend_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
+
+  local last_error=""
+  for _ in {1..30}; do
+    local output
+    if output="$(
+      compose_instance "$inst" exec -T postgres env PGPASSWORD="$db_password" \
+        psql -X -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" -c "$sql" 2>&1
+    )"; then
+      success "AraiOS URL settings seeded in DB."
+      return 0
+    fi
+    last_error="$(echo "$output" | tail -n 3 | tr '\n' ' ')"
+    sleep 1
+  done
+
+  warn "Could not seed AraiOS URL settings in DB for '$inst'."
+  [[ -n "$last_error" ]] && warn "Last DB error: $last_error"
+  return 1
+}
+
 create_bootstrap_agent_token_managed() {
   local inst="$1"
   local gateway_port="$2"
@@ -507,8 +556,6 @@ POSTGRES_USER=$u
 POSTGRES_PASSWORD=$pw
 JWT_SECRET_KEY=$jwt
 JWT_ALGORITHM=HS256
-APP_SENTINEL_URL=/sentinel/
-APP_ARAIOS_URL=/araios/
 EOF
   chmod 600 "$ef"
   success "Config saved for '$inst'."
@@ -547,6 +594,8 @@ action_up() {
     
     local ef="$(instance_env_file "$inst")"
     local p="$(read_env_value "$ef" "STACK_PORT" || echo "4747")"
+    info "Seeding URL settings in DB..."
+    seed_araios_url_settings_managed_instance "$inst" "$p" || true
     if [[ -n "$seed_user" && "$seed_status" == "ok" ]]; then
       info "Creating bootstrap araiOS agent token for '$inst'..."
       if bootstrap_agent_token="$(create_bootstrap_agent_token_managed "$inst" "$p" "$seed_user" "$seed_password")"; then
