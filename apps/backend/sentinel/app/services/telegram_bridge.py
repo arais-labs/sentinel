@@ -28,6 +28,7 @@ from app.database import AsyncSessionLocal
 from app.models import Message as MessageModel, Session as SessionModel
 from app.services import session_bindings
 from app.services.llm.ids import TierName
+from app.services.messages import telegram_ingress_metadata
 from app.services.system_settings import delete_system_setting, upsert_system_setting
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ class _AgentLoopProtocol(Protocol):
         on_event: Any = None,
         inject_queue: asyncio.Queue[str] | None = None,
         persist_incremental: bool = False,
+        user_metadata: dict[str, Any] | None = None,
     ) -> Any: ...
 
 
@@ -857,19 +859,15 @@ class TelegramBridge:
             self._connected_chats[chat.id] = chat_info
         is_owner = self._is_owner_sender(chat, user)
 
-        metadata = {
-            "source": "telegram",
-            "telegram_chat_id": chat.id,
-            "telegram_chat_type": chat.type,
-            "telegram_is_owner": is_owner,
-        }
-        if chat.title:
-            metadata["telegram_chat_title"] = chat.title
-        if user:
-            metadata["telegram_user_name"] = user.full_name or user.first_name or "Unknown"
-            metadata["telegram_user_id"] = user.id
-            if user.username:
-                metadata["telegram_username"] = user.username
+        metadata = telegram_ingress_metadata(
+            chat_id=chat.id,
+            chat_type=chat.type,
+            is_owner=is_owner,
+            chat_title=chat.title,
+            user_name=(user.full_name or user.first_name or "Unknown") if user else None,
+            user_id=user.id if user else None,
+            username=user.username if user else None,
+        )
         if text_override:
             metadata["telegram_text_override"] = incoming_text
 
