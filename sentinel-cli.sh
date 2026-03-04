@@ -343,6 +343,133 @@ apply_auth_custom_instance() {
   return 1
 }
 
+create_bootstrap_agent_token_managed() {
+  local inst="$1"
+  local gateway_port="$2"
+  local username_raw="$3"
+  local password_raw="$4"
+
+  if ! require_cmd curl; then
+    warn "curl is required to create bootstrap araiOS agent token."
+    return 1
+  fi
+  if ! require_cmd python3; then
+    warn "python3 is required to parse bootstrap araiOS agent token response."
+    return 1
+  fi
+
+  local username password
+  username="$(trim_lower "$username_raw")"
+  password="$(echo "$password_raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  if [[ -z "$username" || -z "$password" ]]; then
+    return 1
+  fi
+
+  local base_url="http://localhost:${gateway_port}"
+  local token_suffix="${RANDOM}${RANDOM}"
+  local agent_id="${inst}-bootstrap-${token_suffix}"
+  local label="sentinel-${inst}-bootstrap"
+  local subject="${inst}-bootstrap"
+
+  local login_payload create_payload
+  login_payload="$(
+    LOGIN_USERNAME="$username" LOGIN_PASSWORD="$password" python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({"username": os.environ["LOGIN_USERNAME"], "password": os.environ["LOGIN_PASSWORD"]}))
+PY
+  )" || return 1
+  create_payload="$(
+    AGENT_LABEL="$label" AGENT_ID="$agent_id" AGENT_SUBJECT="$subject" python3 - <<'PY'
+import json
+import os
+
+print(
+    json.dumps(
+        {
+            "label": os.environ["AGENT_LABEL"],
+            "agent_id": os.environ["AGENT_ID"],
+            "subject": os.environ["AGENT_SUBJECT"],
+        }
+    )
+)
+PY
+  )" || return 1
+
+  local cookie_jar login_body create_body
+  cookie_jar="$(mktemp /tmp/sentinel-cookie.XXXXXX)" || return 1
+  login_body="$(mktemp /tmp/sentinel-login-body.XXXXXX)" || {
+    rm -f "$cookie_jar"
+    return 1
+  }
+  create_body="$(mktemp /tmp/sentinel-create-body.XXXXXX)" || {
+    rm -f "$cookie_jar" "$login_body"
+    return 1
+  }
+
+  local login_status login_ok="false"
+  for _ in {1..40}; do
+    login_status="$(
+      curl -sS -o "$login_body" -w "%{http_code}" \
+        -X POST "${base_url}/platform/auth/login" \
+        -H "Content-Type: application/json" \
+        --data "$login_payload" \
+        --cookie-jar "$cookie_jar" \
+        --cookie "$cookie_jar" || true
+    )"
+    if [[ "$login_status" == "200" ]]; then
+      login_ok="true"
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$login_ok" != "true" ]]; then
+    rm -f "$cookie_jar" "$login_body" "$create_body"
+    return 1
+  fi
+
+  local create_status
+  create_status="$(
+    curl -sS -o "$create_body" -w "%{http_code}" \
+      -X POST "${base_url}/platform/auth/agents" \
+      -H "Content-Type: application/json" \
+      --data "$create_payload" \
+      --cookie "$cookie_jar" \
+      --cookie-jar "$cookie_jar" || true
+  )"
+  if [[ "$create_status" != "201" ]]; then
+    rm -f "$cookie_jar" "$login_body" "$create_body"
+    return 1
+  fi
+
+  local api_key
+  api_key="$(
+    python3 - "$create_body" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+value = payload.get("api_key")
+print(value.strip() if isinstance(value, str) else "")
+PY
+  )"
+  rm -f "$cookie_jar" "$login_body" "$create_body"
+
+  if [[ -z "$api_key" ]]; then
+    return 1
+  fi
+
+  printf "%s" "$api_key"
+  return 0
+}
+
 action_create() {
   echo -n "$CURSOR_ON"
   printf "\n${CYAN}SETTING UP NEW INSTANCE${RESET}\n"
@@ -396,6 +523,8 @@ action_up() {
   local seed_password="${3:-}"
   local seed_target="${4:-both}"
   local seed_status="not_requested"
+  local bootstrap_agent_token=""
+  local bootstrap_status="not_requested"
   if [[ -z "$inst" ]]; then
     rm -f "$TMP_PICK"
     if pick_instance_interactive; then
@@ -418,6 +547,16 @@ action_up() {
     
     local ef="$(instance_env_file "$inst")"
     local p="$(read_env_value "$ef" "STACK_PORT" || echo "4747")"
+    if [[ -n "$seed_user" && "$seed_status" == "ok" ]]; then
+      info "Creating bootstrap araiOS agent token for '$inst'..."
+      if bootstrap_agent_token="$(create_bootstrap_agent_token_managed "$inst" "$p" "$seed_user" "$seed_password")"; then
+        bootstrap_status="ok"
+        success "Bootstrap araiOS agent token created."
+      else
+        bootstrap_status="failed"
+        warn "Could not create bootstrap araiOS agent token automatically."
+      fi
+    fi
     
     printf "\n${CYAN}${BOLD}🚀  S T A C K   O N B O A R D I N G${RESET}\n"
     printf "${DIM}---------------------------------------${RESET}\n"
@@ -431,7 +570,15 @@ action_up() {
     else
       printf "2. Log in with your existing DB credentials.\n"
     fi
-    printf "3. Use the gateway controls to rotate Sentinel/araiOS passwords or manage araiOS agent tokens.\n"
+    if [[ "$bootstrap_status" == "ok" ]]; then
+      printf "3. Initial araiOS agent token for this instance (save it now):\n"
+      printf "   🔑 ${YELLOW}${BOLD}%s${RESET}\n" "$bootstrap_agent_token"
+      printf "4. In Sentinel onboarding, paste it into ${BOLD}AraiOS -> Agent API Key${RESET}.\n"
+      printf "5. If needed later, open ${MAGENTA}http://localhost:$p/manage/${RESET} to rotate or create another token.\n"
+    else
+      printf "3. If no token is available, open ${MAGENTA}http://localhost:$p/araios/${RESET} then manage tokens at ${MAGENTA}http://localhost:$p/manage/${RESET}.\n"
+      printf "4. Paste the token into Sentinel onboarding under ${BOLD}AraiOS -> Agent API Key${RESET}.\n"
+    fi
     printf "${DIM}---------------------------------------${RESET}\n"
   else
     error "Failed to start '$inst'."
