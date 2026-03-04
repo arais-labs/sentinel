@@ -348,7 +348,6 @@ export function TriggerDetailPage() {
                     <option value="cron">cron</option>
                     <option value="heartbeat">heartbeat</option>
                     <option value="webhook">webhook</option>
-                    <option value="event">event</option>
                   </select>
                 </div>
                 <div className="space-y-2">
@@ -413,7 +412,7 @@ export function TriggerDetailPage() {
                           />
                         </div>
                       )}
-                      {(editType === 'webhook' || editType === 'event') && (
+                      {editType === 'webhook' && (
                         <p className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">No assisted fields for this trigger type. Switch to manual mode for raw JSON.</p>
                       )}
                     </div>
