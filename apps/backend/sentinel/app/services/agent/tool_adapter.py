@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import copy
 import hashlib
 import json
 from typing import Any
@@ -24,6 +25,8 @@ from app.services.tools.registry import ToolRegistry
 
 MAX_TOOL_RESULT_BYTES = 50_000
 MAX_INLINE_IMAGE_BASE64_CHARS = 2_000_000
+_MODEL_HIDDEN_SCHEMA_FIELDS = frozenset({"session_id"})
+_MODEL_RESULT_STRIP_ROOT_FIELDS = frozenset({"session_id"})
 
 
 class ToolAdapter:
@@ -50,7 +53,7 @@ class ToolAdapter:
                 ToolSchema(
                     name=tool.name,
                     description=tool.description,
-                    parameters=tool.parameters_schema,
+                    parameters=self._schema_for_model(tool.parameters_schema),
                 )
             )
         return schemas
@@ -123,7 +126,7 @@ class ToolAdapter:
             payload = dict(arguments)
             schema_properties = tool.parameters_schema.get("properties", {}) if tool.parameters_schema else {}
             supports_session_id = isinstance(schema_properties, dict) and "session_id" in schema_properties
-            if session_id is not None and supports_session_id and "session_id" not in payload:
+            if session_id is not None and supports_session_id:
                 payload["session_id"] = str(session_id)
             result, _duration_ms = await self._executor.execute(
                 call.name,
@@ -157,12 +160,39 @@ class ToolAdapter:
         """Serialize tool output and extract rich attachments into metadata."""
         attachments: list[dict[str, Any]] = []
         safe_result = self._extract_attachments(result, attachments=attachments)
+        safe_result = self._strip_root_context_fields(safe_result)
         serialized = json.dumps(safe_result, default=str)
         truncated = self._truncate_content(serialized)
         metadata: dict[str, Any] = {}
         if attachments:
             metadata["attachments"] = attachments
         return truncated, metadata
+
+    def _schema_for_model(self, raw_schema: Any) -> dict[str, Any]:
+        if not isinstance(raw_schema, dict):
+            return {}
+        schema = copy.deepcopy(raw_schema)
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            for field in _MODEL_HIDDEN_SCHEMA_FIELDS:
+                properties.pop(field, None)
+        required = schema.get("required")
+        if isinstance(required, list):
+            filtered = [item for item in required if item not in _MODEL_HIDDEN_SCHEMA_FIELDS]
+            if filtered:
+                schema["required"] = filtered
+            else:
+                schema.pop("required", None)
+        return schema
+
+    def _strip_root_context_fields(self, result: Any) -> Any:
+        if not isinstance(result, dict):
+            return result
+        return {
+            key: value
+            for key, value in result.items()
+            if key not in _MODEL_RESULT_STRIP_ROOT_FIELDS
+        }
 
     def _extract_attachments(
         self,
