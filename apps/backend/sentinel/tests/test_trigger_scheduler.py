@@ -103,6 +103,65 @@ def test_scheduler_agent_message_action_calls_agent_loop():
     assert logs[0].status == "fired"
 
 
+def test_scheduler_agent_loop_can_be_updated_after_init():
+    db = FakeDB()
+    trigger = Trigger(
+        name="agent-job",
+        user_id="user-1",
+        type="heartbeat",
+        enabled=True,
+        config={"interval_seconds": 60},
+        action_type="agent_message",
+        action_config={"message": "ping"},
+        next_fire_at=datetime.now(UTC),
+    )
+    db.add(trigger)
+
+    scheduler = TriggerScheduler(
+        agent_loop=None,
+        tool_executor=None,
+        db_factory=_SessionFactory(db),
+        poll_interval_seconds=0.01,
+    )
+    agent = _AgentLoopStub()
+    scheduler.set_agent_loop(agent)
+    _run(scheduler._fire_trigger(trigger.id))
+
+    assert agent.calls and agent.calls[0]["user_message"] == "ping"
+    assert trigger.fire_count == 1
+    assert trigger.last_error is None
+
+
+def test_scheduler_fire_now_records_signal_payload():
+    db = FakeDB()
+    trigger = Trigger(
+        name="tool-job",
+        type="heartbeat",
+        enabled=False,
+        config={"interval_seconds": 60},
+        action_type="tool_call",
+        action_config={"tool_name": "file_read", "payload": {"path": "/tmp/x"}},
+        next_fire_at=None,
+    )
+    db.add(trigger)
+
+    tools = _ToolExecutorStub()
+    scheduler = TriggerScheduler(
+        agent_loop=None,
+        tool_executor=tools,
+        db_factory=_SessionFactory(db),
+        poll_interval_seconds=0.01,
+    )
+    signal = {"source": "manual", "signal": "force_invocation"}
+    log = _run(scheduler.fire_now(db, trigger_id=trigger.id, input_payload=signal, force=True))
+
+    assert log is not None
+    assert log.status == "fired"
+    assert log.input_payload == signal
+    assert tools.calls
+    assert trigger.fire_count == 1
+
+
 def test_scheduler_disables_ownerless_agent_trigger_without_session_context():
     db = FakeDB()
     trigger = Trigger(
