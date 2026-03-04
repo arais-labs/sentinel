@@ -17,6 +17,7 @@ from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
 from app.services.llm.generic.types import AgentEvent, ImageContent, TextContent, UserMessage
 from app.services.llm.ids import TierName
+from app.services.messages import web_ingress_metadata
 from app.services.ws_manager import ConnectionManager
 from app.services.ws_stream_parser import ParsedWsMessage
 
@@ -45,6 +46,7 @@ class AgentLoopProtocol(Protocol):
         max_iterations: int,
         allow_high_risk: bool,
         persist_incremental: bool,
+        user_metadata: dict[str, Any] | None = None,
     ) -> Any: ...
 
 
@@ -125,7 +127,7 @@ async def persist_user_message(
     content: str,
     attachments: list[dict[str, Any]],
 ) -> Message:
-    metadata: dict[str, Any] = {"source": "web"}
+    metadata: dict[str, Any] = web_ingress_metadata()
     if attachments:
         metadata["attachments"] = attachments
     if content and not session.initial_prompt:
