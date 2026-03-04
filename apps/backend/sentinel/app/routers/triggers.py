@@ -14,6 +14,7 @@ from app.middleware.auth import TokenPayload, require_auth
 from app.models import Trigger, TriggerLog
 from app.schemas.triggers import (
     CreateTriggerRequest,
+    FireTriggerResponse,
     FireTriggerRequest,
     TriggerListResponse,
     TriggerLogListResponse,
@@ -164,7 +165,7 @@ async def fire_trigger(
     request: Request,
     user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
-) -> TriggerLogResponse:
+) -> FireTriggerResponse:
     trigger = await _get_trigger_or_404(db, id, user.sub)
     scheduler: TriggerScheduler | None = getattr(request.app.state, "trigger_scheduler", None)
     if scheduler is None:
@@ -174,16 +175,27 @@ async def fire_trigger(
             ws_manager=getattr(request.app.state, "ws_manager", None),
             db_factory=None,
         )
-    log = await scheduler.fire_now(
+    outcome = await scheduler.fire_now_nonblocking(
         db,
         trigger_id=trigger.id,
         input_payload=payload.input_payload,
         force=True,
     )
-    if log is None:
+    if outcome is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Trigger could not be invoked",
+        )
+    log = outcome.log
+    action = outcome.action
+    if (
+        trigger.action_type == "agent_message"
+        and log.status == "fired"
+        and action.resolved_session_id is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Trigger fired but did not resolve a target session",
         )
 
     await log_audit(
@@ -196,7 +208,12 @@ async def fire_trigger(
         ip_address=request.client.host if request.client else None,
         request_id=getattr(request.state, "request_id", None),
     )
-    return _trigger_log_response(log)
+    return FireTriggerResponse(
+        log=_trigger_log_response(log),
+        resolved_session_id=action.resolved_session_id,
+        route_mode=action.route_mode,
+        used_fallback=action.used_fallback,
+    )
 
 
 @router.get("/{id}/logs")
