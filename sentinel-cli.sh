@@ -519,6 +519,221 @@ PY
   return 0
 }
 
+seed_cross_app_urls_via_api_managed_instance() {
+  local gateway_port="$1"
+  local username_raw="$2"
+  local password_raw="$3"
+  local agent_api_key_raw="${4:-}"
+
+  if ! require_cmd curl; then
+    warn "curl is required to seed cross-app URL settings."
+    return 1
+  fi
+  if ! require_cmd python3; then
+    warn "python3 is required to seed cross-app URL settings."
+    return 1
+  fi
+
+  local username password agent_api_key
+  username="$(trim_lower "$username_raw")"
+  password="$(echo "$password_raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  agent_api_key="$(echo "$agent_api_key_raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  if [[ -z "$username" || -z "$password" ]]; then
+    return 1
+  fi
+
+  local base_url="http://localhost:${gateway_port}"
+  local sentinel_frontend_url="${base_url}/sentinel"
+  local araios_frontend_url="${base_url}/araios"
+  local araios_backend_url="http://araios-backend:9000"
+
+  local login_payload sentinel_frontend_payload araios_frontend_payload sentinel_payload
+  login_payload="$(
+    LOGIN_USERNAME="$username" LOGIN_PASSWORD="$password" python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({"username": os.environ["LOGIN_USERNAME"], "password": os.environ["LOGIN_PASSWORD"]}))
+PY
+  )" || return 1
+  sentinel_frontend_payload="$(
+    URL_VALUE="$sentinel_frontend_url" python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({"value": os.environ["URL_VALUE"]}))
+PY
+  )" || return 1
+  araios_frontend_payload="$(
+    URL_VALUE="$araios_frontend_url" python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({"value": os.environ["URL_VALUE"]}))
+PY
+  )" || return 1
+  if [[ -n "$agent_api_key" ]]; then
+    sentinel_payload="$(
+      ARAIOS_FRONTEND_URL="$araios_frontend_url" \
+      ARAIOS_BACKEND_URL="$araios_backend_url" \
+      AGENT_API_KEY="$agent_api_key" \
+      python3 - <<'PY'
+import json
+import os
+
+print(
+    json.dumps(
+        {
+            "enabled": True,
+            "araios_frontend_url": os.environ["ARAIOS_FRONTEND_URL"],
+            "araios_backend_url": os.environ["ARAIOS_BACKEND_URL"],
+            "agent_api_key": os.environ["AGENT_API_KEY"],
+        }
+    )
+)
+PY
+    )" || return 1
+  else
+    sentinel_payload="$(
+      ARAIOS_FRONTEND_URL="$araios_frontend_url" python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({"enabled": False, "araios_frontend_url": os.environ["ARAIOS_FRONTEND_URL"]}))
+PY
+    )" || return 1
+  fi
+
+  local araios_login_body sentinel_login_body
+  araios_login_body="$(mktemp /tmp/sentinel-araios-login.XXXXXX)" || return 1
+  sentinel_login_body="$(mktemp /tmp/sentinel-sentinel-login.XXXXXX)" || {
+    rm -f "$araios_login_body"
+    return 1
+  }
+
+  local araios_login_status araios_login_ok="false"
+  for _ in {1..40}; do
+    araios_login_status="$(
+      curl -sS -o "$araios_login_body" -w "%{http_code}" \
+        -X POST "${base_url}/platform/auth/login" \
+        -H "Content-Type: application/json" \
+        --data "$login_payload" || true
+    )"
+    if [[ "$araios_login_status" == "200" ]]; then
+      araios_login_ok="true"
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$araios_login_ok" != "true" ]]; then
+    rm -f "$araios_login_body" "$sentinel_login_body"
+    return 1
+  fi
+
+  local araios_access_token
+  araios_access_token="$(
+    python3 - "$araios_login_body" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+value = payload.get("access_token")
+print(value.strip() if isinstance(value, str) else "")
+PY
+  )"
+  if [[ -z "$araios_access_token" ]]; then
+    rm -f "$araios_login_body" "$sentinel_login_body"
+    return 1
+  fi
+
+  local araios_set_status
+  araios_set_status="$(
+    curl -sS -o /dev/null -w "%{http_code}" \
+      -X PUT "${base_url}/api/settings/sentinel_frontend_url" \
+      -H "Authorization: Bearer ${araios_access_token}" \
+      -H "Content-Type: application/json" \
+      --data "$sentinel_frontend_payload" || true
+  )"
+  if [[ "$araios_set_status" != "200" ]]; then
+    rm -f "$araios_login_body" "$sentinel_login_body"
+    return 1
+  fi
+
+  araios_set_status="$(
+    curl -sS -o /dev/null -w "%{http_code}" \
+      -X PUT "${base_url}/api/settings/araios_frontend_url" \
+      -H "Authorization: Bearer ${araios_access_token}" \
+      -H "Content-Type: application/json" \
+      --data "$araios_frontend_payload" || true
+  )"
+  if [[ "$araios_set_status" != "200" ]]; then
+    rm -f "$araios_login_body" "$sentinel_login_body"
+    return 1
+  fi
+
+  local sentinel_login_status sentinel_login_ok="false"
+  for _ in {1..40}; do
+    sentinel_login_status="$(
+      curl -sS -o "$sentinel_login_body" -w "%{http_code}" \
+        -X POST "${base_url}/sentinel/api/v1/auth/login" \
+        -H "Content-Type: application/json" \
+        --data "$login_payload" || true
+    )"
+    if [[ "$sentinel_login_status" == "200" ]]; then
+      sentinel_login_ok="true"
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$sentinel_login_ok" != "true" ]]; then
+    rm -f "$araios_login_body" "$sentinel_login_body"
+    return 1
+  fi
+
+  local sentinel_access_token
+  sentinel_access_token="$(
+    python3 - "$sentinel_login_body" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+value = payload.get("access_token")
+print(value.strip() if isinstance(value, str) else "")
+PY
+  )"
+  if [[ -z "$sentinel_access_token" ]]; then
+    rm -f "$araios_login_body" "$sentinel_login_body"
+    return 1
+  fi
+
+  local sentinel_set_status
+  sentinel_set_status="$(
+    curl -sS -o /dev/null -w "%{http_code}" \
+      -X POST "${base_url}/sentinel/api/v1/settings/araios" \
+      -H "Authorization: Bearer ${sentinel_access_token}" \
+      -H "Content-Type: application/json" \
+      --data "$sentinel_payload" || true
+  )"
+  rm -f "$araios_login_body" "$sentinel_login_body"
+  if [[ "$sentinel_set_status" != "200" ]]; then
+    return 1
+  fi
+
+  return 0
+}
+
 action_create() {
   echo -n "$CURSOR_ON"
   printf "\n${CYAN}SETTING UP NEW INSTANCE${RESET}\n"
@@ -594,8 +809,6 @@ action_up() {
     
     local ef="$(instance_env_file "$inst")"
     local p="$(read_env_value "$ef" "STACK_PORT" || echo "4747")"
-    info "Seeding URL settings in DB..."
-    seed_araios_url_settings_managed_instance "$inst" "$p" || true
     if [[ -n "$seed_user" && "$seed_status" == "ok" ]]; then
       info "Creating bootstrap araiOS agent token for '$inst'..."
       if bootstrap_agent_token="$(create_bootstrap_agent_token_managed "$inst" "$p" "$seed_user" "$seed_password")"; then
@@ -605,6 +818,17 @@ action_up() {
         bootstrap_status="failed"
         warn "Could not create bootstrap araiOS agent token automatically."
       fi
+    fi
+    info "Seeding cross-app URL settings..."
+    if [[ -n "$seed_user" && "$seed_status" == "ok" && "$bootstrap_status" == "ok" ]]; then
+      if seed_cross_app_urls_via_api_managed_instance "$p" "$seed_user" "$seed_password" "$bootstrap_agent_token"; then
+        success "Cross-app URL settings seeded via service APIs."
+      else
+        warn "Could not seed cross-app URL settings via service APIs. Falling back to DB seeding."
+        seed_araios_url_settings_managed_instance "$inst" "$p" || true
+      fi
+    else
+      seed_araios_url_settings_managed_instance "$inst" "$p" || true
     fi
     
     printf "\n${CYAN}${BOLD}🚀  S T A C K   O N B O A R D I N G${RESET}\n"

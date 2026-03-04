@@ -395,8 +395,6 @@ function AraisOSStep({
   setUse,
   backendUrl,
   setBackendUrl,
-  sentinelFrontendUrl,
-  setSentinelFrontendUrl,
   araiosFrontendUrl,
   setAraiosFrontendUrl,
   token,
@@ -405,7 +403,6 @@ function AraisOSStep({
 }: {
   use: boolean | null; setUse: (v: boolean) => void;
   backendUrl: string; setBackendUrl: (v: string) => void;
-  sentinelFrontendUrl: string; setSentinelFrontendUrl: (v: string) => void;
   araiosFrontendUrl: string; setAraiosFrontendUrl: (v: string) => void;
   token: string; setToken: (v: string) => void;
   configured: boolean;
@@ -460,12 +457,6 @@ function AraisOSStep({
 
       {use === true && (
         <div className="flex flex-col gap-4 animate-in fade-in duration-200">
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Sentinel Frontend URL</label>
-            <input value={sentinelFrontendUrl} onChange={e => setSentinelFrontendUrl(e.target.value)}
-              placeholder="http://localhost:4747/sentinel"
-              className="input-field h-11 font-mono text-sm" />
-          </div>
           <div className="space-y-2">
             <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Frontend URL</label>
             <input value={araiosFrontendUrl} onChange={e => setAraiosFrontendUrl(e.target.value)}
@@ -600,7 +591,6 @@ export function OnboardingPage() {
 
   // AraisOS
   const [useAraisOS, setUseAraisOS] = useState<boolean | null>(null);
-  const [sentinelFrontendUrl, setSentinelFrontendUrl] = useState('');
   const [araiosFrontendUrl, setAraiosFrontendUrl] = useState('');
   const [araiosBackendUrl, setAraiosBackendUrl] = useState('');
   const [araisToken, setAraisToken] = useState('');
@@ -620,11 +610,9 @@ export function OnboardingPage() {
 
     async function initializeAraisDefaults() {
       const origin = window.location.origin.replace(/\/$/, '');
-      const defaultSentinelFrontendUrl = `${origin}/sentinel`;
       const defaultAraiosFrontendUrl = `${origin}/araios`;
       const defaultAraiosBackendUrl = 'http://araios-backend:9000';
 
-      let persistedSentinelFrontendUrl = '';
       let persistedAraiosFrontendUrl = '';
       let persistedAraiosBackendUrl = '';
       let persistedConfigured = false;
@@ -632,23 +620,19 @@ export function OnboardingPage() {
       try {
         const integration = await api.get<{
           configured?: boolean;
-          sentinel_frontend_url?: string | null;
           araios_frontend_url?: string | null;
           araios_backend_url?: string | null;
         }>('/settings/araios');
         persistedConfigured = !!integration.configured;
-        persistedSentinelFrontendUrl = normalizeAraisUrl(integration.sentinel_frontend_url || '');
         persistedAraiosFrontendUrl = normalizeAraisUrl(integration.araios_frontend_url || '');
         persistedAraiosBackendUrl = normalizeAraisUrl(integration.araios_backend_url || '');
       } catch {
         persistedConfigured = false;
-        persistedSentinelFrontendUrl = '';
         persistedAraiosFrontendUrl = '';
         persistedAraiosBackendUrl = '';
       }
 
       if (mounted) {
-        setSentinelFrontendUrl(persistedSentinelFrontendUrl || defaultSentinelFrontendUrl);
         setAraiosFrontendUrl(persistedAraiosFrontendUrl || defaultAraiosFrontendUrl);
         setAraiosBackendUrl(persistedAraiosBackendUrl || defaultAraiosBackendUrl);
         if (persistedConfigured) {
@@ -670,8 +654,7 @@ export function OnboardingPage() {
       if (useAraisOS === null) return false;
       if (useAraisOS === false) return true;
       return (
-        !!sentinelFrontendUrl.trim()
-        && !!araiosFrontendUrl.trim()
+        !!araiosFrontendUrl.trim()
         && !!araiosBackendUrl.trim()
         && (!!araisToken.trim() || araisConfigured)
       );
@@ -733,7 +716,6 @@ export function OnboardingPage() {
       if (useAraisOS === true) {
         await api.post('/settings/araios', {
           enabled: true,
-          sentinel_frontend_url: normalizeAraisUrl(sentinelFrontendUrl),
           araios_frontend_url: normalizeAraisUrl(araiosFrontendUrl),
           araios_backend_url: normalizeAraisUrl(araiosBackendUrl),
           agent_api_key: araisToken.trim() || undefined,
@@ -742,9 +724,6 @@ export function OnboardingPage() {
         setCompletedItems([...items]);
       } else if (useAraisOS === false) {
         const disablePayload: Record<string, unknown> = { enabled: false };
-        if (sentinelFrontendUrl.trim()) {
-          disablePayload.sentinel_frontend_url = normalizeAraisUrl(sentinelFrontendUrl);
-        }
         if (araiosFrontendUrl.trim()) {
           disablePayload.araios_frontend_url = normalizeAraisUrl(araiosFrontendUrl);
         }
@@ -806,8 +785,6 @@ export function OnboardingPage() {
                   setUse={setUseAraisOS}
                   backendUrl={araiosBackendUrl}
                   setBackendUrl={setAraiosBackendUrl}
-                  sentinelFrontendUrl={sentinelFrontendUrl}
-                  setSentinelFrontendUrl={setSentinelFrontendUrl}
                   araiosFrontendUrl={araiosFrontendUrl}
                   setAraiosFrontendUrl={setAraiosFrontendUrl}
                   token={araisToken}
