@@ -122,12 +122,18 @@ class AgentLoop:
         on_event: Callable[[AgentEvent], Awaitable[None]] | None = None,
         inject_queue: asyncio.Queue[str] | None = None,
         persist_incremental: bool = False,
+        user_metadata: dict[str, Any] | None = None,
     ) -> AgentLoopResult:
         """Execute a full agent run for one user turn and persist resulting messages."""
         session_log_token = set_log_session(session_id)
         if timeout_seconds is None:
             timeout_seconds = settings.agent_loop_timeout
-        user = UserMessage(content=user_message)
+        normalized_user_metadata = (
+            dict(user_metadata)
+            if isinstance(user_metadata, dict)
+            else {}
+        )
+        user = UserMessage(content=user_message, metadata=normalized_user_metadata)
         created: list[AgentMessage] = []
         assistant_iterations: dict[int, int] = {}
         if persist_user_message:
