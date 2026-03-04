@@ -455,7 +455,9 @@ def test_onboarding_araios_integration_configure_and_disable():
             "/api/v1/settings/araios",
             json={
                 "enabled": True,
-                "base_url": "http://araios-backend:9000",
+                "sentinel_frontend_url": "http://localhost:4747/sentinel",
+                "araios_frontend_url": "http://localhost:4747/araios",
+                "araios_backend_url": "http://araios-backend:9000",
                 "agent_api_key": "sk-arais-agent-test",
             },
             headers=headers,
@@ -466,12 +468,18 @@ def test_onboarding_araios_integration_configure_and_disable():
         status = client.get("/api/v1/settings/araios", headers=headers)
         assert status.status_code == 200
         assert status.json()["configured"] is True
-        assert status.json()["base_url"] == "http://araios-backend:9000"
+        assert status.json()["sentinel_frontend_url"] == "http://localhost:4747/sentinel"
+        assert status.json()["araios_frontend_url"] == "http://localhost:4747/araios"
+        assert status.json()["araios_backend_url"] == "http://araios-backend:9000"
         assert status.json()["masked_agent_api_key"] is not None
 
         disable = client.post(
             "/api/v1/settings/araios",
-            json={"enabled": False},
+            json={
+                "enabled": False,
+                "sentinel_frontend_url": "http://localhost:4747/sentinel",
+                "araios_frontend_url": "http://localhost:4747/araios",
+            },
             headers=headers,
         )
         assert disable.status_code == 200
@@ -480,13 +488,15 @@ def test_onboarding_araios_integration_configure_and_disable():
         status_after = client.get("/api/v1/settings/araios", headers=headers)
         assert status_after.status_code == 200
         assert status_after.json()["configured"] is False
-        assert status_after.json()["base_url"] is None
+        assert status_after.json()["sentinel_frontend_url"] == "http://localhost:4747/sentinel"
+        assert status_after.json()["araios_frontend_url"] == "http://localhost:4747/araios"
+        assert status_after.json()["araios_backend_url"] is None
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
 
 
-def test_onboarding_araios_integration_allows_base_url_update_without_new_key():
+def test_onboarding_araios_integration_allows_backend_url_update_without_new_key():
     fake_db = FakeDB()
 
     async def _override_get_db():
@@ -510,7 +520,9 @@ def test_onboarding_araios_integration_allows_base_url_update_without_new_key():
             "/api/v1/settings/araios",
             json={
                 "enabled": True,
-                "base_url": "http://araios-backend:9000",
+                "sentinel_frontend_url": "http://localhost:4747/sentinel",
+                "araios_frontend_url": "http://localhost:4747/araios",
+                "araios_backend_url": "http://araios-backend:9000",
                 "agent_api_key": "sk-arais-agent-test",
             },
             headers=headers,
@@ -521,7 +533,7 @@ def test_onboarding_araios_integration_allows_base_url_update_without_new_key():
             "/api/v1/settings/araios",
             json={
                 "enabled": True,
-                "base_url": "https://new-araios.example.com",
+                "araios_backend_url": "https://new-araios.example.com",
             },
             headers=headers,
         )
@@ -531,7 +543,9 @@ def test_onboarding_araios_integration_allows_base_url_update_without_new_key():
         status = client.get("/api/v1/settings/araios", headers=headers)
         assert status.status_code == 200
         assert status.json()["configured"] is True
-        assert status.json()["base_url"] == "https://new-araios.example.com"
+        assert status.json()["sentinel_frontend_url"] == "http://localhost:4747/sentinel"
+        assert status.json()["araios_frontend_url"] == "http://localhost:4747/araios"
+        assert status.json()["araios_backend_url"] == "https://new-araios.example.com"
         assert status.json()["masked_agent_api_key"] is not None
     finally:
         app.dependency_overrides.clear()

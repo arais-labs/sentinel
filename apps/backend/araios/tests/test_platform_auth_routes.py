@@ -1,4 +1,4 @@
-from app.database.models import PlatformApiKey
+from app.database.models import PlatformApiKey, SystemSetting
 from app.database.database import SessionLocal
 from app.platform_auth import hash_api_key
 
@@ -150,3 +150,29 @@ def test_agent_key_update_conflict(client):
         headers=headers,
     )
     assert conflict.status_code == 409
+
+
+def test_app_links_returns_db_values_for_authenticated_user(client):
+    db = SessionLocal()
+    try:
+        for key, value in (
+            ("sentinel_frontend_url", "http://localhost:4747/sentinel"),
+            ("araios_frontend_url", "http://localhost:4747/araios"),
+        ):
+            row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+            if row is None:
+                db.add(SystemSetting(key=key, value=value))
+            else:
+                row.value = value
+        db.commit()
+    finally:
+        db.close()
+
+    login = _admin_login(client)
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+    response = client.get("/platform/auth/app-links", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {
+        "sentinel_frontend_url": "http://localhost:4747/sentinel",
+        "araios_frontend_url": "http://localhost:4747/araios",
+    }

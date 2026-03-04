@@ -125,7 +125,6 @@ async def get_config(
         access_token_ttl_seconds=settings.access_token_ttl_seconds,
         refresh_token_ttl_seconds=settings.refresh_token_ttl_seconds,
         context_token_budget=settings.context_token_budget,
-        araios_url=settings.araios_url,
         jwt_secret_key="***",
     )
 
@@ -151,6 +150,5 @@ async def update_config(
         access_token_ttl_seconds=settings.access_token_ttl_seconds,
         refresh_token_ttl_seconds=settings.refresh_token_ttl_seconds,
         context_token_budget=settings.context_token_budget,
-        araios_url=settings.araios_url,
         jwt_secret_key="***",
     )

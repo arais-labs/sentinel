@@ -31,15 +31,6 @@ async def get_status(
     return {"completed": await onboarding_service.is_completed(db, user_id=user.sub)}
 
 
-@router.get("/defaults")
-async def get_onboarding_defaults(
-    _: TokenPayload = Depends(require_auth),
-    onboarding_service: OnboardingService = Depends(get_onboarding_service),
-) -> dict[str, str | None]:
-    defaults = onboarding_service.get_defaults()
-    return {"araios_runtime_url": defaults.araios_runtime_url}
-
-
 @router.post("/complete")
 async def complete_onboarding(
     payload: CompleteOnboardingRequest,
