@@ -1706,6 +1706,93 @@ def test_codex_stream_payload_includes_parity_fields_and_prompt_cache_key():
     assert first_payload["prompt_cache_key"] == second_payload["prompt_cache_key"]
 
 
+def test_codex_stream_sanitizes_nested_object_tool_schemas():
+    stream_lines = [
+        'data: {"type":"response.created"}',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[]}}',
+    ]
+    fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
+    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    raw_parameters = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["path"],
+        "properties": {
+            "path": {"type": "string"},
+            "method": {"type": "string"},
+            "query": {"type": "object"},
+            "headers": {"type": "object"},
+            "body": {"type": "object"},
+        },
+    }
+    tools = [
+        ToolSchema(
+            name="araios_api",
+            description="Call AraiOS",
+            parameters=raw_parameters,
+        )
+    ]
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="Create task")],
+            model="gpt-5.3-codex",
+            tools=tools,
+        ):
+            events.append(event)
+        return events
+
+    _run(_collect())
+    payload = fake_client.stream_calls[0]["json"]
+    params = payload["tools"][0]["parameters"]
+    assert params["properties"]["query"]["properties"] == {}
+    assert params["properties"]["headers"]["properties"] == {}
+    assert params["properties"]["body"]["properties"] == {}
+    # Original tool schema should not be mutated in place.
+    assert "properties" not in raw_parameters["properties"]["body"]
+
+
+def test_codex_stream_keeps_additional_properties_boolean_in_nested_object_schema():
+    stream_lines = [
+        'data: {"type":"response.created"}',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[]}}',
+    ]
+    fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
+    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    tools = [
+        ToolSchema(
+            name="custom_tool",
+            description="Custom tool",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "config": {
+                        "type": "object",
+                        "additionalProperties": False,
+                    }
+                },
+            },
+        )
+    ]
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="run")],
+            model="gpt-5.3-codex",
+            tools=tools,
+        ):
+            events.append(event)
+        return events
+
+    _run(_collect())
+    payload = fake_client.stream_calls[0]["json"]
+    params = payload["tools"][0]["parameters"]
+    assert params["properties"]["config"]["additionalProperties"] is False
+    assert params["properties"]["config"]["properties"] == {}
+
+
 def test_codex_stream_raises_on_sse_error_event():
     stream_lines = [
         "event: error",
