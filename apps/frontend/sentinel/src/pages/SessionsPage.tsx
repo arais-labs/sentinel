@@ -1255,7 +1255,7 @@ export function SessionsPage() {
 
   const [liveView, setLiveView] = useState<PlaywrightLiveView | null>(null);
   const [mode, setMode] = useState<'solo' | 'advanced'>(
-      () => (localStorage.getItem('sentinel-mode') as 'solo' | 'advanced') ?? 'solo',
+      () => (localStorage.getItem('sentinel-mode') as 'solo' | 'advanced') ?? 'advanced',
   );
 
   const hasActiveSubAgentTasks = tasks.some((task) => task.status === 'running' || task.status === 'pending');

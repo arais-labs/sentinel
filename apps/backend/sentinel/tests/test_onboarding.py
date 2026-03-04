@@ -99,7 +99,14 @@ def test_onboarding_prompt_when_user_inputs_everything():
         )
         complete = client.post(
             "/api/v1/onboarding/complete",
-            json={"system_prompt": expected_prompt},
+            json={
+                "agent_name": "Atlas",
+                "agent_role": (
+                    "You are a senior product-and-engineering copilot. Drive execution proactively and keep plans "
+                    "actionable."
+                ),
+                "agent_personality": "Direct, pragmatic, and highly solution-oriented.",
+            },
             headers=headers,
         )
         assert complete.status_code == 200
@@ -245,7 +252,14 @@ def test_runtime_context_assembly_when_user_inputs_everything():
 
         complete = client.post(
             "/api/v1/onboarding/complete",
-            json={"system_prompt": custom_prompt},
+            json={
+                "agent_name": "Atlas",
+                "agent_role": (
+                    "You are a senior product-and-engineering copilot. Drive execution proactively and keep plans "
+                    "actionable."
+                ),
+                "agent_personality": "Direct, pragmatic, and highly solution-oriented.",
+            },
             headers=headers,
         )
         assert complete.status_code == 200
@@ -383,10 +397,18 @@ def test_onboarding_complete_keeps_existing_agent_identity_memory():
         )
         assert create_agent.status_code == 200
 
-        custom_prompt = "You are Atlas. Be terse."
+        expected_prompt = build_system_prompt(
+            agent_name="Atlas",
+            agent_role="Be terse.",
+            agent_personality=None,
+        )
         complete = client.post(
             "/api/v1/onboarding/complete",
-            json={"system_prompt": custom_prompt},
+            json={
+                "agent_name": "Atlas",
+                "agent_role": "Be terse.",
+                "system_prompt": "INJECTED PROMPT MUST BE IGNORED",
+            },
             headers=headers,
         )
         assert complete.status_code == 200
@@ -402,7 +424,7 @@ def test_onboarding_complete_keeps_existing_agent_identity_memory():
         assert user_profile is not None
         assert "ask the user for context" in user_profile["content"]
 
-        assert settings.default_system_prompt == custom_prompt
+        assert settings.default_system_prompt == expected_prompt
     finally:
         settings.default_system_prompt = old_prompt
         app.dependency_overrides.clear()
