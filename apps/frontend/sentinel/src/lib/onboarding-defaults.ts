@@ -3,13 +3,6 @@ export const DEFAULT_AGENT_ROLE = 'You are a proactive operator assistant for th
 export const DEFAULT_USER_PROFILE_HINT =
   'When appropriate, ask the user for context about their goals, preferences, constraints, and environment to fill this memory.';
 
-const SYSTEM_PROMPT_LINES = [
-  'Be concise, factual, and execution-oriented.',
-  'Take initiative and complete tasks end-to-end when possible.',
-  'Keep the user informed with clear outcomes.',
-  'Prefer delegating bounded one-off tasks to sub-agents when continuity is not required.',
-] as const;
-
 export interface ResolvedAgentIdentity {
   rawName: string;
   rawRole: string;
@@ -59,14 +52,4 @@ export function buildUserProfileMemoryContent(profile: ResolvedUserProfile): str
     DEFAULT_USER_PROFILE_HINT,
   ];
   return parts.join('\n\n');
-}
-
-export function buildSystemPrompt(identity: ResolvedAgentIdentity): string {
-  const parts = [
-    `You are ${identity.finalName}.`,
-    identity.finalRole,
-    ...SYSTEM_PROMPT_LINES,
-  ];
-  if (identity.rawPersonality) parts.push(`Personality: ${identity.rawPersonality}`);
-  return parts.join(' ');
 }
