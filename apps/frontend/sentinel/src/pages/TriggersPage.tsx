@@ -14,6 +14,7 @@ import {
   History,
   Info,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
@@ -26,6 +27,7 @@ import { formatCompactDate } from '../lib/format';
 import type {
   Session,
   SessionListResponse,
+  FireTriggerResponse,
   Trigger,
   TriggerListResponse,
   TriggerLog,
@@ -120,7 +122,35 @@ function statusTone(status: string): 'default' | 'good' | 'warn' | 'danger' | 'i
   return 'default';
 }
 
+const defaultManualInvokePayload: Record<string, string> = {
+  source: 'manual',
+  signal: 'force_invocation',
+};
+
+function pluralize(value: number, unit: string): string {
+  return `${value} ${unit}${value === 1 ? '' : 's'}`;
+}
+
+function formatNextRunRelative(nextFireAt: string | null, nowMs: number): string {
+  if (!nextFireAt) return 'No next run scheduled';
+  const targetMs = Date.parse(nextFireAt);
+  if (Number.isNaN(targetMs)) return `Next run: ${formatCompactDate(nextFireAt)}`;
+
+  const diffSeconds = Math.max(0, Math.floor((targetMs - nowMs) / 1000));
+  if (diffSeconds <= 5) return 'Next run in a few seconds';
+  if (diffSeconds < 60) return `Next run in ${pluralize(diffSeconds, 'sec')}`;
+
+  const totalMinutes = Math.floor(diffSeconds / 60);
+  if (totalMinutes < 60) return `Next run in ${pluralize(totalMinutes, 'min')}`;
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (minutes === 0) return `Next run in ${pluralize(hours, 'hour')}`;
+  return `Next run in ${pluralize(hours, 'hour')} ${pluralize(minutes, 'min')}`;
+}
+
 export function TriggersPage() {
+  const navigate = useNavigate();
   const [triggers, setTriggers] = useState<Trigger[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -130,11 +160,13 @@ export function TriggersPage() {
   const [savingModal, setSavingModal] = useState(false);
   const [isFiring, setIsFiring] = useState(false);
   const [invokePayloadText, setInvokePayloadText] = useState(
-    '{\n  "source": "manual",\n  "signal": "force_invocation"\n}',
+    JSON.stringify(defaultManualInvokePayload, null, 2),
   );
   const [modalLogs, setModalLogs] = useState<TriggerLog[]>([]);
   const [modalLogsLoading, setModalLogsLoading] = useState(false);
   const [modalLogOffset, setModalLogOffset] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [firingCardTriggerId, setFiringCardTriggerId] = useState<string | null>(null);
 
   const visible = useMemo(
     () =>
@@ -161,6 +193,11 @@ export function TriggersPage() {
 
   useEffect(() => {
     void loadData();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
   async function loadData() {
@@ -269,7 +306,7 @@ export function TriggersPage() {
   }
 
   function openCreateModal() {
-    setInvokePayloadText('{\n  "source": "manual",\n  "signal": "force_invocation"\n}');
+    setInvokePayloadText(JSON.stringify(defaultManualInvokePayload, null, 2));
     setModalLogs([]);
     setModalLogOffset(0);
     setModal(modalDefault);
@@ -284,7 +321,7 @@ export function TriggersPage() {
     const isHttp = trigger.action_type === 'http_request';
     const route = resolveAgentRoute(trigger.action_config);
 
-    setInvokePayloadText('{\n  "source": "manual",\n  "signal": "force_invocation"\n}');
+    setInvokePayloadText(JSON.stringify(defaultManualInvokePayload, null, 2));
     setModal({
       open: true,
       mode: 'edit',
@@ -356,22 +393,57 @@ export function TriggersPage() {
 
     setIsFiring(true);
     try {
-      const result = await api.post<TriggerLog>(`/triggers/${modal.triggerId}/fire`, {
+      const result = await api.post<FireTriggerResponse>(`/triggers/${modal.triggerId}/fire`, {
         input_payload: parsedPayload,
       });
-      if (result.status === 'failed') {
-        toast.error(result.error_message || 'Invocation failed');
+      if (result.log.status === 'failed') {
+        toast.error(result.log.error_message || 'Invocation failed');
+        await Promise.all([loadModalLogs(modal.triggerId, true), loadData()]);
+        return;
+      }
+      if (result.used_fallback) {
+        toast.warning('Target session unavailable, routed to main session');
       } else {
         toast.success('Trigger invoked');
       }
-      await Promise.all([
-        loadModalLogs(modal.triggerId, true),
-        loadData(),
-      ]);
+      if (result.resolved_session_id) {
+        navigate(`/sessions/${result.resolved_session_id}`);
+        return;
+      }
+      await Promise.all([loadModalLogs(modal.triggerId, true), loadData()]);
     } catch {
       toast.error('Trigger invocation failed');
     } finally {
       setIsFiring(false);
+    }
+  }
+
+  async function fireFromCard(triggerId: string) {
+    if (firingCardTriggerId) return;
+    setFiringCardTriggerId(triggerId);
+    try {
+      const result = await api.post<FireTriggerResponse>(`/triggers/${triggerId}/fire`, {
+        input_payload: defaultManualInvokePayload,
+      });
+      if (result.log.status === 'failed') {
+        toast.error(result.log.error_message || 'Invocation failed');
+        await loadData();
+        return;
+      }
+      if (result.used_fallback) {
+        toast.warning('Target session unavailable, routed to main session');
+      } else {
+        toast.success('Trigger invoked');
+      }
+      if (result.resolved_session_id) {
+        navigate(`/sessions/${result.resolved_session_id}`);
+        return;
+      }
+      await loadData();
+    } catch {
+      toast.error('Trigger invocation failed');
+    } finally {
+      setFiringCardTriggerId(null);
     }
   }
 
@@ -477,7 +549,7 @@ export function TriggersPage() {
                     openEditModal(trigger);
                   }
                 }}
-                className="p-5 group hover:border-[color:var(--border-strong)] transition-all flex flex-col gap-4 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[color:var(--border-strong)]"
+                className="p-4 group hover:border-[color:var(--border-strong)] transition-all flex flex-col gap-3 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[color:var(--border-strong)]"
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="space-y-1">
@@ -509,21 +581,34 @@ export function TriggersPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-wider flex items-center gap-1.5">
-                    <Clock size={12} />
-                    {trigger.last_fired_at ? `Last run: ${formatCompactDate(trigger.last_fired_at)}` : 'Never invoked'}
-                  </p>
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void removeTrigger(trigger);
-                    }}
-                    className="p-2 rounded-md hover:bg-rose-500/10 text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                    title="Purge"
-                  >
-                    <Trash2 size={16} />
-                  </button>
+                <div className="flex items-end justify-between gap-3">
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-wider flex items-center gap-1.5">
+                      <Clock size={12} />
+                      {trigger.last_fired_at ? `Last run: ${formatCompactDate(trigger.last_fired_at)}` : 'Never invoked'}
+                    </p>
+                    <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-wider">
+                      {formatNextRunRelative(trigger.next_fire_at, nowMs)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                    <button
+                      onClick={() => void fireFromCard(trigger.id)}
+                      disabled={firingCardTriggerId === trigger.id}
+                      className="btn-secondary h-8 px-3 text-[10px] font-bold uppercase tracking-widest gap-1.5"
+                      title="Run now"
+                    >
+                      {firingCardTriggerId === trigger.id ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} fill="currentColor" />}
+                      Run
+                    </button>
+                    <button
+                      onClick={() => void removeTrigger(trigger)}
+                      className="p-2 rounded-md hover:bg-rose-500/10 text-rose-500 transition-colors"
+                      title="Purge"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </div>
               </Panel>
             ))}
@@ -534,13 +619,13 @@ export function TriggersPage() {
       {modal.open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={closeModal} />
-          <Panel className="relative flex w-full max-w-5xl h-[90vh] flex-col overflow-hidden bg-[color:var(--surface-0)] shadow-2xl animate-in zoom-in-95 duration-200">
+          <Panel className="relative flex w-full max-w-4xl h-[84vh] flex-col overflow-hidden bg-[color:var(--surface-0)] shadow-2xl animate-in zoom-in-95 duration-200">
             <form onSubmit={handleModalSubmit} className="flex h-full min-h-0 flex-col">
               {/* Modal Header */}
-              <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-6 py-4">
+              <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-5 py-3">
                 <div className="flex items-center gap-4">
-                  <div className="p-2.5 rounded-xl bg-[color:var(--surface-2)] text-[color:var(--accent-solid)] shadow-sm">
-                    {modal.mode === 'create' ? <Plus size={20} /> : <History size={20} />}
+                  <div className="p-2 rounded-xl bg-[color:var(--surface-2)] text-[color:var(--accent-solid)] shadow-sm">
+                    {modal.mode === 'create' ? <Plus size={18} /> : <History size={18} />}
                   </div>
                   <div>
                     <h2 className="text-[11px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)] leading-none mb-1.5">
@@ -566,18 +651,18 @@ export function TriggersPage() {
               </div>
 
               {/* Modal Body */}
-              <div className="flex-1 min-h-0 overflow-y-auto px-8 py-8 space-y-10">
+              <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5 space-y-6">
                 {/* Basic Identification */}
-                <section className="space-y-4">
+                <section className="space-y-3">
                   <div className="flex items-center gap-2">
                     <Info size={14} className="text-[color:var(--text-muted)]" />
                     <h3 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Basic Identification</h3>
                   </div>
-                  <div className="grid gap-6">
+                  <div className="grid gap-4">
                     <div className="space-y-2">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Identifier / Name</label>
                       <input
-                        className="input-field h-12 text-sm font-medium"
+                        className="input-field h-11 text-sm font-medium"
                         placeholder="e.g. Daily Inventory Synchronization"
                         value={modal.name}
                         onChange={(event) => setModal((prev) => ({ ...prev, name: event.target.value }))}
@@ -589,9 +674,9 @@ export function TriggersPage() {
                 </section>
 
                 {/* Trigger & Action Configuration */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   {/* Trigger Configuration */}
-                  <section className="space-y-4">
+                  <section className="space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Clock size={14} className="text-[color:var(--text-muted)]" />
@@ -610,7 +695,7 @@ export function TriggersPage() {
                       </button>
                     </div>
 
-                    <div className="p-5 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 space-y-5">
+                    <div className="p-4 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 space-y-4">
                       {!modal.useManualConfig ? (
                         <>
                           <div className="space-y-2">
@@ -681,7 +766,7 @@ export function TriggersPage() {
                   </section>
 
                   {/* Action Configuration */}
-                  <section className="space-y-4">
+                  <section className="space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Zap size={14} className="text-[color:var(--text-muted)]" />
@@ -700,7 +785,7 @@ export function TriggersPage() {
                       </button>
                     </div>
 
-                    <div className="p-5 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 space-y-5">
+                    <div className="p-4 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 space-y-4">
                       {!modal.useManualAction ? (
                         <>
                           <div className="space-y-2">
@@ -851,9 +936,9 @@ export function TriggersPage() {
 
                 {/* Edit-Only: Execution & Logs */}
                 {modal.mode === 'edit' && (
-                  <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.2fr] gap-10 pt-10 border-t border-[color:var(--border-subtle)]">
+                  <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.1fr] gap-6 pt-6 border-t border-[color:var(--border-subtle)]">
                     {/* Manual Invocation */}
-                    <section className="space-y-4">
+                    <section className="space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <Play size={14} className="text-[color:var(--text-muted)]" />
@@ -869,18 +954,18 @@ export function TriggersPage() {
                           Fire Signal
                         </button>
                       </div>
-                      <div className="p-5 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 space-y-2">
+                      <div className="p-4 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 space-y-2">
                         <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Input Payload (JSON)</label>
                         <textarea
                           value={invokePayloadText}
                           onChange={(event) => setInvokePayloadText(event.target.value)}
-                          className="input-field min-h-[150px] resize-none py-3 font-mono text-[11px] leading-relaxed"
+                          className="input-field min-h-[120px] resize-none py-2.5 font-mono text-[11px] leading-relaxed"
                         />
                       </div>
                     </section>
 
                     {/* Telemetry Logs */}
-                    <section className="space-y-4">
+                    <section className="space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <History size={14} className="text-[color:var(--text-muted)]" />
@@ -897,7 +982,7 @@ export function TriggersPage() {
                           </button>
                         )}
                       </div>
-                      <div className="p-5 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 h-[225px] flex flex-col">
+                      <div className="p-4 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 h-[200px] flex flex-col">
                         <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar">
                           {modalLogsLoading && modalLogs.length === 0 ? (
                             <div className="flex items-center justify-center h-full gap-2 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
@@ -944,15 +1029,15 @@ export function TriggersPage() {
               </div>
 
               {/* Modal Footer */}
-              <div className="flex items-center justify-between border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-8 py-5">
+              <div className="flex items-center justify-between border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-5 py-3">
                 <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">
                   {modal.mode === 'create' ? 'Ready for deployment' : `Node ID: ${modal.triggerId?.slice(0, 12)}...`}
                 </div>
                 <div className="flex items-center gap-3">
-                  <button type="button" onClick={closeModal} className="btn-secondary h-11 px-6 text-[11px] font-bold uppercase tracking-widest">
+                  <button type="button" onClick={closeModal} className="btn-secondary h-10 px-5 text-[11px] font-bold uppercase tracking-widest">
                     Decline
                   </button>
-                  <button type="submit" disabled={savingModal} className="btn-primary h-11 px-8 text-[11px] font-bold uppercase tracking-widest gap-2 shadow-lg shadow-black/5">
+                  <button type="submit" disabled={savingModal} className="btn-primary h-10 px-6 text-[11px] font-bold uppercase tracking-widest gap-2 shadow-lg shadow-black/5">
                     {savingModal ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
                     {modal.mode === 'create' ? 'Initialize Automation' : 'Commit Changes'}
                   </button>

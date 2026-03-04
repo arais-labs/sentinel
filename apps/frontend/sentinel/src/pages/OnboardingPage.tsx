@@ -421,6 +421,41 @@ function AraisOSStep({
     }
   })();
 
+  if (configured) {
+    return (
+      <div className="flex flex-col gap-5 max-w-lg">
+        <div>
+          <h2 className="text-xl font-black tracking-tight text-[color:var(--text-primary)]">AraisOS Integration</h2>
+          <p className="text-sm text-[color:var(--text-muted)] mt-1">
+            AraiOS is already configured for this workspace by the CLI setup.
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-400">Configured</p>
+          <p className="mt-1 text-[12px] text-[color:var(--text-secondary)]">
+            Onboarding can continue without entering URLs or token again.
+          </p>
+        </div>
+
+        <div className="space-y-2 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 py-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Frontend URL</p>
+            <p className="font-mono text-[11px] text-[color:var(--text-secondary)] break-all">{araiosFrontendUrl || 'Not set'}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Backend URL</p>
+            <p className="font-mono text-[11px] text-[color:var(--text-secondary)] break-all">{backendUrl || 'Not set'}</p>
+          </div>
+        </div>
+
+        <div className="rounded-lg bg-[color:var(--surface-2)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
+          Need to rotate credentials later? Open <a href={manageCredentialsUrl} target="_blank" rel="noreferrer" className="font-mono text-[color:var(--text-primary)] underline underline-offset-2">{manageCredentialsUrl}</a> and update Sentinel from Settings.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-5 max-w-lg">
       <div>
@@ -429,12 +464,6 @@ function AraisOSStep({
           AraisOS is a platform for creating and managing custom agent modules. Connecting it lets your agent discover, use, and register new capabilities.
         </p>
       </div>
-
-      {configured && (
-        <div className="rounded-lg bg-[color:var(--surface-2)] border border-[color:var(--border-subtle)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
-          AraiOS integration is already configured for this workspace. Enter a new key only if you want to rotate it.
-        </div>
-      )}
 
       <div className="grid grid-cols-2 gap-3">
         {[true, false].map(val => (
@@ -651,6 +680,7 @@ export function OnboardingPage() {
   function canProceed(): boolean {
     const id = STEPS[step].id;
     if (id === 'araios') {
+      if (araisConfigured) return true;
       if (useAraisOS === null) return false;
       if (useAraisOS === false) return true;
       return (
@@ -714,13 +744,17 @@ export function OnboardingPage() {
 
       // 4. Persist AraiOS integration settings
       if (useAraisOS === true) {
-        await api.post('/settings/araios', {
-          enabled: true,
-          araios_frontend_url: normalizeAraisUrl(araiosFrontendUrl),
-          araios_backend_url: normalizeAraisUrl(araiosBackendUrl),
-          agent_api_key: araisToken.trim() || undefined,
-        });
-        items.push('AraiOS integration configured');
+        if (araisConfigured && !araisToken.trim()) {
+          items.push('AraiOS integration detected');
+        } else {
+          await api.post('/settings/araios', {
+            enabled: true,
+            araios_frontend_url: normalizeAraisUrl(araiosFrontendUrl),
+            araios_backend_url: normalizeAraisUrl(araiosBackendUrl),
+            agent_api_key: araisToken.trim() || undefined,
+          });
+          items.push('AraiOS integration configured');
+        }
         setCompletedItems([...items]);
       } else if (useAraisOS === false) {
         const disablePayload: Record<string, unknown> = { enabled: false };

@@ -24,7 +24,14 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api } from '../lib/api';
 import { formatCompactDate, toPrettyJson } from '../lib/format';
-import type { Session, SessionListResponse, Trigger, TriggerLog, TriggerLogListResponse } from '../types/api';
+import type {
+  FireTriggerResponse,
+  Session,
+  SessionListResponse,
+  Trigger,
+  TriggerLog,
+  TriggerLogListResponse,
+} from '../types/api';
 
 function statusTone(status: string): 'default' | 'good' | 'warn' | 'danger' | 'info' {
   if (status === 'fired' || status === 'success') return 'good';
@@ -139,11 +146,18 @@ export function TriggerDetailPage() {
 
     setIsFiring(true);
     try {
-      const result = await api.post<TriggerLog>(`/triggers/${id}/fire`, { input_payload: parsedPayload });
-      if (result.status === 'failed') {
-        toast.error(result.error_message || 'Invocation failed');
+      const result = await api.post<FireTriggerResponse>(`/triggers/${id}/fire`, { input_payload: parsedPayload });
+      if (result.log.status === 'failed') {
+        toast.error(result.log.error_message || 'Invocation failed');
       } else {
         toast.success('Trigger invoked');
+        if (result.used_fallback) {
+          toast.warning('Target session unavailable, routed to main session');
+        }
+      }
+      if (result.log.status !== 'failed' && result.resolved_session_id) {
+        navigate(`/sessions/${result.resolved_session_id}`);
+        return;
       }
       await loadAll(true);
     } catch { toast.error('Trigger invocation failed'); }

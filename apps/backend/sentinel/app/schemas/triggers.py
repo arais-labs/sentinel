@@ -100,6 +100,14 @@ class TriggerLogResponse(BaseModel):
     output_summary: str | None = None
     error_message: str | None = None
 
+
+class FireTriggerResponse(BaseModel):
+    log: TriggerLogResponse
+    resolved_session_id: UUID | None = None
+    route_mode: str | None = None
+    used_fallback: bool | None = None
+
+
 class TriggerLogListResponse(BaseModel):
     items: list[TriggerLogResponse]
     total: int
