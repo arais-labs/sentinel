@@ -185,7 +185,21 @@ compose_instance() {
 compose_instance_dev() {
   local inst="$1"
   shift
-  docker compose -f docker-compose.dev.yml --project-name "$(instance_project_name "$inst")" --env-file "$(instance_env_file "$inst")" "$@"
+  local project_name
+  project_name="$(instance_project_name "$inst")"
+  local shared_pg_volume="${project_name}_pgdata"
+
+  docker compose \
+    -f docker-compose.dev.yml \
+    -f <(cat <<EOF
+volumes:
+  pgdata_dev:
+    name: ${shared_pg_volume}
+EOF
+) \
+    --project-name "$project_name" \
+    --env-file "$(instance_env_file "$inst")" \
+    "$@"
 }
 
 trim_lower() {
