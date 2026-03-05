@@ -3421,7 +3421,7 @@ export function SessionsPage() {
                   const circ = 2 * Math.PI * r;
                   const dash = circ * fill;
                   const ringColor = fill < 0.5 ? '#10b981' : fill < 0.8 ? '#f59e0b' : '#ef4444';
-                  const warn = hasBudget && hasEstimate && estimatedTokens >= CTX_CEILING;
+                  const warn = hasBudget && hasEstimate && estimatedTokens > CTX_CEILING;
                   const kTokens = hasEstimate
                     ? (estimatedTokens >= 1000 ? `${(estimatedTokens / 1000).toFixed(1)}k` : `${estimatedTokens}`)
                     : '—';

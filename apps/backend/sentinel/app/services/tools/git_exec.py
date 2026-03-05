@@ -43,8 +43,9 @@ _GH_NETWORK_READ_SUBCOMMANDS = {
 }
 _GH_NETWORK_WRITE_SUBCOMMANDS = {
     ("pr", "create"),
+    ("pr", "merge"),
 }
-_GH_API_WRITE_METHODS = {"POST"}
+_GH_API_WRITE_METHODS = {"POST", "PUT"}
 _TERMINAL_WAIT_POLL_SECONDS = 1.5
 _DEFAULT_GIT_TIMEOUT_SECONDS = 600
 _MAX_GIT_TIMEOUT_SECONDS = 3600
@@ -192,11 +193,11 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
         name="git_exec",
         description=(
             "Execute git commands and selected GitHub CLI commands inside the session workspace with managed credentials. "
-            "Allowed gh commands: `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh api` (GET/POST). "
+            "Allowed gh commands: `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT). "
             "Allowed network git reads include `git clone/fetch/pull/ls-remote/submodule/request-pull`; "
             "`git request-pull` only generates a pull-request summary and does not open a GitHub PR. "
-            "To open a PR on GitHub, use `gh pr create` (approval-gated). "
-            "Write operations (`git push`, `gh pr create`, `gh api -X POST`) require explicit approval before execution."
+            "To open or merge a PR on GitHub, use `gh pr create` or `gh pr merge` (approval-gated). "
+            "Write operations (`git push`, `gh pr create`, `gh pr merge`, `gh api -X POST`, `gh api -X PUT`) require explicit approval before execution."
         ),
         risk_level="high",
         parameters_schema={
@@ -210,7 +211,7 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
                 },
                 "command": {
                     "type": "string",
-                    "description": "Git/GitHub CLI command. Examples: 'git status', 'git fetch origin', 'git request-pull origin/main https://github.com/org/repo.git feature', 'gh repo list <org>', 'gh pr view 37 --json state,mergeStateStatus', 'gh pr create --repo <org>/<repo> ...', 'gh api -X POST /repos/<org>/<repo>/pulls'",
+                    "description": "Git/GitHub CLI command. Examples: 'git status', 'git fetch origin', 'git request-pull origin/main https://github.com/org/repo.git feature', 'gh repo list <org>', 'gh pr view 37 --json state,mergeStateStatus', 'gh pr create --repo <org>/<repo> ...', 'gh pr merge 37 --repo <org>/<repo> --merge', 'gh api -X PUT /repos/<org>/<repo>/pulls/<num>/merge'",
                 },
                 "cwd": {
                     "type": "string",
@@ -437,7 +438,7 @@ def _parse_cli_command(command: str) -> list[str]:
     if tokens[0] not in {"git", "gh"}:
         raise ToolValidationError(
             "Only git or selected gh commands are allowed. "
-            "Supported gh commands in git_exec: `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh api` (GET/POST)."
+            "Supported gh commands in git_exec: `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT)."
         )
     return tokens
 
@@ -462,12 +463,12 @@ async def _execute_gh_command(
                 "Authentication is managed automatically via configured Git account tokens, "
                 "so interactive auth commands like `gh auth status/login` are not needed. "
                 "Use supported commands: `gh repo list <org>`, `gh repo view <org>/<repo>`, "
-                "`gh pr view`, `gh pr create`, `gh api <endpoint>` (GET/POST)."
+                "`gh pr view`, `gh pr create`, `gh pr merge`, `gh api <endpoint>` (GET/POST/PUT)."
             )
         raise ToolValidationError(
             "Unsupported gh command in git_exec. "
             "Supported: `gh repo list <org>`, `gh repo view <org>/<repo>`, "
-            "`gh pr view`, `gh pr create`, `gh api <endpoint>` (GET/POST)."
+            "`gh pr view`, `gh pr create`, `gh pr merge`, `gh api <endpoint>` (GET/POST/PUT)."
         )
 
     owner = _extract_gh_owner(tokens, run_dir=run_dir)
@@ -560,7 +561,7 @@ def _gh_network_mode(tokens: list[str]) -> str | None:
                 return "read"
             if method in _GH_API_WRITE_METHODS:
                 return "write"
-            raise ToolValidationError("gh api supports GET and POST in git_exec")
+            raise ToolValidationError("gh api supports GET, POST, and PUT in git_exec")
         return "read"
     return None
 
@@ -617,14 +618,7 @@ def _extract_gh_owner(tokens: list[str], *, run_dir: Path) -> str | None:
         endpoint = _first_positional_argument(tokens[2:])
         if endpoint:
             return _normalize_owner(_extract_owner_from_gh_api_endpoint(endpoint))
-    if primary == "pr" and secondary == "create":
-        explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
-        if explicit_repo and "/" in explicit_repo:
-            return _normalize_owner(explicit_repo.split("/", 1)[0])
-        origin_url = _resolve_origin_url(run_dir)
-        repo = _parse_repo_ref(origin_url)
-        return _normalize_owner(repo.path.split("/", 1)[0])
-    if primary == "pr" and secondary == "view":
+    if primary == "pr" and secondary in {"create", "view", "merge"}:
         explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
         if explicit_repo and "/" in explicit_repo:
             return _normalize_owner(explicit_repo.split("/", 1)[0])
