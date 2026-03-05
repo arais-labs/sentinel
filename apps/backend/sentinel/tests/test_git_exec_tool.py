@@ -6,12 +6,21 @@ import pytest
 
 from app.models import GitAccount, Session
 from app.services.tools import git_exec as git_exec_module
-from app.services.tools.executor import ToolValidationError
+from app.services.tools.executor import ToolExecutor, ToolValidationError
+from app.services.tools.registry import ToolRegistry
 from tests.fake_db import FakeDB
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _run_via_executor(tool, payload: dict):
+    registry = ToolRegistry()
+    registry.register(tool)
+    executor = ToolExecutor(registry)
+    result, _ = _run(executor.execute("git_exec", payload, allow_high_risk=True))
+    return result
 
 
 class _SessionCtx:
@@ -354,13 +363,12 @@ def test_git_exec_supports_gh_api_post_with_approval(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    result = _run(
-        tool.execute(
-            {
-                "session_id": str(session.id),
-                "command": "gh api -X POST /repos/domu-ai/domu-gitops/pulls -f title='Test PR'",
-            }
-        )
+    result = _run_via_executor(
+        tool,
+        {
+            "session_id": str(session.id),
+            "command": "gh api -X POST /repos/domu-ai/domu-gitops/pulls -f title='Test PR'",
+        },
     )
 
     assert result["ok"] is True
@@ -429,16 +437,15 @@ def test_git_exec_supports_gh_pr_create_with_approval(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    result = _run(
-        tool.execute(
-            {
-                "session_id": str(session.id),
-                "command": (
-                    "gh pr create --repo domu-ai/domu-gitops "
-                    "--base main --head feat/test --title 'Test' --body 'Body'"
-                ),
-            }
-        )
+    result = _run_via_executor(
+        tool,
+        {
+            "session_id": str(session.id),
+            "command": (
+                "gh pr create --repo domu-ai/domu-gitops "
+                "--base main --head feat/test --title 'Test' --body 'Body'"
+            ),
+        },
     )
 
     assert result["ok"] is True
@@ -490,12 +497,11 @@ def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    with pytest.raises(git_exec_module.ToolExecutionError, match="approval rejected"):
-        _run(
-            tool.execute(
-                {
-                    "session_id": str(session.id),
-                    "command": "gh api -X POST /repos/domu-ai/domu-gitops/pulls",
-                }
-            )
+    with pytest.raises(git_exec_module.ToolExecutionError, match="Approval rejected"):
+        _run_via_executor(
+            tool,
+            {
+                "session_id": str(session.id),
+                "command": "gh api -X POST /repos/domu-ai/domu-gitops/pulls",
+            },
         )

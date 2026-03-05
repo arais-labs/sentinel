@@ -43,9 +43,19 @@ import { StatusChip } from '../components/ui/StatusChip';
 import { WS_BASE_URL } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
 import { extractCriticalToolFields, parsePayloadJson, previewPayloadValue, topLevelPayloadFieldCount, type ToolPayloadKind } from '../lib/toolPayloadPreview';
+import {
+  approvalKey,
+  approvalRefFromMetadata,
+  extractApprovalCandidateFromSerializedArgs,
+  extractApprovalCandidateFromToolArgs,
+  isWaitingApproval,
+  selectMatchingPendingApproval,
+  type ApprovalRef,
+} from '../lib/approvals';
 import { api } from '../lib/api';
 import type {
-  GitPushApprovalListResponse,
+  ApprovalListResponse,
+  ApprovalToolCallMatchResponse,
   Message,
   MessageAttachment,
   MessageListResponse,
@@ -177,55 +187,6 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function normalizeCommand(value: string): string {
-  return value.trim().replace(/\s+/g, ' ').toLowerCase();
-}
-
-function isApprovalGatedGitExecCommand(command: string): boolean {
-  const normalized = normalizeCommand(command);
-  if (!normalized) return false;
-  if (/^git\s+push(?:\s|$)/i.test(normalized)) return true;
-  if (/^gh\s+pr\s+create(?:\s|$)/i.test(normalized)) return true;
-  if (/^gh\s+api(?:\s|$)/i.test(normalized)) {
-    return /(?:^|\s)(?:-x|--method)(?:\s+|=)post(?:\s|$)/i.test(normalized);
-  }
-  return false;
-}
-
-function approvalGatedGitExecCommandFromToolArgs(value: unknown): string | null {
-  if (!isObjectRecord(value)) return null;
-  const command = typeof value.command === 'string' ? value.command.trim() : '';
-  if (!command || !isApprovalGatedGitExecCommand(command)) return null;
-  return command;
-}
-
-function parseToolArgumentsObject(raw: string): Record<string, unknown> | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = JSON.parse(trimmed);
-    return isObjectRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function approvalGatedGitExecCommandFromSerializedArgs(raw: string): string | null {
-  const parsed = parseToolArgumentsObject(raw);
-  return parsed ? approvalGatedGitExecCommandFromToolArgs(parsed) : null;
-}
-
-function pendingApprovalIdFromMetadata(metadata: Record<string, unknown>): string | null {
-  const approvalId = metadata.approval_id;
-  if (typeof approvalId !== 'string') return null;
-  const trimmed = approvalId.trim();
-  return trimmed || null;
-}
-
-function isWaitingApproval(metadata: Record<string, unknown>): boolean {
-  return metadata.pending === true;
-}
-
 function hasUnresolvedToolCalls(messages: Message[]): boolean {
   const resolvedIds = new Set<string>();
   const pendingIds = new Set<string>();
@@ -253,36 +214,11 @@ function hasUnresolvedToolCalls(messages: Message[]): boolean {
   return pendingIds.size > 0;
 }
 
-const GIT_APPROVAL_HYDRATION_MAX_ATTEMPTS = 12;
-const GIT_APPROVAL_HYDRATION_RETRY_MS = 750;
+const APPROVAL_HYDRATION_MAX_ATTEMPTS = 12;
+const APPROVAL_HYDRATION_RETRY_MS = 750;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function selectMatchingPendingGitApproval(
-  items: GitPushApprovalListResponse['items'],
-  options: {
-    sessionId: string;
-    normalizedCommand: string;
-  },
-) {
-  const { sessionId, normalizedCommand } = options;
-  const matches = items.filter(
-    (item) => item.session_id === sessionId && normalizeCommand(item.command) === normalizedCommand,
-  );
-  if (!matches.length) return null;
-  const toEpoch = (value: string | null): number => {
-    if (!value) return 0;
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  };
-  matches.sort((a, b) => {
-    const byCreated = toEpoch(b.created_at) - toEpoch(a.created_at);
-    if (byCreated !== 0) return byCreated;
-    return toEpoch(b.updated_at) - toEpoch(a.updated_at);
-  });
-  return matches[0];
 }
 
 function parseTier(value: string | null): ModelOption['tier'] | null {
@@ -783,13 +719,13 @@ SourceChip.displayName = 'SourceChip';
 const MessageCard = memo(({
   message,
   toolArgumentsByCallId,
-  onResolveGitApproval,
-  resolvingApprovalId,
+  onResolveApproval,
+  resolvingApprovalKey,
 }: {
   message: Message;
   toolArgumentsByCallId: Map<string, string>;
-  onResolveGitApproval: (approvalId: string, decision: 'approve' | 'reject') => void;
-  resolvingApprovalId: string | null;
+  onResolveApproval: (approval: ApprovalRef, decision: 'approve' | 'reject') => void;
+  resolvingApprovalKey: string | null;
 }) => {
   const isUser = message.role === 'user';
   const isToolResult = message.role === 'tool_result';
@@ -814,9 +750,9 @@ const MessageCard = memo(({
     isToolResult &&
     isWaitingApproval(toolMetadata),
   );
-  const pendingApprovalId = pendingApproval ? pendingApprovalIdFromMetadata(toolMetadata) : null;
-  const canResolveGitApproval = pendingApproval && message.tool_name === 'git_exec' && pendingApprovalId !== null;
-  const approvalActionBusy = pendingApprovalId !== null && resolvingApprovalId === pendingApprovalId;
+  const approvalRef = pendingApproval ? approvalRefFromMetadata(toolMetadata) : null;
+  const canResolveApproval = pendingApproval && approvalRef?.canResolve === true;
+  const approvalActionBusy = approvalRef ? resolvingApprovalKey === approvalKey(approvalRef) : false;
   const [toolExpanded, setToolExpanded] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -973,11 +909,11 @@ const MessageCard = memo(({
                           toolName={message.tool_name || 'tool_result'}
                           payloadKind="output"
                         />
-                        {canResolveGitApproval && pendingApprovalId ? (
+                        {canResolveApproval && approvalRef ? (
                           <div className="flex items-center gap-2 pt-1">
                             <button
                               type="button"
-                              onClick={() => onResolveGitApproval(pendingApprovalId, 'reject')}
+                              onClick={() => onResolveApproval(approvalRef, 'reject')}
                               disabled={approvalActionBusy}
                               className="inline-flex items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-500/20 disabled:opacity-60"
                             >
@@ -986,7 +922,7 @@ const MessageCard = memo(({
                             </button>
                             <button
                               type="button"
-                              onClick={() => onResolveGitApproval(pendingApprovalId, 'approve')}
+                              onClick={() => onResolveApproval(approvalRef, 'approve')}
                               disabled={approvalActionBusy}
                               className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-60"
                             >
@@ -1212,20 +1148,20 @@ function streamingCallKey(call: StreamingToolCall): string {
 function StreamToolCard({
   call,
   active,
-  onResolveGitApproval,
-  resolvingApprovalId,
+  onResolveApproval,
+  resolvingApprovalKey,
 }: {
   call: StreamingToolCall;
   active: boolean;
-  onResolveGitApproval: (approvalId: string, decision: 'approve' | 'reject') => void;
-  resolvingApprovalId: string | null;
+  onResolveApproval: (approval: ApprovalRef, decision: 'approve' | 'reject') => void;
+  resolvingApprovalKey: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const isScreenshotCall = call.name.toLowerCase().includes('screenshot');
   const pendingApproval = isWaitingApproval(call.metadata);
-  const pendingApprovalId = pendingApproval ? pendingApprovalIdFromMetadata(call.metadata) : null;
-  const canResolveGitApproval = pendingApproval && call.name === 'git_exec' && pendingApprovalId !== null;
-  const approvalActionBusy = pendingApprovalId !== null && resolvingApprovalId === pendingApprovalId;
+  const approvalRef = pendingApproval ? approvalRefFromMetadata(call.metadata) : null;
+  const canResolveApproval = pendingApproval && approvalRef?.canResolve === true;
+  const approvalActionBusy = approvalRef ? resolvingApprovalKey === approvalKey(approvalRef) : false;
 
   useEffect(() => {
     if (pendingApproval) {
@@ -1290,11 +1226,11 @@ function StreamToolCard({
                     toolName={call.name}
                     payloadKind="output"
                   />
-                  {canResolveGitApproval && pendingApprovalId ? (
+                  {canResolveApproval && approvalRef ? (
                     <div className="flex items-center gap-2 pt-1">
                       <button
                         type="button"
-                        onClick={() => onResolveGitApproval(pendingApprovalId, 'reject')}
+                        onClick={() => onResolveApproval(approvalRef, 'reject')}
                         disabled={approvalActionBusy}
                         className="inline-flex items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-500/20 disabled:opacity-60"
                       >
@@ -1303,7 +1239,7 @@ function StreamToolCard({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onResolveGitApproval(pendingApprovalId, 'approve')}
+                        onClick={() => onResolveApproval(approvalRef, 'approve')}
                         disabled={approvalActionBusy}
                         className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-60"
                       >
@@ -1366,7 +1302,7 @@ export function SessionsPage() {
   const [composerAttachments, setComposerAttachments] = useState<MessageAttachment[]>([]);
 
   const [streaming, setStreaming] = useState<StreamingState>(defaultStreamingState);
-  const [resolvingGitApprovalId, setResolvingGitApprovalId] = useState<string | null>(null);
+  const [resolvingApprovalKey, setResolvingApprovalKey] = useState<string | null>(null);
 
   const [tasks, setTasks] = useState<SubAgentTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
@@ -2460,18 +2396,33 @@ export function SessionsPage() {
   }
 
   const updateStreamingCallApproval = useCallback((
-    approvalId: string,
+    approval: ApprovalRef,
     updates: { pending?: boolean; approval_status?: string; decision_note?: string },
   ) => {
+    const targetKey = approvalKey(approval);
     setStreaming((current) => {
       const patchCall = (call: StreamingToolCall): StreamingToolCall => {
-        const callApprovalId = pendingApprovalIdFromMetadata(call.metadata);
-        if (!callApprovalId || callApprovalId !== approvalId) return call;
+        const callApproval = approvalRefFromMetadata(call.metadata);
+        if (!callApproval || approvalKey(callApproval) !== targetKey) return call;
+        const nextPending = updates.pending ?? callApproval.pending;
+        const nextStatus = updates.approval_status ?? callApproval.status;
+        const currentApproval = isObjectRecord(call.metadata.approval) ? call.metadata.approval : {};
         return {
           ...call,
           metadata: {
             ...call.metadata,
+            pending: nextPending,
+            approval_status: nextStatus,
             ...updates,
+            approval: {
+              ...currentApproval,
+              provider: approval.provider,
+              approval_id: approval.approvalId,
+              pending: nextPending,
+              status: nextStatus,
+              can_resolve: nextPending,
+              decision_note: updates.decision_note ?? currentApproval.decision_note,
+            },
           },
         };
       };
@@ -2483,53 +2434,82 @@ export function SessionsPage() {
     });
   }, []);
 
-  const resolveGitApprovalInline = useCallback(async (approvalId: string, decision: 'approve' | 'reject') => {
-    setResolvingGitApprovalId(approvalId);
+  const resolveApprovalInline = useCallback(async (approval: ApprovalRef, decision: 'approve' | 'reject') => {
+    const targetKey = approvalKey(approval);
+    setResolvingApprovalKey(targetKey);
     try {
-      await api.post(`/git/push-approvals/${approvalId}/${decision}`, {
+      await api.post(`/approvals/${encodeURIComponent(approval.provider)}/${encodeURIComponent(approval.approvalId)}/${decision}`, {
         note: decision === 'approve' ? 'Approved from session tool card' : 'Rejected from session tool card',
       });
-      updateStreamingCallApproval(approvalId, {
+      updateStreamingCallApproval(approval, {
         pending: false,
         approval_status: decision === 'approve' ? 'approved' : 'rejected',
       });
       toast.success(decision === 'approve' ? 'Approval approved' : 'Approval rejected');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to resolve push approval');
+      toast.error(error instanceof Error ? error.message : 'Failed to resolve approval');
     } finally {
-      setResolvingGitApprovalId(null);
+      setResolvingApprovalKey(null);
     }
   }, [updateStreamingCallApproval]);
 
-  async function hydrateGitApprovalForCall(
+  async function hydrateApprovalForCall(
     sessionId: string,
     callId: string,
     contentIndex: number | null,
-    command: string,
+    candidate: ReturnType<typeof extractApprovalCandidateFromToolArgs>,
   ) {
-    const lookupKey = streamingCallKeyFromParts(callId, contentIndex);
+    if (!callId) return;
+    const candidateSuffix = candidate ? `${candidate.provider}:${candidate.matchKey}` : 'unknown';
+    const lookupKey = `${streamingCallKeyFromParts(callId, contentIndex)}:${candidateSuffix}`;
     if (approvalLookupInFlightRef.current.has(lookupKey)) return;
     approvalLookupInFlightRef.current.add(lookupKey);
     try {
-      const normalizedCommand = normalizeCommand(command);
-      for (let attempt = 0; attempt < GIT_APPROVAL_HYDRATION_MAX_ATTEMPTS; attempt += 1) {
+      for (let attempt = 0; attempt < APPROVAL_HYDRATION_MAX_ATTEMPTS; attempt += 1) {
         try {
-          const payload = await api.get<GitPushApprovalListResponse>('/git/push-approvals?status=pending&limit=200&offset=0');
-          const items = Array.isArray(payload.items) ? payload.items : [];
-          const matched = selectMatchingPendingGitApproval(items, {
-            sessionId,
-            normalizedCommand,
-          });
+          let matched = null as ApprovalListResponse['items'][number] | null;
+          if (candidate) {
+            const query = new URLSearchParams();
+            query.set('status', 'pending');
+            query.set('provider', candidate.provider);
+            query.set('limit', '200');
+            query.set('offset', '0');
+            const payload = await api.get<ApprovalListResponse>(`/approvals?${query.toString()}`);
+            const items = Array.isArray(payload.items) ? payload.items : [];
+            matched = selectMatchingPendingApproval(items, {
+              sessionId,
+              candidate,
+            });
+          }
+          if (!matched) {
+            const query = new URLSearchParams();
+            query.set('session_id', sessionId);
+            query.set('tool_call_id', callId);
+            const toolCallMatch = await api.get<ApprovalToolCallMatchResponse>(
+              `/approvals/match-pending-tool-call?${query.toString()}`,
+            );
+            matched = toolCallMatch.item;
+          }
           if (matched) {
             setStreaming((current) => {
               const patchCall = (call: StreamingToolCall): StreamingToolCall => {
-                if (call.id !== callId || call.contentIndex !== contentIndex) return call;
+                if (call.id !== callId) return call;
                 return {
                   ...call,
                   metadata: {
                     ...call.metadata,
                     pending: true,
-                    approval_id: matched.id,
+                    approval_id: matched.approval_id,
+                    approval_provider: matched.provider,
+                    approval: {
+                      provider: matched.provider,
+                      approval_id: matched.approval_id,
+                      status: matched.status,
+                      pending: matched.pending,
+                      can_resolve: matched.can_resolve,
+                      label: matched.label,
+                      match_key: matched.match_key,
+                    },
                   },
                 };
               };
@@ -2544,8 +2524,8 @@ export function SessionsPage() {
         } catch {
           // best-effort retry until attempts are exhausted
         }
-        if (attempt < GIT_APPROVAL_HYDRATION_MAX_ATTEMPTS - 1) {
-          await sleep(GIT_APPROVAL_HYDRATION_RETRY_MS);
+        if (attempt < APPROVAL_HYDRATION_MAX_ATTEMPTS - 1) {
+          await sleep(APPROVAL_HYDRATION_RETRY_MS);
         }
       }
     } catch {
@@ -2688,17 +2668,25 @@ export function SessionsPage() {
             ? rawInitialArguments
             : '';
           const toolName = String((event.tool_call as any)?.name ?? 'unknown');
-          const approvalCommand = toolName === 'git_exec'
-            ? approvalGatedGitExecCommandFromToolArgs((event.tool_call as any)?.arguments)
-            : null;
-          const initialMetadata: Record<string, unknown> = approvalCommand
-            ? { pending: true, approval_kind: 'git_push_approval' }
+          const approvalCandidate = extractApprovalCandidateFromToolArgs(toolName, (event.tool_call as any)?.arguments);
+          const initialMetadata: Record<string, unknown> = approvalCandidate
+            ? {
+              pending: true,
+              approval_provider: approvalCandidate.provider,
+              approval: {
+                provider: approvalCandidate.provider,
+                status: 'pending',
+                pending: true,
+                can_resolve: true,
+                match_key: approvalCandidate.matchKey,
+              },
+            }
             : {};
           const call = {
             id: callId,
             name: toolName,
             argumentsJson: initialArguments,
-            outputJson: approvalCommand
+            outputJson: approvalCandidate
               ? '{"status":"pending","message":"Waiting for approval..."}'
               : '',
             isError: false,
@@ -2719,17 +2707,6 @@ export function SessionsPage() {
               : [...current.timeline, { kind: 'tool', key: `tool-${callKey}`, callKey }],
           };
         });
-        {
-          const callId = String((event.tool_call as any)?.id ?? '');
-          const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
-          const toolName = String((event.tool_call as any)?.name ?? '');
-          const approvalCommand = toolName === 'git_exec'
-            ? approvalGatedGitExecCommandFromToolArgs((event.tool_call as any)?.arguments)
-            : null;
-          if (callId && approvalCommand) {
-            void hydrateGitApprovalForCall(sessionId, callId, contentIndex, approvalCommand);
-          }
-        }
         break;
       case 'toolcall_delta':
         setStreaming((current) => {
@@ -2753,13 +2730,18 @@ export function SessionsPage() {
         break;
       case 'toolcall_end':
         {
-          const hydrationCandidates: Array<{ callId: string; contentIndex: number | null; command: string }> = [];
+          const hydrationCandidates: Array<{
+            callId: string;
+            contentIndex: number | null;
+            candidate: ReturnType<typeof extractApprovalCandidateFromToolArgs>;
+          }> = [];
           const eventCallId = String((event.tool_call as any)?.id ?? '');
           const eventContentIndex = typeof event.content_index === 'number' ? event.content_index : null;
           const eventToolName = String((event.tool_call as any)?.name ?? '');
-          const eventApprovalCommand = eventToolName === 'git_exec'
-            ? approvalGatedGitExecCommandFromToolArgs((event.tool_call as any)?.arguments)
-            : null;
+          const eventApprovalCandidate = extractApprovalCandidateFromToolArgs(
+            eventToolName,
+            (event.tool_call as any)?.arguments,
+          );
           setStreaming((current) => {
             if (!current.activeToolCalls.length) return current;
             const nextActive = [...current.activeToolCalls];
@@ -2773,13 +2755,11 @@ export function SessionsPage() {
             if (targetIndex < 0) targetIndex = nextActive.length - 1;
             const doneCall = nextActive[targetIndex];
             nextActive.splice(targetIndex, 1);
-            const approvalCommand = eventApprovalCommand ?? (
-              doneCall.name === 'git_exec'
-                ? approvalGatedGitExecCommandFromSerializedArgs(doneCall.argumentsJson)
-                : null
+            const approvalCandidate = eventApprovalCandidate ?? (
+              extractApprovalCandidateFromSerializedArgs(doneCall.name, doneCall.argumentsJson)
             );
-            const isPendingApproval = Boolean(approvalCommand);
-            const callApprovalId = pendingApprovalIdFromMetadata(doneCall.metadata);
+            const callApprovalRef = approvalRefFromMetadata(doneCall.metadata);
+            const isPendingApproval = Boolean(approvalCandidate) || Boolean(callApprovalRef?.pending);
             const hydratedDoneCall: StreamingToolCall = isPendingApproval
               ? {
                 ...doneCall,
@@ -2787,18 +2767,27 @@ export function SessionsPage() {
                 metadata: {
                   ...doneCall.metadata,
                   pending: true,
-                  approval_kind: 'git_push_approval',
+                  ...(approvalCandidate ? {
+                    approval_provider: approvalCandidate.provider,
+                    approval: {
+                      provider: approvalCandidate.provider,
+                      status: 'pending',
+                      pending: true,
+                      can_resolve: true,
+                      match_key: approvalCandidate.matchKey,
+                    },
+                  } : {}),
                 },
               }
               : doneCall;
             const alreadyDone = current.completedToolCalls.some(
               (item) => item.id === hydratedDoneCall.id && item.contentIndex === hydratedDoneCall.contentIndex,
             );
-            if (isPendingApproval && !callApprovalId && approvalCommand) {
+            if (isPendingApproval && !callApprovalRef) {
               hydrationCandidates.push({
                 callId: hydratedDoneCall.id,
                 contentIndex: hydratedDoneCall.contentIndex,
-                command: approvalCommand,
+                candidate: approvalCandidate,
               });
             }
             if (alreadyDone) {
@@ -2812,11 +2801,11 @@ export function SessionsPage() {
           });
           const pendingHydration = hydrationCandidates[0];
           if (pendingHydration) {
-            void hydrateGitApprovalForCall(
+            void hydrateApprovalForCall(
               sessionId,
               pendingHydration.callId,
               pendingHydration.contentIndex,
-              pendingHydration.command,
+              pendingHydration.candidate,
             );
           }
         }
@@ -3574,8 +3563,8 @@ export function SessionsPage() {
                           key={m.id}
                           message={m}
                           toolArgumentsByCallId={toolArgumentsByCallId}
-                          onResolveGitApproval={resolveGitApprovalInline}
-                          resolvingApprovalId={resolvingGitApprovalId}
+                          onResolveApproval={resolveApprovalInline}
+                          resolvingApprovalKey={resolvingApprovalKey}
                         />
                       ))}
 
@@ -3601,8 +3590,8 @@ export function SessionsPage() {
                           key={item.key}
                           call={call}
                           active={activeToolCallKeys.has(item.callKey)}
-                          onResolveGitApproval={resolveGitApprovalInline}
-                          resolvingApprovalId={resolvingGitApprovalId}
+                          onResolveApproval={resolveApprovalInline}
+                          resolvingApprovalKey={resolvingApprovalKey}
                         />
                       );
                     })}
@@ -3614,8 +3603,8 @@ export function SessionsPage() {
                           key={`${c.id}-${c.contentIndex ?? 'na'}-fallback-complete-${idx}`}
                           call={c}
                           active={false}
-                          onResolveGitApproval={resolveGitApprovalInline}
-                          resolvingApprovalId={resolvingGitApprovalId}
+                          onResolveApproval={resolveApprovalInline}
+                          resolvingApprovalKey={resolvingApprovalKey}
                         />
                       ))}
                     {streaming.activeToolCalls
@@ -3625,8 +3614,8 @@ export function SessionsPage() {
                           key={`${c.id}-${c.contentIndex ?? 'na'}-fallback-active-${idx}`}
                           call={c}
                           active={true}
-                          onResolveGitApproval={resolveGitApprovalInline}
-                          resolvingApprovalId={resolvingGitApprovalId}
+                          onResolveApproval={resolveApprovalInline}
+                          resolvingApprovalKey={resolvingApprovalKey}
                         />
                       ))}
 
