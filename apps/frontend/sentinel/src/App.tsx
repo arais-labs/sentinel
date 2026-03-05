@@ -15,7 +15,6 @@ import { SessionsPage } from './pages/SessionsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ToolsPage } from './pages/ToolsPage';
 import { GitPage } from './pages/GitPage';
-import { TriggerDetailPage } from './pages/TriggerDetailPage';
 import { TriggersPage } from './pages/TriggersPage';
 import { useAuthStore } from './store/auth-store';
 import { useThemeStore } from './store/theme-store';
@@ -102,7 +101,7 @@ export default function App() {
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/memory" element={<MemoryPage />} />
           <Route path="/triggers" element={<TriggersPage />} />
-          <Route path="/triggers/:id" element={<TriggerDetailPage />} />
+          <Route path="/triggers/:id" element={<Navigate to="/triggers" replace />} />
           <Route path="/tools" element={<ToolsPage />} />
           <Route path="/git" element={<GitPage />} />
           <Route path="/telegram" element={<TelegramPage />} />

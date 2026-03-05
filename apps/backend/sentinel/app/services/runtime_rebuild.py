@@ -16,6 +16,7 @@ class RuntimeRebuildService:
         app_state.llm_provider = provider
         if provider is None:
             app_state.agent_loop = None
+            self._sync_trigger_scheduler_agent_loop(app_state)
             return
 
         tool_registry = getattr(app_state, "tool_registry", None)
@@ -23,6 +24,7 @@ class RuntimeRebuildService:
         memory_search_service = getattr(app_state, "memory_search_service", None)
         if tool_registry is None or tool_executor is None:
             app_state.agent_loop = None
+            self._sync_trigger_scheduler_agent_loop(app_state)
             return
 
         available_tools = {tool.name for tool in tool_registry.list_all()}
@@ -33,7 +35,16 @@ class RuntimeRebuildService:
         )
         tool_adapter = ToolAdapter(tool_registry, tool_executor, session_factory=AsyncSessionLocal)
         app_state.agent_loop = AgentLoop(provider, context_builder, tool_adapter)
+        self._sync_trigger_scheduler_agent_loop(app_state)
 
         bridge = getattr(app_state, "telegram_bridge", None)
         if bridge is not None:
             bridge.update_agent_loop(app_state.agent_loop)
+
+    def _sync_trigger_scheduler_agent_loop(self, app_state: Any) -> None:
+        scheduler = getattr(app_state, "trigger_scheduler", None)
+        if scheduler is None:
+            return
+        setter = getattr(scheduler, "set_agent_loop", None)
+        if callable(setter):
+            setter(app_state.agent_loop)

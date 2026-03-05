@@ -624,8 +624,6 @@
   </main>
 
   <script>
-    const ONBOARDING_PREFILL_KEY = "sentinel.onboarding.araios.prefill";
-
     const normalizedPath = window.location.pathname.replace(/\/+$/, "") || "/";
     const isManageView = normalizedPath === "/manage";
     function setManageViewEnabled(enabled) {
@@ -831,16 +829,6 @@
           try {
             const data = await authorizedAraiosRequest(`/platform/auth/agents/${agent.id}/rotate`, { method: "POST" });
             createdAgentKeyInput.value = data.api_key || "";
-            if (data.api_key) {
-              sessionStorage.setItem(
-                ONBOARDING_PREFILL_KEY,
-                JSON.stringify({
-                  base_url: window.location.origin,
-                  agent_api_key: data.api_key,
-                  created_at: Date.now(),
-                }),
-              );
-            }
             whoamiEl.textContent = "Agent token rotated";
             await loadAgentTokens();
           } catch (err) {
@@ -993,16 +981,6 @@
           }),
         });
         createdAgentKeyInput.value = data.api_key || "";
-        if (data.api_key) {
-          sessionStorage.setItem(
-            ONBOARDING_PREFILL_KEY,
-            JSON.stringify({
-              base_url: window.location.origin,
-              agent_api_key: data.api_key,
-              created_at: Date.now(),
-            }),
-          );
-        }
         agentLabelInput.value = "";
         agentIdInput.value = "";
         agentSubjectInput.value = "";

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from app.database.models import PlatformApiKey
+from app.database.models import PlatformApiKey, SystemSetting
 from app.dependencies import get_db
 from app.middleware.auth import (
     ACCESS_TOKEN_COOKIE_NAME,
@@ -172,6 +172,11 @@ class UpdateAgentKeyRequest(BaseModel):
         return trimmed or None
 
 
+class AppLinksResponse(BaseModel):
+    sentinel_frontend_url: str | None = None
+    araios_frontend_url: str | None = None
+
+
 def _identity_from_key(record: PlatformApiKey) -> PlatformIdentity:
     return PlatformIdentity(
         sub=record.subject,
@@ -233,6 +238,14 @@ def _token_response_for_identity(identity: PlatformIdentity) -> TokenPairRespons
         token_type="bearer",
         expires_in=ACCESS_TOKEN_TTL_SECONDS,
     )
+
+
+def _get_system_setting_value(db: Session, key: str) -> str | None:
+    row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    if row is None:
+        return None
+    value = row.value.strip()
+    return value or None
 
 
 @router.post("/login", response_model=TokenPairResponse)
@@ -310,6 +323,17 @@ async def refresh_tokens(
 @router.get("/me", response_model=MeResponse)
 async def me(user: TokenPayload = Depends(get_current_user)) -> MeResponse:
     return MeResponse(sub=user.sub, role=user.role, agent_id=user.agent_id, label=user.label)
+
+
+@router.get("/app-links", response_model=AppLinksResponse)
+async def app_links(
+    _: TokenPayload = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AppLinksResponse:
+    return AppLinksResponse(
+        sentinel_frontend_url=_get_system_setting_value(db, "sentinel_frontend_url"),
+        araios_frontend_url=_get_system_setting_value(db, "araios_frontend_url"),
+    )
 
 
 @router.post("/change-password")

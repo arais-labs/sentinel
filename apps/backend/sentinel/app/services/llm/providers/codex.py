@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import time
@@ -34,6 +35,7 @@ _REASONING_INCLUDE_KEY = "reasoning.encrypted_content"
 _TOOL_CHOICE_VALUES = {"auto", "required", "none"}
 _MODELS_CACHE_TTL_SECONDS = 300.0
 _MODELS_CLIENT_VERSION = "0.1.0"
+_SCHEMA_COMBINER_KEYS = ("oneOf", "anyOf", "allOf", "prefixItems")
 
 _CODEX_EXECUTION_MARKER = "You are Codex, a coding agent running in Sentinel."
 _CODEX_EXECUTION_PRELUDE = (
@@ -43,6 +45,89 @@ _CODEX_EXECUTION_PRELUDE = (
     "Do not claim commands were run or files were changed unless tool output confirms it.\n"
     "If blocked, state the concrete blocker and the best immediate next action."
 )
+
+
+def _sanitize_tool_schema_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Mirror Codex CLI schema normalization for tool parameter JSON schema."""
+    sanitized = copy.deepcopy(parameters)
+    normalized = _sanitize_json_schema(sanitized)
+    if isinstance(normalized, dict):
+        return normalized
+    return {"type": "object", "properties": {}}
+
+
+def _sanitize_json_schema(value: Any) -> Any:
+    if isinstance(value, bool):
+        # JSON-schema boolean form (`true`/`false`) is valid for schema nodes.
+        return {"type": "string"}
+    if isinstance(value, list):
+        return [_sanitize_json_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    if isinstance(value.get("properties"), dict):
+        value["properties"] = {
+            str(key): _sanitize_json_schema(child)
+            for key, child in value["properties"].items()
+        }
+    if "items" in value:
+        value["items"] = _sanitize_json_schema(value.get("items"))
+    for combiner in _SCHEMA_COMBINER_KEYS:
+        if combiner in value:
+            value[combiner] = _sanitize_json_schema(value.get(combiner))
+
+    schema_type: str | None = None
+    raw_type = value.get("type")
+    if isinstance(raw_type, str):
+        schema_type = raw_type
+    elif isinstance(raw_type, list):
+        for type_name in raw_type:
+            if isinstance(type_name, str) and type_name in {
+                "object",
+                "array",
+                "string",
+                "number",
+                "integer",
+                "boolean",
+            }:
+                schema_type = type_name
+                break
+
+    if schema_type is None:
+        if any(key in value for key in ("properties", "required", "additionalProperties")):
+            schema_type = "object"
+        elif any(key in value for key in ("items", "prefixItems")):
+            schema_type = "array"
+        elif any(key in value for key in ("enum", "const", "format")):
+            schema_type = "string"
+        elif any(
+            key in value
+            for key in (
+                "minimum",
+                "maximum",
+                "exclusiveMinimum",
+                "exclusiveMaximum",
+                "multipleOf",
+            )
+        ):
+            schema_type = "number"
+        else:
+            schema_type = "string"
+
+    value["type"] = schema_type
+
+    if schema_type == "object":
+        properties = value.get("properties")
+        if not isinstance(properties, dict):
+            value["properties"] = {}
+        additional_properties = value.get("additionalProperties")
+        if additional_properties is not None and not isinstance(additional_properties, bool):
+            value["additionalProperties"] = _sanitize_json_schema(additional_properties)
+
+    if schema_type == "array" and "items" not in value:
+        value["items"] = {"type": "string"}
+
+    return value
 
 
 class CodexProvider(LLMProvider):
@@ -572,7 +657,7 @@ class CodexProvider(LLMProvider):
             "type": "function",
             "name": tool.name,
             "description": tool.description,
-            "parameters": tool.parameters,
+            "parameters": _sanitize_tool_schema_parameters(tool.parameters),
             "strict": False,
         }
 

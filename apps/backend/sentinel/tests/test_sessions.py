@@ -379,6 +379,8 @@ def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
+        if "old_agent_loop" in locals():
+            app.state.agent_loop = old_agent_loop
 
 
 def test_runtime_file_explorer_endpoints():
@@ -449,5 +451,3 @@ def test_runtime_file_explorer_endpoints():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
-        if "old_agent_loop" in locals():
-            app.state.agent_loop = old_agent_loop

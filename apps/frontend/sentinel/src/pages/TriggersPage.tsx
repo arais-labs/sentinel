@@ -3,35 +3,38 @@ import {
   Plus,
   RefreshCw,
   Trash2,
-  Settings2,
   Clock,
   Zap,
   Activity,
   Filter,
   X,
-  Save,
   CheckCircle2,
   Loader2,
-  Terminal,
-  Globe,
-  Bell,
-  Wrench,
-  Link,
-  Edit3,
+  Play,
+  History,
+  Info,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
+import { Logo } from '../components/ui/Logo';
 import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { Toggle } from '../components/ui/Toggle';
-import { Logo } from '../components/ui/Logo';
 import { api } from '../lib/api';
 import { formatCompactDate } from '../lib/format';
-import type { Session, SessionListResponse, Trigger, TriggerListResponse } from '../types/api';
+import type {
+  Session,
+  SessionListResponse,
+  FireTriggerResponse,
+  Trigger,
+  TriggerListResponse,
+  TriggerLog,
+  TriggerLogListResponse,
+} from '../types/api';
 
-const triggerTypes = ['cron', 'webhook', 'heartbeat', 'event'];
+const triggerTypes = ['cron', 'webhook', 'heartbeat'];
 const actionTypes = ['agent_message', 'tool_call', 'http_request'];
 
 interface ModalState {
@@ -41,10 +44,9 @@ interface ModalState {
   name: string;
   type: string;
   actionType: string;
-  // Assisted fields for config
+  enabled: boolean;
   cronExpr: string;
   heartbeatInterval: number;
-  // Assisted fields for actions
   agentMsg: string;
   routeMode: 'main' | 'session';
   targetSessionId: string;
@@ -52,7 +54,6 @@ interface ModalState {
   toolArgs: string;
   httpUrl: string;
   httpMethod: string;
-  // Fallbacks
   configText: string;
   actionConfigText: string;
   useManualConfig: boolean;
@@ -62,9 +63,11 @@ interface ModalState {
 const modalDefault: ModalState = {
   open: false,
   mode: 'create',
+  triggerId: undefined,
   name: '',
   type: 'cron',
   actionType: 'agent_message',
+  enabled: true,
   cronExpr: '0 9 * * *',
   heartbeatInterval: 3600,
   agentMsg: '',
@@ -80,11 +83,7 @@ const modalDefault: ModalState = {
   useManualAction: false,
 };
 
-function readString(
-  source: Record<string, unknown>,
-  keys: string[],
-  fallback: string,
-): string {
+function readString(source: Record<string, unknown>, keys: string[], fallback: string): string {
   for (const key of keys) {
     const value = source[key];
     if (typeof value === 'string' && value.trim()) return value;
@@ -92,11 +91,7 @@ function readString(
   return fallback;
 }
 
-function readNumber(
-  source: Record<string, unknown>,
-  keys: string[],
-  fallback: number,
-): number {
+function readNumber(source: Record<string, unknown>, keys: string[], fallback: number): number {
   for (const key of keys) {
     const value = source[key];
     if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -104,9 +99,7 @@ function readNumber(
   return fallback;
 }
 
-function resolveAgentRoute(
-  actionConfig: Record<string, unknown>,
-): { routeMode: 'main' | 'session'; targetSessionId: string } {
+function resolveAgentRoute(actionConfig: Record<string, unknown>): { routeMode: 'main' | 'session'; targetSessionId: string } {
   const hasRouteMode = Object.prototype.hasOwnProperty.call(actionConfig, 'route_mode');
   const routeModeRaw = readString(actionConfig, ['route_mode'], 'main').toLowerCase();
   const routeMode = routeModeRaw === 'session' ? 'session' : 'main';
@@ -116,12 +109,44 @@ function resolveAgentRoute(
     const target = canonicalTarget || readString(actionConfig, ['session_id'], '');
     return { routeMode: 'session', targetSessionId: target };
   }
-
   if (!hasRouteMode) {
     const legacyTarget = readString(actionConfig, ['session_id'], '');
     if (legacyTarget) return { routeMode: 'session', targetSessionId: legacyTarget };
   }
   return { routeMode: 'main', targetSessionId: '' };
+}
+
+function statusTone(status: string): 'default' | 'good' | 'warn' | 'danger' | 'info' {
+  if (status === 'fired' || status === 'success') return 'good';
+  if (status === 'error' || status === 'failed') return 'danger';
+  return 'default';
+}
+
+const defaultManualInvokePayload: Record<string, string> = {
+  source: 'manual',
+  signal: 'force_invocation',
+};
+
+function pluralize(value: number, unit: string): string {
+  return `${value} ${unit}${value === 1 ? '' : 's'}`;
+}
+
+function formatNextRunRelative(nextFireAt: string | null, nowMs: number): string {
+  if (!nextFireAt) return 'No next run scheduled';
+  const targetMs = Date.parse(nextFireAt);
+  if (Number.isNaN(targetMs)) return `Next run: ${formatCompactDate(nextFireAt)}`;
+
+  const diffSeconds = Math.max(0, Math.floor((targetMs - nowMs) / 1000));
+  if (diffSeconds <= 5) return 'Next run in a few seconds';
+  if (diffSeconds < 60) return `Next run in ${pluralize(diffSeconds, 'sec')}`;
+
+  const totalMinutes = Math.floor(diffSeconds / 60);
+  if (totalMinutes < 60) return `Next run in ${pluralize(totalMinutes, 'min')}`;
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (minutes === 0) return `Next run in ${pluralize(hours, 'hour')}`;
+  return `Next run in ${pluralize(hours, 'hour')} ${pluralize(minutes, 'min')}`;
 }
 
 export function TriggersPage() {
@@ -132,6 +157,16 @@ export function TriggersPage() {
   const [typeFilter, setTypeFilter] = useState('all');
   const [enabledOnly, setEnabledOnly] = useState(false);
   const [modal, setModal] = useState<ModalState>(modalDefault);
+  const [savingModal, setSavingModal] = useState(false);
+  const [isFiring, setIsFiring] = useState(false);
+  const [invokePayloadText, setInvokePayloadText] = useState(
+    JSON.stringify(defaultManualInvokePayload, null, 2),
+  );
+  const [modalLogs, setModalLogs] = useState<TriggerLog[]>([]);
+  const [modalLogsLoading, setModalLogsLoading] = useState(false);
+  const [modalLogOffset, setModalLogOffset] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [firingCardTriggerId, setFiringCardTriggerId] = useState<string | null>(null);
 
   const visible = useMemo(
     () =>
@@ -142,10 +177,12 @@ export function TriggersPage() {
       }),
     [triggers, typeFilter, enabledOnly],
   );
+
   const routeSessions = useMemo(
     () => sessions.filter((session) => !session.parent_session_id),
     [sessions],
   );
+
   const isRouteTargetMissing = useMemo(
     () =>
       modal.routeMode === 'session'
@@ -156,6 +193,11 @@ export function TriggersPage() {
 
   useEffect(() => {
     void loadData();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
   async function loadData() {
@@ -174,18 +216,30 @@ export function TriggersPage() {
     }
   }
 
-  function buildConfig(): Record<string, any> {
+  function buildConfig(): Record<string, unknown> {
     if (modal.useManualConfig) {
-      try { return JSON.parse(modal.configText); } catch { return {}; }
+      try {
+        const parsed = JSON.parse(modal.configText);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      } catch {
+        return {};
+      }
+      return {};
     }
     if (modal.type === 'cron') return { expr: modal.cronExpr };
     if (modal.type === 'heartbeat') return { interval_seconds: modal.heartbeatInterval };
     return {};
   }
 
-  function buildActionConfig(): Record<string, any> {
+  function buildActionConfig(): Record<string, unknown> {
     if (modal.useManualAction) {
-      try { return JSON.parse(modal.actionConfigText); } catch { return {}; }
+      try {
+        const parsed = JSON.parse(modal.actionConfigText);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      } catch {
+        return {};
+      }
+      return {};
     }
     if (modal.actionType === 'agent_message') {
       return {
@@ -199,22 +253,26 @@ export function TriggersPage() {
     }
     if (modal.actionType === 'tool_call') {
       try {
-        return { name: modal.toolName, arguments: JSON.parse(modal.toolArgs) };
+        const args = JSON.parse(modal.toolArgs);
+        return { name: modal.toolName, arguments: args };
       } catch {
         return { name: modal.toolName, arguments: {} };
       }
     }
-    if (modal.actionType === 'http_request') return { url: modal.httpUrl, method: modal.httpMethod };
+    if (modal.actionType === 'http_request') {
+      return { url: modal.httpUrl, method: modal.httpMethod };
+    }
     return {};
   }
 
   async function handleModalSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!modal.name.trim()) return;
+    if (!modal.name.trim() || savingModal) return;
 
     const config = buildConfig();
     const action_config = buildActionConfig();
 
+    setSavingModal(true);
     try {
       if (modal.mode === 'create') {
         const created = await api.post<Trigger>('/triggers', {
@@ -223,29 +281,39 @@ export function TriggersPage() {
           config,
           action_type: modal.actionType,
           action_config,
-          enabled: true,
+          enabled: modal.enabled,
         });
         setTriggers((current) => [created, ...current]);
         toast.success('Autonomous trigger established');
-      } else {
+        closeModal();
+      } else if (modal.triggerId) {
         const updated = await api.patch<Trigger>(`/triggers/${modal.triggerId}`, {
           name: modal.name.trim(),
           type: modal.type,
           config,
           action_type: modal.actionType,
           action_config,
+          enabled: modal.enabled,
         });
-        setTriggers((current) => current.map(t => t.id === modal.triggerId ? updated : t));
+        setTriggers((current) => current.map((item) => (item.id === modal.triggerId ? updated : item)));
         toast.success('Trigger configuration updated');
       }
-      setModal(modalDefault);
-    } catch { 
-      toast.error(modal.mode === 'create' ? 'Failed to establish trigger' : 'Failed to update trigger'); 
+    } catch {
+      toast.error(modal.mode === 'create' ? 'Failed to establish trigger' : 'Failed to update trigger');
+    } finally {
+      setSavingModal(false);
     }
   }
 
+  function openCreateModal() {
+    setInvokePayloadText(JSON.stringify(defaultManualInvokePayload, null, 2));
+    setModalLogs([]);
+    setModalLogOffset(0);
+    setModal(modalDefault);
+    setModal((prev) => ({ ...prev, open: true, mode: 'create' }));
+  }
+
   function openEditModal(trigger: Trigger) {
-    // Attempt to deconstruct config for assisted fields
     const isCron = trigger.type === 'cron';
     const isHeartbeat = trigger.type === 'heartbeat';
     const isAgentMsg = trigger.action_type === 'agent_message';
@@ -253,6 +321,7 @@ export function TriggersPage() {
     const isHttp = trigger.action_type === 'http_request';
     const route = resolveAgentRoute(trigger.action_config);
 
+    setInvokePayloadText(JSON.stringify(defaultManualInvokePayload, null, 2));
     setModal({
       open: true,
       mode: 'edit',
@@ -260,6 +329,7 @@ export function TriggersPage() {
       name: trigger.name,
       type: trigger.type,
       actionType: trigger.action_type,
+      enabled: trigger.enabled,
       cronExpr: isCron ? readString(trigger.config, ['expr', 'cron'], '0 9 * * *') : '0 9 * * *',
       heartbeatInterval: isHeartbeat ? readNumber(trigger.config, ['interval_seconds', 'interval'], 3600) : 3600,
       agentMsg: isAgentMsg ? readString(trigger.action_config, ['message'], '') : '',
@@ -274,6 +344,107 @@ export function TriggersPage() {
       useManualConfig: false,
       useManualAction: false,
     });
+    void loadModalLogs(trigger.id, true);
+  }
+
+  function closeModal() {
+    setModal(modalDefault);
+    setModalLogs([]);
+    setModalLogOffset(0);
+    setModalLogsLoading(false);
+    setSavingModal(false);
+    setIsFiring(false);
+  }
+
+  async function loadModalLogs(triggerId: string, reset: boolean) {
+    setModalLogsLoading(true);
+    try {
+      const offset = reset ? 0 : modalLogOffset;
+      const payload = await api.get<TriggerLogListResponse>(`/triggers/${triggerId}/logs?limit=10&offset=${offset}`);
+      if (reset) {
+        setModalLogs(payload.items);
+        setModalLogOffset(payload.items.length);
+      } else {
+        setModalLogs((current) => [...current, ...payload.items]);
+        setModalLogOffset((current) => current + payload.items.length);
+      }
+    } catch {
+      toast.error('Failed to load trigger logs');
+    } finally {
+      setModalLogsLoading(false);
+    }
+  }
+
+  async function fireFromModal() {
+    if (modal.mode !== 'edit' || !modal.triggerId || isFiring) return;
+
+    let parsedPayload: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(invokePayloadText || '{}');
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        toast.error('Signal payload must be a JSON object');
+        return;
+      }
+      parsedPayload = parsed as Record<string, unknown>;
+    } catch {
+      toast.error('Signal payload is not valid JSON');
+      return;
+    }
+
+    setIsFiring(true);
+    try {
+      const result = await api.post<FireTriggerResponse>(`/triggers/${modal.triggerId}/fire`, {
+        input_payload: parsedPayload,
+      });
+      if (result.log.status === 'failed') {
+        toast.error(result.log.error_message || 'Invocation failed');
+        await Promise.all([loadModalLogs(modal.triggerId, true), loadData()]);
+        return;
+      }
+      if (result.used_fallback) {
+        toast.warning('Target session unavailable, routed to main session');
+      } else {
+        toast.success('Trigger invoked');
+      }
+      if (result.resolved_session_id) {
+        navigate(`/sessions/${result.resolved_session_id}`);
+        return;
+      }
+      await Promise.all([loadModalLogs(modal.triggerId, true), loadData()]);
+    } catch {
+      toast.error('Trigger invocation failed');
+    } finally {
+      setIsFiring(false);
+    }
+  }
+
+  async function fireFromCard(triggerId: string) {
+    if (firingCardTriggerId) return;
+    setFiringCardTriggerId(triggerId);
+    try {
+      const result = await api.post<FireTriggerResponse>(`/triggers/${triggerId}/fire`, {
+        input_payload: defaultManualInvokePayload,
+      });
+      if (result.log.status === 'failed') {
+        toast.error(result.log.error_message || 'Invocation failed');
+        await loadData();
+        return;
+      }
+      if (result.used_fallback) {
+        toast.warning('Target session unavailable, routed to main session');
+      } else {
+        toast.success('Trigger invoked');
+      }
+      if (result.resolved_session_id) {
+        navigate(`/sessions/${result.resolved_session_id}`);
+        return;
+      }
+      await loadData();
+    } catch {
+      toast.error('Trigger invocation failed');
+    } finally {
+      setFiringCardTriggerId(null);
+    }
   }
 
   async function removeTrigger(trigger: Trigger) {
@@ -282,7 +453,12 @@ export function TriggersPage() {
       await api.delete<{ status: string }>(`/triggers/${trigger.id}`);
       setTriggers((current) => current.filter((item) => item.id !== trigger.id));
       toast.success('Trigger decommissioned');
-    } catch { toast.error('Failed to decommission'); }
+      if (modal.mode === 'edit' && modal.triggerId === trigger.id) {
+        closeModal();
+      }
+    } catch {
+      toast.error('Failed to decommission');
+    }
   }
 
   async function toggleTrigger(trigger: Trigger) {
@@ -291,9 +467,10 @@ export function TriggersPage() {
       const updated = await api.patch<Trigger>(`/triggers/${trigger.id}`, {
         enabled: nextState,
       });
-      setTriggers((current) =>
-        current.map((t) => (t.id === trigger.id ? updated : t))
-      );
+      setTriggers((current) => current.map((item) => (item.id === trigger.id ? updated : item)));
+      if (modal.mode === 'edit' && modal.triggerId === trigger.id) {
+        setModal((prev) => ({ ...prev, enabled: updated.enabled }));
+      }
       toast.success(`Trigger ${nextState ? 'enabled' : 'disabled'}`);
     } catch {
       toast.error('Failed to update trigger state');
@@ -310,7 +487,7 @@ export function TriggersPage() {
             <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
           </button>
           <div className="h-6 w-px bg-[color:var(--border-subtle)] mx-1" />
-          <button onClick={() => setModal({ ...modalDefault, open: true })} className="btn-primary h-9 px-3 text-xs gap-2">
+          <button onClick={openCreateModal} className="btn-primary h-9 px-3 text-xs gap-2">
             <Plus size={14} />
             New Automation
           </button>
@@ -318,32 +495,31 @@ export function TriggersPage() {
       }
     >
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* Filter Bar */}
         <Panel className="p-4 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-4 flex-1">
             <div className="relative min-w-[200px]">
               <Filter size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
-              <select 
+              <select
                 className="input-field pl-9 h-10 text-xs font-bold uppercase tracking-wider appearance-none"
                 value={typeFilter}
-                onChange={(e) => setTypeFilter(e.target.value)}
+                onChange={(event) => setTypeFilter(event.target.value)}
               >
                 <option value="all">All Trigger Types</option>
-                {triggerTypes.map(t => <option key={t} value={t}>{t.toUpperCase()}</option>)}
+                {triggerTypes.map((item) => <option key={item} value={item}>{item.toUpperCase()}</option>)}
               </select>
             </div>
-            
+
             <label className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-[color:var(--surface-1)] cursor-pointer transition-colors border border-transparent hover:border-[color:var(--border-subtle)]">
-              <input 
-                type="checkbox" 
+              <input
+                type="checkbox"
                 className="w-4 h-4 accent-[color:var(--accent-solid)]"
-                checked={enabledOnly} 
-                onChange={(e) => setEnabledOnly(e.target.checked)} 
+                checked={enabledOnly}
+                onChange={(event) => setEnabledOnly(event.target.checked)}
               />
               <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-secondary)]">Enabled Only</span>
             </label>
           </div>
-          
+
           <div className="flex items-center gap-2 text-[10px] font-bold text-[color:var(--text-muted)] uppercase tracking-widest">
             <Activity size={14} />
             {visible.length} Active Automations
@@ -362,24 +538,32 @@ export function TriggersPage() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {visible.map((trigger) => (
-              <Panel key={trigger.id} className="p-5 group hover:border-[color:var(--border-strong)] transition-all flex flex-col gap-4">
+              <Panel
+                key={trigger.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => openEditModal(trigger)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openEditModal(trigger);
+                  }
+                }}
+                className="p-4 group hover:border-[color:var(--border-strong)] transition-all flex flex-col gap-3 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[color:var(--border-strong)]"
+              >
                 <div className="flex items-start justify-between gap-4">
                   <div className="space-y-1">
-                    <button 
-                      onClick={() => navigate(`/triggers/${trigger.id}`)}
-                      className="text-sm font-bold hover:text-[color:var(--accent-solid)] transition-colors text-left"
-                    >
+                    <p className="text-sm font-bold transition-colors text-left group-hover:text-[color:var(--accent-solid)]">
                       {trigger.name}
-                    </button>
+                    </p>
                     <div className="flex items-center gap-2">
                       <StatusChip label={trigger.type} tone="info" className="scale-90 origin-left" />
                       <StatusChip label={trigger.action_type} className="scale-90 origin-left opacity-70" />
                     </div>
                   </div>
-                  <Toggle 
-                    enabled={trigger.enabled} 
-                    onChange={() => toggleTrigger(trigger)} 
-                  />
+                  <div onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                    <Toggle enabled={trigger.enabled} onChange={() => toggleTrigger(trigger)} />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4 py-2 border-y border-[color:var(--border-subtle)] border-dashed">
@@ -397,29 +581,29 @@ export function TriggersPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-wider flex items-center gap-1.5">
-                    <Clock size={12} />
-                    {trigger.last_fired_at ? `Last run: ${formatCompactDate(trigger.last_fired_at)}` : 'Never invoked'}
-                  </p>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button 
-                      onClick={() => openEditModal(trigger)}
-                      className="p-2 rounded-md hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)]"
-                      title="Edit Configuration"
+                <div className="flex items-end justify-between gap-3">
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-wider flex items-center gap-1.5">
+                      <Clock size={12} />
+                      {trigger.last_fired_at ? `Last run: ${formatCompactDate(trigger.last_fired_at)}` : 'Never invoked'}
+                    </p>
+                    <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-wider">
+                      {formatNextRunRelative(trigger.next_fire_at, nowMs)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                    <button
+                      onClick={() => void fireFromCard(trigger.id)}
+                      disabled={firingCardTriggerId === trigger.id}
+                      className="btn-secondary h-8 px-3 text-[10px] font-bold uppercase tracking-widest gap-1.5"
+                      title="Run now"
                     >
-                      <Edit3 size={16} />
+                      {firingCardTriggerId === trigger.id ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} fill="currentColor" />}
+                      Run
                     </button>
-                    <button 
-                      onClick={() => navigate(`/triggers/${trigger.id}`)}
-                      className="p-2 rounded-md hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)]"
-                      title="Execution Logs"
-                    >
-                      <Settings2 size={16} />
-                    </button>
-                    <button 
+                    <button
                       onClick={() => void removeTrigger(trigger)}
-                      className="p-2 rounded-md hover:bg-rose-500/10 text-rose-500"
+                      className="p-2 rounded-md hover:bg-rose-500/10 text-rose-500 transition-colors"
                       title="Purge"
                     >
                       <Trash2 size={16} />
@@ -432,270 +616,432 @@ export function TriggersPage() {
         )}
       </div>
 
-      {/* Automation Modal */}
       {modal.open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setModal(modalDefault)} />
-          <Panel className="relative w-full max-w-2xl bg-[color:var(--surface-0)] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
-            <form onSubmit={handleModalSubmit}>
-              <div className="px-6 py-4 border-b border-[color:var(--border-subtle)] flex items-center justify-between bg-[color:var(--surface-1)]">
-                <div className="flex items-center gap-3">
-                  {modal.mode === 'create' ? <Plus size={18} className="text-[color:var(--accent-solid)]" /> : <Edit3 size={18} className="text-[color:var(--accent-solid)]" />}
-                  <h2 className="font-bold text-sm uppercase tracking-widest">
-                    {modal.mode === 'create' ? 'Initialize Automation' : 'Modify Automation'}
-                  </h2>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={closeModal} />
+          <Panel className="relative flex w-full max-w-4xl h-[84vh] flex-col overflow-hidden bg-[color:var(--surface-0)] shadow-2xl animate-in zoom-in-95 duration-200">
+            <form onSubmit={handleModalSubmit} className="flex h-full min-h-0 flex-col">
+              {/* Modal Header */}
+              <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-5 py-3">
+                <div className="flex items-center gap-4">
+                  <div className="p-2 rounded-xl bg-[color:var(--surface-2)] text-[color:var(--accent-solid)] shadow-sm">
+                    {modal.mode === 'create' ? <Plus size={18} /> : <History size={18} />}
+                  </div>
+                  <div>
+                    <h2 className="text-[11px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)] leading-none mb-1.5">
+                      Automation Node {modal.mode === 'create' ? 'Initialization' : 'Configuration'}
+                    </h2>
+                    <p className="text-sm font-bold text-[color:var(--text-primary)]">
+                      {modal.mode === 'create' ? 'Establish New Trigger' : modal.name || 'Edit Trigger'}
+                    </p>
+                  </div>
                 </div>
-                <button type="button" onClick={() => setModal(modalDefault)} className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]">
-                  <X size={20} />
-                </button>
+                <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-3 pr-6 border-r border-[color:var(--border-subtle)]">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Status</span>
+                    <Toggle
+                      enabled={modal.enabled}
+                      onChange={(enabled) => setModal((prev) => ({ ...prev, enabled }))}
+                    />
+                  </div>
+                  <button type="button" onClick={closeModal} className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors">
+                    <X size={22} />
+                  </button>
+                </div>
               </div>
 
-              <div className="p-6 space-y-6 overflow-y-auto max-h-[70vh]">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Identifier</label>
-                  <input 
-                    className="input-field h-11 font-bold"
-                    placeholder="e.g. Daily Sync Protocol"
-                    value={modal.name}
-                    onChange={(e) => setModal(prev => ({ ...prev, name: e.target.value }))}
-                    required
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-6">
-                  {/* Trigger Section */}
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] flex items-center gap-2">
-                        <Clock size={12} /> Entry Point
-                      </label>
-                      <button 
-                        type="button" 
-                        className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded border transition-colors ${modal.useManualConfig ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent' : 'text-[color:var(--text-muted)] border-[color:var(--border-subtle)]'}`}
-                        onClick={() => setModal(p => ({ ...p, useManualConfig: !p.useManualConfig }))}
-                      >
-                        Manual
-                      </button>
-                    </div>
-                    
-                    {!modal.useManualConfig ? (
-                      <div className="space-y-3 p-4 rounded-xl bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)]">
-                        <div className="space-y-2">
-                          <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Type</span>
-                          <select 
-                            className="input-field h-9 text-[10px] font-bold uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
-                            value={modal.type}
-                            onChange={(e) => {
-                              const newType = e.target.value;
-                              setModal(prev => ({ 
-                                ...prev, 
-                                type: newType,
-                                cronExpr: newType === 'cron' ? '0 9 * * *' : prev.cronExpr,
-                                heartbeatInterval: newType === 'heartbeat' ? 3600 : prev.heartbeatInterval,
-                              }));
-                            }}
-                          >
-                            {triggerTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                          </select>
-                        </div>
-
-                        {modal.type === 'cron' && (
-                          <div className="space-y-2">
-                            <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Cron Expression</span>
-                            <input 
-                              className="input-field h-9 font-mono text-xs"
-                              value={modal.cronExpr}
-                              onChange={(e) => setModal(p => ({ ...p, cronExpr: e.target.value }))}
-                            />
-                          </div>
-                        )}
-
-                        {modal.type === 'heartbeat' && (
-                          <div className="space-y-2">
-                            <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Interval (Seconds)</span>
-                            <input 
-                              type="number"
-                              className="input-field h-9 font-mono text-xs"
-                              value={modal.heartbeatInterval}
-                              onChange={(e) => setModal(p => ({ ...p, heartbeatInterval: parseInt(e.target.value) }))}
-                            />
-                          </div>
-                        )}
-
-                        {(modal.type === 'webhook' || modal.type === 'event') && (
-                          <div className="p-3 text-[10px] font-medium text-[color:var(--text-muted)] italic leading-relaxed">
-                            No immediate parameters required. Configuration will be refined post-establishment.
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <textarea 
-                        className="input-field min-h-[140px] py-3 resize-none font-mono text-[11px]"
-                        placeholder="Raw Config JSON..."
-                        value={modal.configText}
-                        onChange={(e) => setModal(prev => ({ ...prev, configText: e.target.value }))}
-                      />
-                    )}
+              {/* Modal Body */}
+              <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5 space-y-6">
+                {/* Basic Identification */}
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Info size={14} className="text-[color:var(--text-muted)]" />
+                    <h3 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Basic Identification</h3>
                   </div>
+                  <div className="grid gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Identifier / Name</label>
+                      <input
+                        className="input-field h-11 text-sm font-medium"
+                        placeholder="e.g. Daily Inventory Synchronization"
+                        value={modal.name}
+                        onChange={(event) => setModal((prev) => ({ ...prev, name: event.target.value }))}
+                        required
+                        autoFocus
+                      />
+                    </div>
+                  </div>
+                </section>
 
-                  {/* Action Section */}
-                  <div className="space-y-4">
+                {/* Trigger & Action Configuration */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Trigger Configuration */}
+                  <section className="space-y-3">
                     <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] flex items-center gap-2">
-                        <Zap size={12} /> Execution Action
-                      </label>
-                      <button 
-                        type="button" 
-                        className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded border transition-colors ${modal.useManualAction ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent' : 'text-[color:var(--text-muted)] border-[color:var(--border-subtle)]'}`}
-                        onClick={() => setModal(p => ({ ...p, useManualAction: !p.useManualAction }))}
+                      <div className="flex items-center gap-2">
+                        <Clock size={14} className="text-[color:var(--text-muted)]" />
+                        <h3 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Entry Point</h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setModal((prev) => ({ ...prev, useManualConfig: !prev.useManualConfig }))}
+                        className={`text-[9px] font-bold uppercase tracking-[0.15em] px-2.5 py-1 rounded border transition-all ${
+                          modal.useManualConfig
+                            ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent shadow-sm'
+                            : 'bg-transparent text-[color:var(--text-muted)] border-[color:var(--border-subtle)] hover:border-[color:var(--border-strong)]'
+                        }`}
                       >
-                        Manual
+                        {modal.useManualConfig ? 'Switch to Assisted' : 'Manual JSON'}
                       </button>
                     </div>
 
-                    {!modal.useManualAction ? (
-                      <div className="space-y-3 p-4 rounded-xl bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)]">
-                        <div className="space-y-2">
-                          <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Protocol</span>
-                          <select 
-                            className="input-field h-9 text-[10px] font-bold uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
-                            value={modal.actionType}
-                            onChange={(e) => {
-                              const newActionType = e.target.value;
-                              setModal(prev => ({ 
-                                ...prev, 
-                                actionType: newActionType,
-                                agentMsg: newActionType === 'agent_message' ? '' : prev.agentMsg,
-                                toolName: newActionType === 'tool_call' ? '' : prev.toolName,
-                                toolArgs: newActionType === 'tool_call' ? '{}' : prev.toolArgs,
-                                httpUrl: newActionType === 'http_request' ? '' : prev.httpUrl,
-                                httpMethod: newActionType === 'http_request' ? 'POST' : prev.httpMethod,
-                              }));
-                            }}
-                          >
-                            {actionTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                          </select>
-                        </div>
+                    <div className="p-4 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 space-y-4">
+                      {!modal.useManualConfig ? (
+                        <>
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Protocol Type</label>
+                            <select
+                              className="input-field h-10 text-xs font-bold uppercase tracking-wider"
+                              value={modal.type}
+                              onChange={(event) => {
+                                const nextType = event.target.value;
+                                setModal((prev) => ({
+                                  ...prev,
+                                  type: nextType,
+                                  cronExpr: nextType === 'cron' ? prev.cronExpr || '0 9 * * *' : prev.cronExpr,
+                                  heartbeatInterval: nextType === 'heartbeat' ? prev.heartbeatInterval || 3600 : prev.heartbeatInterval,
+                                }));
+                              }}
+                            >
+                              {triggerTypes.map((item) => <option key={item} value={item}>{item.toUpperCase()}</option>)}
+                            </select>
+                          </div>
 
-                        {modal.actionType === 'agent_message' && (
-                          <div className="space-y-3">
-                            <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Instruction</span>
-                            <textarea 
-                              className="input-field min-h-[80px] py-2 text-xs resize-none"
-                              placeholder="Message for Sentinel..."
-                              value={modal.agentMsg}
-                              onChange={(e) => setModal(p => ({ ...p, agentMsg: e.target.value }))}
-                            />
-                            <div className="space-y-2">
-                              <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Route</span>
-                              <select
-                                className="input-field h-9 text-[10px] font-bold uppercase tracking-wider"
-                                value={modal.routeMode}
-                                onChange={(e) =>
-                                  setModal((prev) => ({
-                                    ...prev,
-                                    routeMode: e.target.value === 'session' ? 'session' : 'main',
-                                    targetSessionId:
-                                      e.target.value === 'session'
-                                        ? prev.targetSessionId || (routeSessions[0]?.id ?? '')
-                                        : '',
-                                  }))
-                                }
-                              >
-                                <option value="main">Main Session</option>
-                                <option value="session">Specific Session</option>
-                              </select>
+                          {modal.type === 'cron' && (
+                            <div className="space-y-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Cron Expression</label>
+                              <input
+                                className="input-field h-10 font-mono text-xs tracking-wider"
+                                value={modal.cronExpr}
+                                onChange={(event) => setModal((prev) => ({ ...prev, cronExpr: event.target.value }))}
+                              />
+                              <p className="text-[9px] text-[color:var(--text-muted)] font-medium">Standard crontab format (e.g., "0 9 * * *" for daily at 9 AM)</p>
                             </div>
-                            {modal.routeMode === 'session' && (
+                          )}
+
+                          {modal.type === 'heartbeat' && (
+                            <div className="space-y-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Frequency (Seconds)</label>
+                              <input
+                                type="number"
+                                min={1}
+                                className="input-field h-10 font-mono text-xs"
+                                value={modal.heartbeatInterval}
+                                onChange={(event) => setModal((prev) => ({ ...prev, heartbeatInterval: Number.parseInt(event.target.value, 10) || 1 }))}
+                              />
+                            </div>
+                          )}
+
+                          {modal.type === 'webhook' && (
+                            <div className="py-4 px-4 rounded-xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]">
+                              <p className="text-[11px] text-[color:var(--text-muted)] text-center font-medium leading-relaxed">
+                                Assisted configuration is not available for <span className="text-[color:var(--text-primary)] font-bold">{modal.type.toUpperCase()}</span>.
+                                <br />Please use <span className="text-[color:var(--accent-solid)] font-bold">Manual JSON</span> mode.
+                              </p>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="space-y-2 animate-in fade-in duration-200">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Raw Configuration</label>
+                          <textarea
+                            className="input-field min-h-[160px] resize-none py-3 font-mono text-[11px] leading-relaxed"
+                            placeholder='{ "key": "value" }'
+                            value={modal.configText}
+                            onChange={(event) => setModal((prev) => ({ ...prev, configText: event.target.value }))}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Action Configuration */}
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Zap size={14} className="text-[color:var(--text-muted)]" />
+                        <h3 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Execution Action</h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setModal((prev) => ({ ...prev, useManualAction: !prev.useManualAction }))}
+                        className={`text-[9px] font-bold uppercase tracking-[0.15em] px-2.5 py-1 rounded border transition-all ${
+                          modal.useManualAction
+                            ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent shadow-sm'
+                            : 'bg-transparent text-[color:var(--text-muted)] border-[color:var(--border-subtle)] hover:border-[color:var(--border-strong)]'
+                        }`}
+                      >
+                        {modal.useManualAction ? 'Switch to Assisted' : 'Manual JSON'}
+                      </button>
+                    </div>
+
+                    <div className="p-4 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 space-y-4">
+                      {!modal.useManualAction ? (
+                        <>
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Action Protocol</label>
+                            <select
+                              className="input-field h-10 text-xs font-bold uppercase tracking-wider"
+                              value={modal.actionType}
+                              onChange={(event) => {
+                                const nextActionType = event.target.value;
+                                setModal((prev) => ({
+                                  ...prev,
+                                  actionType: nextActionType,
+                                  agentMsg: nextActionType === 'agent_message' ? prev.agentMsg : '',
+                                  toolName: nextActionType === 'tool_call' ? prev.toolName : '',
+                                  toolArgs: nextActionType === 'tool_call' ? prev.toolArgs : '{}',
+                                  httpUrl: nextActionType === 'http_request' ? prev.httpUrl : '',
+                                  httpMethod: nextActionType === 'http_request' ? prev.httpMethod : 'POST',
+                                }));
+                              }}
+                            >
+                              {actionTypes.map((item) => <option key={item} value={item}>{item.toUpperCase()}</option>)}
+                            </select>
+                          </div>
+
+                          {modal.actionType === 'agent_message' && (
+                            <div className="space-y-5 animate-in fade-in slide-in-from-top-1 duration-200">
                               <div className="space-y-2">
-                                <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Target Session</span>
-                                <select
-                                  className="input-field h-9 text-[10px] font-bold tracking-wide"
-                                  value={modal.targetSessionId}
-                                  onChange={(e) => setModal((prev) => ({ ...prev, targetSessionId: e.target.value }))}
-                                >
-                                  {!modal.targetSessionId && (
-                                    <option value="">Select session…</option>
-                                  )}
-                                  {routeSessions.map((session) => (
-                                    <option key={session.id} value={session.id}>
-                                      {session.is_main ? 'Main' : 'Session'} · {session.title || session.id.slice(0, 8)}
-                                    </option>
-                                  ))}
-                                  {isRouteTargetMissing && (
-                                    <option value={modal.targetSessionId}>
-                                      Missing session ({modal.targetSessionId.slice(0, 8)})
-                                    </option>
-                                  )}
-                                </select>
-                                <p className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">
-                                  If target session is missing at runtime, trigger auto-fallbacks to Main and self-heals.
-                                </p>
+                                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">System Instruction</label>
+                                <textarea
+                                  className="input-field min-h-[92px] resize-none py-3 text-xs leading-relaxed"
+                                  placeholder="Describe what the agent should do when triggered..."
+                                  value={modal.agentMsg}
+                                  onChange={(event) => setModal((prev) => ({ ...prev, agentMsg: event.target.value }))}
+                                />
                               </div>
-                            )}
-                          </div>
-                        )}
-
-                        {modal.actionType === 'tool_call' && (
-                          <div className="space-y-2">
-                            <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Capability Name</span>
-                            <input 
-                              className="input-field h-9 font-mono text-xs"
-                              placeholder="e.g. web_search"
-                              value={modal.toolName}
-                              onChange={(e) => setModal(p => ({ ...p, toolName: e.target.value }))}
-                            />
-                            <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Arguments (JSON)</span>
-                            <input 
-                              className="input-field h-9 font-mono text-xs"
-                              value={modal.toolArgs}
-                              onChange={(e) => setModal(p => ({ ...p, toolArgs: e.target.value }))}
-                            />
-                          </div>
-                        )}
-
-                        {modal.actionType === 'http_request' && (
-                          <div className="space-y-2">
-                            <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Target URL</span>
-                            <input 
-                              className="input-field h-9 font-mono text-xs"
-                              placeholder="https://api.example.com/webhook"
-                              value={modal.httpUrl}
-                              onChange={(e) => setModal(p => ({ ...p, httpUrl: e.target.value }))}
-                            />
-                            <div className="flex items-center justify-between pt-1">
-                               <span className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Method</span>
-                               <select 
-                                 className="bg-transparent text-[10px] font-bold outline-none"
-                                 value={modal.httpMethod}
-                                 onChange={(e) => setModal(p => ({ ...p, httpMethod: e.target.value }))}
-                               >
-                                 <option>GET</option>
-                                 <option>POST</option>
-                                 <option>PUT</option>
-                               </select>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Routing</label>
+                                  <select
+                                    className="input-field h-10 text-xs font-bold uppercase"
+                                    value={modal.routeMode}
+                                    onChange={(event) =>
+                                      setModal((prev) => ({
+                                        ...prev,
+                                        routeMode: event.target.value === 'session' ? 'session' : 'main',
+                                        targetSessionId:
+                                          event.target.value === 'session'
+                                            ? prev.targetSessionId || (routeSessions[0]?.id ?? '')
+                                            : '',
+                                      }))
+                                    }
+                                  >
+                                    <option value="main">Main Session</option>
+                                    <option value="session">Specific Session</option>
+                                  </select>
+                                </div>
+                                {modal.routeMode === 'session' && (
+                                  <div className="space-y-2 animate-in fade-in slide-in-from-left-1 duration-200">
+                                    <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Target</label>
+                                    <select
+                                      className="input-field h-10 text-xs font-bold"
+                                      value={modal.targetSessionId}
+                                      onChange={(event) => setModal((prev) => ({ ...prev, targetSessionId: event.target.value }))}
+                                    >
+                                      {!modal.targetSessionId && <option value="">Select session...</option>}
+                                      {routeSessions.map((session) => (
+                                        <option key={session.id} value={session.id}>
+                                          {session.title || session.id.slice(0, 8)}
+                                        </option>
+                                      ))}
+                                      {isRouteTargetMissing && (
+                                        <option value={modal.targetSessionId}>
+                                          Missing ({modal.targetSessionId.slice(0, 8)})
+                                        </option>
+                                      )}
+                                    </select>
+                                  </div>
+                                )}
+                              </div>
                             </div>
-                          </div>
+                          )}
+
+                          {modal.actionType === 'tool_call' && (
+                            <div className="space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Tool Identifier</label>
+                                <input
+                                  className="input-field h-10 font-mono text-xs"
+                                  placeholder="e.g. web_search"
+                                  value={modal.toolName}
+                                  onChange={(event) => setModal((prev) => ({ ...prev, toolName: event.target.value }))}
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Arguments (JSON Object)</label>
+                                <textarea
+                                  className="input-field min-h-[100px] resize-none py-3 font-mono text-[11px]"
+                                  placeholder='{ "query": "..." }'
+                                  value={modal.toolArgs}
+                                  onChange={(event) => setModal((prev) => ({ ...prev, toolArgs: event.target.value }))}
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {modal.actionType === 'http_request' && (
+                            <div className="space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Endpoint URL</label>
+                                <input
+                                  className="input-field h-10 font-mono text-xs"
+                                  placeholder="https://api.example.com/webhook"
+                                  value={modal.httpUrl}
+                                  onChange={(event) => setModal((prev) => ({ ...prev, httpUrl: event.target.value }))}
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">HTTP Method</label>
+                                <select
+                                  className="input-field h-10 text-xs font-bold"
+                                  value={modal.httpMethod}
+                                  onChange={(event) => setModal((prev) => ({ ...prev, httpMethod: event.target.value }))}
+                                >
+                                  <option>GET</option>
+                                  <option>POST</option>
+                                  <option>PUT</option>
+                                  <option>PATCH</option>
+                                  <option>DELETE</option>
+                                </select>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="space-y-2 animate-in fade-in duration-200">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Raw Action Payload</label>
+                          <textarea
+                            className="input-field min-h-[160px] resize-none py-3 font-mono text-[11px] leading-relaxed"
+                            placeholder='{ "action": "..." }'
+                            value={modal.actionConfigText}
+                            onChange={(event) => setModal((prev) => ({ ...prev, actionConfigText: event.target.value }))}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </div>
+
+                {/* Edit-Only: Execution & Logs */}
+                {modal.mode === 'edit' && (
+                  <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.1fr] gap-6 pt-6 border-t border-[color:var(--border-subtle)]">
+                    {/* Manual Invocation */}
+                    <section className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Play size={14} className="text-[color:var(--text-muted)]" />
+                          <h3 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Signal Injection</h3>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={fireFromModal}
+                          disabled={isFiring}
+                          className="btn-primary h-8 px-4 text-[10px] font-bold uppercase tracking-widest gap-2 shadow-sm"
+                        >
+                          {isFiring ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} fill="currentColor" />}
+                          Fire Signal
+                        </button>
+                      </div>
+                      <div className="p-4 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 space-y-2">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Input Payload (JSON)</label>
+                        <textarea
+                          value={invokePayloadText}
+                          onChange={(event) => setInvokePayloadText(event.target.value)}
+                          className="input-field min-h-[120px] resize-none py-2.5 font-mono text-[11px] leading-relaxed"
+                        />
+                      </div>
+                    </section>
+
+                    {/* Telemetry Logs */}
+                    <section className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <History size={14} className="text-[color:var(--text-muted)]" />
+                          <h3 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Execution Telemetry</h3>
+                        </div>
+                        {modal.triggerId && (
+                          <button
+                            type="button"
+                            onClick={() => void loadModalLogs(modal.triggerId as string, true)}
+                            className="text-[9px] font-bold uppercase tracking-widest flex items-center gap-1.5 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
+                          >
+                            <RefreshCw size={12} className={modalLogsLoading ? 'animate-spin' : ''} />
+                            Refresh
+                          </button>
                         )}
                       </div>
-                    ) : (
-                      <textarea 
-                        className="input-field min-h-[140px] py-3 resize-none font-mono text-[11px]"
-                        placeholder="Raw Action JSON..."
-                        value={modal.actionConfigText}
-                        onChange={(e) => setModal(prev => ({ ...prev, actionConfigText: e.target.value }))}
-                      />
-                    )}
+                      <div className="p-4 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 h-[200px] flex flex-col">
+                        <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar">
+                          {modalLogsLoading && modalLogs.length === 0 ? (
+                            <div className="flex items-center justify-center h-full gap-2 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                              <Loader2 size={16} className="animate-spin" />
+                              Synchronizing...
+                            </div>
+                          ) : modalLogs.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center h-full opacity-30 gap-3">
+                              <Activity size={32} strokeWidth={1} />
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-center">No telemetry data available</p>
+                            </div>
+                          ) : (
+                            modalLogs.map((log) => (
+                              <div key={log.id} className="group p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] transition-all">
+                                <div className="flex items-center justify-between mb-2">
+                                  <StatusChip label={log.status} tone={statusTone(log.status)} className="scale-90 origin-left" />
+                                  <span className="font-mono text-[9px] font-bold text-[color:var(--text-muted)] group-hover:text-[color:var(--text-secondary)] transition-colors">{formatCompactDate(log.fired_at)}</span>
+                                </div>
+                                {log.error_message ? (
+                                  <p className="text-[11px] text-rose-500 font-medium leading-relaxed">{log.error_message}</p>
+                                ) : (
+                                  <p className="text-[11px] text-[color:var(--text-secondary)] leading-relaxed line-clamp-2 italic">
+                                    {log.output_summary || 'No output summary provided.'}
+                                  </p>
+                                )}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                        {!modalLogsLoading && modal.triggerId && modalLogs.length >= 10 && (
+                          <button
+                            type="button"
+                            onClick={() => void loadModalLogs(modal.triggerId as string, false)}
+                            className="mt-4 btn-secondary h-8 px-4 text-[10px] font-bold uppercase tracking-widest gap-2"
+                          >
+                            <History size={12} />
+                            Load Older Telemetry
+                          </button>
+                        )}
+                      </div>
+                    </section>
                   </div>
-                </div>
+                )}
               </div>
 
-              <div className="p-6 bg-[color:var(--surface-1)] border-t border-[color:var(--border-subtle)] flex items-center justify-end gap-3">
-                <button type="button" onClick={() => setModal(modalDefault)} className="btn-secondary h-11 px-6">Cancel</button>
-                <button type="submit" className="btn-primary h-11 px-8 gap-2">
-                  <CheckCircle2 size={18} />
-                  {modal.mode === 'create' ? 'Establish Automation' : 'Update Configuration'}
-                </button>
+              {/* Modal Footer */}
+              <div className="flex items-center justify-between border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-5 py-3">
+                <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">
+                  {modal.mode === 'create' ? 'Ready for deployment' : `Node ID: ${modal.triggerId?.slice(0, 12)}...`}
+                </div>
+                <div className="flex items-center gap-3">
+                  <button type="button" onClick={closeModal} className="btn-secondary h-10 px-5 text-[11px] font-bold uppercase tracking-widest">
+                    Decline
+                  </button>
+                  <button type="submit" disabled={savingModal} className="btn-primary h-10 px-6 text-[11px] font-bold uppercase tracking-widest gap-2 shadow-lg shadow-black/5">
+                    {savingModal ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
+                    {modal.mode === 'create' ? 'Initialize Automation' : 'Commit Changes'}
+                  </button>
+                </div>
               </div>
             </form>
           </Panel>
