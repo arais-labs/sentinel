@@ -32,6 +32,7 @@ from app.services.memory import (
     MemoryService,
     ParentMemoryNotFoundError,
 )
+from app.services.memory.tree import is_descendant
 from app.services.memory.search import MemorySearchService
 from app.services.session_runtime import (
     finalize_detached_runtime_job,
@@ -122,6 +123,7 @@ def build_default_registry(
             _memory_store_tool(session_factory=session_factory, embedding_service=embedding_service)
         )
         registry.register(_memory_roots_tool(session_factory=session_factory))
+        registry.register(_memory_tree_tool(session_factory=session_factory))
         registry.register(_memory_get_node_tool(session_factory=session_factory))
         registry.register(_memory_list_children_tool(session_factory=session_factory))
         registry.register(
@@ -129,7 +131,9 @@ def build_default_registry(
                 session_factory=session_factory, embedding_service=embedding_service
             )
         )
+        registry.register(_memory_move_tool(session_factory=session_factory))
         registry.register(_memory_touch_tool(session_factory=session_factory))
+        registry.register(_memory_delete_tool(session_factory=session_factory))
         registry.register(trigger_create_tool(session_factory=session_factory))
         registry.register(trigger_list_tool(session_factory=session_factory))
         registry.register(trigger_update_tool(session_factory=session_factory))
@@ -1468,6 +1472,135 @@ def _memory_roots_tool(
     )
 
 
+def _memory_tree_tool(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        category = payload.get("category")
+        if category is not None:
+            if not isinstance(category, str) or category not in _ALLOWED_MEMORY_CATEGORIES:
+                raise ToolValidationError(
+                    "Field 'category' must be one of: core, preference, project, correction"
+                )
+
+        root_id_raw = payload.get("root_id")
+        root_id: UUID | None = None
+        if root_id_raw is not None:
+            if not isinstance(root_id_raw, str) or not root_id_raw.strip():
+                raise ToolValidationError("Field 'root_id' must be a UUID string")
+            try:
+                root_id = UUID(root_id_raw.strip())
+            except ValueError as exc:
+                raise ToolValidationError("Field 'root_id' must be a valid UUID string") from exc
+
+        max_depth = payload.get("max_depth", 5)
+        if (
+            not isinstance(max_depth, int)
+            or isinstance(max_depth, bool)
+            or max_depth < 0
+            or max_depth > 20
+        ):
+            raise ToolValidationError("Field 'max_depth' must be an integer between 0 and 20")
+
+        include_content = payload.get("include_content", False)
+        if not isinstance(include_content, bool):
+            raise ToolValidationError("Field 'include_content' must be a boolean")
+
+        memory_service = MemoryService(MemoryRepository())
+        async with session_factory() as db:
+            all_items = await MemoryRepository().list_all(db)
+            if category is not None and root_id is None:
+                all_items = [item for item in all_items if item.category == category]
+            by_id = {item.id: item for item in all_items}
+            children_by_parent: dict[UUID | None, list[Memory]] = {}
+            for item in all_items:
+                children_by_parent.setdefault(item.parent_id, []).append(item)
+            for children in children_by_parent.values():
+                children.sort(
+                    key=lambda item: (
+                        item.created_at or datetime.min.replace(tzinfo=UTC),
+                        item.id,
+                    ),
+                    reverse=True,
+                )
+
+            if root_id is not None:
+                root = by_id.get(root_id)
+                if root is None:
+                    raise ToolValidationError("root_id references unknown memory node")
+                roots = [root]
+            else:
+                roots = await memory_service.list_root_memories(db, category=category)
+
+        visible_nodes = 0
+        truncated = False
+
+        def _node_to_tree(node: Memory, depth: int) -> dict[str, Any]:
+            nonlocal visible_nodes, truncated
+            visible_nodes += 1
+            direct_children = children_by_parent.get(node.id, [])
+            has_more_children = depth >= max_depth and bool(direct_children)
+            if has_more_children:
+                truncated = True
+
+            payload_node: dict[str, Any] = {
+                "id": str(node.id),
+                "parent_id": str(node.parent_id) if node.parent_id else None,
+                "title": node.title,
+                "summary": node.summary,
+                "category": node.category,
+                "importance": int(node.importance or 0),
+                "pinned": bool(node.pinned),
+                "depth": depth,
+                "child_count": len(direct_children),
+                "has_more_children": has_more_children,
+                "children": [],
+            }
+            if include_content:
+                payload_node["content"] = node.content
+
+            if depth < max_depth and direct_children:
+                payload_node["children"] = [
+                    _node_to_tree(child, depth + 1)
+                    for child in direct_children
+                ]
+
+            return payload_node
+
+        tree_roots = [_node_to_tree(root, 0) for root in roots]
+        return {
+            "roots": tree_roots,
+            "total_roots": len(tree_roots),
+            "visible_nodes": visible_nodes,
+            "max_depth": max_depth,
+            "truncated": truncated,
+        }
+
+    return ToolDefinition(
+        name="memory_tree",
+        description=(
+            "Return memories as a nested tree (roots with recursive children). "
+            "Supports optional root_id subtree selection and depth limiting."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["core", "preference", "project", "correction"],
+                },
+                "root_id": {"type": "string"},
+                "max_depth": {"type": "integer"},
+                "include_content": {"type": "boolean"},
+            },
+        },
+        execute=_execute,
+    )
+
+
 def _memory_get_node_tool(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -1727,6 +1860,177 @@ def _memory_touch_tool(
     return ToolDefinition(
         name="memory_touch",
         description="Mark a memory node as recently accessed.",
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["id"],
+            "properties": {"id": {"type": "string"}},
+        },
+        execute=_execute,
+    )
+
+
+def _memory_move_tool(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        node_ids_raw = payload.get("node_ids")
+        if not isinstance(node_ids_raw, list) or not node_ids_raw:
+            raise ToolValidationError("Field 'node_ids' must be a non-empty array of UUID strings")
+
+        node_ids: list[UUID] = []
+        seen_ids: set[UUID] = set()
+        for raw in node_ids_raw:
+            if not isinstance(raw, str) or not raw.strip():
+                raise ToolValidationError("Each node_id must be a non-empty UUID string")
+            try:
+                parsed = UUID(raw.strip())
+            except ValueError as exc:
+                raise ToolValidationError(f"Invalid node_id UUID: {raw}") from exc
+            if parsed in seen_ids:
+                continue
+            seen_ids.add(parsed)
+            node_ids.append(parsed)
+        if not node_ids:
+            raise ToolValidationError("Field 'node_ids' must contain at least one UUID")
+
+        to_root = payload.get("to_root", False)
+        if not isinstance(to_root, bool):
+            raise ToolValidationError("Field 'to_root' must be a boolean")
+
+        target_parent_id_raw = payload.get("target_parent_id")
+        target_parent_id: UUID | None = None
+        if target_parent_id_raw is not None:
+            if not isinstance(target_parent_id_raw, str) or not target_parent_id_raw.strip():
+                raise ToolValidationError("Field 'target_parent_id' must be a UUID string")
+            try:
+                target_parent_id = UUID(target_parent_id_raw.strip())
+            except ValueError as exc:
+                raise ToolValidationError("Field 'target_parent_id' must be a valid UUID string") from exc
+
+        if to_root and target_parent_id is not None:
+            raise ToolValidationError("Provide either to_root=true or target_parent_id, not both")
+        if not to_root and target_parent_id is None:
+            raise ToolValidationError("Provide target_parent_id or set to_root=true")
+
+        async with session_factory() as db:
+            repo = MemoryRepository()
+            memories = await repo.list_all(db)
+            by_id = {item.id: item for item in memories}
+
+            missing_ids = [str(node_id) for node_id in node_ids if node_id not in by_id]
+            if missing_ids:
+                raise ToolValidationError(
+                    "Memory node(s) not found: " + ", ".join(missing_ids)
+                )
+
+            if target_parent_id is not None and target_parent_id not in by_id:
+                raise ToolValidationError("target_parent_id references unknown memory node")
+
+            # Avoid ambiguous updates: move top-level nodes only, not both parent and child together.
+            node_id_set = set(node_ids)
+            for ancestor in node_ids:
+                for maybe_child in node_ids:
+                    if ancestor == maybe_child:
+                        continue
+                    if is_descendant(
+                        target_parent_id=ancestor,
+                        node_id=maybe_child,
+                        memories=memories,
+                    ):
+                        raise ToolValidationError(
+                            "node_ids contains both an ancestor and its descendant; move only top-level nodes"
+                        )
+
+            if target_parent_id is not None:
+                for node_id in node_ids:
+                    if node_id == target_parent_id:
+                        raise ToolValidationError("A node cannot be moved under itself")
+                    if is_descendant(
+                        target_parent_id=node_id,
+                        node_id=target_parent_id,
+                        memories=memories,
+                    ):
+                        raise ToolValidationError("Cannot move a node under its own descendant")
+                    if target_parent_id in node_id_set:
+                        raise ToolValidationError(
+                            "target_parent_id cannot be one of the moved node_ids"
+                        )
+
+            for node_id in node_ids:
+                node = by_id[node_id]
+                node.parent_id = None if to_root else target_parent_id
+                node.updated_at = datetime.now(UTC)
+                db.add(node)
+            await db.commit()
+
+        return {
+            "moved_node_ids": [str(node_id) for node_id in node_ids],
+            "target_parent_id": None if to_root else str(target_parent_id),
+            "to_root": to_root,
+            "moved_count": len(node_ids),
+        }
+
+    return ToolDefinition(
+        name="memory_move",
+        description=(
+            "Move one or more memory nodes (and their full subtrees) to a new parent or to root. "
+            "Use for fast tree reorganization."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["node_ids"],
+            "properties": {
+                "node_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Node UUIDs to move. Pass top-level nodes only.",
+                },
+                "target_parent_id": {
+                    "type": "string",
+                    "description": "Destination parent UUID. Omit when moving to root.",
+                },
+                "to_root": {
+                    "type": "boolean",
+                    "description": "Set true to move selected nodes to root (parent_id=null).",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _memory_delete_tool(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        node_id_raw = payload.get("id")
+        if not isinstance(node_id_raw, str) or not node_id_raw.strip():
+            raise ToolValidationError("Field 'id' must be a non-empty UUID string")
+        try:
+            node_id = UUID(node_id_raw.strip())
+        except ValueError as exc:
+            raise ToolValidationError("Field 'id' must be a valid UUID string") from exc
+        memory_service = MemoryService(MemoryRepository())
+        try:
+            async with session_factory() as db:
+                await memory_service.delete_memory(db, node_id)
+        except Exception as exc:  # noqa: BLE001
+            _raise_memory_tool_validation_error(exc, not_found_detail="Memory node not found")
+            raise
+        return {
+            "id": str(node_id),
+            "deleted": True,
+        }
+
+    return ToolDefinition(
+        name="memory_delete",
+        description="Delete a memory node and all of its descendants.",
         risk_level="low",
         parameters_schema={
             "type": "object",
