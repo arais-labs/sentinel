@@ -296,7 +296,7 @@ def test_git_exec_rejects_gh_api_unsupported_method():
     fake_db.add(session)
     tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
 
-    with pytest.raises(ToolValidationError, match="GET and POST"):
+    with pytest.raises(ToolValidationError, match="GET, POST, and PUT"):
         _run(
             tool.execute(
                 {
@@ -381,6 +381,81 @@ def test_git_exec_supports_gh_api_post_with_approval(monkeypatch):
     assert "ghw_write_token_456" in captured["redactions"]
 
 
+def test_git_exec_supports_gh_api_put_with_approval(monkeypatch):
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="gh-api-put")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="github-main",
+            host="github.com",
+            scope_pattern="exampleco/*",
+            author_name="Bot",
+            author_email="bot@arais.ai",
+            token_read="ghr_read_token_123",
+            token_write="ghw_write_token_456",
+        )
+    )
+    session_factory = _SessionFactory(fake_db)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_subprocess(*, args, run_dir, env, timeout_seconds, redactions=None):
+        captured["args"] = args
+        captured["env"] = env
+        captured["timeout_seconds"] = timeout_seconds
+        captured["redactions"] = redactions or []
+        return {
+            "ok": True,
+            "returncode": 0,
+            "timed_out": False,
+            "stdout": '{"merged": true}',
+            "stderr": "",
+            "cwd": str(run_dir),
+            "command": " ".join(args),
+        }
+
+    async def _fake_create_push_approval(**kwargs):
+        class _Approval:
+            def __init__(self, approval_id):
+                self.id = approval_id
+
+        captured["approval_kwargs"] = kwargs
+        return _Approval(session.id)
+
+    async def _fake_wait_for_push_approval(**kwargs):
+        class _Decision:
+            status = "approved"
+            decision_by = "admin"
+            decision_note = "ok"
+
+        captured["wait_kwargs"] = kwargs
+        return _Decision()
+
+    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_exec_module, "_create_push_approval", _fake_create_push_approval)
+    monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
+
+    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    result = _run_via_executor(
+        tool,
+        {
+            "session_id": str(session.id),
+            "command": "gh api -X PUT /repos/exampleco/exampleco-gitops/pulls/35/merge -f merge_method=merge",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["network_mode"] == "write"
+    assert result["approval"]["status"] == "approved"
+    assert captured["args"][0:4] == ["gh", "api", "-X", "PUT"]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["GH_TOKEN"] == "ghw_write_token_456"
+    assert env["GITHUB_TOKEN"] == "ghw_write_token_456"
+    assert "ghw_write_token_456" in captured["redactions"]
+
+
 def test_git_exec_supports_gh_pr_create_with_approval(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-pr-create")
@@ -452,6 +527,84 @@ def test_git_exec_supports_gh_pr_create_with_approval(monkeypatch):
     assert result["network_mode"] == "write"
     assert result["approval"]["status"] == "approved"
     assert captured["args"][0:3] == ["gh", "pr", "create"]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["GH_TOKEN"] == "ghw_write_token_456"
+    assert env["GH_PROMPT_DISABLED"] == "1"
+    assert "ghw_write_token_456" in captured["redactions"]
+
+
+def test_git_exec_supports_gh_pr_merge_with_approval(monkeypatch):
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="gh-pr-merge")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="github-main",
+            host="github.com",
+            scope_pattern="exampleco/*",
+            author_name="Bot",
+            author_email="bot@arais.ai",
+            token_read="ghr_read_token_123",
+            token_write="ghw_write_token_456",
+        )
+    )
+    session_factory = _SessionFactory(fake_db)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_subprocess(*, args, run_dir, env, timeout_seconds, redactions=None):
+        captured["args"] = args
+        captured["env"] = env
+        captured["timeout_seconds"] = timeout_seconds
+        captured["redactions"] = redactions or []
+        return {
+            "ok": True,
+            "returncode": 0,
+            "timed_out": False,
+            "stdout": "",
+            "stderr": "",
+            "cwd": str(run_dir),
+            "command": " ".join(args),
+        }
+
+    async def _fake_create_push_approval(**kwargs):
+        class _Approval:
+            def __init__(self, approval_id):
+                self.id = approval_id
+
+        captured["approval_kwargs"] = kwargs
+        return _Approval(session.id)
+
+    async def _fake_wait_for_push_approval(**kwargs):
+        class _Decision:
+            status = "approved"
+            decision_by = "admin"
+            decision_note = "ok"
+
+        captured["wait_kwargs"] = kwargs
+        return _Decision()
+
+    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_exec_module, "_create_push_approval", _fake_create_push_approval)
+    monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
+
+    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    result = _run_via_executor(
+        tool,
+        {
+            "session_id": str(session.id),
+            "command": (
+                "gh pr merge 35 --repo exampleco/exampleco-gitops "
+                "--merge --delete-branch"
+            ),
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["network_mode"] == "write"
+    assert result["approval"]["status"] == "approved"
+    assert captured["args"][0:3] == ["gh", "pr", "merge"]
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["GH_TOKEN"] == "ghw_write_token_456"
