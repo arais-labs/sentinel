@@ -14,6 +14,7 @@ from app.middleware.auth import TokenPayload, require_auth
 from app.models import Trigger, TriggerLog
 from app.schemas.triggers import (
     CreateTriggerRequest,
+    FireTriggerResponse,
     FireTriggerRequest,
     TriggerListResponse,
     TriggerLogListResponse,
@@ -21,7 +22,7 @@ from app.schemas.triggers import (
     TriggerResponse,
     UpdateTriggerRequest,
 )
-from app.services.trigger_scheduler import compute_next_fire_at
+from app.services.trigger_scheduler import TriggerScheduler, compute_next_fire_at
 from app.services.triggers.routing import resolve_agent_message_route
 
 logger = logging.getLogger(__name__)
@@ -164,28 +165,38 @@ async def fire_trigger(
     request: Request,
     user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
-) -> TriggerLogResponse:
+) -> FireTriggerResponse:
     trigger = await _get_trigger_or_404(db, id, user.sub)
-    now = datetime.now(UTC)
-    trigger.last_fired_at = now
-    trigger.fire_count += 1
-    trigger.consecutive_errors = 0
-    trigger.last_error = None
-    if trigger.enabled:
-        try:
-            trigger.next_fire_at = compute_next_fire_at(trigger.type, trigger.config, reference_time=now)
-        except ValueError:
-            trigger.next_fire_at = None
-
-    log = TriggerLog(
+    scheduler: TriggerScheduler | None = getattr(request.app.state, "trigger_scheduler", None)
+    if scheduler is None:
+        scheduler = TriggerScheduler(
+            agent_loop=getattr(request.app.state, "agent_loop", None),
+            tool_executor=getattr(request.app.state, "tool_executor", None),
+            ws_manager=getattr(request.app.state, "ws_manager", None),
+            db_factory=None,
+        )
+    outcome = await scheduler.fire_now_nonblocking(
+        db,
         trigger_id=trigger.id,
-        fired_at=now,
-        status="fired",
         input_payload=payload.input_payload,
+        force=True,
     )
-    db.add(log)
-    await db.commit()
-    await db.refresh(log)
+    if outcome is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Trigger could not be invoked",
+        )
+    log = outcome.log
+    action = outcome.action
+    if (
+        trigger.action_type == "agent_message"
+        and log.status == "fired"
+        and action.resolved_session_id is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Trigger fired but did not resolve a target session",
+        )
 
     await log_audit(
         db,
@@ -197,7 +208,12 @@ async def fire_trigger(
         ip_address=request.client.host if request.client else None,
         request_id=getattr(request.state, "request_id", None),
     )
-    return _trigger_log_response(log)
+    return FireTriggerResponse(
+        log=_trigger_log_response(log),
+        resolved_session_id=action.resolved_session_id,
+        route_mode=action.route_mode,
+        used_fallback=action.used_fallback,
+    )
 
 
 @router.get("/{id}/logs")

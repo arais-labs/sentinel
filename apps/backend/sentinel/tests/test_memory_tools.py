@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from app.models import Memory, Message, Session
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent, TokenUsage
 from app.services.memory.search import MemorySearchResult, MemorySearchService
 from app.services.tools import ToolExecutor
+from app.services.tools.executor import ToolValidationError
 from app.services.tools.builtin import build_default_registry
 from tests.fake_db import FakeDB
 
@@ -144,6 +147,298 @@ def test_agent_loop_can_call_memory_search_tool():
     assert "Remember alpha" in tool_row.content
 
 
+def test_memory_tree_tool_returns_nested_structure():
+    memory_db = FakeDB()
+    session_factory = _SessionFactory(memory_db)
+    registry = build_default_registry(
+        memory_search_service=_StaticMemorySearch(memory_db),
+        embedding_service=_FakeEmbedding(),
+        session_factory=session_factory,
+    )
+    executor = ToolExecutor(registry)
+
+    root_a = Memory(
+        title="Root A",
+        summary="A root",
+        content="Root A content",
+        category="project",
+        metadata_json={},
+        pinned=True,
+        importance=90,
+    )
+    root_b = Memory(
+        title="Root B",
+        summary="B root",
+        content="Root B content",
+        category="project",
+        metadata_json={},
+        pinned=False,
+        importance=20,
+    )
+    memory_db.add(root_a)
+    memory_db.add(root_b)
+    child_a = Memory(
+        title="Child A",
+        summary="A child",
+        content="Child A content",
+        category="project",
+        parent_id=root_a.id,
+        metadata_json={},
+    )
+    memory_db.add(child_a)
+    grandchild_a = Memory(
+        title="Grandchild A",
+        summary="A grandchild",
+        content="Grandchild A content",
+        category="project",
+        parent_id=child_a.id,
+        metadata_json={},
+    )
+    memory_db.add(grandchild_a)
+
+    tree, _ = _run(
+        executor.execute(
+            "memory_tree",
+            {"max_depth": 5},
+            allow_high_risk=True,
+        )
+    )
+
+    assert tree["total_roots"] == 2
+    assert tree["truncated"] is False
+    assert tree["roots"][0]["id"] == str(root_a.id)
+    assert "content" not in tree["roots"][0]
+    assert tree["roots"][0]["children"][0]["id"] == str(child_a.id)
+    assert tree["roots"][0]["children"][0]["children"][0]["id"] == str(grandchild_a.id)
+
+
+def test_memory_tree_tool_respects_depth_limit_and_include_content():
+    memory_db = FakeDB()
+    session_factory = _SessionFactory(memory_db)
+    registry = build_default_registry(
+        memory_search_service=_StaticMemorySearch(memory_db),
+        embedding_service=_FakeEmbedding(),
+        session_factory=session_factory,
+    )
+    executor = ToolExecutor(registry)
+
+    root = Memory(
+        title="Root",
+        summary="Root summary",
+        content="Root content",
+        category="project",
+        metadata_json={},
+    )
+    memory_db.add(root)
+    child = Memory(
+        title="Child",
+        summary="Child summary",
+        content="Child content",
+        category="project",
+        parent_id=root.id,
+        metadata_json={},
+    )
+    memory_db.add(child)
+    grandchild = Memory(
+        title="Grandchild",
+        summary="Grandchild summary",
+        content="Grandchild content",
+        category="project",
+        parent_id=child.id,
+        metadata_json={},
+    )
+    memory_db.add(grandchild)
+
+    tree, _ = _run(
+        executor.execute(
+            "memory_tree",
+            {"root_id": str(root.id), "max_depth": 1, "include_content": True},
+            allow_high_risk=True,
+        )
+    )
+
+    assert tree["total_roots"] == 1
+    assert tree["truncated"] is True
+    root_node = tree["roots"][0]
+    assert root_node["content"] == "Root content"
+    child_node = root_node["children"][0]
+    assert child_node["has_more_children"] is True
+    assert child_node["children"] == []
+
+
+def test_memory_delete_tool_deletes_subtree():
+    memory_db = FakeDB()
+    session_factory = _SessionFactory(memory_db)
+    registry = build_default_registry(
+        memory_search_service=_StaticMemorySearch(memory_db),
+        embedding_service=_FakeEmbedding(),
+        session_factory=session_factory,
+    )
+    executor = ToolExecutor(registry)
+
+    root = Memory(
+        title="Delete root",
+        content="Root",
+        category="project",
+        metadata_json={},
+    )
+    memory_db.add(root)
+    child = Memory(
+        title="Delete child",
+        content="Child",
+        category="project",
+        parent_id=root.id,
+        metadata_json={},
+    )
+    memory_db.add(child)
+    grandchild = Memory(
+        title="Delete grandchild",
+        content="Grandchild",
+        category="project",
+        parent_id=child.id,
+        metadata_json={},
+    )
+    memory_db.add(grandchild)
+    survivor = Memory(
+        title="Keep me",
+        content="Survivor",
+        category="project",
+        metadata_json={},
+    )
+    memory_db.add(survivor)
+
+    deleted, _ = _run(
+        executor.execute(
+            "memory_delete",
+            {"id": str(root.id)},
+            allow_high_risk=True,
+        )
+    )
+    assert deleted["deleted"] is True
+    assert deleted["id"] == str(root.id)
+
+    remaining_ids = {str(item.id) for item in memory_db.storage[Memory]}
+    assert str(root.id) not in remaining_ids
+    assert str(child.id) not in remaining_ids
+    assert str(grandchild.id) not in remaining_ids
+    assert str(survivor.id) in remaining_ids
+
+
+def test_memory_delete_tool_rejects_invalid_or_unknown_id():
+    memory_db = FakeDB()
+    session_factory = _SessionFactory(memory_db)
+    registry = build_default_registry(
+        memory_search_service=_StaticMemorySearch(memory_db),
+        embedding_service=_FakeEmbedding(),
+        session_factory=session_factory,
+    )
+    executor = ToolExecutor(registry)
+
+    with pytest.raises(ToolValidationError, match="Field 'id' must be a valid UUID string"):
+        _run(
+            executor.execute(
+                "memory_delete",
+                {"id": "not-a-uuid"},
+                allow_high_risk=True,
+            )
+        )
+
+    with pytest.raises(ToolValidationError, match="Memory node not found"):
+        _run(
+            executor.execute(
+                "memory_delete",
+                {"id": "7f07395b-9e02-41cd-9952-65792509f7e4"},
+                allow_high_risk=True,
+            )
+        )
+
+
+def test_memory_move_tool_moves_subtree_to_another_root():
+    memory_db = FakeDB()
+    session_factory = _SessionFactory(memory_db)
+    registry = build_default_registry(
+        memory_search_service=_StaticMemorySearch(memory_db),
+        embedding_service=_FakeEmbedding(),
+        session_factory=session_factory,
+    )
+    executor = ToolExecutor(registry)
+
+    root_a = Memory(title="Root A", content="A", category="project", metadata_json={})
+    root_b = Memory(title="Root B", content="B", category="project", metadata_json={})
+    memory_db.add(root_a)
+    memory_db.add(root_b)
+
+    child = Memory(
+        title="Child",
+        content="child",
+        category="project",
+        parent_id=root_a.id,
+        metadata_json={},
+    )
+    memory_db.add(child)
+    grandchild = Memory(
+        title="Grandchild",
+        content="grandchild",
+        category="project",
+        parent_id=child.id,
+        metadata_json={},
+    )
+    memory_db.add(grandchild)
+
+    moved, _ = _run(
+        executor.execute(
+            "memory_move",
+            {"node_ids": [str(child.id)], "target_parent_id": str(root_b.id)},
+            allow_high_risk=True,
+        )
+    )
+
+    assert moved["moved_count"] == 1
+    assert moved["target_parent_id"] == str(root_b.id)
+    assert child.parent_id == root_b.id
+    assert grandchild.parent_id == child.id
+
+
+def test_memory_move_tool_rejects_cycle_or_conflicting_nodes():
+    memory_db = FakeDB()
+    session_factory = _SessionFactory(memory_db)
+    registry = build_default_registry(
+        memory_search_service=_StaticMemorySearch(memory_db),
+        embedding_service=_FakeEmbedding(),
+        session_factory=session_factory,
+    )
+    executor = ToolExecutor(registry)
+
+    root = Memory(title="Root", content="root", category="project", metadata_json={})
+    memory_db.add(root)
+    child = Memory(
+        title="Child",
+        content="child",
+        category="project",
+        parent_id=root.id,
+        metadata_json={},
+    )
+    memory_db.add(child)
+
+    with pytest.raises(ToolValidationError, match="own descendant"):
+        _run(
+            executor.execute(
+                "memory_move",
+                {"node_ids": [str(root.id)], "target_parent_id": str(child.id)},
+                allow_high_risk=True,
+            )
+        )
+
+    with pytest.raises(ToolValidationError, match="ancestor and its descendant"):
+        _run(
+            executor.execute(
+                "memory_move",
+                {"node_ids": [str(root.id), str(child.id)], "to_root": True},
+                allow_high_risk=True,
+            )
+        )
+
+
 def test_context_builder_injects_all_root_memories_and_auto_branches():
     db = FakeDB()
     root_a = Memory(
@@ -192,7 +487,10 @@ def test_context_builder_injects_all_root_memories_and_auto_branches():
     roots_block = next(msg for msg in system_messages if "## Non-Pinned Root Memories" in msg)
     assert str(root_b.id) in roots_block
     assert str(root_a.id) not in roots_block
-    assert "Pinned memories are already fully injected above" in roots_block
+
+    memory_policy_block = next(msg for msg in system_messages if "## Hierarchical Memory Policy" in msg)
+    assert "Pinned memories are high-priority anchors" in memory_policy_block
+    assert "ask whether the user wants memory reorganization" in memory_policy_block
 
     relevant_block = next(msg for msg in system_messages if "Potentially Relevant Memory Branches" in msg)
     assert str(child.id) in relevant_block or str(root_a.id) in relevant_block

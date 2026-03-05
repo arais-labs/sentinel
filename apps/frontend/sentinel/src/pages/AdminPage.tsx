@@ -11,7 +11,6 @@ import {
   Terminal,
   Activity,
   User,
-  ExternalLink,
   ChevronDown,
 } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
@@ -190,14 +189,9 @@ export function AdminPage() {
                 </div>
               </div>
 
-              <div className="space-y-1">
-                <span className="text-[9px] font-bold text-[color:var(--text-muted)] uppercase tracking-widest flex items-center gap-2">
-                  <ExternalLink size={10} /> ARAIOS ENDPOINT
-                </span>
-                <p className="text-xs font-mono font-bold pl-4 border-l border-[color:var(--border-subtle)] truncate">
-                  {config?.araios_url || 'FALLBACK_LOCAL'}
-                </p>
-              </div>
+              <p className="text-[10px] text-[color:var(--text-muted)]">
+                AraiOS integration URLs are managed in Settings.
+              </p>
             </div>
           </Panel>
         </div>

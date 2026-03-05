@@ -17,7 +17,9 @@ router = APIRouter()
 
 
 class CompleteOnboardingRequest(BaseModel):
-    system_prompt: str | None = None
+    agent_name: str | None = None
+    agent_role: str | None = None
+    agent_personality: str | None = None
 
 
 @router.get("/status")
@@ -27,15 +29,6 @@ async def get_status(
     onboarding_service: OnboardingService = Depends(get_onboarding_service),
 ) -> dict[str, bool]:
     return {"completed": await onboarding_service.is_completed(db, user_id=user.sub)}
-
-
-@router.get("/defaults")
-async def get_onboarding_defaults(
-    _: TokenPayload = Depends(require_auth),
-    onboarding_service: OnboardingService = Depends(get_onboarding_service),
-) -> dict[str, str | None]:
-    defaults = onboarding_service.get_defaults()
-    return {"araios_runtime_url": defaults.araios_runtime_url}
 
 
 @router.post("/complete")
@@ -50,7 +43,9 @@ async def complete_onboarding(
     await onboarding_service.complete(
         db,
         user_id=user.sub,
-        system_prompt=payload.system_prompt,
+        agent_name=payload.agent_name,
+        agent_role=payload.agent_role,
+        agent_personality=payload.agent_personality,
     )
     runtime_rebuild_service.rebuild_agent_loop(request.app.state)
     return {"completed": True}
