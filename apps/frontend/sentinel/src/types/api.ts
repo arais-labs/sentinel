@@ -348,6 +348,34 @@ export interface GitPushApprovalListResponse {
   total: number;
 }
 
+export interface ApprovalRecord {
+  provider: string;
+  approval_id: string;
+  status: string;
+  pending: boolean;
+  label: string;
+  session_id: string | null;
+  match_key: string | null;
+  command: string | null;
+  action: string | null;
+  description: string | null;
+  can_resolve: boolean;
+  decision_note: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  expires_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface ApprovalListResponse {
+  items: ApprovalRecord[];
+  total: number;
+}
+
+export interface ApprovalToolCallMatchResponse {
+  item: ApprovalRecord | null;
+}
+
 export interface PlaywrightLiveView {
   enabled: boolean;
   available: boolean;
