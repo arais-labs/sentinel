@@ -58,6 +58,42 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
         ),
     ),
     PolicyDefinition(
+        kind="memory_policy",
+        title="Hierarchical Memory Policy",
+        explanation="How to explain, organize, and maintain memory quality over time.",
+        enabled_when=_always,
+        content=(
+            "## Hierarchical Memory Policy\n"
+            "Treat memory like a filesystem tree:\n"
+            "- Root nodes are top-level folders.\n"
+            "- Child nodes are subfolders/files under those roots.\n"
+            "- Retrieval should traverse the tree intentionally, not flatten everything.\n\n"
+            "Memory is hierarchical:\n"
+            "- Pinned memories are high-priority anchors and are injected in full each turn.\n"
+            "- Non-pinned root memories are indexed by summary and should be expanded only when relevant.\n"
+            "- Child nodes hold deeper details under a root.\n\n"
+            "Root-as-folder strategy:\n"
+            "- Treat each root as a global context folder for a domain/project, then store detailed items as children.\n"
+            "- Group roots by domain first (for example: auth, projects, preferences) and keep each domain internally structured.\n"
+            "- Prefer a small set of stable non-pinned roots over many flat memories.\n"
+            "- Use clear folder-style titles, for example: 'ARCHIVE_PROJECT_X' with summary 'Archives for Project X'.\n"
+            "- Keep archive/history roots non-pinned by default unless they are critical every-turn anchors.\n\n"
+            "When memory tools are available, manage memory proactively and keep structure clean:\n"
+            "- Use depth 0 roots for durable anchors (identity, long-lived project truths, stable constraints).\n"
+            "- Use depth 1 for major subtopics/workstreams and depth 2+ for granular evidence/implementation details.\n"
+            "- Prefer attaching detail under an existing root via parent_id instead of creating too many new roots.\n"
+            "- Start retrieval with memory_search, then expand with memory_get_node and memory_list_children when needed.\n"
+            "- Do not re-fetch pinned memory content unless the user asks to inspect/edit it directly.\n\n"
+            "Be proactive about memory hygiene:\n"
+            "- Periodically (not every turn) ask whether the user wants memory reorganization when structure seems crowded, stale, or ambiguous.\n"
+            "- Offer a concise explanation of how pinned vs non-pinned memories work when helpful.\n"
+            "- If a tree view shows structural inconsistencies (misfiled nodes, duplicate roots, mixed domains, orphan-like layout), prompt the user to approve a cleanup.\n"
+            "- After approval, perform a proper cleanup and summarize exactly what was reorganized.\n"
+            "- You are allowed to reorganize memory structure autonomously for clarity and retrieval quality; summarize what you changed and why.\n"
+            "- If a major reorganization could change meaning or merge distinct concepts, confirm with the user first."
+        ),
+    ),
+    PolicyDefinition(
         kind="trigger_policy",
         title="Trigger Automation Policy",
         explanation="Guidance for creating and maintaining automation triggers.",
@@ -69,8 +105,11 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
             "- Recurring tasks: monitoring, reports, reminders, data collection, health checks\n"
             "- Scheduled actions: 'every morning', 'once a day', 'every hour', 'weekly'\n"
             "- Conditional checks: 'keep an eye on', 'let me know if', 'watch for'\n\n"
-            "When creating agent_message triggers, ALWAYS set action_config.session_id to your current session ID "
-            "so the trigger fires into this conversation and results appear here.\n"
+            "When creating agent_message triggers, choose routing intentionally:\n"
+            "- If the trigger depends on this conversation context, use action_config.route_mode='session' "
+            "and set action_config.target_session_id to the current session ID.\n"
+            "- If the trigger is general/context-independent, use action_config.route_mode='main'.\n"
+            "- If routing intent is unclear, ask the user before creating the trigger.\n"
             "After creating a trigger, store its trigger_id in memory so you can manage it later.\n"
             "Common cron patterns: '0 9 * * MON-FRI' (weekday 9am), '*/30 * * * *' (every 30 min), "
             "'0 */2 * * *' (every 2 hours), '0 0 * * *' (midnight daily)."
@@ -86,8 +125,8 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
             "When interacting with araiOS, use the araios_api tool.\n"
             "Start unfamiliar araiOS tasks with GET /api/agent to discover current endpoints and module capabilities.\n"
             "Use relative API paths only (for example: /api/modules, /api/modules/:name/records).\n"
-            "Do not call /platform/auth/token or /platform/auth/refresh directly; token exchange is handled by araios_api.\n"
-            "Do not provide custom Authorization headers in araios_api calls.\n"
+            # "Do not call /platform/auth/token or /platform/auth/refresh directly; token exchange is handled by araios_api.\n"
+            # "Do not provide custom Authorization headers in araios_api calls.\n"
             "If an araiOS path fails or seems unknown, refresh context with /api/agent before proceeding."
         ),
     ),

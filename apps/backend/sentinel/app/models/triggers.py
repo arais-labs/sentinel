@@ -13,7 +13,7 @@ from app.models.base import Base
 class Trigger(Base):
     __tablename__ = "triggers"
     __table_args__ = (
-        CheckConstraint("type IN ('cron', 'webhook', 'heartbeat', 'event')", name="ck_triggers_type"),
+        CheckConstraint("type IN ('cron', 'webhook', 'heartbeat')", name="ck_triggers_type"),
         CheckConstraint(
             "action_type IN ('agent_message', 'tool_call', 'http_request')",
             name="ck_triggers_action_type",

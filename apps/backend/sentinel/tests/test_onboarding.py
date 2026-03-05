@@ -99,7 +99,14 @@ def test_onboarding_prompt_when_user_inputs_everything():
         )
         complete = client.post(
             "/api/v1/onboarding/complete",
-            json={"system_prompt": expected_prompt},
+            json={
+                "agent_name": "Atlas",
+                "agent_role": (
+                    "You are a senior product-and-engineering copilot. Drive execution proactively and keep plans "
+                    "actionable."
+                ),
+                "agent_personality": "Direct, pragmatic, and highly solution-oriented.",
+            },
             headers=headers,
         )
         assert complete.status_code == 200
@@ -245,7 +252,14 @@ def test_runtime_context_assembly_when_user_inputs_everything():
 
         complete = client.post(
             "/api/v1/onboarding/complete",
-            json={"system_prompt": custom_prompt},
+            json={
+                "agent_name": "Atlas",
+                "agent_role": (
+                    "You are a senior product-and-engineering copilot. Drive execution proactively and keep plans "
+                    "actionable."
+                ),
+                "agent_personality": "Direct, pragmatic, and highly solution-oriented.",
+            },
             headers=headers,
         )
         assert complete.status_code == 200
@@ -383,10 +397,18 @@ def test_onboarding_complete_keeps_existing_agent_identity_memory():
         )
         assert create_agent.status_code == 200
 
-        custom_prompt = "You are Atlas. Be terse."
+        expected_prompt = build_system_prompt(
+            agent_name="Atlas",
+            agent_role="Be terse.",
+            agent_personality=None,
+        )
         complete = client.post(
             "/api/v1/onboarding/complete",
-            json={"system_prompt": custom_prompt},
+            json={
+                "agent_name": "Atlas",
+                "agent_role": "Be terse.",
+                "system_prompt": "INJECTED PROMPT MUST BE IGNORED",
+            },
             headers=headers,
         )
         assert complete.status_code == 200
@@ -402,7 +424,7 @@ def test_onboarding_complete_keeps_existing_agent_identity_memory():
         assert user_profile is not None
         assert "ask the user for context" in user_profile["content"]
 
-        assert settings.default_system_prompt == custom_prompt
+        assert settings.default_system_prompt == expected_prompt
     finally:
         settings.default_system_prompt = old_prompt
         app.dependency_overrides.clear()
@@ -433,7 +455,8 @@ def test_onboarding_araios_integration_configure_and_disable():
             "/api/v1/settings/araios",
             json={
                 "enabled": True,
-                "base_url": "http://araios-backend:9000",
+                "araios_frontend_url": "http://localhost:4747/araios",
+                "araios_backend_url": "http://araios-backend:9000",
                 "agent_api_key": "sk-arais-agent-test",
             },
             headers=headers,
@@ -444,12 +467,17 @@ def test_onboarding_araios_integration_configure_and_disable():
         status = client.get("/api/v1/settings/araios", headers=headers)
         assert status.status_code == 200
         assert status.json()["configured"] is True
-        assert status.json()["base_url"] == "http://araios-backend:9000"
+        assert "sentinel_frontend_url" not in status.json()
+        assert status.json()["araios_frontend_url"] == "http://localhost:4747/araios"
+        assert status.json()["araios_backend_url"] == "http://araios-backend:9000"
         assert status.json()["masked_agent_api_key"] is not None
 
         disable = client.post(
             "/api/v1/settings/araios",
-            json={"enabled": False},
+            json={
+                "enabled": False,
+                "araios_frontend_url": "http://localhost:4747/araios",
+            },
             headers=headers,
         )
         assert disable.status_code == 200
@@ -458,13 +486,15 @@ def test_onboarding_araios_integration_configure_and_disable():
         status_after = client.get("/api/v1/settings/araios", headers=headers)
         assert status_after.status_code == 200
         assert status_after.json()["configured"] is False
-        assert status_after.json()["base_url"] is None
+        assert "sentinel_frontend_url" not in status_after.json()
+        assert status_after.json()["araios_frontend_url"] == "http://localhost:4747/araios"
+        assert status_after.json()["araios_backend_url"] is None
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
 
 
-def test_onboarding_araios_integration_allows_base_url_update_without_new_key():
+def test_onboarding_araios_integration_allows_backend_url_update_without_new_key():
     fake_db = FakeDB()
 
     async def _override_get_db():
@@ -488,7 +518,8 @@ def test_onboarding_araios_integration_allows_base_url_update_without_new_key():
             "/api/v1/settings/araios",
             json={
                 "enabled": True,
-                "base_url": "http://araios-backend:9000",
+                "araios_frontend_url": "http://localhost:4747/araios",
+                "araios_backend_url": "http://araios-backend:9000",
                 "agent_api_key": "sk-arais-agent-test",
             },
             headers=headers,
@@ -499,7 +530,7 @@ def test_onboarding_araios_integration_allows_base_url_update_without_new_key():
             "/api/v1/settings/araios",
             json={
                 "enabled": True,
-                "base_url": "https://new-araios.example.com",
+                "araios_backend_url": "https://new-araios.example.com",
             },
             headers=headers,
         )
@@ -509,7 +540,9 @@ def test_onboarding_araios_integration_allows_base_url_update_without_new_key():
         status = client.get("/api/v1/settings/araios", headers=headers)
         assert status.status_code == 200
         assert status.json()["configured"] is True
-        assert status.json()["base_url"] == "https://new-araios.example.com"
+        assert "sentinel_frontend_url" not in status.json()
+        assert status.json()["araios_frontend_url"] == "http://localhost:4747/araios"
+        assert status.json()["araios_backend_url"] == "https://new-araios.example.com"
         assert status.json()["masked_agent_api_key"] is not None
     finally:
         app.dependency_overrides.clear()

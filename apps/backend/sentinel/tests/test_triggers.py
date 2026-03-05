@@ -104,7 +104,8 @@ def test_triggers_crud_fire_logs_and_webhook():
             headers=headers,
         )
         assert fired.status_code == 200
-        fire_log_id = fired.json()["id"]
+        assert fired.json()["log"]["input_payload"] == {"source": "manual"}
+        fire_log_id = fired.json()["log"]["id"]
 
         logs = client.get(f"/api/v1/triggers/{trigger_id}/logs", headers=headers)
         assert logs.status_code == 200
