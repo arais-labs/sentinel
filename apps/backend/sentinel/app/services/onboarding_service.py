@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -12,15 +11,11 @@ from app.services.onboarding_defaults import (
     DEFAULT_AGENT_IDENTITY_MEMORY,
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_USER_PROFILE_MEMORY,
+    build_system_prompt,
 )
 from app.services.system_settings import get_system_setting, upsert_system_setting
 
 ONBOARDING_COMPLETED_KEY_PREFIX = "onboarding_completed:"
-
-
-@dataclass(frozen=True, slots=True)
-class OnboardingDefaults:
-    araios_runtime_url: str | None
 
 
 class OnboardingService:
@@ -28,17 +23,21 @@ class OnboardingService:
         key = f"{ONBOARDING_COMPLETED_KEY_PREFIX}{user_id}"
         return (await get_system_setting(db, key=key)) is not None
 
-    def get_defaults(self) -> OnboardingDefaults:
-        return OnboardingDefaults(araios_runtime_url=settings.araios_url)
-
     async def complete(
         self,
         db: AsyncSession,
         *,
         user_id: str,
-        system_prompt: str | None,
+        agent_name: str | None,
+        agent_role: str | None,
+        agent_personality: str | None,
     ) -> None:
-        prompt = self._with_default(system_prompt, DEFAULT_SYSTEM_PROMPT)
+        prompt = build_system_prompt(
+            agent_name=agent_name,
+            agent_role=agent_role,
+            agent_personality=agent_personality,
+        )
+        prompt = self._with_default(prompt, DEFAULT_SYSTEM_PROMPT)
         settings.default_system_prompt = prompt
         await upsert_system_setting(db, key="default_system_prompt", value=prompt)
         await upsert_system_setting(

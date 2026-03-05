@@ -19,7 +19,8 @@ router = APIRouter()
 
 class SetAraiOSIntegrationRequest(BaseModel):
     enabled: bool = True
-    base_url: str | None = None
+    araios_frontend_url: str | None = None
+    araios_backend_url: str | None = None
     agent_api_key: str | None = None
 
 
@@ -32,7 +33,8 @@ async def get_araios_integration(
     status = await settings_service.get_araios_integration(db)
     return {
         "configured": status.configured,
-        "base_url": status.base_url,
+        "araios_frontend_url": status.araios_frontend_url,
+        "araios_backend_url": status.araios_backend_url,
         "masked_agent_api_key": status.masked_agent_api_key,
     }
 
@@ -47,13 +49,15 @@ async def set_araios_integration(
     status = await settings_service.set_araios_integration(
         db,
         enabled=payload.enabled,
-        base_url=payload.base_url,
+        araios_frontend_url=payload.araios_frontend_url,
+        araios_backend_url=payload.araios_backend_url,
         agent_api_key=payload.agent_api_key,
     )
     return {
         "success": True,
         "configured": status.configured,
-        "base_url": status.base_url,
+        "araios_frontend_url": status.araios_frontend_url,
+        "araios_backend_url": status.araios_backend_url,
         "masked_agent_api_key": status.masked_agent_api_key,
     }
 

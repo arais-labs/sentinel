@@ -11,7 +11,6 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { APP_VERSION } from '../lib/env';
 import { api } from '../lib/api';
-import { persistAraiosSwitchUrl } from '../lib/araios-switch';
 import { useAuthStore } from '../store/auth-store';
 
 // ── types ───────────────────────────────────────────────────────────────────
@@ -33,7 +32,8 @@ interface ProvidersStatusResponse {
 
 interface AraiOSIntegrationResponse {
   configured: boolean;
-  base_url: string | null;
+  araios_frontend_url: string | null;
+  araios_backend_url: string | null;
   masked_agent_api_key: string | null;
 }
 
@@ -244,7 +244,8 @@ export function SettingsPage() {
   const [araiosStatus, setAraiosStatus] = useState<AraiOSIntegrationResponse | null>(null);
   const [loadingAraiOS, setLoadingAraiOS] = useState(true);
   const [savingAraiOS, setSavingAraiOS] = useState(false);
-  const [araiosBaseUrl, setAraiosBaseUrl] = useState('');
+  const [araiosFrontendUrl, setAraiosFrontendUrl] = useState('');
+  const [araiosBackendUrl, setAraiosBackendUrl] = useState('');
   const [araiosAgentApiKey, setAraiosAgentApiKey] = useState('');
   const [showAraiOSKey, setShowAraiOSKey] = useState(false);
 
@@ -256,8 +257,8 @@ export function SettingsPage() {
       ]);
       setProviderStatus(providers);
       setAraiosStatus(araios);
-      setAraiosBaseUrl(araios.base_url || '');
-      persistAraiosSwitchUrl(araios.base_url);
+      setAraiosFrontendUrl(araios.araios_frontend_url || '');
+      setAraiosBackendUrl(araios.araios_backend_url || '');
     } catch {
       // silent — panel will show loading state
     } finally {
@@ -315,15 +316,20 @@ export function SettingsPage() {
   }
 
   async function handleSaveAraiOS() {
-    if (!araiosBaseUrl.trim()) {
-      toast.error('AraiOS base URL is required');
+    if (!araiosFrontendUrl.trim()) {
+      toast.error('AraiOS frontend URL is required');
+      return;
+    }
+    if (!araiosBackendUrl.trim()) {
+      toast.error('AraiOS backend URL is required');
       return;
     }
     setSavingAraiOS(true);
     try {
       await api.post('/settings/araios', {
         enabled: true,
-        base_url: araiosBaseUrl.trim(),
+        araios_frontend_url: araiosFrontendUrl.trim(),
+        araios_backend_url: araiosBackendUrl.trim(),
         agent_api_key: araiosAgentApiKey.trim() || undefined,
       });
       toast.success('AraiOS integration updated');
@@ -560,11 +566,21 @@ export function SettingsPage() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Base URL</label>
+                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Frontend URL</label>
                 <input
-                  value={araiosBaseUrl}
-                  onChange={(e) => setAraiosBaseUrl(e.target.value)}
-                  placeholder="http://localhost:4747/araios"
+                  value={araiosFrontendUrl}
+                  onChange={(e) => setAraiosFrontendUrl(e.target.value)}
+                  placeholder="http://localhost:4747/araios/"
+                  className="input-field h-10 font-mono text-xs"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Backend URL</label>
+                <input
+                  value={araiosBackendUrl}
+                  onChange={(e) => setAraiosBackendUrl(e.target.value)}
+                  placeholder="http://araios-backend:9000"
                   className="input-field h-10 font-mono text-xs"
                 />
               </div>
@@ -597,7 +613,11 @@ export function SettingsPage() {
               <div className="flex items-center gap-3">
                 <button
                   onClick={handleSaveAraiOS}
-                  disabled={savingAraiOS || !araiosBaseUrl.trim()}
+                  disabled={
+                    savingAraiOS
+                    || !araiosFrontendUrl.trim()
+                    || !araiosBackendUrl.trim()
+                  }
                   className="btn-primary h-10 px-4 text-[10px] font-bold uppercase tracking-widest"
                 >
                   {savingAraiOS ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}

@@ -8,7 +8,6 @@ import {
 import { api } from '../lib/api';
 import {
   buildAgentIdentityMemoryContent,
-  buildSystemPrompt,
   buildUserProfileMemoryContent,
   resolveAgentIdentity,
   resolveUserProfile,
@@ -56,24 +55,10 @@ const STARTER_PROMPT_OPTIONS: StarterPromptOption[] = [
   },
 ];
 
-const ONBOARDING_ARAIOS_PREFILL_KEY = 'sentinel.onboarding.araios.prefill';
-
 // ── helper ───────────────────────────────────────────────────────────────────
 
 function normalizeAraisUrl(value: string): string {
   return value.trim().replace(/\/+$/, '');
-}
-
-function isLocalGatewayAraisUrl(value: string): boolean {
-  try {
-    const parsed = new URL(value);
-    const host = parsed.hostname.toLowerCase();
-    const isLoopbackHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
-    const path = parsed.pathname.replace(/\/+$/, '');
-    return isLoopbackHost && path === '/araios';
-  } catch {
-    return false;
-  }
 }
 
 // ── sub-components ───────────────────────────────────────────────────────────
@@ -405,14 +390,71 @@ function UserStep({ userName, setUserName, userContext, setUserContext }: {
   );
 }
 
-function AraisOSStep({ use, setUse, url, setUrl, token, setToken, autoFilled, configured }: {
+function AraisOSStep({
+  use,
+  setUse,
+  backendUrl,
+  setBackendUrl,
+  araiosFrontendUrl,
+  setAraiosFrontendUrl,
+  token,
+  setToken,
+  configured,
+}: {
   use: boolean | null; setUse: (v: boolean) => void;
-  url: string; setUrl: (v: string) => void;
+  backendUrl: string; setBackendUrl: (v: string) => void;
+  araiosFrontendUrl: string; setAraiosFrontendUrl: (v: string) => void;
   token: string; setToken: (v: string) => void;
-  autoFilled: boolean;
   configured: boolean;
 }) {
   const [showToken, setShowToken] = useState(false);
+  const manageCredentialsUrl = (() => {
+    const trimmed = araiosFrontendUrl.trim();
+    if (!trimmed) {
+      return '/manage/';
+    }
+    try {
+      const parsed = new URL(trimmed);
+      return `${parsed.origin}/manage/`;
+    } catch {
+      return '/manage/';
+    }
+  })();
+
+  if (configured) {
+    return (
+      <div className="flex flex-col gap-5 max-w-lg">
+        <div>
+          <h2 className="text-xl font-black tracking-tight text-[color:var(--text-primary)]">AraisOS Integration</h2>
+          <p className="text-sm text-[color:var(--text-muted)] mt-1">
+            AraiOS is already configured for this workspace by the CLI setup.
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-400">Configured</p>
+          <p className="mt-1 text-[12px] text-[color:var(--text-secondary)]">
+            Onboarding can continue without entering URLs or token again.
+          </p>
+        </div>
+
+        <div className="space-y-2 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 py-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Frontend URL</p>
+            <p className="font-mono text-[11px] text-[color:var(--text-secondary)] break-all">{araiosFrontendUrl || 'Not set'}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Backend URL</p>
+            <p className="font-mono text-[11px] text-[color:var(--text-secondary)] break-all">{backendUrl || 'Not set'}</p>
+          </div>
+        </div>
+
+        <div className="rounded-lg bg-[color:var(--surface-2)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
+          Need to rotate credentials later? Open <a href={manageCredentialsUrl} target="_blank" rel="noreferrer" className="font-mono text-[color:var(--text-primary)] underline underline-offset-2">{manageCredentialsUrl}</a> and update Sentinel from Settings.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-5 max-w-lg">
@@ -422,17 +464,6 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken, autoFilled, co
           AraisOS is a platform for creating and managing custom agent modules. Connecting it lets your agent discover, use, and register new capabilities.
         </p>
       </div>
-
-      {autoFilled && (
-        <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/25 px-4 py-3 text-[11px] text-emerald-400">
-          Auto-filled from this stack (one-time handoff). Review and continue.
-        </div>
-      )}
-      {!autoFilled && configured && (
-        <div className="rounded-lg bg-[color:var(--surface-2)] border border-[color:var(--border-subtle)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
-          AraiOS integration is already configured for this workspace. Enter a new key only if you want to rotate it.
-        </div>
-      )}
 
       <div className="grid grid-cols-2 gap-3">
         {[true, false].map(val => (
@@ -447,7 +478,7 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken, autoFilled, co
               </span>
             </div>
             <p className="text-[11px] text-[color:var(--text-muted)] leading-snug">
-              {val ? 'Set up AraisOS integration with base URL and auth token.' : 'Skip for now. You can connect later.'}
+              {val ? 'Set up AraisOS integration with frontend/backend URLs and auth token.' : 'Skip for now. You can connect later.'}
             </p>
           </button>
         ))}
@@ -456,9 +487,15 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken, autoFilled, co
       {use === true && (
         <div className="flex flex-col gap-4 animate-in fade-in duration-200">
           <div className="space-y-2">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Base URL</label>
-            <input value={url} onChange={e => setUrl(e.target.value)}
+            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Frontend URL</label>
+            <input value={araiosFrontendUrl} onChange={e => setAraiosFrontendUrl(e.target.value)}
               placeholder="http://localhost:4747/araios"
+              className="input-field h-11 font-mono text-sm" />
+          </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Backend URL</label>
+            <input value={backendUrl} onChange={e => setBackendUrl(e.target.value)}
+              placeholder="http://araios-backend:9000"
               className="input-field h-11 font-mono text-sm" />
           </div>
           <div className="space-y-2">
@@ -477,6 +514,14 @@ function AraisOSStep({ use, setUse, url, setUrl, token, setToken, autoFilled, co
               Use the long-lived <span className="font-bold text-[color:var(--text-primary)]">agent API key</span>.
               Sentinel stores it securely in your workspace and the <span className="font-mono">araios_api</span> tool handles token exchange automatically.
             </p>
+            <div className="rounded-lg bg-[color:var(--surface-2)] border border-[color:var(--border-subtle)] px-4 py-3 text-[11px] text-[color:var(--text-muted)] space-y-1.5">
+              <p>
+                First-time setup: use the agent token shown in the CLI when this instance was created.
+              </p>
+              <p>
+                If you do not have it, open <a href={araiosFrontendUrl} target="_blank" rel="noreferrer" className="font-mono text-[color:var(--text-primary)] underline underline-offset-2">{araiosFrontendUrl}</a> then manage tokens at <a href={manageCredentialsUrl} target="_blank" rel="noreferrer" className="font-mono text-[color:var(--text-primary)] underline underline-offset-2">{manageCredentialsUrl}</a>.
+              </p>
+            </div>
           </div>
           <div className="rounded-lg bg-[color:var(--surface-2)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
             After setup, ask Sentinel to call <span className="font-mono text-[color:var(--text-primary)]">araios_api</span> with path <span className="font-mono text-[color:var(--text-primary)]">/api/agent</span> to discover available modules and endpoints.
@@ -575,9 +620,9 @@ export function OnboardingPage() {
 
   // AraisOS
   const [useAraisOS, setUseAraisOS] = useState<boolean | null>(null);
-  const [araisUrl, setAraisUrl] = useState('');
+  const [araiosFrontendUrl, setAraiosFrontendUrl] = useState('');
+  const [araiosBackendUrl, setAraiosBackendUrl] = useState('');
   const [araisToken, setAraisToken] = useState('');
-  const [araisAutoFilled, setAraisAutoFilled] = useState(false);
   const [araisConfigured, setAraisConfigured] = useState(false);
 
   // Done step
@@ -594,75 +639,33 @@ export function OnboardingPage() {
 
     async function initializeAraisDefaults() {
       const origin = window.location.origin.replace(/\/$/, '');
-      const publicFallbackUrl = `${origin}/araios`;
-      let runtimeFallbackUrl = publicFallbackUrl;
-      let persistedBaseUrl = '';
+      const defaultAraiosFrontendUrl = `${origin}/araios`;
+      const defaultAraiosBackendUrl = 'http://araios-backend:9000';
+
+      let persistedAraiosFrontendUrl = '';
+      let persistedAraiosBackendUrl = '';
       let persistedConfigured = false;
 
       try {
-        const defaults = await api.get<{ araios_runtime_url?: string | null }>('/onboarding/defaults');
-        const configuredRuntimeUrl = normalizeAraisUrl(defaults.araios_runtime_url || '');
-        if (configuredRuntimeUrl) {
-          runtimeFallbackUrl = configuredRuntimeUrl;
-        }
-      } catch {
-        runtimeFallbackUrl = publicFallbackUrl;
-      }
-
-      try {
-        const integration = await api.get<{ configured?: boolean; base_url?: string | null }>('/settings/araios');
+        const integration = await api.get<{
+          configured?: boolean;
+          araios_frontend_url?: string | null;
+          araios_backend_url?: string | null;
+        }>('/settings/araios');
         persistedConfigured = !!integration.configured;
-        persistedBaseUrl = normalizeAraisUrl(integration.base_url || '');
+        persistedAraiosFrontendUrl = normalizeAraisUrl(integration.araios_frontend_url || '');
+        persistedAraiosBackendUrl = normalizeAraisUrl(integration.araios_backend_url || '');
       } catch {
         persistedConfigured = false;
-        persistedBaseUrl = '';
+        persistedAraiosFrontendUrl = '';
+        persistedAraiosBackendUrl = '';
       }
 
-      let didAutofill = false;
-      try {
-        const raw = sessionStorage.getItem(ONBOARDING_ARAIOS_PREFILL_KEY);
-        if (!raw) {
-          if (mounted) {
-            const resolved = persistedBaseUrl || runtimeFallbackUrl;
-            setAraisUrl(resolved);
-            if (persistedConfigured) {
-              setUseAraisOS(true);
-              setAraisConfigured(true);
-              setAraisAutoFilled(true);
-            }
-          }
-          return;
-        }
-
-        const parsed = JSON.parse(raw) as { base_url?: string; agent_api_key?: string };
-        const prefillBaseUrl = normalizeAraisUrl(parsed.base_url || '');
-        const agentApiKey = (parsed.agent_api_key || '').trim();
-        const resolvedBaseUrl = prefillBaseUrl
-          ? (isLocalGatewayAraisUrl(prefillBaseUrl) ? runtimeFallbackUrl : prefillBaseUrl)
-          : runtimeFallbackUrl;
-
-        if (mounted && resolvedBaseUrl) {
-          setAraisUrl(resolvedBaseUrl);
-        }
-        if (mounted && agentApiKey) {
-          setAraisToken(agentApiKey);
+      if (mounted) {
+        setAraiosFrontendUrl(persistedAraiosFrontendUrl || defaultAraiosFrontendUrl);
+        setAraiosBackendUrl(persistedAraiosBackendUrl || defaultAraiosBackendUrl);
+        if (persistedConfigured) {
           setUseAraisOS(true);
-        }
-
-        if (prefillBaseUrl || agentApiKey) {
-          didAutofill = true;
-        }
-      } catch {
-        if (mounted) {
-          setAraisUrl(runtimeFallbackUrl);
-        }
-      } finally {
-        // One-time prefill only: remove immediately after first read.
-        sessionStorage.removeItem(ONBOARDING_ARAIOS_PREFILL_KEY);
-        if (mounted && didAutofill) {
-          setAraisAutoFilled(true);
-        }
-        if (mounted && persistedConfigured) {
           setAraisConfigured(true);
         }
       }
@@ -677,9 +680,14 @@ export function OnboardingPage() {
   function canProceed(): boolean {
     const id = STEPS[step].id;
     if (id === 'araios') {
+      if (araisConfigured) return true;
       if (useAraisOS === null) return false;
       if (useAraisOS === false) return true;
-      return !!araisUrl.trim() && (!!araisToken.trim() || araisConfigured);
+      return (
+        !!araiosFrontendUrl.trim()
+        && !!araiosBackendUrl.trim()
+        && (!!araisToken.trim() || araisConfigured)
+      );
     }
     return true; // all other steps are optional content-wise
   }
@@ -736,26 +744,38 @@ export function OnboardingPage() {
 
       // 4. Persist AraiOS integration settings
       if (useAraisOS === true) {
-        await api.post('/settings/araios', {
-          enabled: true,
-          base_url: normalizeAraisUrl(araisUrl),
-          agent_api_key: araisToken.trim() || undefined,
-        });
-        items.push('AraiOS integration configured');
+        if (araisConfigured && !araisToken.trim()) {
+          items.push('AraiOS integration detected');
+        } else {
+          await api.post('/settings/araios', {
+            enabled: true,
+            araios_frontend_url: normalizeAraisUrl(araiosFrontendUrl),
+            araios_backend_url: normalizeAraisUrl(araiosBackendUrl),
+            agent_api_key: araisToken.trim() || undefined,
+          });
+          items.push('AraiOS integration configured');
+        }
         setCompletedItems([...items]);
       } else if (useAraisOS === false) {
-        await api.post('/settings/araios', { enabled: false });
+        const disablePayload: Record<string, unknown> = { enabled: false };
+        if (araiosFrontendUrl.trim()) {
+          disablePayload.araios_frontend_url = normalizeAraisUrl(araiosFrontendUrl);
+        }
+        await api.post('/settings/araios', disablePayload);
       }
 
-      // 5. Mark onboarding complete + persist system prompt
+      // 5. Mark onboarding complete; backend composes and persists system prompt
       await api.post('/onboarding/complete', {
-        system_prompt: buildSystemPrompt(identity),
+        agent_name: identity.rawName || undefined,
+        agent_role: identity.rawRole || undefined,
+        agent_personality: identity.rawPersonality || undefined,
       });
       items.push('Workspace ready');
       setCompletedItems([...items]);
 
       await new Promise(r => setTimeout(r, 600)); // brief pause so user sees the checkmarks
 
+      localStorage.setItem('sentinel-mode', 'advanced');
       navigate('/sessions', { state: { firstMessage: firstMessage.trim() || undefined } });
     } catch (err) {
       toast.error('Setup failed — please try again');
@@ -766,14 +786,14 @@ export function OnboardingPage() {
   const progress = (step / (STEPS.length - 1)) * 100;
 
   return (
-    <div className="min-h-screen w-full flex flex-col bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">
+    <div className="h-screen w-full overflow-hidden flex flex-col bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">
       {/* Top progress bar */}
       <div className="h-0.5 w-full bg-[color:var(--surface-2)]">
         <div className="h-full bg-[color:var(--accent-solid)] transition-all duration-500"
           style={{ width: `${progress}%` }} />
       </div>
 
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Sidebar */}
         <aside className="hidden md:flex flex-col justify-center px-8 py-12 border-r border-[color:var(--border-subtle)] w-64 shrink-0">
           <div className="flex items-center gap-2 mb-10">
@@ -786,9 +806,9 @@ export function OnboardingPage() {
         </aside>
 
         {/* Content */}
-        <main className="flex-1 flex flex-col min-h-0">
-          <div className="flex-1 overflow-y-auto p-8 md:p-16">
-            <div className="w-full max-w-xl mx-auto my-auto min-h-full flex flex-col justify-center animate-in fade-in duration-300" key={step}>
+        <main className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div className="flex-1 overflow-y-auto px-4 py-5 pb-28 sm:px-6 sm:py-6 md:px-12 md:py-10 md:pb-8">
+            <div className="w-full max-w-xl mx-auto flex flex-col gap-4 animate-in fade-in duration-300" key={step}>
               {step === 0 && <WelcomeStep />}
               {step === 1 && <LLMStep apiKey={apiKey} setApiKey={setApiKey} oauthToken={oauthToken} setOauthToken={setOauthToken} openaiApiKey={openaiApiKey} setOpenaiApiKey={setOpenaiApiKey} openaiOauthToken={openaiOauthToken} setOpenaiOauthToken={setOpenaiOauthToken} geminiApiKey={geminiApiKey} setGeminiApiKey={setGeminiApiKey} />}
               {step === 2 && <AgentStep name={agentName} setName={setAgentName} role={agentRole} setRole={setAgentRole} personality={agentPersonality} setPersonality={setAgentPersonality} />}
@@ -797,11 +817,12 @@ export function OnboardingPage() {
                 <AraisOSStep
                   use={useAraisOS}
                   setUse={setUseAraisOS}
-                  url={araisUrl}
-                  setUrl={setAraisUrl}
+                  backendUrl={araiosBackendUrl}
+                  setBackendUrl={setAraiosBackendUrl}
+                  araiosFrontendUrl={araiosFrontendUrl}
+                  setAraiosFrontendUrl={setAraiosFrontendUrl}
                   token={araisToken}
                   setToken={setAraisToken}
-                  autoFilled={araisAutoFilled}
                   configured={araisConfigured}
                 />
               )}
@@ -818,16 +839,16 @@ export function OnboardingPage() {
           </div>
 
           {/* Bottom nav */}
-          <div className="border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-8 py-4 flex items-center justify-between">
+          <div className="sticky bottom-0 z-10 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/95 backdrop-blur px-4 py-3 sm:px-6 md:px-8 md:py-4 flex items-center justify-between gap-3">
             <button
               onClick={() => setStep(s => Math.max(0, s - 1))}
               disabled={step === 0 || isCompleting}
-              className="btn-secondary h-10 px-5 gap-2 text-sm disabled:opacity-30"
+              className="btn-secondary h-10 px-5 gap-2 text-sm whitespace-nowrap disabled:opacity-30"
             >
               <ArrowLeft size={16} /> Back
             </button>
 
-            <div className="flex items-center gap-2">
+            <div className="hidden sm:flex items-center gap-2">
               {STEPS.map((_, i) => (
                 <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${i === step ? 'w-6 bg-[color:var(--accent-solid)]' : i < step ? 'w-1.5 bg-emerald-500' : 'w-1.5 bg-[color:var(--surface-2)]'}`} />
               ))}
@@ -837,7 +858,7 @@ export function OnboardingPage() {
               <button
                 onClick={handleFinish}
                 disabled={isCompleting}
-                className="btn-primary h-10 px-6 gap-2 text-sm"
+                className="btn-primary h-10 px-6 gap-2 text-sm whitespace-nowrap"
               >
                 {isCompleting ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} />}
                 {isCompleting ? 'Setting up…' : 'Launch Sentinel'}
@@ -846,7 +867,7 @@ export function OnboardingPage() {
               <button
                 onClick={() => setStep(s => s + 1)}
                 disabled={!canProceed()}
-                className="btn-primary h-10 px-6 gap-2 text-sm"
+                className="btn-primary h-10 px-6 gap-2 text-sm whitespace-nowrap"
               >
                 {STEPS[step].id === 'welcome' ? 'Get Started' : 'Continue'}
                 <ArrowRight size={16} />

@@ -271,6 +271,13 @@ export interface TriggerLog {
   error_message: string | null;
 }
 
+export interface FireTriggerResponse {
+  log: TriggerLog;
+  resolved_session_id: string | null;
+  route_mode: string | null;
+  used_fallback: boolean | null;
+}
+
 export interface TriggerListResponse {
   items: Trigger[];
   total: number;
@@ -357,7 +364,6 @@ export interface ConfigResponse {
   access_token_ttl_seconds: number;
   refresh_token_ttl_seconds: number;
   context_token_budget: number;
-  araios_url: string;
   jwt_secret_key: string;
 }
 
