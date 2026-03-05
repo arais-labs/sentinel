@@ -181,14 +181,21 @@ function normalizeCommand(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-function isGitPushCommand(command: string): boolean {
-  return /^git\s+push(?:\s|$)/i.test(command.trim());
+function isApprovalGatedGitExecCommand(command: string): boolean {
+  const normalized = normalizeCommand(command);
+  if (!normalized) return false;
+  if (/^git\s+push(?:\s|$)/i.test(normalized)) return true;
+  if (/^gh\s+pr\s+create(?:\s|$)/i.test(normalized)) return true;
+  if (/^gh\s+api(?:\s|$)/i.test(normalized)) {
+    return /(?:^|\s)(?:-x|--method)(?:\s+|=)post(?:\s|$)/i.test(normalized);
+  }
+  return false;
 }
 
-function gitPushCommandFromToolArgs(value: unknown): string | null {
+function approvalGatedGitExecCommandFromToolArgs(value: unknown): string | null {
   if (!isObjectRecord(value)) return null;
   const command = typeof value.command === 'string' ? value.command.trim() : '';
-  if (!command || !isGitPushCommand(command)) return null;
+  if (!command || !isApprovalGatedGitExecCommand(command)) return null;
   return command;
 }
 
@@ -203,9 +210,9 @@ function parseToolArgumentsObject(raw: string): Record<string, unknown> | null {
   }
 }
 
-function gitPushCommandFromSerializedArgs(raw: string): string | null {
+function approvalGatedGitExecCommandFromSerializedArgs(raw: string): string | null {
   const parsed = parseToolArgumentsObject(raw);
-  return parsed ? gitPushCommandFromToolArgs(parsed) : null;
+  return parsed ? approvalGatedGitExecCommandFromToolArgs(parsed) : null;
 }
 
 function pendingApprovalIdFromMetadata(metadata: Record<string, unknown>): string | null {
@@ -805,10 +812,10 @@ const MessageCard = memo(({
   const toolFailed = Boolean(isToolResult && message.metadata?.is_error);
   const pendingApproval = Boolean(
     isToolResult &&
-    message.tool_name === 'git_exec' &&
     isWaitingApproval(toolMetadata),
   );
   const pendingApprovalId = pendingApproval ? pendingApprovalIdFromMetadata(toolMetadata) : null;
+  const canResolveGitApproval = pendingApproval && message.tool_name === 'git_exec' && pendingApprovalId !== null;
   const approvalActionBusy = pendingApprovalId !== null && resolvingApprovalId === pendingApprovalId;
   const [toolExpanded, setToolExpanded] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -966,7 +973,7 @@ const MessageCard = memo(({
                           toolName={message.tool_name || 'tool_result'}
                           payloadKind="output"
                         />
-                        {pendingApproval && pendingApprovalId ? (
+                        {canResolveGitApproval && pendingApprovalId ? (
                           <div className="flex items-center gap-2 pt-1">
                             <button
                               type="button"
@@ -1215,8 +1222,9 @@ function StreamToolCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const isScreenshotCall = call.name.toLowerCase().includes('screenshot');
-  const pendingApproval = call.name === 'git_exec' && isWaitingApproval(call.metadata);
+  const pendingApproval = isWaitingApproval(call.metadata);
   const pendingApprovalId = pendingApproval ? pendingApprovalIdFromMetadata(call.metadata) : null;
+  const canResolveGitApproval = pendingApproval && call.name === 'git_exec' && pendingApprovalId !== null;
   const approvalActionBusy = pendingApprovalId !== null && resolvingApprovalId === pendingApprovalId;
 
   useEffect(() => {
@@ -1282,7 +1290,7 @@ function StreamToolCard({
                     toolName={call.name}
                     payloadKind="output"
                   />
-                  {pendingApproval && pendingApprovalId ? (
+                  {canResolveGitApproval && pendingApprovalId ? (
                     <div className="flex items-center gap-2 pt-1">
                       <button
                         type="button"
@@ -2485,7 +2493,7 @@ export function SessionsPage() {
         pending: false,
         approval_status: decision === 'approve' ? 'approved' : 'rejected',
       });
-      toast.success(decision === 'approve' ? 'Push approved' : 'Push rejected');
+      toast.success(decision === 'approve' ? 'Approval approved' : 'Approval rejected');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to resolve push approval');
     } finally {
@@ -2493,7 +2501,7 @@ export function SessionsPage() {
     }
   }, [updateStreamingCallApproval]);
 
-  async function hydrateGitPushApprovalForCall(
+  async function hydrateGitApprovalForCall(
     sessionId: string,
     callId: string,
     contentIndex: number | null,
@@ -2679,16 +2687,19 @@ export function SessionsPage() {
           const initialArguments = hasMeaningfulToolArguments(rawInitialArguments)
             ? rawInitialArguments
             : '';
-          const pushCommand = gitPushCommandFromToolArgs((event.tool_call as any)?.arguments);
-          const initialMetadata: Record<string, unknown> = pushCommand
-            ? { pending: true, git_push: true }
+          const toolName = String((event.tool_call as any)?.name ?? 'unknown');
+          const approvalCommand = toolName === 'git_exec'
+            ? approvalGatedGitExecCommandFromToolArgs((event.tool_call as any)?.arguments)
+            : null;
+          const initialMetadata: Record<string, unknown> = approvalCommand
+            ? { pending: true, approval_kind: 'git_push_approval' }
             : {};
           const call = {
             id: callId,
-            name: String((event.tool_call as any)?.name ?? 'unknown'),
+            name: toolName,
             argumentsJson: initialArguments,
-            outputJson: pushCommand
-              ? '{"status":"pending","message":"Waiting for push approval..."}'
+            outputJson: approvalCommand
+              ? '{"status":"pending","message":"Waiting for approval..."}'
               : '',
             isError: false,
             metadata: initialMetadata,
@@ -2711,9 +2722,12 @@ export function SessionsPage() {
         {
           const callId = String((event.tool_call as any)?.id ?? '');
           const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
-          const pushCommand = gitPushCommandFromToolArgs((event.tool_call as any)?.arguments);
-          if (callId && pushCommand) {
-            void hydrateGitPushApprovalForCall(sessionId, callId, contentIndex, pushCommand);
+          const toolName = String((event.tool_call as any)?.name ?? '');
+          const approvalCommand = toolName === 'git_exec'
+            ? approvalGatedGitExecCommandFromToolArgs((event.tool_call as any)?.arguments)
+            : null;
+          if (callId && approvalCommand) {
+            void hydrateGitApprovalForCall(sessionId, callId, contentIndex, approvalCommand);
           }
         }
         break;
@@ -2742,7 +2756,10 @@ export function SessionsPage() {
           const hydrationCandidates: Array<{ callId: string; contentIndex: number | null; command: string }> = [];
           const eventCallId = String((event.tool_call as any)?.id ?? '');
           const eventContentIndex = typeof event.content_index === 'number' ? event.content_index : null;
-          const eventPushCommand = gitPushCommandFromToolArgs((event.tool_call as any)?.arguments);
+          const eventToolName = String((event.tool_call as any)?.name ?? '');
+          const eventApprovalCommand = eventToolName === 'git_exec'
+            ? approvalGatedGitExecCommandFromToolArgs((event.tool_call as any)?.arguments)
+            : null;
           setStreaming((current) => {
             if (!current.activeToolCalls.length) return current;
             const nextActive = [...current.activeToolCalls];
@@ -2756,28 +2773,32 @@ export function SessionsPage() {
             if (targetIndex < 0) targetIndex = nextActive.length - 1;
             const doneCall = nextActive[targetIndex];
             nextActive.splice(targetIndex, 1);
-            const pushCommand = eventPushCommand ?? gitPushCommandFromSerializedArgs(doneCall.argumentsJson);
-            const isPendingGitPush = doneCall.name === 'git_exec' && Boolean(pushCommand);
+            const approvalCommand = eventApprovalCommand ?? (
+              doneCall.name === 'git_exec'
+                ? approvalGatedGitExecCommandFromSerializedArgs(doneCall.argumentsJson)
+                : null
+            );
+            const isPendingApproval = Boolean(approvalCommand);
             const callApprovalId = pendingApprovalIdFromMetadata(doneCall.metadata);
-            const hydratedDoneCall: StreamingToolCall = isPendingGitPush
+            const hydratedDoneCall: StreamingToolCall = isPendingApproval
               ? {
                 ...doneCall,
-                outputJson: doneCall.outputJson || '{"status":"pending","message":"Waiting for push approval..."}',
+                outputJson: doneCall.outputJson || '{"status":"pending","message":"Waiting for approval..."}',
                 metadata: {
                   ...doneCall.metadata,
                   pending: true,
-                  git_push: true,
+                  approval_kind: 'git_push_approval',
                 },
               }
               : doneCall;
             const alreadyDone = current.completedToolCalls.some(
               (item) => item.id === hydratedDoneCall.id && item.contentIndex === hydratedDoneCall.contentIndex,
             );
-            if (isPendingGitPush && !callApprovalId && pushCommand) {
+            if (isPendingApproval && !callApprovalId && approvalCommand) {
               hydrationCandidates.push({
                 callId: hydratedDoneCall.id,
                 contentIndex: hydratedDoneCall.contentIndex,
-                command: pushCommand,
+                command: approvalCommand,
               });
             }
             if (alreadyDone) {
@@ -2791,7 +2812,7 @@ export function SessionsPage() {
           });
           const pendingHydration = hydrationCandidates[0];
           if (pendingHydration) {
-            void hydrateGitPushApprovalForCall(
+            void hydrateGitApprovalForCall(
               sessionId,
               pendingHydration.callId,
               pendingHydration.contentIndex,
