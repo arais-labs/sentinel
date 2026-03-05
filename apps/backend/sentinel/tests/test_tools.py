@@ -442,7 +442,7 @@ def test_araios_api_tool_executes_with_configured_integration():
     fake_db = FakeDB()
     previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
     fake_db.add(
-        SystemSetting(key="araios_integration_base_url", value="http://araios-backend:9000")
+        SystemSetting(key="araios_backend_url", value="http://araios-backend:9000")
     )
     fake_db.add(
         SystemSetting(key="araios_integration_agent_api_key", value="sk-arais-agent-test-token")

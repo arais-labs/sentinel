@@ -19,11 +19,8 @@ class WebhookTriggerConfig(BaseModel):
     # Future: add secret_header, allowed_ips, etc.
     pass
 
-class EventTriggerConfig(BaseModel):
-    event_name: str | None = None
-
 TriggerConfig = Annotated[
-    Union[CronTriggerConfig, HeartbeatTriggerConfig, WebhookTriggerConfig, EventTriggerConfig],
+    Union[CronTriggerConfig, HeartbeatTriggerConfig, WebhookTriggerConfig],
     Field(discriminator="type_hint") # Internal helper for parsing if needed, or we map manually
 ]
 
@@ -53,7 +50,7 @@ class HttpRequestActionConfig(BaseModel):
 class CreateTriggerRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     user_id: str | None = Field(default=None, max_length=100)
-    type: Literal["cron", "webhook", "heartbeat", "event"]
+    type: Literal["cron", "webhook", "heartbeat"]
     config: dict[str, Any] = Field(default_factory=dict, description="Configuration for the trigger entry point")
     action_type: Literal["agent_message", "tool_call", "http_request"]
     action_config: dict[str, Any] = Field(default_factory=dict, description="Configuration for the execution action")
@@ -69,7 +66,7 @@ class CreateTriggerRequest(BaseModel):
 
 class UpdateTriggerRequest(BaseModel):
     name: str | None = Field(default=None, max_length=200)
-    type: Literal["cron", "webhook", "heartbeat", "event"] | None = None
+    type: Literal["cron", "webhook", "heartbeat"] | None = None
     config: dict[str, Any] | None = None
     action_type: Literal["agent_message", "tool_call", "http_request"] | None = None
     action_config: dict[str, Any] | None = None
@@ -102,6 +99,14 @@ class TriggerLogResponse(BaseModel):
     input_payload: dict[str, Any] | None = None
     output_summary: str | None = None
     error_message: str | None = None
+
+
+class FireTriggerResponse(BaseModel):
+    log: TriggerLogResponse
+    resolved_session_id: UUID | None = None
+    route_mode: str | None = None
+    used_fallback: bool | None = None
+
 
 class TriggerLogListResponse(BaseModel):
     items: list[TriggerLogResponse]

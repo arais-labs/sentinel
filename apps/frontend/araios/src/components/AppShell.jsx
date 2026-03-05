@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { Logo } from './Icons';
+import { api } from '../lib/api';
 
 // Map icon name strings (from module config) to Lucide components
 const ICON_MAP = {
@@ -30,13 +31,10 @@ const ICON_MAP = {
   GitBranch, CheckCircle, Lock, MessageCircle, MessageSquare, FileCode, Box,
 };
 
-const DEFAULT_ARAIOS_APP_URL = '/araios/';
-const DEFAULT_SENTINEL_APP_URL = '/sentinel/';
-
-function resolveAppUrl(value, fallback) {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
+function normalizeHref(value) {
+  const trimmed = typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
   if (!trimmed) {
-    return fallback;
+    return '';
   }
   if (trimmed.startsWith('/')) {
     return trimmed;
@@ -44,26 +42,13 @@ function resolveAppUrl(value, fallback) {
   try {
     const parsed = new URL(trimmed);
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      return parsed.toString();
+      return parsed.toString().replace(/\/+$/, '');
     }
   } catch {
-    // Fall through to fallback.
+    return '';
   }
-  return fallback;
+  return '';
 }
-
-const APP_SWITCH_ITEMS = [
-  {
-    id: 'araios',
-    label: 'araiOS',
-    href: resolveAppUrl(import.meta.env.APP_ARAIOS_URL, DEFAULT_ARAIOS_APP_URL),
-  },
-  {
-    id: 'sentinel',
-    label: 'Sentinel',
-    href: resolveAppUrl(import.meta.env.APP_SENTINEL_URL, DEFAULT_SENTINEL_APP_URL),
-  },
-];
 
 function NavIcon({ name, size = 18, className }) {
   const Icon = ICON_MAP[name] || Box;
@@ -123,6 +108,28 @@ export function AppShell({
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [theme, setTheme] = useState('dark');
+  const [switchLinks, setSwitchLinks] = useState({ sentinelHref: '', araiosHref: '' });
+
+  React.useEffect(() => {
+    let mounted = true;
+    const loadSwitchLinks = async () => {
+      try {
+        const payload = await api('/platform/auth/app-links');
+        if (mounted) {
+          setSwitchLinks({
+            sentinelHref: normalizeHref(payload?.sentinel_frontend_url),
+            araiosHref: normalizeHref(payload?.araios_frontend_url),
+          });
+        }
+      } catch {
+        // Keep disabled links when app-link settings are unavailable.
+      }
+    };
+    void loadSwitchLinks();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   React.useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -168,13 +175,26 @@ export function AppShell({
 
   const renderAppSwitcher = (currentApp) => (
     <div className="inline-flex items-center rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-0.5">
-      {APP_SWITCH_ITEMS.map((item) => {
+      {[
+        { id: 'araios', label: 'araiOS', href: switchLinks.araiosHref },
+        { id: 'sentinel', label: 'Sentinel', href: switchLinks.sentinelHref },
+      ].map((item) => {
         const active = item.id === currentApp;
         if (active) {
           return (
             <span
               key={item.id}
               className="inline-flex h-7 items-center rounded px-3 text-[10px] font-bold uppercase tracking-wider bg-[color:var(--surface-0)] text-[color:var(--text-primary)]"
+            >
+              {item.label}
+            </span>
+          );
+        }
+        if (!item.href) {
+          return (
+            <span
+              key={item.id}
+              className="inline-flex h-7 items-center rounded px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)] opacity-50 cursor-not-allowed"
             >
               {item.label}
             </span>

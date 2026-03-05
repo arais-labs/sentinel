@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     sentinel_auth_username: str = "admin"
     sentinel_auth_password: str = "admin"
-    araios_url: str | None = None
     dev_user_id: str = "dev-admin"
     anthropic_oauth_token: str | None = None
     anthropic_api_key: str | None = None

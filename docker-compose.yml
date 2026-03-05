@@ -46,7 +46,6 @@ services:
       REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-604800}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       AUTH_COOKIE_SAMESITE: ${AUTH_COOKIE_SAMESITE:-lax}
-      ARAIOS_URL: http://araios-backend:9000
       SSRF_ALLOW_HOSTS: araios-backend
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -74,8 +73,6 @@ services:
       args:
         VITE_BASE_PATH: /araios/
         VITE_BUILD_OUTDIR: dist
-        APP_SENTINEL_URL: ${APP_SENTINEL_URL:-/sentinel/}
-        APP_ARAIOS_URL: ${APP_ARAIOS_URL:-/araios/}
     restart: unless-stopped
 
   sentinel-frontend:
@@ -86,8 +83,6 @@ services:
         VITE_BASE_PATH: /sentinel/
         VITE_ROUTER_BASENAME: /sentinel
         VITE_SENTINEL_API_BASE_URL: /sentinel/api/v1
-        APP_SENTINEL_URL: ${APP_SENTINEL_URL:-/sentinel/}
-        APP_ARAIOS_URL: ${APP_ARAIOS_URL:-/araios/}
     restart: unless-stopped
 
   gateway:

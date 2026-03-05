@@ -465,22 +465,7 @@ class ContextBuilder:
                 )
             )
 
-        guidance = (
-            "## Hierarchical Memory Policy\n"
-            "Pinned memories are already fully injected above — do NOT call memory tools to re-fetch them.\n"
-            "Non-pinned root memories are listed below (summary only). Use memory_search or memory_get_node to retrieve their full content when relevant.\n\n"
-            "### Depth Strategy (store)\n"
-            "- Depth 0 (root): stable, high-value anchors (identity, long-lived project truths, durable constraints).\n"
-            "- Depth 1: major subtopics under a root (workstreams, key decisions, recurring patterns).\n"
-            "- Depth 2+: granular details (evidence, examples, implementation specifics, one-off observations).\n"
-            "When storing detailed information, prefer attaching it as a child via parent_id instead of creating new roots.\n\n"
-            "### Depth Strategy (retrieve)\n"
-            "- Start with memory_search for relevance.\n"
-            "- If a result may have deeper detail, automatically traverse using memory_get_node + memory_list_children.\n"
-            "- Stop traversal when confidence is high or deeper nodes stop adding relevant signal."
-        )
-
-        index_block = f"{guidance}\n\n## Non-Pinned Root Memories\n" + (
+        index_block = "## Non-Pinned Root Memories\n" + (
             "\n".join(root_lines) if root_lines else "(none)"
         )
         messages = [

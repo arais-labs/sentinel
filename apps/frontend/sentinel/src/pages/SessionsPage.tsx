@@ -42,6 +42,7 @@ import { Markdown } from '../components/ui/Markdown';
 import { StatusChip } from '../components/ui/StatusChip';
 import { WS_BASE_URL } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
+import { extractCriticalToolFields, parsePayloadJson, previewPayloadValue, topLevelPayloadFieldCount, type ToolPayloadKind } from '../lib/toolPayloadPreview';
 import { api } from '../lib/api';
 import type {
   GitPushApprovalListResponse,
@@ -143,16 +144,6 @@ function runtimeActionCommand(entry: { action: string; details: Record<string, u
   if (!entry || !entry.details || typeof entry.details !== 'object') return null;
   const command = entry.details.command;
   return typeof command === 'string' && command.trim().length > 0 ? command.trim() : null;
-}
-
-function tryParseJson(raw: string): unknown | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
 }
 
 function humanizeAgentError(raw: string): string {
@@ -334,26 +325,6 @@ function isTelegramGroupAuditMessage(message: Message): boolean {
   ) || content.includes('TG Group Response');
 }
 
-function previewPayloadValue(value: unknown, maxChars = 180): { text: string; truncated: boolean } {
-  let raw: string;
-  if (typeof value === 'string') {
-    raw = value;
-  } else if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
-    raw = String(value);
-  } else {
-    try {
-      raw = JSON.stringify(value);
-    } catch {
-      raw = String(value);
-    }
-  }
-  const normalized = raw.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= maxChars) {
-    return { text: normalized, truncated: false };
-  }
-  return { text: `${normalized.slice(0, maxChars)}…`, truncated: true };
-}
-
 function serializeToolArguments(value: unknown): string {
   if (value == null) return '';
   if (typeof value === 'string') return value;
@@ -442,40 +413,93 @@ function extractImageAttachments(metadata: Record<string, unknown> | null | unde
   return out;
 }
 
+function ToolFieldPreviewList({
+  items,
+  extraCount = 0,
+}: {
+  items: Array<{ key: string; text: string; truncated: boolean; redacted?: boolean }>;
+  extraCount?: number;
+}) {
+  return (
+    <div className="space-y-2">
+      {items.map((item) => (
+        <div key={item.key} className="rounded-lg border border-sky-500/10 bg-sky-500/5 p-2">
+          <p className="text-[9px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">{item.key}</p>
+          <p className="mt-1 font-mono text-[12px] break-words text-[color:var(--text-primary)]">{item.text || '""'}</p>
+          {item.redacted ? (
+            <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Sensitive value hidden</p>
+          ) : null}
+          {item.truncated ? (
+            <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Truncated in preview</p>
+          ) : null}
+        </div>
+      ))}
+      {extraCount > 0 ? (
+        <p className="text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">+{extraCount} more field{extraCount === 1 ? '' : 's'}</p>
+      ) : null}
+    </div>
+  );
+}
+
 function ToolPayloadView({
   raw,
   emptyLabel,
   showRawJson = true,
+  toolName,
+  payloadKind,
+  criticalOnly = false,
+  maxCriticalFields = 3,
 }: {
   raw: string;
   emptyLabel: string;
   showRawJson?: boolean;
+  toolName?: string;
+  payloadKind?: ToolPayloadKind;
+  criticalOnly?: boolean;
+  maxCriticalFields?: number;
 }) {
-  const parsed = useMemo(() => tryParseJson(raw), [raw]);
+  const parsed = useMemo(() => parsePayloadJson(raw), [raw]);
+  const criticalFields = useMemo(() => {
+    if (!toolName || !payloadKind) return [];
+    return extractCriticalToolFields({
+      toolName,
+      raw,
+      kind: payloadKind,
+      maxFields: maxCriticalFields,
+    });
+  }, [toolName, raw, payloadKind, maxCriticalFields]);
+
   if (!raw.trim()) {
     return <p className="text-sky-500/60 italic">{emptyLabel}</p>;
   }
 
+  if (criticalOnly) {
+    if (criticalFields.length > 0) {
+      const extraCount = Math.max(0, topLevelPayloadFieldCount(raw) - criticalFields.length);
+      return <ToolFieldPreviewList items={criticalFields} extraCount={extraCount} />;
+    }
+    const preview = previewPayloadValue(parsed ?? raw, 220);
+    return (
+      <ToolFieldPreviewList
+        items={[
+          {
+            key: payloadKind ?? 'payload',
+            text: preview.text || '""',
+            truncated: preview.truncated,
+          },
+        ]}
+      />
+    );
+  }
+
   if (isObjectRecord(parsed)) {
-    const entries = Object.entries(parsed);
+    const entries = Object.entries(parsed).map(([key, value]) => {
+      const preview = previewPayloadValue(value);
+      return { key, text: preview.text, truncated: preview.truncated };
+    });
     return (
       <div className="space-y-2">
-        {entries.map(([key, value]) => (
-          <div key={key} className="rounded-lg border border-sky-500/10 bg-sky-500/5 p-2">
-            <p className="text-[9px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">{key}</p>
-            {(() => {
-              const preview = previewPayloadValue(value);
-              return (
-                <>
-                  <p className="mt-1 font-mono text-[12px] break-words text-[color:var(--text-primary)]">{preview.text || '""'}</p>
-                  {preview.truncated && (
-                    <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Truncated in preview</p>
-                  )}
-                </>
-              );
-            })()}
-          </div>
-        ))}
+        <ToolFieldPreviewList items={entries} />
         {showRawJson ? (
           <details className="group">
             <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-sky-600/80 dark:text-sky-400/80">
@@ -493,12 +517,15 @@ function ToolPayloadView({
     const preview = previewPayloadValue(parsed, 260);
     return (
       <div className="space-y-2">
-        <div className="rounded-lg border border-sky-500/10 bg-sky-500/5 p-2">
-          <p className="font-mono text-[12px] break-words text-[color:var(--text-primary)]">{preview.text || '""'}</p>
-          {preview.truncated && (
-            <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Truncated in preview</p>
-          )}
-        </div>
+        <ToolFieldPreviewList
+          items={[
+            {
+              key: payloadKind ?? 'value',
+              text: preview.text || '""',
+              truncated: preview.truncated,
+            },
+          ]}
+        />
         {showRawJson ? (
           <details className="group">
             <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-sky-600/80 dark:text-sky-400/80">
@@ -522,6 +549,82 @@ function ToolPayloadView({
         <Markdown content={raw} />
       </div>
     </details>
+  );
+}
+
+function ToolPayloadCompactSummary({
+  toolName,
+  inputRaw,
+  outputRaw,
+  outputEmptyLabel,
+  outputError = false,
+  hideInput = false,
+}: {
+  toolName: string;
+  inputRaw: string;
+  outputRaw: string;
+  outputEmptyLabel: string;
+  outputError?: boolean;
+  hideInput?: boolean;
+}) {
+  const inputFields = useMemo(
+    () => extractCriticalToolFields({ toolName, raw: inputRaw, kind: 'input', maxFields: 2 }),
+    [toolName, inputRaw],
+  );
+  const outputFields = useMemo(
+    () => extractCriticalToolFields({ toolName, raw: outputRaw, kind: 'output', maxFields: 2 }),
+    [toolName, outputRaw],
+  );
+
+  const compactValue = (value: string): string => {
+    const trimmed = value.replace(/\s+/g, ' ').trim();
+    if (trimmed.length <= 56) return trimmed;
+    return `${trimmed.slice(0, 56)}…`;
+  };
+
+  const renderFieldChips = (items: Array<{ key: string; text: string; redacted?: boolean }>) => {
+    if (!items.length) {
+      return <span className="text-[10px] text-[color:var(--text-muted)] italic">none</span>;
+    }
+    return (
+      <div className="flex flex-wrap items-center gap-1.5">
+        {items.map((item) => (
+          <span
+            key={item.key}
+            className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/20 bg-sky-500/8 px-1.5 py-0.5"
+          >
+            <span className="text-[9px] font-bold uppercase tracking-wide text-sky-600 dark:text-sky-400">
+              {item.key}
+            </span>
+            <span className="font-mono text-[10px] text-[color:var(--text-primary)] break-all">
+              {item.redacted ? '[redacted]' : compactValue(item.text || '""')}
+            </span>
+          </span>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div className="mt-2 border-t border-sky-500/10 pt-2 space-y-1.5 animate-in fade-in duration-200 max-w-[620px]">
+      {!hideInput ? (
+        <div className="min-w-0 flex items-start gap-2">
+          <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] pt-0.5 shrink-0">Input</p>
+          <div className="min-w-0 flex-1">{renderFieldChips(inputFields)}</div>
+        </div>
+      ) : null}
+      <div className="min-w-0 flex items-start gap-2">
+        <div className="flex items-center gap-1.5 pt-0.5 shrink-0">
+          <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Output</p>
+          {outputError ? <span className="h-1.5 w-1.5 rounded-full bg-rose-400" title="Error output" /> : null}
+        </div>
+        <div className="min-w-0 flex-1">
+          {outputRaw.trim() ? renderFieldChips(outputFields) : (
+            <span className="text-[10px] text-[color:var(--text-muted)] italic">{outputEmptyLabel}</span>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -629,11 +732,8 @@ const SessionRow = memo(({
 ));
 SessionRow.displayName = 'SessionRow';
 
-const SourceChip = memo(({ metadata }: { metadata: Record<string, unknown> }) => {
-  const source = metadata?.source as string | undefined;
-  if (!source) return null;
-
-  if (source === 'telegram') {
+const SOURCE_CHIP_RENDERERS: Record<string, (metadata: Record<string, unknown>) => JSX.Element> = {
+  telegram: (metadata) => {
     const chatType = metadata.telegram_chat_type as string | undefined;
     const userName = metadata.telegram_user_name as string | undefined;
     const chatTitle = metadata.telegram_chat_title as string | undefined;
@@ -646,18 +746,30 @@ const SourceChip = memo(({ metadata }: { metadata: Record<string, unknown> }) =>
         {label}
       </span>
     );
-  }
-
-  if (source === 'web') {
+  },
+  web: () => (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[9px] font-bold uppercase tracking-wide">
+      <Globe size={9} />
+      Web
+    </span>
+  ),
+  trigger: (metadata) => {
+    const triggerName = typeof metadata.trigger_name === 'string' ? metadata.trigger_name.trim() : '';
     return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[9px] font-bold uppercase tracking-wide">
-        <Globe size={9} />
-        Web
+      <span className="inline-flex max-w-[260px] items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-300 text-[9px] font-bold uppercase tracking-wide">
+        <Clock3 size={9} />
+        <span className="truncate">{triggerName ? `Trigger · ${triggerName}` : 'Trigger'}</span>
       </span>
     );
-  }
+  },
+};
 
-  return null;
+const SourceChip = memo(({ metadata }: { metadata: Record<string, unknown> }) => {
+  const rawSource = metadata?.source as string | undefined;
+  const source = typeof rawSource === 'string' ? rawSource.trim().toLowerCase() : '';
+  if (!source) return null;
+  const render = SOURCE_CHIP_RENDERERS[source];
+  return render ? render(metadata) : null;
 });
 SourceChip.displayName = 'SourceChip';
 
@@ -742,7 +854,7 @@ const MessageCard = memo(({
         </div>
 
       <div
-        className={`${isToolResult ? (toolExpanded ? 'w-full max-w-[90%]' : 'w-fit') : 'max-w-[90%]'} ${isToolResult ? 'inline-flex flex-col' : ''} rounded-2xl px-4 py-1.5 text-xs shadow-sm border ${
+        className={`${isToolResult ? `${toolExpanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]'} inline-flex flex-col` : 'max-w-[90%]'} rounded-2xl px-4 py-1.5 text-xs shadow-sm border ${
           isUser
             ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent rounded-tr-none font-medium'
             : isToolResult
@@ -779,7 +891,12 @@ const MessageCard = memo(({
                   {!isScreenshotTool ? (
                     <div className="min-w-0">
                       <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Input</p>
-                      <ToolPayloadView raw={toolInputRaw} emptyLabel="No input payload." />
+                      <ToolPayloadView
+                        raw={toolInputRaw}
+                        emptyLabel="No input payload."
+                        toolName={message.tool_name || 'tool_result'}
+                        payloadKind="input"
+                      />
                     </div>
                   ) : null}
                   <div className="min-w-0">
@@ -846,6 +963,8 @@ const MessageCard = memo(({
                           raw={message.content}
                           emptyLabel="No output payload."
                           showRawJson={!isScreenshotTool}
+                          toolName={message.tool_name || 'tool_result'}
+                          payloadKind="output"
                         />
                         {pendingApproval && pendingApprovalId ? (
                           <div className="flex items-center gap-2 pt-1">
@@ -873,7 +992,16 @@ const MessageCard = memo(({
                     )}
                   </div>
                 </div>
-              ) : null}
+              ) : (
+                <ToolPayloadCompactSummary
+                  toolName={message.tool_name || 'tool_result'}
+                  inputRaw={toolInputRaw}
+                  outputRaw={message.content}
+                  outputEmptyLabel="No output payload."
+                  outputError={toolFailed}
+                  hideInput={isScreenshotTool}
+                />
+              )}
             </>
           ) : (
             <div className="space-y-2">
@@ -1085,21 +1213,17 @@ function StreamToolCard({
   onResolveGitApproval: (approvalId: string, decision: 'approve' | 'reject') => void;
   resolvingApprovalId: string | null;
 }) {
-  const [expanded, setExpanded] = useState(active);
+  const [expanded, setExpanded] = useState(false);
   const isScreenshotCall = call.name.toLowerCase().includes('screenshot');
   const pendingApproval = call.name === 'git_exec' && isWaitingApproval(call.metadata);
   const pendingApprovalId = pendingApproval ? pendingApprovalIdFromMetadata(call.metadata) : null;
   const approvalActionBusy = pendingApprovalId !== null && resolvingApprovalId === pendingApprovalId;
 
   useEffect(() => {
-    if (active) setExpanded(true);
-  }, [active]);
-
-  useEffect(() => {
-    if (call.name.toLowerCase().includes('screenshot')) {
+    if (pendingApproval) {
       setExpanded(true);
     }
-  }, [call.name]);
+  }, [pendingApproval]);
 
   return (
       <div className="flex flex-col gap-1.5 animate-in items-start w-full">
@@ -1108,7 +1232,7 @@ function StreamToolCard({
           {pendingApproval ? 'tool_call • waiting approval' : `tool_call • ${active ? 'running' : 'complete'}`}
         </span>
         </div>
-        <div className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit'} inline-flex flex-col rounded-2xl rounded-tl-none border ${pendingApproval ? 'border-rose-500/35 bg-rose-500/10' : 'border-sky-500/20 bg-sky-500/5'} px-4 py-1.5 text-[12px] shadow-sm`}>
+        <div className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]'} inline-flex flex-col rounded-2xl rounded-tl-none border ${pendingApproval ? 'border-rose-500/35 bg-rose-500/10' : 'border-sky-500/20 bg-sky-500/5'} px-4 py-1.5 text-[12px] shadow-sm`}>
           <button
             type="button"
             onClick={() => setExpanded((prev) => !prev)}
@@ -1133,7 +1257,12 @@ function StreamToolCard({
               {!isScreenshotCall ? (
                 <div className="min-w-0">
                   <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Input</p>
-                  <ToolPayloadView raw={call.argumentsJson} emptyLabel="No input payload." />
+                  <ToolPayloadView
+                    raw={call.argumentsJson}
+                    emptyLabel="No input payload."
+                    toolName={call.name}
+                    payloadKind="input"
+                  />
                 </div>
               ) : null}
               <div className="min-w-0">
@@ -1150,6 +1279,8 @@ function StreamToolCard({
                     raw={call.outputJson}
                     emptyLabel={active ? 'Running tool...' : 'No output payload.'}
                     showRawJson={!isScreenshotCall}
+                    toolName={call.name}
+                    payloadKind="output"
                   />
                   {pendingApproval && pendingApprovalId ? (
                     <div className="flex items-center gap-2 pt-1">
@@ -1176,7 +1307,16 @@ function StreamToolCard({
                 </div>
               </div>
             </div>
-          ) : null}
+          ) : (
+            <ToolPayloadCompactSummary
+              toolName={call.name}
+              inputRaw={call.argumentsJson}
+              outputRaw={call.outputJson}
+              outputEmptyLabel={active ? 'Running tool...' : 'No output payload.'}
+              outputError={call.isError}
+              hideInput={isScreenshotCall}
+            />
+          )}
         </div>
       </div>
   );
@@ -1255,7 +1395,7 @@ export function SessionsPage() {
 
   const [liveView, setLiveView] = useState<PlaywrightLiveView | null>(null);
   const [mode, setMode] = useState<'solo' | 'advanced'>(
-      () => (localStorage.getItem('sentinel-mode') as 'solo' | 'advanced') ?? 'solo',
+      () => (localStorage.getItem('sentinel-mode') as 'solo' | 'advanced') ?? 'advanced',
   );
 
   const hasActiveSubAgentTasks = tasks.some((task) => task.status === 'running' || task.status === 'pending');
@@ -1513,15 +1653,22 @@ export function SessionsPage() {
     [selectableVisibleSessionIds, selectedSessionIdSet],
   );
 
+  const markSessionRead = useCallback((sessionId: string) => {
+    setSessions((current) =>
+      current.map((s) => s.id === sessionId ? { ...s, has_unread: false } : s),
+    );
+    api.post(`/sessions/${sessionId}/read`, {}).catch(() => {/* best-effort */});
+  }, []);
+
   const onSessionClick = useCallback((id: string) => {
+    const previousId = activeSessionIdRef.current;
+    if (previousId) {
+      markSessionRead(previousId);
+    }
     setActiveSessionId(id);
     navigate(`/sessions/${id}`);
-    // Mark as read locally + server-side
-    setSessions((current) =>
-      current.map((s) => s.id === id ? { ...s, has_unread: false } : s),
-    );
-    api.post(`/sessions/${id}/read`, {}).catch(() => {/* best-effort */});
-  }, [navigate]);
+    markSessionRead(id);
+  }, [markSessionRead, navigate]);
 
   const startResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -2804,6 +2951,7 @@ export function SessionsPage() {
         } else {
           // Final done — agent turn complete, reset everything
           setStreaming((current) => ({ ...current, isThinking: false, isStreaming: false, isCompactingContext: false, agentIteration: 0, agentMaxIterations: 0 }));
+          markSessionRead(sessionId);
           void loadMessages(sessionId);
           void fetchContextUsage(sessionId);
         }

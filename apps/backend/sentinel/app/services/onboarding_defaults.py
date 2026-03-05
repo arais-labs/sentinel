@@ -60,14 +60,6 @@ def build_agent_identity_memory(
         agent_personality=agent_personality,
     )
     parts = [f"You are {name}.", f"Role: {role}"]
-    behavior = (
-        "Behavior: Be concise, factual, and execution-oriented. Take initiative and complete tasks end-to-end "
-        "when possible. Keep the user informed with clear outcomes. "
-        "Prefer delegating bounded one-off tasks to sub-agents when continuity is not required; default to permissive "
-        "sub-agent tool access unless the user requests restrictions, verify delegated results with sub-agent checks "
-        "before finalizing, and retry with a refined sub-agent objective when delegated output is insufficient."
-    )
-    parts.append(behavior)
     if personality:
         parts.append(f"Personality: {personality}")
     return "\n".join(parts)
