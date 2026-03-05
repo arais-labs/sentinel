@@ -100,10 +100,12 @@ def unresolved_tool_calls_from_history(history: list[dict[str, Any]]) -> list[di
                     continue
                 name = str(raw_call.get("name") or "unknown")
                 arguments = raw_call.get("arguments")
+                approval_hint = raw_call.get("approval_hint")
                 pending[call_id] = {
                     "id": call_id,
                     "name": name,
                     "arguments": arguments if isinstance(arguments, dict) else {},
+                    "approval_hint": approval_hint if isinstance(approval_hint, dict) else None,
                 }
                 pending_order.append(call_id)
             continue
