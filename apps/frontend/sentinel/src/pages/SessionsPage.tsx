@@ -319,6 +319,11 @@ function mergeStreamingToolArguments(current: string, delta: string): string {
   return `${current}${delta}`;
 }
 
+function isSyntheticToolCallId(id: string): boolean {
+  const normalized = id.trim().toLowerCase();
+  return normalized.startsWith('tool-');
+}
+
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -2660,9 +2665,6 @@ export function SessionsPage() {
         setStreaming((current) => {
           const callId = String((event.tool_call as any)?.id ?? `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
           const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
-          if (current.activeToolCalls.some((item) => item.id === callId && item.contentIndex === contentIndex)) {
-            return { ...current, isThinking: false };
-          }
           const rawInitialArguments = serializeToolArguments((event.tool_call as any)?.arguments);
           const initialArguments = hasMeaningfulToolArguments(rawInitialArguments)
             ? rawInitialArguments
@@ -2694,6 +2696,48 @@ export function SessionsPage() {
             complete: false,
             contentIndex,
           };
+          const existingByExactId = current.activeToolCalls.findIndex(
+            (item) => item.id === callId && item.contentIndex === contentIndex,
+          );
+          if (existingByExactId >= 0) {
+            return { ...current, isThinking: false };
+          }
+          const existingByContentIndex = contentIndex === null
+            ? -1
+            : current.activeToolCalls.findIndex((item) => item.contentIndex === contentIndex);
+          if (existingByContentIndex >= 0) {
+            const nextActive = [...current.activeToolCalls];
+            const existing = nextActive[existingByContentIndex];
+            const adoptIncomingId = isSyntheticToolCallId(existing.id) && !isSyntheticToolCallId(call.id);
+            const mergedCall: StreamingToolCall = {
+              ...existing,
+              id: adoptIncomingId ? call.id : existing.id,
+              name: existing.name === 'unknown' && call.name !== 'unknown' ? call.name : existing.name,
+              argumentsJson: hasMeaningfulToolArguments(existing.argumentsJson)
+                ? existing.argumentsJson
+                : call.argumentsJson,
+              metadata: Object.keys(existing.metadata).length > 0
+                ? existing.metadata
+                : call.metadata,
+            };
+            let nextTimeline = current.timeline;
+            const oldKey = streamingCallKey(existing);
+            const newKey = streamingCallKey(mergedCall);
+            if (oldKey !== newKey) {
+              nextTimeline = current.timeline.map((item) => (
+                item.kind === 'tool' && item.callKey === oldKey
+                  ? { kind: 'tool', key: `tool-${newKey}`, callKey: newKey }
+                  : item
+              ));
+            }
+            nextActive[existingByContentIndex] = mergedCall;
+            return {
+              ...current,
+              isThinking: false,
+              activeToolCalls: nextActive,
+              timeline: nextTimeline,
+            };
+          }
           const callKey = streamingCallKeyFromParts(callId, contentIndex);
           const hasTimelineItem = current.timeline.some(
             (item) => item.kind === 'tool' && item.callKey === callKey
@@ -2783,7 +2827,7 @@ export function SessionsPage() {
             const alreadyDone = current.completedToolCalls.some(
               (item) => item.id === hydratedDoneCall.id && item.contentIndex === hydratedDoneCall.contentIndex,
             );
-            if (isPendingApproval && !callApprovalRef) {
+            if (!callApprovalRef && Boolean(hydratedDoneCall.id)) {
               hydrationCandidates.push({
                 callId: hydratedDoneCall.id,
                 contentIndex: hydratedDoneCall.contentIndex,
