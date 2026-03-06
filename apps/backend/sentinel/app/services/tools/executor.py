@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import inspect
 import time
 from typing import Any
 
-from app.services.tools.registry import ToolDefinition, ToolRegistry
+from app.services.tools.registry import (
+    ToolApprovalDecision,
+    ToolApprovalEvaluation,
+    ToolApprovalGate,
+    ToolApprovalMode,
+    ToolApprovalOutcomeStatus,
+    ToolApprovalRequirement,
+    ToolDefinition,
+    ToolRegistry,
+)
 
 
 class ToolExecutionError(RuntimeError):
@@ -34,6 +44,9 @@ class ToolExecutor:
             raise PermissionError("High-risk tool execution disabled for this run context")
 
         self._validate_payload(tool, payload)
+        approved_metadata = await self._resolve_tool_approval(tool, payload)
+        if approved_metadata:
+            payload["__approval_gate"] = approved_metadata
 
         started = time.perf_counter()
         try:
@@ -42,8 +55,102 @@ class ToolExecutor:
             raise
         except Exception as exc:  # pragma: no cover - defensive wrapper
             raise ToolExecutionError(str(exc)) from exc
+        finally:
+            payload.pop("__approval_gate", None)
+        if approved_metadata and isinstance(result, dict) and not isinstance(result.get("approval"), dict):
+            result["approval"] = approved_metadata
         duration_ms = int((time.perf_counter() - started) * 1000)
         return result, max(duration_ms, 0)
+
+    async def _resolve_tool_approval(
+        self,
+        tool: ToolDefinition,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        gate = tool.approval_gate
+        if gate is None or gate.mode == ToolApprovalMode.NONE:
+            return None
+
+        evaluation = await self._evaluate_gate(tool.name, gate, payload)
+        if evaluation.decision == ToolApprovalDecision.ALLOW:
+            return None
+        if evaluation.decision == ToolApprovalDecision.DENY:
+            message = (evaluation.reason or "").strip() or "Execution denied by approval policy."
+            raise ToolExecutionError(message)
+
+        requirement = evaluation.requirement
+        if requirement is None:
+            raise ToolExecutionError("Approval gate requires a request descriptor before execution.")
+        if requirement.timeout_seconds < 1:
+            raise ToolExecutionError("Approval timeout must be a positive integer.")
+        if gate.waiter is None:
+            raise ToolExecutionError(f"Tool '{tool.name}' requires approval but no waiter is configured.")
+
+        outcome = await gate.waiter(tool.name, payload, requirement)
+        approval_payload = dict(outcome.approval)
+        if not isinstance(approval_payload.get("provider"), str):
+            approval_payload["provider"] = "tool"
+        if not isinstance(approval_payload.get("status"), str):
+            approval_payload["status"] = outcome.status.value
+        if "pending" not in approval_payload:
+            approval_payload["pending"] = False
+        if "can_resolve" not in approval_payload:
+            approval_payload["can_resolve"] = False
+        if outcome.status != ToolApprovalOutcomeStatus.APPROVED:
+            message = (outcome.message or "").strip() or f"Approval {outcome.status.value}."
+            raise ToolExecutionError(message)
+        return approval_payload
+
+    async def _evaluate_gate(
+        self,
+        tool_name: str,
+        gate: ToolApprovalGate,
+        payload: dict[str, Any],
+    ) -> ToolApprovalEvaluation:
+        if gate.mode == ToolApprovalMode.REQUIRED:
+            evaluated = await self._run_gate_evaluator(tool_name, gate, payload)
+            if evaluated is not None:
+                if evaluated.decision == ToolApprovalDecision.DENY:
+                    return evaluated
+                if evaluated.decision == ToolApprovalDecision.REQUIRE and evaluated.requirement is not None:
+                    return evaluated
+            return ToolApprovalEvaluation.require(
+                gate.required
+                if gate.required is not None
+                else ToolApprovalRequirement(
+                    action=f"{tool_name}.execute",
+                    description=f"{tool_name} execution requires approval.",
+                )
+            )
+
+        if gate.mode == ToolApprovalMode.CONDITIONAL:
+            if gate.evaluator is None:
+                raise ToolExecutionError(f"Tool '{tool_name}' uses conditional approval without evaluator.")
+            evaluated = await self._run_gate_evaluator(tool_name, gate, payload)
+            if evaluated is None:
+                raise ToolExecutionError(
+                    f"Tool '{tool_name}' approval evaluator returned invalid response type."
+                )
+            return evaluated
+
+        return ToolApprovalEvaluation.allow()
+
+    async def _run_gate_evaluator(
+        self,
+        tool_name: str,
+        gate: ToolApprovalGate,
+        payload: dict[str, Any],
+    ) -> ToolApprovalEvaluation | None:
+        if gate.evaluator is None:
+            return None
+        evaluated = gate.evaluator(payload)
+        if inspect.isawaitable(evaluated):
+            evaluated = await evaluated
+        if not isinstance(evaluated, ToolApprovalEvaluation):
+            raise ToolExecutionError(
+                f"Tool '{tool_name}' approval evaluator returned invalid response type."
+            )
+        return evaluated
 
     def _validate_payload(self, tool: ToolDefinition, payload: dict[str, Any]) -> None:
         schema = tool.parameters_schema or {}

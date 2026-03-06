@@ -94,6 +94,8 @@ class MemoryResponse(BaseModel):
     parent_id: UUID | None = None
     importance: int = 0
     pinned: bool = False
+    is_system: bool = False
+    system_key: str | None = None
     metadata: dict = Field(default_factory=dict)
     session_id: UUID | None = None
     score: float | None = None
@@ -123,3 +125,38 @@ class MemorySearchRequest(BaseModel):
     category: Literal["core", "preference", "project", "correction"] | None = None
     root_id: UUID | None = None
     limit: int = Field(default=20, ge=1, le=200)
+
+
+class MemoryBackupNode(BaseModel):
+    external_id: str = Field(min_length=1, max_length=200)
+    parent_external_id: str | None = Field(default=None, max_length=200)
+    content: str = Field(min_length=1, max_length=50_000)
+    title: str | None = Field(default=None, max_length=200)
+    summary: str | None = Field(default=None, max_length=10_000)
+    category: Literal["core", "preference", "project", "correction"]
+    importance: int = Field(default=0, ge=0, le=100)
+    pinned: bool = False
+    is_system: bool = False
+    system_key: str | None = Field(default=None, max_length=100)
+    metadata: dict = Field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class MemoryBackupDocument(BaseModel):
+    schema_version: Literal["memory_backup_v1"] = "memory_backup_v1"
+    exported_at: datetime
+    nodes: list[MemoryBackupNode] = Field(default_factory=list)
+
+
+class MemoryBackupImportRequest(BaseModel):
+    document: MemoryBackupDocument
+    mode: Literal["merge", "replace_non_system", "replace_all"] = "merge"
+
+
+class MemoryBackupImportResponse(BaseModel):
+    total_in_backup: int
+    created: int
+    updated: int
+    deleted: int
+    skipped: int

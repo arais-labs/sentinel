@@ -30,6 +30,7 @@ from app.services import session_bindings
 from app.services.llm.ids import TierName
 from app.services.messages import telegram_ingress_metadata
 from app.services.system_settings import delete_system_setting, upsert_system_setting
+from app.services.tools.executor import ToolExecutionError, ToolValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -1280,7 +1281,7 @@ def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         bridge: TelegramBridge | None = getattr(app_state_ref, "telegram_bridge", None)
         if bridge is None or not bridge.is_running:
-            return {"success": False, "error": "Telegram bridge is not running"}
+            raise ToolExecutionError("Telegram bridge is not running")
 
         chat_id = payload.get("chat_id")
         message = payload.get("message")
@@ -1294,7 +1295,7 @@ def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
                 owner_chat_id = None
 
         if not isinstance(message, str) or not message.strip():
-            return {"success": False, "error": "message must be a non-empty string"}
+            raise ToolValidationError("Field 'message' must be a non-empty string")
 
         # If no chat_id, try to find a connected chat
         connected = bridge.connected_chats
@@ -1302,39 +1303,34 @@ def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
             if len(connected) == 1:
                 chat_id = next(iter(connected.keys()))
             elif len(connected) == 0:
-                return {
-                    "success": False,
-                    "error": "No Telegram chats connected. A user must send /start to the bot first.",
-                }
+                raise ToolExecutionError(
+                    "No Telegram chats connected. A user must send /start to the bot first."
+                )
             else:
                 chat_list = [
                     f"  - {info.get('title', 'Unknown')} (chat_id: {cid}, type: {info.get('chat_type', '?')})"
                     for cid, info in connected.items()
                 ]
-                return {
-                    "success": False,
-                    "error": "Multiple chats connected. Specify chat_id.\n" + "\n".join(chat_list),
-                }
+                raise ToolValidationError(
+                    "Multiple chats connected. Specify chat_id.\n" + "\n".join(chat_list)
+                )
 
         if not isinstance(chat_id, int):
             try:
                 chat_id = int(chat_id)
             except (ValueError, TypeError):
-                return {"success": False, "error": f"Invalid chat_id: {chat_id}"}
+                raise ToolValidationError(f"Invalid chat_id: {chat_id}") from None
 
         if owner_chat_id is not None and chat_id == owner_chat_id and not allow_owner_chat:
-            return {
-                "success": False,
-                "error": (
-                    "Refusing to send to owner Telegram DM by tool. "
-                    "Owner messages should flow through the shared session/UI bridge."
-                ),
-            }
+            raise ToolExecutionError(
+                "Refusing to send to owner Telegram DM by tool. "
+                "Owner messages should flow through the shared session/UI bridge."
+            )
 
         ok = await bridge.send_message(chat_id, message.strip())
         if ok:
             return {"success": True, "chat_id": chat_id, "message_sent": message.strip()[:200]}
-        return {"success": False, "error": "Failed to send message"}
+        raise ToolExecutionError("Failed to send message")
 
     return ToolDefinition(
         name="send_telegram_message",
@@ -1369,16 +1365,19 @@ def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
 
 
 def telegram_manage_integration_tool(app_state_ref: object) -> "ToolDefinition":
-    """Tool for managing Telegram integration (configure/start/stop/status/disable)."""
+    """Tool for managing Telegram integration using UI-equivalent behavior."""
     from typing import Any
 
     from app.services.tools.registry import ToolDefinition
 
-    async def _status_payload() -> dict[str, Any]:
+    async def _status_payload(*, status_user_id: str | None = None) -> dict[str, Any]:
         bridge: TelegramBridge | None = getattr(app_state_ref, "telegram_bridge", None)
         connected = bridge.connected_chats if bridge else {}
         owner_user_id = settings.telegram_owner_user_id or settings.dev_user_id
-        main_session_id = await resolve_latest_active_root_session_id_for_user(owner_user_id)
+        effective_status_user_id = status_user_id or owner_user_id
+        main_session_id = await resolve_latest_active_root_session_id_for_user(
+            effective_status_user_id
+        )
         return {
             "running": bool(bridge and bridge.is_running),
             "bot_username": bridge.bot_username if bridge else None,
@@ -1404,99 +1403,199 @@ def telegram_manage_integration_tool(app_state_ref: object) -> "ToolDefinition":
             await db.refresh(session)
             return str(session.id)
 
-    async def _resolve_owner(payload: dict[str, Any]) -> tuple[str | None, str | None]:
-        owner_user_id = payload.get("owner_user_id")
-        owner_session_id = payload.get("owner_session_id")
-        if owner_user_id is not None:
-            if not isinstance(owner_user_id, str) or not owner_user_id.strip():
-                return (None, "owner_user_id must be a non-empty string")
-            return (owner_user_id.strip(), None)
-        if owner_session_id is not None:
-            if not isinstance(owner_session_id, str) or not owner_session_id.strip():
-                return (None, "owner_session_id must be a non-empty string")
-            resolved = await resolve_owner_user_id_from_session(owner_session_id.strip())
-            if not resolved:
-                return (None, f"Could not resolve owner from session_id: {owner_session_id}")
-            return (resolved, None)
-        fallback = settings.telegram_owner_user_id or settings.dev_user_id
-        return (fallback, None)
+    async def _resolve_actor_user_id(
+        payload: dict[str, Any], *, required: bool
+    ) -> str | None:
+        session_id = payload.get("session_id")
+        if session_id is None:
+            if required:
+                raise ToolValidationError(
+                    "Field 'session_id' is required for this action and must reference an active session"
+                )
+            return None
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ToolValidationError("Field 'session_id' must be a non-empty string")
+        resolved = await resolve_owner_user_id_from_session(session_id.strip())
+        if not resolved:
+            raise ToolValidationError(f"session_id references unknown session: {session_id}")
+        return resolved
 
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         action_raw = payload.get("action", "status")
         action = str(action_raw).strip().lower()
+        mutating_actions = {
+            "configure",
+            "start",
+            "stop",
+            "delete_config",
+            "disable",
+            "bind_owner",
+            "clear_owner",
+        }
+        actor_user_id = await _resolve_actor_user_id(
+            payload,
+            required=action in mutating_actions,
+        )
 
         if action == "status":
-            return {"success": True, "action": action, **(await _status_payload())}
+            return {
+                "success": True,
+                "action": action,
+                **(await _status_payload(status_user_id=actor_user_id)),
+            }
 
         if action == "stop":
             await stop_telegram_bridge(app_state_ref)
-            return {"success": True, "action": action, **(await _status_payload())}
-
-        if action == "disable":
-            await stop_telegram_bridge(app_state_ref)
-            settings.telegram_bot_token = None
-            settings.telegram_owner_user_id = None
-            settings.telegram_owner_chat_id = None
-            await clear_telegram_settings()
-            return {"success": True, "action": action, **(await _status_payload())}
+            return {
+                "success": True,
+                "action": action,
+                **(await _status_payload(status_user_id=actor_user_id)),
+            }
 
         if action == "configure":
             bot_token = payload.get("bot_token")
             if not isinstance(bot_token, str) or not bot_token.strip():
-                return {"success": False, "error": "bot_token is required for action=configure"}
-            owner_user_id, owner_error = await _resolve_owner(payload)
-            if owner_error:
-                return {"success": False, "error": owner_error}
-            if owner_user_id is None:
-                return {"success": False, "error": "owner_user_id could not be resolved"}
+                raise ToolValidationError(
+                    "Field 'bot_token' must be a non-empty string for action=configure"
+                )
+            if actor_user_id is None:
+                raise ToolValidationError("Could not resolve actor from session_id")
 
-            owner_changed = settings.telegram_owner_user_id != owner_user_id
+            owner_changed = bool(
+                settings.telegram_owner_user_id and settings.telegram_owner_user_id != actor_user_id
+            )
             settings.telegram_bot_token = bot_token.strip()
-            settings.telegram_owner_user_id = owner_user_id
+            settings.telegram_owner_user_id = actor_user_id
             if owner_changed:
                 settings.telegram_owner_chat_id = None
                 settings.telegram_owner_telegram_user_id = None
-            await _ensure_owner_main_session(owner_user_id)
+            main_session_id = await _ensure_owner_main_session(actor_user_id)
             await persist_telegram_settings(
                 bot_token=settings.telegram_bot_token,
                 owner_user_id=settings.telegram_owner_user_id or settings.dev_user_id,
                 owner_chat_id=settings.telegram_owner_chat_id,
                 owner_telegram_user_id=settings.telegram_owner_telegram_user_id,
             )
-            await start_telegram_bridge(app_state_ref)
-            return {"success": True, "action": action, **(await _status_payload())}
+            started = await start_telegram_bridge(app_state_ref)
+            if not started:
+                raise ToolExecutionError("Failed to start Telegram bridge")
+            return {
+                "success": True,
+                "action": action,
+                "main_session_id": main_session_id,
+                **(await _status_payload(status_user_id=actor_user_id)),
+            }
 
         if action == "start":
-            owner_user_id, owner_error = await _resolve_owner(payload)
-            if owner_error:
-                return {"success": False, "error": owner_error}
-            if owner_user_id is None:
-                return {"success": False, "error": "owner_user_id could not be resolved"}
-            if owner_user_id:
-                owner_changed = settings.telegram_owner_user_id != owner_user_id
-                settings.telegram_owner_user_id = owner_user_id
-                if settings.telegram_bot_token:
-                    await _upsert_setting("telegram_owner_user_id", owner_user_id)
-                if owner_changed:
-                    settings.telegram_owner_chat_id = None
-                    settings.telegram_owner_telegram_user_id = None
-                await _ensure_owner_main_session(owner_user_id)
             if not settings.telegram_bot_token:
-                return {"success": False, "error": "No Telegram bot token configured"}
-            await start_telegram_bridge(app_state_ref)
-            return {"success": True, "action": action, **(await _status_payload())}
+                raise ToolExecutionError("No Telegram bot token configured")
+            if actor_user_id is None:
+                raise ToolValidationError("Could not resolve actor from session_id")
+            owner_changed = bool(
+                settings.telegram_owner_user_id and settings.telegram_owner_user_id != actor_user_id
+            )
+            settings.telegram_owner_user_id = actor_user_id
+            await _upsert_setting("telegram_owner_user_id", actor_user_id)
+            if owner_changed:
+                settings.telegram_owner_chat_id = None
+                settings.telegram_owner_telegram_user_id = None
+                await _delete_setting("telegram_owner_chat_id")
+                await _delete_setting("telegram_owner_telegram_user_id")
+            main_session_id = await _ensure_owner_main_session(actor_user_id)
+            started = await start_telegram_bridge(app_state_ref)
+            if not started:
+                raise ToolExecutionError("Failed to start Telegram bridge")
+            return {
+                "success": True,
+                "action": action,
+                "main_session_id": main_session_id,
+                **(await _status_payload(status_user_id=actor_user_id)),
+            }
 
-        return {
-            "success": False,
-            "error": f"Unsupported action: {action}",
-        }
+        if action in {"delete_config", "disable"}:
+            await stop_telegram_bridge(app_state_ref)
+            settings.telegram_bot_token = None
+            settings.telegram_owner_user_id = None
+            settings.telegram_owner_chat_id = None
+            settings.telegram_owner_telegram_user_id = None
+            await _delete_setting("telegram_bot_token")
+            await _delete_setting("telegram_owner_user_id")
+            await _delete_setting("telegram_owner_chat_id")
+            await _delete_setting("telegram_owner_telegram_user_id")
+            return {
+                "success": True,
+                "action": action,
+                **(await _status_payload(status_user_id=actor_user_id)),
+            }
+
+        if action == "bind_owner":
+            if actor_user_id is None:
+                raise ToolValidationError("Could not resolve actor from session_id")
+            chat_id = payload.get("chat_id")
+            if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+                raise ToolValidationError("Field 'chat_id' must be an integer for action=bind_owner")
+
+            bridge: TelegramBridge | None = getattr(app_state_ref, "telegram_bridge", None)
+            connected = bridge.connected_chats if bridge else {}
+            chat_info = connected.get(chat_id)
+            if chat_info is None:
+                raise ToolExecutionError("Chat not connected. Send /start from owner DM first.")
+            if str(chat_info.get("chat_type", "")).lower() != "private":
+                raise ToolValidationError("Owner binding requires a private DM chat")
+
+            requested_tg_user_id = payload.get("telegram_user_id")
+            if requested_tg_user_id is not None and (
+                not isinstance(requested_tg_user_id, str) or not requested_tg_user_id.strip()
+            ):
+                raise ToolValidationError("Field 'telegram_user_id' must be a non-empty string")
+            inferred_tg_user_id = chat_info.get("user_id")
+            owner_tg_user_id = (
+                requested_tg_user_id.strip()
+                if isinstance(requested_tg_user_id, str)
+                else (
+                    str(inferred_tg_user_id)
+                    if inferred_tg_user_id is not None
+                    else None
+                )
+            )
+
+            settings.telegram_owner_user_id = actor_user_id
+            settings.telegram_owner_chat_id = str(chat_id)
+            settings.telegram_owner_telegram_user_id = owner_tg_user_id
+            await _upsert_setting("telegram_owner_user_id", actor_user_id)
+            await _upsert_setting("telegram_owner_chat_id", settings.telegram_owner_chat_id)
+            if owner_tg_user_id:
+                await _upsert_setting("telegram_owner_telegram_user_id", owner_tg_user_id)
+            else:
+                await _delete_setting("telegram_owner_telegram_user_id")
+
+            return {
+                "success": True,
+                "action": action,
+                "owner_chat_id": settings.telegram_owner_chat_id,
+                "owner_telegram_user_id": settings.telegram_owner_telegram_user_id,
+                **(await _status_payload(status_user_id=actor_user_id)),
+            }
+
+        if action == "clear_owner":
+            settings.telegram_owner_chat_id = None
+            settings.telegram_owner_telegram_user_id = None
+            await _delete_setting("telegram_owner_chat_id")
+            await _delete_setting("telegram_owner_telegram_user_id")
+            return {
+                "success": True,
+                "action": action,
+                **(await _status_payload(status_user_id=actor_user_id)),
+            }
+
+        raise ToolValidationError(f"Unsupported action: {action}")
 
     return ToolDefinition(
         name="telegram_manage_integration",
         description=(
             "Manage Telegram integration for Sentinel. "
-            "Actions: status, configure, start, stop, disable. "
-            "Use configure with bot_token to connect a bot and bind it to an owner user."
+            "Actions: status, configure, start, stop, delete_config, bind_owner, clear_owner. "
+            "Action disable remains as a backward-compatible alias of delete_config."
         ),
         risk_level="medium",
         parameters_schema={
@@ -1506,20 +1605,36 @@ def telegram_manage_integration_tool(app_state_ref: object) -> "ToolDefinition":
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "configure", "start", "stop", "disable"],
+                    "enum": [
+                        "status",
+                        "configure",
+                        "start",
+                        "stop",
+                        "delete_config",
+                        "bind_owner",
+                        "clear_owner",
+                        "disable",
+                    ],
                     "description": "Integration action to run.",
                 },
                 "bot_token": {
                     "type": "string",
                     "description": "Telegram bot token. Required for action=configure.",
                 },
-                "owner_user_id": {
-                    "type": "string",
-                    "description": "Optional Sentinel user_id to bind as Telegram owner.",
+                "chat_id": {
+                    "type": "integer",
+                    "description": "Required for action=bind_owner. Must be a connected private Telegram chat_id.",
                 },
-                "owner_session_id": {
+                "telegram_user_id": {
                     "type": "string",
-                    "description": "Optional Sentinel session_id to resolve owner user automatically.",
+                    "description": "Optional Telegram user id override for action=bind_owner.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "Sentinel session_id used to resolve acting authenticated user. "
+                        "Required for all mutating actions."
+                    ),
                 },
             },
         },
