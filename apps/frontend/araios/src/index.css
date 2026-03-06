@@ -178,6 +178,46 @@ body {
   color: var(--text-primary);
 }
 
+.filter-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--surface-1);
+}
+
+.filter-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--border-subtle);
+  background-color: var(--surface-0);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition: all 0.15s ease;
+}
+
+.filter-tab:hover {
+  background-color: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.filter-tab.active {
+  border-color: var(--border-strong);
+  background-color: var(--surface-accent);
+  color: var(--text-primary);
+}
+
 /* ── Search ── */
 .top-search-wrap {
   position: relative;
