@@ -337,12 +337,16 @@ def test_onboarding_complete_creates_default_system_memories_and_prompt():
         assert agent_identity is not None
         assert "You are Sentinel." in agent_identity["content"]
         assert agent_identity["pinned"] is True
+        assert agent_identity["is_system"] is True
+        assert agent_identity["system_key"] == "agent_identity"
         assert agent_identity["importance"] == 100
 
         user_profile = next((item for item in items if item["title"] == "User Profile"), None)
         assert user_profile is not None
         assert "ask the user for context" in user_profile["content"]
         assert user_profile["pinned"] is True
+        assert user_profile["is_system"] is True
+        assert user_profile["system_key"] == "user_profile"
         assert user_profile["importance"] == 90
 
         assert settings.default_system_prompt.startswith("You are Sentinel")
