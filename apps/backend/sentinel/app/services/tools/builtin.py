@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import io
 import ipaddress
 import json
@@ -12,8 +11,7 @@ import shlex
 import socket
 import sys
 import traceback
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -24,6 +22,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Memory, Session, SubAgentTask
+from app.services.araios_client import (
+    araios_request_with_auth,
+    join_araios_base_and_path,
+    load_araios_runtime_credentials,
+)
 from app.services.embeddings import EmbeddingService
 from app.services.memory import (
     InvalidMemoryOperationError,
@@ -32,7 +35,6 @@ from app.services.memory import (
     MemoryService,
     ParentMemoryNotFoundError,
 )
-from app.services.memory.tree import is_descendant
 from app.services.memory.search import MemorySearchService
 from app.services.session_runtime import (
     finalize_detached_runtime_job,
@@ -47,10 +49,16 @@ from app.services.session_runtime import (
     runtime_venv_dir,
     runtime_workspace_dir,
 )
-from app.services.settings_service import SettingsService
 from app.services.tools.browser_tool import BrowserManager
 from app.services.tools.executor import ToolValidationError
-from app.services.tools.registry import ToolDefinition, ToolRegistry
+from app.services.tools.approval_waiters import build_tool_db_approval_waiter
+from app.services.tools.registry import (
+    ToolApprovalGate,
+    ToolApprovalMode,
+    ToolApprovalRequirement,
+    ToolDefinition,
+    ToolRegistry,
+)
 from app.services.tools.trigger_tools import (
     trigger_create_tool,
     trigger_delete_tool,
@@ -61,24 +69,12 @@ from app.services.tools.git_exec import git_exec_tool
 
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
 _ALLOWED_MEMORY_CATEGORIES = {"core", "preference", "project", "correction"}
-_ARAIOS_TOKEN_REFRESH_BUFFER_SECONDS = 30
 _PYTHON_XAGENT_BASE_DIR = Path(
     os.environ.get("PYTHON_XAGENT_BASE_DIR", "/tmp/sentinel/python_xagent")
 ).expanduser()
 _MAX_PYTHON_XAGENT_OUTPUT_CHARS = 20_000
 _MAX_RUNTIME_EXEC_OUTPUT_CHARS = 50_000
 _python_xagent_runtime_lock = asyncio.Lock()
-
-
-@dataclass(slots=True)
-class _AraiOSTokenCacheEntry:
-    access_token: str
-    refresh_token: str | None
-    expires_at: datetime
-
-
-_araios_token_cache: dict[str, _AraiOSTokenCacheEntry] = {}
-_araios_token_cache_lock = asyncio.Lock()
 
 
 def build_default_registry(
@@ -333,18 +329,24 @@ def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> To
             else:
                 request_kwargs["content"] = str(body)
 
-        base_url, agent_api_key = await _load_araios_integration_settings(session_factory)
-        request_url = _join_base_and_path(base_url, path)
+        try:
+            base_url, agent_api_key = await load_araios_runtime_credentials(session_factory)
+        except ValueError as exc:
+            raise ToolValidationError(str(exc)) from exc
+        request_url = join_araios_base_and_path(base_url, path)
 
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await _araios_request_with_auth(
-                client=client,
-                method=method,
-                url=request_url,
-                request_kwargs=request_kwargs,
-                base_url=base_url,
-                agent_api_key=agent_api_key,
-            )
+            try:
+                response = await araios_request_with_auth(
+                    client=client,
+                    method=method,
+                    url=request_url,
+                    request_kwargs=request_kwargs,
+                    base_url=base_url,
+                    agent_api_key=agent_api_key,
+                )
+            except ValueError as exc:
+                raise ToolValidationError(str(exc)) from exc
 
         content_type = response.headers.get("content-type", "")
         response_bytes = response.content
@@ -397,24 +399,6 @@ def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> To
     )
 
 
-async def _load_araios_integration_settings(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> tuple[str, str]:
-    settings_service = SettingsService()
-    async with session_factory() as db:
-        try:
-            return await settings_service.get_araios_runtime_credentials(db)
-        except ValueError as exc:
-            raise ToolValidationError(str(exc)) from exc
-
-
-def _join_base_and_path(base_url: str, path: str) -> str:
-    trimmed_path = path.strip()
-    if not trimmed_path.startswith("/"):
-        trimmed_path = f"/{trimmed_path}"
-    return f"{base_url}{trimmed_path}"
-
-
 def _normalize_query_params(query: dict[str, Any]) -> dict[str, str]:
     params: dict[str, str] = {}
     for key, value in query.items():
@@ -429,160 +413,6 @@ def _normalize_query_params(query: dict[str, Any]) -> dict[str, str]:
             )
         params[key_text] = str(value)
     return params
-
-
-def _araios_cache_key(base_url: str, agent_api_key: str) -> str:
-    digest = hashlib.sha256(agent_api_key.encode("utf-8")).hexdigest()
-    return f"{base_url}|{digest}"
-
-
-def _is_araios_token_fresh(entry: _AraiOSTokenCacheEntry) -> bool:
-    refresh_deadline = datetime.now(UTC) + timedelta(seconds=_ARAIOS_TOKEN_REFRESH_BUFFER_SECONDS)
-    return entry.expires_at > refresh_deadline
-
-
-async def _get_araios_access_token(
-    *,
-    client: httpx.AsyncClient,
-    base_url: str,
-    agent_api_key: str,
-) -> str:
-    cache_key = _araios_cache_key(base_url, agent_api_key)
-
-    cached: _AraiOSTokenCacheEntry | None
-    async with _araios_token_cache_lock:
-        cached = _araios_token_cache.get(cache_key)
-    if cached is not None and _is_araios_token_fresh(cached):
-        return cached.access_token
-
-    refreshed: _AraiOSTokenCacheEntry | None = None
-    if cached is not None and cached.refresh_token:
-        refreshed = await _refresh_araios_tokens(
-            client=client,
-            base_url=base_url,
-            refresh_token=cached.refresh_token,
-        )
-
-    next_tokens = refreshed or await _issue_araios_tokens(
-        client=client,
-        base_url=base_url,
-        agent_api_key=agent_api_key,
-    )
-    async with _araios_token_cache_lock:
-        _araios_token_cache[cache_key] = next_tokens
-    return next_tokens.access_token
-
-
-async def _invalidate_araios_token_cache(*, base_url: str, agent_api_key: str) -> None:
-    cache_key = _araios_cache_key(base_url, agent_api_key)
-    async with _araios_token_cache_lock:
-        _araios_token_cache.pop(cache_key, None)
-
-
-async def _araios_request_with_auth(
-    *,
-    client: httpx.AsyncClient,
-    method: str,
-    url: str,
-    request_kwargs: dict[str, Any],
-    base_url: str,
-    agent_api_key: str,
-) -> httpx.Response:
-    access_token = await _get_araios_access_token(
-        client=client,
-        base_url=base_url,
-        agent_api_key=agent_api_key,
-    )
-
-    first_headers = dict(request_kwargs.get("headers", {}))
-    first_headers["Authorization"] = f"Bearer {access_token}"
-    first_kwargs = dict(request_kwargs)
-    first_kwargs["headers"] = first_headers
-
-    response = await client.request(method, url, **first_kwargs)
-    if response.status_code != 401:
-        return response
-
-    await _invalidate_araios_token_cache(base_url=base_url, agent_api_key=agent_api_key)
-    retry_access_token = await _get_araios_access_token(
-        client=client,
-        base_url=base_url,
-        agent_api_key=agent_api_key,
-    )
-    retry_headers = dict(request_kwargs.get("headers", {}))
-    retry_headers["Authorization"] = f"Bearer {retry_access_token}"
-    retry_kwargs = dict(request_kwargs)
-    retry_kwargs["headers"] = retry_headers
-    return await client.request(method, url, **retry_kwargs)
-
-
-async def _issue_araios_tokens(
-    *,
-    client: httpx.AsyncClient,
-    base_url: str,
-    agent_api_key: str,
-) -> _AraiOSTokenCacheEntry:
-    token_url = f"{base_url}/platform/auth/token"
-    try:
-        response = await client.post(token_url, json={"api_key": agent_api_key})
-    except httpx.HTTPError as exc:
-        raise ToolValidationError(f"AraiOS token exchange failed: {exc}") from exc
-    if response.status_code != 200:
-        raise ToolValidationError(
-            f"AraiOS token exchange failed with status {response.status_code}"
-        )
-    return _parse_araios_token_response(response)
-
-
-async def _refresh_araios_tokens(
-    *,
-    client: httpx.AsyncClient,
-    base_url: str,
-    refresh_token: str,
-) -> _AraiOSTokenCacheEntry | None:
-    refresh_url = f"{base_url}/platform/auth/refresh"
-    try:
-        response = await client.post(refresh_url, json={"refresh_token": refresh_token})
-    except httpx.HTTPError:
-        return None
-    if response.status_code != 200:
-        return None
-    try:
-        return _parse_araios_token_response(response)
-    except ToolValidationError:
-        return None
-
-
-def _parse_araios_token_response(response: httpx.Response) -> _AraiOSTokenCacheEntry:
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise ToolValidationError("AraiOS token response was not valid JSON") from exc
-    if not isinstance(payload, dict):
-        raise ToolValidationError("AraiOS token response must be an object")
-    access_token = payload.get("access_token")
-    if not isinstance(access_token, str) or not access_token.strip():
-        raise ToolValidationError("AraiOS token response is missing access_token")
-
-    refresh_token = payload.get("refresh_token")
-    if not isinstance(refresh_token, str) or not refresh_token.strip():
-        refresh_token = None
-
-    expires_in_raw = payload.get("expires_in")
-    if (
-        not isinstance(expires_in_raw, int)
-        or isinstance(expires_in_raw, bool)
-        or expires_in_raw <= 0
-    ):
-        expires_in_raw = 3600
-    expires_at = datetime.now(UTC) + timedelta(seconds=expires_in_raw)
-
-    return _AraiOSTokenCacheEntry(
-        access_token=access_token.strip(),
-        refresh_token=refresh_token.strip() if isinstance(refresh_token, str) else None,
-        expires_at=expires_at,
-    )
-
 
 def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
@@ -829,6 +659,15 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
             },
         },
         execute=_execute,
+        approval_gate=ToolApprovalGate(
+            # Flip mode to REQUIRED to enforce a hard approval gate for every runtime command.
+            mode=ToolApprovalMode.NONE,
+            waiter=build_tool_db_approval_waiter(session_factory=session_factory),
+            required=ToolApprovalRequirement(
+                action="runtime.exec",
+                description="Allow runtime shell command execution.",
+            ),
+        ),
     )
 
 
@@ -1509,7 +1348,7 @@ def _memory_tree_tool(
 
         memory_service = MemoryService(MemoryRepository())
         async with session_factory() as db:
-            all_items = await MemoryRepository().list_all(db)
+            all_items = await memory_service.list_all_memories(db)
             if category is not None and root_id is None:
                 all_items = [item for item in all_items if item.category == category]
             by_id = {item.id: item for item in all_items}
@@ -1915,62 +1754,28 @@ def _memory_move_tool(
         if not to_root and target_parent_id is None:
             raise ToolValidationError("Provide target_parent_id or set to_root=true")
 
-        async with session_factory() as db:
-            repo = MemoryRepository()
-            memories = await repo.list_all(db)
-            by_id = {item.id: item for item in memories}
-
-            missing_ids = [str(node_id) for node_id in node_ids if node_id not in by_id]
-            if missing_ids:
-                raise ToolValidationError(
-                    "Memory node(s) not found: " + ", ".join(missing_ids)
+        memory_service = MemoryService(MemoryRepository())
+        try:
+            async with session_factory() as db:
+                moved = await memory_service.move_memories(
+                    db,
+                    node_ids=node_ids,
+                    target_parent_id=target_parent_id,
+                    to_root=to_root,
                 )
-
-            if target_parent_id is not None and target_parent_id not in by_id:
-                raise ToolValidationError("target_parent_id references unknown memory node")
-
-            # Avoid ambiguous updates: move top-level nodes only, not both parent and child together.
-            node_id_set = set(node_ids)
-            for ancestor in node_ids:
-                for maybe_child in node_ids:
-                    if ancestor == maybe_child:
-                        continue
-                    if is_descendant(
-                        target_parent_id=ancestor,
-                        node_id=maybe_child,
-                        memories=memories,
-                    ):
-                        raise ToolValidationError(
-                            "node_ids contains both an ancestor and its descendant; move only top-level nodes"
-                        )
-
-            if target_parent_id is not None:
-                for node_id in node_ids:
-                    if node_id == target_parent_id:
-                        raise ToolValidationError("A node cannot be moved under itself")
-                    if is_descendant(
-                        target_parent_id=node_id,
-                        node_id=target_parent_id,
-                        memories=memories,
-                    ):
-                        raise ToolValidationError("Cannot move a node under its own descendant")
-                    if target_parent_id in node_id_set:
-                        raise ToolValidationError(
-                            "target_parent_id cannot be one of the moved node_ids"
-                        )
-
-            for node_id in node_ids:
-                node = by_id[node_id]
-                node.parent_id = None if to_root else target_parent_id
-                node.updated_at = datetime.now(UTC)
-                db.add(node)
-            await db.commit()
+        except Exception as exc:  # noqa: BLE001
+            _raise_memory_tool_validation_error(
+                exc,
+                not_found_detail="Memory node not found",
+                parent_not_found_detail="Parent memory node not found",
+            )
+            raise
 
         return {
-            "moved_node_ids": [str(node_id) for node_id in node_ids],
+            "moved_node_ids": [str(item.id) for item in moved],
             "target_parent_id": None if to_root else str(target_parent_id),
             "to_root": to_root,
-            "moved_count": len(node_ids),
+            "moved_count": len(moved),
         }
 
     return ToolDefinition(
@@ -2051,6 +1856,8 @@ def _memory_as_dict(memory: Memory, *, include_parent: bool = True) -> dict[str,
         "category": memory.category,
         "importance": int(memory.importance or 0),
         "pinned": bool(memory.pinned),
+        "is_system": bool(getattr(memory, "is_system", False)),
+        "system_key": getattr(memory, "system_key", None),
     }
     if include_parent:
         data["parent_id"] = str(memory.parent_id) if memory.parent_id else None

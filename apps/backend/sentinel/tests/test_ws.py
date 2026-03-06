@@ -206,6 +206,104 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             assert replay_pending["tool_result"]["tool_arguments"] == {"command": "git push origin main"}
             assert replay_pending["tool_result"]["metadata"]["pending"] is True
             assert isinstance(replay_pending["tool_result"]["metadata"].get("approval_id"), str)
+            approval = replay_pending["tool_result"]["metadata"].get("approval")
+            assert isinstance(approval, dict)
+            assert approval.get("provider") == "git"
+    finally:
+        if old_run_registry is None:
+            delattr(app.state, "agent_run_registry")
+        else:
+            app.state.agent_run_registry = old_run_registry
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_ws_connected_rehydrates_unresolved_git_call_with_truncated_args_and_hint():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    old_run_registry = getattr(app.state, "agent_run_registry", None)
+    app.state.agent_run_registry = _AlwaysRunningRegistry()
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        owner_token = login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "ws-pending-truncated"}, headers=owner_headers)
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
+        command = "gh pr create --repo domu-ai/domu-gitops --title Test --body Body"
+        match_key = command.lower()
+        fake_db.add(
+            Message(
+                session_id=uuid.UUID(session_id),
+                role="assistant",
+                content="",
+                metadata_json={
+                    "tool_calls": [
+                        {
+                            "id": "toolu_pending_2",
+                            "name": "git_exec",
+                            "arguments": {
+                                "_truncated": True,
+                                "preview": "{\"command\":\"gh pr create ...\"}",
+                                "original_chars": 5000,
+                            },
+                            "approval_hint": {
+                                "provider": "git",
+                                "match_key": match_key,
+                            },
+                        }
+                    ]
+                },
+            )
+        )
+        fake_db.add(
+            GitPushApproval(
+                account_id=uuid.uuid4(),
+                session_id=uuid.UUID(session_id),
+                repo_url="https://github.com/ARAI/example",
+                remote_name="origin",
+                command=command,
+                status="pending",
+                requested_by="session:test",
+                expires_at=datetime.now(UTC) + timedelta(minutes=10),
+            )
+        )
+
+        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+            connected = ws.receive_json()
+            assert connected["type"] == "connected"
+            assert connected["session_id"] == session_id
+
+            replay_start = ws.receive_json()
+            assert replay_start["type"] == "toolcall_start"
+            assert replay_start["tool_call"]["id"] == "toolu_pending_2"
+            assert replay_start["tool_call"]["name"] == "git_exec"
+
+            replay_pending = ws.receive_json()
+            assert replay_pending["type"] == "tool_result"
+            assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_2"
+            assert replay_pending["tool_result"]["tool_arguments"]["_truncated"] is True
+            approval = replay_pending["tool_result"]["metadata"].get("approval")
+            assert isinstance(approval, dict)
+            assert approval.get("provider") == "git"
+            assert isinstance(approval.get("approval_id"), str)
     finally:
         if old_run_registry is None:
             delattr(app.state, "agent_run_registry")
@@ -275,7 +373,8 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_runtime"
             assert replay_pending["tool_result"]["tool_arguments"] == {"command": "sleep 10"}
-            assert replay_pending["tool_result"]["metadata"]["pending"] is True
+            assert replay_pending["tool_result"]["content"]["status"] == "running"
+            assert "pending" not in replay_pending["tool_result"]["metadata"]
             assert "approval_id" not in replay_pending["tool_result"]["metadata"]
     finally:
         if old_run_registry is None:
