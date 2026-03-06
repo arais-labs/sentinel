@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.models import Session, SessionBinding, Trigger, TriggerLog
 from app.services.agent.loop import AgentLoopResult
+from app.services.agent_run_registry import AgentRunRegistry
 from app.services.llm.generic.types import TokenUsage
 from app.services.trigger_scheduler import TriggerScheduler, compute_next_fire_at
 from tests.fake_db import FakeDB
@@ -51,6 +52,18 @@ class _AgentLoopStub:
             messages_created=1,
             usage=TokenUsage(input_tokens=3, output_tokens=4),
             iterations=1,
+        )
+
+
+class _BlockingAgentLoopStub:
+    async def run(self, db, session_id, user_message, **kwargs):
+        _ = (db, session_id, user_message, kwargs)
+        await asyncio.sleep(3600)
+        return AgentLoopResult(
+            final_text="never",
+            messages_created=0,
+            usage=TokenUsage(input_tokens=0, output_tokens=0),
+            iterations=0,
         )
 
 
@@ -548,3 +561,49 @@ def test_scheduler_ignores_trigger_already_in_flight():
     scheduler._in_flight.add(str(trigger.id))
     _run(scheduler._poll_once())
     assert not tools.calls
+
+
+def test_scheduler_cancellation_advances_next_fire_and_marks_log_cancelled():
+    db = FakeDB()
+    session = Session(user_id="user-1", title="Main", status="active")
+    db.add(session)
+    trigger = Trigger(
+        name="hourly-agent",
+        user_id="user-1",
+        type="cron",
+        enabled=True,
+        config={"expr": "0 * * * *"},
+        action_type="agent_message",
+        action_config={"message": "ping", "session_id": str(session.id)},
+        next_fire_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    db.add(trigger)
+
+    run_registry = AgentRunRegistry()
+    scheduler = TriggerScheduler(
+        agent_loop=_BlockingAgentLoopStub(),
+        tool_executor=None,
+        run_registry=run_registry,
+        db_factory=_SessionFactory(db),
+        poll_interval_seconds=0.01,
+    )
+
+    async def _scenario():
+        task = asyncio.create_task(scheduler._fire_trigger(trigger.id))
+        for _ in range(20):
+            if await run_registry.is_running(str(session.id)):
+                break
+            await asyncio.sleep(0.01)
+        assert await run_registry.is_running(str(session.id)) is True
+        cancelled = await run_registry.cancel(str(session.id))
+        assert cancelled is True
+        await task
+
+    _run(_scenario())
+
+    assert trigger.enabled is True
+    assert trigger.next_fire_at is not None
+    assert trigger.next_fire_at > datetime.now(UTC)
+    logs = db.storage[TriggerLog]
+    assert logs
+    assert logs[-1].status == "cancelled"

@@ -173,6 +173,7 @@ async def fire_trigger(
             agent_loop=getattr(request.app.state, "agent_loop", None),
             tool_executor=getattr(request.app.state, "tool_executor", None),
             ws_manager=getattr(request.app.state, "ws_manager", None),
+            run_registry=getattr(request.app.state, "agent_run_registry", None),
             db_factory=None,
         )
     outcome = await scheduler.fire_now_nonblocking(

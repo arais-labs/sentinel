@@ -210,6 +210,54 @@ def test_cannot_set_telegram_channel_session_as_main():
         app_main.init_db = old_init
 
 
+def test_reset_default_session_keeps_previous_main_runtime_workspace():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_base = Path(tmpdir)
+            with patch("app.services.session_runtime._RUNTIME_BASE_DIR", runtime_base):
+                client = TestClient(app)
+                login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+                assert login.status_code == 200
+                token = login.json()["access_token"]
+                headers = {"Authorization": f"Bearer {token}"}
+
+                main_resp = client.get("/api/v1/sessions/default", headers=headers)
+                assert main_resp.status_code == 200
+                old_main_id = main_resp.json()["id"]
+
+                old_workspace = runtime_base / old_main_id / "workspace"
+                old_workspace.mkdir(parents=True, exist_ok=True)
+                marker = old_workspace / "keep.txt"
+                marker.write_text("preserve")
+
+                reset_resp = client.post("/api/v1/sessions/default/reset", headers=headers)
+                assert reset_resp.status_code == 200
+                new_main_id = reset_resp.json()["id"]
+                assert new_main_id != old_main_id
+
+                assert old_workspace.exists() is True
+                assert marker.exists() is True
+                assert marker.read_text() == "preserve"
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
 def test_stop_session_generation_cancels_pending_git_push_approvals():
     fake_db = FakeDB()
 
