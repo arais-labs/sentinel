@@ -17,6 +17,7 @@ from app.models import GitPushApproval, Message, ToolApproval
 from app.services.approvals import ApprovalService
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
+from app.services.session_naming import SessionNamingService
 from app.services.ws_manager import ConnectionManager
 from app.services.ws_stream_parser import parse_ws_message
 from app.services.ws_stream_service import (
@@ -25,7 +26,6 @@ from app.services.ws_stream_service import (
     load_history,
     unresolved_tool_calls_from_history,
     maybe_auto_compact_and_resume,
-    name_session,
     persist_user_message,
     run_agent_once,
 )
@@ -69,6 +69,10 @@ async def stream_session(
     session_key = str(id)
     session_log_token = set_log_session(session_key)
     await manager.connect(session_key, websocket)
+    naming_service = SessionNamingService(
+        provider=getattr(getattr(websocket.app.state, "agent_loop", None), "provider", None),
+        ws_manager=manager,
+    )
 
     history = await load_history(db, id)
     unresolved_calls = unresolved_tool_calls_from_history(history)
@@ -187,11 +191,10 @@ async def stream_session(
 
             if is_first_message and parsed.content:
                 asyncio.create_task(
-                    name_session(
+                    naming_service.maybe_auto_rename(
                         session_id=id,
+                        force=True,
                         first_message=parsed.content,
-                        manager=manager,
-                        agent_loop=agent_loop,
                     )
                 )
 
@@ -212,6 +215,7 @@ async def stream_session(
                 continue
 
             if not outcome.cancelled and not outcome.run_error:
+                await naming_service.maybe_auto_rename(session_id=id)
                 await maybe_auto_compact_and_resume(
                     db=db,
                     session_id=id,

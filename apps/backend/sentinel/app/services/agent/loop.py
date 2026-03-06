@@ -31,6 +31,10 @@ from app.services.agent.tool_image_reinjection import (
 from app.services.agent.tool_adapter import ToolAdapter
 from app.services.approvals.providers.git import normalize_git_command
 from app.services.estop import EstopLevel, EstopService
+from app.services.session_naming import (
+    apply_conversation_message_delta,
+    conversation_delta_for_role,
+)
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.ids import TierName
 from app.services.llm.generic.types import (
@@ -863,6 +867,7 @@ class AgentLoop:
             prompt = effective_system_prompt.strip()
             if prompt:
                 session_record.latest_system_prompt = prompt
+        conversation_delta = 0
         start_offset = 0
         if runtime_context_snapshot:
             summary = (
@@ -915,6 +920,7 @@ class AgentLoop:
                     created_at=created_at,
                 )
                 db.add(record)
+                conversation_delta += conversation_delta_for_role("user")
                 continue
 
             if isinstance(message, AssistantMessage):
@@ -955,6 +961,7 @@ class AgentLoop:
                     created_at=created_at,
                 )
                 db.add(record)
+                conversation_delta += conversation_delta_for_role("assistant")
                 continue
 
             if isinstance(message, ToolResultMessage):
@@ -976,6 +983,9 @@ class AgentLoop:
                     created_at=created_at,
                 )
                 db.add(record)
+
+        if session_record is not None:
+            apply_conversation_message_delta(session_record, conversation_delta)
 
         await db.commit()
 
