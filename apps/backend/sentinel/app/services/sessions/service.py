@@ -36,6 +36,11 @@ from app.services.session_runtime import (
     read_runtime_workspace_file_preview,
     stop_all_detached_runtime_jobs,
 )
+from app.services.session_naming import (
+    SessionNamingService,
+    apply_conversation_message_delta,
+    conversation_delta_for_role,
+)
 from app.services.sessions.errors import (
     AgentLoopUnavailableError,
     ChatPayloadRequiredError,
@@ -44,6 +49,7 @@ from app.services.sessions.errors import (
     MessageNotFoundError,
     RuntimePathInvalidError,
     RuntimePathNotFoundError,
+    SessionRenameNotAllowedError,
     SessionNotFoundError,
 )
 
@@ -206,6 +212,34 @@ class SessionService:
             )
         except session_bindings.SessionBindingTargetInvalidError as exc:
             raise MainSessionTargetInvalidError(str(exc)) from exc
+        await db.commit()
+        await db.refresh(session)
+        return session
+
+    async def rename_session(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        title: str | None,
+    ) -> Session:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        is_telegram_channel = await session_bindings.is_session_bound(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            binding_types={
+                session_bindings.TELEGRAM_GROUP_BINDING_TYPE,
+                session_bindings.TELEGRAM_DM_BINDING_TYPE,
+            },
+            active_only=True,
+        )
+        if is_telegram_channel:
+            raise SessionRenameNotAllowedError(
+                "Telegram channel sessions cannot be renamed"
+            )
+        session.title = title
         await db.commit()
         await db.refresh(session)
         return session
@@ -612,6 +646,7 @@ class SessionService:
 
         if role == "user" and not session.initial_prompt and content.strip():
             session.initial_prompt = content.strip()
+        apply_conversation_message_delta(session, conversation_delta_for_role(role))
 
         message = Message(
             session_id=session.id,
@@ -622,6 +657,9 @@ class SessionService:
         db.add(message)
         await db.commit()
         await db.refresh(message)
+        if role == "user":
+            naming = SessionNamingService(provider=getattr(self._agent_loop, "provider", None))
+            await naming.maybe_auto_rename(session_id=session.id)
         return message
 
     async def list_messages(
@@ -703,6 +741,8 @@ class SessionService:
             allow_high_risk=True,
             stream=False,
         )
+        naming = SessionNamingService(provider=getattr(self._agent_loop, "provider", None))
+        await naming.maybe_auto_rename(session_id=session.id)
         return ChatRunResult(
             final_text=result.final_text,
             iterations=result.iterations,
