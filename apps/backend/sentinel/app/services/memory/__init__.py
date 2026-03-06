@@ -9,6 +9,7 @@ from app.services.memory.service import (
     MemoryService,
     MemoryServiceError,
     ParentMemoryNotFoundError,
+    ProtectedMemoryOperationError,
 )
 from app.services.memory.tree import (
     MIN_TIME,
@@ -31,6 +32,7 @@ __all__ = [
     "MemorySearchResult",
     "MemorySearchService",
     "ParentMemoryNotFoundError",
+    "ProtectedMemoryOperationError",
     "children_map",
     "descendant_ids",
     "expand_memory_branches",

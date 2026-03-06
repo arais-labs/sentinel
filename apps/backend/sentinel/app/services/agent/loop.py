@@ -29,6 +29,7 @@ from app.services.agent.tool_image_reinjection import (
     build_tool_image_reinjection_messages,
 )
 from app.services.agent.tool_adapter import ToolAdapter
+from app.services.approvals.providers.git import normalize_git_command
 from app.services.estop import EstopLevel, EstopService
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.ids import TierName
@@ -918,16 +919,23 @@ class AgentLoop:
 
             if isinstance(message, AssistantMessage):
                 text = self._assistant_text(message)
-                tool_calls_data = [
-                    {
+                tool_calls_data: list[dict[str, Any]] = []
+                for block in message.content:
+                    if not isinstance(block, ToolCallContent):
+                        continue
+                    persisted_call = {
                         "id": block.id,
                         "name": block.name,
                         "arguments": self._sanitize_tool_call_arguments(block.arguments),
                         "thought_signature": block.thought_signature,
                     }
-                    for block in message.content
-                    if isinstance(block, ToolCallContent)
-                ]
+                    approval_hint = self._approval_hint_for_tool_call(
+                        tool_name=block.name,
+                        arguments=block.arguments,
+                    )
+                    if approval_hint is not None:
+                        persisted_call["approval_hint"] = approval_hint
+                    tool_calls_data.append(persisted_call)
                 metadata: dict[str, Any] = {
                     "provider": message.provider,
                     "model": message.model,
@@ -1135,6 +1143,19 @@ class AgentLoop:
             "preview": serialized[:max_chars],
             "original_chars": len(serialized),
         }
+
+    @staticmethod
+    def _approval_hint_for_tool_call(
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, str] | None:
+        if tool_name != "git_exec":
+            return None
+        command = arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return None
+        return {"provider": "git", "match_key": normalize_git_command(command)}
 
     def _truncate_tool_result_for_storage(self, content: str) -> tuple[str, dict[str, Any]]:
         """Cap stored tool-result payload size while preserving debug metadata."""

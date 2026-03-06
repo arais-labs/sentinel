@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Session, Trigger, TriggerLog
 from app.services.agent import AgentLoop
+from app.services.agent_run_registry import AgentRunRegistry
 from app.services.messages import trigger_ingress_metadata
 from app.services.triggers.routing import (
     extract_agent_message_target_session_id,
@@ -79,12 +81,14 @@ class TriggerScheduler:
         agent_loop: AgentLoop | None,
         tool_executor: ToolExecutor | None,
         ws_manager: ConnectionManager | None = None,
+        run_registry: AgentRunRegistry | None = None,
         db_factory: async_sessionmaker[AsyncSession] | None,
         poll_interval_seconds: float = 5.0,
     ) -> None:
         self._agent_loop = agent_loop
         self._tool_executor = tool_executor
         self._ws_manager = ws_manager
+        self._run_registry = run_registry
         self._db_factory = db_factory
         self._poll_interval_seconds = max(0.1, float(poll_interval_seconds))
         self._in_flight: set[str] = set()
@@ -304,6 +308,30 @@ class TriggerScheduler:
                 log_entry.input_payload = input_payload
                 log_entry.output_summary = action_outcome.output_summary
                 log_entry.error_message = None
+        except asyncio.CancelledError as exc:
+            duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+            message = str(exc) or "Cancelled while running trigger action"
+            trigger.last_error = message
+            trigger.consecutive_errors = 0
+            if trigger.enabled:
+                trigger.next_fire_at = self._next_fire_after_success(trigger, fired_at)
+
+            if log_entry is None:
+                log_entry = TriggerLog(
+                    trigger_id=trigger.id,
+                    fired_at=fired_at,
+                    status="cancelled",
+                    duration_ms=duration_ms,
+                    input_payload=input_payload,
+                    error_message=message[:1000],
+                )
+            else:
+                log_entry.fired_at = fired_at
+                log_entry.status = "cancelled"
+                log_entry.duration_ms = duration_ms
+                log_entry.input_payload = input_payload
+                log_entry.error_message = message[:1000]
+                log_entry.output_summary = None
         except Exception as exc:  # noqa: BLE001
             duration_ms = max(0, int((time.perf_counter() - started) * 1000))
             message = str(exc)
@@ -438,15 +466,30 @@ class TriggerScheduler:
             )
             await self._ws_manager.broadcast_agent_thinking(session_key)
 
-        result = await self._agent_loop.run(
-            db, 
-            session_id, 
-            message_text, 
-            stream=True, # Enable streaming for real-time UI updates
-            on_event=_on_event,
-            allow_high_risk=True,
-            user_metadata=ingress_metadata,
+        run_task = asyncio.create_task(
+            self._agent_loop.run(
+                db,
+                session_id,
+                message_text,
+                stream=True,
+                on_event=_on_event,
+                allow_high_risk=True,
+                user_metadata=ingress_metadata,
+            )
         )
+        registered = False
+        if self._run_registry is not None:
+            registered = await self._run_registry.register(session_key, run_task)
+            if not registered:
+                run_task.cancel("cancelled: session already has an active run")
+                with contextlib.suppress(asyncio.CancelledError):
+                    await run_task
+                raise RuntimeError("Agent is already processing this session.")
+        try:
+            result = await run_task
+        finally:
+            if self._run_registry is not None and registered:
+                await self._run_registry.clear(session_key, run_task)
         route_mode = route.normalized_action_config.get("route_mode")
         normalized_route_mode = str(route_mode) if isinstance(route_mode, str) and route_mode else None
         return TriggerActionOutcome(

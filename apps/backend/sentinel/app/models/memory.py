@@ -34,6 +34,10 @@ class Memory(Base):
             name="ck_memories_category",
         ),
         CheckConstraint("importance >= 0 AND importance <= 100", name="ck_memories_importance"),
+        CheckConstraint(
+            "((is_system AND system_key IS NOT NULL) OR (NOT is_system AND system_key IS NULL))",
+            name="ck_memories_system_key_consistency",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -46,6 +50,14 @@ class Memory(Base):
     )
     importance: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     pinned: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    is_system: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+        index=True,
+    )
+    system_key: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, server_default=text("'{}'::jsonb"))
     session_id: Mapped[uuid.UUID | None] = mapped_column(

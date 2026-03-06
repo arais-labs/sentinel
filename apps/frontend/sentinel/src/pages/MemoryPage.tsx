@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState, memo, useCallback } from 'react';
+import { FormEvent, useEffect, useMemo, useState, memo, useCallback, useRef } from 'react';
 import {
   Plus,
   Search,
@@ -15,6 +15,9 @@ import {
   X,
   Loader2,
   Pencil,
+  Upload,
+  Download,
+  FileJson,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -24,15 +27,43 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api } from '../lib/api';
 import { formatCompactDate, truncate } from '../lib/format';
-import type { MemoryEntry, MemoryListResponse, MemoryStats } from '../types/api';
+import type {
+  MemoryBackupDocument,
+  MemoryBackupImportMode,
+  MemoryBackupImportResponse,
+  MemoryEntry,
+  MemoryListResponse,
+  MemoryStats,
+} from '../types/api';
 
 const categories = ['core', 'preference', 'project', 'correction'];
-
-const SYSTEM_MEMORY_TITLES = ['Agent Identity', 'User Profile'];
+const backupImportModes: MemoryBackupImportMode[] = ['merge', 'replace_non_system', 'replace_all'];
 
 function isSystemMemory(entry: MemoryEntry): boolean {
-  if (!entry.title) return false;
-  return SYSTEM_MEMORY_TITLES.some(t => entry.title!.trim() === t);
+  return Boolean(entry.is_system);
+}
+
+function backupModeLabel(mode: MemoryBackupImportMode): string {
+  if (mode === 'replace_non_system') return 'Replace Regular Memories';
+  if (mode === 'replace_all') return 'Replace Everything';
+  return 'Keep Existing (Safest)';
+}
+
+function backupModeDescription(mode: MemoryBackupImportMode): string {
+  if (mode === 'replace_all') {
+    return 'Delete all current memories first (including system memories), then import the backup file.';
+  }
+  if (mode === 'replace_non_system') {
+    return 'Delete your regular memories first, keep system memories, then import the backup file.';
+  }
+  return 'Keep your current memories. Import backup items and update previously imported matches instead of duplicating them.';
+}
+
+function backupSystemBehaviorDescription(mode: MemoryBackupImportMode): string {
+  if (mode === 'replace_all') {
+    return 'System memories are restored from the backup file.';
+  }
+  return 'Current system memories are kept unchanged. Missing system memories from backup are added.';
 }
 
 interface TreeRowProps {
@@ -109,6 +140,14 @@ export function MemoryPage() {
   const [editImportance, setEditImportance] = useState(50);
   const [editPinned, setEditPinned] = useState(false);
   const [togglingPin, setTogglingPin] = useState(false);
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
+  const [backupImportMode, setBackupImportMode] = useState<MemoryBackupImportMode>('merge');
+  const [backupIncludeSystem, setBackupIncludeSystem] = useState(true);
+  const [backupDocument, setBackupDocument] = useState<MemoryBackupDocument | null>(null);
+  const [backupFilename, setBackupFilename] = useState<string>('');
+  const [isExportingBackup, setIsExportingBackup] = useState(false);
+  const [isImportingBackup, setIsImportingBackup] = useState(false);
+  const importFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedNode = selectedId ? nodesById[selectedId] ?? null : null;
 
@@ -334,6 +373,84 @@ export function MemoryPage() {
     } catch { toast.error('Purge failed'); }
   }
 
+  async function exportBackup() {
+    if (isExportingBackup) return;
+    setIsExportingBackup(true);
+    try {
+      const backupDoc = await api.get<MemoryBackupDocument>(
+        `/memory/backup/export?include_system=${backupIncludeSystem ? 'true' : 'false'}`,
+      );
+      const safeIso = new Date(backupDoc.exported_at || Date.now()).toISOString().replace(/[:.]/g, '-');
+      const filename = `sentinel-memory-backup-${safeIso}.json`;
+      const blob = new Blob([JSON.stringify(backupDoc, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+      toast.success(`Backup exported (${backupDoc.nodes.length} nodes)`);
+    } catch {
+      toast.error('Backup export failed');
+    } finally {
+      setIsExportingBackup(false);
+    }
+  }
+
+  async function importBackup() {
+    if (isImportingBackup || !backupDocument) return;
+    setIsImportingBackup(true);
+    try {
+      const response = await api.post<MemoryBackupImportResponse>('/memory/backup/import', {
+        document: backupDocument,
+        mode: backupImportMode,
+      });
+      toast.success(
+        `Backup imported: +${response.created} created, ${response.updated} updated, ${response.deleted} deleted, ${response.skipped} skipped`,
+      );
+      setBackupDocument(null);
+      setBackupFilename('');
+      setIsBackupModalOpen(false);
+      await refreshAll();
+      if (selectedId) {
+        await ensureChildren(selectedId);
+      }
+    } catch {
+      toast.error('Backup import failed');
+    } finally {
+      setIsImportingBackup(false);
+    }
+  }
+
+  function clearBackupSelection() {
+    setBackupDocument(null);
+    setBackupFilename('');
+    if (importFileInputRef.current) {
+      importFileInputRef.current.value = '';
+    }
+  }
+
+  async function handleBackupFileSelected(file: File | null) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as MemoryBackupDocument;
+      if (!parsed || parsed.schema_version !== 'memory_backup_v1' || !Array.isArray(parsed.nodes)) {
+        toast.error('Invalid backup file format');
+        clearBackupSelection();
+        return;
+      }
+      setBackupDocument(parsed);
+      setBackupFilename(file.name);
+      toast.success(`Loaded backup file (${parsed.nodes.length} nodes)`);
+    } catch {
+      toast.error('Failed to parse backup file');
+      clearBackupSelection();
+    }
+  }
+
   return (
     <AppShell
       title="Memory"
@@ -345,6 +462,10 @@ export function MemoryPage() {
             <RefreshCw size={18} className={loadingRoots ? 'animate-spin' : ''} />
           </button>
           <div className="h-6 w-px bg-[color:var(--border-subtle)] mx-1" />
+          <button onClick={() => setIsBackupModalOpen(true)} className="btn-secondary h-9 px-3 text-xs gap-2">
+            <FileJson size={14} />
+            Backup
+          </button>
           <button onClick={() => openEditor(null)} className="btn-primary h-9 px-3 text-xs gap-2">
             <Plus size={14} />
             Add Memory
@@ -657,6 +778,106 @@ export function MemoryPage() {
                 </button>
               </div>
             </form>
+          </Panel>
+        </div>
+      )}
+
+      {isBackupModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsBackupModalOpen(false)} />
+          <Panel className="relative w-full max-w-2xl bg-[color:var(--surface-0)] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="px-6 py-4 border-b border-[color:var(--border-subtle)] flex items-center justify-between bg-[color:var(--surface-1)]">
+              <div className="flex items-center gap-3">
+                <FileJson size={18} className="text-[color:var(--accent-solid)]" />
+                <h2 className="font-bold text-sm uppercase tracking-widest">Memory Backup</h2>
+              </div>
+              <button type="button" onClick={() => setIsBackupModalOpen(false)} className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6 overflow-y-auto max-h-[70vh]">
+              <section className="space-y-3">
+                <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)]">Export</h3>
+                <div className="grid grid-cols-1 gap-3">
+                  <label className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 accent-[color:var(--accent-solid)]"
+                      checked={backupIncludeSystem}
+                      onChange={(e) => setBackupIncludeSystem(e.target.checked)}
+                    />
+                    Include system memories
+                  </label>
+                </div>
+                <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-3 text-xs text-[color:var(--text-muted)] space-y-1">
+                  <p><strong className="text-[color:var(--text-primary)]">System memories:</strong> core setup memories like Agent Identity and User Profile.</p>
+                  <p><strong className="text-[color:var(--text-primary)]">Include system memories:</strong> include those core setup memories in the export file.</p>
+                </div>
+                <button onClick={() => void exportBackup()} className="btn-secondary h-10 px-4 text-xs gap-2" disabled={isExportingBackup}>
+                  {isExportingBackup ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                  Export Backup JSON
+                </button>
+              </section>
+
+              <section className="space-y-3">
+                <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)]">Import</h3>
+                <div className="grid grid-cols-1 gap-3">
+                  <label className="space-y-1">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Mode</span>
+                    <select
+                      className="input-field h-10 uppercase font-bold text-[10px] tracking-wider"
+                      value={backupImportMode}
+                      onChange={(e) => setBackupImportMode(e.target.value as MemoryBackupImportMode)}
+                    >
+                      {backupImportModes.map((mode) => (
+                        <option key={mode} value={mode}>{backupModeLabel(mode)}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-3 text-xs text-[color:var(--text-muted)] space-y-2">
+                  <p><strong className="text-[color:var(--text-primary)]">Mode:</strong> {backupModeDescription(backupImportMode)}</p>
+                  <p><strong className="text-[color:var(--text-primary)]">System memories:</strong> {backupSystemBehaviorDescription(backupImportMode)}</p>
+                </div>
+                {(backupImportMode === 'replace_all' || backupImportMode === 'replace_non_system') && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+                    This import mode deletes existing memories before applying the backup.
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={importFileInputRef}
+                    type="file"
+                    accept="application/json,.json"
+                    className="hidden"
+                    onChange={(e) => { void handleBackupFileSelected(e.target.files?.[0] ?? null); }}
+                  />
+                  <button onClick={() => importFileInputRef.current?.click()} className="btn-secondary h-10 px-4 text-xs gap-2">
+                    <Upload size={14} />
+                    Select Backup File
+                  </button>
+                  {backupDocument && (
+                    <button onClick={clearBackupSelection} className="btn-secondary h-10 px-3 text-xs">
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <div className="text-xs text-[color:var(--text-muted)]">
+                  {backupDocument
+                    ? `Loaded: ${backupFilename || 'backup.json'} (${backupDocument.nodes.length} nodes)`
+                    : 'No backup file loaded.'}
+                </div>
+              </section>
+            </div>
+
+            <div className="p-6 bg-[color:var(--surface-1)] border-t border-[color:var(--border-subtle)] flex items-center justify-end gap-3">
+              <button type="button" onClick={() => setIsBackupModalOpen(false)} className="btn-secondary h-11 px-6">Close</button>
+              <button type="button" onClick={() => void importBackup()} className="btn-primary h-11 px-8 gap-2" disabled={!backupDocument || isImportingBackup}>
+                {isImportingBackup ? <Loader2 size={18} className="animate-spin" /> : <Upload size={18} />}
+                Import Backup
+              </button>
+            </div>
           </Panel>
         </div>
       )}
