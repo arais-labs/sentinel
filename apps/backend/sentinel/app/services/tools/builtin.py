@@ -35,7 +35,6 @@ from app.services.memory import (
     MemoryService,
     ParentMemoryNotFoundError,
 )
-from app.services.memory.tree import is_descendant
 from app.services.memory.search import MemorySearchService
 from app.services.session_runtime import (
     finalize_detached_runtime_job,
@@ -1349,7 +1348,7 @@ def _memory_tree_tool(
 
         memory_service = MemoryService(MemoryRepository())
         async with session_factory() as db:
-            all_items = await MemoryRepository().list_all(db)
+            all_items = await memory_service.list_all_memories(db)
             if category is not None and root_id is None:
                 all_items = [item for item in all_items if item.category == category]
             by_id = {item.id: item for item in all_items}
@@ -1755,62 +1754,28 @@ def _memory_move_tool(
         if not to_root and target_parent_id is None:
             raise ToolValidationError("Provide target_parent_id or set to_root=true")
 
-        async with session_factory() as db:
-            repo = MemoryRepository()
-            memories = await repo.list_all(db)
-            by_id = {item.id: item for item in memories}
-
-            missing_ids = [str(node_id) for node_id in node_ids if node_id not in by_id]
-            if missing_ids:
-                raise ToolValidationError(
-                    "Memory node(s) not found: " + ", ".join(missing_ids)
+        memory_service = MemoryService(MemoryRepository())
+        try:
+            async with session_factory() as db:
+                moved = await memory_service.move_memories(
+                    db,
+                    node_ids=node_ids,
+                    target_parent_id=target_parent_id,
+                    to_root=to_root,
                 )
-
-            if target_parent_id is not None and target_parent_id not in by_id:
-                raise ToolValidationError("target_parent_id references unknown memory node")
-
-            # Avoid ambiguous updates: move top-level nodes only, not both parent and child together.
-            node_id_set = set(node_ids)
-            for ancestor in node_ids:
-                for maybe_child in node_ids:
-                    if ancestor == maybe_child:
-                        continue
-                    if is_descendant(
-                        target_parent_id=ancestor,
-                        node_id=maybe_child,
-                        memories=memories,
-                    ):
-                        raise ToolValidationError(
-                            "node_ids contains both an ancestor and its descendant; move only top-level nodes"
-                        )
-
-            if target_parent_id is not None:
-                for node_id in node_ids:
-                    if node_id == target_parent_id:
-                        raise ToolValidationError("A node cannot be moved under itself")
-                    if is_descendant(
-                        target_parent_id=node_id,
-                        node_id=target_parent_id,
-                        memories=memories,
-                    ):
-                        raise ToolValidationError("Cannot move a node under its own descendant")
-                    if target_parent_id in node_id_set:
-                        raise ToolValidationError(
-                            "target_parent_id cannot be one of the moved node_ids"
-                        )
-
-            for node_id in node_ids:
-                node = by_id[node_id]
-                node.parent_id = None if to_root else target_parent_id
-                node.updated_at = datetime.now(UTC)
-                db.add(node)
-            await db.commit()
+        except Exception as exc:  # noqa: BLE001
+            _raise_memory_tool_validation_error(
+                exc,
+                not_found_detail="Memory node not found",
+                parent_not_found_detail="Parent memory node not found",
+            )
+            raise
 
         return {
-            "moved_node_ids": [str(node_id) for node_id in node_ids],
+            "moved_node_ids": [str(item.id) for item in moved],
             "target_parent_id": None if to_root else str(target_parent_id),
             "to_root": to_root,
-            "moved_count": len(node_ids),
+            "moved_count": len(moved),
         }
 
     return ToolDefinition(
@@ -1891,6 +1856,8 @@ def _memory_as_dict(memory: Memory, *, include_parent: bool = True) -> dict[str,
         "category": memory.category,
         "importance": int(memory.importance or 0),
         "pinned": bool(memory.pinned),
+        "is_system": bool(getattr(memory, "is_system", False)),
+        "system_key": getattr(memory, "system_key", None),
     }
     if include_parent:
         data["parent_id"] = str(memory.parent_id) if memory.parent_id else None
