@@ -236,8 +236,8 @@ export default function ModulePage({ moduleName, notify, setRefresh }) {
                   onClick={() => setActiveTab(tab)}
                   className={`px-3 py-1 rounded text-xs font-medium transition-colors capitalize ${
                     activeTab === tab
-                      ? 'bg-[color:var(--accent-solid)] text-white'
-                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)]'
+                      ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
+                      : 'text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)]'
                   }`}
                 >
                   {tab}
