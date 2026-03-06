@@ -25,6 +25,18 @@ class CreateSessionRequest(BaseModel):
         return trimmed or None
 
 
+class UpdateSessionRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def _normalize_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
 class SessionResponse(BaseModel):
     id: UUID
     user_id: str
