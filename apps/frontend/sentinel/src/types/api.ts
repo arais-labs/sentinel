@@ -227,6 +227,8 @@ export interface MemoryEntry {
   parent_id: string | null;
   importance: number;
   pinned: boolean;
+  is_system: boolean;
+  system_key: string | null;
   metadata: Record<string, unknown>;
   session_id: string | null;
   score: number | null;
@@ -243,6 +245,38 @@ export interface MemoryListResponse {
 export interface MemoryStats {
   total_memories: number;
   categories: Record<string, number>;
+}
+
+export type MemoryBackupImportMode = 'merge' | 'replace_non_system' | 'replace_all';
+
+export interface MemoryBackupNode {
+  external_id: string;
+  parent_external_id: string | null;
+  content: string;
+  title: string | null;
+  summary: string | null;
+  category: 'core' | 'preference' | 'project' | 'correction';
+  importance: number;
+  pinned: boolean;
+  is_system: boolean;
+  system_key: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface MemoryBackupDocument {
+  schema_version: 'memory_backup_v1';
+  exported_at: string;
+  nodes: MemoryBackupNode[];
+}
+
+export interface MemoryBackupImportResponse {
+  total_in_backup: number;
+  created: number;
+  updated: number;
+  deleted: number;
+  skipped: number;
 }
 
 export interface Trigger {
@@ -346,6 +380,34 @@ export interface GitPushApproval {
 export interface GitPushApprovalListResponse {
   items: GitPushApproval[];
   total: number;
+}
+
+export interface ApprovalRecord {
+  provider: string;
+  approval_id: string;
+  status: string;
+  pending: boolean;
+  label: string;
+  session_id: string | null;
+  match_key: string | null;
+  command: string | null;
+  action: string | null;
+  description: string | null;
+  can_resolve: boolean;
+  decision_note: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  expires_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface ApprovalListResponse {
+  items: ApprovalRecord[];
+  total: number;
+}
+
+export interface ApprovalToolCallMatchResponse {
+  item: ApprovalRecord | null;
 }
 
 export interface PlaywrightLiveView {

@@ -1,9 +1,11 @@
 import { X, Terminal, Clock, Activity, Hash, Target, Wrench, Trash2, MessageSquare, Loader2 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 
-import { Markdown } from './ui/Markdown';
+import { SessionMessageCard, buildToolArgumentsByCallId } from './session/SessionMessageCard';
 import { Panel } from './ui/Panel';
 import { StatusChip } from './ui/StatusChip';
+import { approvalKey, type ApprovalRef } from '../lib/approvals';
 import { formatCompactDate } from '../lib/format';
 import { api } from '../lib/api';
 import type { Message, MessageListResponse, SubAgentTask } from '../types/api';
@@ -33,9 +35,42 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
+  const [resolvingApprovalKey, setResolvingApprovalKey] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const taskPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const messagePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
+
+  function isAtBottom(el: HTMLDivElement) {
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return distance <= 20;
+  }
+
+  function onTranscriptScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const prevTop = lastScrollTopRef.current;
+    const currentTop = el.scrollTop;
+    const userScrolledUp = currentTop < prevTop - 2;
+    lastScrollTopRef.current = currentTop;
+
+    if (isAtBottom(el)) {
+      shouldAutoScrollRef.current = true;
+      return;
+    }
+    if (userScrolledUp) {
+      shouldAutoScrollRef.current = false;
+    }
+  }
+
+  const toolArgumentsByCallId = useMemo(() => buildToolArgumentsByCallId(messages), [messages]);
+  const displayMessages = useMemo(
+    () => messages
+      .filter((m) => m.role !== 'system')
+      .filter((m) => !(m.role === 'assistant' && !m.content?.trim() && !m.tool_name)),
+    [messages],
+  );
 
   useEffect(() => {
     setLiveTask(task);
@@ -53,13 +88,41 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
   async function fetchMessages(sessionId: string) {
     try {
       const payload = await api.get<MessageListResponse>(`/sessions/${sessionId}/messages?limit=100`);
-      const sorted = sortMessages(payload.items).filter(
-        m => m.role !== 'system' && !(m.role === 'assistant' && !m.content?.trim() && !m.tool_name)
-      );
+      const sorted = sortMessages(payload.items);
       setMessages(sorted);
-      setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 50);
+      if (shouldAutoScrollRef.current) {
+        setTimeout(() => {
+          const el = scrollRef.current;
+          if (!el || !shouldAutoScrollRef.current) return;
+          el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+          lastScrollTopRef.current = el.scrollTop;
+        }, 50);
+      }
     } catch { /* ignore */ }
   }
+
+  const resolveApprovalInline = useCallback(async (approval: ApprovalRef, decision: 'approve' | 'reject') => {
+    const targetKey = approvalKey(approval);
+    setResolvingApprovalKey(targetKey);
+    try {
+      await api.post(
+        `/approvals/${encodeURIComponent(approval.provider)}/${encodeURIComponent(approval.approvalId)}/${decision}`,
+        {
+          note: decision === 'approve'
+            ? 'Approved from sub-agent transcript card'
+            : 'Rejected from sub-agent transcript card',
+        },
+      );
+      if (childSessionId) {
+        await fetchMessages(childSessionId);
+      }
+      toast.success(decision === 'approve' ? 'Approval approved' : 'Approval rejected');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to resolve approval');
+    } finally {
+      setResolvingApprovalKey(null);
+    }
+  }, [childSessionId]);
 
   useEffect(() => {
     void fetchTask();
@@ -223,8 +286,8 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
               {isRunning && <Loader2 size={11} className="animate-spin text-[color:var(--text-muted)] ml-auto" />}
             </div>
 
-            <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
-              {loadingMsgs && messages.length === 0 ? (
+            <div ref={scrollRef} onScroll={onTranscriptScroll} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+              {loadingMsgs && displayMessages.length === 0 ? (
                 <div className="flex items-center justify-center h-full text-[color:var(--text-muted)]">
                   <Loader2 size={20} className="animate-spin" />
                 </div>
@@ -232,32 +295,20 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
                 <div className="flex items-center justify-center h-full">
                   <p className="text-[11px] text-[color:var(--text-muted)] font-bold uppercase tracking-wider">Waiting for agent to start...</p>
                 </div>
-              ) : messages.length === 0 ? (
+              ) : displayMessages.length === 0 ? (
                 <div className="flex items-center justify-center h-full">
                   <p className="text-[11px] text-[color:var(--text-muted)] font-bold uppercase tracking-wider">No messages yet...</p>
                 </div>
               ) : (
-                messages.map(m => {
-                  const isUser = m.role === 'user';
-                  const isToolResult = m.role === 'tool_result';
-                  return (
-                    <div key={m.id} className={`flex w-full flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
-                      <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)] px-1">{m.role}</span>
-                      <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs border ${
-                        isUser
-                          ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent rounded-tr-none font-medium'
-                          : isToolResult
-                          ? 'bg-sky-500/5 border-sky-500/20 font-mono rounded-tl-none text-[color:var(--text-secondary)]'
-                          : 'bg-[color:var(--surface-2)] border-[color:var(--border-subtle)] rounded-tl-none font-medium'
-                      }`}>
-                        {isToolResult && m.tool_name && (
-                          <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-sky-500">⚙ {m.tool_name}</div>
-                        )}
-                        <Markdown content={m.content || ''} compact invert={isUser} />
-                      </div>
-                    </div>
-                  );
-                })
+                displayMessages.map((m) => (
+                  <SessionMessageCard
+                    key={m.id}
+                    message={m}
+                    toolArgumentsByCallId={toolArgumentsByCallId}
+                    onResolveApproval={resolveApprovalInline}
+                    resolvingApprovalKey={resolvingApprovalKey}
+                  />
+                ))
               )}
             </div>
           </div>

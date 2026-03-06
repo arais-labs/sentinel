@@ -24,6 +24,7 @@ from app.middleware import (
 )
 from app.routers import (
     admin,
+    approvals as approvals_router,
     auth,
     git as git_router,
     health,
@@ -41,6 +42,7 @@ from app.routers import (
     ws,
     webhooks,
 )
+from app.services.approvals import ApprovalService
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.embeddings import EmbeddingService
@@ -148,6 +150,7 @@ async def lifespan(app: FastAPI):
     provider = build_tier_provider_from_settings(settings)
     app.state.tool_registry = registry
     app.state.tool_executor = executor
+    app.state.approval_service = ApprovalService(session_factory=AsyncSessionLocal)
     app.state.embedding_service = embedding_service
     app.state.memory_search_service = memory_search_service
     app.state.browser_manager = browser_manager
@@ -374,6 +377,7 @@ async def lifespan(app: FastAPI):
         agent_loop=app.state.agent_loop,
         tool_executor=executor,
         ws_manager=ws_manager,
+        run_registry=app.state.agent_run_registry,
         db_factory=AsyncSessionLocal,
     )
     scheduler_task = asyncio.create_task(app.state.trigger_scheduler.start(stop_event))
@@ -423,6 +427,7 @@ app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 app.state.llm_provider = None
 app.state.ws_manager = ConnectionManager()
 app.state.agent_run_registry = AgentRunRegistry()
+app.state.approval_service = ApprovalService(session_factory=AsyncSessionLocal)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
@@ -445,6 +450,7 @@ app.include_router(triggers.router, prefix="/api/v1/triggers", tags=["triggers"]
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(tools.router, prefix="/api/v1/tools", tags=["tools"])
 app.include_router(git_router.router, prefix="/api/v1/git", tags=["git"])
+app.include_router(approvals_router.router, prefix="/api/v1/approvals", tags=["approvals"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
 app.include_router(models.router, prefix="/api/v1/models", tags=["models"])
 app.include_router(onboarding.router, prefix="/api/v1/onboarding", tags=["onboarding"])
