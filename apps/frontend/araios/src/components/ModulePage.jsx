@@ -280,6 +280,7 @@ export default function ModulePage({ moduleName, notify, setRefresh }) {
           config={{ ...config, actions: standaloneActions }}
           notify={notify}
           setRefresh={setRefresh}
+          hideHeader
         />
       )}
 
