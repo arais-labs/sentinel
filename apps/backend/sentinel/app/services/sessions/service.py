@@ -25,6 +25,7 @@ from app.services import session_bindings
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
 from app.services.llm.ids import TierName
+from app.services.memory import MemoryRepository, MemoryService
 from app.services.session_runtime import (
     cleanup_session_runtime,
     get_session_runtime_snapshot,
@@ -767,6 +768,7 @@ class SessionService:
         if self._agent_loop is None:
             return
         try:
+            memory_service = MemoryService(MemoryRepository())
             async with self._db_factory() as db:
                 for session_id in session_ids:
                     messages = await self._session_messages_for_distillation(db, session_id)
@@ -794,21 +796,25 @@ class SessionService:
                     if not summary_text:
                         continue
 
-                    root = await self._get_or_create_previous_sessions_root(db)
-                    date_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-                    db.add(
-                        Memory(
-                            content=summary_text,
-                            title=f"Session summary ({date_str})",
-                            summary=summary_text[:200],
-                            category="core",
-                            importance=65,
-                            parent_id=root.id,
-                            session_id=session_id,
-                            metadata_json={"source": "session_reset", "user_id": user_id},
-                        )
+                    root = await self._get_or_create_previous_sessions_root(
+                        db,
+                        memory_service=memory_service,
                     )
-                await db.commit()
+                    date_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
+                    await memory_service.create_memory(
+                        db,
+                        content=summary_text,
+                        title=f"Session summary ({date_str})",
+                        summary=summary_text[:200],
+                        category="core",
+                        importance=65,
+                        parent_id=root.id,
+                        pinned=False,
+                        metadata={"source": "session_reset", "user_id": user_id},
+                        embedding=None,
+                        embedding_service=None,
+                        ignore_embedding_errors=True,
+                    )
         except Exception:
             logger.warning("Memory extraction on reset failed", exc_info=True)
 
@@ -833,20 +839,27 @@ class SessionService:
             lines.append(f"{role}: {snippet}")
         return "\n".join(lines)[:6000]
 
-    async def _get_or_create_previous_sessions_root(self, db: AsyncSession) -> Memory:
-        result = await db.execute(
-            select(Memory)
-            .where(
-                Memory.title == "Previous Sessions",
-                Memory.parent_id.is_(None),
-            )
-            .limit(1)
-        )
-        root = result.scalars().first()
+    async def _get_or_create_previous_sessions_root(
+        self,
+        db: AsyncSession,
+        *,
+        memory_service: MemoryService,
+    ) -> Memory:
+        roots = await memory_service.list_root_memories(db, category="core")
+        root = next((item for item in roots if (item.title or "").strip() == "Previous Sessions"), None)
         if root is not None:
+            if not bool(root.pinned):
+                await memory_service.update_memory(
+                    db,
+                    memory_id=root.id,
+                    updates={"pinned": True},
+                    embedding_service=None,
+                    ignore_embedding_errors=True,
+                )
             return root
 
-        root = Memory(
+        return await memory_service.create_memory(
+            db,
             content=(
                 "Archive of past session summaries. "
                 "Reference these when context from previous conversations may be relevant."
@@ -855,12 +868,13 @@ class SessionService:
             summary="Past session summaries — reference if needed.",
             category="core",
             importance=80,
+            parent_id=None,
             pinned=True,
-            metadata_json={"source": "session_reset_root"},
+            metadata={"source": "session_reset_root"},
+            embedding=None,
+            embedding_service=None,
+            ignore_embedding_errors=True,
         )
-        db.add(root)
-        await db.flush()
-        return root
 
     async def _get_main_session_id(self, db: AsyncSession, *, user_id: str) -> UUID | None:
         existing = await session_bindings.resolve_main_session_id(db, user_id=user_id)

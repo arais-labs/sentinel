@@ -17,19 +17,35 @@ class MemoryRepository:
         result = await db.execute(select(Memory).where(Memory.id == memory_id))
         return result.scalars().first()
 
-    async def create(self, db: AsyncSession, memory: Memory) -> Memory:
+    async def create(self, db: AsyncSession, memory: Memory, *, commit: bool = True) -> Memory:
         db.add(memory)
-        await db.commit()
+        if commit:
+            await db.commit()
+        else:
+            await db.flush()
         await db.refresh(memory)
         return memory
 
-    async def save(self, db: AsyncSession, memory: Memory) -> Memory:
-        await db.commit()
+    async def save(self, db: AsyncSession, memory: Memory, *, commit: bool = True) -> Memory:
+        if commit:
+            await db.commit()
+        else:
+            await db.flush()
         await db.refresh(memory)
         return memory
 
-    async def delete_by_ids(self, db: AsyncSession, memories: list[Memory], ids: set[UUID]) -> None:
+    async def delete_by_ids(
+        self,
+        db: AsyncSession,
+        memories: list[Memory],
+        ids: set[UUID],
+        *,
+        commit: bool = True,
+    ) -> None:
         for node in memories:
             if node.id in ids:
                 await db.delete(node)
-        await db.commit()
+        if commit:
+            await db.commit()
+        else:
+            await db.flush()
