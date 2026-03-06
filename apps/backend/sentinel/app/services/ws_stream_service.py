@@ -11,13 +11,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import AsyncSessionLocal
 from app.models import Message, Session
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
-from app.services.llm.generic.types import AgentEvent, ImageContent, TextContent, UserMessage
+from app.services.llm.generic.types import AgentEvent, ImageContent, TextContent
 from app.services.llm.ids import TierName
 from app.services.messages import web_ingress_metadata
+from app.services.session_naming import (
+    apply_conversation_message_delta,
+    conversation_delta_for_role,
+)
 from app.services.ws_manager import ConnectionManager
 from app.services.ws_stream_parser import ParsedWsMessage
 
@@ -134,6 +137,7 @@ async def persist_user_message(
         metadata["attachments"] = attachments
     if content and not session.initial_prompt:
         session.initial_prompt = content
+    apply_conversation_message_delta(session, conversation_delta_for_role("user"))
 
     message = Message(
         session_id=session_id,
@@ -292,50 +296,6 @@ async def maybe_auto_compact_and_resume(
                 "error": "Auto-compaction failed",
             },
         )
-
-
-async def name_session(
-    *,
-    session_id: UUID,
-    first_message: str,
-    manager: ConnectionManager,
-    agent_loop: AgentLoopProtocol,
-) -> None:
-    prompt = (
-        "Generate a very short title (3-6 words max) for a chat session that starts with "
-        "this message. Reply with ONLY the title, no quotes, no punctuation at the end.\n\n"
-        f"Message: {first_message[:300]}"
-    )
-    try:
-        result = await agent_loop.provider.chat(
-            [UserMessage(content=prompt)],
-            model=TierName.FAST.value,
-            tools=[],
-            temperature=0.3,
-        )
-        title = ""
-        for block in result.content:
-            if isinstance(block, TextContent):
-                title += block.text
-        title = title.strip()[:80]
-        if not title:
-            return
-
-        async with AsyncSessionLocal() as db:
-            db_result = await db.execute(select(Session).where(Session.id == session_id))
-            session = db_result.scalars().first()
-            if session is None:
-                return
-            session.title = title
-            await db.commit()
-
-        await manager.broadcast(
-            str(session_id),
-            {"type": "session_named", "session_id": str(session_id), "title": title},
-        )
-    except Exception:
-        logger.warning("Auto-naming failed for session %s", session_id, exc_info=True)
-
 
 def _iso(value: datetime | None) -> str | None:
     if value is None:
