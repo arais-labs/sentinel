@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from app.config import settings
 from app.models import Session, SessionBinding
 from app.services import session_bindings
@@ -14,6 +16,7 @@ from app.services.telegram_bridge import (
     start_telegram_bridge,
     telegram_manage_integration_tool,
 )
+from app.services.tools.executor import ToolExecutionError, ToolValidationError
 from tests.fake_db import FakeDB
 
 
@@ -152,7 +155,7 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
                     {
                         "action": "configure",
                         "bot_token": "12345:abcde",
-                        "owner_session_id": "317dc122-62fd-481e-ba03-907ec45a7c5a",
+                        "session_id": "317dc122-62fd-481e-ba03-907ec45a7c5a",
                     }
                 )
             )
@@ -166,6 +169,115 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
         settings.telegram_bot_token = old_token
         settings.telegram_owner_user_id = old_owner
         settings.dev_user_id = old_dev_user
+
+
+def test_telegram_manage_tool_requires_session_for_mutations():
+    app_state = type(
+        "State", (), {"telegram_bridge": None, "telegram_stop_event": None, "telegram_task": None}
+    )()
+    tool = telegram_manage_integration_tool(app_state)
+
+    with pytest.raises(ToolValidationError, match="session_id"):
+        _run(tool.execute({"action": "start"}))
+
+
+def test_telegram_manage_tool_bind_owner_requires_connected_chat():
+    app_state = type(
+        "State", (), {"telegram_bridge": None, "telegram_stop_event": None, "telegram_task": None}
+    )()
+    tool = telegram_manage_integration_tool(app_state)
+
+    with patch(
+        "app.services.telegram_bridge.resolve_owner_user_id_from_session",
+        new=AsyncMock(return_value="admin"),
+    ):
+        with pytest.raises(ToolExecutionError, match="Chat not connected"):
+            _run(
+                tool.execute(
+                    {
+                        "action": "bind_owner",
+                        "session_id": "317dc122-62fd-481e-ba03-907ec45a7c5a",
+                        "chat_id": 12345,
+                    }
+                )
+            )
+
+
+def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
+    app_state = type(
+        "State", (), {"telegram_bridge": None, "telegram_stop_event": None, "telegram_task": None}
+    )()
+    tool = telegram_manage_integration_tool(app_state)
+
+    old_token = settings.telegram_bot_token
+    old_owner = settings.telegram_owner_user_id
+    old_owner_chat = settings.telegram_owner_chat_id
+    old_owner_tg_user = settings.telegram_owner_telegram_user_id
+
+    settings.telegram_bot_token = "12345:abcde"
+    settings.telegram_owner_user_id = "old-admin"
+    settings.telegram_owner_chat_id = "12345"
+    settings.telegram_owner_telegram_user_id = "777"
+
+    class _DBFactory:
+        async def __aenter__(self):
+            return FakeDB()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    try:
+        with (
+            patch(
+                "app.services.telegram_bridge.resolve_owner_user_id_from_session",
+                new=AsyncMock(return_value="new-admin"),
+            ),
+            patch(
+                "app.services.telegram_bridge._upsert_setting",
+                new=AsyncMock(return_value=None),
+            ) as upsert_mock,
+            patch(
+                "app.services.telegram_bridge._delete_setting",
+                new=AsyncMock(return_value=None),
+            ) as delete_mock,
+            patch(
+                "app.services.telegram_bridge.start_telegram_bridge",
+                new=AsyncMock(return_value=True),
+            ) as start_mock,
+            patch(
+                "app.services.telegram_bridge.AsyncSessionLocal",
+                return_value=_DBFactory(),
+            ),
+            patch(
+                "app.services.telegram_bridge.session_bindings.resolve_or_create_main_session",
+                new=AsyncMock(return_value=Session(user_id="new-admin", title="Main")),
+            ),
+            patch(
+                "app.services.telegram_bridge.resolve_latest_active_root_session_id_for_user",
+                new=AsyncMock(return_value="main-session-id"),
+            ),
+        ):
+            result = _run(
+                tool.execute(
+                    {
+                        "action": "start",
+                        "session_id": "317dc122-62fd-481e-ba03-907ec45a7c5a",
+                    }
+                )
+            )
+        assert result["success"] is True
+        assert settings.telegram_owner_user_id == "new-admin"
+        assert settings.telegram_owner_chat_id is None
+        assert settings.telegram_owner_telegram_user_id is None
+        upsert_mock.assert_awaited_with("telegram_owner_user_id", "new-admin")
+        delete_mock.assert_any_await("telegram_owner_chat_id")
+        delete_mock.assert_any_await("telegram_owner_telegram_user_id")
+        start_mock.assert_awaited_once()
+    finally:
+        settings.telegram_bot_token = old_token
+        settings.telegram_owner_user_id = old_owner
+        settings.telegram_owner_chat_id = old_owner_chat
+        settings.telegram_owner_telegram_user_id = old_owner_tg_user
 
 
 def test_send_telegram_message_tool_refuses_owner_chat_by_default():
@@ -186,9 +298,8 @@ def test_send_telegram_message_tool_refuses_owner_chat_by_default():
     old_owner_chat = settings.telegram_owner_chat_id
     settings.telegram_owner_chat_id = "12345"
     try:
-        result = _run(tool.execute({"chat_id": 12345, "message": "hello"}))
-        assert result["success"] is False
-        assert "owner Telegram DM" in str(result["error"])
+        with pytest.raises(ToolExecutionError, match="owner Telegram DM"):
+            _run(tool.execute({"chat_id": 12345, "message": "hello"}))
     finally:
         settings.telegram_owner_chat_id = old_owner_chat
 

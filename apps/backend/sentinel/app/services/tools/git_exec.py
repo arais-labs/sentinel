@@ -21,12 +21,31 @@ from app.config import settings
 from app.models import GitAccount, GitPushApproval, Session
 from app.services.session_runtime import ensure_runtime_layout, runtime_workspace_dir
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
-from app.services.tools.registry import ToolDefinition
+from app.services.tools.registry import (
+    ToolApprovalEvaluation,
+    ToolApprovalGate,
+    ToolApprovalMode,
+    ToolApprovalOutcome,
+    ToolApprovalOutcomeStatus,
+    ToolApprovalRequirement,
+    ToolDefinition,
+)
 
 _MAX_GIT_OUTPUT_CHARS = 50_000
 _FORBIDDEN_GIT_GLOBAL_FLAGS = {"-c", "-C", "--git-dir", "--work-tree"}
-_NETWORK_READ_SUBCOMMANDS = {"clone", "fetch", "pull", "ls-remote", "submodule"}
+_NETWORK_READ_SUBCOMMANDS = {"clone", "fetch", "pull", "ls-remote", "submodule", "request-pull"}
 _NETWORK_WRITE_SUBCOMMANDS = {"push"}
+_GH_NETWORK_READ_SUBCOMMANDS = {
+    ("repo", "list"),
+    ("repo", "view"),
+    ("pr", "view"),
+    ("api", None),
+}
+_GH_NETWORK_WRITE_SUBCOMMANDS = {
+    ("pr", "create"),
+    ("pr", "merge"),
+}
+_GH_API_WRITE_METHODS = {"POST", "PUT"}
 _TERMINAL_WAIT_POLL_SECONDS = 1.5
 _DEFAULT_GIT_TIMEOUT_SECONDS = 600
 _MAX_GIT_TIMEOUT_SECONDS = 3600
@@ -70,18 +89,6 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
             raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
         timeout_seconds = min(timeout_seconds, _MAX_GIT_TIMEOUT_SECONDS)
 
-        approval_timeout_seconds = payload.get(
-            "approval_timeout_seconds",
-            getattr(settings, "git_push_approval_timeout_seconds", _DEFAULT_PUSH_APPROVAL_TIMEOUT_SECONDS),
-        )
-        if (
-            not isinstance(approval_timeout_seconds, int)
-            or isinstance(approval_timeout_seconds, bool)
-            or approval_timeout_seconds < 1
-        ):
-            raise ToolValidationError("Field 'approval_timeout_seconds' must be a positive integer")
-        approval_timeout_seconds = min(approval_timeout_seconds, _MAX_PUSH_APPROVAL_TIMEOUT_SECONDS)
-
         cwd_raw = payload.get("cwd")
         if cwd_raw is not None and (not isinstance(cwd_raw, str) or not cwd_raw.strip()):
             raise ToolValidationError("Field 'cwd' must be a non-empty string when provided")
@@ -91,7 +98,18 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
         workspace_dir = runtime_workspace_dir(session_id)
         run_dir = _resolve_run_dir(workspace_dir, cwd_raw)
 
-        tokens = _parse_git_command(command.strip())
+        tokens = _parse_cli_command(command.strip())
+        if tokens[0] == "gh":
+            return await _execute_gh_command(
+                session_factory=session_factory,
+                session_id=session_id,
+                workspace_dir=workspace_dir,
+                run_dir=run_dir,
+                tokens=tokens,
+                timeout_seconds=timeout_seconds,
+                approval=_approval_context(payload),
+            )
+
         subcommand, subcommand_index = _extract_git_subcommand(tokens)
         subargs = tokens[subcommand_index + 1 :]
 
@@ -99,7 +117,6 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
         _validate_no_forbidden_global_flags(subargs)
 
         network_mode = _network_mode_for_command(subcommand)
-        approval: dict[str, Any] | None = None
         account: _ResolvedAccount | None = None
 
         if network_mode is not None:
@@ -115,43 +132,6 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
                     f"Add/update a Git account with matching host/scope and a {required_token}."
                 )
 
-            if network_mode == "write":
-                assert account is not None
-                approval_row = await _create_push_approval(
-                    session_factory=session_factory,
-                    account_id=account.account.id,
-                    session_id=session_id,
-                    repo_url=repo_url,
-                    remote_name=remote_name,
-                    command=command.strip(),
-                    requested_by=f"session:{session_id}",
-                    timeout_seconds=approval_timeout_seconds,
-                )
-                try:
-                    decision = await _wait_for_push_approval(
-                        session_factory=session_factory,
-                        approval_id=approval_row.id,
-                        timeout_seconds=approval_timeout_seconds,
-                    )
-                except asyncio.CancelledError:
-                    await _cancel_push_approval(
-                        session_factory=session_factory,
-                        approval_id=approval_row.id,
-                        note="Cancelled by user while awaiting approval",
-                    )
-                    raise
-                approval = {
-                    "id": str(approval_row.id),
-                    "status": decision.status,
-                    "decision_by": decision.decision_by,
-                    "decision_note": decision.decision_note,
-                }
-                if decision.status != "approved":
-                    raise ToolExecutionError(
-                        f"Push approval {decision.status}. "
-                        "Open Sentinel Git tab to approve/reject pending push requests."
-                    )
-
             result = await _run_network_git(
                 account=account,
                 workspace_dir=workspace_dir,
@@ -159,11 +139,11 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
                 tokens=tokens,
                 timeout_seconds=timeout_seconds,
             )
-            if approval is not None:
-                result["approval"] = approval
+            approval = _approval_context(payload)
+            if approval is not None and approval.get("provider") == "git":
                 await _record_push_result(
                     session_factory=session_factory,
-                    approval_id=UUID(approval["id"]),
+                    approval_id=UUID(str(approval["approval_id"])),
                     result=result,
                 )
             if subcommand == "clone" and account is not None and result["ok"]:
@@ -212,8 +192,12 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
     return ToolDefinition(
         name="git_exec",
         description=(
-            "Execute git commands inside the per-session workspace with managed credentials. "
-            "Network git operations are intercepted and account-matched automatically."
+            "Execute git commands and selected GitHub CLI commands inside the session workspace with managed credentials. "
+            "Allowed gh commands: `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT). "
+            "Allowed network git reads include `git clone/fetch/pull/ls-remote/submodule/request-pull`; "
+            "`git request-pull` only generates a pull-request summary and does not open a GitHub PR. "
+            "To open or merge a PR on GitHub, use `gh pr create` or `gh pr merge` (approval-gated). "
+            "Write operations (`git push`, `gh pr create`, `gh pr merge`, `gh api -X POST`, `gh api -X PUT`) require explicit approval before execution."
         ),
         risk_level="high",
         parameters_schema={
@@ -227,7 +211,7 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
                 },
                 "command": {
                     "type": "string",
-                    "description": "Git command, e.g. 'git clone ...', 'git status', 'git push'",
+                    "description": "Git/GitHub CLI command. Examples: 'git status', 'git fetch origin', 'git request-pull origin/main https://github.com/org/repo.git feature', 'gh repo list <org>', 'gh pr view 37 --json state,mergeStateStatus', 'gh pr create --repo <org>/<repo> ...', 'gh pr merge 37 --repo <org>/<repo> --merge', 'gh api -X PUT /repos/<org>/<repo>/pulls/<num>/merge'",
                 },
                 "cwd": {
                     "type": "string",
@@ -244,19 +228,445 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
             },
         },
         execute=_execute,
+        approval_gate=ToolApprovalGate(
+            mode=ToolApprovalMode.CONDITIONAL,
+            evaluator=_git_exec_approval_evaluator,
+            waiter=_git_exec_approval_waiter(session_factory=session_factory),
+        ),
     )
 
 
-def _parse_git_command(command: str) -> list[str]:
+def _approval_context(payload: dict[str, Any]) -> dict[str, Any] | None:
+    raw = payload.get("__approval_gate")
+    if isinstance(raw, dict):
+        return raw
+    return None
+
+
+def _approval_timeout_from_payload(payload: dict[str, Any]) -> int:
+    approval_timeout_seconds = payload.get(
+        "approval_timeout_seconds",
+        getattr(settings, "git_push_approval_timeout_seconds", _DEFAULT_PUSH_APPROVAL_TIMEOUT_SECONDS),
+    )
+    if (
+        not isinstance(approval_timeout_seconds, int)
+        or isinstance(approval_timeout_seconds, bool)
+        or approval_timeout_seconds < 1
+    ):
+        raise ToolValidationError("Field 'approval_timeout_seconds' must be a positive integer")
+    return min(approval_timeout_seconds, _MAX_PUSH_APPROVAL_TIMEOUT_SECONDS)
+
+
+def _git_exec_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEvaluation:
+    command = payload.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return ToolApprovalEvaluation.allow()
+    tokens = _parse_cli_command(command.strip())
+    action = _approval_action_for_tokens(tokens)
+    if action is None:
+        return ToolApprovalEvaluation.allow()
+    session_id = payload.get("session_id")
+    requested_by = (
+        f"session:{session_id.strip()}"
+        if isinstance(session_id, str) and session_id.strip()
+        else None
+    )
+    requirement = ToolApprovalRequirement(
+        action=action,
+        description=f"Allow write operation: {command.strip()}",
+        timeout_seconds=_approval_timeout_from_payload(payload),
+        match_key=_normalize_command(command),
+        metadata={"tool_name": "git_exec", "command": command.strip()},
+        requested_by=requested_by,
+    )
+    return ToolApprovalEvaluation.require(requirement)
+
+
+def _git_exec_approval_waiter(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    async def _waiter(
+        tool_name: str,
+        payload: dict[str, Any],
+        requirement: ToolApprovalRequirement,
+    ) -> ToolApprovalOutcome:
+        _ = tool_name
+        session_id_raw = payload.get("session_id")
+        if not isinstance(session_id_raw, str) or not session_id_raw.strip():
+            raise ToolValidationError("Field 'session_id' must be a non-empty string")
+        try:
+            session_id = UUID(session_id_raw.strip())
+        except ValueError as exc:
+            raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+
+        command = payload.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ToolValidationError("Field 'command' must be a non-empty string")
+        tokens = _parse_cli_command(command.strip())
+
+        await _ensure_session_exists(session_factory, session_id)
+        await ensure_runtime_layout(session_id)
+        workspace_dir = runtime_workspace_dir(session_id)
+        run_dir = _resolve_run_dir(workspace_dir, payload.get("cwd"))
+
+        if tokens[0] == "gh":
+            host = _extract_gh_host(tokens)
+            owner = _extract_gh_owner(tokens, run_dir=run_dir)
+            if not owner:
+                raise ToolValidationError(
+                    "Unable to infer GitHub owner for approval-gated gh command."
+                )
+            repo_url = f"https://{host}/{owner}/_gh_scope"
+            remote_name = "gh"
+        else:
+            subcommand, subcommand_index = _extract_git_subcommand(tokens)
+            subargs = tokens[subcommand_index + 1 :]
+            repo_url, remote_name = _resolve_network_repo_url(subcommand, subargs, run_dir)
+
+        async with session_factory() as db:
+            account = await _resolve_git_account(db, repo_url=repo_url, require_write=True)
+        if account is None:
+            repo_target = _repo_target_label(repo_url)
+            raise ToolValidationError(
+                "No matching git account is configured for "
+                f"'{repo_target}' (write access). Add/update a Git account with a write token."
+            )
+
+        approval_row = await _create_push_approval(
+            session_factory=session_factory,
+            account_id=account.account.id,
+            session_id=session_id,
+            repo_url=repo_url,
+            remote_name=remote_name,
+            command=command.strip(),
+            requested_by=requirement.requested_by or f"session:{session_id}",
+            timeout_seconds=requirement.timeout_seconds,
+        )
+        try:
+            decision = await _wait_for_push_approval(
+                session_factory=session_factory,
+                approval_id=approval_row.id,
+                timeout_seconds=requirement.timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            await _cancel_push_approval(
+                session_factory=session_factory,
+                approval_id=approval_row.id,
+                note="Cancelled by user while awaiting approval",
+            )
+            return ToolApprovalOutcome(
+                status=ToolApprovalOutcomeStatus.CANCELLED,
+                approval={
+                    "provider": "git",
+                    "approval_id": str(approval_row.id),
+                    "status": "cancelled",
+                    "pending": False,
+                    "can_resolve": False,
+                    "label": "Git write approval",
+                    "match_key": _normalize_command(command),
+                },
+                message="Approval cancelled.",
+            )
+
+        return ToolApprovalOutcome(
+            status=ToolApprovalOutcomeStatus(decision.status),
+            approval={
+                "provider": "git",
+                "approval_id": str(approval_row.id),
+                "status": decision.status,
+                "pending": False,
+                "can_resolve": False,
+                "label": "Git write approval",
+                "match_key": _normalize_command(command),
+                "decision_by": decision.decision_by,
+                "decision_note": decision.decision_note,
+            },
+            message=_approval_status_message(decision.status, decision.decision_note),
+        )
+
+    return _waiter
+
+
+def _approval_action_for_tokens(tokens: list[str]) -> str | None:
+    if not tokens:
+        return None
+    if tokens[0] == "git":
+        subcommand, _ = _extract_git_subcommand(tokens)
+        mode = _network_mode_for_command(subcommand)
+        if mode == "write":
+            return f"git.{subcommand}"
+        return None
+    if tokens[0] == "gh":
+        mode = _gh_network_mode(tokens)
+        if mode != "write":
+            return None
+        primary, secondary = _gh_subcommand(tokens)
+        if primary == "api":
+            method = _gh_api_method(tokens).lower()
+            return f"gh.api.{method}"
+        if secondary:
+            return f"gh.{primary}.{secondary}"
+        return f"gh.{primary}"
+    return None
+
+
+def _approval_status_message(status: str, note: str | None) -> str:
+    detail = (note or "").strip()
+    if status == "approved":
+        return f"Approval approved: {detail}" if detail else "Approval approved."
+    if status == "rejected":
+        return f"Approval rejected: {detail}" if detail else "Approval rejected."
+    if status == "timed_out":
+        return f"Approval timed out: {detail}" if detail else "Approval timed out."
+    if status == "cancelled":
+        return f"Approval cancelled: {detail}" if detail else "Approval cancelled."
+    return f"Approval {status}: {detail}" if detail else f"Approval {status}."
+
+
+def _normalize_command(command: str) -> str:
+    return " ".join(command.strip().split()).lower()
+
+
+def _parse_cli_command(command: str) -> list[str]:
     try:
         tokens = shlex.split(command)
     except ValueError as exc:
         raise ToolValidationError(f"Invalid command syntax: {exc}") from exc
     if not tokens:
         raise ToolValidationError("Command is empty")
-    if tokens[0] != "git":
-        raise ToolValidationError("Only git commands are allowed")
+    if tokens[0] not in {"git", "gh"}:
+        raise ToolValidationError(
+            "Only git or selected gh commands are allowed. "
+            "Supported gh commands in git_exec: `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT)."
+        )
     return tokens
+
+
+async def _execute_gh_command(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    session_id: UUID,
+    workspace_dir: Path,
+    run_dir: Path,
+    tokens: list[str],
+    timeout_seconds: int,
+    approval: dict[str, Any] | None,
+) -> dict[str, Any]:
+    host = _extract_gh_host(tokens)
+    primary, secondary = _gh_subcommand(tokens)
+    mode = _gh_network_mode(tokens)
+    if mode not in {"read", "write"}:
+        if primary == "auth":
+            raise ToolValidationError(
+                "Unsupported gh auth command in git_exec. "
+                "Authentication is managed automatically via configured Git account tokens, "
+                "so interactive auth commands like `gh auth status/login` are not needed. "
+                "Use supported commands: `gh repo list <org>`, `gh repo view <org>/<repo>`, "
+                "`gh pr view`, `gh pr create`, `gh pr merge`, `gh api <endpoint>` (GET/POST/PUT)."
+            )
+        raise ToolValidationError(
+            "Unsupported gh command in git_exec. "
+            "Supported: `gh repo list <org>`, `gh repo view <org>/<repo>`, "
+            "`gh pr view`, `gh pr create`, `gh pr merge`, `gh api <endpoint>` (GET/POST/PUT)."
+        )
+
+    owner = _extract_gh_owner(tokens, run_dir=run_dir)
+    if not owner:
+        raise ToolValidationError(
+            "Unable to infer GitHub owner for gh command. "
+            "Provide explicit owner (for example: `gh repo list <org>`, `gh repo view <org>/<repo>`, "
+            "or `gh api /orgs/<org>/repos`)."
+        )
+
+    scope_repo_url = f"https://{host}/{owner}/_gh_scope"
+    async with session_factory() as db:
+        account = await _resolve_git_account(
+            db,
+            repo_url=scope_repo_url,
+            require_write=mode == "write",
+        )
+    if account is None:
+        required_token = "write token" if mode == "write" else "read token"
+        raise ToolValidationError(
+            "No matching git account is configured for "
+            f"'{host}/{owner}' ({mode} access). "
+            f"Add/update a Git account with matching host/scope and a {required_token}."
+        )
+
+    token = (
+        (account.account.token_write if mode == "write" else account.account.token_read)
+        or ""
+    ).strip()
+    if not token:
+        missing_kind = "write token" if mode == "write" else "read token"
+        raise ToolValidationError(f"Matching git account is missing required {missing_kind}")
+
+    env = os.environ.copy()
+    env["HOME"] = str(workspace_dir)
+    env["PWD"] = str(run_dir)
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
+    env["GH_HOST"] = host
+    env["GH_PROMPT_DISABLED"] = "1"
+
+    result = await _run_git_subprocess(
+        args=tokens,
+        run_dir=run_dir,
+        env=env,
+        timeout_seconds=timeout_seconds,
+        redactions=[token],
+    )
+    result["network_mode"] = mode
+    result["account"] = {
+        "id": str(account.account.id),
+        "name": account.account.name,
+        "host": account.account.host,
+        "scope_pattern": account.account.scope_pattern,
+    }
+    if approval is not None and approval.get("provider") == "git":
+        await _record_push_result(
+            session_factory=session_factory,
+            approval_id=UUID(str(approval["approval_id"])),
+            result=result,
+        )
+    return result
+
+
+def _extract_gh_host(tokens: list[str]) -> str:
+    idx = 1
+    while idx < len(tokens):
+        part = tokens[idx]
+        if part == "--hostname":
+            if idx + 1 < len(tokens) and tokens[idx + 1].strip():
+                return tokens[idx + 1].strip().lower()
+            raise ToolValidationError("gh --hostname requires a value")
+        if part.startswith("--hostname="):
+            value = part.split("=", 1)[1].strip().lower()
+            if value:
+                return value
+            raise ToolValidationError("gh --hostname requires a value")
+        idx += 1
+    return "github.com"
+
+
+def _gh_network_mode(tokens: list[str]) -> str | None:
+    primary, secondary = _gh_subcommand(tokens)
+    if (primary, secondary) in _GH_NETWORK_WRITE_SUBCOMMANDS:
+        return "write"
+    if (primary, secondary) in _GH_NETWORK_READ_SUBCOMMANDS:
+        if primary == "api":
+            method = _gh_api_method(tokens)
+            if method == "GET":
+                return "read"
+            if method in _GH_API_WRITE_METHODS:
+                return "write"
+            raise ToolValidationError("gh api supports GET, POST, and PUT in git_exec")
+        return "read"
+    return None
+
+
+def _gh_subcommand(tokens: list[str]) -> tuple[str, str | None]:
+    if len(tokens) < 2:
+        raise ToolValidationError("Missing gh subcommand")
+    primary = tokens[1].strip().lower()
+    if primary.startswith("-"):
+        raise ToolValidationError(
+            "gh global flags before subcommand are not supported in git_exec; place subcommand first"
+        )
+    if primary == "api":
+        return primary, None
+    secondary: str | None = None
+    if len(tokens) >= 3 and not tokens[2].startswith("-"):
+        secondary = tokens[2].strip().lower()
+    return primary, secondary
+
+
+def _gh_api_method(tokens: list[str]) -> str:
+    idx = 0
+    method = "GET"
+    while idx < len(tokens):
+        part = tokens[idx]
+        if part in {"-X", "--method"}:
+            if idx + 1 >= len(tokens):
+                raise ToolValidationError("gh api method flag requires a value")
+            method = str(tokens[idx + 1]).strip().upper()
+            idx += 2
+            continue
+        if part.startswith("--method="):
+            method = part.split("=", 1)[1].strip().upper()
+        idx += 1
+    return method or "GET"
+
+
+def _extract_gh_owner(tokens: list[str], *, run_dir: Path) -> str | None:
+    primary, secondary = _gh_subcommand(tokens)
+    if primary == "repo" and secondary == "list":
+        owner = _first_positional_argument(tokens[3:])
+        return _normalize_owner(owner)
+    if primary == "repo" and secondary == "view":
+        slug = _first_positional_argument(tokens[3:])
+        if slug and "/" in slug:
+            return _normalize_owner(slug.split("/", 1)[0])
+        explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
+        if explicit_repo and "/" in explicit_repo:
+            return _normalize_owner(explicit_repo.split("/", 1)[0])
+        origin_url = _resolve_origin_url(run_dir)
+        repo = _parse_repo_ref(origin_url)
+        return _normalize_owner(repo.path.split("/", 1)[0])
+    if primary == "api":
+        endpoint = _first_positional_argument(tokens[2:])
+        if endpoint:
+            return _normalize_owner(_extract_owner_from_gh_api_endpoint(endpoint))
+    if primary == "pr" and secondary in {"create", "view", "merge"}:
+        explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
+        if explicit_repo and "/" in explicit_repo:
+            return _normalize_owner(explicit_repo.split("/", 1)[0])
+        origin_url = _resolve_origin_url(run_dir)
+        repo = _parse_repo_ref(origin_url)
+        return _normalize_owner(repo.path.split("/", 1)[0])
+    return None
+
+
+def _extract_owner_from_gh_api_endpoint(endpoint: str) -> str | None:
+    value = endpoint.strip()
+    if not value:
+        return None
+    if "://" in value:
+        parsed = urlparse(value)
+        value = parsed.path or ""
+    path = value.strip().lstrip("/")
+    parts = [part for part in path.split("/") if part]
+    if len(parts) >= 3 and parts[0] == "orgs" and parts[2] == "repos":
+        return parts[1]
+    if len(parts) >= 3 and parts[0] == "users" and parts[2] == "repos":
+        return parts[1]
+    if len(parts) >= 3 and parts[0] == "repos":
+        return parts[1]
+    return None
+
+
+def _extract_option_value(args: list[str], option_names: set[str]) -> str | None:
+    idx = 0
+    while idx < len(args):
+        part = args[idx]
+        if part in option_names:
+            if idx + 1 < len(args):
+                value = args[idx + 1].strip()
+                return value or None
+            return None
+        for name in option_names:
+            prefix = f"{name}="
+            if part.startswith(prefix):
+                value = part.split("=", 1)[1].strip()
+                return value or None
+        idx += 1
+    return None
+
+
+def _normalize_owner(value: str | None) -> str | None:
+    normalized = (value or "").strip().strip("/")
+    return normalized.lower() if normalized else None
 
 
 def _extract_git_subcommand(tokens: list[str]) -> tuple[str, int]:
@@ -319,9 +729,23 @@ def _resolve_network_repo_url(subcommand: str, subargs: list[str], run_dir: Path
         if candidate and _looks_like_repo_url(candidate):
             return candidate, "origin"
 
+    if subcommand == "request-pull":
+        repo_url, remote_name = _extract_request_pull_repo_url(subargs, run_dir)
+        return repo_url, remote_name
+
     remote_name = _first_positional_argument(subargs) or "origin"
     repo_url = _resolve_origin_url(run_dir, remote_name=remote_name)
     return repo_url, remote_name
+
+
+def _extract_request_pull_repo_url(subargs: list[str], run_dir: Path) -> tuple[str, str]:
+    positionals = _positional_arguments(subargs)
+    if len(positionals) < 2:
+        raise ToolValidationError("git request-pull requires <start> and <url> arguments")
+    upstream = positionals[1]
+    if _looks_like_repo_url(upstream):
+        return upstream, "origin"
+    return _resolve_origin_url(run_dir, remote_name=upstream), upstream
 
 
 def _extract_clone_repo_url(subargs: list[str]) -> str:
@@ -348,6 +772,11 @@ def _extract_clone_remote_name(subargs: list[str]) -> str | None:
 
 
 def _first_positional_argument(args: list[str]) -> str | None:
+    positionals = _positional_arguments(args)
+    return positionals[0] if positionals else None
+
+
+def _positional_arguments(args: list[str]) -> list[str]:
     options_with_value = {
         "-b",
         "--branch",
@@ -359,12 +788,30 @@ def _first_positional_argument(args: list[str]) -> str | None:
         "--jobs",
         "--config",
         "--upload-pack",
+        "--limit",
+        "-L",
+        "--json",
+        "--jq",
+        "--template",
+        "--hostname",
+        "-R",
+        "--repo",
+        "-X",
+        "--method",
+        "-f",
+        "-F",
+        "--field",
+        "--raw-field",
+        "-H",
+        "--header",
     }
+    positionals: list[str] = []
     idx = 0
     while idx < len(args):
         part = args[idx]
         if part == "--":
-            return args[idx + 1] if idx + 1 < len(args) else None
+            positionals.extend(args[idx + 1 :])
+            break
         if part in options_with_value:
             idx += 2
             continue
@@ -374,8 +821,9 @@ def _first_positional_argument(args: list[str]) -> str | None:
         if part.startswith("-"):
             idx += 1
             continue
-        return part
-    return None
+        positionals.append(part)
+        idx += 1
+    return positionals
 
 
 def _looks_like_repo_url(value: str) -> bool:

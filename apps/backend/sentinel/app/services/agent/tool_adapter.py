@@ -17,6 +17,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.services.approvals.extractors import extract_approval_metadata_from_tool_result
 from app.services.estop import EstopService
 from app.services.llm.generic.credential_scrubber import scrub
 from app.services.llm.generic.types import ToolCallContent, ToolResultMessage, ToolSchema
@@ -133,7 +134,7 @@ class ToolAdapter:
                 payload,
                 allow_high_risk=allow_high_risk,
             )
-            truncated, metadata = self._prepare_content_and_metadata(result)
+            truncated, metadata = self._prepare_content_and_metadata(call.name, result)
             return ToolResultMessage(
                 tool_call_id=call.id,
                 tool_name=call.name,
@@ -156,7 +157,7 @@ class ToolAdapter:
                 is_error=True,
             )
 
-    def _prepare_content_and_metadata(self, result: Any) -> tuple[str, dict[str, Any]]:
+    def _prepare_content_and_metadata(self, tool_name: str, result: Any) -> tuple[str, dict[str, Any]]:
         """Serialize tool output and extract rich attachments into metadata."""
         attachments: list[dict[str, Any]] = []
         safe_result = self._extract_attachments(result, attachments=attachments)
@@ -166,6 +167,16 @@ class ToolAdapter:
         metadata: dict[str, Any] = {}
         if attachments:
             metadata["attachments"] = attachments
+        approval = extract_approval_metadata_from_tool_result(tool_name=tool_name, result=safe_result)
+        if isinstance(approval, dict):
+            metadata["approval"] = approval
+            metadata["pending"] = bool(approval.get("pending"))
+            approval_id = approval.get("approval_id")
+            provider = approval.get("provider")
+            if isinstance(approval_id, str) and approval_id.strip():
+                metadata["approval_id"] = approval_id.strip()
+            if isinstance(provider, str) and provider.strip():
+                metadata["approval_provider"] = provider.strip()
         return truncated, metadata
 
     def _schema_for_model(self, raw_schema: Any) -> dict[str, Any]:
