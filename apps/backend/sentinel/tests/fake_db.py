@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -48,6 +49,7 @@ class FakeDB:
 
     def __init__(self):
         self.storage = defaultdict(list)
+        self._tx_snapshots: list[dict] = []
         self._seed_auth_settings()
 
     def _seed_auth_settings(self) -> None:
@@ -80,11 +82,35 @@ class FakeDB:
     async def commit(self):
         return None
 
+    async def rollback(self):
+        if self._tx_snapshots:
+            snapshot = self._tx_snapshots[0]
+            self.storage = defaultdict(list, copy.deepcopy(snapshot))
+            self._tx_snapshots.clear()
+        return None
+
     async def refresh(self, _obj):
         return None
 
     async def flush(self):
         return None
+
+    class _TxContext:
+        def __init__(self, db: "FakeDB"):
+            self._db = db
+
+        async def __aenter__(self):
+            self._db._tx_snapshots.append(copy.deepcopy(dict(self._db.storage)))
+            return self._db
+
+        async def __aexit__(self, exc_type, _exc, _tb):
+            snapshot = self._db._tx_snapshots.pop() if self._db._tx_snapshots else None
+            if exc_type is not None and snapshot is not None:
+                self._db.storage = defaultdict(list, copy.deepcopy(snapshot))
+            return False
+
+    def begin(self):
+        return self._TxContext(self)
 
     async def get(self, model, obj_id):
         rows = self.storage.get(model, [])
