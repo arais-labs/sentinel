@@ -13,7 +13,8 @@ from app.config import settings
 from app.dependencies import get_db
 from app.logging_context import reset_log_session, set_log_session
 from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
-from app.models import GitPushApproval, Message
+from app.models import GitPushApproval, Message, ToolApproval
+from app.services.approvals import ApprovalService
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
 from app.services.ws_manager import ConnectionManager
@@ -85,55 +86,43 @@ async def stream_session(
             "context_token_budget": int(settings.context_token_budget),
         }
     )
-    pending_result = await db.execute(
-        select(GitPushApproval).where(
-            GitPushApproval.session_id == id,
-            GitPushApproval.status == "pending",
-        )
-    )
-    pending_rows = pending_result.scalars().all()
-    pending_rows.sort(
-        key=lambda item: item.created_at or item.updated_at,
-        reverse=True,
-    )
-    pending_by_command: dict[str, list[GitPushApproval]] = {}
-    pending_pool: list[GitPushApproval] = []
-    for row in pending_rows:
-        pending_pool.append(row)
-        key = _normalize_git_command(row.command)
-        pending_by_command.setdefault(key, []).append(row)
 
-    def _match_pending_for_call(call: dict[str, object]) -> str | None:
-        if call.get("name") != "git_exec":
-            return None
-        arguments = call.get("arguments")
-        if not isinstance(arguments, dict):
-            return None
-        command = arguments.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return None
-        key = _normalize_git_command(command)
-        bucket = pending_by_command.get(key)
-        while bucket:
-            candidate = bucket.pop(0)
-            if candidate in pending_pool:
-                pending_pool.remove(candidate)
-                return str(candidate.id)
-        return None
+    approval_service = _resolve_approval_service(websocket)
+    pending_matches = await approval_service.match_pending_for_unresolved_calls(
+        db,
+        session_id=id,
+        unresolved_calls=unresolved_calls,
+    )
 
     for call in unresolved_calls:
-        approval_id = _match_pending_for_call(call)
+        call_id = str(call.get("id") or "")
+        pending_approval = pending_matches.get(call_id)
         pending_metadata: dict[str, object] = {
-            "pending": True,
             "rehydrated": True,
         }
         pending_content = {
-            "status": "pending",
+            "status": "running",
             "message": "Tool call is still running or waiting for completion.",
         }
-        if approval_id is not None:
-            pending_metadata["approval_id"] = approval_id
-            pending_content["approval_id"] = approval_id
+        if pending_approval is not None:
+            pending_metadata["pending"] = True
+            approval_payload = {
+                "provider": pending_approval.provider,
+                "approval_id": pending_approval.approval_id,
+                "status": pending_approval.status,
+                "pending": pending_approval.pending,
+                "can_resolve": pending_approval.can_resolve,
+                "label": pending_approval.label,
+                "session_id": pending_approval.session_id,
+                "match_key": pending_approval.match_key,
+            }
+            pending_metadata["approval"] = approval_payload
+            pending_metadata["approval_id"] = pending_approval.approval_id
+            pending_metadata["approval_provider"] = pending_approval.provider
+            pending_content["approval"] = approval_payload
+            pending_content["approval_id"] = pending_approval.approval_id
+            pending_content["approval_provider"] = pending_approval.provider
+            pending_content["status"] = "pending"
             pending_content["message"] = "Tool call still running or waiting for approval."
         await websocket.send_json(
             {
@@ -256,8 +245,11 @@ def _resolve_run_registry(websocket: WebSocket) -> AgentRunRegistry:
     raise RuntimeError("Agent run registry is not initialized on app.state")
 
 
-def _normalize_git_command(command: str) -> str:
-    return " ".join(command.strip().split()).lower()
+def _resolve_approval_service(websocket: WebSocket) -> ApprovalService:
+    service = getattr(websocket.app.state, "approval_service", None)
+    if isinstance(service, ApprovalService):
+        return service
+    raise RuntimeError("Approval service is not initialized on app.state")
 
 
 async def _materialize_interrupted_tool_results(
@@ -275,6 +267,17 @@ async def _materialize_interrupted_tool_results(
     )
     pending_rows = pending_result.scalars().all()
     for row in pending_rows:
+        row.status = "cancelled"
+        row.decision_note = "Cancelled automatically: backend run not active after reconnect"
+        row.resolved_at = now
+    tool_pending_result = await db.execute(
+        select(ToolApproval).where(
+            ToolApproval.session_id == session_id,
+            ToolApproval.status == "pending",
+        )
+    )
+    tool_pending_rows = tool_pending_result.scalars().all()
+    for row in tool_pending_rows:
         row.status = "cancelled"
         row.decision_note = "Cancelled automatically: backend run not active after reconnect"
         row.resolved_at = now

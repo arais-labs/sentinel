@@ -8,6 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
 from app.schemas.memory import (
+    MemoryBackupDocument,
+    MemoryBackupImportRequest,
+    MemoryBackupImportResponse,
     MemoryChildrenResponse,
     MemoryListResponse,
     MemoryResponse,
@@ -23,11 +26,14 @@ from app.services.memory import (
     MemoryService,
     MemoryServiceError,
     ParentMemoryNotFoundError,
+    ProtectedMemoryOperationError,
     memory_to_response,
 )
+from app.services.memory.backup import InvalidMemoryBackupError, MemoryBackupService
 
 router = APIRouter()
 _memory_service = MemoryService(MemoryRepository())
+_memory_backup_service = MemoryBackupService(_memory_service)
 
 
 def _raise_http_for_memory_error(exc: MemoryServiceError) -> None:
@@ -39,6 +45,8 @@ def _raise_http_for_memory_error(exc: MemoryServiceError) -> None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Parent memory not found"
         ) from exc
+    if isinstance(exc, ProtectedMemoryOperationError):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     if isinstance(exc, InvalidMemoryOperationError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     raise exc
@@ -235,3 +243,32 @@ async def delete_memory(
         _raise_http_for_memory_error(exc)
         raise
     return {"status": "deleted"}
+
+
+@router.get("/backup/export", response_model=MemoryBackupDocument)
+async def export_memory_backup(
+    include_system: bool = Query(default=True),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> MemoryBackupDocument:
+    _ = user
+    return await _memory_backup_service.export_document(
+        db,
+        include_system=include_system,
+    )
+
+
+@router.post("/backup/import", response_model=MemoryBackupImportResponse)
+async def import_memory_backup(
+    payload: MemoryBackupImportRequest,
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> MemoryBackupImportResponse:
+    _ = user
+    try:
+        return await _memory_backup_service.import_document(db, request=payload)
+    except InvalidMemoryBackupError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except MemoryServiceError as exc:
+        _raise_http_for_memory_error(exc)
+        raise
