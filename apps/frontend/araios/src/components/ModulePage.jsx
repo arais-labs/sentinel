@@ -7,7 +7,7 @@ import DynamicDetailPane from './DynamicDetailPane';
 import DynamicForm from './DynamicForm';
 import PageModule from './PageModule';
 import ApiModule from './ApiModule';
-import { IconSearch, IconCopy } from './Icons';
+import { IconCopy } from './Icons';
 
 function buildDataPrompt(config) {
   const BASE_URL = window.location.origin;
@@ -122,6 +122,7 @@ export default function ModulePage({ moduleName, notify, setRefresh }) {
   const titleField  = config?.list_config?.titleField  || 'id';
   const subtitleField = config?.list_config?.subtitleField;
   const badgeField  = config?.list_config?.badgeField;
+  const metaField = config?.list_config?.metaField;
 
   const filterValues = useMemo(() => {
     if (!filterField) return [];
@@ -151,6 +152,8 @@ export default function ModulePage({ moduleName, notify, setRefresh }) {
     [config]
   );
   const hasStandaloneActions = standaloneActions.length > 0;
+  const hasCreate = (config?.actions || []).some(a => a.type === 'create');
+  const createAction = (config?.actions || []).find(a => a.type === 'create');
 
   // CRUD handlers
   const handleCreate = async (data) => {
@@ -252,8 +255,10 @@ export default function ModulePage({ moduleName, notify, setRefresh }) {
             <IconCopy />
             <span className="text-[10px] font-bold uppercase tracking-widest">{copied ? 'Copied!' : 'Prompt'}</span>
           </button>
-          {activeTab === 'records' && (
-            <button className="btn-primary" onClick={() => setCreateOpen(true)}>+ New</button>
+          {activeTab === 'records' && hasCreate && (
+            <button className="btn-primary" onClick={() => setCreateOpen(true)}>
+              {createAction?.label || `New ${config.label}`}
+            </button>
           )}
         </div>
         {activeTab === 'records' && (
@@ -302,16 +307,30 @@ export default function ModulePage({ moduleName, notify, setRefresh }) {
               {!loading && filtered.length === 0 && (
                 <div className="p-4 text-sm text-[color:var(--text-muted)]">No records found.</div>
               )}
-              {filtered.map(rec => (
-                <ListCard
-                  key={rec.id}
-                  title={rec[titleField] || rec.id}
-                  subtitle={subtitleField ? rec[subtitleField] : undefined}
-                  badge={badgeField ? rec[badgeField] : undefined}
-                  selected={rec.id === selectedId}
-                  onClick={() => setSelectedId(rec.id)}
-                />
-              ))}
+              {filtered.map(rec => {
+                const title = rec[titleField] || rec.id;
+                const hue = avatarHue(title);
+                const badge = badgeField && rec[badgeField]
+                  ? <span className="badge badge-neutral">{rec[badgeField]}</span>
+                  : null;
+                const meta = metaField
+                  ? (rec[metaField] ? (shortDate(rec[metaField]) || rec[metaField]) : null)
+                  : null;
+
+                return (
+                  <ListCard
+                    key={rec.id}
+                    active={rec.id === selectedId}
+                    onClick={() => setSelectedId(rec.id)}
+                    avatarStyle={{ backgroundColor: `hsl(${hue}, 50%, 30%)`, color: '#fff' }}
+                    avatarContent={initials(title)}
+                    title={title}
+                    subtitle={subtitleField ? (rec[subtitleField] || '—') : '—'}
+                    meta={meta}
+                    badge={badge}
+                  />
+                );
+              })}
             </div>
           </div>
 
@@ -333,7 +352,7 @@ export default function ModulePage({ moduleName, notify, setRefresh }) {
       {/* Modals */}
       {createOpen && (
         <DynamicForm
-          config={config}
+          fields={config.fields || []}
           onSubmit={handleCreate}
           onClose={() => setCreateOpen(false)}
           saving={saving}
@@ -342,7 +361,7 @@ export default function ModulePage({ moduleName, notify, setRefresh }) {
       )}
       {editOpen && selectedRecord && (
         <DynamicForm
-          config={config}
+          fields={config.fields || []}
           initial={selectedRecord}
           onSubmit={async (data) => { await handlePatch(data); setEditOpen(false); }}
           onClose={() => setEditOpen(false)}
