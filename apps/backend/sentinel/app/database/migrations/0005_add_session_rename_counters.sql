@@ -1,0 +1,5 @@
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS conversation_message_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS last_auto_rename_count INTEGER NOT NULL DEFAULT 0;
