@@ -21,6 +21,7 @@ from app.services.context_usage import (
     estimate_db_message_tokens,
     estimate_text_tokens,
 )
+from app.services.memory import MemoryRepository, MemoryService
 from app.services.memory.search import MemorySearchService
 from app.services.llm.generic.types import (
     AgentMessage,
@@ -46,6 +47,7 @@ class ContextBuilder:
         token_budget: int | None = None,
         available_tools: set[str] | None = None,
         memory_search_service: MemorySearchService | None = None,
+        memory_service: MemoryService | None = None,
     ) -> None:
         self._default_system_prompt = (
             default_system_prompt or settings.default_system_prompt
@@ -57,6 +59,7 @@ class ContextBuilder:
         )
         self._available_tools = set(available_tools or set())
         self._memory_search_service = memory_search_service
+        self._memory_service = memory_service or MemoryService(MemoryRepository())
 
     async def build(
         self,
@@ -390,8 +393,7 @@ class ContextBuilder:
         db: AsyncSession,
         pending_user_message: str | None,
     ) -> list[SystemMessage]:
-        result = await db.execute(select(Memory))
-        memories = result.scalars().all()
+        memories = await self._memory_service.list_all_memories(db)
         if not memories:
             return []
 
