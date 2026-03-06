@@ -77,13 +77,25 @@ async def agent_guide(
                 "through this API. New modules can be registered at runtime via the approval flow."
             ),
             "module_types": {
-                "data": "Persistent records with CRUD endpoints (e.g. leads, clients).",
-                "tool": "Callable actions backed by sandboxed Python — no stored records (e.g. slack, weather).",
+                "data": (
+                    "Persistent records with full CRUD endpoints (e.g. leads, clients). "
+                    "Can optionally include executable actions: "
+                    "(a) record-scoped actions (placement='detail') appear as buttons on individual records "
+                    "and receive the record context; "
+                    "(b) standalone actions (placement='standalone') appear as callable action cards "
+                    "in a dedicated Actions tab alongside the record list. "
+                    "Use data+actions when you need both structured record storage AND "
+                    "triggerable operations (e.g. a kanban board with 'Run fix' actions)."
+                ),
+                "tool": (
+                    "Callable actions backed by sandboxed Python — no stored records (e.g. slack, weather). "
+                    "Use tool when you only need to run operations, not store anything."
+                ),
                 "page": "UI-only module, no agent-facing endpoints.",
             },
         },
 
-        # ── 2. SYSTEM ENDPOINTS ─────────────────────────────────────────────────
+        # ── 2. SYSTEM ENDPOINTS ───────────────────────────────────────────────
         "system_endpoints": [
             {
                 "method": "GET", "url": f"{base_url}/api/agent",
@@ -146,7 +158,7 @@ async def agent_guide(
             },
         ],
 
-        # ── 3. MODULE ENGINE ENDPOINTS ──────────────────────────────────────────
+        # ── 3. MODULE ENGINE ENDPOINTS ─────────────────────────────────────────
         "module_engine": {
             "description": "Generic API for all data and tool modules. Replace :name with the module slug.",
             "endpoints": [
@@ -160,12 +172,12 @@ async def agent_guide(
                 {"method": "GET",    "url": f"{base_url}/api/modules/:name/records/:id",                   "description": "Get a single record."},
                 {"method": "PATCH",  "url": f"{base_url}/api/modules/:name/records/:id",                   "description": "Update a record (partial — send only changed fields)."},
                 {"method": "DELETE", "url": f"{base_url}/api/modules/:name/records/:id",                   "description": "Delete a record."},
-                {"method": "POST",   "url": f"{base_url}/api/modules/:name/action/:action_id",             "description": "Execute a tool action. Body: {params: {key: value}}. Returns {ok, result}."},
-                {"method": "POST",   "url": f"{base_url}/api/modules/:name/records/:id/action/:action_id", "description": "Execute a record-scoped action (e.g. send a lead to Slack)."},
+                {"method": "POST",   "url": f"{base_url}/api/modules/:name/action/:action_id",             "description": "Execute a standalone tool action (tool modules or data modules with placement='standalone'). Body: flat params object."},
+                {"method": "POST",   "url": f"{base_url}/api/modules/:name/records/:id/action/:action_id", "description": "Execute a record-scoped action (data modules with placement='detail'). Receives record context. Body: flat params object."},
             ],
         },
 
-        # ── 4. MODULE CREATION ──────────────────────────────────────────────────
+        # ── 4. MODULE CREATION ─────────────────────────────────────────────────
         "module_creation": {
             "process": [
                 "1. POST /api/modules with the module definition below.",
@@ -178,9 +190,15 @@ async def agent_guide(
                 "name":        "string — unique slug, lowercase, no spaces (e.g. 'invoices'). REQUIRED.",
                 "label":       "string — display name (e.g. 'Invoices'). REQUIRED.",
                 "description": "string — what this module does.",
-                "icon":        "string — Lucide icon name (e.g. 'FileText', 'Box', 'Zap').",
-                "type":        "'data' | 'tool' — data stores records, tool runs Python actions.",
+                "icon":        "string — Lucide icon name (e.g. 'FileText', 'Box', 'Zap', 'Wrench').",
+                "type":        "'data' | 'tool' — data stores records (optionally with actions), tool runs actions only.",
                 "order":       "integer — sidebar position (lower = higher up).",
+                "list_config": {
+                    "titleField":    "string — field key to use as the record title in the list (e.g. 'title'). REQUIRED for data modules.",
+                    "subtitleField": "string — field key shown as subtitle under the title (optional).",
+                    "badgeField":    "string — field key rendered as a badge chip (e.g. 'status', 'priority') (optional).",
+                    "filterField":   "string — field key used for the filter tab bar (e.g. 'status') (optional).",
+                },
                 "fields": [
                     {
                         "key":         "string — field identifier (snake_case)",
@@ -193,9 +211,14 @@ async def agent_guide(
                 ],
                 "actions": [
                     {
-                        "id":          "string — action slug (e.g. 'send', 'fetch')",
+                        "id":          "string — action slug (e.g. 'send', 'fetch', 'run_fix')",
                         "label":       "string — display label",
                         "description": "string",
+                        "placement": (
+                            "'detail' | 'standalone' (default: 'standalone'). "
+                            "detail: button on an individual record, receives record context in code. "
+                            "standalone: callable action card in the Actions tab (tool modules always use standalone)."
+                        ),
                         "params": [
                             {"key": "string", "label": "string", "type": "text|textarea|number", "required": "boolean", "placeholder": "string"}
                         ],
@@ -204,13 +227,12 @@ async def agent_guide(
                             "Available variables:\n"
                             "  params  : dict of user-supplied params\n"
                             "  secrets : dict of module secrets (set via UI, never exposed)\n"
-                            "  record  : current record dict (record-scoped actions only)\n"
-                            "Available imports: httpx (pre-imported)\n"
+                            "  record  : current record dict (record-scoped/detail actions only)\n"
+                            "Available imports: httpx (pre-imported as http), json, re, math, base64, datetime\n"
                             "Set `result` dict before end — it is returned to the caller.\n"
                             "Example:\n"
-                            "  import httpx\n"
-                            "  r = httpx.get('https://api.example.com', params=params, timeout=10).json()\n"
-                            "  result = {'ok': True, 'data': r}"
+                            "  r = await http.get('https://api.example.com', params=params, timeout=10)\n"
+                            "  result = {'ok': True, 'data': r.json()}"
                         ),
                     }
                 ],
@@ -221,40 +243,78 @@ async def agent_guide(
             "data_module_example": {
                 "name": "invoices", "label": "Invoices", "type": "data", "icon": "FileText", "order": 60,
                 "description": "Track customer invoices",
+                "list_config": {"titleField": "client", "badgeField": "status", "filterField": "status"},
                 "fields": [
-                    {"key": "client",  "label": "Client",  "type": "text",   "required": True},
-                    {"key": "amount",  "label": "Amount",  "type": "number", "required": True},
-                    {"key": "status",  "label": "Status",  "type": "select", "options": ["draft", "sent", "paid"], "required": True},
-                    {"key": "due_date","label": "Due Date","type": "date"},
+                    {"key": "client",   "label": "Client",   "type": "text",   "required": True},
+                    {"key": "amount",   "label": "Amount",   "type": "number", "required": True},
+                    {"key": "status",   "label": "Status",   "type": "select", "options": ["draft", "sent", "paid"], "required": True},
+                    {"key": "due_date", "label": "Due Date", "type": "date"},
                 ],
-                "actions": [], "secrets": [], "list_config": {},
+                "actions": [], "secrets": [],
             },
             "tool_module_example": {
                 "name": "exchange", "label": "Exchange Rates", "type": "tool", "icon": "TrendingUp", "order": 95,
                 "description": "Get live currency exchange rates (no auth required)",
-                "fields": [], "list_config": {},
-                "secrets": [],
+                "fields": [], "list_config": {}, "secrets": [],
                 "actions": [
                     {
                         "id": "convert", "label": "Convert Currency",
                         "description": "Convert an amount from one currency to another",
+                        "placement": "standalone",
                         "params": [
-                            {"key": "from", "label": "From", "type": "text", "required": True, "placeholder": "USD"},
-                            {"key": "to",   "label": "To",   "type": "text", "required": True, "placeholder": "EUR"},
-                            {"key": "amount","label": "Amount","type": "number","required": True},
+                            {"key": "from",   "label": "From",   "type": "text",   "required": True, "placeholder": "USD"},
+                            {"key": "to",     "label": "To",     "type": "text",   "required": True, "placeholder": "EUR"},
+                            {"key": "amount", "label": "Amount", "type": "number", "required": True},
                         ],
                         "code": (
-                            "import httpx\n"
-                            "r = httpx.get(f\"https://api.frankfurter.app/latest?from={params['from']}&to={params['to']}\", timeout=10).json()\n"
-                            "rate = r.get('rates', {}).get(params['to'])\n"
+                            "r = await http.get(f\"https://api.frankfurter.app/latest?from={params['from']}&to={params['to']}\", timeout=10)\n"
+                            "data = r.json()\n"
+                            "rate = data.get('rates', {}).get(params['to'])\n"
                             "result = {'ok': bool(rate), 'rate': rate, 'converted': round(float(params['amount']) * rate, 2) if rate else None}"
                         ),
                     }
                 ],
             },
+            "combined_data_and_actions_example": {
+                "name": "kanban_improvements", "label": "Kanban Improvements", "type": "data",
+                "icon": "Wrench", "order": 30,
+                "description": "Track code improvement tasks with runnable fix actions per record.",
+                "list_config": {"titleField": "title", "badgeField": "priority", "filterField": "status"},
+                "fields": [
+                    {"key": "title",       "label": "Title",     "type": "text",   "required": True},
+                    {"key": "priority",    "label": "Priority",  "type": "badge",  "options": ["critical", "high", "medium", "low"], "required": True},
+                    {"key": "status",      "label": "Status",    "type": "badge",  "options": ["todo", "in_progress", "in_review", "done", "wont_fix"], "required": True},
+                    {"key": "category",    "label": "Category",  "type": "select", "options": ["security", "reliability", "code_quality", "ci_cd", "testing", "observability", "devex"], "required": True},
+                    {"key": "area",        "label": "Code Area", "type": "text"},
+                    {"key": "description", "label": "Description", "type": "textarea"},
+                ],
+                "actions": [
+                    {
+                        "id": "open_github_issue", "label": "Open GitHub Issue",
+                        "description": "Creates a GitHub issue for this improvement item.",
+                        "placement": "detail",
+                        "params": [],
+                        "code": (
+                            "title = record.get('title', 'Untitled')\n"
+                            "body = f\"**Priority:** {record.get('priority')}\\n**Area:** {record.get('area')}\\n\\n{record.get('description', '')}\"\n"
+                            "r = await http.post(\n"
+                            "    'https://api.github.com/repos/Domu-ai/kanban/issues',\n"
+                            "    headers={'Authorization': f'token {secrets[\"github_token\"]}', 'Accept': 'application/vnd.github.v3+json'},\n"
+                            "    json={'title': title, 'body': body, 'labels': [record.get('priority', 'medium')]},\n"
+                            "    timeout=15,\n"
+                            ")\n"
+                            "data = r.json()\n"
+                            "result = {'ok': r.status_code == 201, 'issue_url': data.get('html_url'), 'number': data.get('number')}"
+                        ),
+                    }
+                ],
+                "secrets": [
+                    {"key": "github_token", "label": "GitHub Token", "required": True, "hint": "Personal access token with repo scope"}
+                ],
+            },
         },
 
-        # ── 5. MODULE CATALOG ───────────────────────────────────────────────────
+        # ── 5. MODULE CATALOG ──────────────────────────────────────────────────
         "modules": catalog,
         "catalog_note": (
             f"Action code longer than {_CODE_TRUNCATE_THRESHOLD} chars is truncated. "
