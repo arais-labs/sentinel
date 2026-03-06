@@ -147,6 +147,52 @@ def test_sessions_crud_and_ownership():
         app_main.init_db = old_init
 
 
+def test_session_rename_endpoint():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        created = client.post("/api/v1/sessions", json={"title": "alpha"}, headers=headers)
+        assert created.status_code == 200
+        session_id = created.json()["id"]
+
+        renamed = client.patch(
+            f"/api/v1/sessions/{session_id}",
+            json={"title": "   Better Name   "},
+            headers=headers,
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["title"] == "Better Name"
+
+        cleared = client.patch(
+            f"/api/v1/sessions/{session_id}",
+            json={"title": "   "},
+            headers=headers,
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["title"] is None
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
 def test_cannot_set_telegram_channel_session_as_main():
     fake_db = FakeDB()
 
@@ -205,6 +251,65 @@ def test_cannot_set_telegram_channel_session_as_main():
         still_main = client.get(f"/api/v1/sessions/{main_session_id}", headers=headers)
         assert still_main.status_code == 200
         assert still_main.json()["is_main"] is True
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_cannot_rename_telegram_channel_session():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        channel_resp = client.post("/api/v1/sessions", json={"title": "TG Group · Ops"}, headers=headers)
+        assert channel_resp.status_code == 200
+        channel_session_id = channel_resp.json()["id"]
+
+        import jwt as _jwt
+        _decoded = _jwt.decode(token, options={"verify_signature": False})
+        _actual_user_id = _decoded["sub"]
+        fake_db.add(
+            SessionBinding(
+                user_id=_actual_user_id,
+                binding_type="telegram_group",
+                binding_key="group:-100123",
+                session_id=uuid.UUID(channel_session_id),
+                is_active=True,
+                metadata_json={"chat_id": -100123},
+            )
+        )
+
+        rename = client.patch(
+            f"/api/v1/sessions/{channel_session_id}",
+            json={"title": "Renamed"},
+            headers=headers,
+        )
+        assert rename.status_code == 400
+        payload = rename.json()
+        detail = (
+            payload.get("detail")
+            or (payload.get("error") or {}).get("message")
+            or str(payload)
+        )
+        assert "cannot be renamed" in detail.lower()
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
