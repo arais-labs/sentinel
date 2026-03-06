@@ -54,6 +54,17 @@ class _StaticMemorySearch(MemorySearchService):
         return [MemorySearchResult(memory=item, score=1.0) for item in rows[:limit]]
 
 
+class _TrackingMemoryService:
+    def __init__(self, db: FakeDB):
+        self._db = db
+        self.calls = 0
+
+    async def list_all_memories(self, db):
+        _ = db
+        self.calls += 1
+        return list(self._db.storage[Memory])
+
+
 class _SequenceProvider(LLMProvider):
     def __init__(self, responses: list[AssistantMessage]) -> None:
         self._responses = responses
@@ -439,6 +450,88 @@ def test_memory_move_tool_rejects_cycle_or_conflicting_nodes():
         )
 
 
+def test_memory_move_tool_rejects_system_memory_nodes():
+    memory_db = FakeDB()
+    session_factory = _SessionFactory(memory_db)
+    registry = build_default_registry(
+        memory_search_service=_StaticMemorySearch(memory_db),
+        embedding_service=_FakeEmbedding(),
+        session_factory=session_factory,
+    )
+    executor = ToolExecutor(registry)
+
+    system_root = Memory(
+        title="Agent Identity",
+        content="You are Sentinel.",
+        category="core",
+        pinned=True,
+        is_system=True,
+        system_key="agent_identity",
+        metadata_json={},
+    )
+    other_root = Memory(
+        title="Workspace",
+        content="General workspace notes",
+        category="project",
+        metadata_json={},
+    )
+    memory_db.add(system_root)
+    memory_db.add(other_root)
+
+    with pytest.raises(ToolValidationError, match="protected system memory"):
+        _run(
+            executor.execute(
+                "memory_move",
+                {
+                    "node_ids": [str(system_root.id)],
+                    "target_parent_id": str(other_root.id),
+                },
+                allow_high_risk=True,
+            )
+        )
+
+
+def test_memory_move_tool_rejects_target_parent_that_is_system_memory():
+    memory_db = FakeDB()
+    session_factory = _SessionFactory(memory_db)
+    registry = build_default_registry(
+        memory_search_service=_StaticMemorySearch(memory_db),
+        embedding_service=_FakeEmbedding(),
+        session_factory=session_factory,
+    )
+    executor = ToolExecutor(registry)
+
+    system_root = Memory(
+        title="Agent Identity",
+        content="You are Sentinel.",
+        category="core",
+        pinned=True,
+        is_system=True,
+        system_key="agent_identity",
+        metadata_json={},
+    )
+    other_root = Memory(
+        title="Workspace",
+        content="General workspace notes",
+        category="project",
+        metadata_json={},
+    )
+    memory_db.add(system_root)
+    memory_db.add(other_root)
+
+    with pytest.raises(ToolValidationError, match="under a protected system memory"):
+        _run(
+            executor.execute(
+                "memory_move",
+                {
+                    "node_ids": [str(other_root.id)],
+                    "target_parent_id": str(system_root.id),
+                },
+                allow_high_risk=True,
+            )
+        )
+
+
 def test_context_builder_injects_all_root_memories_and_auto_branches():
     db = FakeDB()
     root_a = Memory(
@@ -494,6 +587,33 @@ def test_context_builder_injects_all_root_memories_and_auto_branches():
 
     relevant_block = next(msg for msg in system_messages if "Potentially Relevant Memory Branches" in msg)
     assert str(child.id) in relevant_block or str(root_a.id) in relevant_block
+
+
+def test_context_builder_memory_layer_uses_injected_memory_service():
+    db = FakeDB()
+    root = Memory(
+        title="Project Alpha",
+        summary="Top-level alpha summary",
+        content="Alpha root content",
+        category="project",
+        metadata_json={},
+        pinned=True,
+        importance=90,
+    )
+    db.add(root)
+    session = Session(user_id="dev-admin", status="active", title="ctx-service")
+    db.add(session)
+    tracking_service = _TrackingMemoryService(db)
+
+    builder = ContextBuilder(
+        default_system_prompt="sys",
+        memory_service=tracking_service,
+    )
+    messages = _run(builder.build(db, session.id))
+
+    assert tracking_service.calls == 1
+    system_messages = [m.content for m in messages if getattr(m, "role", "") == "system"]
+    assert any("## Memory (pinned): Project Alpha" in msg for msg in system_messages)
 
 
 def test_context_builder_skips_runtime_context_system_history_rows():
