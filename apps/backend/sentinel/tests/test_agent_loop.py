@@ -176,6 +176,18 @@ def test_agent_loop_text_only_persists_messages_and_emits_done():
         )
     ]
     assert [m.role for m in conversational_saved] == ["user", "assistant"]
+    user_msg = next(m for m in conversational_saved if m.role == "user")
+    assistant_msg = next(m for m in conversational_saved if m.role == "assistant")
+    user_generation = (user_msg.metadata_json or {}).get("generation") or {}
+    assistant_generation = (assistant_msg.metadata_json or {}).get("generation") or {}
+    assert user_generation.get("requested_tier") == "normal"
+    assert user_generation.get("temperature") == 0.7
+    assert user_generation.get("max_iterations") == 50
+    assert assistant_generation.get("requested_tier") == "normal"
+    assert assistant_generation.get("resolved_model") == "m1"
+    assert assistant_generation.get("provider") == "p1"
+    assert assistant_generation.get("temperature") == 0.7
+    assert assistant_generation.get("max_iterations") == 50
     assert any(event.type == "text_delta" and event.delta == "All set" for event in events)
     assert any(event.type == "done" and event.stop_reason == "stop" for event in events)
 
@@ -251,6 +263,10 @@ def test_agent_loop_tool_use_path_runs_tool_and_finishes_second_iteration():
     assert tool_result.tool_name == "lookup"
     assert "sk-proj-abc123def456ghi789jkl" not in tool_result.content
     assert "sk-pro" in tool_result.content
+    tool_generation = (tool_result.metadata_json or {}).get("generation") or {}
+    assert tool_generation.get("resolved_model") == "m1"
+    assert tool_generation.get("provider") == "p1"
+    assert tool_generation.get("requested_tier") == "normal"
 
     second_batch = provider.message_batches[1]
     replayed_assistant = next(
