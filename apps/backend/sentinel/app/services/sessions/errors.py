@@ -35,3 +35,7 @@ class RuntimePathInvalidError(SessionServiceError):
 
 class RuntimePathNotFoundError(SessionServiceError):
     """Requested runtime path does not exist."""
+
+
+class SessionRenameNotAllowedError(SessionServiceError):
+    """Session title cannot be changed for this session type."""

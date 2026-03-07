@@ -33,6 +33,10 @@ class ReliableProvider(LLMProvider):
     def name(self) -> str:
         return "reliable"
 
+    def resolve_generation_hint(self, model: str) -> tuple[str, str] | None:
+        first = self._providers[0]
+        return first.resolve_generation_hint(model)
+
     async def chat(
         self,
         messages: Sequence[AgentMessage | dict],
@@ -80,6 +84,7 @@ class ReliableProvider(LLMProvider):
         for provider in self._providers:
             for attempt in range(1, self._max_retries + 1):
                 try:
+                    attached_generation_hint = False
                     async for event in provider.stream(
                         messages,
                         model=model,
@@ -88,6 +93,18 @@ class ReliableProvider(LLMProvider):
                         reasoning_config=reasoning_config,
                         tool_choice=tool_choice,
                     ):
+                        if not attached_generation_hint:
+                            attached_generation_hint = True
+                            hint = provider.resolve_generation_hint(model)
+                            hint_provider = hint[0] if hint is not None else provider.name
+                            hint_model = hint[1] if hint is not None else model
+                            if event.message is None:
+                                event.message = AssistantMessage(model=hint_model, provider=hint_provider)
+                            else:
+                                if not event.message.model:
+                                    event.message.model = hint_model
+                                if not event.message.provider:
+                                    event.message.provider = hint_provider
                         yield event
                     return
                 except Exception as exc:  # noqa: BLE001

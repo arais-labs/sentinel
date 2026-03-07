@@ -26,7 +26,7 @@ function buildToolPrompt(config) {
   return lines.join('\n');
 }
 
-export default function ApiModule({ config, notify, setRefresh }) {
+export default function ApiModule({ config, notify, setRefresh, hideHeader = false }) {
   const [secretsStatus, setSecretsStatus] = useState({});
   const [search, setSearch] = useState('');
   const [copied, setCopied] = useState(false);
@@ -66,49 +66,51 @@ export default function ApiModule({ config, notify, setRefresh }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div className="sub-header" style={{ position: 'relative', padding: '14px 16px' }}>
-        <div className="sub-header-left">
-          <span className="text-sm font-medium text-[color:var(--text-secondary)]">
-            {config.label}
-          </span>
-          {/* Secret status chips */}
-          {(config.secrets || []).map(s => (
-            secretsStatus[s.key] ? (
-              <span key={s.key} className="flex items-center gap-1">
-                <span className="badge badge-success">✓ {s.label}</span>
-                <button
-                  className="text-xs text-[color:var(--text-muted)] hover:text-rose-400 transition-colors leading-none"
-                  onClick={() => resetSecret(s.key, s.label)}
-                  title="Clear secret"
-                >×</button>
-              </span>
-            ) : (
-              <span key={s.key} className="badge badge-warn">✗ {s.label}</span>
-            )
-          ))}
-        </div>
-        <div className="sub-header-right">
-          <button
-            className="p-1.5 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors rounded hover:bg-[color:var(--surface-2)] flex items-center gap-1"
-            onClick={copyPrompt}
-            title="Copy agent prompt"
-          >
-            <IconCopy />
-            <span className="text-[10px] font-bold uppercase tracking-widest">{copied ? 'Copied!' : 'Prompt'}</span>
-          </button>
-        </div>
-        {(config.actions || []).length > 2 && (
-          <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>
-            <input
-              className="form-input"
-              style={{ width: 240, padding: '4px 10px', fontSize: 12 }}
-              placeholder="Search actions…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
+      {!hideHeader && (
+        <div className="sub-header" style={{ position: 'relative', padding: '14px 16px' }}>
+          <div className="sub-header-left">
+            <span className="text-sm font-medium text-[color:var(--text-secondary)]">
+              {config.label}
+            </span>
+            {/* Secret status chips */}
+            {(config.secrets || []).map(s => (
+              secretsStatus[s.key] ? (
+                <span key={s.key} className="flex items-center gap-1">
+                  <span className="badge badge-success">✓ {s.label}</span>
+                  <button
+                    className="text-xs text-[color:var(--text-muted)] hover:text-rose-400 transition-colors leading-none"
+                    onClick={() => resetSecret(s.key, s.label)}
+                    title="Clear secret"
+                  >×</button>
+                </span>
+              ) : (
+                <span key={s.key} className="badge badge-warn">✗ {s.label}</span>
+              )
+            ))}
           </div>
-        )}
-      </div>
+          <div className="sub-header-right">
+            <button
+              className="p-1.5 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors rounded hover:bg-[color:var(--surface-2)] flex items-center gap-1"
+              onClick={copyPrompt}
+              title="Copy agent prompt"
+            >
+              <IconCopy />
+              <span className="text-[10px] font-bold uppercase tracking-widest">{copied ? 'Copied!' : 'Prompt'}</span>
+            </button>
+          </div>
+          {(config.actions || []).length > 2 && (
+            <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>
+              <input
+                className="form-input"
+                style={{ width: 240, padding: '4px 10px', fontSize: 12 }}
+                placeholder="Search actions…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto p-6">
         <div style={{ maxWidth: 720, margin: '0 auto' }} className="space-y-4">

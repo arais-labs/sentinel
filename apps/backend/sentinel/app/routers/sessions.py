@@ -16,6 +16,7 @@ from app.schemas.sessions import (
     CreateSessionRequest,
     MessageListResponse,
     MessageResponse,
+    UpdateSessionRequest,
     SessionListResponse,
     SessionContextUsageResponse,
     SessionRuntimeCleanupResponse,
@@ -36,6 +37,7 @@ from app.services.sessions import (
     MessageNotFoundError,
     RuntimePathInvalidError,
     RuntimePathNotFoundError,
+    SessionRenameNotAllowedError,
     SessionNotFoundError,
     SessionService,
 )
@@ -73,6 +75,11 @@ def _raise_http_for_session_error(exc: Exception) -> None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc) or "Invalid main session target",
+        ) from exc
+    if isinstance(exc, SessionRenameNotAllowedError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc) or "Session cannot be renamed",
         ) from exc
     if isinstance(exc, AgentLoopUnavailableError):
         raise HTTPException(
@@ -180,6 +187,29 @@ async def get_session(
     service = _resolve_session_service(request)
     try:
         session = await service.get_session(db, session_id=id, user_id=user.sub)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    main_session_id = await service.get_main_session_id(db, user_id=user.sub)
+    return await _session_response(session, service, main_session_id=main_session_id)
+
+
+@router.patch("/{id}")
+async def update_session(
+    id: UUID,
+    payload: UpdateSessionRequest,
+    request: Request,
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionResponse:
+    service = _resolve_session_service(request)
+    try:
+        session = await service.rename_session(
+            db,
+            session_id=id,
+            user_id=user.sub,
+            title=payload.title,
+        )
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise

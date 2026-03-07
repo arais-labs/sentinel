@@ -28,7 +28,16 @@ from app.database import AsyncSessionLocal
 from app.models import Message as MessageModel, Session as SessionModel
 from app.services import session_bindings
 from app.services.llm.ids import TierName
-from app.services.messages import telegram_ingress_metadata
+from app.services.messages import (
+    build_generation_metadata,
+    telegram_ingress_metadata,
+    with_generation_metadata,
+)
+from app.services.session_naming import (
+    SessionNamingService,
+    apply_conversation_message_delta,
+    conversation_delta_for_role,
+)
 from app.services.system_settings import delete_system_setting, upsert_system_setting
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
 
@@ -955,12 +964,29 @@ class TelegramBridge:
             .where(MessageModel.session_id == route.session_id)
         )
         is_first_message = count_result.scalar_one() == 0
+        session_result = await db.execute(
+            select(SessionModel).where(SessionModel.id == route.session_id)
+        )
+        session = session_result.scalars().first()
+        if session is not None:
+            apply_conversation_message_delta(
+                session, conversation_delta_for_role("user")
+            )
 
         message = MessageModel(
             session_id=route.session_id,
             role="user",
             content=content,
-            metadata_json=metadata,
+            metadata_json=with_generation_metadata(
+                metadata,
+                generation=build_generation_metadata(
+                    requested_tier=TierName.NORMAL,
+                    resolved_model=None,
+                    provider=None,
+                    temperature=0.7,
+                    max_iterations=25,
+                ),
+            ),
         )
         db.add(message)
         await db.commit()
@@ -1094,6 +1120,11 @@ class TelegramBridge:
             return
 
         async with self._db_factory() as db:
+            naming_service = SessionNamingService(
+                provider=getattr(self._agent_loop, "provider", None),
+                ws_manager=self._ws_manager,
+                db_factory=self._db_factory,
+            )
             persisted = await self._persist_inbound_user_message(
                 db,
                 route=route,
@@ -1110,7 +1141,11 @@ class TelegramBridge:
 
             if persisted.is_first_message and route.inline_reply_mode:
                 asyncio.create_task(
-                    self._name_session(route.session_id, text, self._ws_manager, self._agent_loop)
+                    naming_service.maybe_auto_rename(
+                        session_id=route.session_id,
+                        force=True,
+                        first_message=text,
+                    )
                 )
 
             await self._ws_manager.broadcast_agent_thinking(route.session_key)
@@ -1161,6 +1196,7 @@ class TelegramBridge:
                 await update.message.reply_text("Agent is already processing this session.")
                 return
 
+            run_completed_successfully = False
             try:
                 result = await run_task
                 final_text = result.final_text if result else ""
@@ -1180,6 +1216,7 @@ class TelegramBridge:
                         final_text=final_text,
                         delivery_state=delivery_state,
                     )
+                run_completed_successfully = True
 
             except asyncio.CancelledError:
                 await update.message.reply_text("Agent run was cancelled.")
@@ -1191,6 +1228,8 @@ class TelegramBridge:
             finally:
                 await self._run_registry.clear(route.session_key, run_task)
                 await self._auto_compact_after_run(db, session_id=route.session_id)
+                if run_completed_successfully:
+                    await naming_service.maybe_auto_rename(session_id=route.session_id)
 
     # -- helpers -------------------------------------------------------------
 
@@ -1217,60 +1256,6 @@ class TelegramBridge:
             await self._app.bot.send_photo(chat_id=chat_id, photo=bio, caption=caption)
         except Exception:
             logger.exception("Failed to send photo to chat %s", chat_id)
-
-    async def _name_session(
-        self,
-        session_id: UUID,
-        first_message: str,
-        manager: _WSManagerProtocol,
-        agent_loop: _AgentLoopProtocol,
-    ) -> None:
-        """Generate a short session title from the first message."""
-        from app.services.llm.generic.types import TextContent, UserMessage
-
-        prompt = (
-            "Generate a very short title (3-6 words max) for a chat session that starts with "
-            "this message. Reply with ONLY the title, no quotes, no punctuation at the end.\n\n"
-            f"Message: {first_message[:300]}"
-        )
-        try:
-            result = await agent_loop.provider.chat(
-                [UserMessage(content=prompt)],
-                model=TierName.FAST.value,
-                tools=[],
-                temperature=0.3,
-            )
-            title = ""
-            for block in result.content:
-                if isinstance(block, TextContent):
-                    title += block.text
-            title = title.strip()[:80]
-            if not title:
-                return
-
-            async with self._db_factory() as db:
-                from sqlalchemy import select
-
-                db_result = await db.execute(
-                    select(SessionModel).where(SessionModel.id == session_id)
-                )
-                session = db_result.scalars().first()
-                if session is None:
-                    return
-                session.title = title
-                await db.commit()
-
-            await manager.broadcast(
-                str(session_id),
-                {
-                    "type": "session_named",
-                    "session_id": str(session_id),
-                    "title": title,
-                },
-            )
-        except Exception:
-            logger.warning("Auto-naming failed for session %s", session_id, exc_info=True)
-
 
 def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
     """Factory for the send_telegram_message tool. Uses lazy app_state reference."""
