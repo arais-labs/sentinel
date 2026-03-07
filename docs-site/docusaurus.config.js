@@ -7,7 +7,7 @@ const config = {
   tagline: 'The autonomous agent platform built for real operational use.',
   favicon: 'img/logo.svg',
 
-  url: 'https://docs.arais.us',
+  url: 'https://sentinel.arais.us',
   baseUrl: '/',
 
   organizationName: 'arais-labs',
