@@ -3,110 +3,168 @@ sidebar_position: 2
 title: Creating Modules
 ---
 
-# Creating araiOS Modules
+# Creating araiOS modules
 
-Modules are how you extend what the agent can do and what data it can access. You define a module via the araiOS API, and the agent can interact with it immediately after it is approved.
+This page is code accurate to `apps/backend/araios/app/routers/modules.py` and executor behavior.
 
 ---
 
-## Two module types
+## Module types
 
-| Type | What it does |
+| Type | Behavior |
 |---|---|
-| **Data module** | Creates a persistent record store with full CRUD. Agents read, create, update, and delete records. |
-| **Tool module** | Exposes callable Python actions. No stored records — just execution gated by permissions. |
+| `data` | Record CRUD on `/api/modules/{name}/records` plus optional custom actions |
+| `tool` | No records, callable actions executed by sandbox executor |
 
 ---
 
-## Creating a data module
+## Correct payload shape for module creation
+
+Endpoint:
+
+```http
+POST /api/modules
+```
+
+### Data module example
 
 ```json
-POST /api/modules
 {
   "name": "leads",
-  "type": "data",
   "label": "Leads",
+  "type": "data",
+  "description": "Lead pipeline",
   "fields": [
-    { "name": "company", "type": "text", "required": true },
-    { "name": "contact", "type": "text" },
-    { "name": "tier", "type": "select", "options": ["1", "2", "3"] },
-    { "name": "status", "type": "select", "options": ["new", "contacted", "qualified"] },
-    { "name": "notes", "type": "text" }
-  ]
+    { "key": "company", "label": "Company", "type": "text", "required": true },
+    { "key": "status", "label": "Status", "type": "select", "options": ["new", "contacted", "qualified"] }
+  ],
+  "actions": [],
+  "secrets": []
 }
 ```
 
-Once registered and approved, agents can use:
-
-```
-GET    /api/modules/leads/records
-POST   /api/modules/leads/records
-PATCH  /api/modules/leads/records/:id
-DELETE /api/modules/leads/records/:id
-```
-
----
-
-## Creating a tool module
+### Tool module example
 
 ```json
-POST /api/modules
 {
   "name": "slack",
-  "type": "tool",
   "label": "Slack",
-  "secrets": ["SLACK_BOT_TOKEN"],
+  "type": "tool",
+  "description": "Slack actions",
+  "secrets": [
+    { "key": "SLACK_BOT_TOKEN", "required": true }
+  ],
   "actions": [
     {
       "id": "send_message",
-      "label": "Send Message",
-      "description": "Send a message to a Slack channel",
+      "label": "Send message",
+      "description": "Send text to channel",
       "params": [
-        { "name": "channel", "type": "text", "required": true },
-        { "name": "message", "type": "text", "required": true }
+        { "key": "channel", "type": "text", "required": true },
+        { "key": "message", "type": "text", "required": true }
       ],
-      "code": "import os\nfrom slack_sdk import WebClient\nclient = WebClient(token=os.environ['SLACK_BOT_TOKEN'])\nclient.chat_postMessage(channel=params['channel'], text=params['message'])"
+      "code": "token = secrets.get('SLACK_BOT_TOKEN')\nif not token:\n    result = {'ok': False, 'error': 'missing token'}\nelse:\n    # call API here\n    result = {'ok': True}"
     }
   ]
 }
 ```
 
-The `code` field runs in a sandboxed Python environment. Secrets are injected as `os.environ` variables. Action params are available as the `params` dict.
+Important field conventions:
+
+- use `key` for fields and params
+- action identifier is `id`
+- `actions` and `secrets` are arrays of objects
 
 ---
 
-## Approval requirement
+## Action invocation paths
 
-New modules require operator approval before agents can use them. After `POST /api/modules`, the module appears in the araiOS workspace under **Approvals**. The operator approves the registration before the module is accessible.
+### Tool module action
 
-This applies even to modules you created — the approval step is a deliberate gate.
+```http
+POST /api/modules/{name}/action/{action_id}
+```
 
----
+Body:
 
-## Setting permissions after creation
+```json
+{ "params": { "channel": "#ops", "message": "hello" } }
+```
 
-Once approved, configure permission rules for each action under **Permissions** in the araiOS workspace.
+### Data module custom action on a record
 
-Default behavior: all actions are `allow` until you configure a rule.
-
-Common setup for a sensitive tool module:
-
-| Action | Policy |
-|---|---|
-| `invoke:send_message` | `approval` — require review before sending |
-| `invoke:read_data` | `allow` — reading is low risk |
-| `delete` | `deny` — block deletion entirely |
+```http
+POST /api/modules/{name}/records/{id}/action/{action_id}
+```
 
 ---
 
-## Secrets
+## Permission and approval behavior
 
-Secrets registered in a module are stored encrypted. They are never returned in API responses. Agents and operators cannot read them — they can only trigger actions that use them.
+Before execution, router checks action permission.
 
-To update a secret value: use the araiOS workspace UI under **Modules → Secrets**.
+- `allow` -> execute
+- `deny` -> 403
+- `approval` -> creates approval record and returns 202 with approval object
+
+Default if missing permission row is allow.
 
 ---
 
-## Discovering module endpoints
+## Execution context in action code
 
-After creation, call `GET /api/agent` to see the module reflected in the full instance guide with its fields, actions, and current permission rules.
+Executor injects variables into code context:
+
+- `params` dict
+- `secrets` dict
+- `record` dict for record scoped actions
+- `http` async client
+- `result` optional return payload
+
+Secrets are passed through `secrets` dict, not via `os.environ`.
+
+---
+
+## Executor sandbox reality
+
+The sandbox blocks dangerous modules like subprocess, pty, multiprocessing, ctypes, signal.
+
+It is permissive for many normal builtins and libraries.
+
+Do not claim hard isolation. Treat action code as privileged and review it accordingly.
+
+---
+
+## Updating a module
+
+Endpoint:
+
+```http
+PATCH /api/modules/{name}
+```
+
+Editable fields include:
+
+- label
+- icon
+- type
+- fields
+- list_config
+- actions
+- secrets
+- description
+- order
+
+When actions change, permission rows for stale actions are cleaned and new defaults are seeded.
+
+---
+
+## Quick validation checklist
+
+After creating module:
+
+1. `GET /api/modules/{name}` returns expected schema
+2. permission rows exist for intended actions
+3. test action returns expected result on allow
+4. switch one action to approval and verify 202 flow
+5. confirm secrets are configured before production use

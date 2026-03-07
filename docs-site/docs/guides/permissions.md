@@ -5,82 +5,41 @@ title: Permissions
 
 # Permissions
 
-Permissions control what agents can do with araiOS modules. Every action an agent attempts is checked against the permission rules before it executes.
+Permissions in araiOS map an action string to one level.
 
----
+Levels:
 
-## The three policies
-
-| Policy | What happens |
+| Level | Meaning |
 |---|---|
-| `allow` | Agent executes immediately — no interruption |
-| `approval` | Agent pauses, creates an approval request, waits for operator decision |
-| `deny` | Action blocked — agent receives HTTP 403 immediately |
+| `allow` | Execute immediately |
+| `approval` | Create pending approval and return `202` |
+| `deny` | Block and return `403` |
 
-**Default:** Any action without an explicit rule is `allow`.
-
----
-
-## How rules work
-
-Each rule maps an action pattern to a policy:
-
-- **Action** — the operation being performed (`create`, `delete`, `invoke:send_message`, or `*` for wildcard)
-- **Resource** — the module or resource being acted on (`leads`, `slack`, or `*` for all)
-- **Policy** — `allow`, `approval`, or `deny`
-
-Rules are evaluated in order. The first matching rule wins.
+Default for unknown actions is `allow`.
 
 ---
 
-## Configuring rules
+## Actual model in code
 
-Rules are set in the araiOS workspace under **Permissions**.
+Permissions are stored as rows with:
 
-### Examples
+- `action` example: `tasks.create`, `modules.create`, `slack.send_message`
+- `level` one of `allow`, `approval`, `deny`
 
-| Scenario | Action | Resource | Policy |
-|---|---|---|---|
-| Allow agents to read everything | `read` | `*` | `allow` |
-| Require approval before deleting records | `delete` | `*` | `approval` |
-| Block agents from modifying permissions | `*` | `permissions` | `deny` |
-| Allow Slack messages without approval | `invoke:send_message` | `slack` | `allow` |
-| Gate email sending behind approval | `invoke:send_email` | `email` | `approval` |
+There is no separate resource column and no ordered wildcard rule engine in araiOS permission storage.
 
 ---
 
-## Approval flow
+## Common hardening baseline
 
-When an agent hits an `approval` rule:
-
-1. araiOS returns **HTTP 202** (not an error — see [Approvals](/concepts/approvals))
-2. Agent recognizes the 202 and pauses that action
-3. Approval request appears in the araiOS workspace under **Approvals**
-4. Operator reviews the action, payload, and context
-5. Operator approves or denies
-6. Agent resumes on approval, or surfaces the rejection on denial
+1. `modules.create` -> `approval`
+2. `modules.update` -> `approval`
+3. `modules.delete` -> `approval`
+4. `approvals.resolve` -> `deny` for agent role
+5. Sensitive tool actions -> `approval`
 
 ---
 
-## Role-based behavior
+## Approval handling reminder
 
-| Role | Capabilities |
-|---|---|
-| `admin` | Can execute all actions, resolve approvals, manage permissions |
-| `agent` | Executes actions subject to permission rules — cannot resolve approvals |
-
-The `agent` role cannot self-approve its own requests. Only `admin` can resolve approval gates.
-
----
-
-## Deny is immediate and permanent
-
-A `deny` returns HTTP 403 instantly. There is no pending state, no approval flow, and no way for the agent to proceed. If you want the agent to eventually be able to do something pending review, use `approval`, not `deny`.
-
----
-
-## Tips
-
-- Start with `allow` for low-risk read operations, `approval` for writes and external calls, and `deny` for destructive or admin-level operations.
-- Use `deny` on `permissions` and `modules` resources to prevent agents from modifying their own operating environment.
-- Use `approval` on any action that sends data externally (email, Slack, webhooks) until you are confident in the agent's judgment.
+When permission is `approval`, APIs return `202` with approval payload. This is not an error.
