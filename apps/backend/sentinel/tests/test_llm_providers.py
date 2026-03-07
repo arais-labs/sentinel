@@ -367,6 +367,34 @@ def test_reliable_provider_fallback_on_429():
     assert ok.called == 1
 
 
+def test_reliable_provider_stream_attaches_generation_hint_on_first_event():
+    class _OkProvider(LLMProvider):
+        @property
+        def name(self) -> str:
+            return "ok"
+
+        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+            return AssistantMessage(content=[TextContent(text="ok")], model=model, provider="ok")
+
+        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+            yield AgentEvent(type="start")
+            yield AgentEvent(type="done", stop_reason="stop")
+
+    provider = ReliableProvider([_OkProvider()], max_retries=1, sleep_func=lambda _: asyncio.sleep(0))
+
+    async def _collect():
+        events = []
+        async for event in provider.stream([UserMessage(content="hello")], model="gpt-4.1-mini"):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+    assert events
+    assert events[0].message is not None
+    assert events[0].message.provider == "ok"
+    assert events[0].message.model == "gpt-4.1-mini"
+
+
 def test_router_provider_routes_hint_and_passthrough_model():
     class _CaptureProvider(LLMProvider):
         def __init__(self, provider_name: str) -> None:
@@ -402,6 +430,42 @@ def test_router_provider_routes_hint_and_passthrough_model():
     assert fallback.model == "claude-default"
     assert reasoning.calls == ["claude-reasoning"]
     assert default.calls == ["gpt-4.1", "claude-default"]
+
+
+def test_router_provider_stream_attaches_resolved_generation_metadata():
+    class _CaptureProvider(LLMProvider):
+        def __init__(self, provider_name: str) -> None:
+            self._provider_name = provider_name
+
+        @property
+        def name(self) -> str:
+            return self._provider_name
+
+        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+            return AssistantMessage(content=[TextContent(text=model)], model=model, provider=self._provider_name)
+
+        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+            yield AgentEvent(type="start")
+            yield AgentEvent(type="done", stop_reason="stop")
+
+    reasoning = _CaptureProvider("anthropic")
+    default = _CaptureProvider("openai")
+    router = RouterProvider(
+        {"reasoning": (reasoning, "claude-sonnet-4-20250514")},
+        default=(default, "gpt-4.1-mini"),
+    )
+
+    async def _collect():
+        events = []
+        async for event in router.stream([UserMessage(content="x")], model="hint:reasoning"):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+    assert events
+    assert events[0].message is not None
+    assert events[0].message.provider == "anthropic"
+    assert events[0].message.model == "claude-sonnet-4-20250514"
 
 
 # --- OAuth Detection & Header Tests ---
@@ -831,6 +895,23 @@ def test_tier_provider_stream_routes_correctly():
     assert any(e.type == "done" for e in events)
     assert primary.stream_calls[0][0] == "claude-sonnet"
     assert primary.stream_calls[0][1].thinking_budget == 32000
+
+
+def test_tier_provider_stream_attaches_resolved_generation_metadata():
+    primary = _TierCaptureProvider("anthropic")
+    tp = _make_tier_provider(primary)
+
+    async def _collect():
+        events = []
+        async for event in tp.stream([UserMessage(content="x")], model="normal"):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+    assert events
+    assert events[0].message is not None
+    assert events[0].message.provider == "anthropic"
+    assert events[0].message.model == "claude-sonnet"
 
 
 # --- Gemini Schema Cleaner Tests ---
