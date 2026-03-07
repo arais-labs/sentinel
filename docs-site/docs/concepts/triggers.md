@@ -30,6 +30,10 @@ interval_seconds: 300     # Every 5 minutes
 interval_seconds: 1800    # Every 30 minutes
 ```
 
+### Webhook triggers
+HTTP endpoint based trigger type is also supported at API level for external inbound events.
+
+
 ---
 
 ## Routing: where the message goes

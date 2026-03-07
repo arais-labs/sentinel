@@ -84,7 +84,7 @@ Two memory nodes are protected and cannot be deleted or overwritten via the API:
 | `agent_identity` | The agent's core identity and behavior instructions |
 | `user_profile` | The user's profile and preferences |
 
-These are always present and always pinned. Attempts to delete them are silently ignored.
+These are always present and always pinned. Attempts to delete or overwrite them are blocked with an explicit forbidden response.
 
 ---
 
