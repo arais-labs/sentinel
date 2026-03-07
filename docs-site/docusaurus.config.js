@@ -5,7 +5,7 @@ const { themes } = require('prism-react-renderer');
 const config = {
   title: 'Sentinel',
   tagline: 'The autonomous agent platform built for real operational use.',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/logo.svg',
 
   url: 'https://docs.arais.us',
   baseUrl: '/',
@@ -42,7 +42,7 @@ const config = {
   themeConfig:
     /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
     ({
-      image: 'img/sentinel-social.png',
+      image: 'img/logo.svg',
       colorMode: {
         defaultMode: 'dark',
         disableSwitch: false,
@@ -52,7 +52,7 @@ const config = {
         title: 'Sentinel',
         logo: {
           alt: 'Sentinel Logo',
-          src: 'img/logo.png',
+          src: 'img/logo.svg',
         },
         items: [
           {
