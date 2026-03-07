@@ -48,6 +48,68 @@ interface TelegramGroupTurnContext {
   userName: string;
 }
 
+interface MessageGenerationMetadata {
+  requestedTier?: string;
+  resolvedModel?: string;
+  provider?: string;
+  temperature?: number;
+  maxIterations?: number;
+}
+
+function isTierLikeValue(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'fast' || normalized === 'normal' || normalized === 'hard' || normalized === 'tier';
+}
+
+function parseMessageGenerationMetadata(message: Message): MessageGenerationMetadata | null {
+  const rawGeneration = isObjectRecord(message.metadata) ? message.metadata.generation : null;
+  if (!isObjectRecord(rawGeneration)) return null;
+  const requestedTier = typeof rawGeneration.requested_tier === 'string'
+    ? rawGeneration.requested_tier.trim()
+    : '';
+  const resolvedModelRaw = typeof rawGeneration.resolved_model === 'string'
+    ? rawGeneration.resolved_model.trim()
+    : '';
+  const resolvedModel = isTierLikeValue(resolvedModelRaw) ? '' : resolvedModelRaw;
+  const providerRaw = typeof rawGeneration.provider === 'string' ? rawGeneration.provider.trim() : '';
+  const provider = providerRaw.toLowerCase() === 'tier' ? '' : providerRaw;
+  const temperature = typeof rawGeneration.temperature === 'number' ? rawGeneration.temperature : undefined;
+  const maxIterations = typeof rawGeneration.max_iterations === 'number' ? rawGeneration.max_iterations : undefined;
+  if (!requestedTier && !resolvedModel && !provider && temperature == null && maxIterations == null) {
+    return null;
+  }
+  return {
+    requestedTier: requestedTier || undefined,
+    resolvedModel: resolvedModel || undefined,
+    provider: provider || undefined,
+    temperature,
+    maxIterations,
+  };
+}
+
+function formatGenerationFooter(
+  metadata: MessageGenerationMetadata | null,
+  role: string,
+): string | null {
+  if (!metadata) return null;
+  if (role !== 'assistant' && role !== 'tool_result') return null;
+  const parts: string[] = [];
+  const hasResolvedModel = Boolean(metadata.resolvedModel && metadata.resolvedModel.trim());
+  if (!hasResolvedModel) {
+    return null;
+  }
+  if (hasResolvedModel) {
+    parts.push(metadata.resolvedModel!.trim());
+  }
+  if (metadata.provider) parts.push(metadata.provider);
+  if (typeof metadata.temperature === 'number') parts.push(`temp ${Number(metadata.temperature.toFixed(2))}`);
+  if (typeof metadata.maxIterations === 'number' && Number.isFinite(metadata.maxIterations)) {
+    parts.push(`max ${Math.trunc(metadata.maxIterations)}`);
+  }
+  return parts.length ? parts.join(' · ') : null;
+}
+
 function parseTelegramGroupResponseLabel(content: string): TelegramGroupTurnContext | null {
   const firstLine = content.split('\n', 1)[0]?.trim() ?? '';
   if (!firstLine.startsWith('TG Group Response')) return null;
@@ -382,6 +444,7 @@ export const SessionMessageCard = memo(({
     isToolResult &&
     isWaitingApproval(toolMetadata),
   );
+  const generationFooter = formatGenerationFooter(parseMessageGenerationMetadata(message), message.role);
   const approvalRef = pendingApproval ? approvalRefFromMetadata(toolMetadata) : null;
   const canResolveApproval = Boolean(
     pendingApproval &&
@@ -423,8 +486,12 @@ export const SessionMessageCard = memo(({
     }
   }, [isScreenshotTool]);
 
+  const cardWidthClass = isToolResult
+    ? (toolExpanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]')
+    : 'max-w-[90%]';
+
   return (
-    <div className={`flex w-full flex-col gap-1.5 animate-in ${isUser ? 'items-end' : 'items-start'}`}>
+    <div className={`flex w-full flex-col gap-1 animate-in ${isUser ? 'items-end' : 'items-start'}`}>
       <div className="flex items-center gap-2 px-1">
         <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)]">
           {message.role}
@@ -436,7 +503,7 @@ export const SessionMessageCard = memo(({
       </div>
 
       <div
-        className={`${isToolResult ? `${toolExpanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]'} inline-flex flex-col` : 'max-w-[90%]'} rounded-2xl px-4 py-1.5 text-xs shadow-sm border ${
+        className={`${isToolResult ? `${cardWidthClass} inline-flex flex-col` : cardWidthClass} rounded-2xl px-4 py-1.5 text-xs shadow-sm border ${
           isUser
             ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent rounded-tr-none font-medium'
             : isToolResult
@@ -614,6 +681,11 @@ export const SessionMessageCard = memo(({
           </div>
         )}
       </div>
+      {generationFooter ? (
+        <div className={`${cardWidthClass} -mt-2 pl-2 pr-1 ${isUser ? 'text-right' : 'text-left'}`}>
+          <span className="text-[10px] leading-none text-[color:var(--text-muted)] opacity-75">{generationFooter}</span>
+        </div>
+      ) : null}
     </div>
   );
 });

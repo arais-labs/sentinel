@@ -178,6 +178,21 @@ class TierProvider(LLMProvider):
             )
         return result
 
+    def resolve_generation_hint(self, model: str) -> tuple[str, str] | None:
+        """Expose the first concrete provider/model this request will attempt."""
+        try:
+            tier_cfg = self._resolve_tier(model)
+        except Exception:  # noqa: BLE001
+            return super().resolve_generation_hint(model)
+        ordered = self._ordered_configs(tier_cfg)
+        if not ordered:
+            return super().resolve_generation_hint(model)
+        primary = ordered[0]
+        resolved_model = primary.model.strip() if isinstance(primary.model, str) else ""
+        if not resolved_model:
+            return super().resolve_generation_hint(model)
+        return primary.provider.name, resolved_model
+
     @staticmethod
     def _required_provider_id(provider: LLMProvider) -> ProviderId:
         provider_id = provider.provider_id
@@ -339,6 +354,7 @@ class TierProvider(LLMProvider):
 
             for attempt in range(1, self._max_retries + 1):
                 try:
+                    attached_generation_hint = False
                     async for event in cfg.provider.stream(
                         messages,
                         model=cfg.model,
@@ -347,6 +363,15 @@ class TierProvider(LLMProvider):
                         reasoning_config=cfg.reasoning_config,
                         tool_choice=tool_choice,
                     ):
+                        if not attached_generation_hint:
+                            attached_generation_hint = True
+                            if event.message is None:
+                                event.message = AssistantMessage(model=cfg.model, provider=pname)
+                            else:
+                                if not event.message.model:
+                                    event.message.model = cfg.model
+                                if not event.message.provider:
+                                    event.message.provider = pname
                         yield event
                     self._clear_cooldown(pname)
                     return
