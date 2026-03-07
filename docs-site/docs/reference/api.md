@@ -5,19 +5,48 @@ title: araiOS API Reference
 
 # araiOS API Reference
 
-All agent-araiOS interaction happens through this REST API. Start with `GET /api/agent` to discover current endpoints and modules.
+All agent to araiOS interaction happens through this REST API.
+
+:::tip Start here
+Always begin with `GET /api/agent`. It returns the full guide for the current instance: modules, endpoints, permission rules, and usage context.
+:::
 
 ---
 
-## System endpoints
+## Auth and token exchange
+
+araiOS platform auth routes live under `/platform/auth`.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/agent` | Full guide — call this first to understand available modules and endpoints |
-| `GET` | `/api/manifest` | Machine-readable tool manifest |
-| `GET` | `/api/permissions` | List all permission rules |
-| `GET` | `/api/approvals` | List approval requests. Filter: `?status=pending\|approved\|rejected` |
-| `POST` | `/api/approvals` | Create a manual approval request |
+| `POST` | `/platform/auth/token` | Exchange API key for access and refresh tokens |
+| `POST` | `/platform/auth/refresh` | Refresh access token |
+| `POST` | `/platform/auth/logout` | Revoke current token set |
+| `GET` | `/platform/auth/me` | Current identity |
+
+Most `/api/*` routes require a valid bearer access token.
+
+---
+
+## System
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/agent` | Full instance guide with module capabilities |
+| `GET` | `/api/manifest` | Machine readable manifest |
+| `GET` | `/api/permissions` | List all permission actions and levels |
+| `GET` | `/api/approvals` | List approvals. Optional filter: `?status=pending|approved|rejected` |
+| `POST` | `/api/approvals` | Create approval record |
+| `POST` | `/api/approvals/{id}/approve` | Approve a pending approval |
+| `POST` | `/api/approvals/{id}/reject` | Reject a pending approval |
+
+### Approval response codes
+
+| Code | Meaning |
+|---|---|
+| `202` | Action requires approval and was queued as pending |
+| `403` | Action denied by policy |
+| `404` | Approval id not found |
 
 ---
 
@@ -25,47 +54,47 @@ All agent-araiOS interaction happens through this REST API. Start with `GET /api
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/modules` | List all registered modules |
-| `GET` | `/api/modules/:name` | Get module config including fields, actions, secrets schema |
-| `POST` | `/api/modules` | Register a new module (subject to approval) |
-| `PATCH` | `/api/modules/:name` | Update module config |
-| `DELETE` | `/api/modules/:name` | Delete a module |
+| `GET` | `/api/modules` | List modules |
+| `GET` | `/api/modules/{name}` | Get module config |
+| `POST` | `/api/modules` | Create module |
+| `PATCH` | `/api/modules/{name}` | Update module |
+| `DELETE` | `/api/modules/{name}` | Delete module |
 
 ---
 
-## Records (data modules)
+## Records for data modules
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/modules/:name/records` | List records. Filter: `?filter_field=&filter_value=` |
-| `POST` | `/api/modules/:name/records` | Create a record |
-| `PATCH` | `/api/modules/:name/records/:id` | Update a record |
-| `DELETE` | `/api/modules/:name/records/:id` | Delete a record |
+| `GET` | `/api/modules/{name}/records` | List records |
+| `GET` | `/api/modules/{name}/records/{id}` | Get one record |
+| `POST` | `/api/modules/{name}/records` | Create record |
+| `PATCH` | `/api/modules/{name}/records/{id}` | Update record |
+| `DELETE` | `/api/modules/{name}/records/{id}` | Delete record |
 
 ---
 
-## Actions (tool modules)
+## Actions for tool modules
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/modules/:name/actions/:action_id` | Invoke a tool action |
+| `POST` | `/api/modules/{name}/action/{action_id}` | Invoke tool action. Body: `{ "params": { ... } }` |
+
+Returns `202` when approval is required, `200` with result when executed.
 
 ---
 
-## Tasks
+## Built in resources
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/tasks` | List tasks. Filter: `?client=&status=&owner=` |
-| `POST` | `/api/tasks` | Create a task |
-| `PATCH` | `/api/tasks/:id` | Update task fields |
-| `DELETE` | `/api/tasks/:id` | Delete a task |
+| Resource | Endpoint prefix |
+|---|---|
+| Tasks | `/api/tasks` |
+| Coordination messages | `/api/coordination` |
+| Documents | `/api/documents` |
+| Settings | `/api/settings` |
 
 ---
 
-## Coordination
+## Important distinction
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/coordination` | List coordination messages |
-| `POST` | `/api/coordination` | Post a coordination message |
+Sentinel routes such as onboarding, memory, sessions, triggers, and websocket chat are in Sentinel backend APIs, not araiOS APIs.
