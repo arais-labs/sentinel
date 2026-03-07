@@ -7,13 +7,16 @@ title: Installation
 
 Full installation guide for Sentinel.
 
+---
+
 ## Requirements
 
 | Requirement | Notes |
 |---|---|
 | Docker Desktop | Must be running before you start |
 | bash | macOS, Linux, or Windows WSL2 |
-| ~4GB disk space | For Docker images |
+| ~4 GB disk space | For Docker images |
+| An interactive terminal | The CLI requires a real TTY |
 
 ---
 
@@ -32,33 +35,61 @@ cd sentinel
 bash ./sentinel-cli.sh
 ```
 
-Interactive menu options:
+The CLI opens an interactive menu:
 
 | Option | Description |
 |---|---|
 | Create config | Generate `.env` for a new instance |
-| Edit config | Modify existing config |
+| Edit config | Modify an existing config |
 | Start stack | Pull images and start all services |
 | Stop stack | Gracefully stop all services |
 | View logs | Tail container logs |
+| Pull latest images | Update to the latest builds |
 | Destroy | Remove containers and volumes |
 
-On first run: **Create config → Start stack**.
+**On first run:** Create config → Start stack.
 
 :::note
-Must be run in an interactive terminal with a TTY. Won't work in CI or non-interactive shells.
+The CLI must run in an interactive terminal with a TTY. It will not work in CI, non-interactive shells, or piped execution.
 :::
 
 ---
 
-## Step 3 — Access
+## Step 3 — Access the UI
 
 | Service | URL |
 |---|---|
 | Login gateway | `http://localhost:4747/` |
 | Sentinel UI | `http://localhost:4747/sentinel/` |
 | araiOS workspace | `http://localhost:4747/araios/` |
-| Live browser | `http://localhost:4747/vnc/` |
+| Live browser (VNC) | `http://localhost:4747/vnc/` |
+
+---
+
+## Config reference
+
+Key `.env` fields:
+
+| Field | Description |
+|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic API key (for Claude models) |
+| `OPENAI_API_KEY` | OpenAI API key (for GPT models) |
+| `TELEGRAM_BOT_TOKEN` | Optional — enables Telegram integration |
+| `INSTANCE_NAME` | Identifier for this instance (used in multi-instance setups) |
+
+You need at least one LLM provider key. Both can be set simultaneously — the agent uses them with automatic failover.
+
+---
+
+## LLM provider failover
+
+Sentinel uses a `ReliableProvider` wrapper that tries providers in order with exponential backoff:
+
+- 3 retries per provider, starting at 500ms and doubling each attempt
+- On non-retryable errors (auth failures, billing issues), the provider is skipped immediately
+- If all providers fail, the agent surfaces a clear error message
+
+To benefit from failover, set both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. Provider order is determined by config.
 
 ---
 
@@ -71,13 +102,16 @@ bash ./sentinel-cli.sh
 
 ---
 
-## Config reference
+## Troubleshooting
 
-Key `.env` fields:
+**Docker is not running**
+Start Docker Desktop before running the CLI.
 
-| Field | Description |
-|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key (if using Claude) |
-| `OPENAI_API_KEY` | OpenAI API key (if using GPT) |
-| `TELEGRAM_BOT_TOKEN` | Optional Telegram integration |
-| `INSTANCE_NAME` | Name for this instance (multi-instance setups) |
+**Port 4747 is already in use**
+Another process is using the port. Stop that process or change the port in your `.env`.
+
+**CLI exits immediately without a menu**
+You are running it in a non-interactive shell. Run it directly in a terminal.
+
+**Agent returns "API authentication failed"**
+Your LLM provider key is invalid or expired. Check it in Settings → API Keys.

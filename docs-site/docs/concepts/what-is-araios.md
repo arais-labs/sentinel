@@ -5,84 +5,106 @@ title: What is araiOS?
 
 # What is araiOS?
 
-araiOS is the config-driven control plane that powers the structured layer underneath Sentinel. Where Sentinel is the agent runtime and operator interface, araiOS handles everything around it — custom tools, auth, permissions, approvals, and agent coordination.
+araiOS is the control plane that sits underneath Sentinel. It handles everything the agent is allowed to do: custom tools, persistent data stores, permissions, human approval gates, and agent coordination.
 
-> **Sentinel** is the agent. **araiOS** is the operating environment the agent works within.
+> **Sentinel is the agent. araiOS is the environment the agent operates within.**
+
+Agents interact with araiOS exclusively through a REST API. Every action is auditable. There are no backdoors.
 
 ---
 
 ## Module system
 
-araiOS is built around modules. Operators define modules that agents interact with via a REST API. Two types:
+araiOS is built around modules. A module is either a data store or a callable tool.
 
 ### Data modules
-Persistent record stores with full CRUD. Examples: leads, clients, proposals, tasks.
+Persistent record stores with full CRUD. You define fields, types, and validation. Agents read, create, update, and delete records through scoped permission rules.
 
-Agents can read, create, update, and delete records under scoped permissions. Data modules show up as structured stores in the araiOS workspace.
+Examples: leads, clients, proposals, tasks, competitors.
 
 ### Tool modules
-Callable actions backed by sandboxed Python. No stored records — just execution. Examples: sending Slack messages, querying an external API, running a calculation.
+Callable actions backed by sandboxed Python. No stored records — just execution. You write the Python code; araiOS runs it in a controlled environment and passes secrets in as environment variables.
+
+Examples: send a Slack message, call an external API, run a calculation, trigger a webhook.
 
 ---
 
-## Permissions and approvals
+## Permission model
 
-Every agent action maps to a permission rule:
+Every agent action maps to one of three policies:
 
-| Rule | Behavior |
+| Policy | What happens |
 |---|---|
-| `allow` | Agent executes immediately |
-| `approval` | Agent pauses, surfaces a request, waits for operator review |
-| `deny` | Action is blocked |
+| `allow` | Agent executes immediately, no interruption |
+| `approval` | Agent pauses, creates an approval request, waits for operator review |
+| `deny` | Action is blocked, agent receives a 403 immediately |
 
-When an action requires approval, the operator reviews and acts in the araiOS UI before execution continues. High-risk actions stay under human control without blocking normal work.
+The default policy for any unlisted action is `allow`. The `agent` role cannot resolve approvals — only `admin` can.
+
+:::important
+When an action hits `approval`, the araiOS API returns **HTTP 202**, not an error. The agent must handle 202 responses correctly — they mean "created and pending" not "failed". A 403 means "denied" and is permanent.
+:::
+
+---
+
+## Approval flow
+
+When a `202` is returned:
+
+1. araiOS creates an `Approval` record with a `match_key`
+2. The agent sees the 202, pauses the current action
+3. The approval appears in the araiOS workspace under **Approvals**
+4. The operator reviews the action, payload, and context
+5. The operator approves or denies
+6. The agent polls for resolution and resumes on approval, or surfaces the denial to the user
+
+Approvals are matched to pending agent actions via `match_key`. If the key does not match — for example, if the request came from a different session — the approval will never resolve that action.
 
 ---
 
 ## Secrets management
 
-API keys and credentials are stored at the module level in araiOS. Agents access them only through the controlled API surface — they never see raw credential values.
+API keys and credentials are stored at the module level. Agents never see raw secret values. Secrets are injected into sandboxed Python execution as environment variables and never returned in API responses.
 
 ---
 
 ## Agent coordination
 
-araiOS provides a coordination bus for multi-agent setups. Agents post messages, hand off tasks, and check coordination state — all through the same API.
+araiOS provides a coordination bus for multi-agent setups. Agents post messages, hand off tasks, and read coordination state through the same API. This is useful for orchestrating parallel sub-agents or signaling between agents in different sessions.
 
 ---
 
 ## Task system
 
-Built-in collaborative task management between agents and operators:
+Built-in task management shared between agents and operators:
 
 - Status, priority, owner fields
-- Flexible `workPackage` for attaching plans and artifacts
-- Handoff between agents and humans
+- `workPackage` field for attaching plans, code, and artifacts
+- Handoff workflows between agents and humans
+- Supports filtering by client, status, owner, and date
 
 ---
 
-## The API surface
+## Discovering what is available
 
-Agents interact with araiOS exclusively through a documented REST API. Every action is auditable. No backdoor access.
-
-Key endpoints:
+Always start with:
 
 ```
-GET  /api/agent                        # Discover available modules and endpoints
-GET  /api/modules                      # List all modules
-POST /api/modules/:name/records        # Create a record
-POST /api/modules/:name/actions/:id    # Invoke a tool action
-GET  /api/tasks                        # List tasks
-GET  /api/approvals                    # Check pending approvals
+GET /api/agent
 ```
+
+This returns the full guide for the current araiOS instance: available modules, registered actions, permission rules, and usage notes. Agents call this first when entering an unfamiliar instance.
 
 ---
 
-## The araiOS workspace
+## Key endpoints
 
-araiOS ships with its own frontend at `/araios/`. Operators use it to:
-
-- Register and configure modules
-- Set permission rules per action
-- Review and act on agent approval requests
-- Inspect module records and action logs
+```
+GET  /api/agent                          # Full instance guide — call this first
+GET  /api/modules                        # List all modules
+POST /api/modules/:name/records          # Create a record in a data module
+POST /api/modules/:name/actions/:id      # Invoke a tool module action
+GET  /api/tasks                          # List tasks
+GET  /api/approvals?status=pending       # Check pending approvals
+POST /api/approvals/:id/resolve          # Resolve an approval (admin only)
+```
