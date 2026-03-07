@@ -8,10 +8,11 @@
 <p align="center">
   <a href="https://github.com/arais-labs/sentinel/blob/main/LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg"></a>
   <img alt="Deployment" src="https://img.shields.io/badge/deploy-Docker%20Compose-2496ED">
-  <a href="https://github.com/arais-labs/sentinel/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/arais-labs/sentinel/main"></a>
-  <a href="https://github.com/arais-labs/sentinel/commits/main"><img alt="Commit activity" src="https://img.shields.io/github/commit-activity/m/arais-labs/sentinel"></a>
+  <a href="https://github.com/arais-labs/sentinel/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/arais-labs/sentinel?branch=main"></a>
+  <a href="https://github.com/arais-labs/sentinel/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/arais-labs/sentinel"></a>
+  <a href="https://github.com/arais-labs/sentinel/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/arais-labs/sentinel"></a>
   <a href="https://github.com/arais-labs/sentinel/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/arais-labs/sentinel"></a>
-  <a href="https://github.com/arais-labs/sentinel/pulls"><img alt="Open PRs" src="https://img.shields.io/github/issues-pr/arais-labs/sentinel"></a>
+  <a href="https://github.com/arais-labs/sentinel/pulls"><img alt="Open pull requests" src="https://img.shields.io/github/issues-pr/arais-labs/sentinel?label=open%20PRs"></a>
   <img alt="Top language" src="https://img.shields.io/github/languages/top/arais-labs/sentinel">
 </p>
 
