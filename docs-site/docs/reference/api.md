@@ -5,11 +5,26 @@ title: araiOS API Reference
 
 # araiOS API Reference
 
-All agent-to-araiOS interaction happens through this REST API. Every call is auditable.
+All agent to araiOS interaction happens through this REST API.
 
 :::tip Start here
-Always begin with `GET /api/agent`. It returns the full guide for the current instance: modules, endpoints, permission rules, and usage context. Agents call this first when entering an unfamiliar instance.
+Always begin with `GET /api/agent`. It returns the full guide for the current instance: modules, endpoints, permission rules, and usage context.
 :::
+
+---
+
+## Auth and token exchange
+
+araiOS platform auth routes live under `/platform/auth`.
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/platform/auth/token` | Exchange API key for access and refresh tokens |
+| `POST` | `/platform/auth/refresh` | Refresh access token |
+| `POST` | `/platform/auth/logout` | Revoke current token set |
+| `GET` | `/platform/auth/me` | Current identity |
+
+Most `/api/*` routes require a valid bearer access token.
 
 ---
 
@@ -17,20 +32,21 @@ Always begin with `GET /api/agent`. It returns the full guide for the current in
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/agent` | Full instance guide — modules, endpoints, permissions, context |
-| `GET` | `/api/manifest` | Machine-readable tool manifest |
-| `GET` | `/api/permissions` | List all permission rules |
-| `GET` | `/api/approvals` | List approval requests. Filter: `?status=pending\|approved\|rejected`, `?provider=tool\|git\|araios`, `?session_id=<uuid>` |
-| `POST` | `/api/approvals` | Create a manual approval request |
-| `POST` | `/api/approvals/:id/resolve` | Resolve an approval (`admin` role required). Body: `{ "decision": "approved\|rejected", "note": "optional" }` |
+| `GET` | `/api/agent` | Full instance guide with module capabilities |
+| `GET` | `/api/manifest` | Machine readable manifest |
+| `GET` | `/api/permissions` | List all permission actions and levels |
+| `GET` | `/api/approvals` | List approvals. Optional filter: `?status=pending|approved|rejected` |
+| `POST` | `/api/approvals` | Create approval record |
+| `POST` | `/api/approvals/{id}/approve` | Approve a pending approval |
+| `POST` | `/api/approvals/{id}/reject` | Reject a pending approval |
 
 ### Approval response codes
 
 | Code | Meaning |
 |---|---|
-| `202` | Action requires approval — created and pending. Not an error. |
-| `403` | Action is denied by a `deny` rule. Permanent. |
-| `404` | Approval ID not found, or wrong `provider` specified for resolution. |
+| `202` | Action requires approval and was queued as pending |
+| `403` | Action denied by policy |
+| `404` | Approval id not found |
 
 ---
 
@@ -38,93 +54,47 @@ Always begin with `GET /api/agent`. It returns the full guide for the current in
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/modules` | List all registered modules |
-| `GET` | `/api/modules/:name` | Get module config: fields, actions, secrets schema, permission rules |
-| `POST` | `/api/modules` | Register a new module (requires approval) |
-| `PATCH` | `/api/modules/:name` | Update module config |
-| `DELETE` | `/api/modules/:name` | Delete a module |
+| `GET` | `/api/modules` | List modules |
+| `GET` | `/api/modules/{name}` | Get module config |
+| `POST` | `/api/modules` | Create module |
+| `PATCH` | `/api/modules/{name}` | Update module |
+| `DELETE` | `/api/modules/{name}` | Delete module |
 
 ---
 
-## Records (data modules)
+## Records for data modules
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/modules/:name/records` | List records. Filter: `?filter_field=<field>&filter_value=<value>` |
-| `POST` | `/api/modules/:name/records` | Create a record |
-| `PATCH` | `/api/modules/:name/records/:id` | Update a record (partial update) |
-| `DELETE` | `/api/modules/:name/records/:id` | Delete a record |
+| `GET` | `/api/modules/{name}/records` | List records |
+| `GET` | `/api/modules/{name}/records/{id}` | Get one record |
+| `POST` | `/api/modules/{name}/records` | Create record |
+| `PATCH` | `/api/modules/{name}/records/{id}` | Update record |
+| `DELETE` | `/api/modules/{name}/records/{id}` | Delete record |
 
 ---
 
-## Actions (tool modules)
+## Actions for tool modules
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/modules/:name/actions/:action_id` | Invoke a tool action. Body: `{ "params": { ... } }` |
+| `POST` | `/api/modules/{name}/action/{action_id}` | Invoke tool action. Body: `{ "params": { ... } }` |
 
-Returns `202` if the action requires operator approval. Returns the action result directly on `200`.
-
----
-
-## Tasks
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/tasks` | List tasks. Filter: `?client=&status=&owner=&priority=` |
-| `POST` | `/api/tasks` | Create a task |
-| `PATCH` | `/api/tasks/:id` | Update task fields (partial update) |
-| `DELETE` | `/api/tasks/:id` | Delete a task |
-
-### Task fields
-
-| Field | Type | Description |
-|---|---|---|
-| `title` | string | Task title |
-| `status` | string | `open`, `in_progress`, `blocked`, `done` |
-| `priority` | string | `low`, `medium`, `high` |
-| `owner` | string | Assigned agent or human |
-| `client` | string | Associated client or project |
-| `workPackage` | object | Arbitrary structured payload — plans, code, artifacts |
-| `handoffTo` | string | Who to hand off to next |
+Returns `202` when approval is required, `200` with result when executed.
 
 ---
 
-## Coordination
+## Built in resources
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/coordination` | List coordination messages |
-| `POST` | `/api/coordination` | Post a coordination message |
-
-Used for multi-agent communication and state signaling.
-
----
-
-## Documents
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/documents` | List documents |
-| `POST` | `/api/documents` | Create a document |
-| `PATCH` | `/api/documents/:id` | Update a document |
-| `DELETE` | `/api/documents/:id` | Delete a document |
+| Resource | Endpoint prefix |
+|---|---|
+| Tasks | `/api/tasks` |
+| Coordination messages | `/api/coordination` |
+| Documents | `/api/documents` |
+| Settings | `/api/settings` |
 
 ---
 
-## Onboarding
+## Important distinction
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/onboarding/status` | Check if onboarding has been completed |
-| `POST` | `/api/onboarding/complete` | Mark onboarding as complete |
-
----
-
-## Auth notes
-
-All requests require a valid Bearer token obtained via the `/token` endpoint using an API key. Tokens expire — the client is responsible for refreshing before expiry using the refresh token.
-
-The `agent` role can call all module and data endpoints subject to permission rules. It cannot resolve approvals or modify permissions.
-
-The `admin` role can do everything.
+Sentinel routes such as onboarding, memory, sessions, triggers, and websocket chat are in Sentinel backend APIs, not araiOS APIs.

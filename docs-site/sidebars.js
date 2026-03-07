@@ -29,6 +29,7 @@ const sidebars = {
       collapsed: false,
       items: [
         'guides/installation',
+        'guides/cli-reference',
         'guides/creating-modules',
         'guides/permissions',
         'guides/telegram',

@@ -3,115 +3,130 @@ sidebar_position: 1
 title: Installation
 ---
 
-# Installation
+# Installation and CLI workflow
 
-Full installation guide for Sentinel.
+This guide explains the real lifecycle implemented by `sentinel-cli.sh`.
 
 ---
 
 ## Requirements
 
-| Requirement | Notes |
-|---|---|
-| Docker Desktop | Must be running before you start |
-| bash | macOS, Linux, or Windows WSL2 |
-| ~4 GB disk space | For Docker images |
-| An interactive terminal | The CLI requires a real TTY |
+- Docker available and running
+- bash shell with interactive TTY
+- git
 
 ---
 
-## Step 1 — Clone the repo
-
-```bash
-git clone https://github.com/arais-labs/sentinel.git
-cd sentinel
-```
-
----
-
-## Step 2 — Run the CLI
+## CLI entrypoint
 
 ```bash
 bash ./sentinel-cli.sh
 ```
 
-The CLI opens an interactive menu:
+The CLI is stateful and manages instance configs under:
 
-| Option | Description |
+- `.instances/<instance>.env`
+
+Each instance maps to an isolated compose project:
+
+- project name format: `sentinel-<instance>`
+
+---
+
+## Main menu actions
+
+| Action | What it does |
 |---|---|
-| Create config | Generate `.env` for a new instance |
-| Edit config | Modify an existing config |
-| Start stack | Pull images and start all services |
-| Stop stack | Gracefully stop all services |
-| View logs | Tail container logs |
-| Pull latest images | Update to the latest builds |
-| Destroy | Remove containers and volumes |
-
-**On first run:** Create config → Start stack.
-
-:::note
-The CLI must run in an interactive terminal with a TTY. It will not work in CI, non-interactive shells, or piped execution.
-:::
+| New/Edit Instance | Creates or updates `.instances/<instance>.env` then starts instance |
+| Start Instance | Starts selected instance with compose |
+| Stop Instance | Stops selected instance |
+| Reset Auth (Managed Instance) | Rewrites auth username and password hashes in DB |
+| Global Status | Shows running service count per instance |
+| Tail Logs | `docker compose logs -f` for selected instance |
+| Delete Instance | `down -v --remove-orphans` plus remove env file |
+| Advanced Mode | Dev mode compose start and custom DB auth management |
 
 ---
 
-## Step 3 — Access the UI
+## New instance creation flow
 
-| Service | URL |
-|---|---|
-| Login gateway | `http://localhost:4747/` |
-| Sentinel UI | `http://localhost:4747/sentinel/` |
-| araiOS workspace | `http://localhost:4747/araios/` |
-| Live browser (VNC) | `http://localhost:4747/vnc/` |
+When you choose **New/Edit Instance**, CLI prompts for:
 
----
+- instance name
+- gateway port
+- db name
+- db user
+- db password
+- JWT secret
+- admin username
+- admin password
 
-## Config reference
-
-Key `.env` fields:
-
-| Field | Description |
-|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key (for Claude models) |
-| `OPENAI_API_KEY` | OpenAI API key (for GPT models) |
-| `TELEGRAM_BOT_TOKEN` | Optional — enables Telegram integration |
-| `INSTANCE_NAME` | Identifier for this instance (used in multi-instance setups) |
-
-You need at least one LLM provider key. Both can be set simultaneously — the agent uses them with automatic failover.
+Then it writes `.instances/<instance>.env` and starts stack.
 
 ---
 
-## LLM provider failover
+## What happens on Start Instance
 
-Sentinel uses a `ReliableProvider` wrapper that tries providers in order with exponential backoff:
+`action_up` does the following in order:
 
-- 3 retries per provider, starting at 500ms and doubling each attempt
-- On non-retryable errors (auth failures, billing issues), the provider is skipped immediately
-- If all providers fail, the agent surfaces a clear error message
+1. `docker compose up --build -d`
+2. attempts auth credential seeding in DB
+3. attempts bootstrap araiOS agent token creation via APIs
+4. seeds cross app URL settings
+5. prints onboarding instructions
 
-To benefit from failover, set both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. Provider order is determined by config.
-
----
-
-## Updating
-
-```bash
-bash ./sentinel-cli.sh
-# Select: Pull latest images → Restart stack
-```
+If auth seed fails, CLI tells you to use Reset Auth.
 
 ---
 
-## Troubleshooting
+## Auth details
 
-**Docker is not running**
-Start Docker Desktop before running the CLI.
+For managed instances, auth reset writes password hash into `system_settings` table keys:
 
-**Port 4747 is already in use**
-Another process is using the port. Stop that process or change the port in your `.env`.
+- `sentinel.auth.username`
+- `sentinel.auth.password_hash`
+- `araios.auth.username`
+- `araios.auth.password_hash`
 
-**CLI exits immediately without a menu**
-You are running it in a non-interactive shell. Run it directly in a terminal.
+Target can be both apps, Sentinel only, or araiOS only.
 
-**Agent returns "API authentication failed"**
-Your LLM provider key is invalid or expired. Check it in Settings → API Keys.
+---
+
+## Dev mode in Advanced Mode
+
+Advanced mode start uses `docker-compose.dev.yml` and shares Postgres volume name with project.
+
+Use this for local development where you need dev compose behavior.
+
+---
+
+## Common operations
+
+### Start existing instance
+
+1. Run CLI
+2. Select **Start Instance**
+3. Pick instance
+
+### Rotate credentials
+
+1. Run CLI
+2. Select **Reset Auth (Managed Instance)**
+3. Choose target app and set new username and password
+
+### Delete instance fully
+
+1. Run CLI
+2. Select **Delete Instance**
+3. Type `DELETE`
+
+This removes containers, volumes, and instance env file.
+
+---
+
+## Troubleshooting quick checks
+
+- Docker not running -> CLI will fail readiness check
+- Port already in use -> CLI warns during create
+- Login fails after start -> run Reset Auth action
+- araiOS token not auto created -> open manage UI and create token manually

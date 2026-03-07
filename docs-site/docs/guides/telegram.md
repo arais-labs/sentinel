@@ -21,7 +21,7 @@ Sentinel can receive and respond to Telegram messages. Each chat type routes to 
 
 | Chat type | Where it routes | Trust level |
 |---|---|---|
-| Owner private DM | Owner's main session | Full trust — same as UI |
+| Owner private DM | Owner's main session | Owner channel routing to main session |
 | Non-owner private DM | Dedicated private session per user | Untrusted by default |
 | Group / supergroup | Dedicated channel session per group | Untrusted multi-party |
 
@@ -48,8 +48,7 @@ When you message the bot from your owner DM:
 
 - Routed to your main session
 - Agent responds inline in the same Telegram chat
-- Full trust: the agent can use all tools and access all capabilities
-- Secrets and credentials are available in context
+- Owner DM follows owner policy defaults and still respects configured guardrails.
 
 ---
 
@@ -83,8 +82,8 @@ Non-owner private DMs behave like group chats:
 Telegram sessions use a run registry to prevent concurrent agent runs on the same session. If the agent is already processing a message when a new one arrives:
 
 - The bridge polls for up to 60 seconds (12 attempts × 5 second intervals)
-- If the agent is still busy after polling, the message is queued
-- The user may receive a brief "agent is busy" message
+- If the agent is still busy after polling, the new message is rejected for now
+- The user receives a busy message and can retry
 
 ---
 
