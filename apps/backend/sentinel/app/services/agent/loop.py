@@ -31,6 +31,10 @@ from app.services.agent.tool_image_reinjection import (
 from app.services.agent.tool_adapter import ToolAdapter
 from app.services.approvals.providers.git import normalize_git_command
 from app.services.estop import EstopLevel, EstopService
+from app.services.messages import (
+    build_generation_metadata,
+    with_generation_metadata,
+)
 from app.services.session_naming import (
     apply_conversation_message_delta,
     conversation_delta_for_role,
@@ -148,7 +152,15 @@ class AgentLoop:
             if on_event is not None:
                 await on_event(AgentEvent(type="error", error="Emergency stop KILL_ALL is active"))
                 await on_event(AgentEvent(type="done", stop_reason="aborted"))
-            await self._persist_messages(db, session_id, created, assistant_iterations)
+            await self._persist_messages(
+                db,
+                session_id,
+                created,
+                assistant_iterations,
+                requested_tier=model,
+                temperature=temperature,
+                max_iterations=max_iterations,
+            )
             reset_log_session(session_log_token)
             return AgentLoopResult(
                 final_text="",
@@ -221,6 +233,9 @@ class AgentLoop:
                 session_id,
                 batch,
                 assistant_iterations,
+                requested_tier=model,
+                temperature=temperature,
+                max_iterations=max_iterations,
                 effective_system_prompt=runtime_system_prompt,
                 runtime_context_snapshot=snapshot,
             )
@@ -566,6 +581,9 @@ class AgentLoop:
                 session_id,
                 created,
                 assistant_iterations,
+                requested_tier=model,
+                temperature=temperature,
+                max_iterations=max_iterations,
                 effective_system_prompt=runtime_system_prompt,
                 runtime_context_snapshot=snapshot,
             )
@@ -587,6 +605,9 @@ class AgentLoop:
                 session_id,
                 created,
                 assistant_iterations,
+                requested_tier=model,
+                temperature=temperature,
+                max_iterations=max_iterations,
                 effective_system_prompt=runtime_system_prompt,
                 runtime_context_snapshot=snapshot,
             )
@@ -609,6 +630,9 @@ class AgentLoop:
                     session_id,
                     created,
                     assistant_iterations,
+                    requested_tier=model,
+                    temperature=temperature,
+                    max_iterations=max_iterations,
                     effective_system_prompt=runtime_system_prompt,
                     runtime_context_snapshot=snapshot,
                 )
@@ -649,6 +673,15 @@ class AgentLoop:
         """
         streamed_events: list[AgentEvent] = []
         done_event: AgentEvent | None = None
+        fallback_model = model
+        fallback_provider = self.provider.name
+        generation_hint = self.provider.resolve_generation_hint(model)
+        if generation_hint is not None:
+            hinted_provider, hinted_model = generation_hint
+            if hinted_provider:
+                fallback_provider = hinted_provider
+            if hinted_model:
+                fallback_model = hinted_model
 
         try:
             async for event in self.provider.stream(
@@ -673,8 +706,8 @@ class AgentLoop:
                 partial_out.append(
                     self._assemble_message_from_events(
                         streamed_events,
-                        fallback_model=model,
-                        fallback_provider=self.provider.name,
+                        fallback_model=fallback_model,
+                        fallback_provider=fallback_provider,
                     )
                 )
             raise
@@ -686,8 +719,8 @@ class AgentLoop:
 
         return self._assemble_message_from_events(
             streamed_events,
-            fallback_model=model,
-            fallback_provider=self.provider.name,
+            fallback_model=fallback_model,
+            fallback_provider=fallback_provider,
         )
 
     def _assemble_message_from_events(
@@ -857,12 +890,23 @@ class AgentLoop:
         created: list[AgentMessage],
         assistant_iterations: dict[int, int],
         *,
+        requested_tier: TierName | str | None,
+        temperature: float,
+        max_iterations: int,
         effective_system_prompt: str | None = None,
         runtime_context_snapshot: dict[str, Any] | None = None,
     ) -> None:
         """Persist run-created messages in chronological order with metadata."""
         base_time = datetime.now(UTC)
         session_record = await db.get(Session, session_id)
+        requested_generation = build_generation_metadata(
+            requested_tier=requested_tier,
+            resolved_model=None,
+            provider=None,
+            temperature=temperature,
+            max_iterations=max_iterations,
+        )
+        latest_assistant_generation: dict[str, Any] | None = None
         if session_record is not None and effective_system_prompt:
             prompt = effective_system_prompt.strip()
             if prompt:
@@ -880,7 +924,10 @@ class AgentLoop:
                     session_id=session_id,
                     role="system",
                     content=summary,
-                    metadata_json={"source": "runtime_context", "run_context": runtime_context_snapshot},
+                    metadata_json=with_generation_metadata(
+                        {"source": "runtime_context", "run_context": runtime_context_snapshot},
+                        generation=requested_generation,
+                    ),
                     created_at=base_time,
                 )
             )
@@ -896,6 +943,10 @@ class AgentLoop:
                     and text_content.strip()
                 ):
                     session_record.initial_prompt = text_content.strip()
+                metadata = with_generation_metadata(
+                    metadata,
+                    generation=requested_generation,
+                )
                 if isinstance(message.content, list):
                     attachments: list[dict[str, Any]] = []
                     for block in message.content:
@@ -952,6 +1003,18 @@ class AgentLoop:
                 }
                 if tool_calls_data:
                     metadata["tool_calls"] = tool_calls_data
+                assistant_generation = build_generation_metadata(
+                    requested_tier=requested_tier,
+                    resolved_model=message.model,
+                    provider=message.provider,
+                    temperature=temperature,
+                    max_iterations=max_iterations,
+                )
+                metadata = with_generation_metadata(
+                    metadata,
+                    generation=assistant_generation,
+                )
+                latest_assistant_generation = assistant_generation
                 record = Message(
                     session_id=session_id,
                     role="assistant",
@@ -968,6 +1031,10 @@ class AgentLoop:
                 metadata = {"is_error": message.is_error}
                 if message.metadata:
                     metadata.update(message.metadata)
+                metadata = with_generation_metadata(
+                    metadata,
+                    generation=latest_assistant_generation or requested_generation,
+                )
                 stored_content, truncation_meta = self._truncate_tool_result_for_storage(
                     message.content or ""
                 )

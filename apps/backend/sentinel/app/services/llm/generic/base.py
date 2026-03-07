@@ -52,3 +52,9 @@ class LLMProvider(ABC):
     def capabilities(self) -> ProviderCapabilities:
         """Provider capability flags used for runtime behavior decisions."""
         return ProviderCapabilities()
+
+    def resolve_generation_hint(self, model: str) -> tuple[str, str] | None:
+        """Best-effort `(provider, model)` hint for metadata before stream events arrive."""
+        if not isinstance(model, str) or not model.strip():
+            return None
+        return self.name, model.strip()

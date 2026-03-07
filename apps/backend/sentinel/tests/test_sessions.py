@@ -445,6 +445,13 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
                 role="assistant",
                 content="",
                 metadata_json={
+                    "generation": {
+                        "requested_tier": "normal",
+                        "resolved_model": "gpt-4.1-mini",
+                        "provider": "openai",
+                        "temperature": 0.7,
+                        "max_iterations": 50,
+                    },
                     "tool_calls": [
                         {
                             "id": "toolu_pending_runtime",
@@ -476,6 +483,9 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
         assert materialized is not None
         assert materialized["metadata"]["cancelled_by_stop"] is True
         assert materialized["metadata"]["pending"] is False
+        generation = materialized["metadata"].get("generation") or {}
+        assert generation.get("resolved_model") == "gpt-4.1-mini"
+        assert generation.get("provider") == "openai"
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
