@@ -3,81 +3,130 @@ sidebar_position: 1
 title: Installation
 ---
 
-# Installation
+# Installation and CLI workflow
 
-Full installation guide for Sentinel.
+This guide explains the real lifecycle implemented by `sentinel-cli.sh`.
+
+---
 
 ## Requirements
 
-| Requirement | Notes |
-|---|---|
-| Docker Desktop | Must be running before you start |
-| bash | macOS, Linux, or Windows WSL2 |
-| ~4GB disk space | For Docker images |
+- Docker available and running
+- bash shell with interactive TTY
+- git
 
 ---
 
-## Step 1 — Clone the repo
-
-```bash
-git clone https://github.com/arais-labs/sentinel.git
-cd sentinel
-```
-
----
-
-## Step 2 — Run the CLI
+## CLI entrypoint
 
 ```bash
 bash ./sentinel-cli.sh
 ```
 
-Interactive menu options:
+The CLI is stateful and manages instance configs under:
 
-| Option | Description |
-|---|---|
-| Create config | Generate `.env` for a new instance |
-| Edit config | Modify existing config |
-| Start stack | Pull images and start all services |
-| Stop stack | Gracefully stop all services |
-| View logs | Tail container logs |
-| Destroy | Remove containers and volumes |
+- `.instances/<instance>.env`
 
-On first run: **Create config → Start stack**.
+Each instance maps to an isolated compose project:
 
-:::note
-Must be run in an interactive terminal with a TTY. Won't work in CI or non-interactive shells.
-:::
+- project name format: `sentinel-<instance>`
 
 ---
 
-## Step 3 — Access
+## Main menu actions
 
-| Service | URL |
+| Action | What it does |
 |---|---|
-| Login gateway | `http://localhost:4747/` |
-| Sentinel UI | `http://localhost:4747/sentinel/` |
-| araiOS workspace | `http://localhost:4747/araios/` |
-| Live browser | `http://localhost:4747/vnc/` |
+| New/Edit Instance | Creates or updates `.instances/<instance>.env` then starts instance |
+| Start Instance | Starts selected instance with compose |
+| Stop Instance | Stops selected instance |
+| Reset Auth (Managed Instance) | Rewrites auth username and password hashes in DB |
+| Global Status | Shows running service count per instance |
+| Tail Logs | `docker compose logs -f` for selected instance |
+| Delete Instance | `down -v --remove-orphans` plus remove env file |
+| Advanced Mode | Dev mode compose start and custom DB auth management |
 
 ---
 
-## Updating
+## New instance creation flow
 
-```bash
-bash ./sentinel-cli.sh
-# Select: Pull latest images → Restart stack
-```
+When you choose **New/Edit Instance**, CLI prompts for:
+
+- instance name
+- gateway port
+- db name
+- db user
+- db password
+- JWT secret
+- admin username
+- admin password
+
+Then it writes `.instances/<instance>.env` and starts stack.
 
 ---
 
-## Config reference
+## What happens on Start Instance
 
-Key `.env` fields:
+`action_up` does the following in order:
 
-| Field | Description |
-|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key (if using Claude) |
-| `OPENAI_API_KEY` | OpenAI API key (if using GPT) |
-| `TELEGRAM_BOT_TOKEN` | Optional Telegram integration |
-| `INSTANCE_NAME` | Name for this instance (multi-instance setups) |
+1. `docker compose up --build -d`
+2. attempts auth credential seeding in DB
+3. attempts bootstrap araiOS agent token creation via APIs
+4. seeds cross app URL settings
+5. prints onboarding instructions
+
+If auth seed fails, CLI tells you to use Reset Auth.
+
+---
+
+## Auth details
+
+For managed instances, auth reset writes password hash into `system_settings` table keys:
+
+- `sentinel.auth.username`
+- `sentinel.auth.password_hash`
+- `araios.auth.username`
+- `araios.auth.password_hash`
+
+Target can be both apps, Sentinel only, or araiOS only.
+
+---
+
+## Dev mode in Advanced Mode
+
+Advanced mode start uses `docker-compose.dev.yml` and shares Postgres volume name with project.
+
+Use this for local development where you need dev compose behavior.
+
+---
+
+## Common operations
+
+### Start existing instance
+
+1. Run CLI
+2. Select **Start Instance**
+3. Pick instance
+
+### Rotate credentials
+
+1. Run CLI
+2. Select **Reset Auth (Managed Instance)**
+3. Choose target app and set new username and password
+
+### Delete instance fully
+
+1. Run CLI
+2. Select **Delete Instance**
+3. Type `DELETE`
+
+This removes containers, volumes, and instance env file.
+
+---
+
+## Troubleshooting quick checks
+
+- Docker not running -> CLI will fail readiness check
+- Port already in use -> CLI warns during create
+- Login fails after start -> run Reset Auth action
+- araiOS token not auto created -> open manage UI and create token manually
