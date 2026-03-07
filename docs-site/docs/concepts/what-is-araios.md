@@ -23,7 +23,7 @@ Persistent record stores with full CRUD. You define fields, types, and validatio
 Examples: leads, clients, proposals, tasks, competitors.
 
 ### Tool modules
-Callable actions backed by sandboxed Python. No stored records — just execution. You write the Python code; araiOS runs it in a controlled environment and passes secrets in as environment variables.
+Callable actions backed by sandboxed Python. No stored records — just execution. You write the Python code; araiOS runs it in a controlled environment and passes secrets through a `secrets` dictionary in action execution context.
 
 Examples: send a Slack message, call an external API, run a calculation, trigger a webhook.
 
@@ -64,7 +64,7 @@ Approvals are matched to pending agent actions via `match_key`. If the key does 
 
 ## Secrets management
 
-API keys and credentials are stored at the module level. Agents never see raw secret values. Secrets are injected into sandboxed Python execution as environment variables and never returned in API responses.
+API keys and credentials are stored at the module level. Agents never see raw secret values. Secrets are available to action code via a `secrets` dictionary and are never returned in API responses.
 
 ---
 
@@ -103,8 +103,8 @@ This returns the full guide for the current araiOS instance: available modules, 
 GET  /api/agent                          # Full instance guide — call this first
 GET  /api/modules                        # List all modules
 POST /api/modules/:name/records          # Create a record in a data module
-POST /api/modules/:name/actions/:id      # Invoke a tool module action
+POST /api/modules/:name/action/:id       # Invoke a tool module action
 GET  /api/tasks                          # List tasks
 GET  /api/approvals?status=pending       # Check pending approvals
-POST /api/approvals/:id/resolve          # Resolve an approval (admin only)
+POST /api/approvals/:id/approve or /reject # Resolve an approval (admin only)
 ```
