@@ -6,6 +6,7 @@ from app.services.sessions.errors import (
     MessageNotFoundError,
     RuntimePathInvalidError,
     RuntimePathNotFoundError,
+    SessionRenameNotAllowedError,
     SessionNotFoundError,
     SessionServiceError,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "MessageNotFoundError",
     "RuntimePathInvalidError",
     "RuntimePathNotFoundError",
+    "SessionRenameNotAllowedError",
     "MessagePage",
     "SessionNotFoundError",
     "SessionPage",

@@ -29,6 +29,8 @@ import {
   ChevronRight,
   ArrowUp,
   Clock3,
+  Check,
+  Pencil,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
@@ -538,6 +540,14 @@ const SessionRow = memo(({
   isDeleting,
   onDelete,
   onSetMain,
+  canRename,
+  isRenaming,
+  isEditing,
+  editTitle,
+  onEditTitleChange,
+  onSubmitRename,
+  onCancelRename,
+  onRename,
   multiSelectMode,
   selected,
   onToggleSelect,
@@ -549,6 +559,14 @@ const SessionRow = memo(({
   isDeleting: boolean;
   onDelete: (session: Session) => void;
   onSetMain: (session: Session) => void;
+  canRename: boolean;
+  isRenaming: boolean;
+  isEditing: boolean;
+  editTitle: string;
+  onEditTitleChange: (value: string) => void;
+  onSubmitRename: (session: Session) => void;
+  onCancelRename: () => void;
+  onRename: (session: Session) => void;
   multiSelectMode: boolean;
   selected: boolean;
   onToggleSelect: (id: string) => void;
@@ -567,49 +585,104 @@ const SessionRow = memo(({
         <span className={`h-2.5 w-2.5 rounded-sm ${selected ? 'bg-sky-500' : 'bg-transparent'}`} />
       </button>
     ) : null}
-    <button
-      onClick={() => {
-        if (multiSelectMode) {
-          if (canDelete) onToggleSelect(session.id);
-          return;
-        }
-        onClick(session.id);
-      }}
-      className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
-        isActive
-          ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
-          : 'hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-transparent'
-      } ${multiSelectMode ? 'pl-10 pr-3' : 'pr-10'}`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        {session.has_unread && !isActive ? (
-          <span className="h-2 w-2 shrink-0 rounded-full bg-sky-500" />
-        ) : null}
-        <span className="min-w-0 flex-1 text-xs font-semibold truncate">{session.title || 'Session'}</span>
-        <div className="flex shrink-0 items-center gap-1">
-          {sessionChannelKind(session) === 'telegram_group' ? (
-            <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
-              <Users size={8} />
-              <span>{'TG\u00A0Group'}</span>
-            </span>
-          ) : null}
-          {sessionChannelKind(session) === 'telegram_dm' ? (
-            <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
-              <Send size={8} />
-              <span>{'TG\u00A0DM'}</span>
-            </span>
-          ) : null}
-          {session.is_main ? (
-            <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-400">
-              <BadgeCheck size={8} />
-              Main
-            </span>
-          ) : null}
+    {isEditing ? (
+      <div
+        className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
+          isActive
+            ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
+            : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)]'
+        } ${multiSelectMode ? 'pl-10 pr-3' : 'pr-3'}`}
+      >
+        <div className="flex items-center gap-2">
+          <input
+            autoFocus
+            value={editTitle}
+            onChange={(event) => onEditTitleChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                onSubmitRename(session);
+              } else if (event.key === 'Escape') {
+                event.preventDefault();
+                onCancelRename();
+              }
+            }}
+            className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 py-1 text-xs font-semibold text-[color:var(--text-primary)] focus:border-[color:var(--accent-solid)] focus:outline-none"
+            placeholder="Session title"
+            maxLength={200}
+          />
+          <button
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onSubmitRename(session);
+            }}
+            disabled={isRenaming}
+            title="Save title"
+            className="h-7 w-7 rounded-md border border-emerald-500/35 text-emerald-400 bg-[color:var(--surface-1)] hover:bg-emerald-500/10 flex items-center justify-center disabled:opacity-40"
+          >
+            {isRenaming ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+          </button>
+          <button
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCancelRename();
+            }}
+            disabled={isRenaming}
+            title="Cancel rename"
+            className="h-7 w-7 rounded-md border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center disabled:opacity-40"
+          >
+            <X size={13} />
+          </button>
         </div>
+        <span className="text-[10px] text-[color:var(--text-muted)]">{formatCompactDate(session.started_at)}</span>
       </div>
-      <span className="text-[10px] text-[color:var(--text-muted)]">{formatCompactDate(session.started_at)}</span>
-    </button>
-    {!multiSelectMode && !session.is_main ? (
+    ) : (
+      <button
+        onClick={() => {
+          if (multiSelectMode) {
+            if (canDelete) onToggleSelect(session.id);
+            return;
+          }
+          onClick(session.id);
+        }}
+        className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
+          isActive
+            ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
+            : 'hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-transparent'
+        } ${multiSelectMode ? 'pl-10 pr-3' : 'pr-10'}`}
+      >
+        <div className="flex items-center justify-between gap-2">
+          {session.has_unread && !isActive ? (
+            <span className="h-2 w-2 shrink-0 rounded-full bg-sky-500" />
+          ) : null}
+          <span className="min-w-0 flex-1 text-xs font-semibold truncate">{session.title || 'Session'}</span>
+          <div className="flex shrink-0 items-center gap-1">
+            {sessionChannelKind(session) === 'telegram_group' ? (
+              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
+                <Users size={8} />
+                <span>{'TG\u00A0Group'}</span>
+              </span>
+            ) : null}
+            {sessionChannelKind(session) === 'telegram_dm' ? (
+              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
+                <Send size={8} />
+                <span>{'TG\u00A0DM'}</span>
+              </span>
+            ) : null}
+            {session.is_main ? (
+              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-400">
+                <BadgeCheck size={8} />
+                Main
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <span className="text-[10px] text-[color:var(--text-muted)]">{formatCompactDate(session.started_at)}</span>
+      </button>
+    )}
+    {!isEditing && !multiSelectMode && !session.is_main ? (
       <button
         onClick={() => onSetMain(session)}
         title="Set as main session"
@@ -618,7 +691,17 @@ const SessionRow = memo(({
         <BadgeCheck size={13} />
       </button>
     ) : null}
-    {canDelete && !multiSelectMode ? (
+    {!isEditing && !multiSelectMode && canRename ? (
+      <button
+        onClick={() => onRename(session)}
+        disabled={isRenaming}
+        title="Rename session"
+        className="absolute right-[4.5rem] top-2 h-7 w-7 rounded-md border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto disabled:opacity-40 disabled:pointer-events-none"
+      >
+        {isRenaming ? <Loader2 size={13} className="animate-spin" /> : <Pencil size={13} />}
+      </button>
+    ) : null}
+    {canDelete && !isEditing && !multiSelectMode ? (
       <button
         onClick={() => onDelete(session)}
         disabled={isDeleting}
@@ -929,6 +1012,9 @@ export function SessionsPage() {
   const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [settingMainSessionId, setSettingMainSessionId] = useState<string | null>(null);
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionTitle, setEditingSessionTitle] = useState('');
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
   const [historyTab, setHistoryTab] = useState<'sessions' | 'sub_agents'>('sessions');
@@ -1308,6 +1394,15 @@ export function SessionsPage() {
   }, [sessions]);
 
   useEffect(() => {
+    if (!editingSessionId) return;
+    const stillExists = sessions.some((session) => session.id === editingSessionId);
+    if (!stillExists) {
+      setEditingSessionId(null);
+      setEditingSessionTitle('');
+    }
+  }, [editingSessionId, sessions]);
+
+  useEffect(() => {
     void fetchSessions({ autoSelectIfEmpty: true });
     void fetchModels();
     void fetchLiveView();
@@ -1540,6 +1635,48 @@ export function SessionsPage() {
       toast.error(error instanceof Error ? error.message : 'Failed to set main session');
     } finally {
       setSettingMainSessionId(null);
+    }
+  }
+
+  function startRenameSession(session: Session) {
+    if (renamingSessionId) return;
+    setEditingSessionId(session.id);
+    setEditingSessionTitle((session.title || '').trim());
+  }
+
+  function cancelRenameSession() {
+    if (renamingSessionId) return;
+    setEditingSessionId(null);
+    setEditingSessionTitle('');
+  }
+
+  async function submitRenameSession(session: Session) {
+    if (renamingSessionId) return;
+    const title = editingSessionTitle.trim();
+    const current = (session.title || '').trim();
+    if (title === current) {
+      setEditingSessionId(null);
+      setEditingSessionTitle('');
+      return;
+    }
+
+    setRenamingSessionId(session.id);
+    try {
+      const updated = await api.patch<Session>(`/sessions/${session.id}`, {
+        title: title.length > 0 ? title : null,
+      });
+      setSessions((currentSessions) =>
+        currentSessions.map((item) =>
+          item.id === updated.id ? { ...item, ...updated } : item,
+        ),
+      );
+      setEditingSessionId(null);
+      setEditingSessionTitle('');
+      toast.success('Session renamed');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to rename session');
+    } finally {
+      setRenamingSessionId(null);
     }
   }
 
@@ -2972,6 +3109,17 @@ export function SessionsPage() {
                       }
                       onDelete={deleteSession}
                       onSetMain={setMainSession}
+                      isEditing={editingSessionId === s.id}
+                      editTitle={editingSessionTitle}
+                      onEditTitleChange={setEditingSessionTitle}
+                      onSubmitRename={submitRenameSession}
+                      onCancelRename={cancelRenameSession}
+                      canRename={(() => {
+                        const kind = sessionChannelKind(s);
+                        return kind !== 'telegram_group' && kind !== 'telegram_dm';
+                      })()}
+                      isRenaming={renamingSessionId === s.id}
+                      onRename={startRenameSession}
                       multiSelectMode={isMultiSelectMode}
                       selected={selectedSessionIdSet.has(s.id)}
                       onToggleSelect={(id) =>

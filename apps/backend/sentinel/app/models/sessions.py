@@ -30,6 +30,8 @@ class Session(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    conversation_message_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    last_auto_rename_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
 
     messages: Mapped[list["Message"]] = relationship(back_populates="session", cascade="all, delete-orphan")
     summaries: Mapped[list["SessionSummary"]] = relationship(

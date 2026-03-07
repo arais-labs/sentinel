@@ -90,6 +90,11 @@ def test_ws_connect_send_ack_and_rejections():
             assert ack["content"] == "hello from ws"
             assert ack["metadata"]["source"] == "web"
             assert len(ack["metadata"]["attachments"]) == 1
+            generation = ack["metadata"].get("generation") or {}
+            assert generation.get("requested_tier") == "normal"
+            assert generation.get("temperature") == 0.7
+            assert isinstance(generation.get("max_iterations"), int)
+            assert generation.get("max_iterations") > 0
 
             # No provider configured in tests -> explicit agent error for UI feedback.
             no_provider = ws.receive_json()
@@ -104,6 +109,11 @@ def test_ws_connect_send_ack_and_rejections():
         stored = next(item for item in messages.json()["items"] if item["content"] == "hello from ws")
         assert stored["metadata"]["source"] == "web"
         assert len(stored["metadata"]["attachments"]) == 1
+        stored_generation = stored["metadata"].get("generation") or {}
+        assert stored_generation.get("requested_tier") == "normal"
+        assert stored_generation.get("temperature") == 0.7
+        assert isinstance(stored_generation.get("max_iterations"), int)
+        assert stored_generation.get("max_iterations") > 0
 
         anon_client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as missing_token:
@@ -418,6 +428,13 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
                 role="assistant",
                 content="",
                 metadata_json={
+                    "generation": {
+                        "requested_tier": "normal",
+                        "resolved_model": "claude-sonnet-4-20250514",
+                        "provider": "anthropic",
+                        "temperature": 0.7,
+                        "max_iterations": 50,
+                    },
                     "tool_calls": [
                         {
                             "id": "toolu_stale_1",
@@ -458,6 +475,9 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
             metadata = reconciled.get("metadata") or {}
             assert metadata.get("interrupted") is True
             assert metadata.get("pending") is False
+            generation = metadata.get("generation") or {}
+            assert generation.get("resolved_model") == "claude-sonnet-4-20250514"
+            assert generation.get("provider") == "anthropic"
 
         assert pending_approval.status == "cancelled"
         assert pending_approval.resolved_at is not None

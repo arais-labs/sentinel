@@ -51,6 +51,7 @@ from app.services.llm.ids import TierName
 from app.services.memory.backfill import run_memory_embedding_backfill
 from app.services.memory.search import MemorySearchService
 from app.services.session_runtime import run_session_runtime_janitor
+from app.services.session_naming import SessionNamingService
 from app.services.sub_agents import SubAgentOrchestrator
 from app.services.tools import BrowserManager, ToolExecutor, build_default_registry
 from app.services.tools.builtin import (
@@ -234,6 +235,13 @@ async def lifespan(app: FastAPI):
                     await CompactionService(provider=agent_loop.provider).auto_compact_if_needed(
                         db, session_id=sid
                     )
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    await SessionNamingService(
+                        provider=agent_loop.provider,
+                        ws_manager=ws_manager,
+                    ).maybe_auto_rename(session_id=sid)
                 except Exception:  # noqa: BLE001
                     pass
         return True
