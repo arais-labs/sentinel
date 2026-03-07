@@ -5,50 +5,41 @@ title: Permissions
 
 # Permissions
 
-araiOS permissions control what agents can do and when human approval is required.
+Permissions in araiOS map an action string to one level.
 
----
+Levels:
 
-## Permission rules
-
-Each rule maps an action to a policy:
-
-| Policy | Behavior |
+| Level | Meaning |
 |---|---|
-| `allow` | Agent executes immediately, no interruption |
-| `approval` | Agent pauses and surfaces a request for operator review |
-| `deny` | Action is blocked entirely |
+| `allow` | Execute immediately |
+| `approval` | Create pending approval and return `202` |
+| `deny` | Block and return `403` |
+
+Default for unknown actions is `allow`.
 
 ---
 
-## Configuring rules
+## Actual model in code
 
-Rules are set in the araiOS workspace under **Permissions**.
+Permissions are stored as rows with:
 
-Each rule specifies:
-- **Action** — e.g. `create`, `delete`, `invoke:send_message`
-- **Resource** — e.g. `leads`, `slack`, or `*` for all
-- **Policy** — `allow`, `approval`, or `deny`
+- `action` example: `tasks.create`, `modules.create`, `slack.send_message`
+- `level` one of `allow`, `approval`, `deny`
 
----
-
-## Approval flow
-
-When an agent hits an `approval` rule:
-
-1. Agent pauses and posts an approval request to `/api/approvals`
-2. Request appears in the araiOS workspace under **Approvals**
-3. Operator reviews the action, payload, and context
-4. Operator approves or rejects
-5. Agent resumes (or surfaces the rejection to the user)
+There is no separate resource column and no ordered wildcard rule engine in araiOS permission storage.
 
 ---
 
-## Common patterns
+## Common hardening baseline
 
-| Scenario | Rule |
-|---|---|
-| Allow agents to read all data | `read` on `*` → `allow` |
-| Require approval before deleting records | `delete` on `*` → `approval` |
-| Block agents from modifying permissions | `*` on `permissions` → `deny` |
-| Allow Slack messages freely | `invoke:send_message` on `slack` → `allow` |
+1. `modules.create` -> `approval`
+2. `modules.update` -> `approval`
+3. `modules.delete` -> `approval`
+4. `approvals.resolve` -> `deny` for agent role
+5. Sensitive tool actions -> `approval`
+
+---
+
+## Approval handling reminder
+
+When permission is `approval`, APIs return `202` with approval payload. This is not an error.
