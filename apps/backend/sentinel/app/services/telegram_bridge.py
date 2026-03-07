@@ -28,7 +28,11 @@ from app.database import AsyncSessionLocal
 from app.models import Message as MessageModel, Session as SessionModel
 from app.services import session_bindings
 from app.services.llm.ids import TierName
-from app.services.messages import telegram_ingress_metadata
+from app.services.messages import (
+    build_generation_metadata,
+    telegram_ingress_metadata,
+    with_generation_metadata,
+)
 from app.services.session_naming import (
     SessionNamingService,
     apply_conversation_message_delta,
@@ -973,7 +977,16 @@ class TelegramBridge:
             session_id=route.session_id,
             role="user",
             content=content,
-            metadata_json=metadata,
+            metadata_json=with_generation_metadata(
+                metadata,
+                generation=build_generation_metadata(
+                    requested_tier=TierName.NORMAL,
+                    resolved_model=None,
+                    provider=None,
+                    temperature=0.7,
+                    max_iterations=25,
+                ),
+            ),
         )
         db.add(message)
         await db.commit()

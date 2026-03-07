@@ -26,6 +26,7 @@ from app.services.agent_run_registry import AgentRunRegistry
 from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
 from app.services.llm.ids import TierName
 from app.services.memory import MemoryRepository, MemoryService
+from app.services.messages import normalize_generation_metadata, with_generation_metadata
 from app.services.session_runtime import (
     cleanup_session_runtime,
     get_session_runtime_snapshot,
@@ -569,12 +570,19 @@ class SessionService:
                 }
             )
             for call in unresolved_tool_calls:
+                generation = normalize_generation_metadata(
+                    call.get("generation") if isinstance(call.get("generation"), dict) else None
+                )
+                metadata = with_generation_metadata(
+                    {"pending": False, "cancelled_by_stop": True},
+                    generation=generation,
+                )
                 db.add(
                     Message(
                         session_id=session_id,
                         role="tool_result",
                         content=content,
-                        metadata_json={"pending": False, "cancelled_by_stop": True},
+                        metadata_json=metadata,
                         tool_call_id=call["id"],
                         tool_name=call["name"],
                     )
@@ -594,7 +602,7 @@ class SessionService:
         db: AsyncSession,
         *,
         session_id: UUID,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         result = await db.execute(
             select(Message).where(Message.session_id == session_id).order_by(Message.created_at.asc())
         )
@@ -602,7 +610,7 @@ class SessionService:
 
         resolved_ids: set[str] = set()
         pending_order: list[str] = []
-        pending: dict[str, dict[str, str]] = {}
+        pending: dict[str, dict[str, Any]] = {}
 
         for item in messages:
             role = str(item.role or "")
@@ -618,7 +626,11 @@ class SessionService:
                     if not call_id or call_id in resolved_ids or call_id in pending:
                         continue
                     call_name = str(raw_call.get("name") or "unknown").strip() or "unknown"
+                    generation = normalize_generation_metadata(
+                        metadata.get("generation") if isinstance(metadata.get("generation"), dict) else None
+                    )
                     pending[call_id] = {"id": call_id, "name": call_name}
+                    pending[call_id]["generation"] = generation
                     pending_order.append(call_id)
                 continue
 
