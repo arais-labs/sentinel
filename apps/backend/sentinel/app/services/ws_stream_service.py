@@ -16,7 +16,12 @@ from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
 from app.services.llm.generic.types import AgentEvent, ImageContent, TextContent
 from app.services.llm.ids import TierName
-from app.services.messages import web_ingress_metadata
+from app.services.messages import (
+    build_generation_metadata,
+    normalize_generation_metadata,
+    web_ingress_metadata,
+    with_generation_metadata,
+)
 from app.services.session_naming import (
     apply_conversation_message_delta,
     conversation_delta_for_role,
@@ -104,11 +109,15 @@ def unresolved_tool_calls_from_history(history: list[dict[str, Any]]) -> list[di
                 name = str(raw_call.get("name") or "unknown")
                 arguments = raw_call.get("arguments")
                 approval_hint = raw_call.get("approval_hint")
+                generation = normalize_generation_metadata(
+                    metadata.get("generation") if isinstance(metadata.get("generation"), dict) else None
+                )
                 pending[call_id] = {
                     "id": call_id,
                     "name": name,
                     "arguments": arguments if isinstance(arguments, dict) else {},
                     "approval_hint": approval_hint if isinstance(approval_hint, dict) else None,
+                    "generation": generation,
                 }
                 pending_order.append(call_id)
             continue
@@ -131,10 +140,21 @@ async def persist_user_message(
     session: Session,
     content: str,
     attachments: list[dict[str, Any]],
+    requested_tier: TierName | None,
+    temperature: float,
+    max_iterations: int,
 ) -> Message:
     metadata: dict[str, Any] = web_ingress_metadata()
     if attachments:
         metadata["attachments"] = attachments
+    generation = build_generation_metadata(
+        requested_tier=requested_tier or TierName.NORMAL,
+        resolved_model=None,
+        provider=None,
+        temperature=temperature,
+        max_iterations=max_iterations,
+    )
+    metadata = with_generation_metadata(metadata, generation=generation)
     if content and not session.initial_prompt:
         session.initial_prompt = content
     apply_conversation_message_delta(session, conversation_delta_for_role("user"))

@@ -17,6 +17,7 @@ from app.models import GitPushApproval, Message, ToolApproval
 from app.services.approvals import ApprovalService
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
+from app.services.messages import normalize_generation_metadata, with_generation_metadata
 from app.services.session_naming import SessionNamingService
 from app.services.ws_manager import ConnectionManager
 from app.services.ws_stream_parser import parse_ws_message
@@ -170,6 +171,9 @@ async def stream_session(
                 session=session,
                 content=parsed.content,
                 attachments=parsed.attachments,
+                requested_tier=parsed.tier,
+                temperature=0.7,
+                max_iterations=parsed.max_iterations,
             )
             session_has_messages = True
 
@@ -300,16 +304,23 @@ async def _materialize_interrupted_tool_results(
         if not call_id:
             continue
         call_name = str(call.get("name") or "unknown").strip() or "unknown"
+        call_generation = normalize_generation_metadata(
+            call.get("generation") if isinstance(call.get("generation"), dict) else None
+        )
+        metadata = with_generation_metadata(
+            {
+                "pending": False,
+                "interrupted": True,
+                "interrupted_reason": "run_not_active",
+            },
+            generation=call_generation,
+        )
         db.add(
             Message(
                 session_id=session_id,
                 role="tool_result",
                 content=payload,
-                metadata_json={
-                    "pending": False,
-                    "interrupted": True,
-                    "interrupted_reason": "run_not_active",
-                },
+                metadata_json=metadata,
                 tool_call_id=call_id,
                 tool_name=call_name,
             )
