@@ -24,6 +24,10 @@ class RouterProvider(LLMProvider):
     def name(self) -> str:
         return "router"
 
+    def resolve_generation_hint(self, model: str) -> tuple[str, str] | None:
+        provider, resolved_model = self._resolve(model)
+        return provider.resolve_generation_hint(resolved_model)
+
     async def chat(
         self,
         messages: Sequence[AgentMessage | dict],
@@ -55,6 +59,7 @@ class RouterProvider(LLMProvider):
     ) -> AsyncIterator[AgentEvent]:
         """Resolve model hint and dispatch a single streaming provider call."""
         provider, resolved_model = self._resolve(model)
+        attached_generation_hint = False
         async for event in provider.stream(
             messages,
             model=resolved_model,
@@ -63,6 +68,15 @@ class RouterProvider(LLMProvider):
             reasoning_config=reasoning_config,
             tool_choice=tool_choice,
         ):
+            if not attached_generation_hint:
+                attached_generation_hint = True
+                if event.message is None:
+                    event.message = AssistantMessage(model=resolved_model, provider=provider.name)
+                else:
+                    if not event.message.model:
+                        event.message.model = resolved_model
+                    if not event.message.provider:
+                        event.message.provider = provider.name
             yield event
 
     def _resolve(self, model: str) -> tuple[LLMProvider, str]:
