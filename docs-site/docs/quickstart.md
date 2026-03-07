@@ -5,18 +5,18 @@ title: Quick Start
 
 # Quick Start
 
-Get Sentinel running locally in under 5 minutes.
+This gets a fresh Sentinel instance running fast, using the actual `sentinel-cli.sh` flow.
 
 ## Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-- macOS, Linux, or Windows (WSL2)
-- A bash terminal (interactive — not CI)
-- An API key for Anthropic or OpenAI
+- Docker Desktop running
+- macOS, Linux, or Windows WSL2
+- Interactive terminal with TTY
+- git
 
 ---
 
-## 1. Clone the repo
+## 1) Clone and enter repo
 
 ```bash
 git clone https://github.com/arais-labs/sentinel.git
@@ -25,53 +25,66 @@ cd sentinel
 
 ---
 
-## 2. Run the CLI
+## 2) Launch the CLI
 
 ```bash
 bash ./sentinel-cli.sh
 ```
 
-This opens an interactive menu. On first run:
+You will see the interactive menu.
 
-1. Select **Create config**
-2. Enter your LLM provider API key (Anthropic or OpenAI)
-3. Configure optional settings if needed (Telegram token, instance name)
-4. Select **Start stack**
+For first run, choose:
 
-The CLI pulls Docker images and starts all services.
+1. **New/Edit Instance**
+2. Enter instance config values (or accept defaults)
+   - gateway port (default `4747`)
+   - Postgres settings
+   - JWT secret
+   - admin username and password
+3. CLI auto starts stack for that instance
 
-:::note
-The CLI requires an interactive terminal with a TTY. It will not work in CI, non-interactive shells, or piped execution.
-:::
+What the CLI does during startup:
 
----
-
-## 3. Open the UI
-
-Once the stack is up, open your browser:
-
-| Service | URL |
-|---|---|
-| Login gateway | `http://localhost:4747/` |
-| Sentinel agent UI | `http://localhost:4747/sentinel/` |
-| araiOS workspace | `http://localhost:4747/araios/` |
-| Live browser view (VNC) | `http://localhost:4747/vnc/` |
+- runs `docker compose up --build -d`
+- seeds auth credentials in DB
+- tries creating bootstrap araiOS agent token
+- seeds cross app URL settings
+- prints onboarding instructions with login target and token guidance
 
 ---
 
-## 4. Start your first session
+## 3) Open the gateway
 
-1. Go to `http://localhost:4747/` and log in with your API key
-2. You land in the Sentinel session interface
-3. Type a message — the agent has memory, browser access, and tools available immediately
+Use the port you configured (default 4747):
 
-The agent can browse the web, remember context across sessions, and run scheduled tasks out of the box.
+- `http://localhost:4747/` gateway
+- `http://localhost:4747/sentinel/` Sentinel UI
+- `http://localhost:4747/araios/` araiOS UI
+- `http://localhost:4747/vnc/` live browser view
 
 ---
 
-## Next steps
+## 4) Sign in with admin credentials
 
-- [Full installation guide](/guides/installation) — config options, multi-instance, updates
-- [Agent loop](/concepts/agent-loop) — how the agent executes, what limits apply, and how to interpret stops
-- [Memory model](/concepts/memory) — how the agent retains and retrieves context
-- [Triggers](/concepts/triggers) — schedule agent tasks to run automatically
+Sign in using the admin username and password you set during CLI instance creation.
+
+If auth seeding failed, run CLI action:
+
+- **Reset Auth (Managed Instance)**
+
+---
+
+## 5) Validate first run
+
+1. Open Sentinel UI
+2. Send a simple message to confirm LLM path
+3. Open araiOS UI and confirm modules and permissions load
+4. Optionally open VNC page and run one browser action
+
+---
+
+## Next
+
+- [Installation](/guides/installation) for full CLI and instance lifecycle
+- [Creating Modules](/guides/creating-modules) to extend capabilities
+- [Triggers](/concepts/triggers) to automate recurring runs
