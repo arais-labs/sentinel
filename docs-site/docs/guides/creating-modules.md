@@ -5,15 +5,20 @@ title: Creating Modules
 
 # Creating araiOS Modules
 
-Modules are the core extension point in araiOS. They define what data agents can store and what tools they can call.
+Modules are how you extend what the agent can do and what data it can access. You define a module via the araiOS API, and the agent can interact with it immediately after it is approved.
 
 ---
 
-## Data modules
+## Two module types
 
-A data module creates a persistent record store with full CRUD access.
+| Type | What it does |
+|---|---|
+| **Data module** | Creates a persistent record store with full CRUD. Agents read, create, update, and delete records. |
+| **Tool module** | Exposes callable Python actions. No stored records — just execution gated by permissions. |
 
-Example — creating a `leads` module via the araiOS API:
+---
+
+## Creating a data module
 
 ```json
 POST /api/modules
@@ -31,19 +36,18 @@ POST /api/modules
 }
 ```
 
-Once registered, agents can use:
+Once registered and approved, agents can use:
+
 ```
-GET  /api/modules/leads/records
-POST /api/modules/leads/records
-PATCH /api/modules/leads/records/:id
+GET    /api/modules/leads/records
+POST   /api/modules/leads/records
+PATCH  /api/modules/leads/records/:id
 DELETE /api/modules/leads/records/:id
 ```
 
 ---
 
-## Tool modules
-
-A tool module exposes callable actions backed by sandboxed Python.
+## Creating a tool module
 
 ```json
 POST /api/modules
@@ -67,10 +71,42 @@ POST /api/modules
 }
 ```
 
+The `code` field runs in a sandboxed Python environment. Secrets are injected as `os.environ` variables. Action params are available as the `params` dict.
+
 ---
 
-## Permissions
+## Approval requirement
 
-New modules require approval before agents can use them. After creation, go to the araiOS workspace → Approvals to approve the module registration.
+New modules require operator approval before agents can use them. After `POST /api/modules`, the module appears in the araiOS workspace under **Approvals**. The operator approves the registration before the module is accessible.
 
-Then configure permission rules under **Permissions** to control which actions agents can call freely vs. which require approval.
+This applies even to modules you created — the approval step is a deliberate gate.
+
+---
+
+## Setting permissions after creation
+
+Once approved, configure permission rules for each action under **Permissions** in the araiOS workspace.
+
+Default behavior: all actions are `allow` until you configure a rule.
+
+Common setup for a sensitive tool module:
+
+| Action | Policy |
+|---|---|
+| `invoke:send_message` | `approval` — require review before sending |
+| `invoke:read_data` | `allow` — reading is low risk |
+| `delete` | `deny` — block deletion entirely |
+
+---
+
+## Secrets
+
+Secrets registered in a module are stored encrypted. They are never returned in API responses. Agents and operators cannot read them — they can only trigger actions that use them.
+
+To update a secret value: use the araiOS workspace UI under **Modules → Secrets**.
+
+---
+
+## Discovering module endpoints
+
+After creation, call `GET /api/agent` to see the module reflected in the full instance guide with its fields, actions, and current permission rules.
