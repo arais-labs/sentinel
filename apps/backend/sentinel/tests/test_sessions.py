@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -586,13 +587,18 @@ def test_runtime_file_explorer_endpoints():
             (workspace / "src").mkdir(parents=True, exist_ok=True)
             (workspace / "src" / "main.py").write_text("print('ok')\n", encoding="utf-8")
             (workspace / "README.md").write_text("# demo\n", encoding="utf-8")
+            (workspace / "repo").mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "-C", str(workspace / "repo"), "init"], check=False)
 
             with patch("app.services.session_runtime._RUNTIME_BASE_DIR", runtime_base):
                 files_root = client.get(f"/api/v1/sessions/{session_id}/runtime/files", headers=headers)
                 assert files_root.status_code == 200
                 root_payload = files_root.json()
                 names = {item["name"] for item in root_payload["entries"]}
-                assert {"src", "README.md"} <= names
+                assert {"src", "README.md", "repo"} <= names
+                repo_entry = next(item for item in root_payload["entries"] if item["name"] == "repo")
+                assert repo_entry["kind"] == "directory"
+                assert repo_entry["is_git_root"] is True
 
                 files_src = client.get(
                     f"/api/v1/sessions/{session_id}/runtime/files?path=src",
