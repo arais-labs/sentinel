@@ -80,6 +80,8 @@ type RuntimeContextPayload = {
   structured: Record<string, unknown> | null;
 };
 
+const CONTEXT_AUTOFETCH_MAX_PAGES = 10;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -430,6 +432,22 @@ function assembleSystemContext(runContext: Record<string, unknown> | null | unde
   return lines.join('\n\n---\n\n');
 }
 
+function runtimeContextErrorText(context: RuntimeContextPayload | null): string {
+  if (!context) {
+    return [
+      'Runtime context snapshot is missing for this message.',
+      'Raw prompt cannot be rendered in strict mode.',
+      'No fallback is applied.',
+    ].join('\n');
+  }
+
+  return [
+    `Runtime context snapshot ${context.contextMessageId} is present but missing run_context.system_messages.`,
+    'Raw prompt cannot be rendered in strict mode.',
+    'No fallback is applied.',
+  ].join('\n');
+}
+
 function isInjectedFullMemory(block: Record<string, unknown>): boolean {
   return block.injected_full === true;
 }
@@ -440,31 +458,83 @@ function normalizedMemoryCategory(block: Record<string, unknown>): string {
   return 'uncategorized';
 }
 
-function estimateTokens(text: string | null | undefined): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / 4);
+function renderMemoryReferenceCard(block: Record<string, unknown>, key: string): JSX.Element {
+  const title =
+    typeof block.title === 'string' && block.title.trim()
+      ? block.title.trim()
+      : 'Untitled Memory';
+  const summary =
+    typeof block.summary === 'string' && block.summary.trim()
+      ? block.summary.trim()
+      : null;
+  const source =
+    typeof block.source === 'string' && block.source.trim()
+      ? block.source.trim().replace(/_/g, ' ')
+      : 'memory reference';
+  const depth =
+    typeof block.depth === 'number' && Number.isFinite(block.depth)
+      ? block.depth
+      : null;
+  const importance =
+    typeof block.importance === 'number' && Number.isFinite(block.importance)
+      ? block.importance
+      : null;
+  const memoryId =
+    typeof block.memory_id === 'string' && block.memory_id.trim()
+      ? block.memory_id.trim()
+      : null;
+  const rootId =
+    typeof block.root_id === 'string' && block.root_id.trim()
+      ? block.root_id.trim()
+      : null;
+
+  return (
+    <div key={key} className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 p-3 space-y-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <Brain size={12} className="text-[color:var(--text-muted)] shrink-0" />
+        <span className="text-xs font-medium text-[color:var(--text-primary)] truncate">{title}</span>
+        <StatusChip label={source} tone="default" className="h-4 text-[8px] ml-auto" />
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <StatusChip label={normalizedMemoryCategory(block)} tone="info" className="h-4 text-[8px]" />
+        {depth !== null && (
+          <StatusChip label={`depth ${depth}`} tone="default" className="h-4 text-[8px]" />
+        )}
+        {importance !== null && (
+          <StatusChip label={`importance ${importance}`} tone="default" className="h-4 text-[8px]" />
+        )}
+      </div>
+      <p className="text-xs text-[color:var(--text-secondary)] leading-relaxed">
+        {summary ?? 'No summary available for this memory reference.'}
+      </p>
+      {(memoryId || rootId) && (
+        <p className="text-[10px] font-mono text-[color:var(--text-muted)] break-all">
+          {memoryId ? `memory=${memoryId}` : ''}
+          {memoryId && rootId ? ' ' : ''}
+          {rootId ? `root=${rootId}` : ''}
+        </p>
+      )}
+    </div>
+  );
 }
 
 type ContextLayersSectionProps = {
   structured: Record<string, unknown> | null;
   label?: string;
   userMessage?: string | null;
-  initialPrompt?: string | null;
   runConfig?: Record<string, unknown> | null;
   className?: string;
 };
 
 type ExplorerEntry =
   | { kind: 'user_message'; id: string; title: string; content: string }
-  | { kind: 'initial_prompt'; id: string; title: string; content: string }
   | { kind: 'run_config'; id: string; title: string; config: Record<string, unknown> }
   | { kind: 'layer'; id: string; layer: Record<string, unknown>; index: number };
 
 function ContextLayersSection({
   structured,
-  label = 'Context Layers',
+  label = 'Context Snapshot (Layered)',
   userMessage,
-  initialPrompt,
   runConfig,
   className = "",
 }: ContextLayersSectionProps) {
@@ -479,19 +549,11 @@ function ContextLayersSection({
         content: userMessage.trim(),
       });
     }
-    if (typeof initialPrompt === 'string' && initialPrompt.trim()) {
-      items.push({
-        kind: 'initial_prompt',
-        id: 'initial_prompt',
-        title: 'Initial Prompt',
-        content: initialPrompt.trim(),
-      });
-    }
     if (runConfig) {
       items.push({
         kind: 'run_config',
         id: 'run_config',
-        title: 'Run Config',
+        title: 'Execution Settings',
         config: runConfig,
       });
     }
@@ -504,7 +566,7 @@ function ContextLayersSection({
       });
     }
     return items;
-  }, [initialPrompt, layers, runConfig, userMessage]);
+  }, [layers, runConfig, userMessage]);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   useEffect(() => {
@@ -523,14 +585,20 @@ function ContextLayersSection({
     ? extractLayerMemoryBlocks(selectedLayer)
     : [];
   const selectedInjectedMemoryBlocks = selectedLayerMemoryBlocks.filter(isInjectedFullMemory);
-  const selectedHasOnlyReferencedMemories =
-    selectedLayerMemoryBlocks.length > 0 && selectedInjectedMemoryBlocks.length === 0;
+  const selectedReferencedMemoryBlocks = selectedLayerMemoryBlocks.filter(
+    (block) => !isInjectedFullMemory(block),
+  );
 
   return (
     <section className={`p-4 flex flex-col min-h-0 ${className}`}>
       <div className="flex items-center gap-2 mb-4 shrink-0">
         <StatusChip label={label} tone="info" className="h-5" />
         <span className="text-[10px] font-mono text-[color:var(--text-muted)]">{entries.length}</span>
+      </div>
+      <div className="mb-4 space-y-2">
+        <p className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">
+          Layered snapshot of the exact context assembled at run start.
+        </p>
       </div>
       {entries.length === 0 ? (
         <p className="text-xs text-[color:var(--text-muted)]">No structured layers in this snapshot.</p>
@@ -554,7 +622,6 @@ function ContextLayersSection({
                     <div className="flex items-center gap-2 flex-wrap mb-1 min-w-0">
                       {entry.kind === 'user_message' && <StatusChip label="ingress" tone="info" className="h-4 text-[8px]" />}
                       {entry.kind === 'run_config' && <StatusChip label="runtime" tone="info" className="h-4 text-[8px]" />}
-                      {entry.kind === 'initial_prompt' && <StatusChip label="core" tone="info" className="h-4 text-[8px]" />}
                       {entry.kind === 'layer' && <StatusChip label={String(entry.layer.layer ?? 'system')} tone="info" className="h-4 text-[8px]" />}
                     </div>
                     <p className={`text-xs font-medium truncate w-full ${active ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]'}`}>
@@ -580,32 +647,128 @@ function ContextLayersSection({
                     </div>
                   )}
 
-                  {selectedEntry.kind === 'initial_prompt' && (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 pb-2 border-b border-[color:var(--border-subtle)]">
-                        <Terminal size={14} className="text-[color:var(--text-muted)]" />
-                        <h4 className="text-sm font-medium text-[color:var(--text-primary)]">{selectedEntry.title}</h4>
-                      </div>
-                      <Markdown content={selectedEntry.content} compact muted />
-                    </div>
-                  )}
-
                   {selectedEntry.kind === 'run_config' && (
                     <div className="space-y-4">
                       <div className="flex items-center gap-2 pb-2 border-b border-[color:var(--border-subtle)]">
                         <Cpu size={14} className="text-[color:var(--text-muted)]" />
                         <h4 className="text-sm font-medium text-[color:var(--text-primary)]">{selectedEntry.title}</h4>
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {Object.entries(selectedEntry.config)
-                          .filter(([_, v]) => typeof v !== 'object' || v === null)
-                          .map(([k, v]) => (
-                          <div key={k} className="flex flex-col gap-1 p-3 rounded bg-[color:var(--surface-1)]">
-                            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">{k.replace(/_/g, ' ')}</span>
-                            <span className="text-xs font-mono font-medium text-[color:var(--text-primary)] break-all">{String(v ?? '—')}</span>
+                      {(() => {
+                        const entries = Object.entries(selectedEntry.config);
+                        const contextOwnedKeys = new Set([
+                          'system_messages',
+                          'structured_context',
+                          'pinned_memories',
+                        ]);
+                        const tools = Array.isArray(selectedEntry.config.tools)
+                          ? selectedEntry.config.tools.filter((item): item is Record<string, unknown> => isRecord(item))
+                          : [];
+
+                        const visibleEntries = entries.filter(
+                          ([k]) => !contextOwnedKeys.has(k) && k !== 'tools',
+                        );
+                        const scalarEntries = visibleEntries.filter(([_, v]) => typeof v !== 'object' || v === null);
+                        const nestedEntries = visibleEntries.filter(([_, v]) => typeof v === 'object' && v !== null);
+
+                        return (
+                          <div className="space-y-4">
+                            {scalarEntries.length > 0 && (
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {scalarEntries.map(([k, v]) => (
+                                  <div key={k} className="flex flex-col gap-1 p-3 rounded bg-[color:var(--surface-1)]">
+                                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">{k.replace(/_/g, ' ')}</span>
+                                    <span className="text-xs font-mono font-medium text-[color:var(--text-primary)] break-all">{String(v ?? '—')}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {tools.length > 0 && (
+                              <div className="space-y-3">
+                                <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                                  Tools ({tools.length})
+                                </p>
+                                {tools.map((tool, index) => {
+                                  const name =
+                                    typeof tool.name === 'string' && tool.name.trim()
+                                      ? tool.name.trim()
+                                      : `tool_${index + 1}`;
+                                  const description =
+                                    typeof tool.description === 'string' && tool.description.trim()
+                                      ? tool.description.trim()
+                                      : 'No description';
+                                  const parameters = isRecord(tool.parameters) ? tool.parameters : null;
+                                  const parameterProperties = parameters?.properties;
+                                  const parameterKeys = isRecord(parameterProperties)
+                                    ? Object.keys(parameterProperties)
+                                    : [];
+                                  const required = Array.isArray(parameters?.required)
+                                    ? parameters.required.filter((item): item is string => typeof item === 'string')
+                                    : [];
+
+                                  return (
+                                    <details key={`${name}-${index}`} className="group rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 overflow-hidden">
+                                      <summary className="list-none cursor-pointer px-3 py-2 hover:bg-[color:var(--surface-2)] transition-colors flex items-start gap-2">
+                                        <ChevronRight size={12} className="mt-0.5 text-[color:var(--text-muted)] transition-transform group-open:rotate-90" />
+                                        <div className="min-w-0 flex-1 space-y-1">
+                                          <div className="flex items-center gap-2 flex-wrap">
+                                            <StatusChip label={name} tone={toolTone(name)} className="h-4 text-[8px]" />
+                                            <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
+                                              {parameterKeys.length} params
+                                              {required.length > 0 ? ` · ${required.length} required` : ''}
+                                            </span>
+                                          </div>
+                                          <p className="text-xs text-[color:var(--text-secondary)] leading-relaxed">
+                                            {description}
+                                          </p>
+                                          {parameterKeys.length > 0 && (
+                                            <p className="text-[10px] font-mono text-[color:var(--text-muted)] truncate">
+                                              {parameterKeys.slice(0, 8).join(', ')}
+                                              {parameterKeys.length > 8 ? ' ...' : ''}
+                                            </p>
+                                          )}
+                                        </div>
+                                      </summary>
+                                      {parameters && (
+                                        <div className="border-t border-[color:var(--border-subtle)] p-2">
+                                          <JsonBlock
+                                            value={JSON.stringify(parameters, null, 2)}
+                                            className="!border-0 !bg-transparent max-h-[260px] text-[10px]"
+                                          />
+                                        </div>
+                                      )}
+                                    </details>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {nestedEntries.length > 0 && (
+                              <div className="space-y-3">
+                                <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                                  Other Nested Config
+                                </p>
+                                {nestedEntries.map(([k, v]) => (
+                                  <details key={k} className="group rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 overflow-hidden">
+                                    <summary className="list-none cursor-pointer px-3 py-2 hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-2">
+                                      <ChevronRight size={12} className="text-[color:var(--text-muted)] transition-transform group-open:rotate-90" />
+                                      <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                        {k.replace(/_/g, ' ')}
+                                      </span>
+                                    </summary>
+                                    <div className="border-t border-[color:var(--border-subtle)] p-2">
+                                      <JsonBlock
+                                        value={JSON.stringify(v, null, 2)}
+                                        className="!border-0 !bg-transparent max-h-[260px] text-[10px]"
+                                      />
+                                    </div>
+                                  </details>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                        ))}
-                      </div>
+                        );
+                      })()}
                     </div>
                   )}
 
@@ -640,11 +803,26 @@ function ContextLayersSection({
                               </div>
                             </details>
                           ))}
+                          {selectedReferencedMemoryBlocks.length > 0 && (
+                            <div className="space-y-2 pt-2">
+                              <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                                Linked Memory References ({selectedReferencedMemoryBlocks.length})
+                              </p>
+                              {selectedReferencedMemoryBlocks.map((block, bIdx) =>
+                                renderMemoryReferenceCard(block, `linked-${bIdx}`),
+                              )}
+                            </div>
+                          )}
                         </div>
-                      ) : selectedHasOnlyReferencedMemories ? (
-                        <p className="text-xs text-[color:var(--text-muted)] italic">
-                          This layer contains memory references only.
-                        </p>
+                      ) : selectedReferencedMemoryBlocks.length > 0 ? (
+                        <div className="space-y-2">
+                          <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                            Memory References ({selectedReferencedMemoryBlocks.length})
+                          </p>
+                          {selectedReferencedMemoryBlocks.map((block, bIdx) =>
+                            renderMemoryReferenceCard(block, `ref-${bIdx}`),
+                          )}
+                        </div>
                       ) : (
                         <Markdown content={typeof selectedLayer.content === 'string' ? selectedLayer.content : ''} compact muted />
                       )}
@@ -684,19 +862,56 @@ function UnifiedInspectorModal({
   onClose,
 }: UnifiedInspectorProps) {
   const [tab, setTab] = useState<'layers' | 'raw' | 'details'>('layers');
+  const rawPrompt = useMemo(() => assembleSystemContext(context?.runContext ?? null), [context]);
 
-  const contextTokens = useMemo(() => {
-    const system = session?.latest_system_prompt || '';
-    const user = userMessage?.content || '';
-    return estimateTokens(system + user);
-  }, [session?.latest_system_prompt, userMessage?.content]);
+  const contextUsage = useMemo(() => {
+    const runContext = context?.runContext;
+    if (!runContext) {
+      return { tokens: null as number | null, budget: null as number | null, percent: null as number | null };
+    }
 
-  const tokenDotColor = contextTokens < 10000 ? 'bg-emerald-500' : contextTokens < 20000 ? 'bg-amber-500' : 'bg-rose-500';
+    const rawTokens = runContext.estimated_context_tokens;
+    const rawBudget = runContext.context_token_budget;
+    const rawPercent = runContext.estimated_context_percent;
+
+    const tokens =
+      typeof rawTokens === 'number' && Number.isFinite(rawTokens) && rawTokens >= 0
+        ? Math.floor(rawTokens)
+        : null;
+    const budget =
+      typeof rawBudget === 'number' && Number.isFinite(rawBudget) && rawBudget > 0
+        ? Math.floor(rawBudget)
+        : null;
+
+    let percent: number | null = null;
+    if (typeof rawPercent === 'number' && Number.isFinite(rawPercent)) {
+      percent = Math.max(0, Math.min(100, Math.round(rawPercent)));
+    } else if (tokens !== null && budget !== null) {
+      percent = Math.max(0, Math.min(100, Math.round((tokens / budget) * 100)));
+    }
+
+    return { tokens, budget, percent };
+  }, [context]);
+
+  const tokenDotColor =
+    contextUsage.percent === null
+      ? 'bg-[color:var(--text-muted)]'
+      : contextUsage.percent < 70
+        ? 'bg-emerald-500'
+        : contextUsage.percent < 90
+          ? 'bg-amber-500'
+          : 'bg-rose-500';
+  const tokenLabel =
+    contextUsage.tokens === null
+      ? 'context tokens unavailable'
+      : contextUsage.budget === null
+        ? `${contextUsage.tokens.toLocaleString()} tokens`
+        : `${contextUsage.tokens.toLocaleString()} / ${contextUsage.budget.toLocaleString()} tokens${contextUsage.percent !== null ? ` (${contextUsage.percent}%)` : ''}`;
 
   if (!open || !session) return null;
 
   const tabs = [
-    { id: 'layers' as const, label: 'Layers' },
+    { id: 'layers' as const, label: 'Context Snapshot' },
     { id: 'raw' as const, label: 'Raw Prompt' },
     { id: 'details' as const, label: 'Details' },
   ];
@@ -718,7 +933,7 @@ function UnifiedInspectorModal({
             </div>
             <span className="flex items-center gap-1.5 text-[9px] font-mono text-[color:var(--text-muted)]">
               <span className={`w-1.5 h-1.5 rounded-full ${tokenDotColor}`} />
-              {contextTokens.toLocaleString()} tokens
+              {tokenLabel}
             </span>
           </div>
           <button
@@ -752,9 +967,8 @@ function UnifiedInspectorModal({
           {tab === 'layers' && (
             <ContextLayersSection
               structured={context?.structured ?? null}
-              label={userMessage ? "Message Context Layers" : "Latest Session Layers"}
+              label={userMessage ? "Message Context Snapshot (Layered)" : "Session Context Snapshot (Layered)"}
               userMessage={userMessage?.content}
-              initialPrompt={session.initial_prompt}
               runConfig={context?.runContext ?? null}
               className="h-full animate-in fade-in duration-150"
             />
@@ -763,7 +977,19 @@ function UnifiedInspectorModal({
           {tab === 'raw' && (
             <div className="h-full overflow-y-auto p-6 custom-scrollbar animate-in fade-in duration-150">
               <div className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/30 p-6">
-                <Markdown content={session.latest_system_prompt || '[No system prompt captured]'} compact muted />
+                {rawPrompt ? (
+                  <Markdown content={rawPrompt} compact muted />
+                ) : (
+                  <div className="space-y-3">
+                    <div className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-rose-500">
+                      <AlertTriangle size={12} />
+                      Raw Context Unavailable
+                    </div>
+                    <pre className="text-xs font-mono text-rose-400 whitespace-pre-wrap break-words">
+                      {runtimeContextErrorText(context)}
+                    </pre>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1138,6 +1364,53 @@ export function LogsPage() {
     }
   }
 
+  async function resolveContextForUserMessage(
+    sessionId: string,
+    userMessageId: string,
+  ): Promise<RuntimeContextPayload | null> {
+    let workingMessages = messages;
+    let workingHasMore = hasMore;
+    let context = mapRuntimeContextToUserMessages(workingMessages).get(userMessageId) ?? null;
+    if (context) return context;
+    if (!workingHasMore || workingMessages.length === 0) return null;
+
+    setLoadingMore(true);
+    try {
+      let pagesLoaded = 0;
+      while (
+        !context &&
+        workingHasMore &&
+        workingMessages.length > 0 &&
+        pagesLoaded < CONTEXT_AUTOFETCH_MAX_PAGES
+      ) {
+        const oldest = workingMessages[workingMessages.length - 1];
+        const payload = await api.get<MessageListResponse>(
+          `/sessions/${sessionId}/messages?limit=100&before=${encodeURIComponent(oldest.id)}`,
+        );
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        workingHasMore = Boolean(payload?.has_more);
+        if (items.length === 0) break;
+
+        workingMessages = mergeMessages(workingMessages, items);
+        context = mapRuntimeContextToUserMessages(workingMessages).get(userMessageId) ?? null;
+        pagesLoaded += 1;
+      }
+
+      setMessages((current) => mergeMessages(current, workingMessages));
+      setHasMore(workingHasMore);
+
+      if (!context && workingHasMore && pagesLoaded >= CONTEXT_AUTOFETCH_MAX_PAGES) {
+        toast.error('Context snapshot not found yet. Load more history and try again.');
+      }
+      return context;
+    } catch {
+      toast.error('Failed to load older logs for context lookup');
+      return null;
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
   const sessionsInTab = useMemo(() => {
     if (historyTab === 'sub_agents') return sessions.filter((item) => Boolean(item.parent_session_id));
     return sessions.filter((item) => !item.parent_session_id);
@@ -1372,7 +1645,7 @@ export function LogsPage() {
                       className="flex items-center gap-2 px-3 py-1.5 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] text-[10px] font-bold uppercase tracking-widest transition-all"
                     >
                       <Cpu size={12} className="text-sky-500" />
-                      Inspector
+                      Latest Snapshot
                     </button>
                     <div className="w-px h-4 bg-[color:var(--border-subtle)] mx-1" />
                     <button
@@ -1482,19 +1755,23 @@ export function LogsPage() {
                         ? event.message.metadata.tool_calls.filter((c): c is Record<string, unknown> => isRecord(c))
                         : [];
 
-                      const eventLoopContext = event.message.role === 'user'
-                        ? (loopContextByUserMessageId.get(event.message.id) ?? latestRuntimeContext)
-                        : latestRuntimeContext;
-
-                      const handleCardClick = (e?: React.MouseEvent | React.KeyboardEvent) => {
+                      const handleCardClick = async (e?: React.MouseEvent | React.KeyboardEvent) => {
                         e?.preventDefault();
                         e?.stopPropagation();
                         if (event.lens === 'input') {
+                          let userContext =
+                            loopContextByUserMessageId.get(event.message.id) ?? null;
+                          if (!userContext && selectedSessionId) {
+                            userContext = await resolveContextForUserMessage(
+                              selectedSessionId,
+                              event.message.id,
+                            );
+                          }
                           setInspector({
                             session: activeSession,
                             runtime: activeRuntime,
                             userMessage: event.message,
-                            context: eventLoopContext,
+                            context: userContext,
                             lens: event.lens,
                           });
                         } else {
@@ -1520,7 +1797,7 @@ export function LogsPage() {
                           </div>
 
                           {/* Event Card */}
-                          <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] cursor-pointer" onClick={handleCardClick}>
+                          <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] cursor-pointer" onClick={(e) => void handleCardClick(e)}>
                             <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-sm hover:border-[color:var(--border-strong)] hover:shadow-md transition-all p-4">
                               <div className="flex items-center justify-between mb-3 border-b border-[color:var(--border-subtle)]/50 pb-2">
                                 <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)]">
