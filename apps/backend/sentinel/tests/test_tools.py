@@ -302,6 +302,92 @@ def test_runtime_exec_detached_job_lifecycle():
         app_main.init_db = old_init
 
 
+def test_runtime_exec_rejects_background_without_detached():
+    fake_db = FakeDB()
+    previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-exec-bg-reject"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = client.post(
+            "/api/v1/tools/runtime_exec/execute",
+            json={"input": {"command": "sleep 1 &", "session_id": session_id}},
+            headers=headers,
+        )
+        assert run.status_code == 422
+        assert "detached=true" in run.json()["error"]["message"]
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_exec_timeout_returns_result():
+    fake_db = FakeDB()
+    previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-exec-timeout"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = client.post(
+            "/api/v1/tools/runtime_exec/execute",
+            json={"input": {"command": "sleep 3", "timeout_seconds": 1, "session_id": session_id}},
+            headers=headers,
+        )
+        assert run.status_code == 200
+        payload = run.json()["result"]
+        assert payload["timed_out"] is True
+        assert payload["ok"] is False
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
 def test_file_read_path_traversal_blocked():
     fake_db = FakeDB()
     previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
