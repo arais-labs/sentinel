@@ -130,7 +130,6 @@ export interface SessionRuntimeGitChangedFilesResponse {
 export interface SessionRuntimeCleanupResponse {
   session_id: string;
   runtime_removed: boolean;
-  legacy_removed: boolean;
 }
 
 export interface SessionContextUsage {
