@@ -12,6 +12,7 @@ import binascii
 import copy
 import hashlib
 import json
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -28,6 +29,7 @@ MAX_TOOL_RESULT_BYTES = 50_000
 MAX_INLINE_IMAGE_BASE64_CHARS = 2_000_000
 _MODEL_HIDDEN_SCHEMA_FIELDS = frozenset({"session_id"})
 _MODEL_RESULT_STRIP_ROOT_FIELDS = frozenset({"session_id"})
+logger = logging.getLogger(__name__)
 
 
 class ToolAdapter:
@@ -171,12 +173,24 @@ class ToolAdapter:
         if isinstance(approval, dict):
             metadata["approval"] = approval
             metadata["pending"] = bool(approval.get("pending"))
-            approval_id = approval.get("approval_id")
-            provider = approval.get("provider")
-            if isinstance(approval_id, str) and approval_id.strip():
-                metadata["approval_id"] = approval_id.strip()
-            if isinstance(provider, str) and provider.strip():
-                metadata["approval_provider"] = provider.strip()
+            logger.info(
+                "tool_result_approval_metadata tool=%s provider=%s approval_id=%s status=%s pending=%s can_resolve=%s",
+                tool_name,
+                approval.get("provider"),
+                approval.get("approval_id"),
+                approval.get("status"),
+                approval.get("pending"),
+                approval.get("can_resolve"),
+            )
+        elif tool_name == "git_exec":
+            logger.info(
+                "tool_result_approval_metadata tool=%s provider=%s approval_id=%s status=%s pending=%s",
+                tool_name,
+                None,
+                None,
+                None,
+                None,
+            )
         return truncated, metadata
 
     def _schema_for_model(self, raw_schema: Any) -> dict[str, Any]:

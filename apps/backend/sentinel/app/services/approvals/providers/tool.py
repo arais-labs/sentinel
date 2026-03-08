@@ -28,7 +28,9 @@ class ToolApprovalProvider:
         offset: int,
         session_id: UUID | None = None,
     ) -> tuple[list[ApprovalRecord], int]:
-        result = await db.execute(select(ToolApproval))
+        result = await db.execute(
+            select(ToolApproval).where(ToolApproval.provider == self.name)
+        )
         rows = result.scalars().all()
         if status_filter:
             rows = [row for row in rows if row.status == status_filter]
@@ -53,7 +55,12 @@ class ToolApprovalProvider:
         except ValueError as exc:
             raise ApprovalNotFoundError("Tool approval not found") from exc
 
-        result = await db.execute(select(ToolApproval).where(ToolApproval.id == approval_uuid))
+        result = await db.execute(
+            select(ToolApproval).where(
+                ToolApproval.id == approval_uuid,
+                ToolApproval.provider == self.name,
+            )
+        )
         row = result.scalars().first()
         if row is None:
             raise ApprovalNotFoundError("Tool approval not found")

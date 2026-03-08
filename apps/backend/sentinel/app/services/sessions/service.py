@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import GitPushApproval, Memory, Message, Session, ToolApproval
+from app.models import Memory, Message, Session, ToolApproval
 from app.services.context_usage import (
     build_context_usage_metrics,
     estimate_agent_messages_tokens,
@@ -534,19 +534,6 @@ class SessionService:
         cancelled = await self._run_registry.cancel(str(session_id))
         now = datetime.now(UTC)
         has_mutations = False
-        pending_result = await db.execute(
-            select(GitPushApproval).where(
-                GitPushApproval.session_id == session_id,
-                GitPushApproval.status == "pending",
-            )
-        )
-        pending_rows = pending_result.scalars().all()
-        if pending_rows:
-            for row in pending_rows:
-                row.status = "cancelled"
-                row.decision_note = "Cancelled by user via stop"
-                row.resolved_at = now
-            has_mutations = True
         tool_pending_result = await db.execute(
             select(ToolApproval).where(
                 ToolApproval.session_id == session_id,

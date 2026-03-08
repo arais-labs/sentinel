@@ -51,11 +51,7 @@ from app.services.session_runtime import (
 )
 from app.services.tools.browser_tool import BrowserManager
 from app.services.tools.executor import ToolValidationError
-from app.services.tools.approval_waiters import build_tool_db_approval_waiter
 from app.services.tools.registry import (
-    ToolApprovalGate,
-    ToolApprovalMode,
-    ToolApprovalRequirement,
     ToolDefinition,
     ToolRegistry,
 )
@@ -659,15 +655,6 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
             },
         },
         execute=_execute,
-        approval_gate=ToolApprovalGate(
-            # Flip mode to REQUIRED to enforce a hard approval gate for every runtime command.
-            mode=ToolApprovalMode.NONE,
-            waiter=build_tool_db_approval_waiter(session_factory=session_factory),
-            required=ToolApprovalRequirement(
-                action="runtime.exec",
-                description="Allow runtime shell command execution.",
-            ),
-        ),
     )
 
 

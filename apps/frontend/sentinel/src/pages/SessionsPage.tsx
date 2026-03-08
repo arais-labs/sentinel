@@ -49,15 +49,11 @@ import { extractCriticalToolFields, parsePayloadJson, previewPayloadValue, topLe
 import {
   approvalKey,
   approvalRefFromMetadata,
-  extractApprovalCandidateFromSerializedArgs,
-  extractApprovalCandidateFromToolArgs,
   isWaitingApproval,
-  selectMatchingPendingApproval,
   type ApprovalRef,
 } from '../lib/approvals';
 import { api } from '../lib/api';
 import type {
-  ApprovalListResponse,
   ApprovalToolCallMatchResponse,
   Message,
   MessageAttachment,
@@ -217,8 +213,24 @@ function hasUnresolvedToolCalls(messages: Message[]): boolean {
   return pendingIds.size > 0;
 }
 
-const APPROVAL_HYDRATION_MAX_ATTEMPTS = 12;
-const APPROVAL_HYDRATION_RETRY_MS = 750;
+const APPROVAL_HYDRATION_MAX_ATTEMPTS = 3;
+const APPROVAL_HYDRATION_RETRY_MS = 350;
+const APPROVAL_DEBUG_STORAGE_KEY = 'sentinel.debug.approvals';
+
+function isApprovalDebugEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = window.localStorage.getItem(APPROVAL_DEBUG_STORAGE_KEY);
+    return raw === '1' || raw === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function approvalDebugLog(event: string, details: Record<string, unknown>): void {
+  if (!isApprovalDebugEnabled()) return;
+  console.info(`[approval-debug] ${event}`, details);
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -2175,6 +2187,12 @@ export function SessionsPage() {
     approval: ApprovalRef,
     updates: { pending?: boolean; approval_status?: string; decision_note?: string },
   ) => {
+    approvalDebugLog('ui.approval.update_streaming_call', {
+      provider: approval.provider,
+      approval_id: approval.approvalId,
+      pending: updates.pending,
+      approval_status: updates.approval_status,
+    });
     const targetKey = approvalKey(approval);
     setStreaming((current) => {
       const patchCall = (call: StreamingToolCall): StreamingToolCall => {
@@ -2213,16 +2231,32 @@ export function SessionsPage() {
   const resolveApprovalInline = useCallback(async (approval: ApprovalRef, decision: 'approve' | 'reject') => {
     const targetKey = approvalKey(approval);
     setResolvingApprovalKey(targetKey);
+    approvalDebugLog('ui.approval.resolve.request', {
+      provider: approval.provider,
+      approval_id: approval.approvalId,
+      decision,
+    });
     try {
       await api.post(`/approvals/${encodeURIComponent(approval.provider)}/${encodeURIComponent(approval.approvalId)}/${decision}`, {
-        note: decision === 'approve' ? 'Approved from session tool card' : 'Rejected from session tool card',
+        note: decision === 'approve' ? 'User approved action.' : 'User rejected action.',
       });
       updateStreamingCallApproval(approval, {
         pending: false,
         approval_status: decision === 'approve' ? 'approved' : 'rejected',
       });
       toast.success(decision === 'approve' ? 'Approval approved' : 'Approval rejected');
+      approvalDebugLog('ui.approval.resolve.success', {
+        provider: approval.provider,
+        approval_id: approval.approvalId,
+        decision,
+      });
     } catch (error) {
+      approvalDebugLog('ui.approval.resolve.error', {
+        provider: approval.provider,
+        approval_id: approval.approvalId,
+        decision,
+        error: error instanceof Error ? error.message : String(error),
+      });
       toast.error(error instanceof Error ? error.message : 'Failed to resolve approval');
     } finally {
       setResolvingApprovalKey(null);
@@ -2233,39 +2267,33 @@ export function SessionsPage() {
     sessionId: string,
     callId: string,
     contentIndex: number | null,
-    candidate: ReturnType<typeof extractApprovalCandidateFromToolArgs>,
   ) {
     if (!callId) return;
-    const candidateSuffix = candidate ? `${candidate.provider}:${candidate.matchKey}` : 'unknown';
-    const lookupKey = `${streamingCallKeyFromParts(callId, contentIndex)}:${candidateSuffix}`;
+    const lookupKey = streamingCallKeyFromParts(callId, contentIndex);
     if (approvalLookupInFlightRef.current.has(lookupKey)) return;
     approvalLookupInFlightRef.current.add(lookupKey);
+    approvalDebugLog('ui.approval.hydrate.start', {
+      session_id: sessionId,
+      tool_call_id: callId,
+      content_index: contentIndex,
+      lookup_key: lookupKey,
+    });
     try {
       for (let attempt = 0; attempt < APPROVAL_HYDRATION_MAX_ATTEMPTS; attempt += 1) {
         try {
-          let matched = null as ApprovalListResponse['items'][number] | null;
-          if (candidate) {
-            const query = new URLSearchParams();
-            query.set('status', 'pending');
-            query.set('provider', candidate.provider);
-            query.set('limit', '200');
-            query.set('offset', '0');
-            const payload = await api.get<ApprovalListResponse>(`/approvals?${query.toString()}`);
-            const items = Array.isArray(payload.items) ? payload.items : [];
-            matched = selectMatchingPendingApproval(items, {
-              sessionId,
-              candidate,
-            });
-          }
-          if (!matched) {
-            const query = new URLSearchParams();
-            query.set('session_id', sessionId);
-            query.set('tool_call_id', callId);
-            const toolCallMatch = await api.get<ApprovalToolCallMatchResponse>(
-              `/approvals/match-pending-tool-call?${query.toString()}`,
-            );
-            matched = toolCallMatch.item;
-          }
+          const query = new URLSearchParams();
+          query.set('session_id', sessionId);
+          query.set('tool_call_id', callId);
+          const toolCallMatch = await api.get<ApprovalToolCallMatchResponse>(
+            `/approvals/match-pending-tool-call?${query.toString()}`,
+          );
+          const matched = toolCallMatch.item;
+          approvalDebugLog('ui.approval.hydrate.tool_call_attempt', {
+            session_id: sessionId,
+            tool_call_id: callId,
+            attempt: attempt + 1,
+            matched: Boolean(matched),
+          });
           if (matched) {
             setStreaming((current) => {
               const patchCall = (call: StreamingToolCall): StreamingToolCall => {
@@ -2275,8 +2303,6 @@ export function SessionsPage() {
                   metadata: {
                     ...call.metadata,
                     pending: true,
-                    approval_id: matched.approval_id,
-                    approval_provider: matched.provider,
                     approval: {
                       provider: matched.provider,
                       approval_id: matched.approval_id,
@@ -2295,9 +2321,23 @@ export function SessionsPage() {
                 completedToolCalls: current.completedToolCalls.map(patchCall),
               };
             });
+            approvalDebugLog('ui.approval.hydrate.matched', {
+              session_id: sessionId,
+              tool_call_id: callId,
+              attempt: attempt + 1,
+              provider: matched.provider,
+              approval_id: matched.approval_id,
+              status: matched.status,
+              pending: matched.pending,
+            });
             return;
           }
         } catch {
+          approvalDebugLog('ui.approval.hydrate.attempt_error', {
+            session_id: sessionId,
+            tool_call_id: callId,
+            attempt: attempt + 1,
+          });
           // best-effort retry until attempts are exhausted
         }
         if (attempt < APPROVAL_HYDRATION_MAX_ATTEMPTS - 1) {
@@ -2305,9 +2345,17 @@ export function SessionsPage() {
         }
       }
     } catch {
+      approvalDebugLog('ui.approval.hydrate.error', {
+        session_id: sessionId,
+        tool_call_id: callId,
+      });
       // best effort hydration
     } finally {
       approvalLookupInFlightRef.current.delete(lookupKey);
+      approvalDebugLog('ui.approval.hydrate.done', {
+        session_id: sessionId,
+        tool_call_id: callId,
+      });
     }
   }
 
@@ -2433,7 +2481,7 @@ export function SessionsPage() {
         setStreaming((current) => ({ ...current, isThinking: false, isStreaming: true, text: current.text + (event.delta ?? '') }));
         break;
       case 'toolcall_start':
-        setStreaming((current) => {
+        {
           const callId = String((event.tool_call as any)?.id ?? `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
           const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
           const rawInitialArguments = serializeToolArguments((event.tool_call as any)?.arguments);
@@ -2441,122 +2489,120 @@ export function SessionsPage() {
             ? rawInitialArguments
             : '';
           const toolName = String((event.tool_call as any)?.name ?? 'unknown');
-          const approvalCandidate = extractApprovalCandidateFromToolArgs(toolName, (event.tool_call as any)?.arguments);
-          const initialMetadata: Record<string, unknown> = approvalCandidate
-            ? {
-              pending: true,
-              approval_provider: approvalCandidate.provider,
-              approval: {
-                provider: approvalCandidate.provider,
-                status: 'pending',
-                pending: true,
-                can_resolve: true,
-                match_key: approvalCandidate.matchKey,
-              },
-            }
-            : {};
-          const call = {
-            id: callId,
-            name: toolName,
-            argumentsJson: initialArguments,
-            outputJson: approvalCandidate
-              ? '{"status":"pending","message":"Waiting for approval..."}'
-              : '',
-            isError: false,
-            metadata: initialMetadata,
-            complete: false,
-            contentIndex,
-          };
-          const existingByExactId = current.activeToolCalls.findIndex(
-            (item) => item.id === callId && item.contentIndex === contentIndex,
-          );
-          if (existingByExactId >= 0) {
-            return { ...current, isThinking: false };
-          }
-          const existingByContentIndex = contentIndex === null
-            ? -1
-            : current.activeToolCalls.findIndex((item) => item.contentIndex === contentIndex);
-          if (existingByContentIndex >= 0) {
-            const nextActive = [...current.activeToolCalls];
-            const existing = nextActive[existingByContentIndex];
-            const adoptIncomingId = isSyntheticToolCallId(existing.id) && !isSyntheticToolCallId(call.id);
-            const mergedCall: StreamingToolCall = {
-              ...existing,
-              id: adoptIncomingId ? call.id : existing.id,
-              name: existing.name === 'unknown' && call.name !== 'unknown' ? call.name : existing.name,
-              argumentsJson: hasMeaningfulToolArguments(existing.argumentsJson)
-                ? existing.argumentsJson
-                : call.argumentsJson,
-              metadata: Object.keys(existing.metadata).length > 0
-                ? existing.metadata
-                : call.metadata,
+          approvalDebugLog('ws.toolcall_start', {
+            session_id: sessionId,
+            tool_call_id: callId,
+            tool_name: toolName,
+            content_index: contentIndex,
+          });
+          setStreaming((current) => {
+            const call = {
+              id: callId,
+              name: toolName,
+              argumentsJson: initialArguments,
+              outputJson: '',
+              isError: false,
+              metadata: {},
+              complete: false,
+              contentIndex,
             };
-            let nextTimeline = current.timeline;
-            const oldKey = streamingCallKey(existing);
-            const newKey = streamingCallKey(mergedCall);
-            if (oldKey !== newKey) {
-              nextTimeline = current.timeline.map((item) => (
-                item.kind === 'tool' && item.callKey === oldKey
-                  ? { kind: 'tool', key: `tool-${newKey}`, callKey: newKey }
-                  : item
-              ));
+            const existingByExactId = current.activeToolCalls.findIndex(
+              (item) => item.id === callId && item.contentIndex === contentIndex,
+            );
+            if (existingByExactId >= 0) {
+              return { ...current, isThinking: false };
             }
-            nextActive[existingByContentIndex] = mergedCall;
+            const existingByContentIndex = contentIndex === null
+              ? -1
+              : current.activeToolCalls.findIndex((item) => item.contentIndex === contentIndex);
+            if (existingByContentIndex >= 0) {
+              const nextActive = [...current.activeToolCalls];
+              const existing = nextActive[existingByContentIndex];
+              const adoptIncomingId = isSyntheticToolCallId(existing.id) && !isSyntheticToolCallId(call.id);
+              const mergedCall: StreamingToolCall = {
+                ...existing,
+                id: adoptIncomingId ? call.id : existing.id,
+                name: existing.name === 'unknown' && call.name !== 'unknown' ? call.name : existing.name,
+                argumentsJson: hasMeaningfulToolArguments(existing.argumentsJson)
+                  ? existing.argumentsJson
+                  : call.argumentsJson,
+              };
+              let nextTimeline = current.timeline;
+              const oldKey = streamingCallKey(existing);
+              const newKey = streamingCallKey(mergedCall);
+              if (oldKey !== newKey) {
+                nextTimeline = current.timeline.map((item) => (
+                  item.kind === 'tool' && item.callKey === oldKey
+                    ? { kind: 'tool', key: `tool-${newKey}`, callKey: newKey }
+                    : item
+                ));
+              }
+              nextActive[existingByContentIndex] = mergedCall;
+              return {
+                ...current,
+                isThinking: false,
+                activeToolCalls: nextActive,
+                timeline: nextTimeline,
+              };
+            }
+            const callKey = streamingCallKeyFromParts(callId, contentIndex);
+            const hasTimelineItem = current.timeline.some(
+              (item) => item.kind === 'tool' && item.callKey === callKey
+            );
             return {
               ...current,
               isThinking: false,
-              activeToolCalls: nextActive,
-              timeline: nextTimeline,
+              activeToolCalls: [...current.activeToolCalls, call],
+              timeline: hasTimelineItem
+                ? current.timeline
+                : [...current.timeline, { kind: 'tool', key: `tool-${callKey}`, callKey }],
             };
-          }
-          const callKey = streamingCallKeyFromParts(callId, contentIndex);
-          const hasTimelineItem = current.timeline.some(
-            (item) => item.kind === 'tool' && item.callKey === callKey
-          );
-          return {
-            ...current,
-            isThinking: false,
-            activeToolCalls: [...current.activeToolCalls, call],
-            timeline: hasTimelineItem
-              ? current.timeline
-              : [...current.timeline, { kind: 'tool', key: `tool-${callKey}`, callKey }],
-          };
-        });
+          });
+          void hydrateApprovalForCall(sessionId, callId, contentIndex);
+        }
         break;
       case 'toolcall_delta':
-        setStreaming((current) => {
-          const delta = typeof event.delta === 'string' ? event.delta : '';
-          if (!delta) return current;
-          const next = [...current.activeToolCalls];
-          if (!next.length) return current;
-          const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
-          let targetIndex = -1;
-          if (contentIndex !== null) {
-            targetIndex = next.findIndex((item) => item.contentIndex === contentIndex);
-          }
-          if (targetIndex < 0) targetIndex = next.length - 1;
-          const call = next[targetIndex];
-          next[targetIndex] = {
-            ...call,
-            argumentsJson: mergeStreamingToolArguments(call.argumentsJson, delta),
-          };
-          return { ...current, activeToolCalls: next };
-        });
+        {
+          setStreaming((current) => {
+            const delta = typeof event.delta === 'string' ? event.delta : '';
+            if (!delta) return current;
+            const next = [...current.activeToolCalls];
+            if (!next.length) return current;
+            const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
+            let targetIndex = -1;
+            if (contentIndex !== null) {
+              targetIndex = next.findIndex((item) => item.contentIndex === contentIndex);
+            }
+            if (targetIndex < 0) targetIndex = next.length - 1;
+            const call = next[targetIndex];
+            const mergedArguments = mergeStreamingToolArguments(call.argumentsJson, delta);
+            const hasApprovalRef = Boolean(approvalRefFromMetadata(call.metadata));
+            if (!hasApprovalRef && call.id) {
+              void hydrateApprovalForCall(sessionId, call.id, call.contentIndex);
+            }
+            next[targetIndex] = {
+              ...call,
+              argumentsJson: mergedArguments,
+            };
+            return { ...current, activeToolCalls: next };
+          });
+        }
         break;
       case 'toolcall_end':
         {
           const hydrationCandidates: Array<{
             callId: string;
             contentIndex: number | null;
-            candidate: ReturnType<typeof extractApprovalCandidateFromToolArgs>;
           }> = [];
           const eventCallId = String((event.tool_call as any)?.id ?? '');
           const eventContentIndex = typeof event.content_index === 'number' ? event.content_index : null;
           const eventToolName = String((event.tool_call as any)?.name ?? '');
-          const eventApprovalCandidate = extractApprovalCandidateFromToolArgs(
-            eventToolName,
-            (event.tool_call as any)?.arguments,
-          );
+          approvalDebugLog('ws.toolcall_end', {
+            session_id: sessionId,
+            tool_call_id: eventCallId,
+            tool_name: eventToolName,
+            content_index: eventContentIndex,
+          });
           setStreaming((current) => {
             if (!current.activeToolCalls.length) return current;
             const nextActive = [...current.activeToolCalls];
@@ -2570,11 +2616,17 @@ export function SessionsPage() {
             if (targetIndex < 0) targetIndex = nextActive.length - 1;
             const doneCall = nextActive[targetIndex];
             nextActive.splice(targetIndex, 1);
-            const approvalCandidate = eventApprovalCandidate ?? (
-              extractApprovalCandidateFromSerializedArgs(doneCall.name, doneCall.argumentsJson)
-            );
             const callApprovalRef = approvalRefFromMetadata(doneCall.metadata);
-            const isPendingApproval = Boolean(approvalCandidate) || Boolean(callApprovalRef?.pending);
+            const isPendingApproval = Boolean(callApprovalRef?.pending);
+            approvalDebugLog('ws.toolcall_end.classify', {
+              session_id: sessionId,
+              tool_call_id: doneCall.id,
+              tool_name: doneCall.name,
+              pending_from_metadata: Boolean(callApprovalRef?.pending),
+              pending_final: isPendingApproval,
+              metadata_approval_id: callApprovalRef?.approvalId ?? null,
+              metadata_provider: callApprovalRef?.provider ?? null,
+            });
             const hydratedDoneCall: StreamingToolCall = isPendingApproval
               ? {
                 ...doneCall,
@@ -2582,16 +2634,6 @@ export function SessionsPage() {
                 metadata: {
                   ...doneCall.metadata,
                   pending: true,
-                  ...(approvalCandidate ? {
-                    approval_provider: approvalCandidate.provider,
-                    approval: {
-                      provider: approvalCandidate.provider,
-                      status: 'pending',
-                      pending: true,
-                      can_resolve: true,
-                      match_key: approvalCandidate.matchKey,
-                    },
-                  } : {}),
                 },
               }
               : doneCall;
@@ -2602,7 +2644,6 @@ export function SessionsPage() {
               hydrationCandidates.push({
                 callId: hydratedDoneCall.id,
                 contentIndex: hydratedDoneCall.contentIndex,
-                candidate: approvalCandidate,
               });
             }
             if (alreadyDone) {
@@ -2616,11 +2657,15 @@ export function SessionsPage() {
           });
           const pendingHydration = hydrationCandidates[0];
           if (pendingHydration) {
+            approvalDebugLog('ws.toolcall_end.hydrate_queue', {
+              session_id: sessionId,
+              tool_call_id: pendingHydration.callId,
+              content_index: pendingHydration.contentIndex,
+            });
             void hydrateApprovalForCall(
               sessionId,
               pendingHydration.callId,
               pendingHydration.contentIndex,
-              pendingHydration.candidate,
             );
           }
         }
@@ -2628,6 +2673,18 @@ export function SessionsPage() {
       case 'tool_result':
         {
           const payload = (event.tool_result as Record<string, unknown> | undefined) ?? {};
+          const metadata = isObjectRecord(payload.metadata) ? payload.metadata : {};
+          const metadataApproval = approvalRefFromMetadata(metadata);
+          approvalDebugLog('ws.tool_result', {
+            session_id: sessionId,
+            tool_call_id: String(payload.tool_call_id ?? (event.tool_call as any)?.id ?? ''),
+            tool_name: String(payload.tool_name ?? (event.tool_call as any)?.name ?? 'unknown'),
+            is_error: Boolean(payload.is_error),
+            metadata_pending: Boolean(metadata.pending),
+            metadata_approval_id: metadataApproval?.approvalId ?? null,
+            metadata_provider: metadataApproval?.provider ?? null,
+            metadata_status: metadataApproval?.status ?? null,
+          });
           const toolNameForRefresh = String(payload.tool_name ?? (event.tool_call as any)?.name ?? '').trim();
           if (
             toolNameForRefresh === 'spawn_sub_agent' ||
