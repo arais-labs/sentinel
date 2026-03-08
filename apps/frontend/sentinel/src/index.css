@@ -289,6 +289,26 @@ body {
   padding: 0;
 }
 
+.markdown-body.markdown-command-inline .markdown-pre-shell {
+  margin: 0;
+}
+
+.markdown-body.markdown-command-inline .markdown-pre-shell pre {
+  font-size: 9px;
+  line-height: 1.25;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body.markdown-command-inline .markdown-pre-shell pre code,
+.markdown-body.markdown-command-inline .markdown-pre-shell pre code.hljs {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
 .markdown-body .katex-display {
   @apply my-3 overflow-x-auto overflow-y-hidden;
 }
