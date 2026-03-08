@@ -14,6 +14,7 @@ os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.models import GitAccount
 from app.models.system import SystemSetting
 from app.services.tools import ToolExecutor, build_default_registry
 from app.services.tools.builtin import _validate_public_hostname
@@ -97,7 +98,7 @@ def test_tools_registry_and_execution():
         listed = client.get("/api/v1/tools", headers=headers)
         assert listed.status_code == 200
         names = {item["name"] for item in listed.json()["items"]}
-        assert {"file_read", "http_request", "runtime_exec", "git_exec"} <= names
+        assert {"file_read", "http_request", "runtime_exec", "git_exec", "git_accounts_available"} <= names
         assert {"runtime_jobs_list", "runtime_job_status", "runtime_job_logs", "runtime_job_stop"} <= names
         assert "browser_reset" in names
         assert "araios_api" in names
@@ -125,6 +126,28 @@ def test_tools_registry_and_execution():
             headers=headers,
         )
         assert invalid.status_code == 422
+
+        fake_db.add(
+            GitAccount(
+                name="primary-gh",
+                host="github.com",
+                scope_pattern="arais-labs/*",
+                author_name="Ari",
+                author_email="ari@arais.us",
+                token_read="read-token",
+                token_write="write-token",
+            )
+        )
+        accounts_run = client.post(
+            "/api/v1/tools/git_accounts_available/execute",
+            json={"input": {"repo_url": "https://github.com/arais-labs/sentinel.git"}},
+            headers=headers,
+        )
+        assert accounts_run.status_code == 200
+        payload = accounts_run.json()["result"]
+        assert payload["total"] == 1
+        assert payload["accounts"][0]["name"] == "primary-gh"
+        assert payload["accounts"][0]["matches_repo"] is True
 
         created_session = client.post(
             "/api/v1/sessions",
