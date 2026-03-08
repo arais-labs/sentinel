@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import GitPushApproval
+from app.models import ToolApproval
 from app.services.approvals.types import (
     ApprovalConflictError,
     ApprovalNotFoundError,
@@ -31,7 +31,9 @@ class GitApprovalProvider:
         offset: int,
         session_id: UUID | None = None,
     ) -> tuple[list[ApprovalRecord], int]:
-        result = await db.execute(select(GitPushApproval))
+        result = await db.execute(
+            select(ToolApproval).where(ToolApproval.provider == self.name)
+        )
         rows = result.scalars().all()
         if status_filter:
             rows = [row for row in rows if row.status == status_filter]
@@ -56,7 +58,12 @@ class GitApprovalProvider:
         except ValueError as exc:
             raise ApprovalNotFoundError("Git approval not found") from exc
 
-        result = await db.execute(select(GitPushApproval).where(GitPushApproval.id == approval_uuid))
+        result = await db.execute(
+            select(ToolApproval).where(
+                ToolApproval.id == approval_uuid,
+                ToolApproval.provider == self.name,
+            )
+        )
         row = result.scalars().first()
         if row is None:
             raise ApprovalNotFoundError("Git approval not found")
@@ -88,7 +95,19 @@ class GitApprovalProvider:
             return None
         return PendingApprovalMatch(provider=self.name, match_key=normalize_git_command(command))
 
-    def _to_record(self, row: GitPushApproval) -> ApprovalRecord:
+    def _to_record(self, row: ToolApproval) -> ApprovalRecord:
+        payload = dict(row.payload_json or {})
+        command = None
+        command_value = payload.get("command")
+        if isinstance(command_value, str) and command_value.strip():
+            command = command_value.strip()
+        metadata: dict[str, object] = dict(payload)
+        if row.requested_by and "requested_by" not in metadata:
+            metadata["requested_by"] = row.requested_by
+        if row.decision_by and "decision_by" not in metadata:
+            metadata["decision_by"] = row.decision_by
+        if row.tool_name and "tool_name" not in metadata:
+            metadata["tool_name"] = row.tool_name
         return ApprovalRecord(
             provider=self.name,
             approval_id=str(row.id),
@@ -96,18 +115,14 @@ class GitApprovalProvider:
             pending=row.status == "pending",
             label="Git write approval",
             session_id=str(row.session_id) if row.session_id else None,
-            match_key=normalize_git_command(row.command),
-            command=row.command,
-            description=row.decision_note,
+            match_key=row.match_key,
+            command=command,
+            action=row.action,
+            description=row.description,
             can_resolve=row.status == "pending",
             decision_note=row.decision_note,
             created_at=row.created_at,
             updated_at=row.updated_at,
             expires_at=row.expires_at,
-            metadata={
-                "repo_url": row.repo_url,
-                "remote_name": row.remote_name,
-                "requested_by": row.requested_by,
-                "decision_by": row.decision_by,
-            },
+            metadata=metadata,
         )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Literal
 from uuid import UUID
 
@@ -24,6 +25,7 @@ from app.services.approvals.types import ApprovalRecord
 from app.services.ws_stream_service import load_history, unresolved_tool_calls_from_history
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("")
@@ -59,6 +61,11 @@ async def match_pending_tool_call(
     _: TokenPayload = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> ApprovalToolCallMatchResponse:
+    logger.info(
+        "approval_match_tool_call_request session_id=%s tool_call_id=%s",
+        session_id,
+        tool_call_id.strip(),
+    )
     service = _resolve_approval_service()
     history = await load_history(db, session_id)
     unresolved = unresolved_tool_calls_from_history(history)
@@ -72,6 +79,12 @@ async def match_pending_tool_call(
         None,
     )
     if call is None:
+        logger.info(
+            "approval_match_tool_call_unresolved_missing session_id=%s tool_call_id=%s unresolved_count=%s",
+            session_id,
+            normalized_call_id,
+            len(unresolved),
+        )
         return ApprovalToolCallMatchResponse(item=None)
 
     matched = await service.match_pending_for_unresolved_calls(
@@ -81,7 +94,19 @@ async def match_pending_tool_call(
     )
     record = matched.get(normalized_call_id)
     if record is None:
+        logger.info(
+            "approval_match_tool_call_not_found session_id=%s tool_call_id=%s",
+            session_id,
+            normalized_call_id,
+        )
         return ApprovalToolCallMatchResponse(item=None)
+    logger.info(
+        "approval_match_tool_call_found session_id=%s tool_call_id=%s provider=%s approval_id=%s",
+        session_id,
+        normalized_call_id,
+        record.provider,
+        record.approval_id,
+    )
     return ApprovalToolCallMatchResponse(item=_record_response(record))
 
 

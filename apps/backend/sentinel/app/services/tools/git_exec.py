@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fnmatch
+import hashlib
+import logging
 import os
 import shlex
 import stat
@@ -18,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
-from app.models import GitAccount, GitPushApproval, Session
+from app.models import GitAccount, Session, ToolApproval
 from app.services.session_runtime import ensure_runtime_layout, runtime_workspace_dir
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
 from app.services.tools.registry import (
@@ -51,6 +53,7 @@ _DEFAULT_GIT_TIMEOUT_SECONDS = 600
 _MAX_GIT_TIMEOUT_SECONDS = 3600
 _DEFAULT_PUSH_APPROVAL_TIMEOUT_SECONDS = 600
 _MAX_PUSH_APPROVAL_TIMEOUT_SECONDS = 3600
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +307,7 @@ def _git_exec_approval_waiter(
         if not isinstance(command, str) or not command.strip():
             raise ToolValidationError("Field 'command' must be a non-empty string")
         tokens = _parse_cli_command(command.strip())
+        command_hash = _command_hash(command)
 
         await _ensure_session_exists(session_factory, session_id)
         await ensure_runtime_layout(session_id)
@@ -323,6 +327,16 @@ def _git_exec_approval_waiter(
             subcommand, subcommand_index = _extract_git_subcommand(tokens)
             subargs = tokens[subcommand_index + 1 :]
             repo_url, remote_name = _resolve_network_repo_url(subcommand, subargs, run_dir)
+        logger.info(
+            "git_exec_approval_waiter_begin tool=%s session_id=%s action=%s match_key=%s command_hash=%s repo_url=%s remote=%s",
+            tool_name,
+            session_id,
+            requirement.action,
+            requirement.match_key,
+            command_hash,
+            repo_url,
+            remote_name,
+        )
 
         async with session_factory() as db:
             account = await _resolve_git_account(db, repo_url=repo_url, require_write=True)
@@ -335,13 +349,29 @@ def _git_exec_approval_waiter(
 
         approval_row = await _create_push_approval(
             session_factory=session_factory,
-            account_id=account.account.id,
+            provider="git",
+            tool_name="git_exec",
+            action=requirement.action,
+            description=requirement.description,
             session_id=session_id,
-            repo_url=repo_url,
-            remote_name=remote_name,
             command=command.strip(),
+            payload_json=_build_git_approval_payload(
+                account_id=account.account.id,
+                repo_url=repo_url,
+                remote_name=remote_name,
+                command=command.strip(),
+            ),
             requested_by=requirement.requested_by or f"session:{session_id}",
             timeout_seconds=requirement.timeout_seconds,
+        )
+        logger.info(
+            "git_exec_approval_created approval_id=%s session_id=%s action=%s account_id=%s command_hash=%s expires_at=%s",
+            approval_row.id,
+            session_id,
+            requirement.action,
+            account.account.id,
+            command_hash,
+            getattr(approval_row, "expires_at", None),
         )
         try:
             decision = await _wait_for_push_approval(
@@ -368,6 +398,13 @@ def _git_exec_approval_waiter(
                 },
                 message="Approval cancelled.",
             )
+        logger.info(
+            "git_exec_approval_waiter_decision approval_id=%s session_id=%s status=%s decision_by=%s",
+            approval_row.id,
+            session_id,
+            decision.status,
+            decision.decision_by,
+        )
 
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus(decision.status),
@@ -416,7 +453,7 @@ def _approval_status_message(status: str, note: str | None) -> str:
     if status == "approved":
         return f"Approval approved: {detail}" if detail else "Approval approved."
     if status == "rejected":
-        return f"Approval rejected: {detail}" if detail else "Approval rejected."
+        return detail if detail else "User rejected action."
     if status == "timed_out":
         return f"Approval timed out: {detail}" if detail else "Approval timed out."
     if status == "cancelled":
@@ -426,6 +463,11 @@ def _approval_status_message(status: str, note: str | None) -> str:
 
 def _normalize_command(command: str) -> str:
     return " ".join(command.strip().split()).lower()
+
+
+def _command_hash(command: str) -> str:
+    normalized = _normalize_command(command)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
 
 
 def _parse_cli_command(command: str) -> list[str]:
@@ -1125,29 +1167,57 @@ class _ApprovalDecision:
 async def _create_push_approval(
     *,
     session_factory: async_sessionmaker[AsyncSession],
-    account_id: UUID,
+    provider: str,
+    tool_name: str,
+    action: str,
+    description: str | None,
     session_id: UUID,
-    repo_url: str,
-    remote_name: str,
     command: str,
+    payload_json: dict[str, Any] | None,
     requested_by: str,
     timeout_seconds: int,
-) -> GitPushApproval:
+) -> ToolApproval:
     async with session_factory() as db:
-        row = GitPushApproval(
-            account_id=account_id,
+        row = ToolApproval(
+            provider=provider,
+            tool_name=tool_name,
             session_id=session_id,
-            repo_url=repo_url,
-            remote_name=remote_name,
-            command=command,
+            action=action,
+            description=description,
+            match_key=_normalize_command(command),
             status="pending",
             requested_by=requested_by,
+            payload_json=payload_json,
             expires_at=datetime.now(UTC) + timedelta(seconds=timeout_seconds),
         )
         db.add(row)
         await db.commit()
         await db.refresh(row)
+        logger.info(
+            "tool_approval_db_created approval_id=%s provider=%s tool=%s session_id=%s action=%s expires_at=%s",
+            row.id,
+            row.provider,
+            row.tool_name,
+            row.session_id,
+            row.action,
+            row.expires_at,
+        )
         return row
+
+
+def _build_git_approval_payload(
+    *,
+    account_id: UUID,
+    repo_url: str,
+    remote_name: str,
+    command: str,
+) -> dict[str, Any]:
+    return {
+        "account_id": str(account_id),
+        "repo_url": repo_url,
+        "remote_name": remote_name,
+        "command": command,
+    }
 
 
 async def _wait_for_push_approval(
@@ -1157,13 +1227,33 @@ async def _wait_for_push_approval(
     timeout_seconds: int,
 ) -> _ApprovalDecision:
     started_at = datetime.now(UTC)
+    logger.info(
+        "git_exec_approval_wait_loop_start approval_id=%s timeout_seconds=%s",
+        approval_id,
+        timeout_seconds,
+    )
+    poll_count = 0
     while True:
+        poll_count += 1
         async with session_factory() as db:
-            result = await db.execute(select(GitPushApproval).where(GitPushApproval.id == approval_id))
+            result = await db.execute(
+                select(ToolApproval).where(
+                    ToolApproval.id == approval_id,
+                    ToolApproval.provider == "git",
+                )
+            )
             row = result.scalars().first()
             if row is None:
+                logger.warning("git_exec_approval_missing approval_id=%s", approval_id)
                 raise ToolExecutionError("Push approval record disappeared")
             if row.status in {"approved", "rejected", "cancelled", "timed_out"}:
+                logger.info(
+                    "git_exec_approval_wait_loop_resolved approval_id=%s status=%s poll_count=%s decision_by=%s",
+                    approval_id,
+                    row.status,
+                    poll_count,
+                    row.decision_by,
+                )
                 return _ApprovalDecision(
                     status=row.status,
                     decision_by=row.decision_by,
@@ -1176,6 +1266,11 @@ async def _wait_for_push_approval(
                 row.status = "timed_out"
                 row.resolved_at = now
                 await db.commit()
+                logger.info(
+                    "git_exec_approval_wait_loop_timeout approval_id=%s poll_count=%s",
+                    approval_id,
+                    poll_count,
+                )
                 return _ApprovalDecision(status="timed_out", decision_by=None, decision_note=None)
         await asyncio.sleep(_TERMINAL_WAIT_POLL_SECONDS)
 
@@ -1187,12 +1282,26 @@ async def _record_push_result(
     result: dict[str, Any],
 ) -> None:
     async with session_factory() as db:
-        db_result = await db.execute(select(GitPushApproval).where(GitPushApproval.id == approval_id))
+        db_result = await db.execute(
+            select(ToolApproval).where(
+                ToolApproval.id == approval_id,
+                ToolApproval.provider == "git",
+            )
+        )
         approval = db_result.scalars().first()
         if approval is None:
+            logger.info("git_exec_approval_result_skipped_missing approval_id=%s", approval_id)
             return
         approval.result_json = result
         await db.commit()
+        logger.info(
+            "git_exec_approval_result_recorded approval_id=%s status=%s result_ok=%s timed_out=%s returncode=%s",
+            approval_id,
+            approval.status,
+            result.get("ok"),
+            result.get("timed_out"),
+            result.get("returncode"),
+        )
 
 
 async def _cancel_push_approval(
@@ -1202,16 +1311,28 @@ async def _cancel_push_approval(
     note: str,
 ) -> None:
     async with session_factory() as db:
-        db_result = await db.execute(select(GitPushApproval).where(GitPushApproval.id == approval_id))
+        db_result = await db.execute(
+            select(ToolApproval).where(
+                ToolApproval.id == approval_id,
+                ToolApproval.provider == "git",
+            )
+        )
         approval = db_result.scalars().first()
         if approval is None:
+            logger.info("git_exec_approval_cancel_skipped_missing approval_id=%s", approval_id)
             return
         if approval.status != "pending":
+            logger.info(
+                "git_exec_approval_cancel_skipped_status approval_id=%s status=%s",
+                approval_id,
+                approval.status,
+            )
             return
         approval.status = "cancelled"
         approval.decision_note = note
         approval.resolved_at = datetime.now(UTC)
         await db.commit()
+        logger.info("git_exec_approval_cancelled approval_id=%s note=%s", approval_id, note)
 
 
 async def _configure_author_identity_after_clone(
