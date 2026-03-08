@@ -645,15 +645,18 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
                     return (
                       <div
                         key={`${entry.timestamp ?? 'na'}-${entry.action}-${index}`}
-                        className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2"
+                        className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 py-1.5"
                       >
                         <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
                           <Clock3 size={10} />
                           <span>{entry.action.replaceAll('_', ' ')}</span>
                           <span className="ml-auto">{entry.timestamp ? formatCompactDate(entry.timestamp) : '\u2014'}</span>
                         </div>
-                        <div className="mt-1 text-[10px] font-mono text-[color:var(--text-secondary)] break-all">
-                          {command}
+                        <div className="mt-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-1.5 py-1">
+                          <Markdown
+                            content={toMarkdownCodeFence(command || '[empty command]', 'bash')}
+                            className="!text-[9px] markdown-workbench markdown-command-inline"
+                          />
                         </div>
                       </div>
                     );
