@@ -1123,6 +1123,20 @@ export function SessionsPage() {
     localStorage.setItem('sentinel-selected-tier', selectedTier);
   }, [selectedTier]);
 
+  useEffect(() => {
+    if (!isEffortDropdownOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (effortDropdownRef.current?.contains(target)) return;
+      setIsEffortDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [isEffortDropdownOpen]);
+
   const [isCompacting, setIsCompacting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isResettingBrowser, setIsResettingBrowser] = useState(false);
@@ -1141,6 +1155,7 @@ export function SessionsPage() {
   const loadingOlderRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const effortDropdownRef = useRef<HTMLDivElement | null>(null);
   const fullscreenFrameRef = useRef<HTMLIFrameElement | null>(null);
   const intentionalCloseRef = useRef(false);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -1224,6 +1239,10 @@ export function SessionsPage() {
   const activeWorkbenchDiff = activeWorkbenchTab ? workbenchDiffByPath[activeWorkbenchTab.path] ?? null : null;
   const activeWorkbenchDiffError = activeWorkbenchTab ? workbenchDiffErrorByPath[activeWorkbenchTab.path] ?? null : null;
   const activeWorkbenchGitRoots = activeWorkbenchTab ? workbenchGitRootsByPath[activeWorkbenchTab.path] ?? [] : [];
+  const activeWorkbenchViewMode = activeWorkbenchTab && workbenchShowDiffByPath[activeWorkbenchTab.path] ? 'diff' : 'content';
+  const activeWorkbenchViewerKey = activeWorkbenchTab
+    ? `${activeWorkbenchTab.path}:${activeWorkbenchViewMode}`
+    : 'none';
   const activeWorkbenchBaseRef = activeWorkbenchTab
     ? workbenchDiffBaseRefByPath[activeWorkbenchTab.path] ?? 'HEAD'
     : 'HEAD';
@@ -3249,7 +3268,7 @@ export function SessionsPage() {
           </aside>
 
           {/* Chat Area */}
-          <main className="flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)]">
+          <main className="relative z-0 flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)] overflow-hidden">
             {/* Model Selector / Status Header */}
             {mode === 'advanced' ? (
             <div className="flex items-center justify-between px-4 py-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
@@ -3353,7 +3372,7 @@ export function SessionsPage() {
                 {/* --- Effort selector (Fast / Normal / Deep Think) --- */}
                 <div className="flex items-center gap-1.5">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Effort:</span>
-                  <div className="relative">
+                  <div ref={effortDropdownRef} className="relative z-20">
                     {(() => {
                         const active = models.find(m => m.tier === selectedTier) || models[0];
                         const tier = active?.tier ?? 'normal';
@@ -3380,12 +3399,7 @@ export function SessionsPage() {
                       })()}
 
                     {isEffortDropdownOpen && (
-                      <>
-                        <div
-                          className="fixed inset-0 z-40"
-                          onClick={() => setIsEffortDropdownOpen(false)}
-                        />
-                        <div className="absolute top-full left-0 mt-1 w-64 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1 animate-in fade-in zoom-in-95 duration-100">
+                        <div className="absolute top-full right-0 mt-1 w-64 max-w-[min(22rem,calc(100vw-2rem))] rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1 animate-in fade-in zoom-in-95 duration-100 origin-top-right">
                           {models.map(m => {
                             const active = selectedTier === m.tier;
                             const tier = m.tier ?? 'normal';
@@ -3436,7 +3450,6 @@ export function SessionsPage() {
                             );
                           })}
                         </div>
-                      </>
                     )}
                   </div>
                 </div>
@@ -3698,7 +3711,7 @@ export function SessionsPage() {
               />
               <aside
                 style={{ width: `${workbenchWidth}px` }}
-                className="hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden min-w-[360px]"
+                className="relative z-30 hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden min-w-[360px] animate-[workbenchDockIn_180ms_ease-out]"
               >
                 <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
                   <div className="flex items-center justify-between gap-2">
@@ -3824,7 +3837,7 @@ export function SessionsPage() {
                           {activeWorkbenchGitRoots.slice(0, 6).map((root) => (
                             <span
                               key={`${activeWorkbenchTab.path}:${root.root_path || '.'}:${root.branch ?? 'detached'}`}
-                              className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-300"
+                              className="inline-flex items-center gap-1 rounded-full border border-violet-500/35 bg-violet-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300"
                             >
                               <span>{root.root_path || '.'}</span>
                               <span>{root.detached_head ? 'detached' : root.branch || 'unknown'}</span>
@@ -3835,7 +3848,8 @@ export function SessionsPage() {
                     </div>
 
                     <div className="flex-1 min-h-0 overflow-auto p-3">
-                      {workbenchShowDiffByPath[activeWorkbenchTab.path] ? (
+                      <div key={activeWorkbenchViewerKey} className="h-full animate-[workbenchViewerIn_170ms_ease-out]">
+                        {workbenchShowDiffByPath[activeWorkbenchTab.path] ? (
                         workbenchDiffLoadingPath === activeWorkbenchTab.path ? (
                           <div className="flex items-center gap-2 text-[11px] text-[color:var(--text-muted)]">
                             <Loader2 size={13} className="animate-spin" />
@@ -3847,10 +3861,10 @@ export function SessionsPage() {
                               <span>root: {activeWorkbenchDiff.git_root || '.'}</span>
                               <span>{activeWorkbenchDiff.truncated ? 'truncated' : 'full'}</span>
                             </div>
-                            <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2">
+                            <div className="rounded-lg border border-[color:var(--border-subtle)] p-2">
                               <Markdown
                                 content={toMarkdownCodeFence(activeWorkbenchDiff.diff || '[no diff output]', 'diff')}
-                                className="!text-[11px]"
+                                className="!text-[11px] markdown-workbench"
                               />
                             </div>
                           </div>
@@ -3864,16 +3878,17 @@ export function SessionsPage() {
                           </div>
                         )
                       ) : (
-                        <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2">
+                        <div className="rounded-lg border border-[color:var(--border-subtle)] p-2">
                           <Markdown
                             content={toMarkdownCodeFence(
                               activeWorkbenchTab.content || '[empty file]',
                               inferCodeLanguageFromName(activeWorkbenchTab.name),
                             )}
-                            className="!text-[11px]"
+                            className="!text-[11px] markdown-workbench"
                           />
                         </div>
-                      )}
+                        )}
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -3894,7 +3909,7 @@ export function SessionsPage() {
           {/* Right Rail */}
           <aside
               style={{ width: `${rightPanelWidth}px` }}
-              className="hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
+              className="relative z-30 hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
           >
             <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
               <div className="grid grid-cols-3 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
@@ -4164,114 +4179,128 @@ export function SessionsPage() {
                         {runtimeChangedFiles?.git_root ? (
                           <div className="rounded-lg border border-violet-500/30 bg-violet-500/10 p-2">
                             <div className="flex items-center justify-between gap-2">
-                              <div className="min-w-0 flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-violet-200">
+                              <div className="min-w-0 flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-violet-700 dark:text-violet-200">
                                 <GitBranch size={11} />
                                 <span className="truncate">
                                   Repo {runtimeChangedFiles.git_root || '.'}
                                 </span>
-                                <span className="text-violet-300/80">
+                                <span className="text-violet-600/90 dark:text-violet-300/90">
                                   {runtimeChangedFiles.detached_head
                                     ? 'detached'
                                     : runtimeChangedFiles.branch || 'unknown'}
                                 </span>
                               </div>
-                              <span className="text-[8px] font-bold uppercase tracking-widest text-violet-200/80">
+                              <span className="text-[8px] font-bold uppercase tracking-widest text-violet-600 dark:text-violet-300/80">
                                 auto
                               </span>
                             </div>
-                            {runtimeChangedFilesLoading ? (
-                              <div className="mt-2 flex items-center gap-1.5 text-[10px] text-violet-200/80">
+                            {runtimeChangedFiles.entries.length > 0 ? (
+                              <div className="relative mt-2">
+                                {runtimeChangedFilesLoading ? (
+                                  <div className="pointer-events-none absolute inset-x-0 -top-1 z-10 mx-auto w-fit rounded-full border border-violet-500/35 bg-violet-50 px-2 py-0.5 text-[8px] font-bold uppercase tracking-widest text-violet-700 dark:bg-violet-900/35 dark:text-violet-100">
+                                    Updating…
+                                  </div>
+                                ) : null}
+                                <div className={`space-y-1 transition-opacity duration-150 ${runtimeChangedFilesLoading ? 'opacity-85' : 'opacity-100'} ${runtimeChangedFilesLoading ? '' : 'animate-[fade-in_160ms_ease-out]'}`}>
+                                  {runtimeChangedFiles.entries.slice(0, 8).map((entry) => (
+                                    <button
+                                      key={`runtime-inline-change:${entry.path}:${entry.status}`}
+                                      type="button"
+                                      onClick={() => void openRuntimeFileDiff(entry.path)}
+                                      className="w-full rounded-md border border-violet-400/30 bg-violet-50/80 px-2 py-1.5 text-left hover:border-violet-500/50 transition-colors dark:bg-violet-950/30"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <span className="w-7 shrink-0 text-[9px] font-bold uppercase text-violet-700 dark:text-violet-200">
+                                          {entry.status}
+                                        </span>
+                                        <span className="truncate text-[10px] font-mono text-violet-700/90 dark:text-violet-100/90">
+                                          {entry.path}
+                                        </span>
+                                        <ChevronRight size={11} className="ml-auto shrink-0 text-violet-500 dark:text-violet-200/70" />
+                                      </div>
+                                    </button>
+                                  ))}
+                                  {runtimeChangedFiles.entries.length > 8 ? (
+                                    <div className="text-[9px] uppercase tracking-wider text-violet-600 dark:text-violet-200/80">
+                                      +{runtimeChangedFiles.entries.length - 8} more changed files
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            ) : runtimeChangedFilesLoading ? (
+                              <div className="mt-2 flex items-center gap-1.5 text-[10px] text-violet-600 dark:text-violet-200/80">
                                 <Loader2 size={11} className="animate-spin" />
                                 Scanning changes…
                               </div>
-                            ) : runtimeChangedFiles.entries.length > 0 ? (
-                              <div className="mt-2 space-y-1">
-                                {runtimeChangedFiles.entries.slice(0, 8).map((entry) => (
-                                  <button
-                                    key={`runtime-inline-change:${entry.path}:${entry.status}`}
-                                    type="button"
-                                    onClick={() => void openRuntimeFileDiff(entry.path)}
-                                    className="w-full rounded-md border border-violet-400/20 bg-black/10 px-2 py-1.5 text-left hover:border-violet-300/40 transition-colors"
-                                  >
-                                    <div className="flex items-center gap-2 min-w-0">
-                                      <span className="w-7 shrink-0 text-[9px] font-bold uppercase text-violet-200/90">
-                                        {entry.status}
-                                      </span>
-                                      <span className="truncate text-[10px] font-mono text-violet-100/90">
-                                        {entry.path}
-                                      </span>
-                                      <ChevronRight size={11} className="ml-auto shrink-0 text-violet-200/70" />
-                                    </div>
-                                  </button>
-                                ))}
-                                {runtimeChangedFiles.entries.length > 8 ? (
-                                  <div className="text-[9px] uppercase tracking-wider text-violet-200/80">
-                                    +{runtimeChangedFiles.entries.length - 8} more changed files
-                                  </div>
-                                ) : null}
-                              </div>
                             ) : (
-                              <div className="mt-2 text-[10px] text-violet-100/80">
+                              <div className="mt-2 text-[10px] text-violet-600 dark:text-violet-100/80">
                                 No changed files in this repository.
                               </div>
                             )}
                           </div>
                         ) : null}
-                        {runtimeFilesLoading ? (
-                          <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
-                            <Loader2 size={12} className="animate-spin" />
-                            Loading workspace…
-                          </div>
-                        ) : runtimeFiles?.entries?.length ? (
-                          <div className="space-y-1.5">
-                            {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
-                              <button
-                                key={`${entry.path}:${entry.kind}`}
-                                type="button"
-                                onClick={() => {
-                                  if (entry.kind === 'directory') {
-                                    void openRuntimeDirectory(entry.path, {
-                                      autoOpenFirstDiff: Boolean(entry.is_git_root),
-                                    });
-                                  } else {
-                                    void openRuntimeFile(entry.path);
-                                  }
-                                }}
-                                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  {entry.kind === 'directory' ? (
-                                    <Folder size={13} className="text-sky-500 shrink-0" />
-                                  ) : (
-                                    <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
-                                  )}
-                                  <span className="text-[11px] font-semibold truncate">{entry.name}</span>
-                                  <span className="text-[9px] text-[color:var(--text-muted)] shrink-0">
-                                    {entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}
-                                  </span>
-                                  {entry.modified_at ? (
+                        {runtimeFiles?.entries?.length ? (
+                          <div className="relative">
+                            {runtimeFilesLoading ? (
+                              <div className="pointer-events-none absolute inset-x-0 -top-2 z-10 mx-auto w-fit rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2 py-0.5 text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                Updating folder…
+                              </div>
+                            ) : null}
+                            <div className={`space-y-1.5 transition-all duration-150 ${runtimeFilesLoading ? 'opacity-80 blur-[0.2px]' : 'opacity-100'} ${runtimeFilesLoading ? '' : 'animate-[fade-in_180ms_ease-out]'}`}>
+                              {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
+                                <button
+                                  key={`${entry.path}:${entry.kind}`}
+                                  type="button"
+                                  onClick={() => {
+                                    if (entry.kind === 'directory') {
+                                      void openRuntimeDirectory(entry.path, {
+                                        autoOpenFirstDiff: Boolean(entry.is_git_root),
+                                      });
+                                    } else {
+                                      void openRuntimeFile(entry.path);
+                                    }
+                                  }}
+                                  className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    {entry.kind === 'directory' ? (
+                                      <Folder size={13} className="text-sky-500 shrink-0" />
+                                    ) : (
+                                      <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
+                                    )}
+                                    <span className="text-[11px] font-semibold truncate">{entry.name}</span>
                                     <span className="text-[9px] text-[color:var(--text-muted)] shrink-0">
-                                      {formatCompactDate(entry.modified_at)}
+                                      {entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}
                                     </span>
-                                  ) : null}
+                                    {entry.modified_at ? (
+                                      <span className="text-[9px] text-[color:var(--text-muted)] shrink-0">
+                                        {formatCompactDate(entry.modified_at)}
+                                      </span>
+                                    ) : null}
                                   {entry.kind === 'directory' && entry.is_git_root ? (
-                                    <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/35 bg-violet-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-violet-300">
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/35 bg-violet-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-violet-700 dark:text-violet-300">
                                       <GitBranch size={9} />
                                       {entry.git_detached_head
                                         ? 'detached'
                                         : entry.git_branch || 'repo'}
                                     </span>
-                                  ) : null}
-                                  <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
-                                </div>
-                              </button>
-                            ))}
-                            {runtimeFiles.truncated ? (
-                              <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated to 400 entries</p>
-                            ) : null}
+                                    ) : null}
+                                    <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
+                                  </div>
+                                </button>
+                              ))}
+                              {runtimeFiles.truncated ? (
+                                <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated to 400 entries</p>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : runtimeFilesLoading ? (
+                          <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)] animate-[fade-in_140ms_ease-out]">
+                            <Loader2 size={12} className="animate-spin" />
+                            Loading workspace…
                           </div>
                         ) : (
-                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70 animate-[fade-in_180ms_ease-out]">
                             Workspace is empty.
                           </div>
                         )}
