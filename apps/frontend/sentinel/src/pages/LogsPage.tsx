@@ -6,7 +6,6 @@ import {
   Clock,
   Layers,
   Loader2,
-  RefreshCw,
   Search,
   Shield,
   Terminal,
@@ -23,6 +22,7 @@ import {
 import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
+import { RuntimeExplorerModal } from '../components/RuntimeExplorerModal';
 import { JsonBlock } from '../components/ui/JsonBlock';
 import { Markdown } from '../components/ui/Markdown';
 import { StatusChip } from '../components/ui/StatusChip';
@@ -1176,6 +1176,7 @@ export function LogsPage() {
     lens?: OperationalLens;
   } | null>(null);
   const [detailEvent, setDetailEvent] = useState<ArchitectureEvent | null>(null);
+  const [runtimeExplorerOpen, setRuntimeExplorerOpen] = useState(false);
 
   useEffect(() => {
     void loadSessions();
@@ -1534,6 +1535,13 @@ export function LogsPage() {
                       <Cpu size={12} className="text-sky-500" />
                       Latest Snapshot
                     </button>
+                    <button
+                      onClick={() => setRuntimeExplorerOpen(true)}
+                      className="flex items-center gap-2 px-3 py-1.5 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] text-[10px] font-bold uppercase tracking-widest transition-all"
+                    >
+                      <Terminal size={12} className="text-amber-400" />
+                      Explore Runtime
+                    </button>
                   </div>
                 </div>
 
@@ -1775,6 +1783,13 @@ export function LogsPage() {
         open={Boolean(detailEvent)}
         event={detailEvent}
         onClose={() => setDetailEvent(null)}
+      />
+
+      <RuntimeExplorerModal
+        open={runtimeExplorerOpen}
+        session={activeSession ?? null}
+        runtime={activeRuntime ?? null}
+        onClose={() => setRuntimeExplorerOpen(false)}
       />
     </AppShell>
   );
