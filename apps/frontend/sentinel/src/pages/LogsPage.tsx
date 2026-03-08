@@ -372,17 +372,20 @@ function extractRuntimeContextPayload(message: Message): RuntimeContextPayload |
 function mapRuntimeContextToUserMessages(messages: Message[]): Map<string, RuntimeContextPayload> {
   const ordered = [...messages].sort((a, b) => toTimestamp(a.created_at) - toTimestamp(b.created_at));
   const mapped = new Map<string, RuntimeContextPayload>();
-  let pending: RuntimeContextPayload | null = null;
+  let pendingUserMessageId: string | null = null;
 
   for (const message of ordered) {
-    const context = extractRuntimeContextPayload(message);
-    if (context) {
-      pending = context;
+    if (message.role === 'user') {
+      pendingUserMessageId = message.id;
       continue;
     }
-    if (message.role === 'user' && pending) {
-      mapped.set(message.id, pending);
-      pending = null;
+
+    const context = extractRuntimeContextPayload(message);
+    if (context) {
+      if (pendingUserMessageId && !mapped.has(pendingUserMessageId)) {
+        mapped.set(pendingUserMessageId, context);
+        pendingUserMessageId = null;
+      }
     }
   }
   return mapped;
