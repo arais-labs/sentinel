@@ -9,12 +9,13 @@ import {
   Terminal,
   X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { api } from '../lib/api';
 import { formatCompactDate } from '../lib/format';
+import { buildRuntimeCommandRows } from '../lib/runtimeCommands';
 import type {
   Session,
-  SessionRuntimeAction,
   SessionRuntimeFileEntry,
   SessionRuntimeFilePreviewResponse,
   SessionRuntimeFilesResponse,
@@ -80,12 +81,6 @@ function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
   return runtime.active ? 'Active' : 'Idle';
 }
 
-function runtimeActionCommand(entry: SessionRuntimeAction): string | null {
-  if (!entry || !entry.details || typeof entry.details !== 'object') return null;
-  const command = entry.details.command;
-  return typeof command === 'string' && command.trim().length > 0 ? command.trim() : null;
-}
-
 function runtimeBadgeTone(runtime: SessionRuntimeStatus | null): string {
   if (!runtime) return 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] text-[color:var(--text-muted)]';
   if (!runtime.runtime_exists) return 'border-rose-500/30 bg-rose-500/10 text-rose-400';
@@ -113,6 +108,7 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
   const [runtimeDiff, setRuntimeDiff] = useState<SessionRuntimeGitDiffResponse | null>(null);
   const [runtimeDiffLoading, setRuntimeDiffLoading] = useState(false);
   const [runtimeDiffError, setRuntimeDiffError] = useState<string | null>(null);
+  const [isCancellingCommand, setIsCancellingCommand] = useState(false);
 
   const sessionIdRef = useRef<string | null>(null);
   const sessionId = session?.id ?? null;
@@ -278,11 +274,22 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
   }, [open, sessionId, runtimePath, selectedDiffPath, diffBaseRef, diffStaged]);
 
   const commandActions = useMemo(() => {
-    if (!runtimeStatus) return [];
-    return runtimeStatus.actions
-      .filter((entry) => Boolean(runtimeActionCommand(entry)))
-      .slice(0, 50);
+    return buildRuntimeCommandRows(runtimeStatus, { newestFirst: true, limit: 50 });
   }, [runtimeStatus]);
+
+  async function cancelRunningCommand() {
+    if (!sessionId || isCancellingCommand) return;
+    setIsCancellingCommand(true);
+    try {
+      await api.post(`/sessions/${sessionId}/stop`, {});
+      toast.success('Stopping command');
+      await fetchRuntimeStatus(sessionId);
+    } catch {
+      toast.error('Failed to stop command');
+    } finally {
+      setIsCancellingCommand(false);
+    }
+  }
 
   const statusCards = [
     { label: 'Runtime', value: runtimeStatus?.runtime_exists ? 'ready' : 'missing' },
@@ -641,16 +648,29 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
               {commandActions.length > 0 ? (
                 <div className="space-y-1.5">
                   {commandActions.map((entry, index) => {
-                    const command = runtimeActionCommand(entry) || '';
+                    const command = entry.command || '';
+                    const isStarted = entry.entry.action === 'command_started' || entry.entry.action === 'detached_job_started';
+                    const cardTone = entry.isRunning
+                      ? 'border-emerald-500/45 bg-emerald-500/10'
+                      : isStarted
+                        ? 'border-emerald-500/30 bg-emerald-500/5'
+                        : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]';
                     return (
                       <div
-                        key={`${entry.timestamp ?? 'na'}-${entry.action}-${index}`}
-                        className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 py-1.5"
+                        key={`${entry.entry.timestamp ?? 'na'}-${entry.entry.action}-${index}`}
+                        className={`rounded-lg border px-2 py-1.5 ${cardTone}`}
                       >
                         <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                          <Clock3 size={10} />
-                          <span>{entry.action.replaceAll('_', ' ')}</span>
-                          <span className="ml-auto">{entry.timestamp ? formatCompactDate(entry.timestamp) : '\u2014'}</span>
+                          <Clock3 size={10} className={entry.isRunning || isStarted ? 'text-emerald-400' : ''} />
+                          <span className={entry.isRunning || isStarted ? 'text-emerald-300' : ''}>
+                            {entry.entry.action.replaceAll('_', ' ')}
+                          </span>
+                          {entry.isRunning ? (
+                            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/12 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-emerald-300">
+                              running
+                            </span>
+                          ) : null}
+                          <span className="ml-auto">{entry.entry.timestamp ? formatCompactDate(entry.entry.timestamp) : '\u2014'}</span>
                         </div>
                         <div className="mt-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-1.5 py-1">
                           <Markdown
@@ -658,6 +678,18 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
                             className="!text-[9px] markdown-workbench markdown-command-inline"
                           />
                         </div>
+                        {entry.isRunning ? (
+                          <div className="mt-1.5 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => void cancelRunningCommand()}
+                              disabled={isCancellingCommand}
+                              className="inline-flex items-center rounded-md border border-rose-500/40 bg-rose-500/12 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-rose-300 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {isCancellingCommand ? 'Cancelling…' : 'Cancel'}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     );
                   })}
