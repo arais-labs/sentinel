@@ -6,6 +6,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import signal
 import shlex
 import socket
@@ -68,6 +69,10 @@ _ALLOWED_MEMORY_CATEGORIES = {"core", "preference", "project", "correction"}
 _MAX_PYTHON_XAGENT_OUTPUT_CHARS = 20_000
 _MAX_RUNTIME_EXEC_OUTPUT_CHARS = 50_000
 _python_xagent_runtime_lock = asyncio.Lock()
+_RUNTIME_EXEC_STREAM_READ_BYTES = 65_536
+_RUNTIME_EXEC_STREAM_DRAIN_SECONDS = 2.0
+_RUNTIME_EXEC_TIMEOUT_KILL_WAIT_SECONDS = 3.0
+_RUNTIME_BACKGROUND_AMPERSAND_RE = re.compile(r"(?<!&)&(?!&)")
 
 
 def build_default_registry(
@@ -420,6 +425,7 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
         command = payload.get("command")
         if not isinstance(command, str) or not command.strip():
             raise ToolValidationError("Field 'command' must be a non-empty string")
+        command_text = command.strip()
 
         timeout_seconds = payload.get("timeout_seconds", 300)
         if (
@@ -433,6 +439,11 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
         detached = payload.get("detached", False)
         if not isinstance(detached, bool):
             raise ToolValidationError("Field 'detached' must be a boolean")
+        if not detached and _command_requests_background_execution(command_text):
+            raise ToolValidationError(
+                "Background shell execution is not allowed for inline runtime_exec. "
+                "Use detached=true for long-running/background commands."
+            )
 
         use_python_venv = payload.get("use_python_venv", False)
         if not isinstance(use_python_venv, bool):
@@ -493,9 +504,8 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
 
         proc: asyncio.subprocess.Process | None = None
         detached_started = False
-        await mark_runtime_state(session_id, active=True, command=command.strip(), pid=None)
+        await mark_runtime_state(session_id, active=True, command=command_text, pid=None)
         try:
-            command_text = command.strip()
             if detached:
                 logs_dir = runtime_logs_dir(session_id)
                 logs_dir.mkdir(parents=True, exist_ok=True)
@@ -590,7 +600,12 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                     else:
                         with contextlib.suppress(ProcessLookupError):
                             os.killpg(proc.pid, signal.SIGKILL)
-                stdout, stderr = await proc.communicate()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        proc.wait(),
+                        timeout=_RUNTIME_EXEC_TIMEOUT_KILL_WAIT_SECONDS,
+                    )
+                stdout, stderr = await _drain_runtime_exec_streams(proc)
 
             return {
                 "ok": not timed_out and proc.returncode == 0,
@@ -608,7 +623,7 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                 await mark_runtime_state(
                     session_id,
                     active=False,
-                    command=command.strip(),
+                    command=command_text,
                     pid=proc.pid if proc is not None else None,
                 )
 
@@ -678,6 +693,48 @@ def _watch_detached_runtime_process(
             )
 
     asyncio.create_task(_watch())
+
+
+def _command_requests_background_execution(command: str) -> bool:
+    normalized = command.strip().lower()
+    if not normalized:
+        return False
+    if re.search(r"\b(?:nohup|disown)\b", normalized):
+        return True
+    return _RUNTIME_BACKGROUND_AMPERSAND_RE.search(normalized) is not None
+
+
+async def _drain_runtime_exec_streams(
+    proc: asyncio.subprocess.Process,
+) -> tuple[bytes, bytes]:
+    stdout = await _drain_runtime_exec_stream(proc.stdout)
+    stderr = await _drain_runtime_exec_stream(proc.stderr)
+    return stdout, stderr
+
+
+async def _drain_runtime_exec_stream(
+    stream: asyncio.StreamReader | None,
+) -> bytes:
+    if stream is None:
+        return b""
+    chunks: list[bytes] = []
+    remaining = _RUNTIME_EXEC_STREAM_READ_BYTES
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _RUNTIME_EXEC_STREAM_DRAIN_SECONDS
+    while remaining > 0:
+        remaining_timeout = deadline - loop.time()
+        if remaining_timeout <= 0:
+            break
+        chunk_size = min(remaining, 8_192)
+        try:
+            chunk = await asyncio.wait_for(stream.read(chunk_size), timeout=remaining_timeout)
+        except TimeoutError:
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 def _runtime_jobs_list_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
