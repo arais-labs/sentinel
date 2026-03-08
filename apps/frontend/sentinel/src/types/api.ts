@@ -52,6 +52,9 @@ export interface SessionRuntimeFileEntry {
   kind: 'file' | 'directory';
   size_bytes: number | null;
   modified_at: string | null;
+  is_git_root?: boolean;
+  git_branch?: string | null;
+  git_detached_head?: boolean;
 }
 
 export interface SessionRuntimeFilesResponse {

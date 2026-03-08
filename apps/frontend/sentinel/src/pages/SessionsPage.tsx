@@ -31,6 +31,7 @@ import {
   Clock3,
   Check,
   Pencil,
+  GitBranch,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
@@ -141,6 +142,27 @@ function toMarkdownCodeFence(content: string, language: string): string {
     fence += '`';
   }
   return `${fence}${language}\n${content}\n${fence}`;
+}
+
+function buildRuntimeDiffBaseRefOptions(
+  roots: SessionRuntimeGitRoot[],
+  currentRef: string | null | undefined,
+): string[] {
+  const options = new Set<string>();
+  options.add('HEAD');
+  for (const root of roots) {
+    if (!root.detached_head && root.branch) {
+      options.add(root.branch);
+      options.add(`origin/${root.branch}`);
+    }
+  }
+  options.add('origin/main');
+  options.add('origin/master');
+  const normalizedCurrent = (currentRef ?? '').trim();
+  if (normalizedCurrent) {
+    options.add(normalizedCurrent);
+  }
+  return Array.from(options);
 }
 
 function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
@@ -1060,7 +1082,7 @@ export function SessionsPage() {
   const [runtimeStatus, setRuntimeStatus] = useState<SessionRuntimeStatus | null>(null);
   const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
   const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
-  const [runtimeInspectorTab, setRuntimeInspectorTab] = useState<'files' | 'git' | 'commands'>('files');
+  const [runtimeInspectorTab, setRuntimeInspectorTab] = useState<'files' | 'commands'>('files');
   const [runtimePath, setRuntimePath] = useState('');
   const [runtimeChangedFiles, setRuntimeChangedFiles] = useState<SessionRuntimeGitChangedFilesResponse | null>(null);
   const [runtimeChangedFilesLoading, setRuntimeChangedFilesLoading] = useState(false);
@@ -1071,7 +1093,6 @@ export function SessionsPage() {
   const [isWorkbenchResizing, setIsWorkbenchResizing] = useState(false);
   const [workbenchShowDiffByPath, setWorkbenchShowDiffByPath] = useState<Record<string, boolean>>({});
   const [workbenchDiffBaseRefByPath, setWorkbenchDiffBaseRefByPath] = useState<Record<string, string>>({});
-  const [workbenchDiffStagedByPath, setWorkbenchDiffStagedByPath] = useState<Record<string, boolean>>({});
   const [workbenchDiffByPath, setWorkbenchDiffByPath] = useState<Record<string, SessionRuntimeGitDiffResponse | null>>({});
   const [workbenchDiffErrorByPath, setWorkbenchDiffErrorByPath] = useState<Record<string, string | null>>({});
   const [workbenchDiffLoadingPath, setWorkbenchDiffLoadingPath] = useState<string | null>(null);
@@ -1203,6 +1224,13 @@ export function SessionsPage() {
   const activeWorkbenchDiff = activeWorkbenchTab ? workbenchDiffByPath[activeWorkbenchTab.path] ?? null : null;
   const activeWorkbenchDiffError = activeWorkbenchTab ? workbenchDiffErrorByPath[activeWorkbenchTab.path] ?? null : null;
   const activeWorkbenchGitRoots = activeWorkbenchTab ? workbenchGitRootsByPath[activeWorkbenchTab.path] ?? [] : [];
+  const activeWorkbenchBaseRef = activeWorkbenchTab
+    ? workbenchDiffBaseRefByPath[activeWorkbenchTab.path] ?? 'HEAD'
+    : 'HEAD';
+  const activeWorkbenchBaseRefOptions = useMemo(
+    () => (activeWorkbenchTab ? buildRuntimeDiffBaseRefOptions(activeWorkbenchGitRoots, activeWorkbenchBaseRef) : ['HEAD']),
+    [activeWorkbenchTab, activeWorkbenchGitRoots, activeWorkbenchBaseRef],
+  );
 
   const browserToolResults = useMemo(
     () =>
@@ -1453,7 +1481,6 @@ export function SessionsPage() {
       setWorkbenchDiffByPath({});
       setWorkbenchDiffErrorByPath({});
       setWorkbenchDiffBaseRefByPath({});
-      setWorkbenchDiffStagedByPath({});
       setWorkbenchGitRootsByPath({});
       setStreaming(defaultStreamingState);
       shouldAutoScrollRef.current = true;
@@ -1482,7 +1509,6 @@ export function SessionsPage() {
     setWorkbenchDiffByPath({});
     setWorkbenchDiffErrorByPath({});
     setWorkbenchDiffBaseRefByPath({});
-    setWorkbenchDiffStagedByPath({});
     setWorkbenchGitRootsByPath({});
     setStreaming(defaultStreamingState);
     setHasMoreMessages(false);
@@ -1517,13 +1543,18 @@ export function SessionsPage() {
 
   useEffect(() => {
     if (!activeSessionId || rightRailTab !== 'runtime') return;
+    if (streaming.connection !== 'connected') return;
     const timer = window.setInterval(() => {
       void fetchRuntimeStatus(activeSessionId, 120);
-    }, 2500);
+      void fetchRuntimeFiles(activeSessionId, runtimePath, {
+        refreshGit: true,
+        silent: true,
+      });
+    }, 3000);
     return () => {
       window.clearInterval(timer);
     };
-  }, [activeSessionId, rightRailTab]);
+  }, [activeSessionId, rightRailTab, runtimePath, streaming.connection]);
 
   useEffect(() => {
     if (!activeSessionId || rightRailTab !== 'runtime') return;
@@ -1943,8 +1974,15 @@ export function SessionsPage() {
     }
   }
 
-  async function fetchRuntimeFiles(sessionId: string, path = '') {
-    setRuntimeFilesLoading(true);
+  async function fetchRuntimeFiles(
+    sessionId: string,
+    path = '',
+    options?: { refreshGit?: boolean; silent?: boolean },
+  ) {
+    const silent = Boolean(options?.silent);
+    if (!silent) {
+      setRuntimeFilesLoading(true);
+    }
     try {
       const query = new URLSearchParams();
       if (path.trim().length > 0) query.set('path', path.trim());
@@ -1954,8 +1992,10 @@ export function SessionsPage() {
       if (sessionId !== activeSessionIdRef.current) return;
       setRuntimeFiles(payload);
       setRuntimePath(payload.path || '');
-      if (rightRailTab === 'runtime') {
-        void fetchRuntimeChangedFilesForExplorer(sessionId, payload.path || '');
+      if (options?.refreshGit ?? rightRailTab === 'runtime') {
+        void fetchRuntimeChangedFilesForExplorer(sessionId, payload.path || '', {
+          silent,
+        });
       }
     } catch {
       if (sessionId !== activeSessionIdRef.current) return;
@@ -1963,33 +2003,53 @@ export function SessionsPage() {
       setRuntimePath(path);
       setRuntimeChangedFiles(null);
     } finally {
-      if (sessionId === activeSessionIdRef.current) {
+      if (sessionId === activeSessionIdRef.current && !silent) {
         setRuntimeFilesLoading(false);
       }
     }
   }
 
-  async function fetchRuntimeChangedFilesForExplorer(sessionId: string, path: string) {
-    setRuntimeChangedFilesLoading(true);
+  async function fetchRuntimeChangedFilesForExplorer(
+    sessionId: string,
+    path: string,
+    options?: { silent?: boolean },
+  ): Promise<SessionRuntimeGitChangedFilesResponse | null> {
+    const silent = Boolean(options?.silent);
+    if (!silent) {
+      setRuntimeChangedFilesLoading(true);
+    }
     try {
       const payload = await api.get<SessionRuntimeGitChangedFilesResponse>(
         `/sessions/${sessionId}/runtime/git/changed?path=${encodeURIComponent(path)}&limit=200`,
       );
-      if (sessionId !== activeSessionIdRef.current) return;
+      if (sessionId !== activeSessionIdRef.current) return null;
       setRuntimeChangedFiles(payload);
+      return payload;
     } catch {
-      if (sessionId !== activeSessionIdRef.current) return;
+      if (sessionId !== activeSessionIdRef.current) return null;
       setRuntimeChangedFiles(null);
+      return null;
     } finally {
-      if (sessionId === activeSessionIdRef.current) {
+      if (sessionId === activeSessionIdRef.current && !silent) {
         setRuntimeChangedFilesLoading(false);
       }
     }
   }
 
-  async function openRuntimeDirectory(path: string) {
+  async function openRuntimeDirectory(
+    path: string,
+    options?: { autoOpenFirstDiff?: boolean },
+  ) {
     if (!activeSessionId) return;
-    await fetchRuntimeFiles(activeSessionId, path);
+    const shouldAutoOpenFirstDiff = Boolean(options?.autoOpenFirstDiff);
+    await fetchRuntimeFiles(activeSessionId, path, {
+      refreshGit: !shouldAutoOpenFirstDiff,
+    });
+    if (!shouldAutoOpenFirstDiff) return;
+    const changed = await fetchRuntimeChangedFilesForExplorer(activeSessionId, path);
+    const firstPath = changed?.entries?.[0]?.path;
+    if (!firstPath) return;
+    await openRuntimeFileDiff(firstPath);
   }
 
   async function openRuntimeFile(path: string) {
@@ -2019,11 +2079,6 @@ export function SessionsPage() {
       setActiveWorkbenchPath(nextTab.path);
       setWorkbenchDiffBaseRefByPath((current) =>
         current[nextTab.path] ? current : { ...current, [nextTab.path]: 'HEAD' },
-      );
-      setWorkbenchDiffStagedByPath((current) =>
-        Object.prototype.hasOwnProperty.call(current, nextTab.path)
-          ? current
-          : { ...current, [nextTab.path]: false },
       );
       setWorkbenchDiffErrorByPath((current) => ({ ...current, [nextTab.path]: null }));
       setWorkbenchShowDiffByPath((current) =>
@@ -2080,11 +2135,6 @@ export function SessionsPage() {
       delete next[path];
       return next;
     });
-    setWorkbenchDiffStagedByPath((current) => {
-      const next = { ...current };
-      delete next[path];
-      return next;
-    });
     setWorkbenchGitRootsByPath((current) => {
       const next = { ...current };
       delete next[path];
@@ -2107,17 +2157,20 @@ export function SessionsPage() {
     }
   }
 
-  async function fetchRuntimeGitDiff(sessionId: string, path: string) {
-    const baseRefRaw = workbenchDiffBaseRefByPath[path];
+  async function fetchRuntimeGitDiff(
+    sessionId: string,
+    path: string,
+    options?: { baseRef?: string },
+  ) {
+    const baseRefRaw = options?.baseRef ?? workbenchDiffBaseRefByPath[path];
     const baseRef = (typeof baseRefRaw === 'string' && baseRefRaw.trim().length > 0) ? baseRefRaw.trim() : 'HEAD';
-    const staged = Boolean(workbenchDiffStagedByPath[path]);
     setWorkbenchDiffLoadingPath(path);
     setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: null }));
     try {
       const query = new URLSearchParams();
       query.set('path', path);
       query.set('base_ref', baseRef);
-      query.set('staged', staged ? 'true' : 'false');
+      query.set('staged', 'false');
       query.set('context_lines', '3');
       query.set('max_bytes', '120000');
       const payload = await api.get<SessionRuntimeGitDiffResponse>(
@@ -3659,14 +3712,15 @@ export function SessionsPage() {
                         setWorkbenchDiffByPath({});
                         setWorkbenchDiffErrorByPath({});
                         setWorkbenchDiffBaseRefByPath({});
-                        setWorkbenchDiffStagedByPath({});
                         setWorkbenchGitRootsByPath({});
                         setWorkbenchLoadingPath(null);
                         setWorkbenchDiffLoadingPath(null);
                       }}
-                      className="text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-rose-400"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-rose-400/50 bg-rose-500/20 text-rose-300 transition-colors hover:bg-rose-500/35 hover:text-rose-100"
+                      title="Close all tabs"
+                      aria-label="Close all tabs"
                     >
-                      Close All
+                      <X size={12} />
                     </button>
                   </div>
                   <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
@@ -3727,7 +3781,7 @@ export function SessionsPage() {
                           type="button"
                           onClick={() => {
                             setWorkbenchShowDiffByPath((current) => ({ ...current, [activeWorkbenchTab.path]: true }));
-                            if (activeSessionId && !workbenchDiffByPath[activeWorkbenchTab.path]) {
+                            if (activeSessionId) {
                               void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
                             }
                           }}
@@ -3740,42 +3794,29 @@ export function SessionsPage() {
                           Diff
                         </button>
                         <div className="ml-auto flex items-center gap-1.5">
-                          <input
-                            value={workbenchDiffBaseRefByPath[activeWorkbenchTab.path] ?? 'HEAD'}
-                            onChange={(event) =>
+                          <select
+                            value={activeWorkbenchBaseRef}
+                            onChange={(event) => {
+                              const selectedRef = event.target.value || 'HEAD';
                               setWorkbenchDiffBaseRefByPath((current) => ({
                                 ...current,
-                                [activeWorkbenchTab.path]: event.target.value,
-                              }))
-                            }
-                            className="h-7 w-24 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 text-[10px] font-mono"
-                            placeholder="HEAD"
-                            title="Base ref (for diff)"
-                          />
-                          <label className="inline-flex items-center gap-1 text-[10px] text-[color:var(--text-muted)]">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(workbenchDiffStagedByPath[activeWorkbenchTab.path])}
-                              onChange={(event) =>
-                                setWorkbenchDiffStagedByPath((current) => ({
-                                  ...current,
-                                  [activeWorkbenchTab.path]: event.target.checked,
-                                }))
+                                [activeWorkbenchTab.path]: selectedRef,
+                              }));
+                              if (activeSessionId && workbenchShowDiffByPath[activeWorkbenchTab.path]) {
+                                void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path, {
+                                  baseRef: selectedRef,
+                                });
                               }
-                            />
-                            staged
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!activeSessionId) return;
-                              void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
                             }}
-                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
+                            className="h-7 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 text-[10px] font-mono text-[color:var(--text-secondary)]"
+                            title="Diff base reference"
                           >
-                            <RefreshCw size={11} className={workbenchDiffLoadingPath === activeWorkbenchTab.path ? 'animate-spin' : ''} />
-                            Load
-                          </button>
+                            {activeWorkbenchBaseRefOptions.map((ref) => (
+                              <option key={`${activeWorkbenchTab.path}:base-ref:${ref}`} value={ref}>
+                                {ref}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                       </div>
                       {activeWorkbenchGitRoots.length > 0 ? (
@@ -3819,7 +3860,7 @@ export function SessionsPage() {
                           </div>
                         ) : (
                           <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                            Click Load to fetch git diff for this file.
+                            Open Diff to load the comparison automatically.
                           </div>
                         )
                       ) : (
@@ -4065,41 +4106,15 @@ export function SessionsPage() {
                     <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
                       Workspace
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!activeSessionId) return;
-                        void fetchRuntimeStatus(activeSessionId, 120);
-                        void fetchRuntimeFiles(activeSessionId, runtimePath);
-                      }}
-                      className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
-                    >
-                      <RefreshCw size={11} className={runtimeFilesLoading ? 'animate-spin' : ''} />
-                      Refresh
-                    </button>
-                  </div>
-                  <div className="mt-2 flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!activeSessionId || !runtimeFiles || runtimeFiles.parent_path === null) return;
-                        void openRuntimeDirectory(runtimeFiles.parent_path);
-                      }}
-                      disabled={!runtimeFiles || runtimeFiles.parent_path === null || runtimeFilesLoading}
-                      className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] disabled:opacity-40"
-                    >
-                      <ArrowUp size={11} />
-                      Up
-                    </button>
-                    <div className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-mono text-[color:var(--text-secondary)] truncate">
-                      /workspace{runtimePath ? `/${runtimePath}` : ''}
+                    <div className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                      live: ws / 3s
                     </div>
                   </div>
                 </div>
 
                 <div className="flex-1 min-h-0 flex flex-col">
                   <div className="border-b border-[color:var(--border-subtle)] px-4 py-2">
-                    <div className="grid grid-cols-3 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
+                    <div className="grid grid-cols-2 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
                       <button
                         type="button"
                         onClick={() => setRuntimeInspectorTab('files')}
@@ -4110,17 +4125,6 @@ export function SessionsPage() {
                         }`}
                       >
                         Files
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setRuntimeInspectorTab('git')}
-                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                          runtimeInspectorTab === 'git'
-                            ? 'bg-violet-500/15 text-violet-300'
-                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
-                        }`}
-                      >
-                        Git Changed
                       </button>
                       <button
                         type="button"
@@ -4139,7 +4143,80 @@ export function SessionsPage() {
                   <div className="flex-1 min-h-0 overflow-y-auto p-4">
                     {runtimeInspectorTab === 'files' ? (
                       <div className="space-y-2">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Files</div>
+                        <div className="mb-1 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!activeSessionId || !runtimeFiles || runtimeFiles.parent_path === null) return;
+                              void openRuntimeDirectory(runtimeFiles.parent_path);
+                            }}
+                            disabled={!runtimeFiles || runtimeFiles.parent_path === null || runtimeFilesLoading}
+                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] disabled:opacity-40"
+                          >
+                            <ArrowUp size={11} />
+                            Up
+                          </button>
+                          <div className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-mono text-[color:var(--text-secondary)] truncate">
+                            /workspace{runtimePath ? `/${runtimePath}` : ''}
+                          </div>
+                        </div>
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Explorer</div>
+                        {runtimeChangedFiles?.git_root ? (
+                          <div className="rounded-lg border border-violet-500/30 bg-violet-500/10 p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-violet-200">
+                                <GitBranch size={11} />
+                                <span className="truncate">
+                                  Repo {runtimeChangedFiles.git_root || '.'}
+                                </span>
+                                <span className="text-violet-300/80">
+                                  {runtimeChangedFiles.detached_head
+                                    ? 'detached'
+                                    : runtimeChangedFiles.branch || 'unknown'}
+                                </span>
+                              </div>
+                              <span className="text-[8px] font-bold uppercase tracking-widest text-violet-200/80">
+                                auto
+                              </span>
+                            </div>
+                            {runtimeChangedFilesLoading ? (
+                              <div className="mt-2 flex items-center gap-1.5 text-[10px] text-violet-200/80">
+                                <Loader2 size={11} className="animate-spin" />
+                                Scanning changes…
+                              </div>
+                            ) : runtimeChangedFiles.entries.length > 0 ? (
+                              <div className="mt-2 space-y-1">
+                                {runtimeChangedFiles.entries.slice(0, 8).map((entry) => (
+                                  <button
+                                    key={`runtime-inline-change:${entry.path}:${entry.status}`}
+                                    type="button"
+                                    onClick={() => void openRuntimeFileDiff(entry.path)}
+                                    className="w-full rounded-md border border-violet-400/20 bg-black/10 px-2 py-1.5 text-left hover:border-violet-300/40 transition-colors"
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <span className="w-7 shrink-0 text-[9px] font-bold uppercase text-violet-200/90">
+                                        {entry.status}
+                                      </span>
+                                      <span className="truncate text-[10px] font-mono text-violet-100/90">
+                                        {entry.path}
+                                      </span>
+                                      <ChevronRight size={11} className="ml-auto shrink-0 text-violet-200/70" />
+                                    </div>
+                                  </button>
+                                ))}
+                                {runtimeChangedFiles.entries.length > 8 ? (
+                                  <div className="text-[9px] uppercase tracking-wider text-violet-200/80">
+                                    +{runtimeChangedFiles.entries.length - 8} more changed files
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <div className="mt-2 text-[10px] text-violet-100/80">
+                                No changed files in this repository.
+                              </div>
+                            )}
+                          </div>
+                        ) : null}
                         {runtimeFilesLoading ? (
                           <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
                             <Loader2 size={12} className="animate-spin" />
@@ -4153,7 +4230,9 @@ export function SessionsPage() {
                                 type="button"
                                 onClick={() => {
                                   if (entry.kind === 'directory') {
-                                    void openRuntimeDirectory(entry.path);
+                                    void openRuntimeDirectory(entry.path, {
+                                      autoOpenFirstDiff: Boolean(entry.is_git_root),
+                                    });
                                   } else {
                                     void openRuntimeFile(entry.path);
                                   }
@@ -4167,11 +4246,23 @@ export function SessionsPage() {
                                     <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
                                   )}
                                   <span className="text-[11px] font-semibold truncate">{entry.name}</span>
+                                  <span className="text-[9px] text-[color:var(--text-muted)] shrink-0">
+                                    {entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}
+                                  </span>
+                                  {entry.modified_at ? (
+                                    <span className="text-[9px] text-[color:var(--text-muted)] shrink-0">
+                                      {formatCompactDate(entry.modified_at)}
+                                    </span>
+                                  ) : null}
+                                  {entry.kind === 'directory' && entry.is_git_root ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/35 bg-violet-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-violet-300">
+                                      <GitBranch size={9} />
+                                      {entry.git_detached_head
+                                        ? 'detached'
+                                        : entry.git_branch || 'repo'}
+                                    </span>
+                                  ) : null}
                                   <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
-                                </div>
-                                <div className="mt-1 text-[9px] text-[color:var(--text-muted)] flex items-center gap-2">
-                                  <span>{entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}</span>
-                                  {entry.modified_at ? <span>{formatCompactDate(entry.modified_at)}</span> : null}
                                 </div>
                               </button>
                             ))}
@@ -4182,56 +4273,6 @@ export function SessionsPage() {
                         ) : (
                           <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
                             Workspace is empty.
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-
-                    {runtimeInspectorTab === 'git' ? (
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Changed Files</div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!activeSessionId) return;
-                              void fetchRuntimeChangedFilesForExplorer(activeSessionId, runtimePath);
-                            }}
-                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
-                          >
-                            <RefreshCw size={11} className={runtimeChangedFilesLoading ? 'animate-spin' : ''} />
-                            Refresh
-                          </button>
-                        </div>
-                        {runtimeChangedFilesLoading ? (
-                          <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
-                            <Loader2 size={12} className="animate-spin" />
-                            Scanning git changes…
-                          </div>
-                        ) : runtimeChangedFiles?.entries?.length ? (
-                          <div className="space-y-1.5">
-                            {runtimeChangedFiles.entries.map((entry) => (
-                              <button
-                                key={`runtime-change-tab:${entry.path}:${entry.status}`}
-                                type="button"
-                                onClick={() => void openRuntimeFileDiff(entry.path)}
-                                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
-                                title={entry.path}
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <span className="text-[9px] font-bold text-[color:var(--text-muted)] w-8 shrink-0">{entry.status}</span>
-                                  <span className="text-[10px] font-mono truncate">{entry.path}</span>
-                                  <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
-                                </div>
-                              </button>
-                            ))}
-                            {runtimeChangedFiles.truncated ? (
-                              <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated</p>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                            No changed files in this directory’s git root.
                           </div>
                         )}
                       </div>

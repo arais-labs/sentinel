@@ -82,6 +82,9 @@ class SessionRuntimeFileEntryResponse(BaseModel):
     kind: Literal["file", "directory"]
     size_bytes: int | None = None
     modified_at: datetime | None = None
+    is_git_root: bool = False
+    git_branch: str | None = None
+    git_detached_head: bool = False
 
 
 class SessionRuntimeFilesResponse(BaseModel):
