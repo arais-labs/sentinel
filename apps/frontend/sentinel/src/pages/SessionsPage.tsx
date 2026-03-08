@@ -47,6 +47,7 @@ import { StatusChip } from '../components/ui/StatusChip';
 import { WS_BASE_URL } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
 import { extractCriticalToolFields, parsePayloadJson, previewPayloadValue, topLevelPayloadFieldCount, type ToolPayloadKind } from '../lib/toolPayloadPreview';
+import { buildRuntimeCommandRows } from '../lib/runtimeCommands';
 import {
   approvalKey,
   approvalRefFromMetadata,
@@ -169,12 +170,6 @@ function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
   if (!runtime) return 'Unavailable';
   if (!runtime.runtime_exists) return 'Missing';
   return runtime.active ? 'Active' : 'Idle';
-}
-
-function runtimeActionCommand(entry: { action: string; details: Record<string, unknown> }): string | null {
-  if (!entry || !entry.details || typeof entry.details !== 'object') return null;
-  const command = entry.details.command;
-  return typeof command === 'string' && command.trim().length > 0 ? command.trim() : null;
 }
 
 function humanizeAgentError(raw: string): string {
@@ -1223,11 +1218,7 @@ export function SessionsPage() {
   );
 
   const runtimeCommandActions = useMemo(() => {
-    if (!runtimeStatus) return [];
-    return runtimeStatus.actions
-      .filter((entry) => Boolean(runtimeActionCommand(entry)))
-      .slice()
-      .reverse();
+    return buildRuntimeCommandRows(runtimeStatus, { newestFirst: true, limit: 50 });
   }, [runtimeStatus]);
 
   const workbenchVisible = workbenchTabs.length > 0;
@@ -4313,16 +4304,29 @@ export function SessionsPage() {
                         {runtimeCommandActions.length > 0 ? (
                           <div className="space-y-1.5">
                             {runtimeCommandActions.slice(0, 25).map((entry, index) => {
-                              const command = runtimeActionCommand(entry) || '';
+                              const command = entry.command || '';
+                              const isStarted = entry.entry.action === 'command_started' || entry.entry.action === 'detached_job_started';
+                              const cardTone = entry.isRunning
+                                ? 'border-emerald-500/45 bg-emerald-500/10'
+                                : isStarted
+                                  ? 'border-emerald-500/30 bg-emerald-500/5'
+                                  : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]';
                               return (
                                 <div
-                                  key={`${entry.timestamp ?? 'na'}-${entry.action}-${index}`}
-                                  className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 py-1.5"
+                                  key={`${entry.entry.timestamp ?? 'na'}-${entry.entry.action}-${index}`}
+                                  className={`rounded-lg border px-2 py-1.5 ${cardTone}`}
                                 >
                                   <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                                    <Clock3 size={10} />
-                                    <span>{entry.action.replaceAll('_', ' ')}</span>
-                                    <span className="ml-auto">{entry.timestamp ? formatCompactDate(entry.timestamp) : '—'}</span>
+                                    <Clock3 size={10} className={entry.isRunning || isStarted ? 'text-emerald-400' : ''} />
+                                    <span className={entry.isRunning || isStarted ? 'text-emerald-300' : ''}>
+                                      {entry.entry.action.replaceAll('_', ' ')}
+                                    </span>
+                                    {entry.isRunning ? (
+                                      <span className="rounded-full border border-emerald-500/40 bg-emerald-500/12 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-emerald-300">
+                                        running
+                                      </span>
+                                    ) : null}
+                                    <span className="ml-auto">{entry.entry.timestamp ? formatCompactDate(entry.entry.timestamp) : '—'}</span>
                                   </div>
                                   <div className="mt-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-1.5 py-1">
                                     <Markdown
@@ -4330,6 +4334,20 @@ export function SessionsPage() {
                                       className="!text-[9px] markdown-workbench markdown-command-inline"
                                     />
                                   </div>
+                                  {entry.isRunning ? (
+                                    <div className="mt-1.5 flex justify-end">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          void stopCurrent();
+                                        }}
+                                        disabled={isStopping}
+                                        className="inline-flex items-center rounded-md border border-rose-500/40 bg-rose-500/12 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-rose-300 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {isStopping ? 'Cancelling…' : 'Cancel'}
+                                      </button>
+                                    </div>
+                                  ) : null}
                                 </div>
                               );
                             })}
