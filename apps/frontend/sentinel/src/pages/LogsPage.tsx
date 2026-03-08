@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Brain,
@@ -295,6 +295,43 @@ function lensTone(lens: OperationalLens): ChipTone {
 function lensToSide(lens: OperationalLens): 'left' | 'right' {
   if (lens === 'input' || lens === 'bridge') return 'left';
   return 'right';
+}
+
+type TimelineEntry =
+  | {
+      kind: 'event';
+      key: string;
+      event: ArchitectureEvent;
+      side: 'left' | 'right';
+    }
+  | {
+      kind: 'cluster';
+      key: string;
+      representative: ArchitectureEvent;
+      events: ArchitectureEvent[];
+      side: 'left' | 'right';
+    };
+
+type RenderTimelineEntry =
+  | TimelineEntry
+  | {
+      kind: 'event';
+      key: string;
+      event: ArchitectureEvent;
+      side: 'left' | 'right';
+      parentClusterKey: string;
+      clusterIndex: number;
+      clusterLength: number;
+    };
+
+function pickClusterRepresentative(events: ArchitectureEvent[]): ArchitectureEvent {
+  const assistantWithText = events.find(
+    (item) => item.message.role === 'assistant' && (item.message.content || '').trim().length > 0,
+  );
+  if (assistantWithText) return assistantWithText;
+  const assistant = events.find((item) => item.message.role === 'assistant');
+  if (assistant) return assistant;
+  return events[0];
 }
 
 function sortMessagesDesc(items: Message[]): Message[] {
@@ -1177,6 +1214,9 @@ export function LogsPage() {
   } | null>(null);
   const [detailEvent, setDetailEvent] = useState<ArchitectureEvent | null>(null);
   const [runtimeExplorerOpen, setRuntimeExplorerOpen] = useState(false);
+  const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
+  const [collapsingClusters, setCollapsingClusters] = useState<Set<string>>(new Set());
+  const collapseTimersRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     void loadSessions();
@@ -1381,6 +1421,117 @@ export function LogsPage() {
     });
   }, [allEvents, activeLenses, search, sourceFilter]);
 
+  const timelineEntries = useMemo<TimelineEntry[]>(() => {
+    const entries: TimelineEntry[] = [];
+    let index = 0;
+    while (index < filteredEvents.length) {
+      const current = filteredEvents[index];
+      if (current.message.role === 'user') {
+        entries.push({
+          kind: 'event',
+          key: current.id,
+          event: current,
+          side: lensToSide(current.lens),
+        });
+        index += 1;
+        continue;
+      }
+      let end = index + 1;
+      while (end < filteredEvents.length && filteredEvents[end].message.role !== 'user') {
+        end += 1;
+      }
+      const block = filteredEvents.slice(index, end);
+      if (block.length === 1) {
+        entries.push({
+          kind: 'event',
+          key: block[0].id,
+          event: block[0],
+          side: lensToSide(block[0].lens),
+        });
+        index = end;
+        continue;
+      }
+      const representative = pickClusterRepresentative(block);
+      entries.push({
+        kind: 'cluster',
+        key: `cluster_${block[0].id}`,
+        representative,
+        events: block,
+        side: lensToSide(representative.lens),
+      });
+      index = end;
+    }
+    return entries;
+  }, [filteredEvents]);
+
+  useEffect(() => {
+    setExpandedClusters((current) => {
+      if (current.size === 0) return current;
+      const valid = new Set(
+        timelineEntries
+          .filter((entry): entry is Extract<TimelineEntry, { kind: 'cluster' }> => entry.kind === 'cluster')
+          .map((entry) => entry.key),
+      );
+      const next = new Set(Array.from(current).filter((id) => valid.has(id)));
+      if (next.size === current.size) {
+        let unchanged = true;
+        for (const id of next) {
+          if (!current.has(id)) {
+            unchanged = false;
+            break;
+          }
+        }
+        if (unchanged) return current;
+      }
+      return next;
+    });
+    setCollapsingClusters((current) => {
+      if (current.size === 0) return current;
+      const valid = new Set(
+        timelineEntries
+          .filter((entry): entry is Extract<TimelineEntry, { kind: 'cluster' }> => entry.kind === 'cluster')
+          .map((entry) => entry.key),
+      );
+      const next = new Set(Array.from(current).filter((id) => valid.has(id)));
+      if (next.size === current.size) return current;
+      return next;
+    });
+  }, [timelineEntries]);
+
+  const renderedTimelineEntries = useMemo<RenderTimelineEntry[]>(() => {
+    const output: RenderTimelineEntry[] = [];
+    for (const entry of timelineEntries) {
+      if (
+        entry.kind === 'cluster' &&
+        (expandedClusters.has(entry.key) || collapsingClusters.has(entry.key))
+      ) {
+        entry.events.forEach((event, index) => {
+          output.push({
+            kind: 'event',
+            key: `${entry.key}_${event.id}`,
+            event,
+            side: lensToSide(event.lens),
+            parentClusterKey: entry.key,
+            clusterIndex: index,
+            clusterLength: entry.events.length,
+          });
+        });
+        continue;
+      }
+      output.push(entry);
+    }
+    return output;
+  }, [timelineEntries, expandedClusters, collapsingClusters]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of Object.values(collapseTimersRef.current)) {
+        window.clearTimeout(timer);
+      }
+      collapseTimersRef.current = {};
+    };
+  }, []);
+
   const lensCounts = useMemo(() => {
     const counts: Record<OperationalLens, number> = {
       input: 0,
@@ -1409,6 +1560,176 @@ export function LogsPage() {
     { id: 'recall', label: 'Memory', icon: Brain, color: 'text-emerald-500' },
     { id: 'bridge', label: 'Bridges', icon: Network, color: 'text-rose-500' }
   ];
+
+  const openEventDetails = async (
+    event: ArchitectureEvent,
+    e?: React.MouseEvent | React.KeyboardEvent,
+  ) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    if (event.lens === 'input') {
+      let userContext = loopContextByUserMessageId.get(event.message.id) ?? null;
+      if (!userContext && selectedSessionId) {
+        userContext = await resolveContextForUserMessage(
+          selectedSessionId,
+          event.message.id,
+        );
+      }
+      setInspector({
+        session: activeSession,
+        userMessage: event.message,
+        context: userContext,
+        lens: event.lens,
+      });
+      return;
+    }
+    setDetailEvent(event);
+  };
+
+  const toggleCluster = (clusterKey: string) => {
+    const isOpen = expandedClusters.has(clusterKey);
+    if (isOpen) {
+      const cluster = timelineEntries.find(
+        (entry): entry is Extract<TimelineEntry, { kind: 'cluster' }> =>
+          entry.kind === 'cluster' && entry.key === clusterKey,
+      );
+      const maxStaggerSteps = Math.min(Math.max((cluster?.events.length ?? 1) - 1, 0), 6);
+      const waitMs = 220 + maxStaggerSteps * 16 + 30;
+      setCollapsingClusters((current) => {
+        const next = new Set(current);
+        next.add(clusterKey);
+        return next;
+      });
+      const existing = collapseTimersRef.current[clusterKey];
+      if (existing) window.clearTimeout(existing);
+      collapseTimersRef.current[clusterKey] = window.setTimeout(() => {
+        setExpandedClusters((current) => {
+          const next = new Set(current);
+          next.delete(clusterKey);
+          return next;
+        });
+        setCollapsingClusters((current) => {
+          const next = new Set(current);
+          next.delete(clusterKey);
+          return next;
+        });
+        delete collapseTimersRef.current[clusterKey];
+      }, waitMs);
+      return;
+    }
+    const existing = collapseTimersRef.current[clusterKey];
+    if (existing) {
+      window.clearTimeout(existing);
+      delete collapseTimersRef.current[clusterKey];
+    }
+    setCollapsingClusters((current) => {
+      if (!current.has(clusterKey)) return current;
+      const next = new Set(current);
+      next.delete(clusterKey);
+      return next;
+    });
+    setExpandedClusters((current) => {
+      const next = new Set(current);
+      next.add(clusterKey);
+      return next;
+    });
+  };
+
+  const renderEventCard = (
+    event: ArchitectureEvent,
+    options?: {
+      compact?: boolean;
+      onClick?: (e?: React.MouseEvent | React.KeyboardEvent) => void;
+      headerBadge?: JSX.Element | null;
+    },
+  ) => {
+    const compact = options?.compact ?? false;
+    const isJson = typeof event.payload === 'object' && event.payload !== null;
+    const cardToolCalls = Array.isArray(event.message.metadata.tool_calls)
+      ? event.message.metadata.tool_calls.filter((c): c is Record<string, unknown> => isRecord(c))
+      : [];
+    const lensMap = LENSES.find((l) => l.id === event.lens) || LENSES[1];
+
+    return (
+      <div
+        className={`rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-sm hover:border-[color:var(--border-strong)] hover:shadow-md transition-all ${compact ? 'p-3' : 'p-4'} ${options?.onClick ? 'cursor-pointer' : ''}`}
+        onClick={options?.onClick ? (e) => options.onClick?.(e) : undefined}
+      >
+        <div className={`flex items-center justify-between border-b border-[color:var(--border-subtle)]/50 ${compact ? 'mb-2 pb-2' : 'mb-3 pb-2'}`}>
+          <span className={`font-bold uppercase tracking-widest text-[color:var(--text-primary)] ${compact ? 'text-[9px]' : 'text-[10px]'}`}>
+            {event.label}
+          </span>
+          <div className="flex items-center gap-2">
+            {options?.headerBadge}
+            <span className="text-[9px] font-mono text-[color:var(--text-muted)]">
+              {event.timestamp.split('T')[1].slice(0, 8)}
+            </span>
+          </div>
+        </div>
+
+        <div className={`font-medium text-[color:var(--text-primary)] leading-relaxed ${compact ? 'text-xs mb-2' : 'text-sm mb-3'}`}>
+          {isJson && isRecord(event.payload) ? (
+            <div className="space-y-1.5">
+              {Object.entries(event.payload as Record<string, unknown>).slice(0, compact ? 3 : 4).map(([k, v]) => (
+                <div key={k} className="flex items-baseline gap-2 text-xs">
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">{k}</span>
+                  <span className="font-mono text-[11px] text-[color:var(--text-secondary)] truncate">{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—')}</span>
+                </div>
+              ))}
+            </div>
+          ) : cardToolCalls.length > 0 ? (
+            <div className="space-y-2">
+              {event.message.content && (
+                <p className="text-xs text-[color:var(--text-secondary)]">{event.summary}</p>
+              )}
+              {cardToolCalls.slice(0, compact ? 1 : 2).map((call, ci) => {
+                const cName = typeof call.name === 'string' ? call.name : `call_${ci}`;
+                const rawArgs = call.arguments ?? call.input ?? call.params ?? null;
+                const argsObj = rawArgs && typeof rawArgs === 'string' ? safeJsonParse(rawArgs) : isRecord(rawArgs) ? rawArgs : null;
+                const topKeys = isRecord(argsObj) ? Object.entries(argsObj).slice(0, compact ? 2 : 3) : [];
+                return (
+                  <div key={ci} className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/50 p-2 space-y-1">
+                    <StatusChip label={cName} tone={toolTone(cName)} className="text-[8px]" />
+                    {topKeys.map(([k, v]) => (
+                      <div key={k} className="flex items-baseline gap-2 text-[11px]">
+                        <span className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">{k}</span>
+                        <span className="font-mono text-[10px] text-[color:var(--text-secondary)] truncate">{typeof v === 'string' ? truncate(v, 80) : String(v ?? '—')}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+              {cardToolCalls.length > (compact ? 1 : 2) && (
+                <p className="text-[9px] text-[color:var(--text-muted)]">+{cardToolCalls.length - (compact ? 1 : 2)} more</p>
+              )}
+            </div>
+          ) : event.message.role === 'tool_result' && event.message.content.trimStart().startsWith('{') ? (
+            <pre className="text-[10px] font-mono text-[color:var(--text-secondary)] bg-[color:var(--surface-2)] rounded p-2 overflow-hidden max-h-24 whitespace-pre-wrap break-all line-clamp-4">{event.summary}</pre>
+          ) : (
+            <div className={compact ? 'line-clamp-3' : 'line-clamp-4'}>
+              <Markdown content={event.summary} compact />
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {event.tools.map((t) => (
+            <StatusChip key={t} label={t} tone={toolTone(t)} className="text-[8px]" />
+          ))}
+          {event.source && (
+            <StatusChip label={event.source} tone={toolTone(event.source)} className="text-[8px]" />
+          )}
+          {event.tools.length === 0 && !event.source && (
+            <StatusChip
+              label={lensMap.label}
+              tone={lensTone(event.lens)}
+              className="text-[8px]"
+            />
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <AppShell
@@ -1627,125 +1948,119 @@ export function LogsPage() {
                   )}
 
                   <div className="relative before:absolute before:inset-0 before:ml-4 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-px before:bg-[color:var(--border-subtle)]">
-                    {filteredEvents.map((event, idx) => {
-                      const isJson = typeof event.payload === 'object' && event.payload !== null;
-                      const cardToolCalls = Array.isArray(event.message.metadata.tool_calls)
-                        ? event.message.metadata.tool_calls.filter((c): c is Record<string, unknown> => isRecord(c))
-                        : [];
-
-                      const handleCardClick = async (e?: React.MouseEvent | React.KeyboardEvent) => {
-                        e?.preventDefault();
-                        e?.stopPropagation();
-                        if (event.lens === 'input') {
-                          let userContext =
-                            loopContextByUserMessageId.get(event.message.id) ?? null;
-                          if (!userContext && selectedSessionId) {
-                            userContext = await resolveContextForUserMessage(
-                              selectedSessionId,
-                              event.message.id,
-                            );
-                          }
-                          setInspector({
-                            session: activeSession,
-                            userMessage: event.message,
-                            context: userContext,
-                            lens: event.lens,
-                          });
-                        } else {
-                          setDetailEvent(event);
-                        }
-                      };
-
-                      const lensMap = LENSES.find(l => l.id === event.lens) || LENSES[1];
-                      const side = lensToSide(event.lens);
+                    {renderedTimelineEntries.map((entry, idx) => {
+                      const event = entry.kind === 'event' ? entry.event : entry.representative;
+                      const lensMap = LENSES.find((l) => l.id === event.lens) || LENSES[1];
+                      const side = entry.side;
                       const isRight = side === 'right';
-                      const prevSide = idx > 0 ? lensToSide(filteredEvents[idx - 1].lens) : side;
+                      const prevSide = idx > 0 ? renderedTimelineEntries[idx - 1].side : side;
                       const isOpposite = idx > 0 && side !== prevSide;
+                      const isCluster = entry.kind === 'cluster';
+                      const isExpandedClusterEvent = 'parentClusterKey' in entry;
+                      const isCollapsingExpandedEvent =
+                        isExpandedClusterEvent && collapsingClusters.has(entry.parentClusterKey);
+                      const showCollapsePill =
+                        isExpandedClusterEvent && entry.clusterIndex === entry.clusterLength - 1;
+                      const expandedEventAnimClass =
+                        isExpandedClusterEvent ? 'will-change-transform will-change-opacity' : '';
+                      const expandedEventAnimDelay =
+                        isExpandedClusterEvent
+                          ? isCollapsingExpandedEvent
+                            ? Math.min(entry.clusterLength - entry.clusterIndex - 1, 6) * 16
+                            : Math.min(entry.clusterIndex, 6) * 28
+                          : 0;
+                      const expandedEventAnimStyle: React.CSSProperties | undefined = isExpandedClusterEvent
+                        ? {
+                            animation: isCollapsingExpandedEvent
+                              ? 'logsClusterOut 220ms cubic-bezier(0.22,1,0.36,1) forwards'
+                              : 'logsClusterIn 260ms cubic-bezier(0.22,1,0.36,1) both',
+                            animationDelay: `${expandedEventAnimDelay}ms`,
+                          }
+                        : undefined;
 
                       return (
                         <div
-                          key={event.id}
-                          className={`relative flex items-center justify-between md:justify-normal ${isRight ? 'md:flex-row-reverse' : ''} group`}
+                          key={entry.key}
+                          className={`relative flex items-center justify-between md:justify-normal ${isRight ? 'md:flex-row-reverse' : ''} group ${
+                            isCluster || showCollapsePill ? 'z-30' : 'z-10'
+                          }`}
                           style={idx === 0 ? undefined : { marginTop: isOpposite ? '-40px' : '24px' }}
                         >
-                          {/* Timeline Node */}
                           <div className={`flex items-center justify-center w-8 h-8 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shrink-0 md:order-1 ${isRight ? 'md:-translate-x-1/2' : 'md:translate-x-1/2'} z-10 shadow-sm transition-transform group-hover:scale-110`}>
                             <lensMap.icon size={12} className={lensMap.color} />
                           </div>
 
-                          {/* Event Card */}
-                          <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] cursor-pointer" onClick={(e) => void handleCardClick(e)}>
-                            <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-sm hover:border-[color:var(--border-strong)] hover:shadow-md transition-all p-4">
-                              <div className="flex items-center justify-between mb-3 border-b border-[color:var(--border-subtle)]/50 pb-2">
-                                <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)]">
-                                  {event.label}
-                                </span>
-                                <span className="text-[9px] font-mono text-[color:var(--text-muted)]">
-                                  {event.timestamp.split('T')[1].slice(0, 8)}
-                                </span>
+                          <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)]">
+                            {entry.kind === 'event' ? (
+                              <div
+                                className={`space-y-2 ${expandedEventAnimClass}`}
+                                style={expandedEventAnimStyle}
+                              >
+                                {renderEventCard(event, {
+                                  onClick: (e) => void openEventDetails(event, e),
+                                  headerBadge:
+                                    isExpandedClusterEvent && entry.clusterIndex === 0 ? (
+                                      <span className="inline-flex items-center rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-emerald-300">
+                                        Latest
+                                      </span>
+                                    ) : null,
+                                })}
+                                {showCollapsePill ? (
+                                  <div className="relative z-40 flex justify-center -mt-1 pointer-events-none">
+                                    <button
+                                      onClick={() => toggleCluster(entry.parentClusterKey)}
+                                      className="pointer-events-auto px-5 py-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+                                    >
+                                      <ChevronRight size={11} className="-rotate-90" />
+                                      Collapse Trace
+                                    </button>
+                                  </div>
+                                ) : null}
                               </div>
-
-                              <div className="text-sm font-medium text-[color:var(--text-primary)] leading-relaxed mb-3">
-                                {isJson && isRecord(event.payload) ? (
-                                  <div className="space-y-1.5">
-                                    {Object.entries(event.payload as Record<string, unknown>).slice(0, 4).map(([k, v]) => (
-                                      <div key={k} className="flex items-baseline gap-2 text-xs">
-                                        <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">{k}</span>
-                                        <span className="font-mono text-[11px] text-[color:var(--text-secondary)] truncate">{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—')}</span>
+                            ) : (
+                              <div className="space-y-2">
+                                <div className="relative pb-11">
+                                  <div className="pointer-events-none absolute inset-x-0 top-0 z-0">
+                                    {entry.events.slice(1, 4).map((shadowEvent, shadowIndex) => (
+                                      <div
+                                        key={shadowEvent.id}
+                                        className="absolute inset-x-0"
+                                        style={{
+                                          top: `${(shadowIndex + 1) * 8}px`,
+                                          left: `${(shadowIndex + 1) * 5}px`,
+                                          right: `${(shadowIndex + 1) * 5}px`,
+                                          opacity: Math.max(0.26, 0.54 - shadowIndex * 0.13),
+                                          transform: `scale(${1 - (shadowIndex + 1) * 0.01})`,
+                                        }}
+                                      >
+                                        <div className="h-24 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/70 shadow-sm" />
                                       </div>
                                     ))}
                                   </div>
-                                ) : cardToolCalls.length > 0 ? (
-                                  <div className="space-y-2">
-                                    {event.message.content && (
-                                      <p className="text-xs text-[color:var(--text-secondary)]">{event.summary}</p>
-                                    )}
-                                    {cardToolCalls.slice(0, 2).map((call, ci) => {
-                                      const cName = typeof call.name === 'string' ? call.name : `call_${ci}`;
-                                      const rawArgs = call.arguments ?? call.input ?? call.params ?? null;
-                                      const argsObj = rawArgs && typeof rawArgs === 'string' ? safeJsonParse(rawArgs) : isRecord(rawArgs) ? rawArgs : null;
-                                      const topKeys = isRecord(argsObj) ? Object.entries(argsObj).slice(0, 3) : [];
-                                      return (
-                                        <div key={ci} className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/50 p-2 space-y-1">
-                                          <StatusChip label={cName} tone={toolTone(cName)} className="text-[8px]" />
-                                          {topKeys.map(([k, v]) => (
-                                            <div key={k} className="flex items-baseline gap-2 text-[11px]">
-                                              <span className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">{k}</span>
-                                              <span className="font-mono text-[10px] text-[color:var(--text-secondary)] truncate">{typeof v === 'string' ? truncate(v, 80) : String(v ?? '—')}</span>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      );
-                                    })}
-                                    {cardToolCalls.length > 2 && (
-                                      <p className="text-[9px] text-[color:var(--text-muted)]">+{cardToolCalls.length - 2} more</p>
-                                    )}
-                                  </div>
-                                ) : event.message.role === 'tool_result' && event.message.content.trimStart().startsWith('{') ? (
-                                  <pre className="text-[10px] font-mono text-[color:var(--text-secondary)] bg-[color:var(--surface-2)] rounded p-2 overflow-hidden max-h-24 whitespace-pre-wrap break-all line-clamp-4">{event.summary}</pre>
-                                ) : (
-                                  <div className="line-clamp-4">
-                                    <Markdown content={event.summary} compact />
-                                  </div>
-                                )}
-                              </div>
 
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                {event.tools.map(t => (
-                                  <StatusChip key={t} label={t} tone={toolTone(t)} className="text-[8px]" />
-                                ))}
-                                {event.source && (
-                                  <StatusChip label={event.source} tone={toolTone(event.source)} className="text-[8px]" />
-                                )}
-                                {event.tools.length === 0 && !event.source && (
-                                  <StatusChip
-                                    label={lensMap.label}
-                                    tone={lensTone(event.lens)}
-                                    className="text-[8px]"
-                                  />
-                                )}
+                                  <div className="relative z-10">
+                                    {renderEventCard(entry.representative, {
+                                      onClick: (e) => void openEventDetails(entry.representative, e),
+                                      headerBadge: (
+                                        <span className="inline-flex items-center rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-emerald-300">
+                                          Latest
+                                        </span>
+                                      ),
+                                    })}
+                                  </div>
+
+                                  <div className="absolute left-1/2 bottom-0 z-40 -translate-x-1/2 pointer-events-none">
+                                    <button
+                                      onClick={() => toggleCluster(entry.key)}
+                                      className="pointer-events-auto px-5 py-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+                                    >
+                                      <ChevronRight size={11} className="rotate-90" />
+                                      Expand {entry.events.length} Step Trace
+                                    </button>
+                                  </div>
+                                </div>
                               </div>
-                            </div>
+                            )}
                           </div>
                         </div>
                       );
