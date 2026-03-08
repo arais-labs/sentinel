@@ -160,7 +160,6 @@ class SessionRuntimeGitChangedFilesResponse(BaseModel):
 class SessionRuntimeCleanupResponse(BaseModel):
     session_id: UUID
     runtime_removed: bool
-    legacy_removed: bool
 
 
 class SessionContextUsageResponse(BaseModel):
