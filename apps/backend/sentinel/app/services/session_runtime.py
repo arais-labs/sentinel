@@ -23,9 +23,6 @@ logger = logging.getLogger(__name__)
 _RUNTIME_BASE_DIR = Path(
     os.environ.get("SESSION_RUNTIME_BASE_DIR", "/tmp/sentinel/session_runtime")
 ).expanduser()
-_LEGACY_PYTHON_XAGENT_BASE_DIR = Path(
-    os.environ.get("PYTHON_XAGENT_BASE_DIR", "/tmp/sentinel/python_xagent")
-).expanduser()
 _RUNTIME_META_FILENAME = ".runtime_meta.json"
 _RUNTIME_ACTIONS_FILENAME = ".runtime_actions.jsonl"
 _RUNTIME_JOBS_FILENAME = ".runtime_jobs.json"
@@ -723,15 +720,10 @@ async def read_detached_runtime_job_logs(
 
 async def cleanup_session_runtime(
     session_id: UUID | str,
-    *,
-    remove_legacy_python_xagent: bool = True,
 ) -> dict[str, bool]:
     session_key = str(session_id)
     runtime_removed = await _remove_runtime_root(runtime_root_dir(session_key))
-    legacy_removed = False
-    if remove_legacy_python_xagent:
-        legacy_removed = await _remove_tree(_LEGACY_PYTHON_XAGENT_BASE_DIR / session_key)
-    return {"runtime_removed": runtime_removed, "legacy_removed": legacy_removed}
+    return {"runtime_removed": runtime_removed}
 
 
 async def sweep_session_runtimes(
@@ -744,7 +736,6 @@ async def sweep_session_runtimes(
     - orphan session dir => delete immediately
     - active metadata older than stale-active TTL => delete
     - inactive metadata older than idle TTL => delete
-    - legacy python_xagent dirs are cleaned by TTL/orphan based on directory mtime
     """
     idle_ttl_seconds = _parse_seconds("SESSION_RUNTIME_IDLE_TTL_SECONDS", 2700)
     stale_active_ttl_seconds = _parse_seconds(
@@ -784,19 +775,6 @@ async def sweep_session_runtimes(
 
         idle_age = (now - last_used).total_seconds()
         if idle_age > idle_ttl_seconds and await _remove_runtime_root(root):
-            removed += 1
-            removed_idle += 1
-
-    for root in _list_runtime_dirs(_LEGACY_PYTHON_XAGENT_BASE_DIR):
-        session_key = root.name
-        session = existing_sessions.get(session_key)
-        if session is None:
-            if await _remove_tree(root):
-                removed += 1
-                removed_orphans += 1
-            continue
-        idle_age = (now - _mtime_dt(root)).total_seconds()
-        if idle_age > idle_ttl_seconds and await _remove_tree(root):
             removed += 1
             removed_idle += 1
 
