@@ -360,28 +360,6 @@ export interface GitAccountListResponse {
   total: number;
 }
 
-export interface GitPushApproval {
-  id: string;
-  account_id: string;
-  session_id: string | null;
-  repo_url: string;
-  remote_name: string;
-  command: string;
-  status: 'pending' | 'approved' | 'rejected' | 'timed_out' | 'cancelled' | string;
-  requested_by: string | null;
-  decision_by: string | null;
-  decision_note: string | null;
-  expires_at: string;
-  resolved_at: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-}
-
-export interface GitPushApprovalListResponse {
-  items: GitPushApproval[];
-  total: number;
-}
-
 export interface ApprovalRecord {
   provider: string;
   approval_id: string;
