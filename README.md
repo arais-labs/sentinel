@@ -39,6 +39,8 @@ Built by [ARAIS](https://arais.us).
 - Delegate bounded work to sub agents.
 - Gate risky actions behind human approvals.
 - Connect to custom araiOS modules for data and actions.
+- Run git operations freely and only gate at push or PR creation, so the agent moves fast without surprise commits to main.
+- Authenticate with your existing Claude Code or Codex CLI OAuth token, no extra API subscription needed.
 
 ## Architecture
 
