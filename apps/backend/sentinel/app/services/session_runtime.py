@@ -200,6 +200,9 @@ def list_runtime_workspace_entries(
         if entry_path == ".":
             entry_path = ""
         stats = child.stat()
+        git_root_payload = None
+        if child.is_dir():
+            git_root_payload = _read_git_root_payload_if_repo_root(child, workspace)
         entries.append(
             {
                 "name": child.name,
@@ -207,6 +210,11 @@ def list_runtime_workspace_entries(
                 "kind": "directory" if child.is_dir() else "file",
                 "size_bytes": None if child.is_dir() else int(stats.st_size),
                 "modified_at": datetime.fromtimestamp(stats.st_mtime, tz=UTC).isoformat(),
+                "is_git_root": git_root_payload is not None,
+                "git_branch": git_root_payload.get("branch") if isinstance(git_root_payload, dict) else None,
+                "git_detached_head": bool(git_root_payload.get("detached_head"))
+                if isinstance(git_root_payload, dict)
+                else False,
             }
         )
 
@@ -964,6 +972,24 @@ def _scan_workspace_git_roots(workspace: Path, *, limit: int) -> list[Path]:
                 results.append(repo_dir)
             dirs.remove(".git")
     return results
+
+
+def _read_git_root_payload_if_repo_root(directory: Path, workspace: Path) -> dict[str, Any] | None:
+    try:
+        candidate = directory.resolve()
+    except OSError:
+        return None
+    marker = candidate / ".git"
+    if not marker.exists():
+        return None
+    if not (marker.is_dir() or marker.is_file()):
+        return None
+    if not _is_within_path(base=workspace, target=candidate):
+        return None
+    resolved_root = _resolve_git_root(candidate, workspace)
+    if resolved_root is None or resolved_root != candidate:
+        return None
+    return _build_git_root_payload(resolved_root, workspace)
 
 
 def _resolve_git_root(start_dir: Path, workspace: Path) -> Path | None:
