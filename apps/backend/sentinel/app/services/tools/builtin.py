@@ -65,9 +65,6 @@ from app.services.tools.git_exec import git_exec_tool
 
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
 _ALLOWED_MEMORY_CATEGORIES = {"core", "preference", "project", "correction"}
-_PYTHON_XAGENT_BASE_DIR = Path(
-    os.environ.get("PYTHON_XAGENT_BASE_DIR", "/tmp/sentinel/python_xagent")
-).expanduser()
 _MAX_PYTHON_XAGENT_OUTPUT_CHARS = 20_000
 _MAX_RUNTIME_EXEC_OUTPUT_CHARS = 50_000
 _python_xagent_runtime_lock = asyncio.Lock()
@@ -461,7 +458,7 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
         env["PWD"] = str(workspace_dir)
         if use_python_venv:
             python_bin = _venv_python_path(venv_dir)
-            await _ensure_python_xagent_venv(venv_dir, python_bin)
+            await _ensure_managed_runtime_venv(venv_dir, python_bin)
             venv_bin = _venv_bin_dir(venv_dir)
             existing_path = env.get("PATH", "")
             env["PATH"] = (
@@ -897,17 +894,16 @@ def python_xagent_tool(
         sub_agent_timeout = min(sub_agent_timeout, 3600)
 
         await _ensure_session_exists(session_factory, session_id)
-
-        session_root = _PYTHON_XAGENT_BASE_DIR / str(session_id)
-        workspace_dir = session_root / "workspace"
-        venv_dir = session_root / "venv"
+        await ensure_runtime_layout(session_id)
+        workspace_dir = runtime_workspace_dir(session_id)
+        venv_dir = runtime_venv_dir(session_id)
         python_bin = _venv_python_path(venv_dir)
         pip_bin = _venv_pip_path(venv_dir)
 
         async with _python_xagent_runtime_lock:
-            await _ensure_python_xagent_venv(venv_dir, python_bin)
+            await _ensure_managed_runtime_venv(venv_dir, python_bin)
             if normalized_requirements:
-                await _install_python_xagent_requirements(
+                await _install_managed_runtime_requirements(
                     pip_bin=pip_bin,
                     requirements=normalized_requirements,
                     timeout_seconds=min(timeout_seconds, 240),
@@ -2503,15 +2499,15 @@ def _run_python_xagent_code_sync(
     result_json, result_repr = _to_json_or_repr(result_value)
     return {
         "ok": exception_text is None,
-        "stdout": _truncate_python_xagent_text(stdout_buf.getvalue()),
-        "stderr": _truncate_python_xagent_text(stderr_buf.getvalue()),
-        "exception": (_truncate_python_xagent_text(exception_text) if exception_text else None),
+        "stdout": _truncate_python_tool_text(stdout_buf.getvalue()),
+        "stderr": _truncate_python_tool_text(stderr_buf.getvalue()),
+        "exception": (_truncate_python_tool_text(exception_text) if exception_text else None),
         "result": result_json,
         "result_repr": result_repr,
     }
 
 
-async def _ensure_python_xagent_venv(venv_dir: Path, python_bin: Path) -> None:
+async def _ensure_managed_runtime_venv(venv_dir: Path, python_bin: Path) -> None:
     if python_bin.exists():
         return
     venv_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -2534,7 +2530,7 @@ async def _ensure_python_xagent_venv(venv_dir: Path, python_bin: Path) -> None:
             "utf-8", errors="replace"
         )
         raise ToolValidationError(
-            f"Failed to create virtualenv: {_truncate_python_xagent_text(message)}"
+            f"Failed to create virtualenv: {_truncate_python_tool_text(message)}"
         )
     if not python_bin.exists():
         raise ToolValidationError(
@@ -2542,7 +2538,7 @@ async def _ensure_python_xagent_venv(venv_dir: Path, python_bin: Path) -> None:
         )
 
 
-async def _install_python_xagent_requirements(
+async def _install_managed_runtime_requirements(
     *,
     pip_bin: Path,
     requirements: list[str],
@@ -2569,7 +2565,7 @@ async def _install_python_xagent_requirements(
         message = stderr.decode("utf-8", errors="replace") or stdout.decode(
             "utf-8", errors="replace"
         )
-        raise ToolValidationError(f"pip install failed: {_truncate_python_xagent_text(message)}")
+        raise ToolValidationError(f"pip install failed: {_truncate_python_tool_text(message)}")
 
 
 def _venv_bin_dir(venv_dir: Path) -> Path:
@@ -2607,7 +2603,7 @@ def _to_json_or_repr(value: Any) -> tuple[Any, str | None]:
         return None, repr(value)
 
 
-def _truncate_python_xagent_text(value: str | None) -> str:
+def _truncate_python_tool_text(value: str | None) -> str:
     text = value or ""
     if len(text) <= _MAX_PYTHON_XAGENT_OUTPUT_CHARS:
         return text
