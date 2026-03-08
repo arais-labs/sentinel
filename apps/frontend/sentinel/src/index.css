@@ -274,6 +274,21 @@ body {
   padding: 0;
 }
 
+.markdown-body.markdown-workbench .markdown-pre-shell {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.markdown-body.markdown-workbench .markdown-pre-bar {
+  display: none;
+}
+
+.markdown-body.markdown-workbench .markdown-pre-shell pre {
+  padding: 0;
+}
+
 .markdown-body .katex-display {
   @apply my-3 overflow-x-auto overflow-y-hidden;
 }
@@ -388,5 +403,27 @@ body {
   to {
     opacity: 0;
     transform: translateY(-6px) scale(0.992);
+  }
+}
+
+@keyframes workbenchDockIn {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes workbenchViewerIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
