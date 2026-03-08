@@ -109,8 +109,8 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
         `/approvals/${encodeURIComponent(approval.provider)}/${encodeURIComponent(approval.approvalId)}/${decision}`,
         {
           note: decision === 'approve'
-            ? 'Approved from sub-agent transcript card'
-            : 'Rejected from sub-agent transcript card',
+            ? 'User approved action.'
+            : 'User rejected action.',
         },
       );
       if (childSessionId) {

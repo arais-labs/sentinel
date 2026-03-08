@@ -42,29 +42,3 @@ class UpdateGitAccountRequest(BaseModel):
     author_email: str | None = Field(default=None, min_length=3, max_length=320)
     token_read: str | None = Field(default=None, min_length=1)
     token_write: str | None = Field(default=None, min_length=1)
-
-
-class GitPushApprovalResponse(BaseModel):
-    id: UUID
-    account_id: UUID
-    session_id: UUID | None
-    repo_url: str
-    remote_name: str
-    command: str
-    status: str
-    requested_by: str | None
-    decision_by: str | None
-    decision_note: str | None
-    expires_at: datetime
-    resolved_at: datetime | None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-class GitPushApprovalListResponse(BaseModel):
-    items: list[GitPushApprovalResponse]
-    total: int
-
-
-class ResolveGitPushApprovalRequest(BaseModel):
-    note: str | None = None
