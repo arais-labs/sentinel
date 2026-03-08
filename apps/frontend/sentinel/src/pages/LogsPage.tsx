@@ -1,13 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Activity,
   AlertTriangle,
   Brain,
   ChevronRight,
   Clock,
-  FileJson,
-  HardDrive,
-  History,
   Layers,
   Loader2,
   RefreshCw,
@@ -37,7 +33,6 @@ import type {
   MessageListResponse,
   Session,
   SessionListResponse,
-  SessionRuntimeCleanupResponse,
   SessionRuntimeStatus,
 } from '../types/api';
 
@@ -846,7 +841,6 @@ function ContextLayersSection({
 type UnifiedInspectorProps = {
   open: boolean;
   session: Session | null;
-  runtime: SessionRuntimeStatus | null;
   userMessage?: Message | null;
   context: RuntimeContextPayload | null;
   lens?: OperationalLens;
@@ -856,12 +850,16 @@ type UnifiedInspectorProps = {
 function UnifiedInspectorModal({
   open,
   session,
-  runtime,
   userMessage,
   context,
   onClose,
 }: UnifiedInspectorProps) {
-  const [tab, setTab] = useState<'layers' | 'raw' | 'details'>('layers');
+  const [tab, setTab] = useState<'layers' | 'raw'>('layers');
+
+  useEffect(() => {
+    if (open) setTab('layers');
+  }, [open]);
+
   const rawPrompt = useMemo(() => assembleSystemContext(context?.runContext ?? null), [context]);
 
   const contextUsage = useMemo(() => {
@@ -913,7 +911,6 @@ function UnifiedInspectorModal({
   const tabs = [
     { id: 'layers' as const, label: 'Context Snapshot' },
     { id: 'raw' as const, label: 'Raw Prompt' },
-    { id: 'details' as const, label: 'Details' },
   ];
 
   return (
@@ -994,62 +991,6 @@ function UnifiedInspectorModal({
             </div>
           )}
 
-          {tab === 'details' && (
-            <div className="h-full overflow-y-auto p-6 space-y-6 custom-scrollbar animate-in fade-in duration-150">
-              {/* Environment State */}
-              <section className="space-y-3">
-                <div className="flex items-center gap-2 text-[color:var(--text-muted)]">
-                  <Activity size={14} />
-                  <h3 className="text-[10px] font-bold uppercase tracking-[0.2em]">Environment State</h3>
-                </div>
-                {runtime ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {[
-                      { label: 'Status', value: runtimeStatusLabel(runtime), tone: (runtime.active ? 'good' : 'default') as 'good' | 'default' },
-                      { label: 'Workspace', value: runtime.workspace_exists ? 'Ready' : 'Missing', tone: (runtime.workspace_exists ? 'good' : 'danger') as 'good' | 'danger' },
-                      { label: 'Venv', value: runtime.venv_exists ? 'Ready' : 'Missing', tone: (runtime.venv_exists ? 'good' : 'danger') as 'good' | 'danger' },
-                      { label: 'PID', value: runtime.active_pid?.toString() || 'None', tone: 'default' as 'default' },
-                    ].map(stat => (
-                      <div key={stat.label} className="flex items-center justify-between px-3 py-2 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
-                        <span className="text-[10px] font-medium text-[color:var(--text-muted)]">{stat.label}</span>
-                        <StatusChip label={stat.value} tone={stat.tone} className="h-5" />
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="py-4 text-center rounded border border-dashed border-[color:var(--border-subtle)]">
-                    <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">State unavailable</p>
-                  </div>
-                )}
-              </section>
-
-              {/* Session DB Record */}
-              <details className="group">
-                <summary className="cursor-pointer flex items-center gap-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)] transition-colors py-1">
-                  <ChevronRight size={12} className="transition-transform group-open:rotate-90" />
-                  <FileJson size={14} />
-                  <h3 className="text-[10px] font-bold uppercase tracking-[0.2em]">Session DB Record</h3>
-                </summary>
-                <div className="mt-3 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
-                  <JsonBlock value={JSON.stringify(session, null, 2)} className="!border-0 !bg-transparent max-h-[300px] text-[10px]" />
-                </div>
-              </details>
-
-              {/* Message DB Record */}
-              {userMessage && (
-                <details className="group">
-                  <summary className="cursor-pointer flex items-center gap-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)] transition-colors py-1">
-                    <ChevronRight size={12} className="transition-transform group-open:rotate-90" />
-                    <History size={14} />
-                    <h3 className="text-[10px] font-bold uppercase tracking-[0.2em]">Message DB Record</h3>
-                  </summary>
-                  <div className="mt-3 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
-                    <JsonBlock value={JSON.stringify(userMessage.metadata, null, 2)} className="!border-0 !bg-transparent max-h-[300px] text-[10px]" />
-                  </div>
-                </details>
-              )}
-            </div>
-          )}
         </div>
       </div>
     </div>
@@ -1220,7 +1161,6 @@ export function LogsPage() {
 
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
-  const [loadingRuntimeAction, setLoadingRuntimeAction] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
 
@@ -1228,11 +1168,9 @@ export function LogsPage() {
   const [search, setSearch] = useState('');
   const [activeLenses, setActiveLenses] = useState<Set<OperationalLens>>(new Set());
   const [sourceFilter, setSourceFilter] = useState('all');
-  const [autoRefresh, setAutoRefresh] = useState(true);
   
   const [inspector, setInspector] = useState<{
     session: Session | null;
-    runtime: SessionRuntimeStatus | null;
     userMessage?: Message | null;
     context: RuntimeContextPayload | null;
     lens?: OperationalLens;
@@ -1249,12 +1187,12 @@ export function LogsPage() {
   }, [selectedSessionId]);
 
   useEffect(() => {
-    if (!autoRefresh || !selectedSessionId) return;
+    if (!selectedSessionId) return;
     const timer = window.setInterval(() => {
       void refreshMessages(selectedSessionId, true);
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, selectedSessionId]);
+  }, [selectedSessionId]);
 
   async function loadSessions() {
     const pageSize = 100;
@@ -1316,33 +1254,6 @@ export function LogsPage() {
       setRuntimeBySession((current) => ({ ...current, [sessionId]: runtimeStatus }));
     } catch {
       if (!silent) toast.error('Failed to refresh logs');
-    }
-  }
-
-  async function refreshRuntimeStatus(sessionId: string) {
-    setLoadingRuntimeAction(true);
-    try {
-      const runtime = await api.get<SessionRuntimeStatus>(`/sessions/${sessionId}/runtime?action_limit=80`);
-      setRuntimeBySession((current) => ({ ...current, [sessionId]: runtime }));
-      toast.success('Runtime synced');
-    } catch {
-      toast.error('Failed to sync runtime');
-    } finally {
-      setLoadingRuntimeAction(false);
-    }
-  }
-
-  async function cleanupRuntime(sessionId: string) {
-    if (!window.confirm('Terminate and cleanup this session runtime workspace?')) return;
-    setLoadingRuntimeAction(true);
-    try {
-      await api.post<SessionRuntimeCleanupResponse>(`/sessions/${sessionId}/runtime/cleanup`);
-      toast.success('Runtime cleaned');
-      await loadMessages(sessionId, true);
-    } catch {
-      toast.error('Cleanup failed');
-    } finally {
-      setLoadingRuntimeAction(false);
     }
   }
 
@@ -1503,30 +1414,7 @@ export function LogsPage() {
       title="Control Plane"
       subtitle="Operational Diagnostics"
       actions={
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 cursor-pointer group px-3 py-1 rounded hover:bg-[color:var(--surface-1)] transition-colors">
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(event) => setAutoRefresh(event.target.checked)}
-              className="w-3.5 h-3.5 rounded border-[color:var(--border-subtle)] text-[color:var(--text-primary)]"
-            />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] group-hover:text-[color:var(--text-primary)]">
-              Live Tail
-            </span>
-          </label>
-          <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
-          <button
-            onClick={() => {
-              if (selectedSessionId) void refreshMessages(selectedSessionId);
-            }}
-            className="btn-secondary h-8 px-4 text-[10px] font-bold uppercase tracking-widest flex items-center gap-2"
-            disabled={!selectedSessionId}
-          >
-            <RefreshCw size={12} className={loadingMessages ? 'animate-spin' : ''} />
-            Sync
-          </button>
-        </div>
+        <div />
       }
       contentClassName="h-full !p-0 overflow-hidden bg-[color:var(--app-bg)]"
     >
@@ -1639,30 +1527,12 @@ export function LogsPage() {
                     <button
                       onClick={() => setInspector({
                         session: activeSession,
-                        runtime: activeRuntime,
                         context: latestRuntimeContext
                       })}
                       className="flex items-center gap-2 px-3 py-1.5 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] text-[10px] font-bold uppercase tracking-widest transition-all"
                     >
                       <Cpu size={12} className="text-sky-500" />
                       Latest Snapshot
-                    </button>
-                    <div className="w-px h-4 bg-[color:var(--border-subtle)] mx-1" />
-                    <button
-                      onClick={() => void refreshRuntimeStatus(activeSession.id)}
-                      className="p-1.5 rounded hover:bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-sky-500 transition-colors"
-                      disabled={loadingRuntimeAction}
-                      title="Sync Runtime"
-                    >
-                      <RefreshCw size={14} className={loadingRuntimeAction ? 'animate-spin' : ''} />
-                    </button>
-                    <button
-                      onClick={() => void cleanupRuntime(activeSession.id)}
-                      className="p-1.5 rounded hover:bg-rose-500/10 text-[color:var(--text-muted)] hover:text-rose-500 transition-colors"
-                      disabled={loadingRuntimeAction}
-                      title="Cleanup Runtime"
-                    >
-                      <X size={16} />
                     </button>
                   </div>
                 </div>
@@ -1769,7 +1639,6 @@ export function LogsPage() {
                           }
                           setInspector({
                             session: activeSession,
-                            runtime: activeRuntime,
                             userMessage: event.message,
                             context: userContext,
                             lens: event.lens,
@@ -1897,7 +1766,6 @@ export function LogsPage() {
       <UnifiedInspectorModal
         open={Boolean(inspector)}
         session={inspector?.session ?? null}
-        runtime={inspector?.runtime ?? null}
         userMessage={inspector?.userMessage ?? null}
         context={inspector?.context ?? null}
         onClose={() => setInspector(null)}
