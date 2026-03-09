@@ -76,6 +76,7 @@ from app.services.tools.trigger_tools import (
 )
 from app.services.tools.git_accounts_available import git_accounts_available_tool
 from app.services.tools.git_exec import git_exec_tool
+from app.services.tools.editor import str_replace_editor_tool
 
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
 _ALLOWED_MEMORY_CATEGORIES = {"core", "preference", "project", "correction"}
@@ -100,6 +101,7 @@ def build_default_registry(
     registry = ToolRegistry()
     manager = browser_manager or BrowserManager()
     registry.register(_file_read_tool())
+    registry.register(str_replace_editor_tool())
     registry.register(_http_request_tool())
     if session_factory is not None:
         registry.register(git_accounts_available_tool(session_factory=session_factory))
