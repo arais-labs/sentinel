@@ -30,12 +30,22 @@ export function runtimeActionCommand(entry: SessionRuntimeAction): string | null
 
 export type RuntimeCommandState = 'running' | 'completed' | 'failed' | 'cancelled';
 
+export interface RuntimeCommandOutput {
+  ok: boolean | null;
+  timedOut: boolean;
+  returncode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
 export interface RuntimeCommandRow {
+  id: string;
   command: string;
   source: 'command' | 'detached_job';
   state: RuntimeCommandState;
   startedAt: string | null;
   endedAt: string | null;
+  output: RuntimeCommandOutput | null;
 }
 
 type BuildRuntimeCommandRowsOptions = {
@@ -84,6 +94,38 @@ export function buildRuntimeCommandRows(
     return 'completed';
   }
 
+  function parseCommandOutput(entry: SessionRuntimeAction): RuntimeCommandOutput | null {
+    if (!entry || !entry.details || typeof entry.details !== 'object') return null;
+    const rawStdout =
+      typeof entry.details.stdout === 'string'
+        ? entry.details.stdout
+        : typeof entry.details.stdout_tail === 'string'
+          ? entry.details.stdout_tail
+          : '';
+    const rawStderr =
+      typeof entry.details.stderr === 'string'
+        ? entry.details.stderr
+        : typeof entry.details.stderr_tail === 'string'
+          ? entry.details.stderr_tail
+          : '';
+    const stdout = rawStdout;
+    const stderr = rawStderr;
+    const returncode =
+      typeof entry.details.returncode === 'number' && Number.isFinite(entry.details.returncode)
+        ? Math.trunc(entry.details.returncode)
+        : null;
+    const ok = typeof entry.details.ok === 'boolean' ? entry.details.ok : null;
+    const timedOut = entry.details.timed_out === true;
+    if (!stdout.trim() && !stderr.trim() && returncode === null && ok === null && !timedOut) return null;
+    return {
+      ok,
+      timedOut,
+      returncode,
+      stdout,
+      stderr,
+    };
+  }
+
   for (let index = 0; index < actions.length; index += 1) {
     const entry = actions[index];
     const key = actionKey(entry, index);
@@ -92,11 +134,13 @@ export function buildRuntimeCommandRows(
       const command = runtimeActionCommand(entry);
       if (!command) continue;
       queuePending(key, {
+        id: `${entry.action}:${entry.timestamp ?? 'na'}:${index}`,
         command,
         source: entry.action === 'detached_job_started' ? 'detached_job' : 'command',
         state: 'running',
         startedAt: entry.timestamp,
         endedAt: null,
+        output: null,
       });
       continue;
     }
@@ -106,6 +150,7 @@ export function buildRuntimeCommandRows(
     if (pending) {
       pending.state = finishState(entry);
       pending.endedAt = entry.timestamp;
+      pending.output = parseCommandOutput(entry);
       rows.push(pending);
       continue;
     }
@@ -113,11 +158,13 @@ export function buildRuntimeCommandRows(
     const command = runtimeActionCommand(entry);
     if (!command) continue;
     rows.push({
+      id: `${entry.action}:${entry.timestamp ?? 'na'}:${index}`,
       command,
       source: entry.action.startsWith('detached_job_') ? 'detached_job' : 'command',
       state: finishState(entry),
       startedAt: null,
       endedAt: entry.timestamp,
+      output: parseCommandOutput(entry),
     });
   }
 
