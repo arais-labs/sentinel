@@ -225,6 +225,7 @@ def test_runtime_context_snapshot_includes_conversation_history_layer():
         temperature=0.7,
         max_iterations=50,
         stream=True,
+        agent_mode="normal",
     )
     structured = snapshot["structured_context"]
     layers = structured["layers"]
@@ -255,6 +256,34 @@ def test_runtime_context_snapshot_includes_conversation_history_layer():
     assert tool_result_entry["is_error"] is False
 
     assert structured["history_message_count"] == 3
+
+
+def test_context_builder_injects_agent_mode_policy_layer_for_read_only():
+    db = FakeDB()
+    builder = ContextBuilder(default_system_prompt="System prompt")
+    session = _new_session(db)
+
+    built = _run(
+        builder.build(
+            db,
+            session.id,
+            pending_user_message="diagnose only",
+            agent_mode="read_only",
+        )
+    )
+
+    policy_layer = next(
+        (
+            message
+            for message in built
+            if isinstance(message, SystemMessage)
+            and isinstance(message.metadata, dict)
+            and message.metadata.get("kind") == "agent_mode_policy"
+        ),
+        None,
+    )
+    assert policy_layer is not None
+    assert "Read-Only" in (policy_layer.content or "")
 
 
 def test_agent_loop_tool_use_path_runs_tool_and_finishes_second_iteration():

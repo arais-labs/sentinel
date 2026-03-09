@@ -10,6 +10,7 @@ from app.config import (
     CHAT_DEFAULT_ITERATIONS,
     CHAT_MAX_ITERATIONS,
 )
+from app.services.agent.agent_modes import AgentMode
 from app.services.llm.ids import TierName
 
 
@@ -221,6 +222,7 @@ class ChatRequest(BaseModel):
     content: str = Field(default="", max_length=50_000)
     attachments: list[ChatAttachment] = Field(default_factory=list, max_length=4)
     tier: TierName | None = None
+    agent_mode: AgentMode | None = None
     system_prompt: str | None = None
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_iterations: int = Field(

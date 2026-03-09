@@ -24,6 +24,7 @@ from app.middleware import (
 )
 from app.routers import (
     admin,
+    agent_modes as agent_modes_router,
     approvals as approvals_router,
     auth,
     git as git_router,
@@ -461,6 +462,7 @@ app.include_router(git_router.router, prefix="/api/v1/git", tags=["git"])
 app.include_router(approvals_router.router, prefix="/api/v1/approvals", tags=["approvals"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
 app.include_router(models.router, prefix="/api/v1/models", tags=["models"])
+app.include_router(agent_modes_router.router, prefix="/api/v1/agent-modes", tags=["agent-modes"])
 app.include_router(onboarding.router, prefix="/api/v1/onboarding", tags=["onboarding"])
 app.include_router(settings_router.router, prefix="/api/v1/settings", tags=["settings"])
 app.include_router(playwright.router, prefix="/api/v1/playwright", tags=["playwright"])

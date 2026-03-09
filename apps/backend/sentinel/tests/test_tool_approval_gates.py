@@ -123,3 +123,45 @@ def test_conditional_gate_rejects_when_waiter_rejects():
 
     with pytest.raises(ToolExecutionError, match="Approval rejected"):
         _run(executor.execute("gated_tool", {}, allow_high_risk=True))
+
+
+def test_full_permission_mode_auto_approves_required_gate_without_waiter_call():
+    waiter_called = False
+
+    async def _waiter(_tool_name, _payload, _requirement):
+        nonlocal waiter_called
+        waiter_called = True
+        return ToolApprovalOutcome(
+            status=ToolApprovalOutcomeStatus.APPROVED,
+            approval={"provider": "tool", "approval_id": "apr_should_not_be_used"},
+            message="approved",
+        )
+
+    gate = ToolApprovalGate(
+        mode=ToolApprovalMode.CONDITIONAL,
+        evaluator=lambda _payload: ToolApprovalEvaluation.require(
+            ToolApprovalRequirement(
+                action="gated_tool.execute",
+                description="Needs approval",
+            )
+        ),
+        waiter=_waiter,
+    )
+    tool = _tool_with_gate(approval_gate=gate)
+    executor = _executor_for(tool)
+
+    result, _ = _run(
+        executor.execute(
+            "gated_tool",
+            {},
+            allow_high_risk=True,
+            agent_mode="full_permission",
+        )
+    )
+
+    assert waiter_called is False
+    assert result["ok"] is True
+    approval = result.get("approval") or {}
+    assert approval.get("status") == "approved"
+    assert approval.get("pending") is False
+    assert approval.get("provider") == "tool"
