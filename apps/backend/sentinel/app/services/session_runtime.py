@@ -27,6 +27,8 @@ _RUNTIME_META_FILENAME = ".runtime_meta.json"
 _RUNTIME_ACTIONS_FILENAME = ".runtime_actions.jsonl"
 _RUNTIME_JOBS_FILENAME = ".runtime_jobs.json"
 _RUNTIME_LOGS_DIRNAME = "logs"
+_RUNTIME_PUBLIC_WORKSPACE = "/mnt"
+_RUNTIME_PUBLIC_LOGS_DIR = f"{_RUNTIME_PUBLIC_WORKSPACE}/.runtime/logs"
 _DEFAULT_RUNTIME_ACTION_LIMIT = 40
 _DEFAULT_RUNTIME_FILE_LIMIT = 400
 _MAX_RUNTIME_FILE_LIMIT = 2_000
@@ -67,7 +69,7 @@ def runtime_venv_dir(session_id: UUID | str) -> Path:
 
 
 def runtime_logs_dir(session_id: UUID | str) -> Path:
-    return runtime_root_dir(session_id) / _RUNTIME_LOGS_DIRNAME
+    return runtime_workspace_dir(session_id) / ".runtime" / _RUNTIME_LOGS_DIRNAME
 
 
 async def ensure_runtime_layout(session_id: UUID | str) -> Path:
@@ -521,7 +523,7 @@ async def register_detached_runtime_job(
                 },
             },
         )
-    return job
+    return _serialize_detached_runtime_job(session_id, job)
 
 
 async def finalize_detached_runtime_job(
@@ -552,8 +554,14 @@ async def finalize_detached_runtime_job(
         if updated is None:
             return None
         _write_runtime_jobs(jobs_path, jobs)
-        stdout_tail = _tail_text(Path(str(updated.get("stdout_path") or "")), max_bytes=6_000)
-        stderr_tail = _tail_text(Path(str(updated.get("stderr_path") or "")), max_bytes=6_000)
+        stdout_tail = _tail_text(
+            _runtime_job_host_path(session_id, updated.get("stdout_path")),
+            max_bytes=6_000,
+        )
+        stderr_tail = _tail_text(
+            _runtime_job_host_path(session_id, updated.get("stderr_path")),
+            max_bytes=6_000,
+        )
         _append_runtime_action(
             actions_path,
             {
@@ -571,13 +579,14 @@ async def finalize_detached_runtime_job(
                 ),
             },
         )
-        return updated
+        return _serialize_detached_runtime_job(session_id, updated)
 
 
 async def list_detached_runtime_jobs(
     session_id: UUID | str,
     *,
     include_completed: bool = True,
+    include_internal: bool = False,
 ) -> list[dict[str, Any]]:
     root = runtime_root_dir(session_id)
     jobs_path = root / _RUNTIME_JOBS_FILENAME
@@ -586,17 +595,23 @@ async def list_detached_runtime_jobs(
         jobs = _refresh_runtime_jobs(jobs)
         _write_runtime_jobs(jobs_path, jobs)
     jobs.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-    if include_completed:
-        return jobs
-    return [item for item in jobs if str(item.get("status")) == "running"]
+    filtered = jobs if include_completed else [item for item in jobs if str(item.get("status")) == "running"]
+    if include_internal:
+        return [dict(item) for item in filtered]
+    return [_serialize_detached_runtime_job(session_id, item) for item in filtered]
 
 
 async def get_detached_runtime_job(
     session_id: UUID | str,
     *,
     job_id: str,
+    include_internal: bool = False,
 ) -> dict[str, Any] | None:
-    jobs = await list_detached_runtime_jobs(session_id, include_completed=True)
+    jobs = await list_detached_runtime_jobs(
+        session_id,
+        include_completed=True,
+        include_internal=include_internal,
+    )
     for item in jobs:
         if str(item.get("id", "")).strip() == job_id:
             return item
@@ -628,7 +643,7 @@ async def stop_detached_runtime_job(
         status = str(target.get("status") or "")
         if status != "running":
             _write_runtime_jobs(jobs_path, jobs)
-            return target
+            return _serialize_detached_runtime_job(session_id, target)
 
         pid = _int_or_none(target.get("pid"))
         if pid is None:
@@ -637,7 +652,7 @@ async def stop_detached_runtime_job(
             target["ended_at"] = now
             target["termination_reason"] = reason or "stopped"
             _write_runtime_jobs(jobs_path, jobs)
-            return target
+            return _serialize_detached_runtime_job(session_id, target)
 
         signal_name = "SIGKILL" if force else "SIGTERM"
         await _terminate_pid(pid, force=force)
@@ -651,8 +666,14 @@ async def stop_detached_runtime_job(
         target["termination_signal"] = signal_name
         target["termination_reason"] = reason or "stopped"
         _write_runtime_jobs(jobs_path, jobs)
-        stdout_tail = _tail_text(Path(str(target.get("stdout_path") or "")), max_bytes=6_000)
-        stderr_tail = _tail_text(Path(str(target.get("stderr_path") or "")), max_bytes=6_000)
+        stdout_tail = _tail_text(
+            _runtime_job_host_path(session_id, target.get("stdout_path")),
+            max_bytes=6_000,
+        )
+        stderr_tail = _tail_text(
+            _runtime_job_host_path(session_id, target.get("stderr_path")),
+            max_bytes=6_000,
+        )
         _append_runtime_action(
             actions_path,
             {
@@ -671,7 +692,7 @@ async def stop_detached_runtime_job(
                 ),
             },
         )
-        return target
+        return _serialize_detached_runtime_job(session_id, target)
 
 
 async def stop_all_detached_runtime_jobs(
@@ -703,8 +724,14 @@ async def stop_all_detached_runtime_jobs(
             item["termination_signal"] = "SIGKILL"
             item["termination_reason"] = reason or "stopped"
             stopped += 1
-            stdout_tail = _tail_text(Path(str(item.get("stdout_path") or "")), max_bytes=6_000)
-            stderr_tail = _tail_text(Path(str(item.get("stderr_path") or "")), max_bytes=6_000)
+            stdout_tail = _tail_text(
+                _runtime_job_host_path(session_id, item.get("stdout_path")),
+                max_bytes=6_000,
+            )
+            stderr_tail = _tail_text(
+                _runtime_job_host_path(session_id, item.get("stderr_path")),
+                max_bytes=6_000,
+            )
             _append_runtime_action(
                 actions_path,
                 {
@@ -734,16 +761,16 @@ async def read_detached_runtime_job_logs(
     job_id: str,
     tail_bytes: int = 8_000,
 ) -> dict[str, Any] | None:
-    job = await get_detached_runtime_job(session_id, job_id=job_id)
+    job = await get_detached_runtime_job(session_id, job_id=job_id, include_internal=True)
     if job is None:
         return None
     max_bytes = max(256, min(int(tail_bytes), 200_000))
-    stdout_path = Path(str(job.get("stdout_path") or ""))
-    stderr_path = Path(str(job.get("stderr_path") or ""))
+    stdout_path = _runtime_job_host_path(session_id, job.get("stdout_path"))
+    stderr_path = _runtime_job_host_path(session_id, job.get("stderr_path"))
     stdout = _tail_text(stdout_path, max_bytes=max_bytes)
     stderr = _tail_text(stderr_path, max_bytes=max_bytes)
     return {
-        "job": job,
+        "job": _serialize_detached_runtime_job(session_id, job),
         "stdout_tail": stdout,
         "stderr_tail": stderr,
         "tail_bytes": max_bytes,
@@ -1269,6 +1296,74 @@ def _tail_text(path: Path, *, max_bytes: int) -> str:
     except OSError:
         return ""
     return data.decode("utf-8", errors="replace")
+
+
+def _serialize_detached_runtime_job(
+    session_id: UUID | str,
+    job: dict[str, Any],
+) -> dict[str, Any]:
+    payload = dict(job)
+    payload["cwd"] = _runtime_job_public_path(session_id, payload.get("cwd"))
+    payload["stdout_path"] = _runtime_job_public_path(session_id, payload.get("stdout_path"))
+    payload["stderr_path"] = _runtime_job_public_path(session_id, payload.get("stderr_path"))
+    return payload
+
+
+def _runtime_job_public_path(session_id: UUID | str, value: Any) -> str | None:
+    raw = _string_or_none(value)
+    if raw is None:
+        return None
+    if raw == _RUNTIME_PUBLIC_WORKSPACE or raw.startswith(f"{_RUNTIME_PUBLIC_WORKSPACE}/"):
+        return raw
+
+    mapped = _map_host_runtime_path_to_public(session_id, raw)
+    if mapped is not None:
+        return mapped
+    return raw
+
+
+def _runtime_job_host_path(session_id: UUID | str, value: Any) -> Path:
+    raw = _string_or_none(value)
+    if raw is None:
+        return Path("")
+    mapped = _map_public_runtime_path_to_host(session_id, raw)
+    if mapped is not None:
+        return mapped
+    return Path(raw)
+
+
+def _map_host_runtime_path_to_public(session_id: UUID | str, host_path: str) -> str | None:
+    try:
+        host = Path(host_path).expanduser().resolve()
+        workspace = runtime_workspace_dir(session_id).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if _is_within_path(base=workspace, target=host):
+        relative = host.relative_to(workspace).as_posix()
+        return _RUNTIME_PUBLIC_WORKSPACE if relative in {"", "."} else f"{_RUNTIME_PUBLIC_WORKSPACE}/{relative}"
+
+    try:
+        legacy_logs = (runtime_root_dir(session_id) / _RUNTIME_LOGS_DIRNAME).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if _is_within_path(base=legacy_logs, target=host):
+        relative = host.relative_to(legacy_logs).as_posix()
+        return _RUNTIME_PUBLIC_LOGS_DIR if relative in {"", "."} else f"{_RUNTIME_PUBLIC_LOGS_DIR}/{relative}"
+    return None
+
+
+def _map_public_runtime_path_to_host(session_id: UUID | str, public_path: str) -> Path | None:
+    try:
+        if public_path == _RUNTIME_PUBLIC_WORKSPACE:
+            return runtime_workspace_dir(session_id).resolve()
+        prefix = f"{_RUNTIME_PUBLIC_WORKSPACE}/"
+        if public_path.startswith(prefix):
+            suffix = public_path[len(prefix) :].strip("/")
+            workspace = runtime_workspace_dir(session_id).resolve()
+            return workspace if not suffix else (workspace / suffix).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
 
 
 def _truncate_runtime_action_text(value: str) -> str:
