@@ -30,6 +30,7 @@ const sidebars = {
       items: [
         'guides/installation',
         'guides/cli-reference',
+        'guides/runtime-exec-security',
         'guides/creating-modules',
         'guides/permissions',
         'guides/telegram',

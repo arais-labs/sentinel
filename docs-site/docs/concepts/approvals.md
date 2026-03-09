@@ -15,7 +15,7 @@ Sentinel uses three distinct approval providers, which are aggregated in the app
 
 | Provider | What it covers |
 |---|---|
-| `tool` | Sentinel-native tool-level approval gate (blocking, in-process) |
+| `tool` | Sentinel-native tool-level approval gate (blocking, in-process), including `runtime_exec` root mode |
 | `git` | Git push and PR operations |
 | `araios` | araiOS module actions (async, persisted to DB) |
 
@@ -49,6 +49,23 @@ When an approval is created, it is assigned a `match_key` derived from the tool 
 If an approval was created in a different session or with different arguments, its match key will not match the pending tool call in the current session. The agent will never see the resolution.
 
 This means approvals are **not portable between sessions**. An approval created in session A cannot resolve a pending call in session B.
+
+### Runtime exec root key contract
+
+`runtime_exec` uses an explicit scoped match key for root approvals:
+
+- `runtime_exec:root:<normalized command>`
+
+Examples:
+
+- `runtime_exec:root:apt-get update`
+- `runtime_exec:root:echo hello`
+
+This exact key must match across:
+
+1. approval creation
+2. persisted `approval_hint` on tool calls
+3. rehydration lookup on reconnect/refresh
 
 ---
 

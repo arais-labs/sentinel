@@ -29,6 +29,7 @@ from app.services.agent.tool_image_reinjection import (
     build_tool_image_reinjection_messages,
 )
 from app.services.agent.tool_adapter import ToolAdapter
+from app.services.approvals.tool_match import build_runtime_exec_match_key
 from app.services.approvals.providers.git import normalize_git_command
 from app.services.estop import EstopLevel, EstopService
 from app.services.messages import (
@@ -1331,12 +1332,22 @@ class AgentLoop:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> dict[str, str] | None:
-        if tool_name != "git_exec":
-            return None
         command = arguments.get("command")
         if not isinstance(command, str) or not command.strip():
             return None
-        return {"provider": "git", "match_key": normalize_git_command(command)}
+        if tool_name == "git_exec":
+            return {"provider": "git", "match_key": normalize_git_command(command)}
+        if tool_name == "runtime_exec":
+            privilege = str(arguments.get("privilege") or "user").strip().lower()
+            if privilege == "root":
+                return {
+                    "provider": "tool",
+                    "match_key": build_runtime_exec_match_key(
+                        command=command,
+                        privilege="root",
+                    ),
+                }
+        return None
 
     def _truncate_tool_result_for_storage(self, content: str) -> tuple[str, dict[str, Any]]:
         """Cap stored tool-result payload size while preserving debug metadata."""

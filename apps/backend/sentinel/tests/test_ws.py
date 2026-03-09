@@ -338,6 +338,180 @@ def test_ws_connected_rehydrates_unresolved_git_call_with_truncated_args_and_hin
         app_main.init_db = old_init
 
 
+def test_ws_connected_rehydrates_unresolved_runtime_root_call_with_hint():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    old_run_registry = getattr(app.state, "agent_run_registry", None)
+    app.state.agent_run_registry = _AlwaysRunningRegistry()
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        owner_token = login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "ws-pending-runtime-root"}, headers=owner_headers)
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
+        command = "echo root-check"
+        match_key = "runtime_exec:root:echo root-check"
+        fake_db.add(
+            Message(
+                session_id=uuid.UUID(session_id),
+                role="assistant",
+                content="",
+                metadata_json={
+                    "tool_calls": [
+                        {
+                            "id": "toolu_pending_runtime_root",
+                            "name": "runtime_exec",
+                            "arguments": {
+                                "_truncated": True,
+                                "preview": "{\"command\":\"echo root-check\",\"privilege\":\"root\"}",
+                                "original_chars": 256,
+                            },
+                            "approval_hint": {
+                                "provider": "tool",
+                                "match_key": match_key,
+                            },
+                        }
+                    ]
+                },
+            )
+        )
+        fake_db.add(
+            ToolApproval(
+                provider="tool",
+                tool_name="runtime_exec",
+                session_id=uuid.UUID(session_id),
+                action="runtime_exec.root",
+                description=f"Allow root runtime command: {command}",
+                match_key=match_key,
+                status="pending",
+                requested_by="session:test",
+                payload_json={
+                    "tool_name": "runtime_exec",
+                    "privilege": "root",
+                    "command": command,
+                },
+                expires_at=datetime.now(UTC) + timedelta(minutes=10),
+            )
+        )
+
+        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+            connected = ws.receive_json()
+            assert connected["type"] == "connected"
+            assert connected["session_id"] == session_id
+
+            replay_start = ws.receive_json()
+            assert replay_start["type"] == "toolcall_start"
+            assert replay_start["tool_call"]["id"] == "toolu_pending_runtime_root"
+            assert replay_start["tool_call"]["name"] == "runtime_exec"
+
+            replay_pending = ws.receive_json()
+            assert replay_pending["type"] == "tool_result"
+            assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_runtime_root"
+            approval = replay_pending["tool_result"]["metadata"].get("approval")
+            assert isinstance(approval, dict)
+            assert approval.get("provider") == "tool"
+            assert isinstance(approval.get("approval_id"), str)
+    finally:
+        if old_run_registry is None:
+            delattr(app.state, "agent_run_registry")
+        else:
+            app.state.agent_run_registry = old_run_registry
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_ws_connected_marks_linkage_missing_as_pending_stub():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    old_run_registry = getattr(app.state, "agent_run_registry", None)
+    app.state.agent_run_registry = _AlwaysRunningRegistry()
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        owner_token = login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "ws-linkage-missing"}, headers=owner_headers)
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
+        fake_db.add(
+            Message(
+                session_id=uuid.UUID(session_id),
+                role="assistant",
+                content="",
+                metadata_json={
+                    "tool_calls": [
+                        {
+                            "id": "toolu_pending_linkage",
+                            "name": "runtime_exec",
+                            "arguments": {"_truncated": True},
+                            "approval_hint": {
+                                "provider": "tool",
+                                "match_key": "runtime_exec:root:echo missing",
+                            },
+                        }
+                    ]
+                },
+            )
+        )
+
+        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+            connected = ws.receive_json()
+            assert connected["type"] == "connected"
+            replay_start = ws.receive_json()
+            assert replay_start["type"] == "toolcall_start"
+            replay_pending = ws.receive_json()
+            assert replay_pending["type"] == "tool_result"
+            metadata = replay_pending["tool_result"]["metadata"]
+            assert metadata.get("pending") is True
+            assert metadata.get("approval_linkage_missing") is True
+            approval = metadata.get("approval")
+            assert isinstance(approval, dict)
+            assert approval.get("provider") == "tool"
+            assert approval.get("pending") is True
+            assert "approval_id" not in approval
+    finally:
+        if old_run_registry is None:
+            delattr(app.state, "agent_run_registry")
+        else:
+            app.state.agent_run_registry = old_run_registry
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
 def test_ws_rehydrate_matches_duplicate_git_approvals_in_call_order():
     fake_db = FakeDB()
 

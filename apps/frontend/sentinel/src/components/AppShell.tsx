@@ -50,7 +50,7 @@ interface AraiosIntegrationStatus {
 
 const navItems: NavItem[] = [
   { label: 'Sessions', path: '/sessions', icon: LayoutDashboard },
-  { label: 'Logs', path: '/logs', icon: Activity },
+  { label: 'Session Logs', path: '/logs', icon: Activity },
   { label: 'Memory', path: '/memory', icon: Database },
   { label: 'Triggers', path: '/triggers', icon: Zap },
   { label: 'Tools', path: '/tools', icon: Wrench },
