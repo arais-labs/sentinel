@@ -3148,23 +3148,30 @@ export function SessionsPage() {
             <div className={`flex flex-col h-full min-w-[16rem] transition-opacity duration-200 ${mode === 'advanced' ? 'opacity-100' : 'opacity-0'}`}>
               <div className="p-3 border-b border-[color:var(--border-subtle)] space-y-2">
                 <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">History</h2>
-                <div className="grid grid-cols-2 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1">
+                <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
+                  {/* Sliding Indicator */}
+                  <div 
+                    className={`absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
+                      historyTab === 'sessions' ? 'left-0.5' : 'left-[calc(50%)]'
+                    }`}
+                  />
+                  
                   <button
                     onClick={() => setHistoryTab('sessions')}
-                    className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                    className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                       historyTab === 'sessions'
-                        ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)]'
-                        : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                        ? 'text-[color:var(--text-primary)]'
+                        : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                     }`}
                   >
                     Sessions
                   </button>
                   <button
                     onClick={() => setHistoryTab('sub_agents')}
-                    className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                    className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                       historyTab === 'sub_agents'
-                        ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)]'
-                        : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                        ? 'text-[color:var(--text-primary)]'
+                        : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                     }`}
                   >
                     Sub-agents
@@ -3173,7 +3180,7 @@ export function SessionsPage() {
                 <div className="relative">
                   <History size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
                   <input
-                      className="input-field pl-8 h-8 text-xs"
+                      className="input-field pl-8 h-8 rounded-full text-xs"
                       placeholder="Search..."
                       value={sessionFilter}
                       onChange={(e) => setSessionFilter(e.target.value)}
@@ -3188,7 +3195,11 @@ export function SessionsPage() {
                         return next;
                       });
                     }}
-                    className="rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-0)]"
+                    className={`rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95 shadow-sm ${
+                      isMultiSelectMode 
+                        ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent' 
+                        : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] text-[color:var(--text-secondary)] hover:border-[color:var(--border-strong)] hover:text-[color:var(--text-primary)]'
+                    }`}
                   >
                     {isMultiSelectMode ? 'Done' : 'Select'}
                   </button>
@@ -3205,22 +3216,23 @@ export function SessionsPage() {
                           return Array.from(set);
                         })
                       }
-                      className="rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-0)]"
+                      className="rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:border-[color:var(--border-strong)] hover:text-[color:var(--text-primary)] transition-all active:scale-95 shadow-sm"
                     >
                       {allVisibleSelected ? 'Unselect All' : 'Select All'}
                     </button>
                   ) : null}
                 </div>
                 {isMultiSelectMode ? (
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] uppercase tracking-wider text-[color:var(--text-muted)]">
-                      {selectedSessionIds.length} selected
+                  <div className="flex items-center justify-between gap-2 px-1 pt-2 border-t border-[color:var(--border-subtle)] animate-in slide-in-from-top-1">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                      {selectedSessionIds.length} <span className="opacity-50">Selected</span>
                     </p>
                     <button
                       onClick={() => void deleteSelectedSessions()}
                       disabled={selectedSessionIds.length === 0 || deletingSessionId !== null}
-                      className="rounded-md border border-rose-500/30 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-rose-500 hover:bg-rose-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-rose-500/10 border border-rose-500/20 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500 hover:text-white transition-all active:scale-95 disabled:opacity-40 disabled:pointer-events-none shadow-sm"
                     >
+                      <Trash2 size={11} />
                       Delete Selected
                     </button>
                   </div>
@@ -3673,7 +3685,7 @@ export function SessionsPage() {
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
                           disabled={streamBusy || composerAttachments.length >= MAX_IMAGE_ATTACHMENTS}
-                          className="p-2 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                          className="p-2.5 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95 shadow-sm"
                           title="Attach image"
                         >
                           <Paperclip size={16} />
@@ -3681,10 +3693,10 @@ export function SessionsPage() {
                         <button
                             type="submit"
                             disabled={(composer.trim().length === 0 && composerAttachments.length === 0) || streamBusy}
-                            className={`p-2 rounded-lg transition-all ${
+                            className={`p-2.5 rounded-xl transition-all active:scale-95 shadow-md ${
                                 (composer.trim().length > 0 || composerAttachments.length > 0) && !streamBusy
-                                    ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] shadow-md'
-                                    : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] cursor-not-allowed'
+                                    ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] shadow-[0_4px_12px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_12px_rgba(255,255,255,0.05)]'
+                                    : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] cursor-not-allowed opacity-40'
                             }`}
                         >
                           <Send size={18} />

@@ -1902,7 +1902,29 @@ export function LogsPage() {
       title="Control Plane"
       subtitle="Operational Diagnostics"
       actions={
-        <div />
+        <div className="flex items-center gap-2">
+          {activeSession && (
+            <>
+              <button
+                onClick={() => setInspector({
+                  session: activeSession,
+                  context: latestRuntimeContext
+                })}
+                className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+              >
+                <Cpu size={14} className="text-sky-500/80" />
+                Latest Snapshot
+              </button>
+              <button
+                onClick={() => setRuntimeExplorerOpen(true)}
+                className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+              >
+                <Terminal size={14} className="text-amber-500/80" />
+                Explore Runtime
+              </button>
+            </>
+          )}
+        </div>
       }
       contentClassName="h-full !p-0 overflow-hidden bg-[color:var(--app-bg)]"
     >
@@ -1911,23 +1933,30 @@ export function LogsPage() {
         <aside className="w-64 border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] flex flex-col shrink-0">
           <div className="p-3 border-b border-[color:var(--border-subtle)] space-y-2">
             <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">History</h2>
-            <div className="grid grid-cols-2 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1">
+            <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
+              {/* Sliding Indicator */}
+              <div 
+                className={`absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
+                  historyTab === 'sessions' ? 'left-0.5' : 'left-[calc(50%)]'
+                }`}
+              />
+
               <button
                 onClick={() => setHistoryTab('sessions')}
-                className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                   historyTab === 'sessions'
-                    ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)]'
-                    : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                    ? 'text-[color:var(--text-primary)]'
+                    : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                 }`}
               >
                 Sessions
               </button>
               <button
                 onClick={() => setHistoryTab('sub_agents')}
-                className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                   historyTab === 'sub_agents'
-                    ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)]'
-                    : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                    ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)] shadow-sm'
+                    : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                 }`}
               >
                 Sub-agents
@@ -1947,36 +1976,30 @@ export function LogsPage() {
                 <button
                   key={session.id}
                   onClick={() => setSelectedSessionId(session.id)}
-                  className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
+                  className={`w-full flex flex-col gap-1 p-3 rounded-xl text-left transition-all duration-200 border active:scale-[0.98] ${
                     active
-                      ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
+                      ? 'bg-[color:var(--surface-0)] shadow-md border-[color:var(--border-strong)] scale-[1.02] z-10'
                       : 'hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-transparent'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 flex-1 text-xs font-semibold truncate">{session.title || 'Session'}</span>
+                    <span className="min-w-0 flex-1 text-xs font-bold truncate">{session.title || 'Session'}</span>
                     <div className="flex shrink-0 items-center gap-1">
                       {sessionChannelKind(session) === 'telegram_group' ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
+                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-sky-400">
                           <Users size={8} />
-                          <span>{'TG\u00A0Group'}</span>
-                        </span>
-                      ) : null}
-                      {sessionChannelKind(session) === 'telegram_dm' ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
-                          <Send size={8} />
-                          <span>{'TG\u00A0DM'}</span>
+                          <span>TG</span>
                         </span>
                       ) : null}
                       {session.is_main ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-400">
+                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-emerald-400">
                           <BadgeCheck size={8} />
                           Main
                         </span>
                       ) : null}
                     </div>
                   </div>
-                  <span className="text-[10px] text-[color:var(--text-muted)]">{formatCompactDate(session.started_at)}</span>
+                  <span className="text-[9px] font-medium uppercase tracking-tight text-[color:var(--text-muted)] opacity-60">{formatCompactDate(session.started_at)}</span>
                 </button>
               );
             })}
@@ -1994,41 +2017,21 @@ export function LogsPage() {
             <>
               {/* Control Ribbon */}
               <header className="shrink-0 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] z-10">
-                {/* Row 1: Identity & Primary Actions */}
+                {/* Row 1: Identity & Primary Status */}
                 <div className="px-6 h-14 flex items-center justify-between border-b border-[color:var(--border-subtle)]/30">
                   <div className="flex items-center gap-4 min-w-0">
                     <div className="flex items-center gap-2 shrink-0">
-                      <div className={`w-2 h-2 rounded-sm ${activeRuntime?.active ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)]' : 'bg-[color:var(--border-strong)]'}`} />
+                      <div className={`w-2 h-2 rounded-full transition-all duration-500 ${activeRuntime?.active ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-[color:var(--border-strong)]'}`} />
                       <h2 className="text-sm font-bold text-[color:var(--text-primary)] uppercase tracking-wider truncate max-w-[400px]">
                         {activeSession.title || 'Live Process'}
                       </h2>
                     </div>
-                    <div className="flex items-center gap-3 text-[10px] font-mono text-[color:var(--text-muted)] border-l border-[color:var(--border-subtle)] pl-4 truncate">
-                      <span className="opacity-70">id:{activeSession.id}</span>
-                      <span className={`px-1.5 py-0.5 rounded border ${activeRuntime?.active ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]'} uppercase font-bold tracking-widest text-[9px]`}>
+                    <div className="flex items-center gap-3 text-[10px] font-mono font-bold text-[color:var(--text-muted)] border-l border-[color:var(--border-subtle)] pl-4 truncate">
+                      <span className="opacity-40">ID: {activeSession.id.slice(0, 12)}…</span>
+                      <span className={`px-2 py-0.5 rounded-full border transition-colors ${activeRuntime?.active ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]'} uppercase font-bold tracking-widest text-[8px]`}>
                         {runtimeStatusLabel(activeRuntime)}
                       </span>
                     </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={() => setInspector({
-                        session: activeSession,
-                        context: latestRuntimeContext
-                      })}
-                      className="flex items-center gap-2 px-3 py-1.5 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] text-[10px] font-bold uppercase tracking-widest transition-all"
-                    >
-                      <Cpu size={12} className="text-sky-500" />
-                      Latest Snapshot
-                    </button>
-                    <button
-                      onClick={() => setRuntimeExplorerOpen(true)}
-                      className="flex items-center gap-2 px-3 py-1.5 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] text-[10px] font-bold uppercase tracking-widest transition-all"
-                    >
-                      <Terminal size={12} className="text-amber-400" />
-                      Explore Runtime
-                    </button>
                   </div>
                 </div>
 

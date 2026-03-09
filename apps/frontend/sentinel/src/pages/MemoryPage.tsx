@@ -458,21 +458,26 @@ export function MemoryPage() {
       contentClassName="h-full !p-0 overflow-hidden"
       actions={
         <div className="flex items-center gap-2">
-          <button onClick={() => void refreshAll()} className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors">
+          <button onClick={() => void refreshAll()} className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors active:scale-95">
             <RefreshCw size={18} className={loadingRoots ? 'animate-spin' : ''} />
           </button>
-          <div className="h-6 w-px bg-[color:var(--border-subtle)] mx-1" />
-          <button onClick={() => setIsBackupModalOpen(true)} className="btn-secondary h-9 px-3 text-xs gap-2">
-            <FileJson size={14} />
+          <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
+          <button 
+           onClick={() => setIsBackupModalOpen(true)} 
+           className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+         >
+            <FileJson size={14} className="text-sky-500/80" />
             Backup
           </button>
-          <button onClick={() => openEditor(null)} className="btn-primary h-9 px-3 text-xs gap-2">
+          <button 
+           onClick={() => openEditor(null)} 
+           className="inline-flex h-9 items-center gap-2.5 rounded-full border border-transparent bg-[color:var(--accent-solid)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--app-bg)] transition-all hover:opacity-90 active:scale-95 shadow-md shadow-black/5"
+         >
             <Plus size={14} />
             Add Memory
           </button>
         </div>
-      }
-    >
+      }    >
       <div className="flex h-full w-full overflow-hidden bg-[color:var(--surface-0)]">
         {/* Left Explorer */}
         <aside className="w-80 flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
