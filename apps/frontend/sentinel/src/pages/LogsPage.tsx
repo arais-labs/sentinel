@@ -23,6 +23,7 @@ import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
 import { RuntimeExplorerModal } from '../components/RuntimeExplorerModal';
+import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
 import { JsonBlock } from '../components/ui/JsonBlock';
 import { Markdown } from '../components/ui/Markdown';
 import { StatusChip } from '../components/ui/StatusChip';
@@ -366,13 +367,6 @@ function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
   if (!runtime) return 'unavailable';
   if (!runtime.runtime_exists) return 'missing';
   return runtime.active ? 'active' : 'idle';
-}
-
-function sessionChannelKind(session: Session): 'default' | 'telegram_group' | 'telegram_dm' {
-  const title = (session.title ?? '').trim().toLowerCase();
-  if (title.startsWith('tg group ·')) return 'telegram_group';
-  if (title.startsWith('tg dm ·')) return 'telegram_dm';
-  return 'default';
 }
 
 function extractRuntimeContextPayload(message: Message): RuntimeContextPayload | null {
@@ -1341,6 +1335,7 @@ function EventDetailModal({ open, event, onClose }: EventDetailModalProps) {
 
 export function LogsPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [runtimeBySession, setRuntimeBySession] = useState<Record<string, SessionRuntimeStatus>>({});
@@ -1351,10 +1346,157 @@ export function LogsPage() {
   const [hasMore, setHasMore] = useState(false);
 
   const [historyTab, setHistoryTab] = useState<SidebarTab>('sessions');
+  const [sessionFilter, setSessionFilter] = useState('');
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [activeLenses, setActiveLenses] = useState<Set<OperationalLens>>(new Set());
   const [sourceFilter, setSourceFilter] = useState('all');
   
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionTitle, setEditingSessionTitle] = useState('');
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+
+  const sessionsInTab = useMemo(() => {
+    return sessions.filter((s) => {
+      if (historyTab === 'sub_agents') return Boolean(s.parent_session_id);
+      return !s.parent_session_id;
+    });
+  }, [sessions, historyTab]);
+
+  const filteredSessions = useMemo(() => {
+    const f = sessionFilter.trim().toLowerCase();
+    if (!f) return sessionsInTab;
+    return sessionsInTab.filter((s) =>
+      (s.title || '').toLowerCase().includes(f) || s.id.toLowerCase().includes(f),
+    );
+  }, [sessionsInTab, sessionFilter]);
+
+  const selectableVisibleSessionIds = useMemo(() => {
+    return filteredSessions
+      .filter((session) => Boolean(defaultSessionId) && session.id !== defaultSessionId)
+      .map((session) => session.id);
+  }, [filteredSessions, defaultSessionId]);
+
+  const allVisibleSelected = useMemo(() => {
+    return (
+      selectableVisibleSessionIds.length > 0 &&
+      selectableVisibleSessionIds.every((id) => selectedSessionIds.includes(id))
+    );
+  }, [selectableVisibleSessionIds, selectedSessionIds]);
+
+  async function deleteSession(session: Session) {
+    if (deletingSessionId) return;
+    if (session.id === defaultSessionId) {
+      toast.error('Main session cannot be deleted');
+      return;
+    }
+    const label = (session.title || 'Session').trim() || 'Session';
+    const confirmed = window.confirm(`Delete "${label}" and all its messages? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setDeletingSessionId(session.id);
+    try {
+      await api.delete<{ status: string }>(`/sessions/${session.id}`);
+      setSessions((current) => current.filter((item) => item.id !== session.id));
+      setSelectedSessionIds((current) => current.filter((id) => id !== session.id));
+      if (selectedSessionId === session.id) {
+        setSelectedSessionId(null);
+      }
+      toast.success('Session deleted');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete session');
+    } finally {
+      setDeletingSessionId(null);
+    }
+  }
+
+  async function deleteSelectedSessions() {
+    if (deletingSessionId) return;
+    const targetIds = selectedSessionIds.filter((id) => id !== defaultSessionId);
+    if (targetIds.length === 0) return;
+    const confirmed = window.confirm(`Delete ${targetIds.length} selected sessions? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setDeletingSessionId('bulk');
+    try {
+      const results = await Promise.allSettled(
+        targetIds.map((id) => api.delete<{ status: string }>(`/sessions/${id}`)),
+      );
+      const deletedIds = targetIds.filter((_, index) => results[index]?.status === 'fulfilled');
+      const failedCount = targetIds.length - deletedIds.length;
+
+      if (deletedIds.length > 0) {
+        setSessions((current) => current.filter((session) => !deletedIds.includes(session.id)));
+        setSelectedSessionIds((current) => current.filter((id) => !deletedIds.includes(id)));
+        if (selectedSessionId && deletedIds.includes(selectedSessionId)) {
+          setSelectedSessionId(null);
+        }
+      }
+
+      if (failedCount === 0) {
+        toast.success(`${deletedIds.length} sessions deleted`);
+      } else {
+        toast.error(`${failedCount} sessions could not be deleted`);
+      }
+    } finally {
+      setDeletingSessionId(null);
+    }
+  }
+
+  function startRenameSession(session: Session) {
+    setEditingSessionId(session.id);
+    setEditingSessionTitle((session.title || '').trim());
+  }
+
+  function cancelRenameSession() {
+    setEditingSessionId(null);
+    setEditingSessionTitle('');
+  }
+
+  async function submitRenameSession(session: Session) {
+    const title = editingSessionTitle.trim();
+    if (title === (session.title || '').trim()) {
+      setEditingSessionId(null);
+      return;
+    }
+
+    setRenamingSessionId(session.id);
+    try {
+      const updated = await api.patch<Session>(`/sessions/${session.id}`, {
+        title: title.length > 0 ? title : null,
+      });
+      setSessions((current) =>
+        current.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
+      );
+      setEditingSessionId(null);
+      setEditingSessionTitle('');
+      toast.success('Session renamed');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to rename session');
+    } finally {
+      setRenamingSessionId(null);
+    }
+  }
+
+  async function setMainSession(session: Session) {
+    try {
+      const updated = await api.post<Session>(`/sessions/${session.id}/main`, {});
+      setDefaultSessionId(updated.id);
+      setSessions((current) =>
+        current.map((item) =>
+          item.id === updated.id
+            ? { ...item, ...updated, is_main: true }
+            : { ...item, is_main: false },
+        ),
+      );
+      toast.success('Main session updated');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to set main session');
+    }
+  }
+
   const [inspector, setInspector] = useState<{
     session: Session | null;
     userMessage?: Message | null;
@@ -1405,8 +1547,12 @@ export function LogsPage() {
         if (!byId.has(session.id)) byId.set(session.id, session);
       }
       const ordered = Array.from(byId.values());
+      const main = ordered.find((s) => s.is_main) || ordered[0];
+      if (main) {
+        setDefaultSessionId(main.id);
+      }
       setSessions(ordered);
-      setSelectedSessionId((current) => current ?? ordered[0]?.id ?? null);
+      setSelectedSessionId((current) => current ?? main?.id ?? null);
     } catch {
       toast.error('Failed to load sessions');
     } finally {
@@ -1511,11 +1657,6 @@ export function LogsPage() {
       setLoadingMore(false);
     }
   }
-
-  const sessionsInTab = useMemo(() => {
-    if (historyTab === 'sub_agents') return sessions.filter((item) => Boolean(item.parent_session_id));
-    return sessions.filter((item) => !item.parent_session_id);
-  }, [sessions, historyTab]);
 
   const activeSession = useMemo(
     () => sessions.find((item) => item.id === selectedSessionId) ?? null,
@@ -1931,79 +2072,34 @@ export function LogsPage() {
       <div className="flex h-full overflow-hidden">
         {/* IDE-Style Sidebar */}
         <aside className="w-64 border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] flex flex-col shrink-0">
-          <div className="p-3 border-b border-[color:var(--border-subtle)] space-y-2">
-            <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">History</h2>
-            <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
-              {/* Sliding Indicator */}
-              <div 
-                className={`absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
-                  historyTab === 'sessions' ? 'left-0.5' : 'left-[calc(50%)]'
-                }`}
-              />
-
-              <button
-                onClick={() => setHistoryTab('sessions')}
-                className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                  historyTab === 'sessions'
-                    ? 'text-[color:var(--text-primary)]'
-                    : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                }`}
-              >
-                Sessions
-              </button>
-              <button
-                onClick={() => setHistoryTab('sub_agents')}
-                className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                  historyTab === 'sub_agents'
-                    ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)] shadow-sm'
-                    : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                }`}
-              >
-                Sub-agents
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-2 space-y-0.5 custom-scrollbar">
-            {loadingSessions ? (
-              <div className="py-8 text-center">
-                <Loader2 size={16} className="animate-spin mx-auto text-[color:var(--text-muted)]" />
-              </div>
-            ) : null}
-            {sessionsInTab.map((session) => {
-              const active = session.id === selectedSessionId;
-              return (
-                <button
-                  key={session.id}
-                  onClick={() => setSelectedSessionId(session.id)}
-                  className={`w-full flex flex-col gap-1 p-3 rounded-xl text-left transition-all duration-200 border active:scale-[0.98] ${
-                    active
-                      ? 'bg-[color:var(--surface-0)] shadow-md border-[color:var(--border-strong)] scale-[1.02] z-10'
-                      : 'hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-transparent'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 flex-1 text-xs font-bold truncate">{session.title || 'Session'}</span>
-                    <div className="flex shrink-0 items-center gap-1">
-                      {sessionChannelKind(session) === 'telegram_group' ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-sky-400">
-                          <Users size={8} />
-                          <span>TG</span>
-                        </span>
-                      ) : null}
-                      {session.is_main ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-emerald-400">
-                          <BadgeCheck size={8} />
-                          Main
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                  <span className="text-[9px] font-medium uppercase tracking-tight text-[color:var(--text-muted)] opacity-60">{formatCompactDate(session.started_at)}</span>
-                </button>
-              );
-            })}
-          </div>
+          <SessionHistorySidebar
+            historyTab={historyTab}
+            setHistoryTab={setHistoryTab}
+            sessionFilter={sessionFilter}
+            setSessionFilter={setSessionFilter}
+            isMultiSelectMode={isMultiSelectMode}
+            setIsMultiSelectMode={setIsMultiSelectMode}
+            selectedSessionIds={selectedSessionIds}
+            setSelectedSessionIds={setSelectedSessionIds}
+            allVisibleSelected={allVisibleSelected}
+            selectableVisibleSessionIds={selectableVisibleSessionIds}
+            deleteSelectedSessions={deleteSelectedSessions}
+            deletingSessionId={deletingSessionId}
+            filteredSessions={filteredSessions}
+            activeSessionId={selectedSessionId}
+            onSessionClick={(id) => setSelectedSessionId(id)}
+            defaultSessionId={defaultSessionId}
+            editingSessionId={editingSessionId}
+            editingSessionTitle={editingSessionTitle}
+            setEditingSessionTitle={setEditingSessionTitle}
+            submitRenameSession={submitRenameSession}
+            cancelRenameSession={cancelRenameSession}
+            startRenameSession={startRenameSession}
+            setMainSession={setMainSession}
+            deleteSession={deleteSession}
+            renamingSessionId={renamingSessionId}
+            loadingSessions={loadingSessions}
+          />
         </aside>
 
         {/* Command Center Main */}
