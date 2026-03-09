@@ -134,10 +134,15 @@ class ApprovalService:
         )
 
         provider_keys: dict[str, list[tuple[str, str]]] = {}
+        call_debug: dict[str, dict[str, object]] = {}
         for call in unresolved_calls:
             call_id = str(call.get("id") or "").strip()
             if not call_id:
                 continue
+            call_debug[call_id] = {
+                "tool_name": str(call.get("name") or "").strip() or None,
+                "has_hint": isinstance(call.get("approval_hint"), dict),
+            }
             approval_hint = call.get("approval_hint")
             if isinstance(approval_hint, dict):
                 provider_name = str(approval_hint.get("provider") or "").strip().lower()
@@ -202,6 +207,21 @@ class ApprovalService:
                 if not items:
                     continue
                 resolved[call_id] = items.pop(0)
+        expected_call_ids = {
+            call_id
+            for matches in provider_keys.values()
+            for call_id, _ in matches
+        }
+        missing_call_ids = sorted(expected_call_ids - set(resolved.keys()))
+        for call_id in missing_call_ids:
+            debug = call_debug.get(call_id, {})
+            logger.warning(
+                "approval_match_missing session_id=%s tool_call_id=%s tool_name=%s has_hint=%s",
+                session_id,
+                call_id,
+                debug.get("tool_name"),
+                debug.get("has_hint"),
+            )
         logger.info(
             "approval_match_done session_id=%s resolved_count=%s",
             session_id,

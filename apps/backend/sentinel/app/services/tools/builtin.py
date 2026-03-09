@@ -22,7 +22,9 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import settings
 from app.models import Memory, Session, SubAgentTask
+from app.services.approvals.tool_match import build_runtime_exec_match_key
 from app.services.araios_client import (
     araios_request_with_auth,
     join_araios_base_and_path,
@@ -46,13 +48,23 @@ from app.services.session_runtime import (
     ensure_runtime_layout,
     mark_runtime_state,
     runtime_logs_dir,
+    runtime_root_dir,
     stop_detached_runtime_job,
     runtime_venv_dir,
     runtime_workspace_dir,
 )
+from app.services.tools.approval_waiters import build_tool_db_approval_waiter
 from app.services.tools.browser_tool import BrowserManager
 from app.services.tools.executor import ToolValidationError
+from app.services.tools.runtime_exec_sandbox import (
+    RuntimeExecSandboxError,
+    build_runtime_exec_command_args,
+)
 from app.services.tools.registry import (
+    ToolApprovalEvaluation,
+    ToolApprovalGate,
+    ToolApprovalMode,
+    ToolApprovalRequirement,
     ToolDefinition,
     ToolRegistry,
 )
@@ -73,6 +85,8 @@ _RUNTIME_EXEC_STREAM_READ_BYTES = 65_536
 _RUNTIME_EXEC_STREAM_DRAIN_SECONDS = 2.0
 _RUNTIME_EXEC_TIMEOUT_KILL_WAIT_SECONDS = 3.0
 _RUNTIME_BACKGROUND_AMPERSAND_RE = re.compile(r"(?<!&)&(?!&)")
+_DEFAULT_RUNTIME_ROOT_APPROVAL_TIMEOUT_SECONDS = 600
+_MAX_RUNTIME_ROOT_APPROVAL_TIMEOUT_SECONDS = 3600
 
 
 def build_default_registry(
@@ -427,6 +441,13 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
             raise ToolValidationError("Field 'command' must be a non-empty string")
         command_text = command.strip()
 
+        privilege_raw = payload.get("privilege", "user")
+        if not isinstance(privilege_raw, str) or not privilege_raw.strip():
+            raise ToolValidationError("Field 'privilege' must be one of: user, root")
+        privilege = privilege_raw.strip().lower()
+        if privilege not in {"user", "root"}:
+            raise ToolValidationError("Field 'privilege' must be one of: user, root")
+
         timeout_seconds = payload.get("timeout_seconds", 300)
         if (
             not isinstance(timeout_seconds, int)
@@ -461,21 +482,19 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
 
         await _ensure_session_exists(session_factory, session_id)
         await ensure_runtime_layout(session_id)
+        runtime_root = runtime_root_dir(session_id)
         workspace_dir = runtime_workspace_dir(session_id)
         venv_dir = runtime_venv_dir(session_id)
 
         env = os.environ.copy()
         env["HOME"] = str(workspace_dir)
         env["PWD"] = str(workspace_dir)
+        base_path = env.get("PATH", "")
+        venv_bin: Path | None = None
         if use_python_venv:
             python_bin = _venv_python_path(venv_dir)
             await _ensure_managed_runtime_venv(venv_dir, python_bin)
             venv_bin = _venv_bin_dir(venv_dir)
-            existing_path = env.get("PATH", "")
-            env["PATH"] = (
-                f"{venv_bin}{os.pathsep}{existing_path}" if existing_path else str(venv_bin)
-            )
-            env["VIRTUAL_ENV"] = str(venv_dir)
 
         for key, value in env_payload.items():
             if not isinstance(key, str) or not key.strip():
@@ -502,6 +521,31 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
             run_dir = candidate
             run_dir.mkdir(parents=True, exist_ok=True)
 
+        try:
+            command_plan = build_runtime_exec_command_args(
+                command=command_text,
+                privilege=privilege,
+                workspace_dir=workspace_dir,
+                run_dir=run_dir,
+                runtime_root=runtime_root,
+                use_python_venv=use_python_venv,
+                venv_dir=venv_dir if use_python_venv else None,
+            )
+        except RuntimeExecSandboxError as exc:
+            raise ToolValidationError(str(exc)) from exc
+        if command_plan.env_overrides:
+            env.update(command_plan.env_overrides)
+        if use_python_venv:
+            current_path = env.get("PATH", base_path)
+            if privilege == "user":
+                env["PATH"] = f"/venv/bin{os.pathsep}{current_path}" if current_path else "/venv/bin"
+                env["VIRTUAL_ENV"] = "/venv"
+            else:
+                if venv_bin is None:
+                    raise ToolValidationError("Failed to resolve virtualenv bin path")
+                env["PATH"] = f"{venv_bin}{os.pathsep}{current_path}" if current_path else str(venv_bin)
+                env["VIRTUAL_ENV"] = str(venv_dir)
+
         proc: asyncio.subprocess.Process | None = None
         detached_started = False
         command_result_details: dict[str, Any] | None = None
@@ -516,29 +560,19 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                 stdout_path.touch(exist_ok=True)
                 stderr_path.touch(exist_ok=True)
                 with stdout_path.open("ab") as stdout_handle, stderr_path.open("ab") as stderr_handle:
-                    if os.name == "nt":
-                        proc = await asyncio.create_subprocess_exec(
-                            "cmd",
-                            "/C",
-                            command_text,
-                            cwd=str(run_dir),
-                            env=env,
-                            stdin=asyncio.subprocess.DEVNULL,
-                            stdout=stdout_handle,
-                            stderr=stderr_handle,
-                        )
-                    else:
-                        proc = await asyncio.create_subprocess_exec(
-                            "/bin/bash",
-                            "-lc",
-                            command_text,
-                            cwd=str(run_dir),
-                            env=env,
-                            stdin=asyncio.subprocess.DEVNULL,
-                            stdout=stdout_handle,
-                            stderr=stderr_handle,
-                            start_new_session=True,
-                        )
+                    detached_kwargs: dict[str, Any] = {
+                        "cwd": str(run_dir),
+                        "env": env,
+                        "stdin": asyncio.subprocess.DEVNULL,
+                        "stdout": stdout_handle,
+                        "stderr": stderr_handle,
+                    }
+                    if os.name != "nt":
+                        detached_kwargs["start_new_session"] = True
+                    proc = await asyncio.create_subprocess_exec(
+                        *command_plan.args,
+                        **detached_kwargs,
+                    )
 
                 await mark_runtime_state(session_id, active=True, command=command_text, pid=proc.pid)
                 job = await register_detached_runtime_job(
@@ -565,36 +599,33 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                     "workspace": str(workspace_dir),
                     "cwd": str(run_dir),
                     "venv": str(venv_dir) if use_python_venv else None,
+                    "privilege": privilege,
                 }
 
-            if os.name == "nt":
-                proc = await asyncio.create_subprocess_exec(
-                    "cmd",
-                    "/C",
-                    command_text,
-                    cwd=str(run_dir),
-                    env=env,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-            else:
-                proc = await asyncio.create_subprocess_exec(
-                    "/bin/bash",
-                    "-lc",
-                    command_text,
-                    cwd=str(run_dir),
-                    env=env,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                )
+            inline_kwargs: dict[str, Any] = {
+                "cwd": str(run_dir),
+                "env": env,
+                "stdout": asyncio.subprocess.PIPE,
+                "stderr": asyncio.subprocess.PIPE,
+            }
+            if os.name != "nt":
+                inline_kwargs["start_new_session"] = True
+            proc = await asyncio.create_subprocess_exec(
+                *command_plan.args,
+                **inline_kwargs,
+            )
 
             await mark_runtime_state(session_id, active=True, command=command_text, pid=proc.pid)
+            timeout_hint: str | None = None
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
                 timed_out = False
             except TimeoutError:
                 timed_out = True
+                timeout_hint = (
+                    f"Command timed out after {timeout_seconds}s. "
+                    "Use detached=true for long-running/background commands."
+                )
                 if proc.returncode is None:
                     if os.name == "nt":
                         proc.kill()
@@ -617,6 +648,8 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                 "returncode": proc.returncode,
                 "stdout": stdout_text,
                 "stderr": stderr_text,
+                "message": timeout_hint,
+                "privilege": privilege,
             }
             return {
                 "ok": ok,
@@ -624,10 +657,12 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                 "returncode": proc.returncode,
                 "stdout": stdout_text,
                 "stderr": stderr_text,
+                "message": timeout_hint,
                 "session_id": str(session_id),
                 "workspace": str(workspace_dir),
                 "cwd": str(run_dir),
                 "venv": str(venv_dir) if use_python_venv else None,
+                "privilege": privilege,
             }
         finally:
             if not detached_started:
@@ -643,7 +678,8 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
         name="runtime_exec",
         description=(
             "Execute arbitrary shell commands in a per-session runtime workspace. "
-            "Supports installs and full command chains; workspace persists for this session."
+            "privilege=user runs in a confined sandbox limited to workspace writes. "
+            "privilege=root runs unconfined and requires explicit approval."
         ),
         risk_level="high",
         parameters_schema={
@@ -656,6 +692,11 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                     "description": "Current session ID (auto-injected in agent loop)",
                 },
                 "command": {"type": "string"},
+                "privilege": {
+                    "type": "string",
+                    "enum": ["user", "root"],
+                    "description": "Execution privilege mode (default user). root requires approval.",
+                },
                 "cwd": {
                     "type": "string",
                     "description": "Optional working directory inside the session workspace",
@@ -672,6 +713,10 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                     "type": "integer",
                     "description": "Execution timeout in seconds (default 300, max 1800)",
                 },
+                "approval_timeout_seconds": {
+                    "type": "integer",
+                    "description": "Root approval wait timeout in seconds (default 600, max 3600)",
+                },
                 "detached": {
                     "type": "boolean",
                     "description": "If true, starts command in background and returns a tracked job immediately",
@@ -679,6 +724,67 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
             },
         },
         execute=_execute,
+        approval_gate=ToolApprovalGate(
+            mode=ToolApprovalMode.CONDITIONAL,
+            evaluator=_runtime_exec_approval_evaluator,
+            waiter=build_tool_db_approval_waiter(session_factory=session_factory),
+        ),
+    )
+
+
+def _runtime_exec_approval_timeout_from_payload(payload: dict[str, Any]) -> int:
+    approval_timeout_seconds = payload.get(
+        "approval_timeout_seconds",
+        getattr(
+            settings,
+            "runtime_exec_root_approval_timeout_seconds",
+            _DEFAULT_RUNTIME_ROOT_APPROVAL_TIMEOUT_SECONDS,
+        ),
+    )
+    if (
+        not isinstance(approval_timeout_seconds, int)
+        or isinstance(approval_timeout_seconds, bool)
+        or approval_timeout_seconds < 1
+    ):
+        raise ToolValidationError("Field 'approval_timeout_seconds' must be a positive integer")
+    return min(approval_timeout_seconds, _MAX_RUNTIME_ROOT_APPROVAL_TIMEOUT_SECONDS)
+
+
+def _runtime_exec_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEvaluation:
+    privilege_raw = payload.get("privilege", "user")
+    privilege = privilege_raw.strip().lower() if isinstance(privilege_raw, str) else "user"
+    if privilege != "root":
+        return ToolApprovalEvaluation.allow()
+
+    command = payload.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return ToolApprovalEvaluation.allow()
+
+    session_id = payload.get("session_id")
+    requested_by = (
+        f"session:{session_id.strip()}"
+        if isinstance(session_id, str) and session_id.strip()
+        else None
+    )
+    return ToolApprovalEvaluation.require(
+        ToolApprovalRequirement(
+            action="runtime_exec.root",
+            description=f"Allow root runtime command: {command.strip()}",
+            timeout_seconds=_runtime_exec_approval_timeout_from_payload(payload),
+            match_key=build_runtime_exec_match_key(
+                command=command,
+                privilege="root",
+            ),
+            metadata={
+                "tool_name": "runtime_exec",
+                "privilege": "root",
+                "command": command.strip(),
+                "cwd": payload.get("cwd"),
+                "detached": bool(payload.get("detached", False)),
+                "use_python_venv": bool(payload.get("use_python_venv", False)),
+            },
+            requested_by=requested_by,
+        )
     )
 
 
