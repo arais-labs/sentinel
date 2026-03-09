@@ -9,8 +9,10 @@ from app.services.llm.generic.types import (
     AgentEvent,
     AssistantMessage,
     ImageContent,
+    SystemMessage,
     TextContent,
     ToolCallContent,
+    ToolResultMessage,
     TokenUsage,
     UserMessage,
 )
@@ -190,6 +192,69 @@ def test_agent_loop_text_only_persists_messages_and_emits_done():
     assert assistant_generation.get("max_iterations") == 50
     assert any(event.type == "text_delta" and event.delta == "All set" for event in events)
     assert any(event.type == "done" and event.stop_reason == "stop" for event in events)
+
+
+def test_runtime_context_snapshot_includes_conversation_history_layer():
+    messages = [
+        SystemMessage(
+            content="System prompt",
+            metadata={"layer": "core", "kind": "base_prompt", "title": "Core Prompt"},
+        ),
+        UserMessage(
+            content=[TextContent(text="Need the latest status"), ImageContent(data="abc")],
+            metadata={"source": "web"},
+        ),
+        AssistantMessage(
+            content=[
+                TextContent(text="I will check the repository."),
+                ToolCallContent(id="call_1", name="git_exec", arguments={"command": "git status"}),
+            ]
+        ),
+        ToolResultMessage(
+            tool_call_id="call_1",
+            tool_name="git_exec",
+            content='{"ok": true}',
+            is_error=False,
+        ),
+    ]
+
+    snapshot = AgentLoop._build_runtime_context_snapshot(
+        messages,
+        [],
+        model="normal",
+        temperature=0.7,
+        max_iterations=50,
+        stream=True,
+    )
+    structured = snapshot["structured_context"]
+    layers = structured["layers"]
+    history_layer = next(layer for layer in layers if layer.get("kind") == "conversation_history")
+    assert history_layer["layer"] == "history"
+    assert history_layer["title"] == "Injected Previous Messages"
+
+    history_messages = history_layer["history_messages"]
+    assert len(history_messages) == 3
+
+    user_entry = history_messages[0]
+    assert user_entry["role"] == "user"
+    assert user_entry["source"] == "web"
+    assert user_entry["text_block_count"] == 1
+    assert user_entry["image_count"] == 1
+    assert "latest status" in str(user_entry.get("preview") or "")
+
+    assistant_entry = history_messages[1]
+    assert assistant_entry["role"] == "assistant"
+    assert assistant_entry["tool_call_count"] == 1
+    assert assistant_entry["tool_calls"][0]["name"] == "git_exec"
+    assert "check the repository" in str(assistant_entry.get("preview") or "")
+
+    tool_result_entry = history_messages[2]
+    assert tool_result_entry["role"] == "tool_result"
+    assert tool_result_entry["tool_name"] == "git_exec"
+    assert tool_result_entry["tool_call_id"] == "call_1"
+    assert tool_result_entry["is_error"] is False
+
+    assert structured["history_message_count"] == 3
 
 
 def test_agent_loop_tool_use_path_runs_tool_and_finishes_second_iteration():

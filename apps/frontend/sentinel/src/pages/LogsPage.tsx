@@ -292,6 +292,24 @@ function lensTone(lens: OperationalLens): ChipTone {
   return 'default';
 }
 
+function contextLayerTone(layer: string | null | undefined): ChipTone {
+  const normalized = (layer ?? '').trim().toLowerCase();
+  if (!normalized) return 'default';
+  if (normalized === 'core' || normalized.includes('core')) return 'danger';
+  if (
+    normalized === 'policy' ||
+    normalized.includes('policy') ||
+    normalized.includes('guardrail')
+  ) {
+    return 'warn';
+  }
+  if (normalized === 'memory' || normalized.includes('memory')) return 'good';
+  if (normalized === 'runtime' || normalized.includes('runtime')) return 'info';
+  if (normalized === 'ingress' || normalized.includes('ingress')) return 'info';
+  if (normalized === 'history' || normalized.includes('history')) return 'info';
+  return 'default';
+}
+
 function lensToSide(lens: OperationalLens): 'left' | 'right' {
   if (lens === 'input' || lens === 'bridge') return 'left';
   return 'right';
@@ -454,6 +472,18 @@ function extractLayerMemoryBlocks(layer: Record<string, unknown>): Record<string
   const memoryBlocks = layer.memory_blocks;
   if (!Array.isArray(memoryBlocks)) return [];
   return memoryBlocks.filter((item): item is Record<string, unknown> => isRecord(item));
+}
+
+function extractLayerHistoryMessages(layer: Record<string, unknown>): Record<string, unknown>[] {
+  const historyMessages = layer.history_messages;
+  if (!Array.isArray(historyMessages)) return [];
+  return historyMessages.filter((item): item is Record<string, unknown> => isRecord(item));
+}
+
+function asCount(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const normalized = Math.trunc(value);
+  return normalized >= 0 ? normalized : null;
 }
 
 function assembleSystemContext(runContext: Record<string, unknown> | null | undefined): string | null {
@@ -619,6 +649,14 @@ function ContextLayersSection({
   const selectedLayerMemoryBlocks = selectedLayer
     ? extractLayerMemoryBlocks(selectedLayer)
     : [];
+  const selectedLayerHistoryMessages = selectedLayer
+    ? extractLayerHistoryMessages(selectedLayer)
+    : [];
+  const selectedLayerKind =
+    typeof selectedLayer?.kind === 'string'
+      ? selectedLayer.kind.trim().toLowerCase()
+      : '';
+  const isHistoryLayer = selectedLayerKind === 'conversation_history';
   const selectedInjectedMemoryBlocks = selectedLayerMemoryBlocks.filter(isInjectedFullMemory);
   const selectedReferencedMemoryBlocks = selectedLayerMemoryBlocks.filter(
     (block) => !isInjectedFullMemory(block),
@@ -642,6 +680,12 @@ function ContextLayersSection({
           <div className="flex flex-col gap-1 overflow-y-auto pr-2 custom-scrollbar min-h-0 w-full">
             {entries.map((entry, index) => {
               const active = selectedIndex === index;
+              const layerLabel =
+                entry.kind === 'layer'
+                  ? String(entry.layer.layer ?? 'system')
+                  : entry.kind === 'run_config'
+                    ? 'runtime'
+                    : 'ingress';
               return (
                 <div key={entry.id} className="w-full">
                   <button
@@ -655,9 +699,11 @@ function ContextLayersSection({
                     ].join(' ')}
                   >
                     <div className="flex items-center gap-2 flex-wrap mb-1 min-w-0">
-                      {entry.kind === 'user_message' && <StatusChip label="ingress" tone="info" className="h-4 text-[8px]" />}
-                      {entry.kind === 'run_config' && <StatusChip label="runtime" tone="info" className="h-4 text-[8px]" />}
-                      {entry.kind === 'layer' && <StatusChip label={String(entry.layer.layer ?? 'system')} tone="info" className="h-4 text-[8px]" />}
+                      <StatusChip
+                        label={layerLabel}
+                        tone={contextLayerTone(layerLabel)}
+                        className="h-4 text-[8px]"
+                      />
                     </div>
                     <p className={`text-xs font-medium truncate w-full ${active ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]'}`}>
                       {entry.kind === 'layer' ? String(entry.layer.title ?? `Layer ${entry.index + 1}`) : entry.title}
@@ -822,7 +868,107 @@ function ContextLayersSection({
                         </div>
                       )}
 
-                      {selectedInjectedMemoryBlocks.length > 0 ? (
+                      {isHistoryLayer ? (
+                        selectedLayerHistoryMessages.length > 0 ? (
+                          <div className="space-y-2">
+                            {selectedLayerHistoryMessages.map((historyMessage, idx) => {
+                              const role =
+                                typeof historyMessage.role === 'string' && historyMessage.role.trim()
+                                  ? historyMessage.role.trim()
+                                  : 'unknown';
+                              const preview =
+                                typeof historyMessage.preview === 'string' && historyMessage.preview.trim()
+                                  ? historyMessage.preview.trim()
+                                  : '';
+                              const source =
+                                typeof historyMessage.source === 'string' && historyMessage.source.trim()
+                                  ? historyMessage.source.trim()
+                                  : null;
+                              const toolName =
+                                typeof historyMessage.tool_name === 'string' && historyMessage.tool_name.trim()
+                                  ? historyMessage.tool_name.trim()
+                                  : null;
+                              const toolCallCount = asCount(historyMessage.tool_call_count);
+                              const imageCount = asCount(historyMessage.image_count);
+                              const textBlockCount = asCount(historyMessage.text_block_count);
+                              const isError = historyMessage.is_error === true;
+                              const toolCalls = Array.isArray(historyMessage.tool_calls)
+                                ? historyMessage.tool_calls.filter((item): item is Record<string, unknown> => isRecord(item))
+                                : [];
+
+                              return (
+                                <div
+                                  key={`history-${idx}`}
+                                  className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 p-3 space-y-2"
+                                >
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <StatusChip
+                                      label={role.replace(/_/g, ' ')}
+                                      tone={roleTone(role)}
+                                      className="h-4 text-[8px]"
+                                    />
+                                    {source && <StatusChip label={source} tone="default" className="h-4 text-[8px]" />}
+                                    {toolName && <StatusChip label={toolName} tone={toolTone(toolName)} className="h-4 text-[8px]" />}
+                                    {toolCallCount !== null && toolCallCount > 0 && (
+                                      <StatusChip
+                                        label={`${toolCallCount} tool call${toolCallCount === 1 ? '' : 's'}`}
+                                        tone="warn"
+                                        className="h-4 text-[8px]"
+                                      />
+                                    )}
+                                    {isError && <StatusChip label="error" tone="danger" className="h-4 text-[8px]" />}
+                                  </div>
+
+                                  {preview ? (
+                                    <p className="text-xs text-[color:var(--text-secondary)] leading-relaxed whitespace-pre-wrap break-words">
+                                      {preview}
+                                    </p>
+                                  ) : (
+                                    <p className="text-[11px] text-[color:var(--text-muted)] italic">
+                                      No text preview available.
+                                    </p>
+                                  )}
+
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    {textBlockCount !== null && (
+                                      <StatusChip
+                                        label={`${textBlockCount} text block${textBlockCount === 1 ? '' : 's'}`}
+                                        tone="default"
+                                        className="h-4 text-[8px]"
+                                      />
+                                    )}
+                                    {imageCount !== null && imageCount > 0 && (
+                                      <StatusChip
+                                        label={`${imageCount} image${imageCount === 1 ? '' : 's'}`}
+                                        tone="info"
+                                        className="h-4 text-[8px]"
+                                      />
+                                    )}
+                                  </div>
+
+                                  {toolCalls.length > 0 && (
+                                    <div className="text-[10px] font-mono text-[color:var(--text-muted)] break-words">
+                                      {toolCalls
+                                        .map((call) => {
+                                          const name = typeof call.name === 'string' ? call.name.trim() : '';
+                                          const id = typeof call.id === 'string' ? call.id.trim() : '';
+                                          if (name && id) return `${name} (${id})`;
+                                          return name || id || null;
+                                        })
+                                        .filter((item): item is string => Boolean(item))
+                                        .join(' • ')}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-[color:var(--text-muted)]">
+                            No conversation history entries were captured for this run.
+                          </p>
+                        )
+                      ) : selectedInjectedMemoryBlocks.length > 0 ? (
                         <div className="space-y-3">
                           {selectedInjectedMemoryBlocks.map((block, bIdx) => (
                             <details key={bIdx} className="group bg-[color:var(--surface-1)]/50 rounded border border-[color:var(--border-subtle)] overflow-hidden">
@@ -1648,6 +1794,7 @@ export function LogsPage() {
   ) => {
     const compact = options?.compact ?? false;
     const isJson = typeof event.payload === 'object' && event.payload !== null;
+    const isUserIngressCard = event.message.role === 'user' && Boolean(options?.onClick);
     const cardToolCalls = Array.isArray(event.message.metadata.tool_calls)
       ? event.message.metadata.tool_calls.filter((c): c is Record<string, unknown> => isRecord(c))
       : [];
@@ -1715,19 +1862,35 @@ export function LogsPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {event.tools.map((t) => (
-            <StatusChip key={t} label={t} tone={toolTone(t)} className="text-[8px]" />
-          ))}
-          {event.source && (
-            <StatusChip label={event.source} tone={toolTone(event.source)} className="text-[8px]" />
-          )}
-          {event.tools.length === 0 && !event.source && (
-            <StatusChip
-              label={lensMap.label}
-              tone={lensTone(event.lens)}
-              className="text-[8px]"
-            />
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {event.tools.map((t) => (
+              <StatusChip key={t} label={t} tone={toolTone(t)} className="text-[8px]" />
+            ))}
+            {event.source && (
+              <StatusChip label={event.source} tone={toolTone(event.source)} className="text-[8px]" />
+            )}
+            {event.tools.length === 0 && !event.source && (
+              <StatusChip
+                label={lensMap.label}
+                tone={lensTone(event.lens)}
+                className="text-[8px]"
+              />
+            )}
+          </div>
+          {isUserIngressCard && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                options?.onClick?.(e);
+              }}
+              className="inline-flex items-center gap-1 rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-sky-400 hover:bg-sky-500/15"
+            >
+              <Layers size={10} />
+              Explore Context
+            </button>
           )}
         </div>
       </div>
@@ -1959,11 +2122,17 @@ export function LogsPage() {
                       const prevSide = idx > 0 ? renderedTimelineEntries[idx - 1].side : side;
                       const isOpposite = idx > 0 && side !== prevSide;
                       const isCluster = entry.kind === 'cluster';
+                      const isUserEvent = entry.kind === 'event' && entry.event.message.role === 'user';
                       const isExpandedClusterEvent = 'parentClusterKey' in entry;
                       const isCollapsingExpandedEvent =
                         isExpandedClusterEvent && collapsingClusters.has(entry.parentClusterKey);
                       const showCollapsePill =
                         isExpandedClusterEvent && entry.clusterIndex === entry.clusterLength - 1;
+                      const rowZClass = isCluster || showCollapsePill
+                        ? 'z-50'
+                        : isUserEvent
+                          ? 'z-40'
+                          : 'z-20';
                       const expandedEventAnimClass =
                         isExpandedClusterEvent ? 'will-change-transform will-change-opacity' : '';
                       const expandedEventAnimDelay =
@@ -1984,9 +2153,7 @@ export function LogsPage() {
                       return (
                         <div
                           key={entry.key}
-                          className={`relative flex items-center justify-between md:justify-normal ${isRight ? 'md:flex-row-reverse' : ''} group ${
-                            isCluster || showCollapsePill ? 'z-30' : 'z-10'
-                          }`}
+                          className={`relative flex items-center justify-between md:justify-normal ${isRight ? 'md:flex-row-reverse' : ''} group pointer-events-none ${rowZClass}`}
                           style={idx === 0 ? undefined : { marginTop: isOpposite ? '-40px' : '24px' }}
                         >
                           <div className={`flex items-center justify-center w-8 h-8 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shrink-0 md:order-1 ${isRight ? 'md:-translate-x-1/2' : 'md:translate-x-1/2'} z-10 shadow-sm transition-transform group-hover:scale-110`}>
@@ -1996,7 +2163,7 @@ export function LogsPage() {
                           <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)]">
                             {entry.kind === 'event' ? (
                               <div
-                                className={`space-y-2 ${expandedEventAnimClass}`}
+                                className={`space-y-2 pointer-events-auto ${expandedEventAnimClass}`}
                                 style={expandedEventAnimStyle}
                               >
                                 {renderEventCard(event, {
@@ -2009,10 +2176,14 @@ export function LogsPage() {
                                     ) : null,
                                 })}
                                 {showCollapsePill ? (
-                                  <div className="relative z-40 flex justify-center -mt-1 pointer-events-none">
+                                  <div className="relative z-50 flex justify-center -mt-1 pointer-events-auto">
                                     <button
-                                      onClick={() => toggleCluster(entry.parentClusterKey)}
-                                      className="pointer-events-auto px-5 py-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        toggleCluster(entry.parentClusterKey);
+                                      }}
+                                      className="px-5 py-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
                                     >
                                       <ChevronRight size={11} className="-rotate-90" />
                                       Collapse Trace
@@ -2021,7 +2192,7 @@ export function LogsPage() {
                                 ) : null}
                               </div>
                             ) : (
-                              <div className="space-y-2">
+                              <div className="space-y-2 pointer-events-auto">
                                 <div className="relative pb-11">
                                   <div className="pointer-events-none absolute inset-x-0 top-0 z-0">
                                     {entry.events.slice(1, 4).map((shadowEvent, shadowIndex) => (
@@ -2041,7 +2212,7 @@ export function LogsPage() {
                                     ))}
                                   </div>
 
-                                  <div className="relative z-10">
+                                  <div className="relative z-10 pointer-events-auto">
                                     {renderEventCard(entry.representative, {
                                       onClick: (e) => void openEventDetails(entry.representative, e),
                                       headerBadge: (
@@ -2052,10 +2223,14 @@ export function LogsPage() {
                                     })}
                                   </div>
 
-                                  <div className="absolute left-1/2 bottom-0 z-40 -translate-x-1/2 pointer-events-none">
+                                  <div className="absolute left-1/2 bottom-0 z-50 -translate-x-1/2 pointer-events-auto">
                                     <button
-                                      onClick={() => toggleCluster(entry.key)}
-                                      className="pointer-events-auto px-5 py-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        toggleCluster(entry.key);
+                                      }}
+                                      className="px-5 py-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
                                     >
                                       <ChevronRight size={11} className="rotate-90" />
                                       Expand {entry.events.length} Step Trace

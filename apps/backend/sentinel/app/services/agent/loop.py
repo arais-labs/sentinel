@@ -1070,6 +1070,94 @@ class AgentLoop:
         return "\n\n---\n\n".join(blocks)
 
     @staticmethod
+    def _truncate_runtime_history_preview(value: str, *, max_chars: int = 320) -> str:
+        text = value.strip()
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars].rstrip()}..."
+
+    @staticmethod
+    def _runtime_history_entry(message: AgentMessage) -> dict[str, Any] | None:
+        if isinstance(message, UserMessage):
+            text_parts: list[str] = []
+            image_count = 0
+            if isinstance(message.content, str):
+                text = message.content.strip()
+                if text:
+                    text_parts.append(text)
+            elif isinstance(message.content, list):
+                for block in message.content:
+                    if isinstance(block, TextContent):
+                        text = (block.text or "").strip()
+                        if text:
+                            text_parts.append(text)
+                    elif isinstance(block, ImageContent):
+                        if (block.data or "").strip():
+                            image_count += 1
+
+            preview = "\n\n".join(text_parts).strip()
+            if not preview and image_count > 0:
+                preview = f"[{image_count} image attachment{'s' if image_count != 1 else ''}]"
+
+            entry: dict[str, Any] = {
+                "role": "user",
+                "kind": "history_user",
+                "preview": AgentLoop._truncate_runtime_history_preview(preview) if preview else None,
+                "text_block_count": len(text_parts),
+                "image_count": image_count,
+            }
+            source = message.metadata.get("source") if isinstance(message.metadata, dict) else None
+            if isinstance(source, str) and source.strip():
+                entry["source"] = source.strip()
+            return entry
+
+        if isinstance(message, AssistantMessage):
+            text_parts = [
+                (block.text or "").strip()
+                for block in message.content
+                if isinstance(block, TextContent) and (block.text or "").strip()
+            ]
+            tool_calls = [
+                {
+                    "id": block.id,
+                    "name": block.name,
+                }
+                for block in message.content
+                if isinstance(block, ToolCallContent) and (block.id or block.name)
+            ]
+            preview = "\n\n".join(text_parts).strip()
+            if not preview and tool_calls:
+                call_names = ", ".join(
+                    call["name"] for call in tool_calls if isinstance(call.get("name"), str) and call["name"].strip()
+                )
+                if call_names:
+                    preview = f"Planned tool call{'s' if len(tool_calls) != 1 else ''}: {call_names}"
+
+            entry = {
+                "role": "assistant",
+                "kind": "history_assistant",
+                "preview": AgentLoop._truncate_runtime_history_preview(preview) if preview else None,
+                "text_block_count": len(text_parts),
+                "tool_call_count": len(tool_calls),
+            }
+            if tool_calls:
+                entry["tool_calls"] = tool_calls
+            return entry
+
+        if isinstance(message, ToolResultMessage):
+            preview = AgentLoop._truncate_runtime_history_preview((message.content or "").strip())
+            return {
+                "role": "tool_result",
+                "kind": "history_tool_result",
+                "preview": preview or None,
+                "tool_name": message.tool_name or None,
+                "tool_call_id": message.tool_call_id or None,
+                "is_error": bool(message.is_error),
+            }
+
+        return None
+
+    @staticmethod
     def _build_runtime_context_snapshot(
         messages: list[AgentMessage],
         tools: list[ToolSchema],
@@ -1082,8 +1170,12 @@ class AgentLoop:
         system_blocks: list[str] = []
         layered_context: list[dict[str, Any]] = []
         memory_blocks: list[dict[str, Any]] = []
+        history_messages: list[dict[str, Any]] = []
         for message in messages:
             if not isinstance(message, SystemMessage):
+                history_entry = AgentLoop._runtime_history_entry(message)
+                if history_entry is not None:
+                    history_messages.append(history_entry)
                 continue
             content = (message.content or "").strip()
             if not content:
@@ -1130,6 +1222,17 @@ class AgentLoop:
 
             layered_context.append(layer_entry)
 
+        if history_messages:
+            layered_context.append(
+                {
+                    "layer": "history",
+                    "kind": "conversation_history",
+                    "title": "Injected Previous Messages",
+                    "explanation": "Recent conversation history injected into this run context.",
+                    "history_messages": history_messages,
+                }
+            )
+
         pinned_memories = [
             {
                 "title": block["title"],
@@ -1166,6 +1269,7 @@ class AgentLoop:
                 "memory_blocks": memory_blocks,
                 "layer_count": len(layered_context),
                 "memory_block_count": len(memory_blocks),
+                "history_message_count": len(history_messages),
             },
             "context_token_budget": usage_metrics.context_token_budget,
             "estimated_context_tokens": usage_metrics.estimated_context_tokens,
