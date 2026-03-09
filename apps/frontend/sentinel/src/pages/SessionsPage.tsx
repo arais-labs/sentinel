@@ -3594,13 +3594,15 @@ export function SessionsPage() {
                   Runtime
                 </button>
               </div>
-              <div className="flex items-center justify-between">
-                <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                  {rightRailTab === 'browser'
-                    ? 'Live Browser'
-                    : rightRailTab === 'sub_agents'
-                      ? 'Sub-Agent Tasks'
-                      : 'Workspace Runtime'}
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                    {rightRailTab === 'browser'
+                      ? 'Live Browser'
+                      : rightRailTab === 'sub_agents'
+                        ? 'Sub-Agent Tasks'
+                        : 'Workspace Runtime'}
+                  </div>
                 </div>
                 {rightRailTab === 'sub_agents' ? (
                   <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-1.5 py-0.5 rounded font-bold">
@@ -3777,17 +3779,6 @@ export function SessionsPage() {
 
             {rightRailTab === 'runtime' ? (
               <div className="flex-1 min-h-0 flex flex-col">
-                <div className="px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                      Workspace
-                    </div>
-                    <div className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                      live: ws / 3s
-                    </div>
-                  </div>
-                </div>
-
                 <div className="flex-1 min-h-0 flex flex-col">
                   <div className="border-b border-[color:var(--border-subtle)] px-4 py-2">
                     <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
