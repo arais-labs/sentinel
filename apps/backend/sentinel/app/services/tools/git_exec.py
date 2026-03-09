@@ -69,6 +69,12 @@ class _ResolvedAccount:
     repo: _RepoRef
 
 
+@dataclass(frozen=True, slots=True)
+class _AccountSelector:
+    account_id: UUID | None = None
+    account_name: str | None = None
+
+
 def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         session_id_raw = payload.get("session_id")
@@ -95,6 +101,7 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
         cwd_raw = payload.get("cwd")
         if cwd_raw is not None and (not isinstance(cwd_raw, str) or not cwd_raw.strip()):
             raise ToolValidationError("Field 'cwd' must be a non-empty string when provided")
+        selector = _account_selector_from_payload(payload)
 
         await _ensure_session_exists(session_factory, session_id)
         await ensure_runtime_layout(session_id)
@@ -111,6 +118,7 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
                 tokens=tokens,
                 timeout_seconds=timeout_seconds,
                 approval=_approval_context(payload),
+                account_selector=selector,
             )
 
         subcommand, subcommand_index = _extract_git_subcommand(tokens)
@@ -125,7 +133,12 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
         if network_mode is not None:
             repo_url, remote_name = _resolve_network_repo_url(subcommand, subargs, run_dir)
             async with session_factory() as db:
-                account = await _resolve_git_account(db, repo_url=repo_url, require_write=network_mode == "write")
+                account = await _resolve_git_account(
+                    db,
+                    repo_url=repo_url,
+                    require_write=network_mode == "write",
+                    selector=selector,
+                )
             if account is None:
                 repo_target = _repo_target_label(repo_url)
                 required_token = "write token" if network_mode == "write" else "read token"
@@ -163,7 +176,12 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
         if subcommand == "commit":
             origin_url = _resolve_origin_url(run_dir)
             async with session_factory() as db:
-                account = await _resolve_git_account(db, repo_url=origin_url, require_write=False)
+                account = await _resolve_git_account(
+                    db,
+                    repo_url=origin_url,
+                    require_write=False,
+                    selector=selector,
+                )
             if account is None:
                 repo_target = _repo_target_label(origin_url)
                 raise ToolValidationError(
@@ -228,6 +246,14 @@ def git_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolD
                     "type": "integer",
                     "description": "Push approval wait timeout in seconds (default 600, max 3600)",
                 },
+                "git_account_name": {
+                    "type": "string",
+                    "description": "Optional explicit git account name to use for this command",
+                },
+                "git_account_id": {
+                    "type": "string",
+                    "description": "Optional explicit git account UUID to use for this command",
+                },
             },
         },
         execute=_execute,
@@ -244,6 +270,33 @@ def _approval_context(payload: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(raw, dict):
         return raw
     return None
+
+
+def _account_selector_from_payload(payload: dict[str, Any]) -> _AccountSelector | None:
+    account_name_raw = payload.get("git_account_name")
+    account_id_raw = payload.get("git_account_id")
+
+    account_name: str | None = None
+    if account_name_raw is not None:
+        if not isinstance(account_name_raw, str) or not account_name_raw.strip():
+            raise ToolValidationError("Field 'git_account_name' must be a non-empty string when provided")
+        account_name = account_name_raw.strip()
+
+    account_id: UUID | None = None
+    if account_id_raw is not None:
+        if not isinstance(account_id_raw, str) or not account_id_raw.strip():
+            raise ToolValidationError("Field 'git_account_id' must be a non-empty UUID string when provided")
+        try:
+            account_id = UUID(account_id_raw.strip())
+        except ValueError as exc:
+            raise ToolValidationError("Field 'git_account_id' must be a valid UUID string") from exc
+
+    if account_name is not None and account_id is not None:
+        raise ToolValidationError("Provide only one of 'git_account_name' or 'git_account_id'")
+
+    if account_name is None and account_id is None:
+        return None
+    return _AccountSelector(account_id=account_id, account_name=account_name)
 
 
 def _approval_timeout_from_payload(payload: dict[str, Any]) -> int:
@@ -313,6 +366,7 @@ def _git_exec_approval_waiter(
         await ensure_runtime_layout(session_id)
         workspace_dir = runtime_workspace_dir(session_id)
         run_dir = _resolve_run_dir(workspace_dir, payload.get("cwd"))
+        selector = _account_selector_from_payload(payload)
 
         if tokens[0] == "gh":
             host = _extract_gh_host(tokens)
@@ -339,7 +393,12 @@ def _git_exec_approval_waiter(
         )
 
         async with session_factory() as db:
-            account = await _resolve_git_account(db, repo_url=repo_url, require_write=True)
+            account = await _resolve_git_account(
+                db,
+                repo_url=repo_url,
+                require_write=True,
+                selector=selector,
+            )
         if account is None:
             repo_target = _repo_target_label(repo_url)
             raise ToolValidationError(
@@ -494,6 +553,7 @@ async def _execute_gh_command(
     tokens: list[str],
     timeout_seconds: int,
     approval: dict[str, Any] | None,
+    account_selector: _AccountSelector | None,
 ) -> dict[str, Any]:
     host = _extract_gh_host(tokens)
     primary, secondary = _gh_subcommand(tokens)
@@ -527,6 +587,7 @@ async def _execute_gh_command(
             db,
             repo_url=scope_repo_url,
             require_write=mode == "write",
+            selector=account_selector,
         )
     if account is None:
         required_token = "write token" if mode == "write" else "read token"
@@ -1132,10 +1193,59 @@ async def _resolve_git_account(
     *,
     repo_url: str,
     require_write: bool,
+    selector: _AccountSelector | None = None,
 ) -> _ResolvedAccount | None:
     repo = _parse_repo_ref(repo_url)
     result = await db.execute(select(GitAccount))
     accounts = result.scalars().all()
+
+    requested_account: GitAccount | None = None
+    if selector is not None:
+        if selector.account_id is not None:
+            requested_account = next(
+                (item for item in accounts if item.id == selector.account_id),
+                None,
+            )
+            if requested_account is None:
+                raise ToolValidationError(
+                    f"Requested git account id '{selector.account_id}' was not found"
+                )
+        elif selector.account_name is not None:
+            selected_name = selector.account_name.casefold()
+            requested_account = next(
+                (
+                    item
+                    for item in accounts
+                    if (item.name or "").strip().casefold() == selected_name
+                ),
+                None,
+            )
+            if requested_account is None:
+                raise ToolValidationError(
+                    f"Requested git account '{selector.account_name}' was not found"
+                )
+
+    if requested_account is not None:
+        host = (requested_account.host or "").strip().lower()
+        if host != repo.host:
+            raise ToolValidationError(
+                "Requested git account does not match repository host "
+                f"'{repo.host}' (account host: '{host or '<empty>'}')"
+            )
+        pattern_raw = (requested_account.scope_pattern or "*").strip().lower() or "*"
+        matches_scope = fnmatch.fnmatch(repo.target, pattern_raw) or fnmatch.fnmatch(repo.path, pattern_raw)
+        if not matches_scope:
+            raise ToolValidationError(
+                "Requested git account scope does not match repository "
+                f"'{repo.target}' (scope: '{requested_account.scope_pattern}')"
+            )
+        token = requested_account.token_write if require_write else requested_account.token_read
+        if not token.strip():
+            missing_kind = "write token" if require_write else "read token"
+            raise ToolValidationError(
+                f"Requested git account is missing required {missing_kind}"
+            )
+        return _ResolvedAccount(account=requested_account, repo=repo)
 
     best: tuple[int, GitAccount] | None = None
     for item in accounts:
