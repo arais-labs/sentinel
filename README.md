@@ -1,179 +1,157 @@
-# Sentinel: Autonomous Agent Platform, Backed by araiOS
+<p align="center">
+  <img src="docs/logo.png" alt="Sentinel logo" width="120" />
+</p>
 
-Sentinel is a complete operator platform for autonomous execution.
-It combines a high-quality frontend, real runtime controls, browser automation, and structured memory into one cohesive stack you can run locally.
+<h1 align="center">Sentinel</h1>
+<p align="center"><strong>One autonomous agent. Full execution stack.</strong></p>
 
-## Built by ARAIS
+<p align="center">
+  <a href="https://github.com/arais-labs/sentinel/blob/main/LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg"></a>
+  <img alt="Deployment" src="https://img.shields.io/badge/deploy-Docker%20Compose-2496ED">
+  <a href="https://github.com/arais-labs/sentinel/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/arais-labs/sentinel?branch=main"></a>
+  <a href="https://github.com/arais-labs/sentinel/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/arais-labs/sentinel"></a>
+  <a href="https://github.com/arais-labs/sentinel/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/arais-labs/sentinel"></a>
+  <a href="https://github.com/arais-labs/sentinel/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/arais-labs/sentinel"></a>
+  <a href="https://github.com/arais-labs/sentinel/pulls"><img alt="Open pull requests" src="https://img.shields.io/github/issues-pr/arais-labs/sentinel?label=open%20PRs"></a>
+  <img alt="Top language" src="https://img.shields.io/github/languages/top/arais-labs/sentinel">
+</p>
 
-ARAIS designs and builds production AI systems.
-Sentinel is our free stack for teams that want autonomous agents with real operational quality and strong user-facing execution.
-Learn more: [arais.us](https://arais.us)
+Sentinel is a self hosted AI operator that turns intent into execution.
+It combines an agent runtime, browser automation, scheduling, memory, approvals, and tool access in one product.
 
-## Why Sentinel Feels Different
+Built by [ARAIS](https://arais.us).
 
-1. **It just works**  
-No painful setup flow, no complex multi-service wiring, no fragile local boot choreography.
+## Quick links
 
-2. **Modern UI built for operators**  
-Sentinel ships with a clean, fast interface and a built-in live browser monitor to watch agent execution in real time.
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [What Sentinel can do](#what-sentinel-can-do)
+- [Documentation](#documentation)
+- [Security model](#security-model)
+- [Contributing](#contributing)
 
-3. **Focused system, not bloated**  
-The stack stays opinionated and practical, without piling on noisy tools or oversized prompt scaffolding.
+## What Sentinel can do
 
-4. **Hierarchical memory model**  
-Memory is structured for continuity and scale, with a hierarchy that helps long-running autonomous work stay coherent.
+- Run multi step tasks with tool calls and recovery.
+- Use a real browser with Playwright and live VNC monitoring.
+- Execute scheduled runs with cron or heartbeat triggers.
+- Keep persistent hierarchical memory across sessions.
+- Delegate bounded work to sub agents.
+- Gate risky actions behind human approvals.
+- Connect to custom araiOS modules for data and actions.
+- Run git operations freely and only gate at push or PR creation, so the agent moves fast without surprise commits to main.
+- Authenticate with your existing Claude Code or Codex CLI OAuth token, no extra API subscription needed.
 
-5. **Custom Python agent runtime**  
-Sentinel runs on custom agent code written in Python, giving teams direct control over execution behavior and task logic.
+## Architecture
 
-6. **araiOS tool creation + guardrails**  
-araiOS lets users create custom tools, gate them with explicit controls, and expose safe capabilities to agents under operator-defined guardrails.
+```text
+User / Telegram / Trigger
+        ↓
+  Sentinel UI  ↔  araiOS Workspace
+        ↓
+  Agent Runtime (Python)
+  ├── Context builder (memory + history)
+  ├── LLM provider (Anthropic / OpenAI / failover)
+  ├── Tool adapter (araiOS + browser + runtime + git)
+  ├── Approval gate (pause/resume on sensitive actions)
+  └── Estop service (freeze or kill execution at any depth)
+        ↓
+  araiOS Control Plane
+  ├── Custom tool modules (sandboxed Python)
+  ├── Data modules (persistent record stores)
+  ├── Permissions (allow / approval / deny per action)
+  └── Approval queue (async human review)
+        ↓
+  Browser + External APIs + Git
+```
 
-7. **Unified Triggers system**  
-Webhooks, cron schedules, and scripts can all trigger agents from one UI, and agents can update trigger definitions when allowed.
+## Quick Start
 
-8. **Python framework for embedded pipelines**  
-Developers can build Python-native pipelines and embed agent workflows directly into code, similar in spirit to visual orchestrators but governed by Sentinel.
+### 1) Clone
 
-9. **No painful manual configuration culture**  
-The platform is designed to avoid brittle hand-written config sprawl and keep teams moving with a reliable default runtime.
+```bash
+git clone https://github.com/arais-labs/sentinel.git
+cd sentinel
+```
 
-## Sentinel + araiOS
-
-- `Sentinel` is the autonomous runtime and operator interface.
-- `araiOS` is the operating layer for auth, permissions, approvals, and coordination.
-
-Sentinel is the product focus. araiOS powers the surrounding control plane.
-
-## Product Screens
-
-### Sentinel Operator UI
-![Sentinel UI](docs/images/sentinel.png)
-
-### araiOS Workspace
-![araiOS UI](docs/images/araios.png)
-
-## URLs
-
-- `http://localhost:4747/` -> Login gateway + app chooser
-- `http://localhost:4747/sentinel/` -> Sentinel
-- `http://localhost:4747/araios/` -> araiOS
-- `http://localhost:4747/vnc/` -> Live browser view
-
-## Quick Start (Recommended)
-
-### 1. Prerequisite
-
-- Docker Desktop installed and running
-
-### 2. Run the stack CLI
+### 2) Launch Sentinel CLI
 
 ```bash
 bash ./sentinel-cli.sh
 ```
 
-Run this in a normal local terminal (interactive TTY).
+For first run:
 
-The CLI menu lets you:
-- create or edit an instance config
-- start or stop an instance
-- view global status across instances
-- tail logs
-- delete an instance (with volume cleanup)
+1. Choose `New/Edit Instance`
+2. Set instance values or accept defaults
+3. Let CLI start services and seed auth
 
-Each instance is stored in `.instances/<instance>.env` and runs with an isolated Docker Compose project.
+### 3) Open gateway
 
-### 3. Sign in and choose app
+Default URLs:
 
-1. Open the URL printed by the CLI (default: `http://localhost:4747/`)
-2. Authenticate
-3. Choose `Sentinel` or `araiOS`
+- `http://localhost:4747/` gateway
+- `http://localhost:4747/sentinel/` Sentinel
+- `http://localhost:4747/araios/` araiOS
+- `http://localhost:4747/vnc/` live browser monitor
 
-### 4. Multiple local instances (supported)
+### 4) Sign in
 
-To run multiple instances:
+Use the admin username and password you configured in CLI.
+If login fails, run `Reset Auth (Managed Instance)` from CLI and retry.
 
-1. Open `bash ./sentinel-cli.sh`
-2. Select `New/Edit Instance`
-3. Create another instance name
-4. Use a different gateway port when prompted
+## Installation paths
 
-Instances are isolated by Compose project + env file, so they can run in parallel.
+### Recommended
 
-## Manual Start (Optional)
+- Use `sentinel-cli.sh` for instance lifecycle, auth seeding, startup, status, logs, and cleanup.
 
-If you prefer manual setup:
+### Manual compose
 
 ```bash
 cp .env.example .env
-docker compose up --build
+docker compose up --build -d
 ```
 
-## Authentication and Onboarding
-
-### First Login
-
-1. Start an instance with `bash ./sentinel-cli.sh`.
-2. Open the printed Gateway URL (default `http://localhost:4747/`).
-3. Log in with the admin username/password shown by the CLI.
-4. Choose `Sentinel` or `araiOS`.
-
-### Change Passwords
-
-Use the CLI when you need to reset credentials:
-
-- `Reset Auth (Managed Instance)` for instances under `.instances/*`
-- `Manage Custom Instance Auth` for any reachable PostgreSQL-backed deployment
-
-### araiOS Agent Tokens
-
-For agent-to-araiOS access:
-
-1. Open Gateway `Manage Credentials`.
-2. Create or revoke araiOS agent tokens.
-3. Use those tokens for agent integrations.
-
-## What You Get in This Repo
-
-- `apps/backend/sentinel` -> Sentinel backend
-- `apps/frontend/sentinel` -> Sentinel frontend
-- `apps/backend/araios` -> araiOS backend + its own auth
-- `apps/frontend/araios` -> araiOS frontend
-- `infra/` -> gateway and Docker wiring
-- `docker-compose.yml` -> production-style local runtime
-- `docker-compose.dev.yml` -> hot reload runtime for all four apps
-- `docs/browser-roadmap.md` -> browser automation roadmap
-
-## Operations
-
-Primary operations are available in the CLI menu:
-
-```bash
-bash ./sentinel-cli.sh
-```
-
-Manual fallback commands for an instance:
-
-```bash
-docker compose --project-name sentinel-<instance> --env-file .instances/<instance>.env ps
-docker compose --project-name sentinel-<instance> --env-file .instances/<instance>.env logs -f
-docker compose --project-name sentinel-<instance> --env-file .instances/<instance>.env down
-docker compose --project-name sentinel-<instance> --env-file .instances/<instance>.env down -v
-```
-
-## Development (Secondary)
+### Dev mode
 
 ```bash
 docker compose -f docker-compose.dev.yml up --build
 ```
 
-This starts hot reload for both frontends and both backends.
+## Repository layout
 
-When switching between production-style and development compose files, run:
+- `apps/backend/sentinel` Sentinel backend
+- `apps/frontend/sentinel` Sentinel frontend
+- `apps/backend/araios` araiOS backend
+- `apps/frontend/araios` araiOS frontend
+- `infra/` gateway and runtime wiring
+- `docs-site/` full documentation source
+- `docs/` project notes and assets
 
-```bash
-docker compose down --remove-orphans
-```
+## Documentation
+
+- Docs site source: [`docs-site/`](docs-site)
+- Intro: [`docs-site/docs/introduction.md`](docs-site/docs/introduction.md)
+- Quickstart: [`docs-site/docs/quickstart.md`](docs-site/docs/quickstart.md)
+- Installation guide: [`docs-site/docs/guides/installation.md`](docs-site/docs/guides/installation.md)
+- CLI reference: [`docs-site/docs/guides/cli-reference.md`](docs-site/docs/guides/cli-reference.md)
+- API reference: [`docs-site/docs/reference/api.md`](docs-site/docs/reference/api.md)
+
+## Security model
+
+Sentinel uses explicit policy based controls through araiOS:
+
+- `allow` executes immediately
+- `approval` pauses and requests human review
+- `deny` blocks action
+
+High risk actions can be reviewed before execution.
+Emergency stop levels can freeze active execution when needed.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## Runtime Exec Security Model
 
@@ -187,7 +165,4 @@ Inline timeout results include a detached-mode hint.
 
 ## License
 
-Licensed under GNU AGPL-3.0 ([LICENSE](LICENSE)).
-Attribution and notices: [NOTICE](NOTICE).
-Contribution process and DCO: [CONTRIBUTING.md](CONTRIBUTING.md).
-Automated third-party inventory: run `bash scripts/generate-license-reports.sh`.
+GNU AGPL-3.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

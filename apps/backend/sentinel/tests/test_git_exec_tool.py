@@ -658,3 +658,126 @@ def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
                 "command": "gh api -X POST /repos/exampleco/exampleco-gitops/pulls",
             },
         )
+
+
+def test_git_exec_uses_explicit_git_account_name_for_clone(monkeypatch):
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="explicit-git-account")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="secondary",
+            host="github.com",
+            scope_pattern="*",
+            author_name="Secondary",
+            author_email="secondary@example.com",
+            token_read="secondary-read",
+            token_write="secondary-write",
+        )
+    )
+    preferred = GitAccount(
+        name="arailex",
+        host="github.com",
+        scope_pattern="*",
+        author_name="Arailex",
+        author_email="alex@example.com",
+        token_read="alex-read",
+        token_write="alex-write",
+    )
+    fake_db.add(preferred)
+    session_factory = _SessionFactory(fake_db)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_subprocess(*, args, run_dir, env, timeout_seconds, redactions=None):
+        _ = timeout_seconds, redactions
+        captured["args"] = args
+        return {
+            "ok": True,
+            "returncode": 0,
+            "timed_out": False,
+            "stdout": "",
+            "stderr": "",
+            "cwd": str(run_dir),
+            "command": " ".join(args),
+        }
+
+    async def _noop_configure_clone_author(**kwargs):
+        _ = kwargs
+        return None
+
+    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_exec_module, "_configure_author_identity_after_clone", _noop_configure_clone_author)
+
+    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    result = _run(
+        tool.execute(
+            {
+                "session_id": str(session.id),
+                "command": "git clone https://github.com/arais-labs/sentinel.git",
+                "git_account_name": "arailex",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["account"]["name"] == "arailex"
+    assert captured["args"][0:4] == ["git", "-c", "credential.helper=", "clone"]
+
+
+def test_git_exec_rejects_unknown_explicit_git_account_name():
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="missing-account")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="secondary",
+            host="github.com",
+            scope_pattern="*",
+            author_name="Secondary",
+            author_email="secondary@example.com",
+            token_read="secondary-read",
+            token_write="secondary-write",
+        )
+    )
+    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+
+    with pytest.raises(ToolValidationError, match="Requested git account 'arailex' was not found"):
+        _run(
+            tool.execute(
+                {
+                    "session_id": str(session.id),
+                    "command": "git clone https://github.com/arais-labs/sentinel.git",
+                    "git_account_name": "arailex",
+                }
+            )
+        )
+
+
+def test_git_exec_rejects_explicit_git_account_scope_mismatch():
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="scope-mismatch")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="secondary",
+            host="github.com",
+            scope_pattern="other-org/*",
+            author_name="Secondary",
+            author_email="secondary@example.com",
+            token_read="secondary-read",
+            token_write="secondary-write",
+        )
+    )
+    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+
+    with pytest.raises(ToolValidationError, match="scope does not match repository"):
+        _run(
+            tool.execute(
+                {
+                    "session_id": str(session.id),
+                    "command": "git clone https://github.com/arais-labs/sentinel.git",
+                    "git_account_name": "secondary",
+                }
+            )
+        )
