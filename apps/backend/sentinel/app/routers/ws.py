@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -13,7 +14,7 @@ from app.config import settings
 from app.dependencies import get_db
 from app.logging_context import reset_log_session, set_log_session
 from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
-from app.models import GitPushApproval, Message, ToolApproval
+from app.models import Message, ToolApproval
 from app.services.approvals import ApprovalService
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
@@ -32,6 +33,7 @@ from app.services.ws_stream_service import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _COMPACTION_AUTO_RESUME_PROMPT = (
     "Context was compacted automatically. Continue the same task from the latest state. "
@@ -98,6 +100,12 @@ async def stream_session(
         session_id=id,
         unresolved_calls=unresolved_calls,
     )
+    logger.info(
+        "ws_unresolved_tool_rehydrate session_id=%s unresolved_count=%s pending_matches=%s",
+        session_key,
+        len(unresolved_calls),
+        len(pending_matches),
+    )
 
     for call in unresolved_calls:
         call_id = str(call.get("id") or "")
@@ -122,13 +130,48 @@ async def stream_session(
                 "match_key": pending_approval.match_key,
             }
             pending_metadata["approval"] = approval_payload
-            pending_metadata["approval_id"] = pending_approval.approval_id
-            pending_metadata["approval_provider"] = pending_approval.provider
             pending_content["approval"] = approval_payload
-            pending_content["approval_id"] = pending_approval.approval_id
-            pending_content["approval_provider"] = pending_approval.provider
             pending_content["status"] = "pending"
             pending_content["message"] = "Tool call still running or waiting for approval."
+            logger.info(
+                "ws_unresolved_tool_pending_match session_id=%s tool_call_id=%s tool_name=%s provider=%s approval_id=%s",
+                session_key,
+                call_id,
+                call.get("name"),
+                pending_approval.provider,
+                pending_approval.approval_id,
+            )
+        elif isinstance(call.get("approval_hint"), dict):
+            hint = call.get("approval_hint")
+            hint_provider = None
+            hint_match_key = None
+            if isinstance(hint, dict):
+                raw_provider = hint.get("provider")
+                raw_match_key = hint.get("match_key")
+                if isinstance(raw_provider, str) and raw_provider.strip():
+                    hint_provider = raw_provider.strip().lower()
+                if isinstance(raw_match_key, str) and raw_match_key.strip():
+                    hint_match_key = raw_match_key.strip()
+            pending_metadata["approval_linkage_missing"] = True
+            pending_metadata["pending"] = True
+            pending_metadata["approval"] = {
+                "provider": hint_provider or "tool",
+                "status": "pending",
+                "pending": True,
+                "can_resolve": False,
+                "match_key": hint_match_key,
+            }
+            pending_content["status"] = "pending"
+            pending_content["message"] = (
+                "Approval linkage missing for this pending tool call. "
+                "Refresh and stop/retry the run if controls do not appear."
+            )
+            logger.warning(
+                "ws_unresolved_tool_pending_linkage_missing session_id=%s tool_call_id=%s tool_name=%s",
+                session_key,
+                call_id,
+                call.get("name"),
+            )
         await websocket.send_json(
             {
                 "type": "toolcall_start",
@@ -267,17 +310,6 @@ async def _materialize_interrupted_tool_results(
     unresolved_calls: list[dict[str, object]],
 ) -> None:
     now = datetime.now(UTC)
-    pending_result = await db.execute(
-        select(GitPushApproval).where(
-            GitPushApproval.session_id == session_id,
-            GitPushApproval.status == "pending",
-        )
-    )
-    pending_rows = pending_result.scalars().all()
-    for row in pending_rows:
-        row.status = "cancelled"
-        row.decision_note = "Cancelled automatically: backend run not active after reconnect"
-        row.resolved_at = now
     tool_pending_result = await db.execute(
         select(ToolApproval).where(
             ToolApproval.session_id == session_id,

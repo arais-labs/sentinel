@@ -32,7 +32,8 @@ def test_extracts_git_approval_from_git_exec_result():
     result = {
         "command": "git push origin main",
         "approval": {
-            "id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "provider": "git",
+            "approval_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
             "status": "approved",
             "decision_note": "ok",
         },

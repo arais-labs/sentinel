@@ -19,10 +19,10 @@ import { api } from '../lib/api';
 import { formatCompactDate } from '../lib/format';
 import { useAuthStore } from '../store/auth-store';
 import type {
+  ApprovalListResponse,
+  ApprovalRecord,
   GitAccount,
   GitAccountListResponse,
-  GitPushApproval,
-  GitPushApprovalListResponse,
 } from '../types/api';
 
 interface GitAccountForm {
@@ -55,10 +55,17 @@ function approvalTone(status: string): 'default' | 'good' | 'warn' | 'danger' | 
   return 'info';
 }
 
+function readMetadataString(approval: ApprovalRecord, key: string): string | null {
+  const value = approval.metadata?.[key];
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 export function GitPage() {
   const role = useAuthStore((state) => state.role);
   const [accounts, setAccounts] = useState<GitAccount[]>([]);
-  const [approvals, setApprovals] = useState<GitPushApproval[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -77,10 +84,12 @@ export function GitPage() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const statusQuery = approvalStatusFilter === 'all' ? '' : `?status=${approvalStatusFilter}`;
+      const approvalQuery = new URLSearchParams();
+      approvalQuery.set('provider', 'git');
+      if (approvalStatusFilter !== 'all') approvalQuery.set('status', approvalStatusFilter);
       const [accountsPayload, approvalsPayload] = await Promise.all([
         api.get<GitAccountListResponse>('/git/accounts'),
-        api.get<GitPushApprovalListResponse>(`/git/push-approvals${statusQuery}`),
+        api.get<ApprovalListResponse>(`/approvals?${approvalQuery.toString()}`),
       ]);
       setAccounts(accountsPayload.items || []);
       setApprovals(approvalsPayload.items || []);
@@ -205,8 +214,8 @@ export function GitPage() {
   async function resolveApproval(approvalId: string, decision: 'approve' | 'reject') {
     setResolvingApprovalId(approvalId);
     try {
-      await api.post(`/git/push-approvals/${approvalId}/${decision}`, {
-        note: decision === 'approve' ? 'Approved in Sentinel Git tab' : 'Rejected in Sentinel Git tab',
+      await api.post(`/approvals/git/${approvalId}/${decision}`, {
+        note: decision === 'approve' ? 'User approved action.' : 'User rejected action.',
       });
       toast.success(`Push ${decision}d`);
       await loadAll();
@@ -225,13 +234,12 @@ export function GitPage() {
       actions={(
         <button
           onClick={() => void refreshAll()}
-          className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
+          className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-all active:scale-95"
           aria-label="Refresh"
         >
           <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />
         </button>
-      )}
-    >
+      )}    >
       <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-[1.2fr_1fr] gap-6 items-start">
         <div className="space-y-5">
           <Panel className="p-5 space-y-4">
@@ -480,67 +488,70 @@ export function GitPage() {
             <p className="text-xs text-[color:var(--text-muted)]">No approvals for this filter.</p>
           ) : (
             <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
-              {approvals.map((approval) => (
-                <Panel key={approval.id} className="p-4 bg-[color:var(--surface-1)] space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <StatusChip label={approval.status} tone={approvalTone(approval.status)} />
-                    <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
-                      {formatCompactDate(approval.created_at || '')}
-                    </span>
-                  </div>
-
-                  <div className="space-y-1">
-                    <p className="text-[11px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                      Repository
-                    </p>
-                    <p className="text-xs font-mono break-all">{approval.repo_url}</p>
-                  </div>
-
-                  <div className="space-y-1">
-                    <p className="text-[11px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                      Command
-                    </p>
-                    <p className="text-xs font-mono break-all">{approval.command}</p>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-[11px] text-[color:var(--text-secondary)]">
-                    <div className="flex items-center gap-1">
-                      <Clock3 size={12} />
-                      Expires: {formatCompactDate(approval.expires_at)}
+              {approvals.map((approval) => {
+                const decisionBy = readMetadataString(approval, 'decision_by');
+                return (
+                  <Panel key={approval.approval_id} className="p-4 bg-[color:var(--surface-1)] space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <StatusChip label={approval.status} tone={approvalTone(approval.status)} />
+                      <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
+                        {formatCompactDate(approval.created_at || '')}
+                      </span>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <GitBranch size={12} />
-                      Remote: {approval.remote_name}
-                    </div>
-                  </div>
 
-                  {approval.status === 'pending' ? (
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        className="btn-secondary h-8 px-3 text-[10px] uppercase tracking-widest text-rose-500"
-                        onClick={() => void resolveApproval(approval.id, 'reject')}
-                        disabled={resolvingApprovalId === approval.id}
-                      >
-                        <XCircle size={12} className="mr-1" />
-                        Reject
-                      </button>
-                      <button
-                        className="btn-primary h-8 px-3 text-[10px] uppercase tracking-widest"
-                        onClick={() => void resolveApproval(approval.id, 'approve')}
-                        disabled={resolvingApprovalId === approval.id}
-                      >
-                        <CheckCircle2 size={12} className="mr-1" />
-                        Approve
-                      </button>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                        Repository
+                      </p>
+                      <p className="text-xs font-mono break-all">{readMetadataString(approval, 'repo_url') ?? '—'}</p>
                     </div>
-                  ) : (
-                    <p className="text-[11px] text-[color:var(--text-muted)]">
-                      {approval.decision_by ? `Resolved by ${approval.decision_by}` : 'Resolved'}
-                      {approval.decision_note ? ` · ${approval.decision_note}` : ''}
-                    </p>
-                  )}
-                </Panel>
-              ))}
+
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                        Command
+                      </p>
+                      <p className="text-xs font-mono break-all">{approval.command ?? readMetadataString(approval, 'command') ?? '—'}</p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[11px] text-[color:var(--text-secondary)]">
+                      <div className="flex items-center gap-1">
+                        <Clock3 size={12} />
+                        Expires: {formatCompactDate(approval.expires_at || '')}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <GitBranch size={12} />
+                        Remote: {readMetadataString(approval, 'remote_name') ?? '—'}
+                      </div>
+                    </div>
+
+                    {approval.status === 'pending' ? (
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          className="btn-secondary h-8 px-3 text-[10px] uppercase tracking-widest text-rose-500"
+                          onClick={() => void resolveApproval(approval.approval_id, 'reject')}
+                          disabled={resolvingApprovalId === approval.approval_id}
+                        >
+                          <XCircle size={12} className="mr-1" />
+                          Reject
+                        </button>
+                        <button
+                          className="btn-primary h-8 px-3 text-[10px] uppercase tracking-widest"
+                          onClick={() => void resolveApproval(approval.approval_id, 'approve')}
+                          disabled={resolvingApprovalId === approval.approval_id}
+                        >
+                          <CheckCircle2 size={12} className="mr-1" />
+                          Approve
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-[color:var(--text-muted)]">
+                        {decisionBy ? `Resolved by ${decisionBy}` : 'Resolved'}
+                        {approval.decision_note ? ` · ${approval.decision_note}` : ''}
+                      </p>
+                    )}
+                  </Panel>
+                );
+              })}
             </div>
           )}
         </Panel>

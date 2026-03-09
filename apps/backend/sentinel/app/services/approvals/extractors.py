@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.approvals.tool_match import normalize_command
-from app.services.approvals.providers.git import normalize_git_command
 
 
 def extract_approval_metadata_from_tool_result(
@@ -18,11 +17,6 @@ def extract_approval_metadata_from_tool_result(
     if generic is not None:
         return generic
 
-    if tool_name == "git_exec":
-        payload = _extract_git_approval(result)
-        if payload is not None:
-            return payload
-
     if tool_name == "araios_api":
         payload = _extract_araios_approval(result)
         if payload is not None:
@@ -36,7 +30,7 @@ def _extract_generic_approval(result: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(approval, dict):
         return None
     provider = str(approval.get("provider") or "").strip()
-    approval_id = str(approval.get("approval_id") or approval.get("id") or "").strip()
+    approval_id = str(approval.get("approval_id") or "").strip()
     if not provider or not approval_id:
         return None
     status = str(approval.get("status") or "pending").strip() or "pending"
@@ -67,30 +61,6 @@ def _extract_generic_approval(result: dict[str, Any]) -> dict[str, Any] | None:
         if key in approval:
             payload[key] = approval.get(key)
     return payload
-
-
-def _extract_git_approval(result: dict[str, Any]) -> dict[str, Any] | None:
-    approval = result.get("approval")
-    if not isinstance(approval, dict):
-        return None
-    approval_id = str(approval.get("id") or "").strip()
-    status = str(approval.get("status") or "pending").strip() or "pending"
-    if not approval_id:
-        return None
-
-    command = result.get("command")
-    match_key = normalize_git_command(command) if isinstance(command, str) and command.strip() else None
-
-    return {
-        "provider": "git",
-        "approval_id": approval_id,
-        "status": status,
-        "pending": status == "pending",
-        "can_resolve": status == "pending",
-        "label": "Git write approval",
-        "match_key": match_key,
-        "decision_note": approval.get("decision_note"),
-    }
 
 
 def _extract_araios_approval(result: dict[str, Any]) -> dict[str, Any] | None:

@@ -55,7 +55,7 @@ const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: r
     output: ['status', 'exit_code', 'stdout', 'stderr'],
   },
   runtime_exec: {
-    input: ['command', 'cwd', 'timeout_seconds', 'detached'],
+    input: ['command', 'privilege', 'cwd', 'timeout_seconds', 'detached'],
     output: ['stdout', 'ok', 'returncode', 'timed_out', 'stderr'],
   },
   runtime_job_logs: {

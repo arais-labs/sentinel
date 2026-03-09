@@ -153,6 +153,16 @@ Emergency stop levels can freeze active execution when needed.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
+## Runtime Exec Security Model
+
+`runtime_exec` supports two explicit modes:
+
+- `privilege=user` (default): confined execution with write access limited to the session workspace and runtime temp mounts
+- `privilege=root`: unconfined execution, approval-gated before command execution
+
+For long-running commands, use `detached=true`.
+Inline timeout results include a detached-mode hint.
+
 ## License
 
 GNU AGPL-3.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
