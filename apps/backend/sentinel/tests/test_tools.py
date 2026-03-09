@@ -2,8 +2,10 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import uuid
+from functools import lru_cache
 from unittest.mock import patch
 
 import jwt
@@ -74,7 +76,48 @@ def _restore_app_tool_runtime(previous_registry, previous_executor) -> None:
 
 
 def _runtime_exec_needs_root_test_mode() -> bool:
-    return os.name != "nt" and shutil.which("bwrap") is None
+    return os.name != "nt" and not _runtime_exec_user_sandbox_available()
+
+
+@lru_cache(maxsize=1)
+def _runtime_exec_user_sandbox_available() -> bool:
+    if os.name == "nt":
+        return False
+    bwrap_bin = shutil.which("bwrap")
+    if not bwrap_bin:
+        return False
+
+    # CI environments can have bwrap installed but disallow the required namespaces.
+    probe = [
+        bwrap_bin,
+        "--die-with-parent",
+        "--unshare-pid",
+        "--unshare-uts",
+        "--unshare-ipc",
+        "--ro-bind",
+        "/",
+        "/",
+        "--proc",
+        "/proc",
+        "--dev-bind",
+        "/dev",
+        "/dev",
+        "--",
+        "/bin/bash",
+        "-lc",
+        "true",
+    ]
+    try:
+        result = subprocess.run(
+            probe,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def _enable_runtime_root_auto_approval_for_tests() -> None:
