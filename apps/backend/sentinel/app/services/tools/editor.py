@@ -1,13 +1,31 @@
 from __future__ import annotations
-import os
-from pathlib import Path
 from typing import Any
-from app.services.tools.executor import ToolValidationError
-from app.services.tools.registry import ToolDefinition
-from app.services.session_runtime import runtime_workspace_dir
 from uuid import UUID
 
-def str_replace_editor_tool() -> ToolDefinition:
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.models import Session
+from app.services.tools.executor import ToolValidationError
+from app.services.tools.registry import ToolDefinition
+from app.services.session_runtime import ensure_runtime_layout, runtime_workspace_dir
+
+
+async def _ensure_session_exists(
+    session_factory: async_sessionmaker[AsyncSession],
+    session_id: UUID,
+) -> None:
+    async with session_factory() as db:
+        result = await db.execute(select(Session).where(Session.id == session_id))
+        session = result.scalars().first()
+        if session is None:
+            raise ToolValidationError("Session not found")
+
+
+def str_replace_editor_tool(
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         session_id_raw = payload.get("session_id")
         if not isinstance(session_id_raw, str) or not session_id_raw.strip():
@@ -28,6 +46,10 @@ def str_replace_editor_tool() -> ToolDefinition:
         new_str = payload.get("new_str")
         if not isinstance(new_str, str):
             raise ToolValidationError("Field 'new_str' must be a string")
+
+        if session_factory is not None:
+            await _ensure_session_exists(session_factory, session_id)
+            await ensure_runtime_layout(session_id)
 
         workspace_dir = runtime_workspace_dir(session_id)
         path = (workspace_dir / path_raw).resolve()

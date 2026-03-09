@@ -101,7 +101,7 @@ def build_default_registry(
     registry = ToolRegistry()
     manager = browser_manager or BrowserManager()
     registry.register(_file_read_tool())
-    registry.register(str_replace_editor_tool())
+    registry.register(str_replace_editor_tool(session_factory=session_factory))
     registry.register(_http_request_tool())
     if session_factory is not None:
         registry.register(git_accounts_available_tool(session_factory=session_factory))
