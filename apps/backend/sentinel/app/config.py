@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     session_auto_rename_context_messages: int = 24
     session_auto_rename_model_tier: str = "fast"
     git_push_approval_timeout_seconds: int = 600
+    runtime_exec_root_approval_timeout_seconds: int = 600
 
     # --- Telegram ---
     telegram_bot_token: str | None = None

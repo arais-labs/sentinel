@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -13,7 +14,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.models import GitPushApproval, Message, Session, SessionBinding
+from app.models import Message, Session, SessionBinding, ToolApproval
 from app.services.llm.generic.types import AssistantMessage, SystemMessage, TextContent, UserMessage
 from tests.fake_db import FakeDB
 
@@ -363,7 +364,7 @@ def test_reset_default_session_keeps_previous_main_runtime_workspace():
         app_main.init_db = old_init
 
 
-def test_stop_session_generation_cancels_pending_git_push_approvals():
+def test_stop_session_generation_cancels_pending_git_approvals():
     fake_db = FakeDB()
 
     async def _override_get_db():
@@ -390,14 +391,21 @@ def test_stop_session_generation_cancels_pending_git_push_approvals():
         assert session_resp.status_code == 200
         session_id = uuid.UUID(session_resp.json()["id"])
 
-        pending = GitPushApproval(
-            account_id=uuid.uuid4(),
+        pending = ToolApproval(
+            provider="git",
+            tool_name="git_exec",
             session_id=session_id,
-            repo_url="https://github.com/acme/repo",
-            remote_name="origin",
-            command="git push origin main",
+            action="git.push",
+            description="Allow write operation: git push origin main",
+            match_key="git push origin main",
             status="pending",
             requested_by="session:test",
+            payload_json={
+                "account_id": str(uuid.uuid4()),
+                "repo_url": "https://github.com/acme/repo",
+                "remote_name": "origin",
+                "command": "git push origin main",
+            },
             expires_at=datetime.now(UTC) + timedelta(minutes=10),
         )
         fake_db.add(pending)
@@ -579,13 +587,18 @@ def test_runtime_file_explorer_endpoints():
             (workspace / "src").mkdir(parents=True, exist_ok=True)
             (workspace / "src" / "main.py").write_text("print('ok')\n", encoding="utf-8")
             (workspace / "README.md").write_text("# demo\n", encoding="utf-8")
+            (workspace / "repo").mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "-C", str(workspace / "repo"), "init"], check=False)
 
             with patch("app.services.session_runtime._RUNTIME_BASE_DIR", runtime_base):
                 files_root = client.get(f"/api/v1/sessions/{session_id}/runtime/files", headers=headers)
                 assert files_root.status_code == 200
                 root_payload = files_root.json()
                 names = {item["name"] for item in root_payload["entries"]}
-                assert {"src", "README.md"} <= names
+                assert {"src", "README.md", "repo"} <= names
+                repo_entry = next(item for item in root_payload["entries"] if item["name"] == "repo")
+                assert repo_entry["kind"] == "directory"
+                assert repo_entry["is_git_root"] is True
 
                 files_src = client.get(
                     f"/api/v1/sessions/{session_id}/runtime/files?path=src",

@@ -23,9 +23,6 @@ logger = logging.getLogger(__name__)
 _RUNTIME_BASE_DIR = Path(
     os.environ.get("SESSION_RUNTIME_BASE_DIR", "/tmp/sentinel/session_runtime")
 ).expanduser()
-_LEGACY_PYTHON_XAGENT_BASE_DIR = Path(
-    os.environ.get("PYTHON_XAGENT_BASE_DIR", "/tmp/sentinel/python_xagent")
-).expanduser()
 _RUNTIME_META_FILENAME = ".runtime_meta.json"
 _RUNTIME_ACTIONS_FILENAME = ".runtime_actions.jsonl"
 _RUNTIME_JOBS_FILENAME = ".runtime_jobs.json"
@@ -38,6 +35,7 @@ _MAX_RUNTIME_FILE_PREVIEW_BYTES = 200_000
 _DEFAULT_RUNTIME_GIT_ROOT_LIMIT = 200
 _DEFAULT_RUNTIME_GIT_DIFF_BYTES = 120_000
 _MAX_RUNTIME_GIT_DIFF_BYTES = 500_000
+_RUNTIME_ACTION_TEXT_MAX_CHARS = 12_000
 _runtime_meta_lock = asyncio.Lock()
 
 
@@ -98,6 +96,7 @@ async def mark_runtime_state(
     active: bool,
     command: str | None,
     pid: int | None,
+    action_details: dict[str, Any] | None = None,
 ) -> None:
     now = _utc_now().isoformat()
     root = runtime_root_dir(session_id)
@@ -131,15 +130,17 @@ async def mark_runtime_state(
                 },
             )
         elif not active and previous_active:
+            details: dict[str, Any] = {
+                "command": command if isinstance(command, str) and command else metadata.get("last_command"),
+                "pid": int(pid) if isinstance(pid, int) and pid > 0 else None,
+            }
+            details.update(_normalize_runtime_action_details(action_details))
             _append_runtime_action(
                 actions_path,
                 {
                     "timestamp": now,
                     "action": "command_finished",
-                    "details": {
-                        "command": command if isinstance(command, str) and command else metadata.get("last_command"),
-                        "pid": int(pid) if isinstance(pid, int) and pid > 0 else None,
-                    },
+                    "details": details,
                 },
             )
 
@@ -203,6 +204,9 @@ def list_runtime_workspace_entries(
         if entry_path == ".":
             entry_path = ""
         stats = child.stat()
+        git_root_payload = None
+        if child.is_dir():
+            git_root_payload = _read_git_root_payload_if_repo_root(child, workspace)
         entries.append(
             {
                 "name": child.name,
@@ -210,6 +214,11 @@ def list_runtime_workspace_entries(
                 "kind": "directory" if child.is_dir() else "file",
                 "size_bytes": None if child.is_dir() else int(stats.st_size),
                 "modified_at": datetime.fromtimestamp(stats.st_mtime, tz=UTC).isoformat(),
+                "is_git_root": git_root_payload is not None,
+                "git_branch": git_root_payload.get("branch") if isinstance(git_root_payload, dict) else None,
+                "git_detached_head": bool(git_root_payload.get("detached_head"))
+                if isinstance(git_root_payload, dict)
+                else False,
             }
         )
 
@@ -543,17 +552,23 @@ async def finalize_detached_runtime_job(
         if updated is None:
             return None
         _write_runtime_jobs(jobs_path, jobs)
+        stdout_tail = _tail_text(Path(str(updated.get("stdout_path") or "")), max_bytes=6_000)
+        stderr_tail = _tail_text(Path(str(updated.get("stderr_path") or "")), max_bytes=6_000)
         _append_runtime_action(
             actions_path,
             {
                 "timestamp": now,
                 "action": "detached_job_finished",
-                "details": {
-                    "job_id": updated["id"],
-                    "pid": updated.get("pid"),
-                    "status": updated["status"],
-                    "returncode": updated.get("returncode"),
-                },
+                "details": _normalize_runtime_action_details(
+                    {
+                        "job_id": updated["id"],
+                        "pid": updated.get("pid"),
+                        "status": updated["status"],
+                        "returncode": updated.get("returncode"),
+                        "stdout_tail": stdout_tail,
+                        "stderr_tail": stderr_tail,
+                    }
+                ),
             },
         )
         return updated
@@ -636,17 +651,24 @@ async def stop_detached_runtime_job(
         target["termination_signal"] = signal_name
         target["termination_reason"] = reason or "stopped"
         _write_runtime_jobs(jobs_path, jobs)
+        stdout_tail = _tail_text(Path(str(target.get("stdout_path") or "")), max_bytes=6_000)
+        stderr_tail = _tail_text(Path(str(target.get("stderr_path") or "")), max_bytes=6_000)
         _append_runtime_action(
             actions_path,
             {
                 "timestamp": now,
                 "action": "detached_job_stopped",
-                "details": {
-                    "job_id": target.get("id"),
-                    "pid": pid,
-                    "signal": signal_name,
-                    "reason": target.get("termination_reason"),
-                },
+                "details": _normalize_runtime_action_details(
+                    {
+                        "job_id": target.get("id"),
+                        "pid": pid,
+                        "status": target.get("status"),
+                        "signal": signal_name,
+                        "reason": target.get("termination_reason"),
+                        "stdout_tail": stdout_tail,
+                        "stderr_tail": stderr_tail,
+                    }
+                ),
             },
         )
         return target
@@ -681,17 +703,24 @@ async def stop_all_detached_runtime_jobs(
             item["termination_signal"] = "SIGKILL"
             item["termination_reason"] = reason or "stopped"
             stopped += 1
+            stdout_tail = _tail_text(Path(str(item.get("stdout_path") or "")), max_bytes=6_000)
+            stderr_tail = _tail_text(Path(str(item.get("stderr_path") or "")), max_bytes=6_000)
             _append_runtime_action(
                 actions_path,
                 {
                     "timestamp": now,
                     "action": "detached_job_stopped",
-                    "details": {
-                        "job_id": item.get("id"),
-                        "pid": pid,
-                        "signal": "SIGKILL",
-                        "reason": item.get("termination_reason"),
-                    },
+                    "details": _normalize_runtime_action_details(
+                        {
+                            "job_id": item.get("id"),
+                            "pid": pid,
+                            "status": item.get("status"),
+                            "signal": "SIGKILL",
+                            "reason": item.get("termination_reason"),
+                            "stdout_tail": stdout_tail,
+                            "stderr_tail": stderr_tail,
+                        }
+                    ),
                 },
             )
         if stopped > 0:
@@ -723,15 +752,10 @@ async def read_detached_runtime_job_logs(
 
 async def cleanup_session_runtime(
     session_id: UUID | str,
-    *,
-    remove_legacy_python_xagent: bool = True,
 ) -> dict[str, bool]:
     session_key = str(session_id)
     runtime_removed = await _remove_runtime_root(runtime_root_dir(session_key))
-    legacy_removed = False
-    if remove_legacy_python_xagent:
-        legacy_removed = await _remove_tree(_LEGACY_PYTHON_XAGENT_BASE_DIR / session_key)
-    return {"runtime_removed": runtime_removed, "legacy_removed": legacy_removed}
+    return {"runtime_removed": runtime_removed}
 
 
 async def sweep_session_runtimes(
@@ -744,7 +768,6 @@ async def sweep_session_runtimes(
     - orphan session dir => delete immediately
     - active metadata older than stale-active TTL => delete
     - inactive metadata older than idle TTL => delete
-    - legacy python_xagent dirs are cleaned by TTL/orphan based on directory mtime
     """
     idle_ttl_seconds = _parse_seconds("SESSION_RUNTIME_IDLE_TTL_SECONDS", 2700)
     stale_active_ttl_seconds = _parse_seconds(
@@ -784,19 +807,6 @@ async def sweep_session_runtimes(
 
         idle_age = (now - last_used).total_seconds()
         if idle_age > idle_ttl_seconds and await _remove_runtime_root(root):
-            removed += 1
-            removed_idle += 1
-
-    for root in _list_runtime_dirs(_LEGACY_PYTHON_XAGENT_BASE_DIR):
-        session_key = root.name
-        session = existing_sessions.get(session_key)
-        if session is None:
-            if await _remove_tree(root):
-                removed += 1
-                removed_orphans += 1
-            continue
-        idle_age = (now - _mtime_dt(root)).total_seconds()
-        if idle_age > idle_ttl_seconds and await _remove_tree(root):
             removed += 1
             removed_idle += 1
 
@@ -986,6 +996,24 @@ def _scan_workspace_git_roots(workspace: Path, *, limit: int) -> list[Path]:
                 results.append(repo_dir)
             dirs.remove(".git")
     return results
+
+
+def _read_git_root_payload_if_repo_root(directory: Path, workspace: Path) -> dict[str, Any] | None:
+    try:
+        candidate = directory.resolve()
+    except OSError:
+        return None
+    marker = candidate / ".git"
+    if not marker.exists():
+        return None
+    if not (marker.is_dir() or marker.is_file()):
+        return None
+    if not _is_within_path(base=workspace, target=candidate):
+        return None
+    resolved_root = _resolve_git_root(candidate, workspace)
+    if resolved_root is None or resolved_root != candidate:
+        return None
+    return _build_git_root_payload(resolved_root, workspace)
 
 
 def _resolve_git_root(start_dir: Path, workspace: Path) -> Path | None:
@@ -1266,3 +1294,41 @@ def _tail_text(path: Path, *, max_bytes: int) -> str:
     except OSError:
         return ""
     return data.decode("utf-8", errors="replace")
+
+
+def _truncate_runtime_action_text(value: str) -> str:
+    text = str(value)
+    if len(text) <= _RUNTIME_ACTION_TEXT_MAX_CHARS:
+        return text
+    return f"{text[:_RUNTIME_ACTION_TEXT_MAX_CHARS]}\n...[truncated]"
+
+
+def _normalize_runtime_action_details(
+    details: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(details, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for raw_key, value in details.items():
+        if not isinstance(raw_key, str):
+            continue
+        key = raw_key.strip()
+        if not key:
+            continue
+        if value is None:
+            normalized[key] = None
+            continue
+        if isinstance(value, bool):
+            normalized[key] = value
+            continue
+        if isinstance(value, int):
+            normalized[key] = value
+            continue
+        if isinstance(value, float):
+            if value != value or value in {float("inf"), float("-inf")}:
+                continue
+            normalized[key] = value
+            continue
+        if isinstance(value, str):
+            normalized[key] = _truncate_runtime_action_text(value)
+    return normalized

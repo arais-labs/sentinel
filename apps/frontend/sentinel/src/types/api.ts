@@ -52,6 +52,9 @@ export interface SessionRuntimeFileEntry {
   kind: 'file' | 'directory';
   size_bytes: number | null;
   modified_at: string | null;
+  is_git_root?: boolean;
+  git_branch?: string | null;
+  git_detached_head?: boolean;
 }
 
 export interface SessionRuntimeFilesResponse {
@@ -130,7 +133,6 @@ export interface SessionRuntimeGitChangedFilesResponse {
 export interface SessionRuntimeCleanupResponse {
   session_id: string;
   runtime_removed: boolean;
-  legacy_removed: boolean;
 }
 
 export interface SessionContextUsage {
@@ -357,28 +359,6 @@ export interface GitAccount {
 
 export interface GitAccountListResponse {
   items: GitAccount[];
-  total: number;
-}
-
-export interface GitPushApproval {
-  id: string;
-  account_id: string;
-  session_id: string | null;
-  repo_url: string;
-  remote_name: string;
-  command: string;
-  status: 'pending' | 'approved' | 'rejected' | 'timed_out' | 'cancelled' | string;
-  requested_by: string | null;
-  decision_by: string | null;
-  decision_note: string | null;
-  expires_at: string;
-  resolved_at: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-}
-
-export interface GitPushApprovalListResponse {
-  items: GitPushApproval[];
   total: number;
 }
 

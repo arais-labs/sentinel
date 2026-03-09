@@ -1,16 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity,
   AlertTriangle,
   Brain,
   ChevronRight,
   Clock,
-  FileJson,
-  HardDrive,
-  History,
   Layers,
   Loader2,
-  RefreshCw,
   Search,
   Shield,
   Terminal,
@@ -27,6 +22,8 @@ import {
 import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
+import { RuntimeExplorerModal } from '../components/RuntimeExplorerModal';
+import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
 import { JsonBlock } from '../components/ui/JsonBlock';
 import { Markdown } from '../components/ui/Markdown';
 import { StatusChip } from '../components/ui/StatusChip';
@@ -37,7 +34,6 @@ import type {
   MessageListResponse,
   Session,
   SessionListResponse,
-  SessionRuntimeCleanupResponse,
   SessionRuntimeStatus,
 } from '../types/api';
 
@@ -79,6 +75,8 @@ type RuntimeContextPayload = {
   runContext: Record<string, unknown>;
   structured: Record<string, unknown> | null;
 };
+
+const CONTEXT_AUTOFETCH_MAX_PAGES = 10;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -295,9 +293,64 @@ function lensTone(lens: OperationalLens): ChipTone {
   return 'default';
 }
 
+function contextLayerTone(layer: string | null | undefined): ChipTone {
+  const normalized = (layer ?? '').trim().toLowerCase();
+  if (!normalized) return 'default';
+  if (normalized === 'core' || normalized.includes('core')) return 'danger';
+  if (
+    normalized === 'policy' ||
+    normalized.includes('policy') ||
+    normalized.includes('guardrail')
+  ) {
+    return 'warn';
+  }
+  if (normalized === 'memory' || normalized.includes('memory')) return 'good';
+  if (normalized === 'runtime' || normalized.includes('runtime')) return 'info';
+  if (normalized === 'ingress' || normalized.includes('ingress')) return 'info';
+  if (normalized === 'history' || normalized.includes('history')) return 'info';
+  return 'default';
+}
+
 function lensToSide(lens: OperationalLens): 'left' | 'right' {
   if (lens === 'input' || lens === 'bridge') return 'left';
   return 'right';
+}
+
+type TimelineEntry =
+  | {
+      kind: 'event';
+      key: string;
+      event: ArchitectureEvent;
+      side: 'left' | 'right';
+    }
+  | {
+      kind: 'cluster';
+      key: string;
+      representative: ArchitectureEvent;
+      events: ArchitectureEvent[];
+      side: 'left' | 'right';
+    };
+
+type RenderTimelineEntry =
+  | TimelineEntry
+  | {
+      kind: 'event';
+      key: string;
+      event: ArchitectureEvent;
+      side: 'left' | 'right';
+      parentClusterKey: string;
+      clusterIndex: number;
+      clusterLength: number;
+    };
+
+function pickClusterRepresentative(events: ArchitectureEvent[]): ArchitectureEvent {
+  const assistantWithText = events.find(
+    (item) => item.message.role === 'assistant' && (item.message.content || '').trim().length > 0,
+  );
+  if (assistantWithText) return assistantWithText;
+  const assistant = events.find((item) => item.message.role === 'assistant');
+  if (assistant) return assistant;
+  return events[0];
 }
 
 function sortMessagesDesc(items: Message[]): Message[] {
@@ -316,13 +369,6 @@ function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
   return runtime.active ? 'active' : 'idle';
 }
 
-function sessionChannelKind(session: Session): 'default' | 'telegram_group' | 'telegram_dm' {
-  const title = (session.title ?? '').trim().toLowerCase();
-  if (title.startsWith('tg group ·')) return 'telegram_group';
-  if (title.startsWith('tg dm ·')) return 'telegram_dm';
-  return 'default';
-}
-
 function extractRuntimeContextPayload(message: Message): RuntimeContextPayload | null {
   if (extractSource(message.metadata) !== 'runtime_context') return null;
   const runContext = message.metadata.run_context;
@@ -338,17 +384,20 @@ function extractRuntimeContextPayload(message: Message): RuntimeContextPayload |
 function mapRuntimeContextToUserMessages(messages: Message[]): Map<string, RuntimeContextPayload> {
   const ordered = [...messages].sort((a, b) => toTimestamp(a.created_at) - toTimestamp(b.created_at));
   const mapped = new Map<string, RuntimeContextPayload>();
-  let pending: RuntimeContextPayload | null = null;
+  let pendingUserMessageId: string | null = null;
 
   for (const message of ordered) {
-    const context = extractRuntimeContextPayload(message);
-    if (context) {
-      pending = context;
+    if (message.role === 'user') {
+      pendingUserMessageId = message.id;
       continue;
     }
-    if (message.role === 'user' && pending) {
-      mapped.set(message.id, pending);
-      pending = null;
+
+    const context = extractRuntimeContextPayload(message);
+    if (context) {
+      if (pendingUserMessageId && !mapped.has(pendingUserMessageId)) {
+        mapped.set(pendingUserMessageId, context);
+        pendingUserMessageId = null;
+      }
     }
   }
   return mapped;
@@ -419,6 +468,18 @@ function extractLayerMemoryBlocks(layer: Record<string, unknown>): Record<string
   return memoryBlocks.filter((item): item is Record<string, unknown> => isRecord(item));
 }
 
+function extractLayerHistoryMessages(layer: Record<string, unknown>): Record<string, unknown>[] {
+  const historyMessages = layer.history_messages;
+  if (!Array.isArray(historyMessages)) return [];
+  return historyMessages.filter((item): item is Record<string, unknown> => isRecord(item));
+}
+
+function asCount(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const normalized = Math.trunc(value);
+  return normalized >= 0 ? normalized : null;
+}
+
 function assembleSystemContext(runContext: Record<string, unknown> | null | undefined): string | null {
   const blocks = runContext?.system_messages;
   if (!Array.isArray(blocks)) return null;
@@ -428,6 +489,22 @@ function assembleSystemContext(runContext: Record<string, unknown> | null | unde
     .filter((item) => item.length > 0);
   if (lines.length === 0) return null;
   return lines.join('\n\n---\n\n');
+}
+
+function runtimeContextErrorText(context: RuntimeContextPayload | null): string {
+  if (!context) {
+    return [
+      'Runtime context snapshot is missing for this message.',
+      'Raw prompt cannot be rendered in strict mode.',
+      'No fallback is applied.',
+    ].join('\n');
+  }
+
+  return [
+    `Runtime context snapshot ${context.contextMessageId} is present but missing run_context.system_messages.`,
+    'Raw prompt cannot be rendered in strict mode.',
+    'No fallback is applied.',
+  ].join('\n');
 }
 
 function isInjectedFullMemory(block: Record<string, unknown>): boolean {
@@ -440,31 +517,83 @@ function normalizedMemoryCategory(block: Record<string, unknown>): string {
   return 'uncategorized';
 }
 
-function estimateTokens(text: string | null | undefined): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / 4);
+function renderMemoryReferenceCard(block: Record<string, unknown>, key: string): JSX.Element {
+  const title =
+    typeof block.title === 'string' && block.title.trim()
+      ? block.title.trim()
+      : 'Untitled Memory';
+  const summary =
+    typeof block.summary === 'string' && block.summary.trim()
+      ? block.summary.trim()
+      : null;
+  const source =
+    typeof block.source === 'string' && block.source.trim()
+      ? block.source.trim().replace(/_/g, ' ')
+      : 'memory reference';
+  const depth =
+    typeof block.depth === 'number' && Number.isFinite(block.depth)
+      ? block.depth
+      : null;
+  const importance =
+    typeof block.importance === 'number' && Number.isFinite(block.importance)
+      ? block.importance
+      : null;
+  const memoryId =
+    typeof block.memory_id === 'string' && block.memory_id.trim()
+      ? block.memory_id.trim()
+      : null;
+  const rootId =
+    typeof block.root_id === 'string' && block.root_id.trim()
+      ? block.root_id.trim()
+      : null;
+
+  return (
+    <div key={key} className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 p-3 space-y-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <Brain size={12} className="text-[color:var(--text-muted)] shrink-0" />
+        <span className="text-xs font-medium text-[color:var(--text-primary)] truncate">{title}</span>
+        <StatusChip label={source} tone="default" className="h-4 text-[8px] ml-auto" />
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <StatusChip label={normalizedMemoryCategory(block)} tone="info" className="h-4 text-[8px]" />
+        {depth !== null && (
+          <StatusChip label={`depth ${depth}`} tone="default" className="h-4 text-[8px]" />
+        )}
+        {importance !== null && (
+          <StatusChip label={`importance ${importance}`} tone="default" className="h-4 text-[8px]" />
+        )}
+      </div>
+      <p className="text-xs text-[color:var(--text-secondary)] leading-relaxed">
+        {summary ?? 'No summary available for this memory reference.'}
+      </p>
+      {(memoryId || rootId) && (
+        <p className="text-[10px] font-mono text-[color:var(--text-muted)] break-all">
+          {memoryId ? `memory=${memoryId}` : ''}
+          {memoryId && rootId ? ' ' : ''}
+          {rootId ? `root=${rootId}` : ''}
+        </p>
+      )}
+    </div>
+  );
 }
 
 type ContextLayersSectionProps = {
   structured: Record<string, unknown> | null;
   label?: string;
   userMessage?: string | null;
-  initialPrompt?: string | null;
   runConfig?: Record<string, unknown> | null;
   className?: string;
 };
 
 type ExplorerEntry =
   | { kind: 'user_message'; id: string; title: string; content: string }
-  | { kind: 'initial_prompt'; id: string; title: string; content: string }
   | { kind: 'run_config'; id: string; title: string; config: Record<string, unknown> }
   | { kind: 'layer'; id: string; layer: Record<string, unknown>; index: number };
 
 function ContextLayersSection({
   structured,
-  label = 'Context Layers',
+  label = 'Context Snapshot (Layered)',
   userMessage,
-  initialPrompt,
   runConfig,
   className = "",
 }: ContextLayersSectionProps) {
@@ -479,19 +608,11 @@ function ContextLayersSection({
         content: userMessage.trim(),
       });
     }
-    if (typeof initialPrompt === 'string' && initialPrompt.trim()) {
-      items.push({
-        kind: 'initial_prompt',
-        id: 'initial_prompt',
-        title: 'Initial Prompt',
-        content: initialPrompt.trim(),
-      });
-    }
     if (runConfig) {
       items.push({
         kind: 'run_config',
         id: 'run_config',
-        title: 'Run Config',
+        title: 'Execution Settings',
         config: runConfig,
       });
     }
@@ -504,7 +625,7 @@ function ContextLayersSection({
       });
     }
     return items;
-  }, [initialPrompt, layers, runConfig, userMessage]);
+  }, [layers, runConfig, userMessage]);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   useEffect(() => {
@@ -522,15 +643,29 @@ function ContextLayersSection({
   const selectedLayerMemoryBlocks = selectedLayer
     ? extractLayerMemoryBlocks(selectedLayer)
     : [];
+  const selectedLayerHistoryMessages = selectedLayer
+    ? extractLayerHistoryMessages(selectedLayer)
+    : [];
+  const selectedLayerKind =
+    typeof selectedLayer?.kind === 'string'
+      ? selectedLayer.kind.trim().toLowerCase()
+      : '';
+  const isHistoryLayer = selectedLayerKind === 'conversation_history';
   const selectedInjectedMemoryBlocks = selectedLayerMemoryBlocks.filter(isInjectedFullMemory);
-  const selectedHasOnlyReferencedMemories =
-    selectedLayerMemoryBlocks.length > 0 && selectedInjectedMemoryBlocks.length === 0;
+  const selectedReferencedMemoryBlocks = selectedLayerMemoryBlocks.filter(
+    (block) => !isInjectedFullMemory(block),
+  );
 
   return (
     <section className={`p-4 flex flex-col min-h-0 ${className}`}>
       <div className="flex items-center gap-2 mb-4 shrink-0">
         <StatusChip label={label} tone="info" className="h-5" />
         <span className="text-[10px] font-mono text-[color:var(--text-muted)]">{entries.length}</span>
+      </div>
+      <div className="mb-4 space-y-2">
+        <p className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">
+          Layered snapshot of the exact context assembled at run start.
+        </p>
       </div>
       {entries.length === 0 ? (
         <p className="text-xs text-[color:var(--text-muted)]">No structured layers in this snapshot.</p>
@@ -539,6 +674,12 @@ function ContextLayersSection({
           <div className="flex flex-col gap-1 overflow-y-auto pr-2 custom-scrollbar min-h-0 w-full">
             {entries.map((entry, index) => {
               const active = selectedIndex === index;
+              const layerLabel =
+                entry.kind === 'layer'
+                  ? String(entry.layer.layer ?? 'system')
+                  : entry.kind === 'run_config'
+                    ? 'runtime'
+                    : 'ingress';
               return (
                 <div key={entry.id} className="w-full">
                   <button
@@ -552,10 +693,11 @@ function ContextLayersSection({
                     ].join(' ')}
                   >
                     <div className="flex items-center gap-2 flex-wrap mb-1 min-w-0">
-                      {entry.kind === 'user_message' && <StatusChip label="ingress" tone="info" className="h-4 text-[8px]" />}
-                      {entry.kind === 'run_config' && <StatusChip label="runtime" tone="info" className="h-4 text-[8px]" />}
-                      {entry.kind === 'initial_prompt' && <StatusChip label="core" tone="info" className="h-4 text-[8px]" />}
-                      {entry.kind === 'layer' && <StatusChip label={String(entry.layer.layer ?? 'system')} tone="info" className="h-4 text-[8px]" />}
+                      <StatusChip
+                        label={layerLabel}
+                        tone={contextLayerTone(layerLabel)}
+                        className="h-4 text-[8px]"
+                      />
                     </div>
                     <p className={`text-xs font-medium truncate w-full ${active ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]'}`}>
                       {entry.kind === 'layer' ? String(entry.layer.title ?? `Layer ${entry.index + 1}`) : entry.title}
@@ -580,32 +722,128 @@ function ContextLayersSection({
                     </div>
                   )}
 
-                  {selectedEntry.kind === 'initial_prompt' && (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 pb-2 border-b border-[color:var(--border-subtle)]">
-                        <Terminal size={14} className="text-[color:var(--text-muted)]" />
-                        <h4 className="text-sm font-medium text-[color:var(--text-primary)]">{selectedEntry.title}</h4>
-                      </div>
-                      <Markdown content={selectedEntry.content} compact muted />
-                    </div>
-                  )}
-
                   {selectedEntry.kind === 'run_config' && (
                     <div className="space-y-4">
                       <div className="flex items-center gap-2 pb-2 border-b border-[color:var(--border-subtle)]">
                         <Cpu size={14} className="text-[color:var(--text-muted)]" />
                         <h4 className="text-sm font-medium text-[color:var(--text-primary)]">{selectedEntry.title}</h4>
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {Object.entries(selectedEntry.config)
-                          .filter(([_, v]) => typeof v !== 'object' || v === null)
-                          .map(([k, v]) => (
-                          <div key={k} className="flex flex-col gap-1 p-3 rounded bg-[color:var(--surface-1)]">
-                            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">{k.replace(/_/g, ' ')}</span>
-                            <span className="text-xs font-mono font-medium text-[color:var(--text-primary)] break-all">{String(v ?? '—')}</span>
+                      {(() => {
+                        const entries = Object.entries(selectedEntry.config);
+                        const contextOwnedKeys = new Set([
+                          'system_messages',
+                          'structured_context',
+                          'pinned_memories',
+                        ]);
+                        const tools = Array.isArray(selectedEntry.config.tools)
+                          ? selectedEntry.config.tools.filter((item): item is Record<string, unknown> => isRecord(item))
+                          : [];
+
+                        const visibleEntries = entries.filter(
+                          ([k]) => !contextOwnedKeys.has(k) && k !== 'tools',
+                        );
+                        const scalarEntries = visibleEntries.filter(([_, v]) => typeof v !== 'object' || v === null);
+                        const nestedEntries = visibleEntries.filter(([_, v]) => typeof v === 'object' && v !== null);
+
+                        return (
+                          <div className="space-y-4">
+                            {scalarEntries.length > 0 && (
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {scalarEntries.map(([k, v]) => (
+                                  <div key={k} className="flex flex-col gap-1 p-3 rounded bg-[color:var(--surface-1)]">
+                                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">{k.replace(/_/g, ' ')}</span>
+                                    <span className="text-xs font-mono font-medium text-[color:var(--text-primary)] break-all">{String(v ?? '—')}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {tools.length > 0 && (
+                              <div className="space-y-3">
+                                <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                                  Tools ({tools.length})
+                                </p>
+                                {tools.map((tool, index) => {
+                                  const name =
+                                    typeof tool.name === 'string' && tool.name.trim()
+                                      ? tool.name.trim()
+                                      : `tool_${index + 1}`;
+                                  const description =
+                                    typeof tool.description === 'string' && tool.description.trim()
+                                      ? tool.description.trim()
+                                      : 'No description';
+                                  const parameters = isRecord(tool.parameters) ? tool.parameters : null;
+                                  const parameterProperties = parameters?.properties;
+                                  const parameterKeys = isRecord(parameterProperties)
+                                    ? Object.keys(parameterProperties)
+                                    : [];
+                                  const required = Array.isArray(parameters?.required)
+                                    ? parameters.required.filter((item): item is string => typeof item === 'string')
+                                    : [];
+
+                                  return (
+                                    <details key={`${name}-${index}`} className="group rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 overflow-hidden">
+                                      <summary className="list-none cursor-pointer px-3 py-2 hover:bg-[color:var(--surface-2)] transition-colors flex items-start gap-2">
+                                        <ChevronRight size={12} className="mt-0.5 text-[color:var(--text-muted)] transition-transform group-open:rotate-90" />
+                                        <div className="min-w-0 flex-1 space-y-1">
+                                          <div className="flex items-center gap-2 flex-wrap">
+                                            <StatusChip label={name} tone={toolTone(name)} className="h-4 text-[8px]" />
+                                            <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
+                                              {parameterKeys.length} params
+                                              {required.length > 0 ? ` · ${required.length} required` : ''}
+                                            </span>
+                                          </div>
+                                          <p className="text-xs text-[color:var(--text-secondary)] leading-relaxed">
+                                            {description}
+                                          </p>
+                                          {parameterKeys.length > 0 && (
+                                            <p className="text-[10px] font-mono text-[color:var(--text-muted)] truncate">
+                                              {parameterKeys.slice(0, 8).join(', ')}
+                                              {parameterKeys.length > 8 ? ' ...' : ''}
+                                            </p>
+                                          )}
+                                        </div>
+                                      </summary>
+                                      {parameters && (
+                                        <div className="border-t border-[color:var(--border-subtle)] p-2">
+                                          <JsonBlock
+                                            value={JSON.stringify(parameters, null, 2)}
+                                            className="!border-0 !bg-transparent max-h-[260px] text-[10px]"
+                                          />
+                                        </div>
+                                      )}
+                                    </details>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {nestedEntries.length > 0 && (
+                              <div className="space-y-3">
+                                <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                                  Other Nested Config
+                                </p>
+                                {nestedEntries.map(([k, v]) => (
+                                  <details key={k} className="group rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 overflow-hidden">
+                                    <summary className="list-none cursor-pointer px-3 py-2 hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-2">
+                                      <ChevronRight size={12} className="text-[color:var(--text-muted)] transition-transform group-open:rotate-90" />
+                                      <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                        {k.replace(/_/g, ' ')}
+                                      </span>
+                                    </summary>
+                                    <div className="border-t border-[color:var(--border-subtle)] p-2">
+                                      <JsonBlock
+                                        value={JSON.stringify(v, null, 2)}
+                                        className="!border-0 !bg-transparent max-h-[260px] text-[10px]"
+                                      />
+                                    </div>
+                                  </details>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                        ))}
-                      </div>
+                        );
+                      })()}
                     </div>
                   )}
 
@@ -624,7 +862,107 @@ function ContextLayersSection({
                         </div>
                       )}
 
-                      {selectedInjectedMemoryBlocks.length > 0 ? (
+                      {isHistoryLayer ? (
+                        selectedLayerHistoryMessages.length > 0 ? (
+                          <div className="space-y-2">
+                            {selectedLayerHistoryMessages.map((historyMessage, idx) => {
+                              const role =
+                                typeof historyMessage.role === 'string' && historyMessage.role.trim()
+                                  ? historyMessage.role.trim()
+                                  : 'unknown';
+                              const preview =
+                                typeof historyMessage.preview === 'string' && historyMessage.preview.trim()
+                                  ? historyMessage.preview.trim()
+                                  : '';
+                              const source =
+                                typeof historyMessage.source === 'string' && historyMessage.source.trim()
+                                  ? historyMessage.source.trim()
+                                  : null;
+                              const toolName =
+                                typeof historyMessage.tool_name === 'string' && historyMessage.tool_name.trim()
+                                  ? historyMessage.tool_name.trim()
+                                  : null;
+                              const toolCallCount = asCount(historyMessage.tool_call_count);
+                              const imageCount = asCount(historyMessage.image_count);
+                              const textBlockCount = asCount(historyMessage.text_block_count);
+                              const isError = historyMessage.is_error === true;
+                              const toolCalls = Array.isArray(historyMessage.tool_calls)
+                                ? historyMessage.tool_calls.filter((item): item is Record<string, unknown> => isRecord(item))
+                                : [];
+
+                              return (
+                                <div
+                                  key={`history-${idx}`}
+                                  className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 p-3 space-y-2"
+                                >
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <StatusChip
+                                      label={role.replace(/_/g, ' ')}
+                                      tone={roleTone(role)}
+                                      className="h-4 text-[8px]"
+                                    />
+                                    {source && <StatusChip label={source} tone="default" className="h-4 text-[8px]" />}
+                                    {toolName && <StatusChip label={toolName} tone={toolTone(toolName)} className="h-4 text-[8px]" />}
+                                    {toolCallCount !== null && toolCallCount > 0 && (
+                                      <StatusChip
+                                        label={`${toolCallCount} tool call${toolCallCount === 1 ? '' : 's'}`}
+                                        tone="warn"
+                                        className="h-4 text-[8px]"
+                                      />
+                                    )}
+                                    {isError && <StatusChip label="error" tone="danger" className="h-4 text-[8px]" />}
+                                  </div>
+
+                                  {preview ? (
+                                    <p className="text-xs text-[color:var(--text-secondary)] leading-relaxed whitespace-pre-wrap break-words">
+                                      {preview}
+                                    </p>
+                                  ) : (
+                                    <p className="text-[11px] text-[color:var(--text-muted)] italic">
+                                      No text preview available.
+                                    </p>
+                                  )}
+
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    {textBlockCount !== null && (
+                                      <StatusChip
+                                        label={`${textBlockCount} text block${textBlockCount === 1 ? '' : 's'}`}
+                                        tone="default"
+                                        className="h-4 text-[8px]"
+                                      />
+                                    )}
+                                    {imageCount !== null && imageCount > 0 && (
+                                      <StatusChip
+                                        label={`${imageCount} image${imageCount === 1 ? '' : 's'}`}
+                                        tone="info"
+                                        className="h-4 text-[8px]"
+                                      />
+                                    )}
+                                  </div>
+
+                                  {toolCalls.length > 0 && (
+                                    <div className="text-[10px] font-mono text-[color:var(--text-muted)] break-words">
+                                      {toolCalls
+                                        .map((call) => {
+                                          const name = typeof call.name === 'string' ? call.name.trim() : '';
+                                          const id = typeof call.id === 'string' ? call.id.trim() : '';
+                                          if (name && id) return `${name} (${id})`;
+                                          return name || id || null;
+                                        })
+                                        .filter((item): item is string => Boolean(item))
+                                        .join(' • ')}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-[color:var(--text-muted)]">
+                            No conversation history entries were captured for this run.
+                          </p>
+                        )
+                      ) : selectedInjectedMemoryBlocks.length > 0 ? (
                         <div className="space-y-3">
                           {selectedInjectedMemoryBlocks.map((block, bIdx) => (
                             <details key={bIdx} className="group bg-[color:var(--surface-1)]/50 rounded border border-[color:var(--border-subtle)] overflow-hidden">
@@ -640,11 +978,26 @@ function ContextLayersSection({
                               </div>
                             </details>
                           ))}
+                          {selectedReferencedMemoryBlocks.length > 0 && (
+                            <div className="space-y-2 pt-2">
+                              <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                                Linked Memory References ({selectedReferencedMemoryBlocks.length})
+                              </p>
+                              {selectedReferencedMemoryBlocks.map((block, bIdx) =>
+                                renderMemoryReferenceCard(block, `linked-${bIdx}`),
+                              )}
+                            </div>
+                          )}
                         </div>
-                      ) : selectedHasOnlyReferencedMemories ? (
-                        <p className="text-xs text-[color:var(--text-muted)] italic">
-                          This layer contains memory references only.
-                        </p>
+                      ) : selectedReferencedMemoryBlocks.length > 0 ? (
+                        <div className="space-y-2">
+                          <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                            Memory References ({selectedReferencedMemoryBlocks.length})
+                          </p>
+                          {selectedReferencedMemoryBlocks.map((block, bIdx) =>
+                            renderMemoryReferenceCard(block, `ref-${bIdx}`),
+                          )}
+                        </div>
                       ) : (
                         <Markdown content={typeof selectedLayer.content === 'string' ? selectedLayer.content : ''} compact muted />
                       )}
@@ -668,7 +1021,6 @@ function ContextLayersSection({
 type UnifiedInspectorProps = {
   open: boolean;
   session: Session | null;
-  runtime: SessionRuntimeStatus | null;
   userMessage?: Message | null;
   context: RuntimeContextPayload | null;
   lens?: OperationalLens;
@@ -678,27 +1030,67 @@ type UnifiedInspectorProps = {
 function UnifiedInspectorModal({
   open,
   session,
-  runtime,
   userMessage,
   context,
   onClose,
 }: UnifiedInspectorProps) {
-  const [tab, setTab] = useState<'layers' | 'raw' | 'details'>('layers');
+  const [tab, setTab] = useState<'layers' | 'raw'>('layers');
 
-  const contextTokens = useMemo(() => {
-    const system = session?.latest_system_prompt || '';
-    const user = userMessage?.content || '';
-    return estimateTokens(system + user);
-  }, [session?.latest_system_prompt, userMessage?.content]);
+  useEffect(() => {
+    if (open) setTab('layers');
+  }, [open]);
 
-  const tokenDotColor = contextTokens < 10000 ? 'bg-emerald-500' : contextTokens < 20000 ? 'bg-amber-500' : 'bg-rose-500';
+  const rawPrompt = useMemo(() => assembleSystemContext(context?.runContext ?? null), [context]);
+
+  const contextUsage = useMemo(() => {
+    const runContext = context?.runContext;
+    if (!runContext) {
+      return { tokens: null as number | null, budget: null as number | null, percent: null as number | null };
+    }
+
+    const rawTokens = runContext.estimated_context_tokens;
+    const rawBudget = runContext.context_token_budget;
+    const rawPercent = runContext.estimated_context_percent;
+
+    const tokens =
+      typeof rawTokens === 'number' && Number.isFinite(rawTokens) && rawTokens >= 0
+        ? Math.floor(rawTokens)
+        : null;
+    const budget =
+      typeof rawBudget === 'number' && Number.isFinite(rawBudget) && rawBudget > 0
+        ? Math.floor(rawBudget)
+        : null;
+
+    let percent: number | null = null;
+    if (typeof rawPercent === 'number' && Number.isFinite(rawPercent)) {
+      percent = Math.max(0, Math.min(100, Math.round(rawPercent)));
+    } else if (tokens !== null && budget !== null) {
+      percent = Math.max(0, Math.min(100, Math.round((tokens / budget) * 100)));
+    }
+
+    return { tokens, budget, percent };
+  }, [context]);
+
+  const tokenDotColor =
+    contextUsage.percent === null
+      ? 'bg-[color:var(--text-muted)]'
+      : contextUsage.percent < 70
+        ? 'bg-emerald-500'
+        : contextUsage.percent < 90
+          ? 'bg-amber-500'
+          : 'bg-rose-500';
+  const tokenLabel =
+    contextUsage.tokens === null
+      ? 'context tokens unavailable'
+      : contextUsage.budget === null
+        ? `${contextUsage.tokens.toLocaleString()} tokens`
+        : `${contextUsage.tokens.toLocaleString()} / ${contextUsage.budget.toLocaleString()} tokens${contextUsage.percent !== null ? ` (${contextUsage.percent}%)` : ''}`;
 
   if (!open || !session) return null;
 
   const tabs = [
-    { id: 'layers' as const, label: 'Layers' },
+    { id: 'layers' as const, label: 'Context Snapshot' },
     { id: 'raw' as const, label: 'Raw Prompt' },
-    { id: 'details' as const, label: 'Details' },
   ];
 
   return (
@@ -718,7 +1110,7 @@ function UnifiedInspectorModal({
             </div>
             <span className="flex items-center gap-1.5 text-[9px] font-mono text-[color:var(--text-muted)]">
               <span className={`w-1.5 h-1.5 rounded-full ${tokenDotColor}`} />
-              {contextTokens.toLocaleString()} tokens
+              {tokenLabel}
             </span>
           </div>
           <button
@@ -752,9 +1144,8 @@ function UnifiedInspectorModal({
           {tab === 'layers' && (
             <ContextLayersSection
               structured={context?.structured ?? null}
-              label={userMessage ? "Message Context Layers" : "Latest Session Layers"}
+              label={userMessage ? "Message Context Snapshot (Layered)" : "Session Context Snapshot (Layered)"}
               userMessage={userMessage?.content}
-              initialPrompt={session.initial_prompt}
               runConfig={context?.runContext ?? null}
               className="h-full animate-in fade-in duration-150"
             />
@@ -763,67 +1154,23 @@ function UnifiedInspectorModal({
           {tab === 'raw' && (
             <div className="h-full overflow-y-auto p-6 custom-scrollbar animate-in fade-in duration-150">
               <div className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/30 p-6">
-                <Markdown content={session.latest_system_prompt || '[No system prompt captured]'} compact muted />
+                {rawPrompt ? (
+                  <Markdown content={rawPrompt} compact muted />
+                ) : (
+                  <div className="space-y-3">
+                    <div className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-rose-500">
+                      <AlertTriangle size={12} />
+                      Raw Context Unavailable
+                    </div>
+                    <pre className="text-xs font-mono text-rose-400 whitespace-pre-wrap break-words">
+                      {runtimeContextErrorText(context)}
+                    </pre>
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          {tab === 'details' && (
-            <div className="h-full overflow-y-auto p-6 space-y-6 custom-scrollbar animate-in fade-in duration-150">
-              {/* Environment State */}
-              <section className="space-y-3">
-                <div className="flex items-center gap-2 text-[color:var(--text-muted)]">
-                  <Activity size={14} />
-                  <h3 className="text-[10px] font-bold uppercase tracking-[0.2em]">Environment State</h3>
-                </div>
-                {runtime ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {[
-                      { label: 'Status', value: runtimeStatusLabel(runtime), tone: (runtime.active ? 'good' : 'default') as 'good' | 'default' },
-                      { label: 'Workspace', value: runtime.workspace_exists ? 'Ready' : 'Missing', tone: (runtime.workspace_exists ? 'good' : 'danger') as 'good' | 'danger' },
-                      { label: 'Venv', value: runtime.venv_exists ? 'Ready' : 'Missing', tone: (runtime.venv_exists ? 'good' : 'danger') as 'good' | 'danger' },
-                      { label: 'PID', value: runtime.active_pid?.toString() || 'None', tone: 'default' as 'default' },
-                    ].map(stat => (
-                      <div key={stat.label} className="flex items-center justify-between px-3 py-2 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
-                        <span className="text-[10px] font-medium text-[color:var(--text-muted)]">{stat.label}</span>
-                        <StatusChip label={stat.value} tone={stat.tone} className="h-5" />
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="py-4 text-center rounded border border-dashed border-[color:var(--border-subtle)]">
-                    <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">State unavailable</p>
-                  </div>
-                )}
-              </section>
-
-              {/* Session DB Record */}
-              <details className="group">
-                <summary className="cursor-pointer flex items-center gap-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)] transition-colors py-1">
-                  <ChevronRight size={12} className="transition-transform group-open:rotate-90" />
-                  <FileJson size={14} />
-                  <h3 className="text-[10px] font-bold uppercase tracking-[0.2em]">Session DB Record</h3>
-                </summary>
-                <div className="mt-3 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
-                  <JsonBlock value={JSON.stringify(session, null, 2)} className="!border-0 !bg-transparent max-h-[300px] text-[10px]" />
-                </div>
-              </details>
-
-              {/* Message DB Record */}
-              {userMessage && (
-                <details className="group">
-                  <summary className="cursor-pointer flex items-center gap-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)] transition-colors py-1">
-                    <ChevronRight size={12} className="transition-transform group-open:rotate-90" />
-                    <History size={14} />
-                    <h3 className="text-[10px] font-bold uppercase tracking-[0.2em]">Message DB Record</h3>
-                  </summary>
-                  <div className="mt-3 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
-                    <JsonBlock value={JSON.stringify(userMessage.metadata, null, 2)} className="!border-0 !bg-transparent max-h-[300px] text-[10px]" />
-                  </div>
-                </details>
-              )}
-            </div>
-          )}
         </div>
       </div>
     </div>
@@ -988,30 +1335,179 @@ function EventDetailModal({ open, event, onClose }: EventDetailModalProps) {
 
 export function LogsPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [runtimeBySession, setRuntimeBySession] = useState<Record<string, SessionRuntimeStatus>>({});
 
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
-  const [loadingRuntimeAction, setLoadingRuntimeAction] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
 
   const [historyTab, setHistoryTab] = useState<SidebarTab>('sessions');
+  const [sessionFilter, setSessionFilter] = useState('');
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [activeLenses, setActiveLenses] = useState<Set<OperationalLens>>(new Set());
   const [sourceFilter, setSourceFilter] = useState('all');
-  const [autoRefresh, setAutoRefresh] = useState(true);
   
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionTitle, setEditingSessionTitle] = useState('');
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+
+  const sessionsInTab = useMemo(() => {
+    return sessions.filter((s) => {
+      if (historyTab === 'sub_agents') return Boolean(s.parent_session_id);
+      return !s.parent_session_id;
+    });
+  }, [sessions, historyTab]);
+
+  const filteredSessions = useMemo(() => {
+    const f = sessionFilter.trim().toLowerCase();
+    if (!f) return sessionsInTab;
+    return sessionsInTab.filter((s) =>
+      (s.title || '').toLowerCase().includes(f) || s.id.toLowerCase().includes(f),
+    );
+  }, [sessionsInTab, sessionFilter]);
+
+  const selectableVisibleSessionIds = useMemo(() => {
+    return filteredSessions
+      .filter((session) => Boolean(defaultSessionId) && session.id !== defaultSessionId)
+      .map((session) => session.id);
+  }, [filteredSessions, defaultSessionId]);
+
+  const allVisibleSelected = useMemo(() => {
+    return (
+      selectableVisibleSessionIds.length > 0 &&
+      selectableVisibleSessionIds.every((id) => selectedSessionIds.includes(id))
+    );
+  }, [selectableVisibleSessionIds, selectedSessionIds]);
+
+  async function deleteSession(session: Session) {
+    if (deletingSessionId) return;
+    if (session.id === defaultSessionId) {
+      toast.error('Main session cannot be deleted');
+      return;
+    }
+    const label = (session.title || 'Session').trim() || 'Session';
+    const confirmed = window.confirm(`Delete "${label}" and all its messages? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setDeletingSessionId(session.id);
+    try {
+      await api.delete<{ status: string }>(`/sessions/${session.id}`);
+      setSessions((current) => current.filter((item) => item.id !== session.id));
+      setSelectedSessionIds((current) => current.filter((id) => id !== session.id));
+      if (selectedSessionId === session.id) {
+        setSelectedSessionId(null);
+      }
+      toast.success('Session deleted');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete session');
+    } finally {
+      setDeletingSessionId(null);
+    }
+  }
+
+  async function deleteSelectedSessions() {
+    if (deletingSessionId) return;
+    const targetIds = selectedSessionIds.filter((id) => id !== defaultSessionId);
+    if (targetIds.length === 0) return;
+    const confirmed = window.confirm(`Delete ${targetIds.length} selected sessions? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setDeletingSessionId('bulk');
+    try {
+      const results = await Promise.allSettled(
+        targetIds.map((id) => api.delete<{ status: string }>(`/sessions/${id}`)),
+      );
+      const deletedIds = targetIds.filter((_, index) => results[index]?.status === 'fulfilled');
+      const failedCount = targetIds.length - deletedIds.length;
+
+      if (deletedIds.length > 0) {
+        setSessions((current) => current.filter((session) => !deletedIds.includes(session.id)));
+        setSelectedSessionIds((current) => current.filter((id) => !deletedIds.includes(id)));
+        if (selectedSessionId && deletedIds.includes(selectedSessionId)) {
+          setSelectedSessionId(null);
+        }
+      }
+
+      if (failedCount === 0) {
+        toast.success(`${deletedIds.length} sessions deleted`);
+      } else {
+        toast.error(`${failedCount} sessions could not be deleted`);
+      }
+    } finally {
+      setDeletingSessionId(null);
+    }
+  }
+
+  function startRenameSession(session: Session) {
+    setEditingSessionId(session.id);
+    setEditingSessionTitle((session.title || '').trim());
+  }
+
+  function cancelRenameSession() {
+    setEditingSessionId(null);
+    setEditingSessionTitle('');
+  }
+
+  async function submitRenameSession(session: Session) {
+    const title = editingSessionTitle.trim();
+    if (title === (session.title || '').trim()) {
+      setEditingSessionId(null);
+      return;
+    }
+
+    setRenamingSessionId(session.id);
+    try {
+      const updated = await api.patch<Session>(`/sessions/${session.id}`, {
+        title: title.length > 0 ? title : null,
+      });
+      setSessions((current) =>
+        current.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
+      );
+      setEditingSessionId(null);
+      setEditingSessionTitle('');
+      toast.success('Session renamed');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to rename session');
+    } finally {
+      setRenamingSessionId(null);
+    }
+  }
+
+  async function setMainSession(session: Session) {
+    try {
+      const updated = await api.post<Session>(`/sessions/${session.id}/main`, {});
+      setDefaultSessionId(updated.id);
+      setSessions((current) =>
+        current.map((item) =>
+          item.id === updated.id
+            ? { ...item, ...updated, is_main: true }
+            : { ...item, is_main: false },
+        ),
+      );
+      toast.success('Main session updated');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to set main session');
+    }
+  }
+
   const [inspector, setInspector] = useState<{
     session: Session | null;
-    runtime: SessionRuntimeStatus | null;
     userMessage?: Message | null;
     context: RuntimeContextPayload | null;
     lens?: OperationalLens;
   } | null>(null);
   const [detailEvent, setDetailEvent] = useState<ArchitectureEvent | null>(null);
+  const [runtimeExplorerOpen, setRuntimeExplorerOpen] = useState(false);
+  const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
+  const [collapsingClusters, setCollapsingClusters] = useState<Set<string>>(new Set());
+  const collapseTimersRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     void loadSessions();
@@ -1023,12 +1519,12 @@ export function LogsPage() {
   }, [selectedSessionId]);
 
   useEffect(() => {
-    if (!autoRefresh || !selectedSessionId) return;
+    if (!selectedSessionId) return;
     const timer = window.setInterval(() => {
       void refreshMessages(selectedSessionId, true);
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, selectedSessionId]);
+  }, [selectedSessionId]);
 
   async function loadSessions() {
     const pageSize = 100;
@@ -1051,8 +1547,12 @@ export function LogsPage() {
         if (!byId.has(session.id)) byId.set(session.id, session);
       }
       const ordered = Array.from(byId.values());
+      const main = ordered.find((s) => s.is_main) || ordered[0];
+      if (main) {
+        setDefaultSessionId(main.id);
+      }
       setSessions(ordered);
-      setSelectedSessionId((current) => current ?? ordered[0]?.id ?? null);
+      setSelectedSessionId((current) => current ?? main?.id ?? null);
     } catch {
       toast.error('Failed to load sessions');
     } finally {
@@ -1093,33 +1593,6 @@ export function LogsPage() {
     }
   }
 
-  async function refreshRuntimeStatus(sessionId: string) {
-    setLoadingRuntimeAction(true);
-    try {
-      const runtime = await api.get<SessionRuntimeStatus>(`/sessions/${sessionId}/runtime?action_limit=80`);
-      setRuntimeBySession((current) => ({ ...current, [sessionId]: runtime }));
-      toast.success('Runtime synced');
-    } catch {
-      toast.error('Failed to sync runtime');
-    } finally {
-      setLoadingRuntimeAction(false);
-    }
-  }
-
-  async function cleanupRuntime(sessionId: string) {
-    if (!window.confirm('Terminate and cleanup this session runtime workspace?')) return;
-    setLoadingRuntimeAction(true);
-    try {
-      await api.post<SessionRuntimeCleanupResponse>(`/sessions/${sessionId}/runtime/cleanup`);
-      toast.success('Runtime cleaned');
-      await loadMessages(sessionId, true);
-    } catch {
-      toast.error('Cleanup failed');
-    } finally {
-      setLoadingRuntimeAction(false);
-    }
-  }
-
   async function loadMoreLogs() {
     if (!selectedSessionId || !hasMore || loadingMore || messages.length === 0) return;
     const oldest = messages[messages.length - 1];
@@ -1138,10 +1611,52 @@ export function LogsPage() {
     }
   }
 
-  const sessionsInTab = useMemo(() => {
-    if (historyTab === 'sub_agents') return sessions.filter((item) => Boolean(item.parent_session_id));
-    return sessions.filter((item) => !item.parent_session_id);
-  }, [sessions, historyTab]);
+  async function resolveContextForUserMessage(
+    sessionId: string,
+    userMessageId: string,
+  ): Promise<RuntimeContextPayload | null> {
+    let workingMessages = messages;
+    let workingHasMore = hasMore;
+    let context = mapRuntimeContextToUserMessages(workingMessages).get(userMessageId) ?? null;
+    if (context) return context;
+    if (!workingHasMore || workingMessages.length === 0) return null;
+
+    setLoadingMore(true);
+    try {
+      let pagesLoaded = 0;
+      while (
+        !context &&
+        workingHasMore &&
+        workingMessages.length > 0 &&
+        pagesLoaded < CONTEXT_AUTOFETCH_MAX_PAGES
+      ) {
+        const oldest = workingMessages[workingMessages.length - 1];
+        const payload = await api.get<MessageListResponse>(
+          `/sessions/${sessionId}/messages?limit=100&before=${encodeURIComponent(oldest.id)}`,
+        );
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        workingHasMore = Boolean(payload?.has_more);
+        if (items.length === 0) break;
+
+        workingMessages = mergeMessages(workingMessages, items);
+        context = mapRuntimeContextToUserMessages(workingMessages).get(userMessageId) ?? null;
+        pagesLoaded += 1;
+      }
+
+      setMessages((current) => mergeMessages(current, workingMessages));
+      setHasMore(workingHasMore);
+
+      if (!context && workingHasMore && pagesLoaded >= CONTEXT_AUTOFETCH_MAX_PAGES) {
+        toast.error('Context snapshot not found yet. Load more history and try again.');
+      }
+      return context;
+    } catch {
+      toast.error('Failed to load older logs for context lookup');
+      return null;
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   const activeSession = useMemo(
     () => sessions.find((item) => item.id === selectedSessionId) ?? null,
@@ -1196,6 +1711,117 @@ export function LogsPage() {
     });
   }, [allEvents, activeLenses, search, sourceFilter]);
 
+  const timelineEntries = useMemo<TimelineEntry[]>(() => {
+    const entries: TimelineEntry[] = [];
+    let index = 0;
+    while (index < filteredEvents.length) {
+      const current = filteredEvents[index];
+      if (current.message.role === 'user') {
+        entries.push({
+          kind: 'event',
+          key: current.id,
+          event: current,
+          side: lensToSide(current.lens),
+        });
+        index += 1;
+        continue;
+      }
+      let end = index + 1;
+      while (end < filteredEvents.length && filteredEvents[end].message.role !== 'user') {
+        end += 1;
+      }
+      const block = filteredEvents.slice(index, end);
+      if (block.length === 1) {
+        entries.push({
+          kind: 'event',
+          key: block[0].id,
+          event: block[0],
+          side: lensToSide(block[0].lens),
+        });
+        index = end;
+        continue;
+      }
+      const representative = pickClusterRepresentative(block);
+      entries.push({
+        kind: 'cluster',
+        key: `cluster_${block[0].id}`,
+        representative,
+        events: block,
+        side: lensToSide(representative.lens),
+      });
+      index = end;
+    }
+    return entries;
+  }, [filteredEvents]);
+
+  useEffect(() => {
+    setExpandedClusters((current) => {
+      if (current.size === 0) return current;
+      const valid = new Set(
+        timelineEntries
+          .filter((entry): entry is Extract<TimelineEntry, { kind: 'cluster' }> => entry.kind === 'cluster')
+          .map((entry) => entry.key),
+      );
+      const next = new Set(Array.from(current).filter((id) => valid.has(id)));
+      if (next.size === current.size) {
+        let unchanged = true;
+        for (const id of next) {
+          if (!current.has(id)) {
+            unchanged = false;
+            break;
+          }
+        }
+        if (unchanged) return current;
+      }
+      return next;
+    });
+    setCollapsingClusters((current) => {
+      if (current.size === 0) return current;
+      const valid = new Set(
+        timelineEntries
+          .filter((entry): entry is Extract<TimelineEntry, { kind: 'cluster' }> => entry.kind === 'cluster')
+          .map((entry) => entry.key),
+      );
+      const next = new Set(Array.from(current).filter((id) => valid.has(id)));
+      if (next.size === current.size) return current;
+      return next;
+    });
+  }, [timelineEntries]);
+
+  const renderedTimelineEntries = useMemo<RenderTimelineEntry[]>(() => {
+    const output: RenderTimelineEntry[] = [];
+    for (const entry of timelineEntries) {
+      if (
+        entry.kind === 'cluster' &&
+        (expandedClusters.has(entry.key) || collapsingClusters.has(entry.key))
+      ) {
+        entry.events.forEach((event, index) => {
+          output.push({
+            kind: 'event',
+            key: `${entry.key}_${event.id}`,
+            event,
+            side: lensToSide(event.lens),
+            parentClusterKey: entry.key,
+            clusterIndex: index,
+            clusterLength: entry.events.length,
+          });
+        });
+        continue;
+      }
+      output.push(entry);
+    }
+    return output;
+  }, [timelineEntries, expandedClusters, collapsingClusters]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of Object.values(collapseTimersRef.current)) {
+        window.clearTimeout(timer);
+      }
+      collapseTimersRef.current = {};
+    };
+  }, []);
+
   const lensCounts = useMemo(() => {
     const counts: Record<OperationalLens, number> = {
       input: 0,
@@ -1225,34 +1851,220 @@ export function LogsPage() {
     { id: 'bridge', label: 'Bridges', icon: Network, color: 'text-rose-500' }
   ];
 
+  const openEventDetails = async (
+    event: ArchitectureEvent,
+    e?: React.MouseEvent | React.KeyboardEvent,
+  ) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    if (event.lens === 'input') {
+      let userContext = loopContextByUserMessageId.get(event.message.id) ?? null;
+      if (!userContext && selectedSessionId) {
+        userContext = await resolveContextForUserMessage(
+          selectedSessionId,
+          event.message.id,
+        );
+      }
+      setInspector({
+        session: activeSession,
+        userMessage: event.message,
+        context: userContext,
+        lens: event.lens,
+      });
+      return;
+    }
+    setDetailEvent(event);
+  };
+
+  const toggleCluster = (clusterKey: string) => {
+    const isOpen = expandedClusters.has(clusterKey);
+    if (isOpen) {
+      const cluster = timelineEntries.find(
+        (entry): entry is Extract<TimelineEntry, { kind: 'cluster' }> =>
+          entry.kind === 'cluster' && entry.key === clusterKey,
+      );
+      const maxStaggerSteps = Math.min(Math.max((cluster?.events.length ?? 1) - 1, 0), 6);
+      const waitMs = 220 + maxStaggerSteps * 16 + 30;
+      setCollapsingClusters((current) => {
+        const next = new Set(current);
+        next.add(clusterKey);
+        return next;
+      });
+      const existing = collapseTimersRef.current[clusterKey];
+      if (existing) window.clearTimeout(existing);
+      collapseTimersRef.current[clusterKey] = window.setTimeout(() => {
+        setExpandedClusters((current) => {
+          const next = new Set(current);
+          next.delete(clusterKey);
+          return next;
+        });
+        setCollapsingClusters((current) => {
+          const next = new Set(current);
+          next.delete(clusterKey);
+          return next;
+        });
+        delete collapseTimersRef.current[clusterKey];
+      }, waitMs);
+      return;
+    }
+    const existing = collapseTimersRef.current[clusterKey];
+    if (existing) {
+      window.clearTimeout(existing);
+      delete collapseTimersRef.current[clusterKey];
+    }
+    setCollapsingClusters((current) => {
+      if (!current.has(clusterKey)) return current;
+      const next = new Set(current);
+      next.delete(clusterKey);
+      return next;
+    });
+    setExpandedClusters((current) => {
+      const next = new Set(current);
+      next.add(clusterKey);
+      return next;
+    });
+  };
+
+  const renderEventCard = (
+    event: ArchitectureEvent,
+    options?: {
+      compact?: boolean;
+      onClick?: (e?: React.MouseEvent | React.KeyboardEvent) => void;
+      headerBadge?: JSX.Element | null;
+    },
+  ) => {
+    const compact = options?.compact ?? false;
+    const isJson = typeof event.payload === 'object' && event.payload !== null;
+    const isUserIngressCard = event.message.role === 'user' && Boolean(options?.onClick);
+    const cardToolCalls = Array.isArray(event.message.metadata.tool_calls)
+      ? event.message.metadata.tool_calls.filter((c): c is Record<string, unknown> => isRecord(c))
+      : [];
+    const lensMap = LENSES.find((l) => l.id === event.lens) || LENSES[1];
+
+    return (
+      <div
+        className={`rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-sm hover:border-[color:var(--border-strong)] hover:shadow-md transition-all ${compact ? 'p-3' : 'p-4'} ${options?.onClick ? 'cursor-pointer' : ''}`}
+        onClick={options?.onClick ? (e) => options.onClick?.(e) : undefined}
+      >
+        <div className={`flex items-center justify-between border-b border-[color:var(--border-subtle)]/50 ${compact ? 'mb-2 pb-2' : 'mb-3 pb-2'}`}>
+          <span className={`font-bold uppercase tracking-widest text-[color:var(--text-primary)] ${compact ? 'text-[9px]' : 'text-[10px]'}`}>
+            {event.label}
+          </span>
+          <div className="flex items-center gap-2">
+            {options?.headerBadge}
+            <span className="text-[9px] font-mono text-[color:var(--text-muted)]">
+              {event.timestamp.split('T')[1].slice(0, 8)}
+            </span>
+          </div>
+        </div>
+
+        <div className={`font-medium text-[color:var(--text-primary)] leading-relaxed ${compact ? 'text-xs mb-2' : 'text-sm mb-3'}`}>
+          {isJson && isRecord(event.payload) ? (
+            <div className="space-y-1.5">
+              {Object.entries(event.payload as Record<string, unknown>).slice(0, compact ? 3 : 4).map(([k, v]) => (
+                <div key={k} className="flex items-baseline gap-2 text-xs">
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">{k}</span>
+                  <span className="font-mono text-[11px] text-[color:var(--text-secondary)] truncate">{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—')}</span>
+                </div>
+              ))}
+            </div>
+          ) : cardToolCalls.length > 0 ? (
+            <div className="space-y-2">
+              {event.message.content && (
+                <p className="text-xs text-[color:var(--text-secondary)]">{event.summary}</p>
+              )}
+              {cardToolCalls.slice(0, compact ? 1 : 2).map((call, ci) => {
+                const cName = typeof call.name === 'string' ? call.name : `call_${ci}`;
+                const rawArgs = call.arguments ?? call.input ?? call.params ?? null;
+                const argsObj = rawArgs && typeof rawArgs === 'string' ? safeJsonParse(rawArgs) : isRecord(rawArgs) ? rawArgs : null;
+                const topKeys = isRecord(argsObj) ? Object.entries(argsObj).slice(0, compact ? 2 : 3) : [];
+                return (
+                  <div key={ci} className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/50 p-2 space-y-1">
+                    <StatusChip label={cName} tone={toolTone(cName)} className="text-[8px]" />
+                    {topKeys.map(([k, v]) => (
+                      <div key={k} className="flex items-baseline gap-2 text-[11px]">
+                        <span className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">{k}</span>
+                        <span className="font-mono text-[10px] text-[color:var(--text-secondary)] truncate">{typeof v === 'string' ? truncate(v, 80) : String(v ?? '—')}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+              {cardToolCalls.length > (compact ? 1 : 2) && (
+                <p className="text-[9px] text-[color:var(--text-muted)]">+{cardToolCalls.length - (compact ? 1 : 2)} more</p>
+              )}
+            </div>
+          ) : event.message.role === 'tool_result' && event.message.content.trimStart().startsWith('{') ? (
+            <pre className="text-[10px] font-mono text-[color:var(--text-secondary)] bg-[color:var(--surface-2)] rounded p-2 overflow-hidden max-h-24 whitespace-pre-wrap break-all line-clamp-4">{event.summary}</pre>
+          ) : (
+            <div className={compact ? 'line-clamp-3' : 'line-clamp-4'}>
+              <Markdown content={event.summary} compact />
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {event.tools.map((t) => (
+              <StatusChip key={t} label={t} tone={toolTone(t)} className="text-[8px]" />
+            ))}
+            {event.source && (
+              <StatusChip label={event.source} tone={toolTone(event.source)} className="text-[8px]" />
+            )}
+            {event.tools.length === 0 && !event.source && (
+              <StatusChip
+                label={lensMap.label}
+                tone={lensTone(event.lens)}
+                className="text-[8px]"
+              />
+            )}
+          </div>
+          {isUserIngressCard && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                options?.onClick?.(e);
+              }}
+              className="inline-flex items-center gap-1 rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-sky-400 hover:bg-sky-500/15"
+            >
+              <Layers size={10} />
+              Explore Context
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <AppShell
-      title="Control Plane"
+      title="Session Logs"
       subtitle="Operational Diagnostics"
       actions={
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 cursor-pointer group px-3 py-1 rounded hover:bg-[color:var(--surface-1)] transition-colors">
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(event) => setAutoRefresh(event.target.checked)}
-              className="w-3.5 h-3.5 rounded border-[color:var(--border-subtle)] text-[color:var(--text-primary)]"
-            />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] group-hover:text-[color:var(--text-primary)]">
-              Live Tail
-            </span>
-          </label>
-          <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
-          <button
-            onClick={() => {
-              if (selectedSessionId) void refreshMessages(selectedSessionId);
-            }}
-            className="btn-secondary h-8 px-4 text-[10px] font-bold uppercase tracking-widest flex items-center gap-2"
-            disabled={!selectedSessionId}
-          >
-            <RefreshCw size={12} className={loadingMessages ? 'animate-spin' : ''} />
-            Sync
-          </button>
+        <div className="flex items-center gap-2">
+          {activeSession && (
+            <>
+              <button
+                onClick={() => setInspector({
+                  session: activeSession,
+                  context: latestRuntimeContext
+                })}
+                className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+              >
+                <Cpu size={14} className="text-sky-500/80" />
+                Latest Snapshot
+              </button>
+              <button
+                onClick={() => setRuntimeExplorerOpen(true)}
+                className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+              >
+                <Terminal size={14} className="text-amber-500/80" />
+                Explore Runtime
+              </button>
+            </>
+          )}
         </div>
       }
       contentClassName="h-full !p-0 overflow-hidden bg-[color:var(--app-bg)]"
@@ -1260,78 +2072,34 @@ export function LogsPage() {
       <div className="flex h-full overflow-hidden">
         {/* IDE-Style Sidebar */}
         <aside className="w-64 border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] flex flex-col shrink-0">
-          <div className="p-3 border-b border-[color:var(--border-subtle)] space-y-2">
-            <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">History</h2>
-            <div className="grid grid-cols-2 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1">
-              <button
-                onClick={() => setHistoryTab('sessions')}
-                className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                  historyTab === 'sessions'
-                    ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)]'
-                    : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
-                }`}
-              >
-                Sessions
-              </button>
-              <button
-                onClick={() => setHistoryTab('sub_agents')}
-                className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                  historyTab === 'sub_agents'
-                    ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)]'
-                    : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
-                }`}
-              >
-                Sub-agents
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-2 space-y-0.5 custom-scrollbar">
-            {loadingSessions ? (
-              <div className="py-8 text-center">
-                <Loader2 size={16} className="animate-spin mx-auto text-[color:var(--text-muted)]" />
-              </div>
-            ) : null}
-            {sessionsInTab.map((session) => {
-              const active = session.id === selectedSessionId;
-              return (
-                <button
-                  key={session.id}
-                  onClick={() => setSelectedSessionId(session.id)}
-                  className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
-                    active
-                      ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
-                      : 'hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-transparent'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 flex-1 text-xs font-semibold truncate">{session.title || 'Session'}</span>
-                    <div className="flex shrink-0 items-center gap-1">
-                      {sessionChannelKind(session) === 'telegram_group' ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
-                          <Users size={8} />
-                          <span>{'TG\u00A0Group'}</span>
-                        </span>
-                      ) : null}
-                      {sessionChannelKind(session) === 'telegram_dm' ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
-                          <Send size={8} />
-                          <span>{'TG\u00A0DM'}</span>
-                        </span>
-                      ) : null}
-                      {session.is_main ? (
-                        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-400">
-                          <BadgeCheck size={8} />
-                          Main
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                  <span className="text-[10px] text-[color:var(--text-muted)]">{formatCompactDate(session.started_at)}</span>
-                </button>
-              );
-            })}
-          </div>
+          <SessionHistorySidebar
+            historyTab={historyTab}
+            setHistoryTab={setHistoryTab}
+            sessionFilter={sessionFilter}
+            setSessionFilter={setSessionFilter}
+            isMultiSelectMode={isMultiSelectMode}
+            setIsMultiSelectMode={setIsMultiSelectMode}
+            selectedSessionIds={selectedSessionIds}
+            setSelectedSessionIds={setSelectedSessionIds}
+            allVisibleSelected={allVisibleSelected}
+            selectableVisibleSessionIds={selectableVisibleSessionIds}
+            deleteSelectedSessions={deleteSelectedSessions}
+            deletingSessionId={deletingSessionId}
+            filteredSessions={filteredSessions}
+            activeSessionId={selectedSessionId}
+            onSessionClick={(id) => setSelectedSessionId(id)}
+            defaultSessionId={defaultSessionId}
+            editingSessionId={editingSessionId}
+            editingSessionTitle={editingSessionTitle}
+            setEditingSessionTitle={setEditingSessionTitle}
+            submitRenameSession={submitRenameSession}
+            cancelRenameSession={cancelRenameSession}
+            startRenameSession={startRenameSession}
+            setMainSession={setMainSession}
+            deleteSession={deleteSession}
+            renamingSessionId={renamingSessionId}
+            loadingSessions={loadingSessions}
+          />
         </aside>
 
         {/* Command Center Main */}
@@ -1345,52 +2113,21 @@ export function LogsPage() {
             <>
               {/* Control Ribbon */}
               <header className="shrink-0 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] z-10">
-                {/* Row 1: Identity & Primary Actions */}
+                {/* Row 1: Identity & Primary Status */}
                 <div className="px-6 h-14 flex items-center justify-between border-b border-[color:var(--border-subtle)]/30">
                   <div className="flex items-center gap-4 min-w-0">
                     <div className="flex items-center gap-2 shrink-0">
-                      <div className={`w-2 h-2 rounded-sm ${activeRuntime?.active ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)]' : 'bg-[color:var(--border-strong)]'}`} />
+                      <div className={`w-2 h-2 rounded-full transition-all duration-500 ${activeRuntime?.active ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-[color:var(--border-strong)]'}`} />
                       <h2 className="text-sm font-bold text-[color:var(--text-primary)] uppercase tracking-wider truncate max-w-[400px]">
                         {activeSession.title || 'Live Process'}
                       </h2>
                     </div>
-                    <div className="flex items-center gap-3 text-[10px] font-mono text-[color:var(--text-muted)] border-l border-[color:var(--border-subtle)] pl-4 truncate">
-                      <span className="opacity-70">id:{activeSession.id}</span>
-                      <span className={`px-1.5 py-0.5 rounded border ${activeRuntime?.active ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]'} uppercase font-bold tracking-widest text-[9px]`}>
+                    <div className="flex items-center gap-3 text-[10px] font-mono font-bold text-[color:var(--text-muted)] border-l border-[color:var(--border-subtle)] pl-4 truncate">
+                      <span className="opacity-40">ID: {activeSession.id.slice(0, 12)}…</span>
+                      <span className={`px-2 py-0.5 rounded-full border transition-colors ${activeRuntime?.active ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]'} uppercase font-bold tracking-widest text-[8px]`}>
                         {runtimeStatusLabel(activeRuntime)}
                       </span>
                     </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={() => setInspector({
-                        session: activeSession,
-                        runtime: activeRuntime,
-                        context: latestRuntimeContext
-                      })}
-                      className="flex items-center gap-2 px-3 py-1.5 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] text-[10px] font-bold uppercase tracking-widest transition-all"
-                    >
-                      <Cpu size={12} className="text-sky-500" />
-                      Inspector
-                    </button>
-                    <div className="w-px h-4 bg-[color:var(--border-subtle)] mx-1" />
-                    <button
-                      onClick={() => void refreshRuntimeStatus(activeSession.id)}
-                      className="p-1.5 rounded hover:bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-sky-500 transition-colors"
-                      disabled={loadingRuntimeAction}
-                      title="Sync Runtime"
-                    >
-                      <RefreshCw size={14} className={loadingRuntimeAction ? 'animate-spin' : ''} />
-                    </button>
-                    <button
-                      onClick={() => void cleanupRuntime(activeSession.id)}
-                      className="p-1.5 rounded hover:bg-rose-500/10 text-[color:var(--text-muted)] hover:text-rose-500 transition-colors"
-                      disabled={loadingRuntimeAction}
-                      title="Cleanup Runtime"
-                    >
-                      <X size={16} />
-                    </button>
                   </div>
                 </div>
 
@@ -1476,122 +2213,131 @@ export function LogsPage() {
                   )}
 
                   <div className="relative before:absolute before:inset-0 before:ml-4 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-px before:bg-[color:var(--border-subtle)]">
-                    {filteredEvents.map((event, idx) => {
-                      const isJson = typeof event.payload === 'object' && event.payload !== null;
-                      const cardToolCalls = Array.isArray(event.message.metadata.tool_calls)
-                        ? event.message.metadata.tool_calls.filter((c): c is Record<string, unknown> => isRecord(c))
-                        : [];
-
-                      const eventLoopContext = event.message.role === 'user'
-                        ? (loopContextByUserMessageId.get(event.message.id) ?? latestRuntimeContext)
-                        : latestRuntimeContext;
-
-                      const handleCardClick = (e?: React.MouseEvent | React.KeyboardEvent) => {
-                        e?.preventDefault();
-                        e?.stopPropagation();
-                        if (event.lens === 'input') {
-                          setInspector({
-                            session: activeSession,
-                            runtime: activeRuntime,
-                            userMessage: event.message,
-                            context: eventLoopContext,
-                            lens: event.lens,
-                          });
-                        } else {
-                          setDetailEvent(event);
-                        }
-                      };
-
-                      const lensMap = LENSES.find(l => l.id === event.lens) || LENSES[1];
-                      const side = lensToSide(event.lens);
+                    {renderedTimelineEntries.map((entry, idx) => {
+                      const event = entry.kind === 'event' ? entry.event : entry.representative;
+                      const lensMap = LENSES.find((l) => l.id === event.lens) || LENSES[1];
+                      const side = entry.side;
                       const isRight = side === 'right';
-                      const prevSide = idx > 0 ? lensToSide(filteredEvents[idx - 1].lens) : side;
+                      const prevSide = idx > 0 ? renderedTimelineEntries[idx - 1].side : side;
                       const isOpposite = idx > 0 && side !== prevSide;
+                      const isCluster = entry.kind === 'cluster';
+                      const isUserEvent = entry.kind === 'event' && entry.event.message.role === 'user';
+                      const isExpandedClusterEvent = 'parentClusterKey' in entry;
+                      const isCollapsingExpandedEvent =
+                        isExpandedClusterEvent && collapsingClusters.has(entry.parentClusterKey);
+                      const showCollapsePill =
+                        isExpandedClusterEvent && entry.clusterIndex === entry.clusterLength - 1;
+                      const rowZClass = isCluster || showCollapsePill
+                        ? 'z-50'
+                        : isUserEvent
+                          ? 'z-40'
+                          : 'z-20';
+                      const expandedEventAnimClass =
+                        isExpandedClusterEvent ? 'will-change-transform will-change-opacity' : '';
+                      const expandedEventAnimDelay =
+                        isExpandedClusterEvent
+                          ? isCollapsingExpandedEvent
+                            ? Math.min(entry.clusterLength - entry.clusterIndex - 1, 6) * 16
+                            : Math.min(entry.clusterIndex, 6) * 28
+                          : 0;
+                      const expandedEventAnimStyle: React.CSSProperties | undefined = isExpandedClusterEvent
+                        ? {
+                            animation: isCollapsingExpandedEvent
+                              ? 'logsClusterOut 220ms cubic-bezier(0.22,1,0.36,1) forwards'
+                              : 'logsClusterIn 260ms cubic-bezier(0.22,1,0.36,1) both',
+                            animationDelay: `${expandedEventAnimDelay}ms`,
+                          }
+                        : undefined;
 
                       return (
                         <div
-                          key={event.id}
-                          className={`relative flex items-center justify-between md:justify-normal ${isRight ? 'md:flex-row-reverse' : ''} group`}
+                          key={entry.key}
+                          className={`relative flex items-center justify-between md:justify-normal ${isRight ? 'md:flex-row-reverse' : ''} group pointer-events-none ${rowZClass}`}
                           style={idx === 0 ? undefined : { marginTop: isOpposite ? '-40px' : '24px' }}
                         >
-                          {/* Timeline Node */}
                           <div className={`flex items-center justify-center w-8 h-8 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shrink-0 md:order-1 ${isRight ? 'md:-translate-x-1/2' : 'md:translate-x-1/2'} z-10 shadow-sm transition-transform group-hover:scale-110`}>
                             <lensMap.icon size={12} className={lensMap.color} />
                           </div>
 
-                          {/* Event Card */}
-                          <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] cursor-pointer" onClick={handleCardClick}>
-                            <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-sm hover:border-[color:var(--border-strong)] hover:shadow-md transition-all p-4">
-                              <div className="flex items-center justify-between mb-3 border-b border-[color:var(--border-subtle)]/50 pb-2">
-                                <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)]">
-                                  {event.label}
-                                </span>
-                                <span className="text-[9px] font-mono text-[color:var(--text-muted)]">
-                                  {event.timestamp.split('T')[1].slice(0, 8)}
-                                </span>
+                          <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)]">
+                            {entry.kind === 'event' ? (
+                              <div
+                                className={`space-y-2 pointer-events-auto ${expandedEventAnimClass}`}
+                                style={expandedEventAnimStyle}
+                              >
+                                {renderEventCard(event, {
+                                  onClick: (e) => void openEventDetails(event, e),
+                                  headerBadge:
+                                    isExpandedClusterEvent && entry.clusterIndex === 0 ? (
+                                      <span className="inline-flex items-center rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-emerald-300">
+                                        Latest
+                                      </span>
+                                    ) : null,
+                                })}
+                                {showCollapsePill ? (
+                                  <div className="relative z-50 flex justify-center -mt-1 pointer-events-auto">
+                                    <button
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        toggleCluster(entry.parentClusterKey);
+                                      }}
+                                      className="px-5 py-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+                                    >
+                                      <ChevronRight size={11} className="-rotate-90" />
+                                      Collapse Trace
+                                    </button>
+                                  </div>
+                                ) : null}
                               </div>
-
-                              <div className="text-sm font-medium text-[color:var(--text-primary)] leading-relaxed mb-3">
-                                {isJson && isRecord(event.payload) ? (
-                                  <div className="space-y-1.5">
-                                    {Object.entries(event.payload as Record<string, unknown>).slice(0, 4).map(([k, v]) => (
-                                      <div key={k} className="flex items-baseline gap-2 text-xs">
-                                        <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">{k}</span>
-                                        <span className="font-mono text-[11px] text-[color:var(--text-secondary)] truncate">{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—')}</span>
+                            ) : (
+                              <div className="space-y-2 pointer-events-auto">
+                                <div className="relative pb-11">
+                                  <div className="pointer-events-none absolute inset-x-0 top-0 z-0">
+                                    {entry.events.slice(1, 4).map((shadowEvent, shadowIndex) => (
+                                      <div
+                                        key={shadowEvent.id}
+                                        className="absolute inset-x-0"
+                                        style={{
+                                          top: `${(shadowIndex + 1) * 8}px`,
+                                          left: `${(shadowIndex + 1) * 5}px`,
+                                          right: `${(shadowIndex + 1) * 5}px`,
+                                          opacity: Math.max(0.26, 0.54 - shadowIndex * 0.13),
+                                          transform: `scale(${1 - (shadowIndex + 1) * 0.01})`,
+                                        }}
+                                      >
+                                        <div className="h-24 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/70 shadow-sm" />
                                       </div>
                                     ))}
                                   </div>
-                                ) : cardToolCalls.length > 0 ? (
-                                  <div className="space-y-2">
-                                    {event.message.content && (
-                                      <p className="text-xs text-[color:var(--text-secondary)]">{event.summary}</p>
-                                    )}
-                                    {cardToolCalls.slice(0, 2).map((call, ci) => {
-                                      const cName = typeof call.name === 'string' ? call.name : `call_${ci}`;
-                                      const rawArgs = call.arguments ?? call.input ?? call.params ?? null;
-                                      const argsObj = rawArgs && typeof rawArgs === 'string' ? safeJsonParse(rawArgs) : isRecord(rawArgs) ? rawArgs : null;
-                                      const topKeys = isRecord(argsObj) ? Object.entries(argsObj).slice(0, 3) : [];
-                                      return (
-                                        <div key={ci} className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/50 p-2 space-y-1">
-                                          <StatusChip label={cName} tone={toolTone(cName)} className="text-[8px]" />
-                                          {topKeys.map(([k, v]) => (
-                                            <div key={k} className="flex items-baseline gap-2 text-[11px]">
-                                              <span className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">{k}</span>
-                                              <span className="font-mono text-[10px] text-[color:var(--text-secondary)] truncate">{typeof v === 'string' ? truncate(v, 80) : String(v ?? '—')}</span>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      );
-                                    })}
-                                    {cardToolCalls.length > 2 && (
-                                      <p className="text-[9px] text-[color:var(--text-muted)]">+{cardToolCalls.length - 2} more</p>
-                                    )}
-                                  </div>
-                                ) : event.message.role === 'tool_result' && event.message.content.trimStart().startsWith('{') ? (
-                                  <pre className="text-[10px] font-mono text-[color:var(--text-secondary)] bg-[color:var(--surface-2)] rounded p-2 overflow-hidden max-h-24 whitespace-pre-wrap break-all line-clamp-4">{event.summary}</pre>
-                                ) : (
-                                  <div className="line-clamp-4">
-                                    <Markdown content={event.summary} compact />
-                                  </div>
-                                )}
-                              </div>
 
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                {event.tools.map(t => (
-                                  <StatusChip key={t} label={t} tone={toolTone(t)} className="text-[8px]" />
-                                ))}
-                                {event.source && (
-                                  <StatusChip label={event.source} tone={toolTone(event.source)} className="text-[8px]" />
-                                )}
-                                {event.tools.length === 0 && !event.source && (
-                                  <StatusChip
-                                    label={lensMap.label}
-                                    tone={lensTone(event.lens)}
-                                    className="text-[8px]"
-                                  />
-                                )}
+                                  <div className="relative z-10 pointer-events-auto">
+                                    {renderEventCard(entry.representative, {
+                                      onClick: (e) => void openEventDetails(entry.representative, e),
+                                      headerBadge: (
+                                        <span className="inline-flex items-center rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-emerald-300">
+                                          Latest
+                                        </span>
+                                      ),
+                                    })}
+                                  </div>
+
+                                  <div className="absolute left-1/2 bottom-0 z-50 -translate-x-1/2 pointer-events-auto">
+                                    <button
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        toggleCluster(entry.key);
+                                      }}
+                                      className="px-5 py-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+                                    >
+                                      <ChevronRight size={11} className="rotate-90" />
+                                      Expand {entry.events.length} Step Trace
+                                    </button>
+                                  </div>
+                                </div>
                               </div>
-                            </div>
+                            )}
                           </div>
                         </div>
                       );
@@ -1620,7 +2366,6 @@ export function LogsPage() {
       <UnifiedInspectorModal
         open={Boolean(inspector)}
         session={inspector?.session ?? null}
-        runtime={inspector?.runtime ?? null}
         userMessage={inspector?.userMessage ?? null}
         context={inspector?.context ?? null}
         onClose={() => setInspector(null)}
@@ -1631,6 +2376,14 @@ export function LogsPage() {
         event={detailEvent}
         onClose={() => setDetailEvent(null)}
       />
+
+      <RuntimeExplorerModal
+        open={runtimeExplorerOpen}
+        session={activeSession ?? null}
+        runtime={activeRuntime ?? null}
+        onClose={() => setRuntimeExplorerOpen(false)}
+      />
+
     </AppShell>
   );
 }
