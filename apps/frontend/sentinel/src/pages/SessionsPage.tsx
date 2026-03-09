@@ -3095,29 +3095,32 @@ export function SessionsPage() {
           hideHeader={mode === 'solo'}
           actions={
             mode === 'advanced' ? (
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2">
                 <button
                     onClick={() => setMode('solo')}
-                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]"
+                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
                 >
-                  <Expand size={14} className="text-emerald-500" />
+                  <Expand size={14} className="text-emerald-500/80" />
                   Focus
                 </button>
-                <div className="h-5 w-px bg-[color:var(--border-subtle)] mx-0.5" />
+                
+                <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
+                
                 <button
                     onClick={resetSession}
                     title="Start fresh (memories preserved)"
-                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]"
+                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
                 >
-                  <RefreshCw size={14} className="text-sky-500" />
+                  <RefreshCw size={14} className="text-sky-500/80" />
                   New Chat
                 </button>
+
                 <button
                     onClick={compactContext}
                     disabled={isCompacting}
-                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
                 >
-                  <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-400`} />
+                  <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-500/80`} />
                   Compact
                 </button>
               </div>
@@ -3126,12 +3129,13 @@ export function SessionsPage() {
       >
         <div className="relative flex h-full w-full overflow-hidden">
           {mode === 'solo' ? (
-            <div className="absolute top-3 left-3 z-40">
+            <div className="absolute top-4 left-4 z-40">
               <button
                 type="button"
                 onClick={() => setMode('advanced')}
-                className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/90 backdrop-blur px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]"
+                className="inline-flex h-9 items-center gap-2 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)]/90 backdrop-blur px-4 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] hover:bg-[color:var(--surface-1)] transition-all active:scale-95 shadow-xl"
               >
+                <X size={14} className="text-[color:var(--text-muted)]" />
                 Exit Focus
               </button>
             </div>
@@ -3268,202 +3272,208 @@ export function SessionsPage() {
 
           {/* Chat Area */}
           <main className="relative z-0 flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)] overflow-hidden">
-            {/* Model Selector / Status Header */}
+            {/* Unified Session Toolbar */}
             {mode === 'advanced' ? (
-            <div className="flex items-center justify-between px-4 py-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
-              <div className="flex items-center gap-3">
-                <div className="relative flex items-center gap-1.5 group cursor-default">
-                  <div className={`h-2 w-2 rounded-full ${streaming.connection === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)]">{streaming.connection}</span>
-                  <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-lg bg-[color:var(--surface-0)] border border-[color:var(--border)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-50 space-y-0.5">
-                    <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)]">WebSocket</div>
-                    <div className={streaming.connection === 'connected' ? 'text-emerald-500 font-bold' : 'text-rose-500 font-bold'}>{streaming.connection}</div>
+            <div className="flex items-center justify-between px-4 h-12 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/80 backdrop-blur-md sticky top-0 z-30 shrink-0 select-none">
+              {/* Left: Connection & Progress */}
+              <div className="flex items-center gap-2.5">
+                <div className="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
+                  <div className={`h-1.5 w-1.5 rounded-full transition-all duration-500 ${streaming.connection === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]'}`} />
+                  <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--text-secondary)]">{streaming.connection === 'connected' ? 'Live' : 'Offline'}</span>
+                  
+                  {/* Connection Tooltip */}
+                  <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
+                    <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Telemetry Link</div>
+                    <div className="flex items-center gap-2">
+                      <div className={`h-1.5 w-1.5 rounded-full ${streaming.connection === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                      <span className={streaming.connection === 'connected' ? 'text-emerald-500 font-bold' : 'text-rose-500 font-bold'}>{streaming.connection.toUpperCase()}</span>
+                    </div>
                   </div>
                 </div>
+
                 {streaming.agentMaxIterations > 0 && (
-                  <>
-                    <div className="w-px h-3 bg-[color:var(--border)]" />
-                    <div className="relative flex items-center gap-2 group cursor-default">
-                      <div className="w-20 h-1 rounded-full bg-[color:var(--surface-2)] overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-[color:var(--accent-solid)] transition-all duration-500"
-                          style={{ width: `${Math.min((streaming.agentIteration / streaming.agentMaxIterations) * 100, 100)}%` }}
-                        />
-                      </div>
-                      <span className="text-[10px] font-mono font-bold text-[color:var(--text-muted)]">
-                        {streaming.agentIteration}/{streaming.agentMaxIterations}
-                      </span>
-                      <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-lg bg-[color:var(--surface-0)] border border-[color:var(--border)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-50 space-y-0.5">
-                        <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Agent Steps</div>
-                        <div><span className="font-bold text-[color:var(--accent-solid)]">{streaming.agentIteration}</span><span className="text-[color:var(--text-muted)]"> / {streaming.agentMaxIterations} steps used</span></div>
-                        <div className="text-[color:var(--text-muted)]">{streaming.agentMaxIterations - streaming.agentIteration} remaining</div>
+                  <div className="group relative flex items-center gap-3 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
+                    <div className="w-16 h-1 rounded-full bg-[color:var(--surface-3)] overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-[color:var(--accent-solid)] transition-all duration-700 ease-out"
+                        style={{ width: `${Math.min((streaming.agentIteration / streaming.agentMaxIterations) * 100, 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] font-mono font-bold text-[color:var(--text-primary)]">
+                      {streaming.agentIteration}<span className="text-[color:var(--text-muted)] mx-0.5">/</span>{streaming.agentMaxIterations}
+                    </span>
+
+                    {/* Progress Tooltip */}
+                    <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
+                      <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Execution Pipeline</div>
+                      <div><span className="font-bold text-[color:var(--accent-solid)]">{streaming.agentIteration}</span><span className="text-[color:var(--text-muted)]"> of {streaming.agentMaxIterations} steps completed</span></div>
+                      <div className="mt-1 h-1 w-full bg-[color:var(--surface-2)] rounded-full overflow-hidden">
+                        <div className="h-full bg-[color:var(--accent-solid)]" style={{ width: `${(streaming.agentIteration / streaming.agentMaxIterations) * 100}%` }} />
                       </div>
                     </div>
-                  </>
-                )}
-                {streaming.isCompactingContext && (
-                  <>
-                    <div className="w-px h-3 bg-[color:var(--border)]" />
-                    <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-500">
-                      <Loader2 size={10} className="animate-spin" />
-                      Compacting context
-                    </div>
-                  </>
+                  </div>
                 )}
               </div>
 
-              <div className="flex items-center gap-4">
-                {/* Context ring indicator */}
-                {(() => {
-                  const estimatedTokens =
-                    typeof contextTokenEstimate === 'number' && Number.isFinite(contextTokenEstimate)
-                      ? contextTokenEstimate
-                      : null;
-                  const hasBudget = typeof contextTokenBudget === 'number' && contextTokenBudget > 0;
-                  const hasEstimate = typeof estimatedTokens === 'number';
-                  const CTX_CEILING = hasBudget ? contextTokenBudget : 1;
-                  const fill = hasBudget && hasEstimate ? Math.min(estimatedTokens / CTX_CEILING, 1) : 0;
-                  const pct =
-                    typeof contextTokenPercent === 'number' && Number.isFinite(contextTokenPercent)
-                      ? Math.max(0, Math.min(100, Math.floor(contextTokenPercent)))
-                      : Math.round(fill * 100);
-                  const r = 7;
-                  const circ = 2 * Math.PI * r;
-                  const dash = circ * fill;
-                  const ringColor = fill < 0.5 ? '#10b981' : fill < 0.8 ? '#f59e0b' : '#ef4444';
-                  const warn = hasBudget && hasEstimate && estimatedTokens > CTX_CEILING;
-                  const kTokens = hasEstimate
-                    ? (estimatedTokens >= 1000 ? `${(estimatedTokens / 1000).toFixed(1)}k` : `${estimatedTokens}`)
-                    : '—';
-                  const ceilingLabel = hasBudget ? `${Math.round(CTX_CEILING / 1000)}k tokens` : '…';
-                  return (
-                    <div className="relative flex items-center gap-1.5 group cursor-default">
-                      <svg width="18" height="18" viewBox="0 0 20 20" className="-rotate-90 shrink-0">
-                        <circle cx="10" cy="10" r={r} fill="none" stroke="var(--surface-2)" strokeWidth="2.5" />
-                        <circle
-                          cx="10" cy="10" r={r} fill="none"
-                          stroke={ringColor}
-                          strokeWidth="2.5"
-                          strokeLinecap="round"
-                          strokeDasharray={`${dash} ${circ}`}
-                          className="transition-all duration-500"
-                        />
-                      </svg>
-                      <span className={`text-[10px] font-mono font-bold transition-colors ${warn ? 'text-amber-500' : 'text-[color:var(--text-muted)]'}`}>
-                        {pct}<span className="opacity-40">%</span>
-                      </span>
-                      {warn && <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />}
-                      {/* Tooltip */}
-                      <div className="absolute top-full right-0 mt-2 px-3 py-2 rounded-lg bg-[color:var(--surface-0)] border border-[color:var(--border)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-50 space-y-1">
-                        <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Context Window</div>
-                        <div><span className="font-bold" style={{ color: ringColor }}>~{kTokens}</span><span className="text-[color:var(--text-muted)]"> / {ceilingLabel}</span></div>
-                        <div className="text-[color:var(--text-muted)]">
-                          {hasEstimate ? `${pct}% used` : 'Awaiting backend runtime snapshot'}
+              {/* Center: Thinking Status (Absolute) */}
+              <div className="absolute left-1/2 -translate-x-1/2 flex items-center pointer-events-none">
+                 {(streaming.isThinking || streaming.isCompactingContext) && (
+                   <div className="flex items-center gap-2.5 px-3.5 py-1.5 rounded-full bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] shadow-xl shadow-black/10 animate-in slide-in-from-top-2 duration-500">
+                     <Loader2 size={11} className="animate-spin opacity-80" />
+                     <span className="text-[10px] font-bold uppercase tracking-[0.15em]">
+                       {streaming.isCompactingContext ? 'Compacting Memory' : 'Sentinel Thinking'}
+                     </span>
+                   </div>
+                 )}
+              </div>
+
+              {/* Right: Controls & Context */}
+              <div className="flex items-center gap-3">
+                {/* Context Indicator */}
+                <div className="group relative flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
+                  {(() => {
+                    const estimatedTokens = typeof contextTokenEstimate === 'number' && Number.isFinite(contextTokenEstimate) ? contextTokenEstimate : null;
+                    const hasBudget = typeof contextTokenBudget === 'number' && contextTokenBudget > 0;
+                    const hasEstimate = typeof estimatedTokens === 'number';
+                    const CTX_CEILING = hasBudget ? contextTokenBudget : 1;
+                    const pct = typeof contextTokenPercent === 'number' && Number.isFinite(contextTokenPercent)
+                        ? Math.max(0, Math.min(100, Math.floor(contextTokenPercent)))
+                        : Math.round(((estimatedTokens || 0) / CTX_CEILING) * 100);
+                    const ringColor = pct < 50 ? 'bg-emerald-500' : pct < 80 ? 'bg-amber-500' : 'bg-rose-500';
+                    const warn = hasBudget && hasEstimate && estimatedTokens > CTX_CEILING;
+                    const kTokens = hasEstimate
+                      ? (estimatedTokens >= 1000 ? `${(estimatedTokens / 1000).toFixed(1)}k` : `${estimatedTokens}`)
+                      : '—';
+                    const ceilingLabel = hasBudget ? `${Math.round(CTX_CEILING / 1000)}k` : '…';
+
+                    return (
+                      <>
+                        <div className={`h-1.5 w-1.5 rounded-full ${ringColor} ${warn ? 'animate-pulse shadow-[0_0_8px_rgba(245,158,11,0.6)]' : ''}`} />
+                        <span className="text-[10px] font-mono font-bold text-[color:var(--text-primary)]">
+                          {pct}<span className="text-[color:var(--text-muted)] opacity-60 ml-0.5">%</span>
+                        </span>
+                        
+                        {/* Context Tooltip */}
+                        <div className="absolute top-full right-0 mt-2 px-3 py-2.5 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
+                          <div className="font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-1.5 pb-1 border-b border-[color:var(--border-subtle)]">Context Window</div>
+                          <div className="flex items-center justify-between gap-8 mb-1">
+                            <span className="text-[color:var(--text-secondary)]">Utilization</span>
+                            <span className={`font-bold ${pct > 80 ? 'text-rose-500' : 'text-[color:var(--accent-solid)]'}`}>{pct}%</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-8 mb-2">
+                            <span className="text-[color:var(--text-secondary)]">Token Load</span>
+                            <span className="text-[color:var(--text-muted)]"><span className="font-bold text-[color:var(--text-primary)]">{kTokens}</span> / {ceilingLabel}</span>
+                          </div>
+                          <div className="h-1 w-full bg-[color:var(--surface-2)] rounded-full overflow-hidden">
+                            <div className={`h-full transition-all duration-500 ${pct > 80 ? 'bg-rose-500' : 'bg-[color:var(--accent-solid)]'}`} style={{ width: `${pct}%` }} />
+                          </div>
+                          {warn && (
+                            <div className="mt-2 py-1 px-2 rounded bg-amber-500/10 text-amber-500 font-bold text-[9px] uppercase tracking-wider animate-pulse">
+                              Auto-compaction pending
+                            </div>
+                          )}
+                          {!hasEstimate && <div className="mt-1.5 text-[color:var(--text-muted)] italic">Awaiting telemetry...</div>}
                         </div>
-                        {warn && <div className="text-amber-500 font-bold">Auto-compaction should trigger on next turn</div>}
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                <div className="w-px h-3 bg-[color:var(--border)]" />
-
-                {/* --- Effort selector (Fast / Normal / Deep Think) --- */}
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Effort:</span>
-                  <div ref={effortDropdownRef} className="relative z-20">
-                    {(() => {
-                        const active = models.find(m => m.tier === selectedTier) || models[0];
-                        const tier = active?.tier ?? 'normal';
-                        const icons: Record<string, any> = {
-                          fast: <Zap size={10} />,
-                          normal: <Sparkles size={10} />,
-                          hard: <Brain size={10} />,
-                        };
-                        const themes: Record<string, string> = {
-                          fast: 'bg-emerald-600 dark:bg-emerald-500/40 border-emerald-600/20 dark:border-emerald-500/50 text-white dark:text-white/90 hover:bg-emerald-500 dark:hover:bg-emerald-500/50',
-                          normal: 'bg-sky-600 dark:bg-sky-500/40 border-sky-600/20 dark:border-sky-500/50 text-white dark:text-white/90 hover:bg-sky-500 dark:hover:bg-sky-500/50',
-                          hard: 'bg-rose-600 dark:bg-rose-500/40 border-rose-600/20 dark:border-rose-500/50 text-white dark:text-white/90 hover:bg-rose-500 dark:hover:bg-rose-500/50',
-                        };
-                        return (
-                          <button
-                            onClick={() => setIsEffortDropdownOpen(!isEffortDropdownOpen)}
-                            className={`flex items-center gap-2 px-2.5 h-6 text-[10px] font-bold uppercase tracking-widest rounded-lg transition-all duration-200 border shadow-sm ${themes[tier] || 'bg-[color:var(--surface-2)] border-[color:var(--border-subtle)] text-[color:var(--text-primary)]'}`}
-                          >
-                            <span className="opacity-90">{icons[tier] || <Activity size={10} />}</span>
-                            <span>{active?.label || 'Select'}</span>
-                            <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
-                          </button>
-                        );
-                      })()}
-
-                    {isEffortDropdownOpen && (
-                        <div className="absolute top-full right-0 mt-1 w-64 max-w-[min(22rem,calc(100vw-2rem))] rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1 animate-in fade-in zoom-in-95 duration-100 origin-top-right">
-                          {models.map(m => {
-                            const active = selectedTier === m.tier;
-                            const tier = m.tier ?? 'normal';
-                            const icons: Record<string, any> = {
-                              fast: <Zap size={14} className={active ? 'text-white/90' : 'text-emerald-500'} />,
-                              normal: <Sparkles size={14} className={active ? 'text-white/90' : 'text-sky-500'} />,
-                              hard: <Brain size={14} className={active ? 'text-white/90' : 'text-rose-500'} />,
-                            };
-                            const bgColors: Record<string, string> = {
-                              fast: 'bg-emerald-600 dark:bg-emerald-500/40',
-                              normal: 'bg-sky-600 dark:bg-sky-500/40',
-                              hard: 'bg-rose-600 dark:bg-rose-500/40',
-                            };
-                            return (
-                              <button
-                                key={m.tier}
-                                onClick={() => {
-                                  setSelectedTier(m.tier);
-                                  setIsEffortDropdownOpen(false);
-                                }}
-                                className={`w-full flex items-start gap-3 px-4 py-3 transition-all text-left group ${
-                                  active
-                                    ? `text-white ${bgColors[tier] || ''}`
-                                    : 'hover:bg-[color:var(--surface-1)]'
-                                }`}
-                              >
-                                <div className="mt-0.5 shrink-0 transition-transform group-hover:scale-110 duration-200">
-                                  {icons[tier] || <Activity size={14} />}
-                                </div>
-                                <div className="flex flex-col gap-0.5 min-w-0">
-                                  <div className={`text-[10px] font-bold uppercase tracking-widest ${active ? 'text-white' : 'text-[color:var(--text-primary)] group-hover:text-[color:var(--text-primary)]'}`}>
-                                    {m.label}
-                                  </div>
-                                  <div className={`text-[9px] font-medium leading-tight ${active ? 'text-white/80' : 'text-[color:var(--text-muted)]'}`}>
-                                    {m.description}
-                                  </div>
-                                  {m.primary_provider_id && (
-                                    <div className="mt-1.5 flex items-center gap-1.5">
-                                      <span className={`text-[8px] font-mono px-1 rounded uppercase ${active ? 'bg-black/20 text-white/90' : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] opacity-60'}`}>{m.primary_provider_id}</span>
-                                      <span className={`text-[8px] font-mono truncate ${active ? 'text-white/40' : 'text-[color:var(--text-muted)] opacity-40'}`}>{m.primary_model_id}</span>
-                                    </div>
-                                  )}
-                                </div>
-                                {active && (
-                                  <div className="ml-auto w-1 h-1 rounded-full bg-white/60 mt-1.5 shadow-[0_0_8px_rgba(255,255,255,0.2)]" />
-                                )}
-                              </button>
-                            );
-                          })}
-                        </div>
-                    )}
-                  </div>
+                      </>
+                    );
+                  })()}
                 </div>
 
-                <div className="w-px h-3 bg-[color:var(--border)]" />
+                <div className="w-px h-4 bg-[color:var(--border-subtle)] mx-1" />
 
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Steps:</span>
+                {/* Effort / Tier Selector */}
+                <div ref={effortDropdownRef} className="relative z-20">
+                  {(() => {
+                      const active = models.find(m => m.tier === selectedTier) || models[0];
+                      const tier = active?.tier ?? 'normal';
+                      const icons: Record<string, any> = {
+                        fast: <Zap size={11} />,
+                        normal: <Sparkles size={11} />,
+                        hard: <Brain size={11} />,
+                      };
+                      return (
+                        <button
+                          onClick={() => setIsEffortDropdownOpen(!isEffortDropdownOpen)}
+                          className="flex items-center gap-2.5 px-3 h-8 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all shadow-sm"
+                        >
+                          <span className="text-[color:var(--text-secondary)]">{icons[tier] || <Activity size={11} />}</span>
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)]">{active?.label || 'Mode'}</span>
+                          <ChevronDown size={11} className={`transition-transform duration-300 opacity-40 ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
+                        </button>
+                      );
+                    })()}
+
+                  {isEffortDropdownOpen && (
+                      <div className="absolute top-full right-0 mt-2 w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl">
+                        {models.map(m => {
+                          const active = selectedTier === m.tier;
+                          const tier = m.tier ?? 'normal';
+                          const TierIcon = {
+                            fast: Zap,
+                            normal: Sparkles,
+                            hard: Brain,
+                          }[tier as string] || Activity;
+                          
+                          const tierColor = {
+                            fast: 'text-emerald-500',
+                            normal: 'text-sky-500',
+                            hard: 'text-rose-500',
+                          }[tier as string] || 'text-[color:var(--text-muted)]';
+
+                          return (
+                            <button
+                              key={m.tier}
+                              onClick={() => {
+                                setSelectedTier(m.tier);
+                                setIsEffortDropdownOpen(false);
+                              }}
+                              className={`w-full flex items-start gap-3.5 px-4 py-3 transition-all text-left group ${
+                                active
+                                  ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
+                                  : 'hover:bg-[color:var(--surface-1)]'
+                              }`}
+                            >
+                              <div className={`mt-0.5 shrink-0 transition-transform group-hover:scale-110 duration-200 ${active ? 'text-[color:var(--app-bg)] opacity-90' : tierColor}`}>
+                                <TierIcon size={14} />
+                              </div>
+                              <div className="flex flex-col gap-0.5 min-w-0">
+                                <div className={`text-[10px] font-bold uppercase tracking-widest ${active ? 'text-[color:var(--app-bg)]' : 'text-[color:var(--text-primary)]'}`}>
+                                  {m.label}
+                                </div>
+                                <div className={`text-[9px] font-medium leading-tight ${active ? 'text-[color:var(--app-bg)] opacity-70' : 'text-[color:var(--text-muted)]'}`}>
+                                  {m.description}
+                                </div>
+                                {m.primary_provider_id && (
+                                  <div className="mt-2 flex items-center gap-1.5">
+                                    <span className={`text-[8px] font-mono px-1 rounded uppercase tracking-wider ${active ? 'bg-[color:var(--app-bg)]/10 text-[color:var(--app-bg)] border border-[color:var(--app-bg)]/20' : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] border border-[color:var(--border-subtle)] opacity-80'}`}>
+                                      {m.primary_provider_id}
+                                    </span>
+                                    <span className={`text-[8px] font-mono truncate tracking-tight ${active ? 'text-[color:var(--app-bg)] opacity-40' : 'text-[color:var(--text-muted)] opacity-50'}`}>
+                                      {m.primary_model_id}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                              {active && (
+                                <div className="ml-auto w-1 h-6 rounded-full bg-[color:var(--app-bg)]/20 my-auto shadow-sm" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                  )}
+                </div>
+
+                {/* Steps Selector */}
+                <div className="flex items-center gap-2 pl-2 border-l border-[color:var(--border-subtle)]">
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Max</span>
                   <select
                       value={maxIterations}
                       onChange={(e) => setMaxIterations(Number(e.target.value))}
-                      className="bg-transparent text-xs font-semibold outline-none cursor-pointer hover:text-[color:var(--accent-solid)] transition-colors"
+                      className="bg-transparent text-[11px] font-bold outline-none cursor-pointer hover:text-[color:var(--accent-solid)] transition-colors pr-1"
                   >
-                    {[5, 10, 15, 20, 25, 30, 50, 75, 100].map(n => (
-                      <option key={n} value={n}>{n}</option>
+                    {[5, 10, 20, 30, 50, 100].map(n => (
+                      <option key={n} value={n} className="bg-[color:var(--surface-0)]">{n}</option>
                     ))}
                   </select>
                 </div>
@@ -3581,39 +3591,47 @@ export function SessionsPage() {
                     )}
 
                     {streaming.isThinking && !streaming.text && streaming.activeToolCalls.length === 0 && (
-                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] animate-pulse">
-                          <Bot size={14} />
-                          Sentinel is thinking...
+                        <div className="flex items-center gap-3 px-4 py-3 rounded-2xl bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] w-fit animate-pulse">
+                          <div className="flex gap-1">
+                            <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] animate-bounce [animation-delay:-0.3s]" />
+                            <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] animate-bounce [animation-delay:-0.15s]" />
+                            <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] animate-bounce" />
+                          </div>
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                            Sentinel is thinking
+                          </span>
                         </div>
                     )}
 
                     {streaming.isCompactingContext && (
-                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-amber-500 animate-pulse">
-                          <Loader2 size={14} className="animate-spin" />
-                          Compacting context...
+                        <div className="flex items-center gap-3 px-4 py-3 rounded-2xl bg-amber-500/5 border border-amber-500/20 w-fit animate-pulse">
+                          <Loader2 size={14} className="animate-spin text-amber-500" />
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-amber-500">
+                            Compacting context
+                          </span>
                         </div>
                     )}
 
                     {streaming.agentIteration > 0 || streaming.isThinking || streaming.isStreaming || streaming.activeToolCalls.length > 0 ? (
-                      <div className="sticky bottom-2 z-20 flex justify-center pointer-events-none">
+                      <div className="sticky bottom-4 z-20 flex justify-center pointer-events-none">
                         <button
                           type="button"
                           onClick={stopCurrent}
                           disabled={isStopping}
-                          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-rose-500/40 bg-rose-500/10 px-4 py-1.5 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500/20 disabled:opacity-60 shadow-lg"
+                          className="pointer-events-auto inline-flex items-center gap-2.5 rounded-full border border-rose-500/40 bg-[color:var(--surface-0)]/90 backdrop-blur px-5 h-9 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500 hover:text-white transition-all active:scale-95 shadow-[0_8px_24px_rgba(244,63,94,0.2)] disabled:opacity-50"
                         >
                           <Square size={12} fill="currentColor" />
-                          {isStopping ? 'Stopping...' : 'Stop'}
+                          {isStopping ? 'Stopping' : 'Stop Execution'}
                         </button>
                       </div>
                     ) : null}
 
                     {!isPinnedToBottom && (
-                      <div className="sticky bottom-2 z-20 flex justify-end pointer-events-none">
+                      <div className="sticky bottom-4 z-20 flex justify-end pointer-events-none px-4">
                         <button
                           type="button"
                           onClick={() => scrollToBottom('smooth')}
-                          className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] shadow-lg hover:border-[color:var(--accent-solid)] hover:text-[color:var(--accent-solid)] transition-colors"
+                          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)]/90 backdrop-blur px-4 h-9 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] shadow-xl hover:border-[color:var(--accent-solid)] hover:text-[color:var(--accent-solid)] transition-all active:scale-95 translate-y-0"
                         >
                           <ArrowDown size={12} />
                           Back to bottom

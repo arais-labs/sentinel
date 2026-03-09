@@ -2284,6 +2284,7 @@ export function LogsPage() {
         runtime={activeRuntime ?? null}
         onClose={() => setRuntimeExplorerOpen(false)}
       />
+
     </AppShell>
   );
 }
