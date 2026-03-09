@@ -48,7 +48,6 @@ from app.services.session_runtime import (
     ensure_runtime_layout,
     mark_runtime_state,
     runtime_logs_dir,
-    runtime_root_dir,
     stop_detached_runtime_job,
     runtime_venv_dir,
     runtime_workspace_dir,
@@ -57,6 +56,7 @@ from app.services.tools.approval_waiters import build_tool_db_approval_waiter
 from app.services.tools.browser_tool import BrowserManager
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.runtime_exec_sandbox import (
+    RUNTIME_EXEC_SANDBOX_VENV,
     RuntimeExecSandboxError,
     build_runtime_exec_command_args,
 )
@@ -484,7 +484,6 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
 
         await _ensure_session_exists(session_factory, session_id)
         await ensure_runtime_layout(session_id)
-        runtime_root = runtime_root_dir(session_id)
         workspace_dir = runtime_workspace_dir(session_id)
         venv_dir = runtime_venv_dir(session_id)
 
@@ -529,7 +528,6 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                 privilege=privilege,
                 workspace_dir=workspace_dir,
                 run_dir=run_dir,
-                runtime_root=runtime_root,
                 use_python_venv=use_python_venv,
                 venv_dir=venv_dir if use_python_venv else None,
             )
@@ -537,11 +535,24 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
             raise ToolValidationError(str(exc)) from exc
         if command_plan.env_overrides:
             env.update(command_plan.env_overrides)
+        reported_workspace = str(workspace_dir)
+        reported_cwd = str(run_dir)
+        reported_venv = str(venv_dir) if use_python_venv else None
+        if privilege == "user":
+            reported_workspace = command_plan.env_overrides.get("HOME", reported_workspace)
+            reported_cwd = command_plan.env_overrides.get("PWD", reported_workspace)
+            if use_python_venv:
+                reported_venv = RUNTIME_EXEC_SANDBOX_VENV
         if use_python_venv:
             current_path = env.get("PATH", base_path)
             if privilege == "user":
-                env["PATH"] = f"/venv/bin{os.pathsep}{current_path}" if current_path else "/venv/bin"
-                env["VIRTUAL_ENV"] = "/venv"
+                sandbox_venv_bin = f"{RUNTIME_EXEC_SANDBOX_VENV}/bin"
+                env["PATH"] = (
+                    f"{sandbox_venv_bin}{os.pathsep}{current_path}"
+                    if current_path
+                    else sandbox_venv_bin
+                )
+                env["VIRTUAL_ENV"] = RUNTIME_EXEC_SANDBOX_VENV
             else:
                 if venv_bin is None:
                     raise ToolValidationError("Failed to resolve virtualenv bin path")
@@ -598,9 +609,9 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                     "detached": True,
                     "job": job,
                     "session_id": str(session_id),
-                    "workspace": str(workspace_dir),
-                    "cwd": str(run_dir),
-                    "venv": str(venv_dir) if use_python_venv else None,
+                    "workspace": reported_workspace,
+                    "cwd": reported_cwd,
+                    "venv": reported_venv,
                     "privilege": privilege,
                 }
 
@@ -661,9 +672,9 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                 "stderr": stderr_text,
                 "message": timeout_hint,
                 "session_id": str(session_id),
-                "workspace": str(workspace_dir),
-                "cwd": str(run_dir),
-                "venv": str(venv_dir) if use_python_venv else None,
+                "workspace": reported_workspace,
+                "cwd": reported_cwd,
+                "venv": reported_venv,
                 "privilege": privilege,
             }
         finally:
