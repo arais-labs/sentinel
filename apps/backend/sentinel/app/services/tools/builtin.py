@@ -74,6 +74,7 @@ from app.services.tools.trigger_tools import (
     trigger_list_tool,
     trigger_update_tool,
 )
+from app.services.tools.git_accounts_available import git_accounts_available_tool
 from app.services.tools.git_exec import git_exec_tool
 
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
@@ -101,6 +102,7 @@ def build_default_registry(
     registry.register(_file_read_tool())
     registry.register(_http_request_tool())
     if session_factory is not None:
+        registry.register(git_accounts_available_tool(session_factory=session_factory))
         registry.register(_runtime_exec_tool(session_factory=session_factory))
         registry.register(_runtime_jobs_list_tool(session_factory=session_factory))
         registry.register(_runtime_job_status_tool(session_factory=session_factory))
