@@ -14,6 +14,7 @@ RUN apt-get update \
         file \
         fluxbox \
         gawk \
+        git \
         gh \
         iputils-ping \
         jq \
