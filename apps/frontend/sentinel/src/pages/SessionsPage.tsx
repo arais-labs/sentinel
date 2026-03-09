@@ -1081,6 +1081,7 @@ export function SessionsPage() {
   const [runtimePath, setRuntimePath] = useState('');
   const [runtimeChangedFiles, setRuntimeChangedFiles] = useState<SessionRuntimeGitChangedFilesResponse | null>(null);
   const [runtimeChangedFilesLoading, setRuntimeChangedFilesLoading] = useState(false);
+  const [runtimeCommandOutputCollapsed, setRuntimeCommandOutputCollapsed] = useState<Record<string, boolean>>({});
   const [workbenchTabs, setWorkbenchTabs] = useState<WorkbenchTab[]>([]);
   const [activeWorkbenchPath, setActiveWorkbenchPath] = useState<string | null>(null);
   const [workbenchLoadingPath, setWorkbenchLoadingPath] = useState<string | null>(null);
@@ -1220,6 +1221,13 @@ export function SessionsPage() {
   const runtimeCommandActions = useMemo(() => {
     return buildRuntimeCommandRows(runtimeStatus, { newestFirst: true, limit: 50 });
   }, [runtimeStatus]);
+
+  const toggleRuntimeCommandOutput = useCallback((rowId: string) => {
+    setRuntimeCommandOutputCollapsed((current) => ({
+      ...current,
+      [rowId]: !(current[rowId] ?? true),
+    }));
+  }, []);
 
   const workbenchVisible = workbenchTabs.length > 0;
   const activeWorkbenchTab = useMemo(() => {
@@ -4303,9 +4311,19 @@ export function SessionsPage() {
                         <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Recent Commands</div>
                         {runtimeCommandActions.length > 0 ? (
                           <div className="space-y-2">
-                            {runtimeCommandActions.slice(0, 25).map((entry, index) => {
+                            {runtimeCommandActions.slice(0, 25).map((entry) => {
                               const command = entry.command || '';
                               const isRunning = entry.state === 'running';
+                              const output = entry.output;
+                              const hasOutput = Boolean(
+                                output &&
+                                  (output.stdout.trim().length > 0 ||
+                                    output.stderr.trim().length > 0 ||
+                                    output.timedOut ||
+                                    output.returncode !== null ||
+                                    output.ok !== null),
+                              );
+                              const isOutputCollapsed = runtimeCommandOutputCollapsed[entry.id] ?? true;
                               const statusTone =
                                 entry.state === 'running'
                                   ? 'border-[color:var(--border-subtle)] bg-emerald-500/[0.05]'
@@ -4334,7 +4352,7 @@ export function SessionsPage() {
                               const displayTimestamp = entry.endedAt || entry.startedAt;
                               return (
                                 <div
-                                  key={`${displayTimestamp ?? 'na'}-${entry.source}-${index}`}
+                                  key={entry.id}
                                   className={`relative overflow-hidden rounded-xl border px-3 py-2.5 ${statusTone}`}
                                 >
                                   <div className={`absolute left-0 top-2 bottom-2 w-[2px] rounded-full ${accentTone}`} />
@@ -4345,6 +4363,15 @@ export function SessionsPage() {
                                       <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wider ${statusPillTone}`}>
                                         {entry.state}
                                       </span>
+                                      {hasOutput ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => toggleRuntimeCommandOutput(entry.id)}
+                                          className="inline-flex items-center rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/40 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--surface-2)]/65"
+                                        >
+                                          {isOutputCollapsed ? 'show output' : 'hide output'}
+                                        </button>
+                                      ) : null}
                                       <span className="ml-auto font-semibold">{displayTimestamp ? formatCompactDate(displayTimestamp) : '—'}</span>
                                     </div>
                                     <div className="mt-1.5">
@@ -4353,6 +4380,39 @@ export function SessionsPage() {
                                         className="!text-[9px] markdown-workbench markdown-command-inline"
                                       />
                                     </div>
+                                    {hasOutput && !isOutputCollapsed && output ? (
+                                      <div className="mt-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/65 p-2">
+                                        <div className="flex flex-wrap items-center gap-1 text-[8px] uppercase tracking-wider text-[color:var(--text-muted)]">
+                                          {output.ok !== null ? (
+                                            <span className="rounded-full border border-[color:var(--border-subtle)] px-1.5 py-0.5">
+                                              ok: {String(output.ok)}
+                                            </span>
+                                          ) : null}
+                                          {output.returncode !== null ? (
+                                            <span className="rounded-full border border-[color:var(--border-subtle)] px-1.5 py-0.5">
+                                              exit: {output.returncode}
+                                            </span>
+                                          ) : null}
+                                          {output.timedOut ? (
+                                            <span className="rounded-full border border-rose-500/40 bg-rose-500/12 px-1.5 py-0.5 text-rose-300">
+                                              timed out
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                        {output.stdout.trim() ? (
+                                          <div className="mt-1.5">
+                                            <div className="text-[8px] font-bold uppercase tracking-wider text-emerald-300/90">stdout</div>
+                                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-[color:var(--text-secondary)]">{output.stdout}</pre>
+                                          </div>
+                                        ) : null}
+                                        {output.stderr.trim() ? (
+                                          <div className="mt-1.5">
+                                            <div className="text-[8px] font-bold uppercase tracking-wider text-rose-300/90">stderr</div>
+                                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-rose-200/95">{output.stderr}</pre>
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    ) : null}
                                     {isRunning ? (
                                       <div className="mt-1.5 flex justify-end">
                                         <button

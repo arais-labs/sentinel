@@ -218,6 +218,17 @@ def test_runtime_exec_runs_command():
         payload = run.json()["result"]
         assert payload["ok"] is True
         assert "hello" in payload["stdout"]
+
+        runtime = client.get(f"/api/v1/sessions/{session_id}/runtime", headers=headers)
+        assert runtime.status_code == 200
+        actions = runtime.json().get("actions", [])
+        finished_actions = [item for item in actions if item.get("action") == "command_finished"]
+        assert finished_actions
+        details = finished_actions[-1].get("details", {})
+        assert details.get("ok") is True
+        assert details.get("timed_out") is False
+        assert details.get("returncode") == 0
+        assert "hello" in str(details.get("stdout", ""))
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()
