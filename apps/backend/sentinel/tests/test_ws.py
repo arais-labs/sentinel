@@ -82,6 +82,7 @@ def test_ws_connect_send_ack_and_rejections():
                             "filename": "pixel.png",
                         }
                     ],
+                    "agent_mode": "read_only",
                 }
             )
             ack = ws.receive_json()
@@ -89,6 +90,7 @@ def test_ws_connect_send_ack_and_rejections():
             assert ack["session_id"] == session_id
             assert ack["content"] == "hello from ws"
             assert ack["metadata"]["source"] == "web"
+            assert ack["metadata"]["agent_mode"] == "read_only"
             assert len(ack["metadata"]["attachments"]) == 1
             generation = ack["metadata"].get("generation") or {}
             assert generation.get("requested_tier") == "normal"
@@ -108,6 +110,7 @@ def test_ws_connect_send_ack_and_rejections():
         assert messages.status_code == 200
         stored = next(item for item in messages.json()["items"] if item["content"] == "hello from ws")
         assert stored["metadata"]["source"] == "web"
+        assert stored["metadata"]["agent_mode"] == "read_only"
         assert len(stored["metadata"]["attachments"]) == 1
         stored_generation = stored["metadata"].get("generation") or {}
         assert stored_generation.get("requested_tier") == "normal"
@@ -137,6 +140,45 @@ def test_ws_connect_send_ack_and_rejections():
             with client.websocket_connect(f"/ws/sessions/{unknown_session}/stream?token={owner_token}"):
                 pass
         assert unknown.value.code == 4004
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_ws_rejects_invalid_agent_mode_payload():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        owner_token = login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "ws-invalid-mode"}, headers=owner_headers)
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
+        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+            connected = ws.receive_json()
+            assert connected["type"] == "connected"
+            ws.send_json({"type": "message", "content": "hello", "agent_mode": "invalid-mode"})
+            error = ws.receive_json()
+            assert error["type"] == "error"
+            assert error["code"] == "invalid_payload"
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init

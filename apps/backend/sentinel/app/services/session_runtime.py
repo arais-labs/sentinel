@@ -762,19 +762,11 @@ async def sweep_session_runtimes(
     db_factory: async_sessionmaker[AsyncSession],
 ) -> dict[str, int]:
     """
-    Remove stale/orphan session runtimes.
+    Remove orphan session runtimes.
 
     Policy:
     - orphan session dir => delete immediately
-    - active metadata older than stale-active TTL => delete
-    - inactive metadata older than idle TTL => delete
     """
-    idle_ttl_seconds = _parse_seconds("SESSION_RUNTIME_IDLE_TTL_SECONDS", 2700)
-    stale_active_ttl_seconds = _parse_seconds(
-        "SESSION_RUNTIME_STALE_ACTIVE_TTL_SECONDS", 10800
-    )
-    now = _utc_now()
-
     async with db_factory() as db:
         result = await db.execute(select(Session))
         sessions = result.scalars().all()
@@ -792,23 +784,6 @@ async def sweep_session_runtimes(
             if await _remove_runtime_root(root):
                 removed += 1
                 removed_orphans += 1
-            continue
-
-        meta = _read_runtime_metadata(root / _RUNTIME_META_FILENAME)
-        active = bool(meta.get("active"))
-        last_used = _parse_dt(meta.get("last_used_at")) or _mtime_dt(root)
-        last_active = _parse_dt(meta.get("last_active_at")) or last_used
-        if active:
-            age = (now - last_active).total_seconds()
-            if age > stale_active_ttl_seconds and await _remove_runtime_root(root):
-                removed += 1
-                removed_stale_active += 1
-            continue
-
-        idle_age = (now - last_used).total_seconds()
-        if idle_age > idle_ttl_seconds and await _remove_runtime_root(root):
-            removed += 1
-            removed_idle += 1
 
     return {
         "removed": removed,

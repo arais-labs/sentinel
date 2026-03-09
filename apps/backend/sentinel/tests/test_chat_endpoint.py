@@ -67,6 +67,7 @@ def test_chat_endpoint_calls_agent_loop_and_returns_response():
         assert payload["iterations"] == 2
         assert payload["usage"] == {"input_tokens": 11, "output_tokens": 7}
         assert fake_loop.calls[0]["user_message"] == "hello model"
+        assert fake_loop.calls[0]["agent_mode"] == "normal"
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
