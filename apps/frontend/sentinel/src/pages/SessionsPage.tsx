@@ -2964,7 +2964,7 @@ export function SessionsPage() {
                     const pct = typeof contextTokenPercent === 'number' && Number.isFinite(contextTokenPercent)
                         ? Math.max(0, Math.min(100, Math.floor(contextTokenPercent)))
                         : Math.round(((estimatedTokens || 0) / CTX_CEILING) * 100);
-                    const ringColor = pct < 50 ? 'bg-emerald-500' : pct < 80 ? 'bg-amber-500' : 'bg-rose-500';
+                    const toneColor = pct < 50 ? '#22c55e' : pct < 80 ? '#f59e0b' : '#f43f5e';
                     const warn = hasBudget && hasEstimate && estimatedTokens > CTX_CEILING;
                     const kTokens = hasEstimate
                       ? (estimatedTokens >= 1000 ? `${(estimatedTokens / 1000).toFixed(1)}k` : `${estimatedTokens}`)
@@ -2973,7 +2973,10 @@ export function SessionsPage() {
 
                     return (
                       <>
-                        <div className={`h-1.5 w-1.5 rounded-full ${ringColor} ${warn ? 'animate-pulse shadow-[0_0_8px_rgba(245,158,11,0.6)]' : ''}`} />
+                        <div
+                          className={`h-1.5 w-1.5 rounded-full ${warn ? 'animate-pulse shadow-[0_0_8px_rgba(245,158,11,0.6)]' : ''}`}
+                          style={{ backgroundColor: toneColor }}
+                        />
                         <span className="text-[10px] font-mono font-bold text-[color:var(--text-primary)]">
                           {pct}<span className="text-[color:var(--text-muted)] opacity-60 ml-0.5">%</span>
                         </span>
@@ -2983,14 +2986,17 @@ export function SessionsPage() {
                           <div className="font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-1.5 pb-1 border-b border-[color:var(--border-subtle)]">Context Window</div>
                           <div className="flex items-center justify-between gap-8 mb-1">
                             <span className="text-[color:var(--text-secondary)]">Utilization</span>
-                            <span className={`font-bold ${pct > 80 ? 'text-rose-500' : 'text-[color:var(--accent-solid)]'}`}>{pct}%</span>
+                            <span className="font-bold" style={{ color: toneColor }}>{pct}%</span>
                           </div>
                           <div className="flex items-center justify-between gap-8 mb-2">
                             <span className="text-[color:var(--text-secondary)]">Token Load</span>
                             <span className="text-[color:var(--text-muted)]"><span className="font-bold text-[color:var(--text-primary)]">{kTokens}</span> / {ceilingLabel}</span>
                           </div>
                           <div className="h-1 w-full bg-[color:var(--surface-2)] rounded-full overflow-hidden">
-                            <div className={`h-full transition-all duration-500 ${pct > 80 ? 'bg-rose-500' : 'bg-[color:var(--accent-solid)]'}`} style={{ width: `${pct}%` }} />
+                            <div
+                              className="h-full transition-all duration-500"
+                              style={{ width: `${pct}%`, backgroundColor: toneColor }}
+                            />
                           </div>
                           {warn && (
                             <div className="mt-2 py-1 px-2 rounded bg-amber-500/10 text-amber-500 font-bold text-[9px] uppercase tracking-wider animate-pulse">
