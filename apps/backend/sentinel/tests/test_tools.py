@@ -589,7 +589,7 @@ def test_runtime_exec_root_privilege_requires_approval():
 
 
 def test_runtime_exec_user_mode_confines_writes_to_workspace():
-    if os.name == "nt" or shutil.which("bwrap") is None:
+    if not _runtime_exec_user_sandbox_available():
         return
 
     fake_db = FakeDB()
@@ -658,7 +658,7 @@ def test_runtime_exec_user_mode_confines_writes_to_workspace():
 
 
 def test_runtime_exec_user_mode_python_venv_is_available_inside_sandbox():
-    if os.name == "nt" or shutil.which("bwrap") is None:
+    if not _runtime_exec_user_sandbox_available():
         return
 
     fake_db = FakeDB()
