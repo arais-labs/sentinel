@@ -18,7 +18,24 @@ def test_str_replace_editor_success(tmp_path: pytest.TempPathFactory, monkeypatc
 
     monkeypatch.setattr("app.services.tools.editor.runtime_workspace_dir", lambda _sid: workspace)
 
-    tool = str_replace_editor_tool()
+    class _DummyResult:
+        def scalars(self):
+            return self
+        def first(self):
+            return object()
+
+    class _DummySession:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+        async def execute(self, _query):
+            return _DummyResult()
+
+    def _session_factory():
+        return _DummySession()
+
+    tool = str_replace_editor_tool(session_factory=_session_factory)
     result = asyncio.run(
         tool.execute(
             {
@@ -43,7 +60,24 @@ def test_str_replace_editor_requires_unique_match(tmp_path: pytest.TempPathFacto
 
     monkeypatch.setattr("app.services.tools.editor.runtime_workspace_dir", lambda _sid: workspace)
 
-    tool = str_replace_editor_tool()
+    class _DummyResult:
+        def scalars(self):
+            return self
+        def first(self):
+            return object()
+
+    class _DummySession:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+        async def execute(self, _query):
+            return _DummyResult()
+
+    def _session_factory():
+        return _DummySession()
+
+    tool = str_replace_editor_tool(session_factory=_session_factory)
     with pytest.raises(ToolValidationError) as exc:
         asyncio.run(
             tool.execute(
@@ -68,7 +102,24 @@ def test_str_replace_editor_rejects_missing_match(tmp_path: pytest.TempPathFacto
 
     monkeypatch.setattr("app.services.tools.editor.runtime_workspace_dir", lambda _sid: workspace)
 
-    tool = str_replace_editor_tool()
+    class _DummyResult:
+        def scalars(self):
+            return self
+        def first(self):
+            return object()
+
+    class _DummySession:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+        async def execute(self, _query):
+            return _DummyResult()
+
+    def _session_factory():
+        return _DummySession()
+
+    tool = str_replace_editor_tool(session_factory=_session_factory)
     with pytest.raises(ToolValidationError) as exc:
         asyncio.run(
             tool.execute(
