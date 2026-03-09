@@ -34,6 +34,7 @@ bash scripts/install-git-hooks.sh
 2. Tests pass locally for affected components.
 3. New env vars, endpoints, or UI flows are documented.
 4. Commit messages are clear and include DCO sign-off.
+5. For approval-gated flows, verify create -> stream -> refresh/rehydrate -> approve/reject.
 
 ## Git Hook Policy
 

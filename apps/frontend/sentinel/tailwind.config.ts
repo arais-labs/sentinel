@@ -13,7 +13,6 @@ export default {
         ink: '#0A1320',
         cyan: '#16B4C5',
         mint: '#22C58B',
-        amber: '#F59E0B',
         coral: '#F97352',
         cloud: '#E6F2FF',
       },

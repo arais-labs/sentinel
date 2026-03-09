@@ -31,6 +31,7 @@ import {
   Clock3,
   Check,
   Pencil,
+  GitBranch,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
@@ -38,6 +39,8 @@ import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
 import { SessionMessageCard, buildToolArgumentsByCallId } from '../components/session/SessionMessageCard';
+import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
+import { BrowserPreview } from '../components/session/BrowserPreview';
 import { SubAgentTaskModal } from '../components/SubAgentTaskModal';
 import { SpawnSubAgentModal } from '../components/SpawnSubAgentModal';
 import { JsonBlock } from '../components/ui/JsonBlock';
@@ -46,18 +49,15 @@ import { StatusChip } from '../components/ui/StatusChip';
 import { WS_BASE_URL } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
 import { extractCriticalToolFields, parsePayloadJson, previewPayloadValue, topLevelPayloadFieldCount, type ToolPayloadKind } from '../lib/toolPayloadPreview';
+import { buildRuntimeCommandRows } from '../lib/runtimeCommands';
 import {
   approvalKey,
   approvalRefFromMetadata,
-  extractApprovalCandidateFromSerializedArgs,
-  extractApprovalCandidateFromToolArgs,
   isWaitingApproval,
-  selectMatchingPendingApproval,
   type ApprovalRef,
 } from '../lib/approvals';
 import { api } from '../lib/api';
 import type {
-  ApprovalListResponse,
   ApprovalToolCallMatchResponse,
   Message,
   MessageAttachment,
@@ -147,16 +147,31 @@ function toMarkdownCodeFence(content: string, language: string): string {
   return `${fence}${language}\n${content}\n${fence}`;
 }
 
+function buildRuntimeDiffBaseRefOptions(
+  roots: SessionRuntimeGitRoot[],
+  currentRef: string | null | undefined,
+): string[] {
+  const options = new Set<string>();
+  options.add('HEAD');
+  for (const root of roots) {
+    if (!root.detached_head && root.branch) {
+      options.add(root.branch);
+      options.add(`origin/${root.branch}`);
+    }
+  }
+  options.add('origin/main');
+  options.add('origin/master');
+  const normalizedCurrent = (currentRef ?? '').trim();
+  if (normalizedCurrent) {
+    options.add(normalizedCurrent);
+  }
+  return Array.from(options);
+}
+
 function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
   if (!runtime) return 'Unavailable';
   if (!runtime.runtime_exists) return 'Missing';
   return runtime.active ? 'Active' : 'Idle';
-}
-
-function runtimeActionCommand(entry: { action: string; details: Record<string, unknown> }): string | null {
-  if (!entry || !entry.details || typeof entry.details !== 'object') return null;
-  const command = entry.details.command;
-  return typeof command === 'string' && command.trim().length > 0 ? command.trim() : null;
 }
 
 function humanizeAgentError(raw: string): string {
@@ -217,8 +232,24 @@ function hasUnresolvedToolCalls(messages: Message[]): boolean {
   return pendingIds.size > 0;
 }
 
-const APPROVAL_HYDRATION_MAX_ATTEMPTS = 12;
-const APPROVAL_HYDRATION_RETRY_MS = 750;
+const APPROVAL_HYDRATION_MAX_ATTEMPTS = 3;
+const APPROVAL_HYDRATION_RETRY_MS = 350;
+const APPROVAL_DEBUG_STORAGE_KEY = 'sentinel.debug.approvals';
+
+function isApprovalDebugEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = window.localStorage.getItem(APPROVAL_DEBUG_STORAGE_KEY);
+    return raw === '1' || raw === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function approvalDebugLog(event: string, details: Record<string, unknown>): void {
+  if (!isApprovalDebugEnabled()) return;
+  console.info(`[approval-debug] ${event}`, details);
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -229,13 +260,6 @@ function parseTier(value: string | null): ModelOption['tier'] | null {
     return value;
   }
   return null;
-}
-
-function sessionChannelKind(session: Session): 'default' | 'telegram_group' | 'telegram_dm' {
-  const title = (session.title ?? '').trim().toLowerCase();
-  if (title.startsWith('tg group ·')) return 'telegram_group';
-  if (title.startsWith('tg dm ·')) return 'telegram_dm';
-  return 'default';
 }
 
 function serializeToolArguments(value: unknown): string {
@@ -532,279 +556,6 @@ function ToolPayloadCompactSummary({
 
 // --- Memoized Components ---
 
-const SessionRow = memo(({
-  session,
-  isActive,
-  onClick,
-  canDelete,
-  isDeleting,
-  onDelete,
-  onSetMain,
-  canRename,
-  isRenaming,
-  isEditing,
-  editTitle,
-  onEditTitleChange,
-  onSubmitRename,
-  onCancelRename,
-  onRename,
-  multiSelectMode,
-  selected,
-  onToggleSelect,
-}: {
-  session: Session;
-  isActive: boolean;
-  onClick: (id: string) => void;
-  canDelete: boolean;
-  isDeleting: boolean;
-  onDelete: (session: Session) => void;
-  onSetMain: (session: Session) => void;
-  canRename: boolean;
-  isRenaming: boolean;
-  isEditing: boolean;
-  editTitle: string;
-  onEditTitleChange: (value: string) => void;
-  onSubmitRename: (session: Session) => void;
-  onCancelRename: () => void;
-  onRename: (session: Session) => void;
-  multiSelectMode: boolean;
-  selected: boolean;
-  onToggleSelect: (id: string) => void;
-}) => (
-  <div className="group relative">
-    {multiSelectMode && canDelete ? (
-      <button
-        onClick={() => onToggleSelect(session.id)}
-        title={selected ? 'Unselect session' : 'Select session'}
-        className={`absolute left-2 top-2 h-6 w-6 rounded-md border flex items-center justify-center transition-colors ${
-          selected
-            ? 'border-sky-500/40 bg-sky-500/15'
-            : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)]'
-        }`}
-      >
-        <span className={`h-2.5 w-2.5 rounded-sm ${selected ? 'bg-sky-500' : 'bg-transparent'}`} />
-      </button>
-    ) : null}
-    {isEditing ? (
-      <div
-        className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
-          isActive
-            ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
-            : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)]'
-        } ${multiSelectMode ? 'pl-10 pr-3' : 'pr-3'}`}
-      >
-        <div className="flex items-center gap-2">
-          <input
-            autoFocus
-            value={editTitle}
-            onChange={(event) => onEditTitleChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                onSubmitRename(session);
-              } else if (event.key === 'Escape') {
-                event.preventDefault();
-                onCancelRename();
-              }
-            }}
-            className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 py-1 text-xs font-semibold text-[color:var(--text-primary)] focus:border-[color:var(--accent-solid)] focus:outline-none"
-            placeholder="Session title"
-            maxLength={200}
-          />
-          <button
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onSubmitRename(session);
-            }}
-            disabled={isRenaming}
-            title="Save title"
-            className="h-7 w-7 rounded-md border border-emerald-500/35 text-emerald-400 bg-[color:var(--surface-1)] hover:bg-emerald-500/10 flex items-center justify-center disabled:opacity-40"
-          >
-            {isRenaming ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-          </button>
-          <button
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onCancelRename();
-            }}
-            disabled={isRenaming}
-            title="Cancel rename"
-            className="h-7 w-7 rounded-md border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center disabled:opacity-40"
-          >
-            <X size={13} />
-          </button>
-        </div>
-        <span className="text-[10px] text-[color:var(--text-muted)]">{formatCompactDate(session.started_at)}</span>
-      </div>
-    ) : (
-      <button
-        onClick={() => {
-          if (multiSelectMode) {
-            if (canDelete) onToggleSelect(session.id);
-            return;
-          }
-          onClick(session.id);
-        }}
-        className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
-          isActive
-            ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
-            : 'hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-transparent'
-        } ${multiSelectMode ? 'pl-10 pr-3' : 'pr-10'}`}
-      >
-        <div className="flex items-center justify-between gap-2">
-          {session.has_unread && !isActive ? (
-            <span className="h-2 w-2 shrink-0 rounded-full bg-sky-500" />
-          ) : null}
-          <span className="min-w-0 flex-1 text-xs font-semibold truncate">{session.title || 'Session'}</span>
-          <div className="flex shrink-0 items-center gap-1">
-            {sessionChannelKind(session) === 'telegram_group' ? (
-              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
-                <Users size={8} />
-                <span>{'TG\u00A0Group'}</span>
-              </span>
-            ) : null}
-            {sessionChannelKind(session) === 'telegram_dm' ? (
-              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
-                <Send size={8} />
-                <span>{'TG\u00A0DM'}</span>
-              </span>
-            ) : null}
-            {session.is_main ? (
-              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-400">
-                <BadgeCheck size={8} />
-                Main
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <span className="text-[10px] text-[color:var(--text-muted)]">{formatCompactDate(session.started_at)}</span>
-      </button>
-    )}
-    {!isEditing && !multiSelectMode && !session.is_main ? (
-      <button
-        onClick={() => onSetMain(session)}
-        title="Set as main session"
-        className="absolute right-10 top-2 h-7 w-7 rounded-md border border-emerald-500/35 text-emerald-400 bg-[color:var(--surface-1)] hover:bg-emerald-500/10 flex items-center justify-center transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-      >
-        <BadgeCheck size={13} />
-      </button>
-    ) : null}
-    {!isEditing && !multiSelectMode && canRename ? (
-      <button
-        onClick={() => onRename(session)}
-        disabled={isRenaming}
-        title="Rename session"
-        className="absolute right-[4.5rem] top-2 h-7 w-7 rounded-md border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto disabled:opacity-40 disabled:pointer-events-none"
-      >
-        {isRenaming ? <Loader2 size={13} className="animate-spin" /> : <Pencil size={13} />}
-      </button>
-    ) : null}
-    {canDelete && !isEditing && !multiSelectMode ? (
-      <button
-        onClick={() => onDelete(session)}
-        disabled={isDeleting}
-        title="Delete session"
-        className="absolute right-2 top-2 h-7 w-7 rounded-md border border-rose-500/20 text-rose-500 bg-[color:var(--surface-1)] hover:bg-rose-500/10 flex items-center justify-center transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-      >
-        {isDeleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-      </button>
-    ) : null}
-  </div>
-));
-SessionRow.displayName = 'SessionRow';
-
-const BrowserPreview = memo(({
-                               url,
-                               isFullscreen,
-                               onClose
-                             }: {
-  url: string | null;
-  isFullscreen: boolean;
-  onClose: () => void
-}) => {
-  // Sanitize URL to prevent accidental character injection and FORCE 127.0.0.1
-  const cleanUrl = useMemo(() => {
-    if (!url) return null;
-    const normalized = url
-        .replace(/["']/g, '')
-        .replace('localhost', '127.0.0.1')
-        .trim();
-    try {
-      const parsed = new URL(normalized);
-      // Force fit-to-container behavior in embedded noVNC.
-      parsed.searchParams.set('resize', 'scale');
-      parsed.searchParams.set('autoconnect', '1');
-      parsed.searchParams.set('view_only', '0');
-      return parsed.toString();
-    } catch {
-      return normalized;
-    }
-  }, [url]);
-
-  if (!cleanUrl) {
-    return (
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-[color:var(--text-muted)] gap-3 bg-zinc-900 rounded-xl border border-[color:var(--border-strong)]">
-          <Globe size={32} strokeWidth={1} />
-          <p className="text-[10px] font-bold uppercase tracking-widest">No Active Browser</p>
-        </div>
-    );
-  }
-
-  return (
-      <>
-        <div
-            className={`fixed inset-0 z-[90] bg-black/80 backdrop-blur-md transition-opacity duration-500 ${isFullscreen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
-            onClick={onClose}
-        />
-
-        <div
-            onMouseDown={(e) => e.stopPropagation()}
-            className={`transition-all duration-500 ease-in-out bg-black shadow-2xl overflow-hidden ${
-                isFullscreen
-                    ? 'fixed inset-4 md:inset-12 z-[100] rounded-2xl border border-white/10'
-                    : 'absolute inset-0 rounded-none'
-            }`}
-        >
-          {isFullscreen && (
-              <div className="flex items-center justify-between px-6 py-3 border-b border-white/10 bg-zinc-900">
-                <div className="flex items-center gap-3">
-                  <Globe size={16} className="text-sky-400" />
-                  <div className="flex flex-col">
-                    <span className="font-bold text-[10px] tracking-widest text-white uppercase">Live Browser Session</span>
-                    <span className="text-[9px] text-sky-400/60 font-mono leading-none mt-1 uppercase text-emerald-400">interactive mode</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                      onClick={() => window.open(cleanUrl, '_blank')}
-                      className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition-colors"
-                      title="Open in new tab"
-                  >
-                    <ExternalLink size={16} />
-                  </button>
-                  <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition-colors">
-                    <X size={18} />
-                  </button>
-                </div>
-              </div>
-          )}
-          <div className={isFullscreen ? 'h-[calc(100%-53px)] w-full' : 'h-full w-full'}>
-            <iframe
-                src={cleanUrl}
-                className="w-full h-full border-none pointer-events-auto bg-black"
-                allow="fullscreen; clipboard-read; clipboard-write"
-                title="sentinel-browser"
-            />
-          </div>
-        </div>
-      </>
-  );
-});
-
-BrowserPreview.displayName = 'BrowserPreview';
-
 // --- Types ---
 
 interface StreamingToolCall {
@@ -896,6 +647,7 @@ function StreamToolCard({
   const pendingApproval = isWaitingApproval(call.metadata);
   const approvalRef = pendingApproval ? approvalRefFromMetadata(call.metadata) : null;
   const canResolveApproval = pendingApproval && approvalRef?.canResolve === true;
+  const approvalLinkMissing = pendingApproval && !approvalRef;
   const approvalActionBusy = approvalRef ? resolvingApprovalKey === approvalKey(approvalRef) : false;
 
   useEffect(() => {
@@ -983,6 +735,11 @@ function StreamToolCard({
                       </button>
                     </div>
                   ) : null}
+                  {approvalLinkMissing ? (
+                    <p className="text-[10px] leading-relaxed text-amber-300">
+                      Pending approval detected but controls are unavailable. Refresh and stop/retry this run if it remains stuck.
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -1048,10 +805,11 @@ export function SessionsPage() {
   const [runtimeStatus, setRuntimeStatus] = useState<SessionRuntimeStatus | null>(null);
   const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
   const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
-  const [runtimeInspectorTab, setRuntimeInspectorTab] = useState<'files' | 'git' | 'commands'>('files');
+  const [runtimeInspectorTab, setRuntimeInspectorTab] = useState<'files' | 'commands'>('files');
   const [runtimePath, setRuntimePath] = useState('');
   const [runtimeChangedFiles, setRuntimeChangedFiles] = useState<SessionRuntimeGitChangedFilesResponse | null>(null);
   const [runtimeChangedFilesLoading, setRuntimeChangedFilesLoading] = useState(false);
+  const [runtimeCommandOutputCollapsed, setRuntimeCommandOutputCollapsed] = useState<Record<string, boolean>>({});
   const [workbenchTabs, setWorkbenchTabs] = useState<WorkbenchTab[]>([]);
   const [activeWorkbenchPath, setActiveWorkbenchPath] = useState<string | null>(null);
   const [workbenchLoadingPath, setWorkbenchLoadingPath] = useState<string | null>(null);
@@ -1059,7 +817,6 @@ export function SessionsPage() {
   const [isWorkbenchResizing, setIsWorkbenchResizing] = useState(false);
   const [workbenchShowDiffByPath, setWorkbenchShowDiffByPath] = useState<Record<string, boolean>>({});
   const [workbenchDiffBaseRefByPath, setWorkbenchDiffBaseRefByPath] = useState<Record<string, string>>({});
-  const [workbenchDiffStagedByPath, setWorkbenchDiffStagedByPath] = useState<Record<string, boolean>>({});
   const [workbenchDiffByPath, setWorkbenchDiffByPath] = useState<Record<string, SessionRuntimeGitDiffResponse | null>>({});
   const [workbenchDiffErrorByPath, setWorkbenchDiffErrorByPath] = useState<Record<string, string | null>>({});
   const [workbenchDiffLoadingPath, setWorkbenchDiffLoadingPath] = useState<string | null>(null);
@@ -1090,6 +847,20 @@ export function SessionsPage() {
     localStorage.setItem('sentinel-selected-tier', selectedTier);
   }, [selectedTier]);
 
+  useEffect(() => {
+    if (!isEffortDropdownOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (effortDropdownRef.current?.contains(target)) return;
+      setIsEffortDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [isEffortDropdownOpen]);
+
   const [isCompacting, setIsCompacting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isResettingBrowser, setIsResettingBrowser] = useState(false);
@@ -1108,6 +879,7 @@ export function SessionsPage() {
   const loadingOlderRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const effortDropdownRef = useRef<HTMLDivElement | null>(null);
   const fullscreenFrameRef = useRef<HTMLIFrameElement | null>(null);
   const intentionalCloseRef = useRef(false);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -1175,12 +947,15 @@ export function SessionsPage() {
   );
 
   const runtimeCommandActions = useMemo(() => {
-    if (!runtimeStatus) return [];
-    return runtimeStatus.actions
-      .filter((entry) => Boolean(runtimeActionCommand(entry)))
-      .slice()
-      .reverse();
+    return buildRuntimeCommandRows(runtimeStatus, { newestFirst: true, limit: 50 });
   }, [runtimeStatus]);
+
+  const toggleRuntimeCommandOutput = useCallback((rowId: string) => {
+    setRuntimeCommandOutputCollapsed((current) => ({
+      ...current,
+      [rowId]: !(current[rowId] ?? true),
+    }));
+  }, []);
 
   const workbenchVisible = workbenchTabs.length > 0;
   const activeWorkbenchTab = useMemo(() => {
@@ -1191,6 +966,17 @@ export function SessionsPage() {
   const activeWorkbenchDiff = activeWorkbenchTab ? workbenchDiffByPath[activeWorkbenchTab.path] ?? null : null;
   const activeWorkbenchDiffError = activeWorkbenchTab ? workbenchDiffErrorByPath[activeWorkbenchTab.path] ?? null : null;
   const activeWorkbenchGitRoots = activeWorkbenchTab ? workbenchGitRootsByPath[activeWorkbenchTab.path] ?? [] : [];
+  const activeWorkbenchViewMode = activeWorkbenchTab && workbenchShowDiffByPath[activeWorkbenchTab.path] ? 'diff' : 'content';
+  const activeWorkbenchViewerKey = activeWorkbenchTab
+    ? `${activeWorkbenchTab.path}:${activeWorkbenchViewMode}`
+    : 'none';
+  const activeWorkbenchBaseRef = activeWorkbenchTab
+    ? workbenchDiffBaseRefByPath[activeWorkbenchTab.path] ?? 'HEAD'
+    : 'HEAD';
+  const activeWorkbenchBaseRefOptions = useMemo(
+    () => (activeWorkbenchTab ? buildRuntimeDiffBaseRefOptions(activeWorkbenchGitRoots, activeWorkbenchBaseRef) : ['HEAD']),
+    [activeWorkbenchTab, activeWorkbenchGitRoots, activeWorkbenchBaseRef],
+  );
 
   const browserToolResults = useMemo(
     () =>
@@ -1441,7 +1227,6 @@ export function SessionsPage() {
       setWorkbenchDiffByPath({});
       setWorkbenchDiffErrorByPath({});
       setWorkbenchDiffBaseRefByPath({});
-      setWorkbenchDiffStagedByPath({});
       setWorkbenchGitRootsByPath({});
       setStreaming(defaultStreamingState);
       shouldAutoScrollRef.current = true;
@@ -1470,7 +1255,6 @@ export function SessionsPage() {
     setWorkbenchDiffByPath({});
     setWorkbenchDiffErrorByPath({});
     setWorkbenchDiffBaseRefByPath({});
-    setWorkbenchDiffStagedByPath({});
     setWorkbenchGitRootsByPath({});
     setStreaming(defaultStreamingState);
     setHasMoreMessages(false);
@@ -1505,13 +1289,18 @@ export function SessionsPage() {
 
   useEffect(() => {
     if (!activeSessionId || rightRailTab !== 'runtime') return;
+    if (streaming.connection !== 'connected') return;
     const timer = window.setInterval(() => {
       void fetchRuntimeStatus(activeSessionId, 120);
-    }, 2500);
+      void fetchRuntimeFiles(activeSessionId, runtimePath, {
+        refreshGit: true,
+        silent: true,
+      });
+    }, 3000);
     return () => {
       window.clearInterval(timer);
     };
-  }, [activeSessionId, rightRailTab]);
+  }, [activeSessionId, rightRailTab, runtimePath, streaming.connection]);
 
   useEffect(() => {
     if (!activeSessionId || rightRailTab !== 'runtime') return;
@@ -1931,8 +1720,15 @@ export function SessionsPage() {
     }
   }
 
-  async function fetchRuntimeFiles(sessionId: string, path = '') {
-    setRuntimeFilesLoading(true);
+  async function fetchRuntimeFiles(
+    sessionId: string,
+    path = '',
+    options?: { refreshGit?: boolean; silent?: boolean },
+  ) {
+    const silent = Boolean(options?.silent);
+    if (!silent) {
+      setRuntimeFilesLoading(true);
+    }
     try {
       const query = new URLSearchParams();
       if (path.trim().length > 0) query.set('path', path.trim());
@@ -1942,8 +1738,10 @@ export function SessionsPage() {
       if (sessionId !== activeSessionIdRef.current) return;
       setRuntimeFiles(payload);
       setRuntimePath(payload.path || '');
-      if (rightRailTab === 'runtime') {
-        void fetchRuntimeChangedFilesForExplorer(sessionId, payload.path || '');
+      if (options?.refreshGit ?? rightRailTab === 'runtime') {
+        void fetchRuntimeChangedFilesForExplorer(sessionId, payload.path || '', {
+          silent,
+        });
       }
     } catch {
       if (sessionId !== activeSessionIdRef.current) return;
@@ -1951,33 +1749,53 @@ export function SessionsPage() {
       setRuntimePath(path);
       setRuntimeChangedFiles(null);
     } finally {
-      if (sessionId === activeSessionIdRef.current) {
+      if (sessionId === activeSessionIdRef.current && !silent) {
         setRuntimeFilesLoading(false);
       }
     }
   }
 
-  async function fetchRuntimeChangedFilesForExplorer(sessionId: string, path: string) {
-    setRuntimeChangedFilesLoading(true);
+  async function fetchRuntimeChangedFilesForExplorer(
+    sessionId: string,
+    path: string,
+    options?: { silent?: boolean },
+  ): Promise<SessionRuntimeGitChangedFilesResponse | null> {
+    const silent = Boolean(options?.silent);
+    if (!silent) {
+      setRuntimeChangedFilesLoading(true);
+    }
     try {
       const payload = await api.get<SessionRuntimeGitChangedFilesResponse>(
         `/sessions/${sessionId}/runtime/git/changed?path=${encodeURIComponent(path)}&limit=200`,
       );
-      if (sessionId !== activeSessionIdRef.current) return;
+      if (sessionId !== activeSessionIdRef.current) return null;
       setRuntimeChangedFiles(payload);
+      return payload;
     } catch {
-      if (sessionId !== activeSessionIdRef.current) return;
+      if (sessionId !== activeSessionIdRef.current) return null;
       setRuntimeChangedFiles(null);
+      return null;
     } finally {
-      if (sessionId === activeSessionIdRef.current) {
+      if (sessionId === activeSessionIdRef.current && !silent) {
         setRuntimeChangedFilesLoading(false);
       }
     }
   }
 
-  async function openRuntimeDirectory(path: string) {
+  async function openRuntimeDirectory(
+    path: string,
+    options?: { autoOpenFirstDiff?: boolean },
+  ) {
     if (!activeSessionId) return;
-    await fetchRuntimeFiles(activeSessionId, path);
+    const shouldAutoOpenFirstDiff = Boolean(options?.autoOpenFirstDiff);
+    await fetchRuntimeFiles(activeSessionId, path, {
+      refreshGit: !shouldAutoOpenFirstDiff,
+    });
+    if (!shouldAutoOpenFirstDiff) return;
+    const changed = await fetchRuntimeChangedFilesForExplorer(activeSessionId, path);
+    const firstPath = changed?.entries?.[0]?.path;
+    if (!firstPath) return;
+    await openRuntimeFileDiff(firstPath);
   }
 
   async function openRuntimeFile(path: string) {
@@ -2007,11 +1825,6 @@ export function SessionsPage() {
       setActiveWorkbenchPath(nextTab.path);
       setWorkbenchDiffBaseRefByPath((current) =>
         current[nextTab.path] ? current : { ...current, [nextTab.path]: 'HEAD' },
-      );
-      setWorkbenchDiffStagedByPath((current) =>
-        Object.prototype.hasOwnProperty.call(current, nextTab.path)
-          ? current
-          : { ...current, [nextTab.path]: false },
       );
       setWorkbenchDiffErrorByPath((current) => ({ ...current, [nextTab.path]: null }));
       setWorkbenchShowDiffByPath((current) =>
@@ -2068,11 +1881,6 @@ export function SessionsPage() {
       delete next[path];
       return next;
     });
-    setWorkbenchDiffStagedByPath((current) => {
-      const next = { ...current };
-      delete next[path];
-      return next;
-    });
     setWorkbenchGitRootsByPath((current) => {
       const next = { ...current };
       delete next[path];
@@ -2095,17 +1903,20 @@ export function SessionsPage() {
     }
   }
 
-  async function fetchRuntimeGitDiff(sessionId: string, path: string) {
-    const baseRefRaw = workbenchDiffBaseRefByPath[path];
+  async function fetchRuntimeGitDiff(
+    sessionId: string,
+    path: string,
+    options?: { baseRef?: string },
+  ) {
+    const baseRefRaw = options?.baseRef ?? workbenchDiffBaseRefByPath[path];
     const baseRef = (typeof baseRefRaw === 'string' && baseRefRaw.trim().length > 0) ? baseRefRaw.trim() : 'HEAD';
-    const staged = Boolean(workbenchDiffStagedByPath[path]);
     setWorkbenchDiffLoadingPath(path);
     setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: null }));
     try {
       const query = new URLSearchParams();
       query.set('path', path);
       query.set('base_ref', baseRef);
-      query.set('staged', staged ? 'true' : 'false');
+      query.set('staged', 'false');
       query.set('context_lines', '3');
       query.set('max_bytes', '120000');
       const payload = await api.get<SessionRuntimeGitDiffResponse>(
@@ -2175,6 +1986,12 @@ export function SessionsPage() {
     approval: ApprovalRef,
     updates: { pending?: boolean; approval_status?: string; decision_note?: string },
   ) => {
+    approvalDebugLog('ui.approval.update_streaming_call', {
+      provider: approval.provider,
+      approval_id: approval.approvalId,
+      pending: updates.pending,
+      approval_status: updates.approval_status,
+    });
     const targetKey = approvalKey(approval);
     setStreaming((current) => {
       const patchCall = (call: StreamingToolCall): StreamingToolCall => {
@@ -2213,16 +2030,32 @@ export function SessionsPage() {
   const resolveApprovalInline = useCallback(async (approval: ApprovalRef, decision: 'approve' | 'reject') => {
     const targetKey = approvalKey(approval);
     setResolvingApprovalKey(targetKey);
+    approvalDebugLog('ui.approval.resolve.request', {
+      provider: approval.provider,
+      approval_id: approval.approvalId,
+      decision,
+    });
     try {
       await api.post(`/approvals/${encodeURIComponent(approval.provider)}/${encodeURIComponent(approval.approvalId)}/${decision}`, {
-        note: decision === 'approve' ? 'Approved from session tool card' : 'Rejected from session tool card',
+        note: decision === 'approve' ? 'User approved action.' : 'User rejected action.',
       });
       updateStreamingCallApproval(approval, {
         pending: false,
         approval_status: decision === 'approve' ? 'approved' : 'rejected',
       });
       toast.success(decision === 'approve' ? 'Approval approved' : 'Approval rejected');
+      approvalDebugLog('ui.approval.resolve.success', {
+        provider: approval.provider,
+        approval_id: approval.approvalId,
+        decision,
+      });
     } catch (error) {
+      approvalDebugLog('ui.approval.resolve.error', {
+        provider: approval.provider,
+        approval_id: approval.approvalId,
+        decision,
+        error: error instanceof Error ? error.message : String(error),
+      });
       toast.error(error instanceof Error ? error.message : 'Failed to resolve approval');
     } finally {
       setResolvingApprovalKey(null);
@@ -2233,39 +2066,33 @@ export function SessionsPage() {
     sessionId: string,
     callId: string,
     contentIndex: number | null,
-    candidate: ReturnType<typeof extractApprovalCandidateFromToolArgs>,
   ) {
     if (!callId) return;
-    const candidateSuffix = candidate ? `${candidate.provider}:${candidate.matchKey}` : 'unknown';
-    const lookupKey = `${streamingCallKeyFromParts(callId, contentIndex)}:${candidateSuffix}`;
+    const lookupKey = streamingCallKeyFromParts(callId, contentIndex);
     if (approvalLookupInFlightRef.current.has(lookupKey)) return;
     approvalLookupInFlightRef.current.add(lookupKey);
+    approvalDebugLog('ui.approval.hydrate.start', {
+      session_id: sessionId,
+      tool_call_id: callId,
+      content_index: contentIndex,
+      lookup_key: lookupKey,
+    });
     try {
       for (let attempt = 0; attempt < APPROVAL_HYDRATION_MAX_ATTEMPTS; attempt += 1) {
         try {
-          let matched = null as ApprovalListResponse['items'][number] | null;
-          if (candidate) {
-            const query = new URLSearchParams();
-            query.set('status', 'pending');
-            query.set('provider', candidate.provider);
-            query.set('limit', '200');
-            query.set('offset', '0');
-            const payload = await api.get<ApprovalListResponse>(`/approvals?${query.toString()}`);
-            const items = Array.isArray(payload.items) ? payload.items : [];
-            matched = selectMatchingPendingApproval(items, {
-              sessionId,
-              candidate,
-            });
-          }
-          if (!matched) {
-            const query = new URLSearchParams();
-            query.set('session_id', sessionId);
-            query.set('tool_call_id', callId);
-            const toolCallMatch = await api.get<ApprovalToolCallMatchResponse>(
-              `/approvals/match-pending-tool-call?${query.toString()}`,
-            );
-            matched = toolCallMatch.item;
-          }
+          const query = new URLSearchParams();
+          query.set('session_id', sessionId);
+          query.set('tool_call_id', callId);
+          const toolCallMatch = await api.get<ApprovalToolCallMatchResponse>(
+            `/approvals/match-pending-tool-call?${query.toString()}`,
+          );
+          const matched = toolCallMatch.item;
+          approvalDebugLog('ui.approval.hydrate.tool_call_attempt', {
+            session_id: sessionId,
+            tool_call_id: callId,
+            attempt: attempt + 1,
+            matched: Boolean(matched),
+          });
           if (matched) {
             setStreaming((current) => {
               const patchCall = (call: StreamingToolCall): StreamingToolCall => {
@@ -2275,8 +2102,6 @@ export function SessionsPage() {
                   metadata: {
                     ...call.metadata,
                     pending: true,
-                    approval_id: matched.approval_id,
-                    approval_provider: matched.provider,
                     approval: {
                       provider: matched.provider,
                       approval_id: matched.approval_id,
@@ -2295,9 +2120,23 @@ export function SessionsPage() {
                 completedToolCalls: current.completedToolCalls.map(patchCall),
               };
             });
+            approvalDebugLog('ui.approval.hydrate.matched', {
+              session_id: sessionId,
+              tool_call_id: callId,
+              attempt: attempt + 1,
+              provider: matched.provider,
+              approval_id: matched.approval_id,
+              status: matched.status,
+              pending: matched.pending,
+            });
             return;
           }
         } catch {
+          approvalDebugLog('ui.approval.hydrate.attempt_error', {
+            session_id: sessionId,
+            tool_call_id: callId,
+            attempt: attempt + 1,
+          });
           // best-effort retry until attempts are exhausted
         }
         if (attempt < APPROVAL_HYDRATION_MAX_ATTEMPTS - 1) {
@@ -2305,9 +2144,17 @@ export function SessionsPage() {
         }
       }
     } catch {
+      approvalDebugLog('ui.approval.hydrate.error', {
+        session_id: sessionId,
+        tool_call_id: callId,
+      });
       // best effort hydration
     } finally {
       approvalLookupInFlightRef.current.delete(lookupKey);
+      approvalDebugLog('ui.approval.hydrate.done', {
+        session_id: sessionId,
+        tool_call_id: callId,
+      });
     }
   }
 
@@ -2433,7 +2280,7 @@ export function SessionsPage() {
         setStreaming((current) => ({ ...current, isThinking: false, isStreaming: true, text: current.text + (event.delta ?? '') }));
         break;
       case 'toolcall_start':
-        setStreaming((current) => {
+        {
           const callId = String((event.tool_call as any)?.id ?? `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
           const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
           const rawInitialArguments = serializeToolArguments((event.tool_call as any)?.arguments);
@@ -2441,122 +2288,120 @@ export function SessionsPage() {
             ? rawInitialArguments
             : '';
           const toolName = String((event.tool_call as any)?.name ?? 'unknown');
-          const approvalCandidate = extractApprovalCandidateFromToolArgs(toolName, (event.tool_call as any)?.arguments);
-          const initialMetadata: Record<string, unknown> = approvalCandidate
-            ? {
-              pending: true,
-              approval_provider: approvalCandidate.provider,
-              approval: {
-                provider: approvalCandidate.provider,
-                status: 'pending',
-                pending: true,
-                can_resolve: true,
-                match_key: approvalCandidate.matchKey,
-              },
-            }
-            : {};
-          const call = {
-            id: callId,
-            name: toolName,
-            argumentsJson: initialArguments,
-            outputJson: approvalCandidate
-              ? '{"status":"pending","message":"Waiting for approval..."}'
-              : '',
-            isError: false,
-            metadata: initialMetadata,
-            complete: false,
-            contentIndex,
-          };
-          const existingByExactId = current.activeToolCalls.findIndex(
-            (item) => item.id === callId && item.contentIndex === contentIndex,
-          );
-          if (existingByExactId >= 0) {
-            return { ...current, isThinking: false };
-          }
-          const existingByContentIndex = contentIndex === null
-            ? -1
-            : current.activeToolCalls.findIndex((item) => item.contentIndex === contentIndex);
-          if (existingByContentIndex >= 0) {
-            const nextActive = [...current.activeToolCalls];
-            const existing = nextActive[existingByContentIndex];
-            const adoptIncomingId = isSyntheticToolCallId(existing.id) && !isSyntheticToolCallId(call.id);
-            const mergedCall: StreamingToolCall = {
-              ...existing,
-              id: adoptIncomingId ? call.id : existing.id,
-              name: existing.name === 'unknown' && call.name !== 'unknown' ? call.name : existing.name,
-              argumentsJson: hasMeaningfulToolArguments(existing.argumentsJson)
-                ? existing.argumentsJson
-                : call.argumentsJson,
-              metadata: Object.keys(existing.metadata).length > 0
-                ? existing.metadata
-                : call.metadata,
+          approvalDebugLog('ws.toolcall_start', {
+            session_id: sessionId,
+            tool_call_id: callId,
+            tool_name: toolName,
+            content_index: contentIndex,
+          });
+          setStreaming((current) => {
+            const call = {
+              id: callId,
+              name: toolName,
+              argumentsJson: initialArguments,
+              outputJson: '',
+              isError: false,
+              metadata: {},
+              complete: false,
+              contentIndex,
             };
-            let nextTimeline = current.timeline;
-            const oldKey = streamingCallKey(existing);
-            const newKey = streamingCallKey(mergedCall);
-            if (oldKey !== newKey) {
-              nextTimeline = current.timeline.map((item) => (
-                item.kind === 'tool' && item.callKey === oldKey
-                  ? { kind: 'tool', key: `tool-${newKey}`, callKey: newKey }
-                  : item
-              ));
+            const existingByExactId = current.activeToolCalls.findIndex(
+              (item) => item.id === callId && item.contentIndex === contentIndex,
+            );
+            if (existingByExactId >= 0) {
+              return { ...current, isThinking: false };
             }
-            nextActive[existingByContentIndex] = mergedCall;
+            const existingByContentIndex = contentIndex === null
+              ? -1
+              : current.activeToolCalls.findIndex((item) => item.contentIndex === contentIndex);
+            if (existingByContentIndex >= 0) {
+              const nextActive = [...current.activeToolCalls];
+              const existing = nextActive[existingByContentIndex];
+              const adoptIncomingId = isSyntheticToolCallId(existing.id) && !isSyntheticToolCallId(call.id);
+              const mergedCall: StreamingToolCall = {
+                ...existing,
+                id: adoptIncomingId ? call.id : existing.id,
+                name: existing.name === 'unknown' && call.name !== 'unknown' ? call.name : existing.name,
+                argumentsJson: hasMeaningfulToolArguments(existing.argumentsJson)
+                  ? existing.argumentsJson
+                  : call.argumentsJson,
+              };
+              let nextTimeline = current.timeline;
+              const oldKey = streamingCallKey(existing);
+              const newKey = streamingCallKey(mergedCall);
+              if (oldKey !== newKey) {
+                nextTimeline = current.timeline.map((item) => (
+                  item.kind === 'tool' && item.callKey === oldKey
+                    ? { kind: 'tool', key: `tool-${newKey}`, callKey: newKey }
+                    : item
+                ));
+              }
+              nextActive[existingByContentIndex] = mergedCall;
+              return {
+                ...current,
+                isThinking: false,
+                activeToolCalls: nextActive,
+                timeline: nextTimeline,
+              };
+            }
+            const callKey = streamingCallKeyFromParts(callId, contentIndex);
+            const hasTimelineItem = current.timeline.some(
+              (item) => item.kind === 'tool' && item.callKey === callKey
+            );
             return {
               ...current,
               isThinking: false,
-              activeToolCalls: nextActive,
-              timeline: nextTimeline,
+              activeToolCalls: [...current.activeToolCalls, call],
+              timeline: hasTimelineItem
+                ? current.timeline
+                : [...current.timeline, { kind: 'tool', key: `tool-${callKey}`, callKey }],
             };
-          }
-          const callKey = streamingCallKeyFromParts(callId, contentIndex);
-          const hasTimelineItem = current.timeline.some(
-            (item) => item.kind === 'tool' && item.callKey === callKey
-          );
-          return {
-            ...current,
-            isThinking: false,
-            activeToolCalls: [...current.activeToolCalls, call],
-            timeline: hasTimelineItem
-              ? current.timeline
-              : [...current.timeline, { kind: 'tool', key: `tool-${callKey}`, callKey }],
-          };
-        });
+          });
+          void hydrateApprovalForCall(sessionId, callId, contentIndex);
+        }
         break;
       case 'toolcall_delta':
-        setStreaming((current) => {
-          const delta = typeof event.delta === 'string' ? event.delta : '';
-          if (!delta) return current;
-          const next = [...current.activeToolCalls];
-          if (!next.length) return current;
-          const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
-          let targetIndex = -1;
-          if (contentIndex !== null) {
-            targetIndex = next.findIndex((item) => item.contentIndex === contentIndex);
-          }
-          if (targetIndex < 0) targetIndex = next.length - 1;
-          const call = next[targetIndex];
-          next[targetIndex] = {
-            ...call,
-            argumentsJson: mergeStreamingToolArguments(call.argumentsJson, delta),
-          };
-          return { ...current, activeToolCalls: next };
-        });
+        {
+          setStreaming((current) => {
+            const delta = typeof event.delta === 'string' ? event.delta : '';
+            if (!delta) return current;
+            const next = [...current.activeToolCalls];
+            if (!next.length) return current;
+            const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
+            let targetIndex = -1;
+            if (contentIndex !== null) {
+              targetIndex = next.findIndex((item) => item.contentIndex === contentIndex);
+            }
+            if (targetIndex < 0) targetIndex = next.length - 1;
+            const call = next[targetIndex];
+            const mergedArguments = mergeStreamingToolArguments(call.argumentsJson, delta);
+            const hasApprovalRef = Boolean(approvalRefFromMetadata(call.metadata));
+            if (!hasApprovalRef && call.id) {
+              void hydrateApprovalForCall(sessionId, call.id, call.contentIndex);
+            }
+            next[targetIndex] = {
+              ...call,
+              argumentsJson: mergedArguments,
+            };
+            return { ...current, activeToolCalls: next };
+          });
+        }
         break;
       case 'toolcall_end':
         {
           const hydrationCandidates: Array<{
             callId: string;
             contentIndex: number | null;
-            candidate: ReturnType<typeof extractApprovalCandidateFromToolArgs>;
           }> = [];
           const eventCallId = String((event.tool_call as any)?.id ?? '');
           const eventContentIndex = typeof event.content_index === 'number' ? event.content_index : null;
           const eventToolName = String((event.tool_call as any)?.name ?? '');
-          const eventApprovalCandidate = extractApprovalCandidateFromToolArgs(
-            eventToolName,
-            (event.tool_call as any)?.arguments,
-          );
+          approvalDebugLog('ws.toolcall_end', {
+            session_id: sessionId,
+            tool_call_id: eventCallId,
+            tool_name: eventToolName,
+            content_index: eventContentIndex,
+          });
           setStreaming((current) => {
             if (!current.activeToolCalls.length) return current;
             const nextActive = [...current.activeToolCalls];
@@ -2570,11 +2415,17 @@ export function SessionsPage() {
             if (targetIndex < 0) targetIndex = nextActive.length - 1;
             const doneCall = nextActive[targetIndex];
             nextActive.splice(targetIndex, 1);
-            const approvalCandidate = eventApprovalCandidate ?? (
-              extractApprovalCandidateFromSerializedArgs(doneCall.name, doneCall.argumentsJson)
-            );
             const callApprovalRef = approvalRefFromMetadata(doneCall.metadata);
-            const isPendingApproval = Boolean(approvalCandidate) || Boolean(callApprovalRef?.pending);
+            const isPendingApproval = Boolean(callApprovalRef?.pending);
+            approvalDebugLog('ws.toolcall_end.classify', {
+              session_id: sessionId,
+              tool_call_id: doneCall.id,
+              tool_name: doneCall.name,
+              pending_from_metadata: Boolean(callApprovalRef?.pending),
+              pending_final: isPendingApproval,
+              metadata_approval_id: callApprovalRef?.approvalId ?? null,
+              metadata_provider: callApprovalRef?.provider ?? null,
+            });
             const hydratedDoneCall: StreamingToolCall = isPendingApproval
               ? {
                 ...doneCall,
@@ -2582,16 +2433,6 @@ export function SessionsPage() {
                 metadata: {
                   ...doneCall.metadata,
                   pending: true,
-                  ...(approvalCandidate ? {
-                    approval_provider: approvalCandidate.provider,
-                    approval: {
-                      provider: approvalCandidate.provider,
-                      status: 'pending',
-                      pending: true,
-                      can_resolve: true,
-                      match_key: approvalCandidate.matchKey,
-                    },
-                  } : {}),
                 },
               }
               : doneCall;
@@ -2602,7 +2443,6 @@ export function SessionsPage() {
               hydrationCandidates.push({
                 callId: hydratedDoneCall.id,
                 contentIndex: hydratedDoneCall.contentIndex,
-                candidate: approvalCandidate,
               });
             }
             if (alreadyDone) {
@@ -2616,11 +2456,15 @@ export function SessionsPage() {
           });
           const pendingHydration = hydrationCandidates[0];
           if (pendingHydration) {
+            approvalDebugLog('ws.toolcall_end.hydrate_queue', {
+              session_id: sessionId,
+              tool_call_id: pendingHydration.callId,
+              content_index: pendingHydration.contentIndex,
+            });
             void hydrateApprovalForCall(
               sessionId,
               pendingHydration.callId,
               pendingHydration.contentIndex,
-              pendingHydration.candidate,
             );
           }
         }
@@ -2628,6 +2472,18 @@ export function SessionsPage() {
       case 'tool_result':
         {
           const payload = (event.tool_result as Record<string, unknown> | undefined) ?? {};
+          const metadata = isObjectRecord(payload.metadata) ? payload.metadata : {};
+          const metadataApproval = approvalRefFromMetadata(metadata);
+          approvalDebugLog('ws.tool_result', {
+            session_id: sessionId,
+            tool_call_id: String(payload.tool_call_id ?? (event.tool_call as any)?.id ?? ''),
+            tool_name: String(payload.tool_name ?? (event.tool_call as any)?.name ?? 'unknown'),
+            is_error: Boolean(payload.is_error),
+            metadata_pending: Boolean(metadata.pending),
+            metadata_approval_id: metadataApproval?.approvalId ?? null,
+            metadata_provider: metadataApproval?.provider ?? null,
+            metadata_status: metadataApproval?.status ?? null,
+          });
           const toolNameForRefresh = String(payload.tool_name ?? (event.tool_call as any)?.name ?? '').trim();
           if (
             toolNameForRefresh === 'spawn_sub_agent' ||
@@ -2967,29 +2823,32 @@ export function SessionsPage() {
           hideHeader={mode === 'solo'}
           actions={
             mode === 'advanced' ? (
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2">
                 <button
                     onClick={() => setMode('solo')}
-                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]"
+                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
                 >
-                  <Expand size={14} className="text-emerald-500" />
+                  <Expand size={14} className="text-emerald-500/80" />
                   Focus
                 </button>
-                <div className="h-5 w-px bg-[color:var(--border-subtle)] mx-0.5" />
+
+                <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
+
                 <button
                     onClick={resetSession}
                     title="Start fresh (memories preserved)"
-                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]"
+                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
                 >
-                  <RefreshCw size={14} className="text-sky-500" />
+                  <RefreshCw size={14} className="text-sky-500/80" />
                   New Chat
                 </button>
+
                 <button
                     onClick={compactContext}
                     disabled={isCompacting}
-                    className="inline-flex h-8 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
                 >
-                  <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-400`} />
+                  <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-500/80`} />
                   Compact
                 </button>
               </div>
@@ -2998,12 +2857,13 @@ export function SessionsPage() {
       >
         <div className="relative flex h-full w-full overflow-hidden">
           {mode === 'solo' ? (
-            <div className="absolute top-3 left-3 z-40">
+            <div className="absolute top-4 left-4 z-40">
               <button
                 type="button"
                 onClick={() => setMode('advanced')}
-                className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/90 backdrop-blur px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)]"
+                className="inline-flex h-9 items-center gap-2 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)]/90 backdrop-blur px-4 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] hover:bg-[color:var(--surface-1)] transition-all active:scale-95 shadow-xl"
               >
+                <X size={14} className="text-[color:var(--text-muted)]" />
                 Exit Focus
               </button>
             </div>
@@ -3014,334 +2874,237 @@ export function SessionsPage() {
             }`}
           >
             <div className={`flex flex-col h-full min-w-[16rem] transition-opacity duration-200 ${mode === 'advanced' ? 'opacity-100' : 'opacity-0'}`}>
-              <div className="p-3 border-b border-[color:var(--border-subtle)] space-y-2">
-                <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">History</h2>
-                <div className="grid grid-cols-2 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1">
-                  <button
-                    onClick={() => setHistoryTab('sessions')}
-                    className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                      historyTab === 'sessions'
-                        ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)]'
-                        : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
-                    }`}
-                  >
-                    Sessions
-                  </button>
-                  <button
-                    onClick={() => setHistoryTab('sub_agents')}
-                    className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                      historyTab === 'sub_agents'
-                        ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)]'
-                        : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
-                    }`}
-                  >
-                    Sub-agents
-                  </button>
-                </div>
-                <div className="relative">
-                  <History size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
-                  <input
-                      className="input-field pl-8 h-8 text-xs"
-                      placeholder="Search..."
-                      value={sessionFilter}
-                      onChange={(e) => setSessionFilter(e.target.value)}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    onClick={() => {
-                      setIsMultiSelectMode((current) => {
-                        const next = !current;
-                        if (!next) setSelectedSessionIds([]);
-                        return next;
-                      });
-                    }}
-                    className="rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-0)]"
-                  >
-                    {isMultiSelectMode ? 'Done' : 'Select'}
-                  </button>
-                  {isMultiSelectMode ? (
-                    <button
-                      onClick={() =>
-                        setSelectedSessionIds((current) => {
-                          const set = new Set(current);
-                          if (allVisibleSelected) {
-                            selectableVisibleSessionIds.forEach((id) => set.delete(id));
-                          } else {
-                            selectableVisibleSessionIds.forEach((id) => set.add(id));
-                          }
-                          return Array.from(set);
-                        })
-                      }
-                      className="rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-0)]"
-                    >
-                      {allVisibleSelected ? 'Unselect All' : 'Select All'}
-                    </button>
-                  ) : null}
-                </div>
-                {isMultiSelectMode ? (
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] uppercase tracking-wider text-[color:var(--text-muted)]">
-                      {selectedSessionIds.length} selected
-                    </p>
-                    <button
-                      onClick={() => void deleteSelectedSessions()}
-                      disabled={selectedSessionIds.length === 0 || deletingSessionId !== null}
-                      className="rounded-md border border-rose-500/30 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-rose-500 hover:bg-rose-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Delete Selected
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-              <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-                {filteredSessions.map((s) => (
-                    <SessionRow
-                      key={s.id}
-                      session={s}
-                      isActive={s.id === activeSessionId}
-                      onClick={onSessionClick}
-                      canDelete={Boolean(defaultSessionId) && s.id !== defaultSessionId}
-                      isDeleting={
-                        deletingSessionId === s.id ||
-                        deletingSessionId === 'bulk' ||
-                        settingMainSessionId === s.id
-                      }
-                      onDelete={deleteSession}
-                      onSetMain={setMainSession}
-                      isEditing={editingSessionId === s.id}
-                      editTitle={editingSessionTitle}
-                      onEditTitleChange={setEditingSessionTitle}
-                      onSubmitRename={submitRenameSession}
-                      onCancelRename={cancelRenameSession}
-                      canRename={(() => {
-                        const kind = sessionChannelKind(s);
-                        return kind !== 'telegram_group' && kind !== 'telegram_dm';
-                      })()}
-                      isRenaming={renamingSessionId === s.id}
-                      onRename={startRenameSession}
-                      multiSelectMode={isMultiSelectMode}
-                      selected={selectedSessionIdSet.has(s.id)}
-                      onToggleSelect={(id) =>
-                        setSelectedSessionIds((current) =>
-                          current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-                        )
-                      }
-                    />
-                ))}
-                {filteredSessions.length === 0 && (
-                    <div className="py-8 text-center text-[10px] text-[color:var(--text-muted)] uppercase tracking-widest">
-                      No sessions
-                    </div>
-                )}
-              </div>
+              <SessionHistorySidebar
+                historyTab={historyTab}
+                setHistoryTab={setHistoryTab}
+                sessionFilter={sessionFilter}
+                setSessionFilter={setSessionFilter}
+                isMultiSelectMode={isMultiSelectMode}
+                setIsMultiSelectMode={setIsMultiSelectMode}
+                selectedSessionIds={selectedSessionIds}
+                setSelectedSessionIds={setSelectedSessionIds}
+                allVisibleSelected={allVisibleSelected}
+                selectableVisibleSessionIds={selectableVisibleSessionIds}
+                deleteSelectedSessions={deleteSelectedSessions}
+                deletingSessionId={deletingSessionId}
+                filteredSessions={filteredSessions}
+                activeSessionId={activeSessionId}
+                onSessionClick={onSessionClick}
+                defaultSessionId={defaultSessionId}
+                editingSessionId={editingSessionId}
+                editingSessionTitle={editingSessionTitle}
+                setEditingSessionTitle={setEditingSessionTitle}
+                submitRenameSession={submitRenameSession}
+                cancelRenameSession={cancelRenameSession}
+                startRenameSession={startRenameSession}
+                setMainSession={setMainSession}
+                deleteSession={deleteSession}
+                renamingSessionId={renamingSessionId}
+                loadingSessions={false}
+              />
             </div>
           </aside>
 
           {/* Chat Area */}
-          <main className="flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)]">
-            {/* Model Selector / Status Header */}
+          <main className="relative z-0 flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)] overflow-hidden">
+            {/* Unified Session Toolbar */}
             {mode === 'advanced' ? (
-            <div className="flex items-center justify-between px-4 py-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
-              <div className="flex items-center gap-3">
-                <div className="relative flex items-center gap-1.5 group cursor-default">
-                  <div className={`h-2 w-2 rounded-full ${streaming.connection === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)]">{streaming.connection}</span>
-                  <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-lg bg-[color:var(--surface-0)] border border-[color:var(--border)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-50 space-y-0.5">
-                    <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)]">WebSocket</div>
-                    <div className={streaming.connection === 'connected' ? 'text-emerald-500 font-bold' : 'text-rose-500 font-bold'}>{streaming.connection}</div>
+            <div className="flex items-center justify-between px-4 h-12 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/80 backdrop-blur-md sticky top-0 z-30 shrink-0 select-none">
+              {/* Left: Connection & Progress */}
+              <div className="flex items-center gap-2.5">
+                <div className="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
+                  <div className={`h-1.5 w-1.5 rounded-full transition-all duration-500 ${streaming.connection === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]'}`} />
+                  <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--text-secondary)]">{streaming.connection === 'connected' ? 'Live' : 'Offline'}</span>
+
+                  {/* Connection Tooltip */}
+                  <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
+                    <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Telemetry Link</div>
+                    <div className="flex items-center gap-2">
+                      <div className={`h-1.5 w-1.5 rounded-full ${streaming.connection === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                      <span className={streaming.connection === 'connected' ? 'text-emerald-500 font-bold' : 'text-rose-500 font-bold'}>{streaming.connection.toUpperCase()}</span>
+                    </div>
                   </div>
                 </div>
+
                 {streaming.agentMaxIterations > 0 && (
-                  <>
-                    <div className="w-px h-3 bg-[color:var(--border)]" />
-                    <div className="relative flex items-center gap-2 group cursor-default">
-                      <div className="w-20 h-1 rounded-full bg-[color:var(--surface-2)] overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-[color:var(--accent-solid)] transition-all duration-500"
-                          style={{ width: `${Math.min((streaming.agentIteration / streaming.agentMaxIterations) * 100, 100)}%` }}
-                        />
-                      </div>
-                      <span className="text-[10px] font-mono font-bold text-[color:var(--text-muted)]">
-                        {streaming.agentIteration}/{streaming.agentMaxIterations}
-                      </span>
-                      <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-lg bg-[color:var(--surface-0)] border border-[color:var(--border)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-50 space-y-0.5">
-                        <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Agent Steps</div>
-                        <div><span className="font-bold text-[color:var(--accent-solid)]">{streaming.agentIteration}</span><span className="text-[color:var(--text-muted)]"> / {streaming.agentMaxIterations} steps used</span></div>
-                        <div className="text-[color:var(--text-muted)]">{streaming.agentMaxIterations - streaming.agentIteration} remaining</div>
+                  <div className="group relative flex items-center gap-3 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
+                    <div className="w-16 h-1 rounded-full bg-[color:var(--surface-3)] overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-[color:var(--accent-solid)] transition-all duration-700 ease-out"
+                        style={{ width: `${Math.min((streaming.agentIteration / streaming.agentMaxIterations) * 100, 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] font-mono font-bold text-[color:var(--text-primary)]">
+                      {streaming.agentIteration}<span className="text-[color:var(--text-muted)] mx-0.5">/</span>{streaming.agentMaxIterations}
+                    </span>
+
+                    {/* Progress Tooltip */}
+                    <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
+                      <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Execution Pipeline</div>
+                      <div><span className="font-bold text-[color:var(--accent-solid)]">{streaming.agentIteration}</span><span className="text-[color:var(--text-muted)]"> of {streaming.agentMaxIterations} steps completed</span></div>
+                      <div className="mt-1 h-1 w-full bg-[color:var(--surface-2)] rounded-full overflow-hidden">
+                        <div className="h-full bg-[color:var(--accent-solid)]" style={{ width: `${(streaming.agentIteration / streaming.agentMaxIterations) * 100}%` }} />
                       </div>
                     </div>
-                  </>
-                )}
-                {streaming.isCompactingContext && (
-                  <>
-                    <div className="w-px h-3 bg-[color:var(--border)]" />
-                    <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-500">
-                      <Loader2 size={10} className="animate-spin" />
-                      Compacting context
-                    </div>
-                  </>
+                  </div>
                 )}
               </div>
 
-              <div className="flex items-center gap-4">
-                {/* Context ring indicator */}
-                {(() => {
-                  const estimatedTokens =
-                    typeof contextTokenEstimate === 'number' && Number.isFinite(contextTokenEstimate)
-                      ? contextTokenEstimate
-                      : null;
-                  const hasBudget = typeof contextTokenBudget === 'number' && contextTokenBudget > 0;
-                  const hasEstimate = typeof estimatedTokens === 'number';
-                  const CTX_CEILING = hasBudget ? contextTokenBudget : 1;
-                  const fill = hasBudget && hasEstimate ? Math.min(estimatedTokens / CTX_CEILING, 1) : 0;
-                  const pct =
-                    typeof contextTokenPercent === 'number' && Number.isFinite(contextTokenPercent)
-                      ? Math.max(0, Math.min(100, Math.floor(contextTokenPercent)))
-                      : Math.round(fill * 100);
-                  const r = 7;
-                  const circ = 2 * Math.PI * r;
-                  const dash = circ * fill;
-                  const ringColor = fill < 0.5 ? '#10b981' : fill < 0.8 ? '#f59e0b' : '#ef4444';
-                  const warn = hasBudget && hasEstimate && estimatedTokens > CTX_CEILING;
-                  const kTokens = hasEstimate
-                    ? (estimatedTokens >= 1000 ? `${(estimatedTokens / 1000).toFixed(1)}k` : `${estimatedTokens}`)
-                    : '—';
-                  const ceilingLabel = hasBudget ? `${Math.round(CTX_CEILING / 1000)}k tokens` : '…';
-                  return (
-                    <div className="relative flex items-center gap-1.5 group cursor-default">
-                      <svg width="18" height="18" viewBox="0 0 20 20" className="-rotate-90 shrink-0">
-                        <circle cx="10" cy="10" r={r} fill="none" stroke="var(--surface-2)" strokeWidth="2.5" />
-                        <circle
-                          cx="10" cy="10" r={r} fill="none"
-                          stroke={ringColor}
-                          strokeWidth="2.5"
-                          strokeLinecap="round"
-                          strokeDasharray={`${dash} ${circ}`}
-                          className="transition-all duration-500"
-                        />
-                      </svg>
-                      <span className={`text-[10px] font-mono font-bold transition-colors ${warn ? 'text-amber-500' : 'text-[color:var(--text-muted)]'}`}>
-                        {pct}<span className="opacity-40">%</span>
-                      </span>
-                      {warn && <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />}
-                      {/* Tooltip */}
-                      <div className="absolute top-full right-0 mt-2 px-3 py-2 rounded-lg bg-[color:var(--surface-0)] border border-[color:var(--border)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none shadow-xl z-50 space-y-1">
-                        <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Context Window</div>
-                        <div><span className="font-bold" style={{ color: ringColor }}>~{kTokens}</span><span className="text-[color:var(--text-muted)]"> / {ceilingLabel}</span></div>
-                        <div className="text-[color:var(--text-muted)]">
-                          {hasEstimate ? `${pct}% used` : 'Awaiting backend runtime snapshot'}
-                        </div>
-                        {warn && <div className="text-amber-500 font-bold">Auto-compaction should trigger on next turn</div>}
-                      </div>
-                    </div>
-                  );
-                })()}
+              {/* Center: Toolbar metadata removed */}
 
-                <div className="w-px h-3 bg-[color:var(--border)]" />
+              {/* Right: Controls & Context */}
+              <div className="flex items-center gap-3">
+                {/* Context Indicator */}
+                <div className="group relative flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
+                  {(() => {
+                    const estimatedTokens = typeof contextTokenEstimate === 'number' && Number.isFinite(contextTokenEstimate) ? contextTokenEstimate : null;
+                    const hasBudget = typeof contextTokenBudget === 'number' && contextTokenBudget > 0;
+                    const hasEstimate = typeof estimatedTokens === 'number';
+                    const CTX_CEILING = hasBudget ? contextTokenBudget : 1;
+                    const pct = typeof contextTokenPercent === 'number' && Number.isFinite(contextTokenPercent)
+                        ? Math.max(0, Math.min(100, Math.floor(contextTokenPercent)))
+                        : Math.round(((estimatedTokens || 0) / CTX_CEILING) * 100);
+                    const toneColor = pct < 50 ? '#22c55e' : pct < 80 ? '#f59e0b' : '#f43f5e';
+                    const warn = hasBudget && hasEstimate && estimatedTokens > CTX_CEILING;
+                    const kTokens = hasEstimate
+                      ? (estimatedTokens >= 1000 ? `${(estimatedTokens / 1000).toFixed(1)}k` : `${estimatedTokens}`)
+                      : '—';
+                    const ceilingLabel = hasBudget ? `${Math.round(CTX_CEILING / 1000)}k` : '…';
 
-                {/* --- Effort selector (Fast / Normal / Deep Think) --- */}
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Effort:</span>
-                  <div className="relative">
-                    {(() => {
-                        const active = models.find(m => m.tier === selectedTier) || models[0];
-                        const tier = active?.tier ?? 'normal';
-                        const icons: Record<string, any> = {
-                          fast: <Zap size={10} />,
-                          normal: <Sparkles size={10} />,
-                          hard: <Brain size={10} />,
-                        };
-                        const themes: Record<string, string> = {
-                          fast: 'bg-emerald-600 dark:bg-emerald-500/40 border-emerald-600/20 dark:border-emerald-500/50 text-white dark:text-white/90 hover:bg-emerald-500 dark:hover:bg-emerald-500/50',
-                          normal: 'bg-sky-600 dark:bg-sky-500/40 border-sky-600/20 dark:border-sky-500/50 text-white dark:text-white/90 hover:bg-sky-500 dark:hover:bg-sky-500/50',
-                          hard: 'bg-rose-600 dark:bg-rose-500/40 border-rose-600/20 dark:border-rose-500/50 text-white dark:text-white/90 hover:bg-rose-500 dark:hover:bg-rose-500/50',
-                        };
-                        return (
-                          <button
-                            onClick={() => setIsEffortDropdownOpen(!isEffortDropdownOpen)}
-                            className={`flex items-center gap-2 px-2.5 h-6 text-[10px] font-bold uppercase tracking-widest rounded-lg transition-all duration-200 border shadow-sm ${themes[tier] || 'bg-[color:var(--surface-2)] border-[color:var(--border-subtle)] text-[color:var(--text-primary)]'}`}
-                          >
-                            <span className="opacity-90">{icons[tier] || <Activity size={10} />}</span>
-                            <span>{active?.label || 'Select'}</span>
-                            <ChevronDown size={10} className={`transition-transform duration-200 opacity-40 ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
-                          </button>
-                        );
-                      })()}
-
-                    {isEffortDropdownOpen && (
+                    return (
                       <>
                         <div
-                          className="fixed inset-0 z-40"
-                          onClick={() => setIsEffortDropdownOpen(false)}
+                          className={`h-1.5 w-1.5 rounded-full ${warn ? 'animate-pulse shadow-[0_0_8px_rgba(245,158,11,0.6)]' : ''}`}
+                          style={{ backgroundColor: toneColor }}
                         />
-                        <div className="absolute top-full left-0 mt-1 w-64 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1 animate-in fade-in zoom-in-95 duration-100">
-                          {models.map(m => {
-                            const active = selectedTier === m.tier;
-                            const tier = m.tier ?? 'normal';
-                            const icons: Record<string, any> = {
-                              fast: <Zap size={14} className={active ? 'text-white/90' : 'text-emerald-500'} />,
-                              normal: <Sparkles size={14} className={active ? 'text-white/90' : 'text-sky-500'} />,
-                              hard: <Brain size={14} className={active ? 'text-white/90' : 'text-rose-500'} />,
-                            };
-                            const bgColors: Record<string, string> = {
-                              fast: 'bg-emerald-600 dark:bg-emerald-500/40',
-                              normal: 'bg-sky-600 dark:bg-sky-500/40',
-                              hard: 'bg-rose-600 dark:bg-rose-500/40',
-                            };
-                            return (
-                              <button
-                                key={m.tier}
-                                onClick={() => {
-                                  setSelectedTier(m.tier);
-                                  setIsEffortDropdownOpen(false);
-                                }}
-                                className={`w-full flex items-start gap-3 px-4 py-3 transition-all text-left group ${
-                                  active
-                                    ? `text-white ${bgColors[tier] || ''}`
-                                    : 'hover:bg-[color:var(--surface-1)]'
-                                }`}
-                              >
-                                <div className="mt-0.5 shrink-0 transition-transform group-hover:scale-110 duration-200">
-                                  {icons[tier] || <Activity size={14} />}
-                                </div>
-                                <div className="flex flex-col gap-0.5 min-w-0">
-                                  <div className={`text-[10px] font-bold uppercase tracking-widest ${active ? 'text-white' : 'text-[color:var(--text-primary)] group-hover:text-[color:var(--text-primary)]'}`}>
-                                    {m.label}
-                                  </div>
-                                  <div className={`text-[9px] font-medium leading-tight ${active ? 'text-white/80' : 'text-[color:var(--text-muted)]'}`}>
-                                    {m.description}
-                                  </div>
-                                  {m.primary_provider_id && (
-                                    <div className="mt-1.5 flex items-center gap-1.5">
-                                      <span className={`text-[8px] font-mono px-1 rounded uppercase ${active ? 'bg-black/20 text-white/90' : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] opacity-60'}`}>{m.primary_provider_id}</span>
-                                      <span className={`text-[8px] font-mono truncate ${active ? 'text-white/40' : 'text-[color:var(--text-muted)] opacity-40'}`}>{m.primary_model_id}</span>
-                                    </div>
-                                  )}
-                                </div>
-                                {active && (
-                                  <div className="ml-auto w-1 h-1 rounded-full bg-white/60 mt-1.5 shadow-[0_0_8px_rgba(255,255,255,0.2)]" />
-                                )}
-                              </button>
-                            );
-                          })}
+                        <span className="text-[10px] font-mono font-bold text-[color:var(--text-primary)]">
+                          {pct}<span className="text-[color:var(--text-muted)] opacity-60 ml-0.5">%</span>
+                        </span>
+
+                        {/* Context Tooltip */}
+                        <div className="absolute top-full right-0 mt-2 px-3 py-2.5 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
+                          <div className="font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-1.5 pb-1 border-b border-[color:var(--border-subtle)]">Context Window</div>
+                          <div className="flex items-center justify-between gap-8 mb-1">
+                            <span className="text-[color:var(--text-secondary)]">Utilization</span>
+                            <span className="font-bold" style={{ color: toneColor }}>{pct}%</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-8 mb-2">
+                            <span className="text-[color:var(--text-secondary)]">Token Load</span>
+                            <span className="text-[color:var(--text-muted)]"><span className="font-bold text-[color:var(--text-primary)]">{kTokens}</span> / {ceilingLabel}</span>
+                          </div>
+                          <div className="h-1 w-full bg-[color:var(--surface-2)] rounded-full overflow-hidden">
+                            <div
+                              className="h-full transition-all duration-500"
+                              style={{ width: `${pct}%`, backgroundColor: toneColor }}
+                            />
+                          </div>
+                          {warn && (
+                            <div className="mt-2 py-1 px-2 rounded bg-amber-500/10 text-amber-500 font-bold text-[9px] uppercase tracking-wider animate-pulse">
+                              Auto-compaction pending
+                            </div>
+                          )}
+                          {!hasEstimate && <div className="mt-1.5 text-[color:var(--text-muted)] italic">Awaiting telemetry...</div>}
                         </div>
                       </>
-                    )}
-                  </div>
+                    );
+                  })()}
                 </div>
 
-                <div className="w-px h-3 bg-[color:var(--border)]" />
+                <div className="w-px h-4 bg-[color:var(--border-subtle)] mx-1" />
 
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)]">Steps:</span>
+                {/* Effort / Tier Selector */}
+                <div ref={effortDropdownRef} className="relative z-20">
+                  {(() => {
+                      const active = models.find(m => m.tier === selectedTier) || models[0];
+                      const tier = active?.tier ?? 'normal';
+                      const icons: Record<string, any> = {
+                        fast: <Zap size={11} />,
+                        normal: <Sparkles size={11} />,
+                        hard: <Brain size={11} />,
+                      };
+                      return (
+                        <button
+                          onClick={() => setIsEffortDropdownOpen(!isEffortDropdownOpen)}
+                          className="flex items-center gap-2.5 px-3 h-8 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all shadow-sm"
+                        >
+                          <span className="text-[color:var(--text-secondary)]">{icons[tier] || <Activity size={11} />}</span>
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)]">{active?.label || 'Mode'}</span>
+                          <ChevronDown size={11} className={`transition-transform duration-300 opacity-40 ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
+                        </button>
+                      );
+                    })()}
+
+                  {isEffortDropdownOpen && (
+                      <div className="absolute top-full right-0 mt-2 w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl">
+                        {models.map(m => {
+                          const active = selectedTier === m.tier;
+                          const tier = m.tier ?? 'normal';
+                          const TierIcon = {
+                            fast: Zap,
+                            normal: Sparkles,
+                            hard: Brain,
+                          }[tier as string] || Activity;
+
+                          const tierColor = {
+                            fast: 'text-emerald-500',
+                            normal: 'text-sky-500',
+                            hard: 'text-rose-500',
+                          }[tier as string] || 'text-[color:var(--text-muted)]';
+
+                          return (
+                            <button
+                              key={m.tier}
+                              onClick={() => {
+                                setSelectedTier(m.tier);
+                                setIsEffortDropdownOpen(false);
+                              }}
+                              className={`w-full flex items-start gap-3.5 px-4 py-3 transition-all text-left group ${
+                                active
+                                  ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
+                                  : 'hover:bg-[color:var(--surface-1)]'
+                              }`}
+                            >
+                              <div className={`mt-0.5 shrink-0 transition-transform group-hover:scale-110 duration-200 ${active ? 'text-[color:var(--app-bg)] opacity-90' : tierColor}`}>
+                                <TierIcon size={14} />
+                              </div>
+                              <div className="flex flex-col gap-0.5 min-w-0">
+                                <div className={`text-[10px] font-bold uppercase tracking-widest ${active ? 'text-[color:var(--app-bg)]' : 'text-[color:var(--text-primary)]'}`}>
+                                  {m.label}
+                                </div>
+                                <div className={`text-[9px] font-medium leading-tight ${active ? 'text-[color:var(--app-bg)] opacity-70' : 'text-[color:var(--text-muted)]'}`}>
+                                  {m.description}
+                                </div>
+                                {m.primary_provider_id && (
+                                  <div className="mt-2 flex items-center gap-1.5">
+                                    <span className={`text-[8px] font-mono px-1 rounded uppercase tracking-wider ${active ? 'bg-[color:var(--app-bg)]/10 text-[color:var(--app-bg)] border border-[color:var(--app-bg)]/20' : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] border border-[color:var(--border-subtle)] opacity-80'}`}>
+                                      {m.primary_provider_id}
+                                    </span>
+                                    <span className={`text-[8px] font-mono truncate tracking-tight ${active ? 'text-[color:var(--app-bg)] opacity-40' : 'text-[color:var(--text-muted)] opacity-50'}`}>
+                                      {m.primary_model_id}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                              {active && (
+                                <div className="ml-auto w-1 h-6 rounded-full bg-[color:var(--app-bg)]/20 my-auto shadow-sm" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                  )}
+                </div>
+
+                {/* Steps Selector */}
+                <div className="flex items-center gap-2 pl-2 border-l border-[color:var(--border-subtle)]">
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Max</span>
                   <select
                       value={maxIterations}
                       onChange={(e) => setMaxIterations(Number(e.target.value))}
-                      className="bg-transparent text-xs font-semibold outline-none cursor-pointer hover:text-[color:var(--accent-solid)] transition-colors"
+                      className="bg-transparent text-[11px] font-bold outline-none cursor-pointer hover:text-[color:var(--accent-solid)] transition-colors pr-1"
                   >
-                    {[5, 10, 15, 20, 25, 30, 50, 75, 100].map(n => (
-                      <option key={n} value={n}>{n}</option>
+                    {[5, 10, 20, 30, 50, 100].map(n => (
+                      <option key={n} value={n} className="bg-[color:var(--surface-0)]">{n}</option>
                     ))}
                   </select>
                 </div>
@@ -3466,9 +3229,11 @@ export function SessionsPage() {
                     )}
 
                     {streaming.isCompactingContext && (
-                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-amber-500 animate-pulse">
-                          <Loader2 size={14} className="animate-spin" />
-                          Compacting context...
+                        <div className="flex items-center gap-3 px-4 py-3 rounded-2xl bg-amber-500/5 border border-amber-500/20 w-fit animate-pulse">
+                          <Loader2 size={14} className="animate-spin text-amber-500" />
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-amber-500">
+                            Compacting context
+                          </span>
                         </div>
                     )}
 
@@ -3478,20 +3243,20 @@ export function SessionsPage() {
                           type="button"
                           onClick={stopCurrent}
                           disabled={isStopping}
-                          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-rose-500/40 bg-rose-500/10 px-4 py-1.5 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500/20 disabled:opacity-60 shadow-lg"
+                          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-rose-500/40 bg-[color:var(--surface-0)]/90 backdrop-blur px-4 h-9 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500 hover:text-white transition-all active:scale-95 shadow-xl disabled:opacity-50"
                         >
                           <Square size={12} fill="currentColor" />
-                          {isStopping ? 'Stopping...' : 'Stop'}
+                          {isStopping ? 'Stopping...' : 'Stop Execution'}
                         </button>
                       </div>
                     ) : null}
 
                     {!isPinnedToBottom && (
-                      <div className="sticky bottom-2 z-20 flex justify-end pointer-events-none">
+                      <div className="sticky bottom-4 z-20 flex justify-end pointer-events-none px-4">
                         <button
                           type="button"
                           onClick={() => scrollToBottom('smooth')}
-                          className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] shadow-lg hover:border-[color:var(--accent-solid)] hover:text-[color:var(--accent-solid)] transition-colors"
+                          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)]/90 backdrop-blur px-4 h-9 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] shadow-xl hover:border-[color:var(--accent-solid)] hover:text-[color:var(--accent-solid)] transition-all active:scale-95 translate-y-0"
                         >
                           <ArrowDown size={12} />
                           Back to bottom
@@ -3533,7 +3298,7 @@ export function SessionsPage() {
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
                           disabled={streamBusy || composerAttachments.length >= MAX_IMAGE_ATTACHMENTS}
-                          className="p-2 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                          className="p-2.5 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95 shadow-sm"
                           title="Attach image"
                         >
                           <Paperclip size={16} />
@@ -3541,10 +3306,10 @@ export function SessionsPage() {
                         <button
                             type="submit"
                             disabled={(composer.trim().length === 0 && composerAttachments.length === 0) || streamBusy}
-                            className={`p-2 rounded-lg transition-all ${
+                            className={`p-2.5 rounded-xl transition-all active:scale-95 shadow-md ${
                                 (composer.trim().length > 0 || composerAttachments.length > 0) && !streamBusy
-                                    ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] shadow-md'
-                                    : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] cursor-not-allowed'
+                                    ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] shadow-[0_4px_12px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_12px_rgba(255,255,255,0.05)]'
+                                    : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] cursor-not-allowed opacity-40'
                             }`}
                         >
                           <Send size={18} />
@@ -3588,7 +3353,7 @@ export function SessionsPage() {
               />
               <aside
                 style={{ width: `${workbenchWidth}px` }}
-                className="hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden min-w-[360px]"
+                className="relative z-30 hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden min-w-[360px] animate-[workbenchDockIn_180ms_ease-out]"
               >
                 <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
                   <div className="flex items-center justify-between gap-2">
@@ -3602,14 +3367,15 @@ export function SessionsPage() {
                         setWorkbenchDiffByPath({});
                         setWorkbenchDiffErrorByPath({});
                         setWorkbenchDiffBaseRefByPath({});
-                        setWorkbenchDiffStagedByPath({});
                         setWorkbenchGitRootsByPath({});
                         setWorkbenchLoadingPath(null);
                         setWorkbenchDiffLoadingPath(null);
                       }}
-                      className="text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-rose-400"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-rose-400/50 bg-rose-500/20 text-rose-300 transition-colors hover:bg-rose-500/35 hover:text-rose-100"
+                      title="Close all tabs"
+                      aria-label="Close all tabs"
                     >
-                      Close All
+                      <X size={12} />
                     </button>
                   </div>
                   <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
@@ -3670,7 +3436,7 @@ export function SessionsPage() {
                           type="button"
                           onClick={() => {
                             setWorkbenchShowDiffByPath((current) => ({ ...current, [activeWorkbenchTab.path]: true }));
-                            if (activeSessionId && !workbenchDiffByPath[activeWorkbenchTab.path]) {
+                            if (activeSessionId) {
                               void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
                             }
                           }}
@@ -3683,42 +3449,29 @@ export function SessionsPage() {
                           Diff
                         </button>
                         <div className="ml-auto flex items-center gap-1.5">
-                          <input
-                            value={workbenchDiffBaseRefByPath[activeWorkbenchTab.path] ?? 'HEAD'}
-                            onChange={(event) =>
+                          <select
+                            value={activeWorkbenchBaseRef}
+                            onChange={(event) => {
+                              const selectedRef = event.target.value || 'HEAD';
                               setWorkbenchDiffBaseRefByPath((current) => ({
                                 ...current,
-                                [activeWorkbenchTab.path]: event.target.value,
-                              }))
-                            }
-                            className="h-7 w-24 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 text-[10px] font-mono"
-                            placeholder="HEAD"
-                            title="Base ref (for diff)"
-                          />
-                          <label className="inline-flex items-center gap-1 text-[10px] text-[color:var(--text-muted)]">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(workbenchDiffStagedByPath[activeWorkbenchTab.path])}
-                              onChange={(event) =>
-                                setWorkbenchDiffStagedByPath((current) => ({
-                                  ...current,
-                                  [activeWorkbenchTab.path]: event.target.checked,
-                                }))
+                                [activeWorkbenchTab.path]: selectedRef,
+                              }));
+                              if (activeSessionId && workbenchShowDiffByPath[activeWorkbenchTab.path]) {
+                                void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path, {
+                                  baseRef: selectedRef,
+                                });
                               }
-                            />
-                            staged
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!activeSessionId) return;
-                              void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
                             }}
-                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
+                            className="h-7 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 text-[10px] font-mono text-[color:var(--text-secondary)]"
+                            title="Diff base reference"
                           >
-                            <RefreshCw size={11} className={workbenchDiffLoadingPath === activeWorkbenchTab.path ? 'animate-spin' : ''} />
-                            Load
-                          </button>
+                            {activeWorkbenchBaseRefOptions.map((ref) => (
+                              <option key={`${activeWorkbenchTab.path}:base-ref:${ref}`} value={ref}>
+                                {ref}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                       </div>
                       {activeWorkbenchGitRoots.length > 0 ? (
@@ -3726,7 +3479,7 @@ export function SessionsPage() {
                           {activeWorkbenchGitRoots.slice(0, 6).map((root) => (
                             <span
                               key={`${activeWorkbenchTab.path}:${root.root_path || '.'}:${root.branch ?? 'detached'}`}
-                              className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-300"
+                              className="inline-flex items-center gap-1 rounded-full border border-violet-500/35 bg-violet-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300"
                             >
                               <span>{root.root_path || '.'}</span>
                               <span>{root.detached_head ? 'detached' : root.branch || 'unknown'}</span>
@@ -3737,7 +3490,8 @@ export function SessionsPage() {
                     </div>
 
                     <div className="flex-1 min-h-0 overflow-auto p-3">
-                      {workbenchShowDiffByPath[activeWorkbenchTab.path] ? (
+                      <div key={activeWorkbenchViewerKey} className="h-full animate-[workbenchViewerIn_170ms_ease-out]">
+                        {workbenchShowDiffByPath[activeWorkbenchTab.path] ? (
                         workbenchDiffLoadingPath === activeWorkbenchTab.path ? (
                           <div className="flex items-center gap-2 text-[11px] text-[color:var(--text-muted)]">
                             <Loader2 size={13} className="animate-spin" />
@@ -3749,10 +3503,10 @@ export function SessionsPage() {
                               <span>root: {activeWorkbenchDiff.git_root || '.'}</span>
                               <span>{activeWorkbenchDiff.truncated ? 'truncated' : 'full'}</span>
                             </div>
-                            <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2">
+                            <div className="rounded-lg border border-[color:var(--border-subtle)] p-2">
                               <Markdown
                                 content={toMarkdownCodeFence(activeWorkbenchDiff.diff || '[no diff output]', 'diff')}
-                                className="!text-[11px]"
+                                className="!text-[11px] markdown-workbench"
                               />
                             </div>
                           </div>
@@ -3762,20 +3516,21 @@ export function SessionsPage() {
                           </div>
                         ) : (
                           <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                            Click Load to fetch git diff for this file.
+                            Open Diff to load the comparison automatically.
                           </div>
                         )
                       ) : (
-                        <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2">
+                        <div className="rounded-lg border border-[color:var(--border-subtle)] p-2">
                           <Markdown
                             content={toMarkdownCodeFence(
                               activeWorkbenchTab.content || '[empty file]',
                               inferCodeLanguageFromName(activeWorkbenchTab.name),
                             )}
-                            className="!text-[11px]"
+                            className="!text-[11px] markdown-workbench"
                           />
                         </div>
-                      )}
+                        )}
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -3796,17 +3551,28 @@ export function SessionsPage() {
           {/* Right Rail */}
           <aside
               style={{ width: `${rightPanelWidth}px` }}
-              className="hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
+              className="relative z-30 hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
           >
             <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
-              <div className="grid grid-cols-3 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
+              <div className="relative grid grid-cols-3 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
+                {/* Sliding Indicator */}
+                <div
+                  className={`absolute top-0.5 bottom-0.5 w-[calc(33.333%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
+                    rightRailTab === 'browser'
+                      ? 'left-0.5'
+                      : rightRailTab === 'sub_agents'
+                        ? 'left-[calc(33.333%)]'
+                        : 'left-[calc(66.666%-0.5px)]'
+                  }`}
+                />
+
                 <button
                   type="button"
                   onClick={() => setRightRailTab('browser')}
-                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                  className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                     rightRailTab === 'browser'
-                      ? 'bg-sky-500/15 text-sky-400'
-                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                      ? 'text-[color:var(--text-primary)]'
+                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                   }`}
                 >
                   Browser
@@ -3814,10 +3580,10 @@ export function SessionsPage() {
                 <button
                   type="button"
                   onClick={() => setRightRailTab('sub_agents')}
-                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                  className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                     rightRailTab === 'sub_agents'
-                      ? 'bg-emerald-500/15 text-emerald-400'
-                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                      ? 'text-[color:var(--text-primary)]'
+                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                   }`}
                 >
                   Sub-Agents
@@ -3825,22 +3591,24 @@ export function SessionsPage() {
                 <button
                   type="button"
                   onClick={() => setRightRailTab('runtime')}
-                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                  className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                     rightRailTab === 'runtime'
-                      ? 'bg-amber-500/15 text-amber-400'
-                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                      ? 'text-[color:var(--text-primary)]'
+                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                   }`}
                 >
                   Runtime
                 </button>
               </div>
-              <div className="flex items-center justify-between">
-                <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                  {rightRailTab === 'browser'
-                    ? 'Live Browser'
-                    : rightRailTab === 'sub_agents'
-                      ? 'Sub-Agent Tasks'
-                      : 'Workspace Runtime'}
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                    {rightRailTab === 'browser'
+                      ? 'Live Browser'
+                      : rightRailTab === 'sub_agents'
+                        ? 'Sub-Agent Tasks'
+                        : 'Workspace Runtime'}
+                  </div>
                 </div>
                 {rightRailTab === 'sub_agents' ? (
                   <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-1.5 py-0.5 rounded font-bold">
@@ -3890,60 +3658,73 @@ export function SessionsPage() {
                     />
                   </div>
 
-                  <div className="px-3 pb-3 space-y-2">
-                    <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2.5">
-                      <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Browser Status</div>
-                      <div className="grid grid-cols-1 gap-2 text-[10px]">
-                        <div className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
-                          <div className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Connection</div>
-                          <div className="font-semibold text-[color:var(--text-secondary)]">
-                            {liveView?.enabled
-                              ? liveView.available
-                                ? 'Connected'
-                                : 'Runtime unreachable'
-                              : 'Disabled'}
+                  <div className="p-3 space-y-4">
+                    <section>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2.5 px-1">Browser Status</div>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)]">Connection</span>
+                          <div className="flex items-center gap-2">
+                            {liveView?.enabled && liveView.available ? (
+                              <>
+                                <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
+                                <span className="text-[10px] font-mono font-bold text-emerald-500">CONNECTED</span>
+                              </>
+                            ) : (
+                              <>
+                                <div className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                                <span className="text-[10px] font-mono font-bold text-rose-500 uppercase">
+                                  {liveView?.enabled ? 'UNREACHABLE' : 'DISABLED'}
+                                </span>
+                              </>
+                            )}
                           </div>
                         </div>
-                        <div className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
-                          <div className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Stream URL</div>
-                          <div className="font-mono text-[10px] text-[color:var(--text-secondary)] break-all">
-                            {liveView?.url ?? 'No URL'}
+                        <div className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">Stream URL</span>
+                            <div className="flex-1 min-w-0 font-mono text-[10px] text-[color:var(--text-secondary)] truncate text-right">
+                              {liveView?.url || '—'}
+                            </div>
                           </div>
+                          {liveView?.reason && (
+                            <div className="mt-1 text-[9px] font-medium text-amber-500/80 leading-relaxed italic text-right truncate">
+                              {liveView.reason}
+                            </div>
+                          )}
                         </div>
-                        {liveView?.reason ? (
-                          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-300">
-                            {liveView.reason}
-                          </div>
-                        ) : null}
                       </div>
-                    </div>
+                    </section>
 
-                    <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2.5">
-                      <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Recent Browser Actions</div>
+                    <section>
+                      <div className="flex items-center justify-between mb-2.5 px-1">
+                        <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Recent Browser Actions</div>
+                      </div>
                       {browserToolResults.length > 0 ? (
-                        <div className="space-y-1.5">
-                          {browserToolResults.slice(0, 8).map((item) => (
+                        <div className="space-y-1">
+                          {browserToolResults.slice(0, 12).map((item) => (
                             <div
                               key={item.id}
-                              className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2 py-1.5"
+                              className="flex items-center justify-between p-2.5 rounded-lg border border-transparent hover:border-[color:var(--border-subtle)] hover:bg-[color:var(--surface-1)] transition-all group active:scale-[0.99]"
                             >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[10px] font-semibold text-[color:var(--text-primary)]">
+                              <div className="flex items-center gap-3 min-0">
+                                <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] opacity-20 group-hover:opacity-100 transition-opacity" />
+                                <span className="text-[11px] font-bold text-[color:var(--text-primary)] truncate capitalize">
                                   {item.tool_name?.replace('browser_', '').replaceAll('_', ' ') || 'browser action'}
                                 </span>
-                                <span className="text-[9px] text-[color:var(--text-muted)]">
-                                  {formatCompactDate(item.created_at)}
-                                </span>
                               </div>
+                              <span className="text-[9px] font-mono text-[color:var(--text-muted)] shrink-0 opacity-60 group-hover:opacity-100">
+                                {formatCompactDate(item.created_at)}
+                              </span>
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                        <div className="py-8 text-center text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] opacity-40">
                           No browser tool activity yet.
                         </div>
                       )}
-                    </div>
+                    </section>
                   </div>
                 </div>
               </div>
@@ -3951,48 +3732,49 @@ export function SessionsPage() {
 
             {rightRailTab === 'sub_agents' ? (
               <div className="flex-1 min-h-0 flex flex-col">
-                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                <div className="flex-1 overflow-y-auto p-3 space-y-2.5 custom-scrollbar">
                   {tasks.map(t => (
-                    <div key={t.id} className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] shadow-sm space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-bold truncate">{t.name}</span>
-                        <StatusChip label={t.status} tone={taskStatusTone(t.status)} className="scale-75 origin-right" />
+                    <div key={t.id} className="group p-3.5 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--border-strong)] transition-all shadow-sm">
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <span className="text-xs font-bold text-[color:var(--text-primary)] truncate">{t.name}</span>
+                        <div className="shrink-0 scale-90 origin-right">
+                          <StatusChip label={t.status} tone={taskStatusTone(t.status)} />
+                        </div>
                       </div>
-                      <p className="text-[10px] text-[color:var(--text-secondary)] line-clamp-2 leading-relaxed">
+                      <p className="text-[10px] text-[color:var(--text-secondary)] line-clamp-2 leading-relaxed mb-3">
                         {t.scope || 'No scope defined.'}
                       </p>
-                      <div className="flex items-center gap-2 pt-1">
+                      <div className="flex items-center gap-2">
                         <button
                           onClick={() => { setSelectedTask(t); setIsTaskModalOpen(true); }}
-                          className="text-[10px] font-bold text-[color:var(--accent-solid)] hover:underline uppercase tracking-wide"
+                          className="flex-1 inline-flex items-center justify-center h-7 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] transition-all active:scale-95"
                         >
                           View Task
                         </button>
                         {(t.status === 'running' || t.status === 'pending') && (
-                          <>
-                            <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
-                            <button
-                              onClick={() => terminateTask(t.id)}
-                              className="text-[10px] font-bold text-rose-500 hover:underline uppercase tracking-wide"
-                            >
-                              Terminate
-                            </button>
-                          </>
+                          <button
+                            onClick={() => terminateTask(t.id)}
+                            className="inline-flex items-center justify-center h-7 px-3 rounded-full border border-rose-500/20 bg-rose-500/5 text-rose-500 text-[10px] font-bold uppercase tracking-wide hover:bg-rose-500 hover:text-white transition-all active:scale-95"
+                          >
+                            Terminate
+                          </button>
                         )}
                       </div>
                     </div>
                   ))}
                   {tasks.length === 0 && (
-                    <div className="h-32 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-50 gap-2">
-                      <Terminal size={24} strokeWidth={1} />
+                    <div className="py-12 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-3">
+                      <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
+                        <Terminal size={24} strokeWidth={1} />
+                      </div>
                       <p className="text-[10px] font-medium uppercase tracking-widest">Idle</p>
                     </div>
                   )}
                 </div>
-                <div className="p-4 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
+                <div className="p-3 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 backdrop-blur">
                   <button
                     onClick={() => setIsSpawnModalOpen(true)}
-                    className="btn-primary w-full h-10 text-xs shadow-sm"
+                    className="w-full flex items-center justify-center gap-2 h-10 rounded-full bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] text-[11px] font-bold uppercase tracking-[0.1em] hover:opacity-90 transition-all active:scale-[0.98] shadow-md shadow-black/5"
                   >
                     <Plus size={14} />
                     Spawn Sub-Agent
@@ -4003,75 +3785,36 @@ export function SessionsPage() {
 
             {rightRailTab === 'runtime' ? (
               <div className="flex-1 min-h-0 flex flex-col">
-                <div className="px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                      Workspace
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!activeSessionId) return;
-                        void fetchRuntimeStatus(activeSessionId, 120);
-                        void fetchRuntimeFiles(activeSessionId, runtimePath);
-                      }}
-                      className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
-                    >
-                      <RefreshCw size={11} className={runtimeFilesLoading ? 'animate-spin' : ''} />
-                      Refresh
-                    </button>
-                  </div>
-                  <div className="mt-2 flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!activeSessionId || !runtimeFiles || runtimeFiles.parent_path === null) return;
-                        void openRuntimeDirectory(runtimeFiles.parent_path);
-                      }}
-                      disabled={!runtimeFiles || runtimeFiles.parent_path === null || runtimeFilesLoading}
-                      className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] disabled:opacity-40"
-                    >
-                      <ArrowUp size={11} />
-                      Up
-                    </button>
-                    <div className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-mono text-[color:var(--text-secondary)] truncate">
-                      /workspace{runtimePath ? `/${runtimePath}` : ''}
-                    </div>
-                  </div>
-                </div>
-
                 <div className="flex-1 min-h-0 flex flex-col">
                   <div className="border-b border-[color:var(--border-subtle)] px-4 py-2">
-                    <div className="grid grid-cols-3 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
+                    <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
+                      {/* Sliding Indicator */}
+                      <div
+                        className={`absolute top-0.5 bottom-0.5 w-[calc(50%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
+                          runtimeInspectorTab === 'files'
+                            ? 'left-0.5'
+                            : 'left-[calc(50%)]'
+                        }`}
+                      />
+
                       <button
                         type="button"
                         onClick={() => setRuntimeInspectorTab('files')}
-                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                        className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                           runtimeInspectorTab === 'files'
-                            ? 'bg-sky-500/15 text-sky-400'
-                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                            ? 'text-[color:var(--text-primary)]'
+                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                         }`}
                       >
                         Files
                       </button>
                       <button
                         type="button"
-                        onClick={() => setRuntimeInspectorTab('git')}
-                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                          runtimeInspectorTab === 'git'
-                            ? 'bg-violet-500/15 text-violet-300'
-                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
-                        }`}
-                      >
-                        Git Changed
-                      </button>
-                      <button
-                        type="button"
                         onClick={() => setRuntimeInspectorTab('commands')}
-                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                        className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                           runtimeInspectorTab === 'commands'
-                            ? 'bg-emerald-500/15 text-emerald-300'
-                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                            ? 'text-[color:var(--text-primary)]'
+                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                         }`}
                       >
                         Commands
@@ -4082,131 +3825,293 @@ export function SessionsPage() {
                   <div className="flex-1 min-h-0 overflow-y-auto p-4">
                     {runtimeInspectorTab === 'files' ? (
                       <div className="space-y-2">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Files</div>
-                        {runtimeFilesLoading ? (
-                          <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
-                            <Loader2 size={12} className="animate-spin" />
-                            Loading workspace…
-                          </div>
-                        ) : runtimeFiles?.entries?.length ? (
-                          <div className="space-y-1.5">
-                            {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
-                              <button
-                                key={`${entry.path}:${entry.kind}`}
-                                type="button"
-                                onClick={() => {
-                                  if (entry.kind === 'directory') {
-                                    void openRuntimeDirectory(entry.path);
-                                  } else {
-                                    void openRuntimeFile(entry.path);
-                                  }
-                                }}
-                                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  {entry.kind === 'directory' ? (
-                                    <Folder size={13} className="text-sky-500 shrink-0" />
-                                  ) : (
-                                    <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
-                                  )}
-                                  <span className="text-[11px] font-semibold truncate">{entry.name}</span>
-                                  <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
-                                </div>
-                                <div className="mt-1 text-[9px] text-[color:var(--text-muted)] flex items-center gap-2">
-                                  <span>{entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}</span>
-                                  {entry.modified_at ? <span>{formatCompactDate(entry.modified_at)}</span> : null}
-                                </div>
-                              </button>
-                            ))}
-                            {runtimeFiles.truncated ? (
-                              <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated to 400 entries</p>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                            Workspace is empty.
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-
-                    {runtimeInspectorTab === 'git' ? (
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Changed Files</div>
+                        <div className="mb-1 flex items-center gap-2">
                           <button
                             type="button"
                             onClick={() => {
-                              if (!activeSessionId) return;
-                              void fetchRuntimeChangedFilesForExplorer(activeSessionId, runtimePath);
+                              if (!activeSessionId || !runtimeFiles || runtimeFiles.parent_path === null) return;
+                              void openRuntimeDirectory(runtimeFiles.parent_path);
                             }}
-                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)]"
+                            disabled={!runtimeFiles || runtimeFiles.parent_path === null || runtimeFilesLoading}
+                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] disabled:opacity-40"
                           >
-                            <RefreshCw size={11} className={runtimeChangedFilesLoading ? 'animate-spin' : ''} />
-                            Refresh
+                            <ArrowUp size={11} />
+                            Up
                           </button>
-                        </div>
-                        {runtimeChangedFilesLoading ? (
-                          <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
-                            <Loader2 size={12} className="animate-spin" />
-                            Scanning git changes…
+                          <div className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-mono text-[color:var(--text-secondary)] truncate">
+                            /workspace{runtimePath ? `/${runtimePath}` : ''}
                           </div>
-                        ) : runtimeChangedFiles?.entries?.length ? (
-                          <div className="space-y-1.5">
-                            {runtimeChangedFiles.entries.map((entry) => (
-                              <button
-                                key={`runtime-change-tab:${entry.path}:${entry.status}`}
-                                type="button"
-                                onClick={() => void openRuntimeFileDiff(entry.path)}
-                                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
-                                title={entry.path}
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <span className="text-[9px] font-bold text-[color:var(--text-muted)] w-8 shrink-0">{entry.status}</span>
-                                  <span className="text-[10px] font-mono truncate">{entry.path}</span>
-                                  <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
+                        </div>
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Explorer</div>
+                        {runtimeChangedFiles?.git_root ? (
+                          <div className="rounded-lg border border-violet-500/30 bg-violet-500/10 p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-violet-700 dark:text-violet-200">
+                                <GitBranch size={11} />
+                                <span className="truncate">
+                                  Repo {runtimeChangedFiles.git_root || '.'}
+                                </span>
+                                <span className="text-violet-600/90 dark:text-violet-300/90">
+                                  {runtimeChangedFiles.detached_head
+                                    ? 'detached'
+                                    : runtimeChangedFiles.branch || 'unknown'}
+                                </span>
+                              </div>
+                              <span className="text-[8px] font-bold uppercase tracking-widest text-violet-600 dark:text-violet-300/80">
+                                auto
+                              </span>
+                            </div>
+                            {runtimeChangedFiles.entries.length > 0 ? (
+                              <div className="relative mt-2">
+                                {runtimeChangedFilesLoading ? (
+                                  <div className="pointer-events-none absolute inset-x-0 -top-1 z-10 mx-auto w-fit rounded-full border border-violet-500/35 bg-violet-50 px-2 py-0.5 text-[8px] font-bold uppercase tracking-widest text-violet-700 dark:bg-violet-900/35 dark:text-violet-100">
+                                    Updating…
+                                  </div>
+                                ) : null}
+                                <div className={`space-y-1 transition-opacity duration-150 ${runtimeChangedFilesLoading ? 'opacity-85' : 'opacity-100'} ${runtimeChangedFilesLoading ? '' : 'animate-[fade-in_160ms_ease-out]'}`}>
+                                  {runtimeChangedFiles.entries.slice(0, 8).map((entry) => (
+                                    <button
+                                      key={`runtime-inline-change:${entry.path}:${entry.status}`}
+                                      type="button"
+                                      onClick={() => void openRuntimeFileDiff(entry.path)}
+                                      className="w-full rounded-md border border-violet-400/30 bg-violet-50/80 px-2 py-1.5 text-left hover:border-violet-500/50 transition-colors dark:bg-violet-950/30"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <span className="w-7 shrink-0 text-[9px] font-bold uppercase text-violet-700 dark:text-violet-200">
+                                          {entry.status}
+                                        </span>
+                                        <span className="truncate text-[10px] font-mono text-violet-700/90 dark:text-violet-100/90">
+                                          {entry.path}
+                                        </span>
+                                        <ChevronRight size={11} className="ml-auto shrink-0 text-violet-500 dark:text-violet-200/70" />
+                                      </div>
+                                    </button>
+                                  ))}
+                                  {runtimeChangedFiles.entries.length > 8 ? (
+                                    <div className="text-[9px] uppercase tracking-wider text-violet-600 dark:text-violet-200/80">
+                                      +{runtimeChangedFiles.entries.length - 8} more changed files
+                                    </div>
+                                  ) : null}
                                 </div>
-                              </button>
-                            ))}
-                            {runtimeChangedFiles.truncated ? (
-                              <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated</p>
-                            ) : null}
+                              </div>
+                            ) : runtimeChangedFilesLoading ? (
+                              <div className="mt-2 flex items-center gap-1.5 text-[10px] text-violet-600 dark:text-violet-200/80">
+                                <Loader2 size={11} className="animate-spin" />
+                                Scanning changes…
+                              </div>
+                            ) : (
+                              <div className="mt-2 text-[10px] text-violet-600 dark:text-violet-100/80">
+                                No changed files in this repository.
+                              </div>
+                            )}
+                          </div>
+                        ) : null}
+                        {runtimeFiles?.entries?.length ? (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between px-1">
+                              <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Workspace Explorer</div>
+                              {runtimeFilesLoading && <Loader2 size={10} className="animate-spin text-[color:var(--text-muted)]" />}
+                            </div>
+                            <div className="space-y-1.5">
+                              {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
+                                <button
+                                  key={`${entry.path}:${entry.kind}`}
+                                  type="button"
+                                  onClick={() => {
+                                    if (entry.kind === 'directory') {
+                                      void openRuntimeDirectory(entry.path, {
+                                        autoOpenFirstDiff: Boolean(entry.is_git_root),
+                                      });
+                                    } else {
+                                      void openRuntimeFile(entry.path);
+                                    }
+                                  }}
+                                  className="w-full group flex items-center justify-between p-2.5 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all active:scale-[0.99]"
+                                >
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    {entry.kind === 'directory' ? (
+                                      <Folder size={14} className="text-sky-500 shrink-0" />
+                                    ) : (
+                                      <FileCode2 size={14} className="text-[color:var(--text-muted)] shrink-0 group-hover:text-[color:var(--text-primary)] transition-colors" />
+                                    )}
+                                    <div className="flex flex-col items-start min-w-0">
+                                      <span className="text-[11px] font-bold text-[color:var(--text-primary)] truncate">{entry.name}</span>
+                                      <div className="flex items-center gap-2 mt-0.5">
+                                        <span className="text-[9px] font-mono text-[color:var(--text-muted)] uppercase tracking-tight">
+                                          {entry.kind === 'directory' ? 'Folder' : formatBytes(entry.size_bytes)}
+                                        </span>
+                                        {entry.modified_at && (
+                                          <>
+                                            <div className="w-0.5 h-0.5 rounded-full bg-[color:var(--border-strong)]" />
+                                            <span className="text-[9px] font-mono text-[color:var(--text-muted)]">
+                                              {formatCompactDate(entry.modified_at)}
+                                            </span>
+                                          </>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    {entry.kind === 'directory' && entry.is_git_root && (
+                                      <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/5 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-violet-500">
+                                        <GitBranch size={9} />
+                                        {entry.git_detached_head ? 'detached' : entry.git_branch || 'repo'}
+                                      </span>
+                                    )}
+                                    <ChevronRight size={12} className="text-[color:var(--text-muted)] opacity-40 group-hover:opacity-100 transition-opacity" />
+                                  </div>
+                                </button>
+                              ))}
+                              {runtimeFiles.truncated && (
+                                <div className="p-3 text-center rounded-lg border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/20">
+                                  <p className="text-[9px] font-bold uppercase tracking-widest text-amber-500/80">List truncated to 400 entries</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : runtimeFilesLoading ? (
+                          <div className="py-12 flex flex-col items-center justify-center gap-3 text-[color:var(--text-muted)] animate-pulse">
+                            <Loader2 size={20} className="animate-spin" />
+                            <p className="text-[10px] font-bold uppercase tracking-widest">Mapping Workspace...</p>
                           </div>
                         ) : (
-                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                            No changed files in this directory’s git root.
+                          <div className="py-12 flex flex-col items-center justify-center gap-3 text-[color:var(--text-muted)] opacity-40">
+                            <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
+                              <FileCode2 size={20} strokeWidth={1.5} />
+                            </div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.1em]">Workspace is empty</p>
                           </div>
                         )}
                       </div>
                     ) : null}
 
                     {runtimeInspectorTab === 'commands' ? (
-                      <div className="space-y-2">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Recent Commands</div>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between px-1">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Recent Commands</div>
+                          <span className="text-[9px] font-mono text-[color:var(--text-muted)] opacity-60">Last 25</span>
+                        </div>
                         {runtimeCommandActions.length > 0 ? (
-                          <div className="space-y-1.5">
-                            {runtimeCommandActions.slice(0, 25).map((entry, index) => {
-                              const command = runtimeActionCommand(entry) || '';
+                          <div className="space-y-2.5">
+                            {runtimeCommandActions.slice(0, 25).map((entry) => {
+                              const isRunning = entry.state === 'running';
+                              const hasOutput = Boolean(
+                                entry.output &&
+                                  (entry.output.stdout.trim().length > 0 ||
+                                    entry.output.stderr.trim().length > 0 ||
+                                    entry.output.timedOut ||
+                                    entry.output.returncode !== null ||
+                                    entry.output.ok !== null),
+                              );
+                              const isOutputCollapsed = runtimeCommandOutputCollapsed[entry.id] ?? true;
+
                               return (
                                 <div
-                                  key={`${entry.timestamp ?? 'na'}-${entry.action}-${index}`}
-                                  className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2"
+                                  key={entry.id}
+                                  className={`group relative overflow-hidden rounded-xl border transition-all ${
+                                    isRunning
+                                      ? 'border-emerald-500/30 bg-emerald-500/[0.02] shadow-[0_4px_12px_rgba(16,185,129,0.05)]'
+                                      : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)]'
+                                  }`}
                                 >
-                                  <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                                    <Clock3 size={10} />
-                                    <span>{entry.action.replaceAll('_', ' ')}</span>
-                                    <span className="ml-auto">{entry.timestamp ? formatCompactDate(entry.timestamp) : '—'}</span>
-                                  </div>
-                                  <div className="mt-1 text-[10px] font-mono text-[color:var(--text-secondary)] break-all">
-                                    {command}
+                                  <div className="p-3">
+                                    <div className="flex items-center justify-between mb-2">
+                                      <div className="flex items-center gap-2">
+                                        <div className={`h-1.5 w-1.5 rounded-full ${
+                                          entry.state === 'running' ? 'bg-emerald-500 animate-pulse' :
+                                          entry.state === 'failed' || entry.state === 'cancelled' ? 'bg-rose-500' :
+                                          'bg-[color:var(--text-muted)] opacity-40'
+                                        }`} />
+                                        <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                          {entry.source === 'detached_job' ? 'DETACHED JOB' : 'SHELL'}
+                                        </span>
+                                        <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
+                                        <span className={`text-[8px] font-bold uppercase tracking-wider ${
+                                          entry.state === 'running' ? 'text-emerald-500' :
+                                          entry.state === 'failed' || entry.state === 'cancelled' ? 'text-rose-500' :
+                                          'text-[color:var(--text-muted)]'
+                                        }`}>
+                                          {entry.state}
+                                        </span>
+                                      </div>
+                                      <span className="text-[9px] font-mono text-[color:var(--text-muted)] opacity-60">
+                                        {formatCompactDate(entry.endedAt || entry.startedAt)}
+                                      </span>
+                                    </div>
+
+                                    <div className="rounded-lg bg-black/5 dark:bg-black/40 p-2 border border-black/5">
+                                      <Markdown
+                                        content={toMarkdownCodeFence(entry.command || '[empty command]', 'bash')}
+                                        className="!text-[10px] markdown-command-inline"
+                                      />
+                                    </div>
+
+                                    {hasOutput && (
+                                      <div className="mt-2.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => toggleRuntimeCommandOutput(entry.id)}
+                                          className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-80 transition-opacity"
+                                        >
+                                          {isOutputCollapsed ? 'Show Output' : 'Hide Output'}
+                                          <ChevronDown size={10} className={`transition-transform ${isOutputCollapsed ? '' : 'rotate-180'}`} />
+                                        </button>
+
+                                        {!isOutputCollapsed && entry.output && (
+                                          <div className="mt-2 space-y-2 animate-in slide-in-from-top-1 duration-200">
+                                            <div className="flex gap-2">
+                                              {entry.output.returncode !== null && (
+                                                <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-[color:var(--surface-2)] text-[color:var(--text-muted)]">
+                                                  EXIT: {entry.output.returncode}
+                                                </span>
+                                              )}
+                                              {entry.output.timedOut && (
+                                                <span className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500 uppercase tracking-widest">
+                                                  Timed Out
+                                                </span>
+                                              )}
+                                            </div>
+
+                                            {entry.output.stdout.trim() && (
+                                              <div className="space-y-1">
+                                                <div className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">stdout</div>
+                                                <pre className="p-2 rounded-lg bg-black/5 dark:bg-black/60 font-mono text-[10px] text-[color:var(--text-secondary)] overflow-auto max-h-48 whitespace-pre-wrap">{entry.output.stdout}</pre>
+                                              </div>
+                                            )}
+                                            {entry.output.stderr.trim() && (
+                                              <div className="space-y-1">
+                                                <div className="text-[8px] font-bold uppercase tracking-widest text-rose-500/80 px-1">stderr</div>
+                                                <pre className="p-2 rounded-lg bg-rose-500/5 dark:bg-rose-500/10 font-mono text-[10px] text-rose-600 dark:text-rose-300 overflow-auto max-h-48 whitespace-pre-wrap">{entry.output.stderr}</pre>
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {isRunning && (
+                                      <div className="mt-3 flex justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={() => void stopCurrent()}
+                                          disabled={isStopping}
+                                          className="inline-flex items-center gap-1.5 h-7 px-3 rounded-full border border-rose-500/20 bg-rose-500/5 text-rose-500 text-[9px] font-bold uppercase tracking-wider hover:bg-rose-500 hover:text-white transition-all active:scale-95"
+                                        >
+                                          {isStopping ? 'Stopping...' : 'Stop Execution'}
+                                        </button>
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               );
                             })}
                           </div>
                         ) : (
-                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                            No runtime commands yet.
+                          <div className="py-12 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-3">
+                            <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
+                              <Terminal size={20} strokeWidth={1.5} />
+                            </div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.1em]">No shell history</p>
                           </div>
                         )}
                       </div>

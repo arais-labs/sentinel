@@ -446,6 +446,7 @@ export const SessionMessageCard = memo(({
   );
   const generationFooter = formatGenerationFooter(parseMessageGenerationMetadata(message), message.role);
   const approvalRef = pendingApproval ? approvalRefFromMetadata(toolMetadata) : null;
+  const approvalLinkMissing = pendingApproval && !approvalRef;
   const canResolveApproval = Boolean(
     pendingApproval &&
     approvalRef?.canResolve === true &&
@@ -637,6 +638,11 @@ export const SessionMessageCard = memo(({
                             Approve
                           </button>
                         </div>
+                      ) : null}
+                      {approvalLinkMissing ? (
+                        <p className="text-[10px] leading-relaxed text-amber-300">
+                          Pending approval detected but controls are unavailable. Refresh and stop/retry this run if it remains stuck.
+                        </p>
                       ) : null}
                     </div>
                   )}

@@ -71,16 +71,16 @@ export function UiShowcasePage() {
         {/* Action Protocols */}
         <ShowcaseSection title="Action Protocols" subtitle="Standardized button variants for operator interaction.">
           <div className="grid grid-cols-2 gap-3">
-            <button className="btn-primary h-11 text-[10px] uppercase tracking-widest">
+            <button className="flex items-center justify-center h-11 px-6 rounded-full bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 transition-all hover:opacity-90 active:scale-95 shadow-md shadow-black/5">
               <Save size={14} /> Commit Changes
             </button>
-            <button className="btn-secondary h-11 text-[10px] uppercase tracking-widest">
-              <Shield size={14} /> Authorize
+            <button className="flex items-center justify-center h-11 px-6 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] text-[color:var(--text-primary)] text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 transition-all hover:bg-[color:var(--surface-1)] active:scale-95 shadow-sm">
+              <Shield size={14} className="text-sky-500/80" /> Authorize
             </button>
-            <button className="btn-secondary h-11 text-[10px] uppercase tracking-widest text-rose-500 hover:bg-rose-500/10">
+            <button className="flex items-center justify-center h-11 px-6 rounded-full border border-rose-500/20 bg-rose-500/5 text-rose-500 text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 transition-all hover:bg-rose-500/10 active:scale-95">
               <Trash2 size={14} /> Purge Registry
             </button>
-            <button className="btn-primary h-11 text-[10px] uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700">
+            <button className="flex items-center justify-center h-11 px-6 rounded-full bg-emerald-600 text-white text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 transition-all hover:bg-emerald-700 active:scale-95 shadow-lg shadow-emerald-500/20">
               <Play size={14} fill="currentColor" /> Run Sequence
             </button>
           </div>

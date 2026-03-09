@@ -99,12 +99,11 @@ export function AdminPage() {
       subtitle="Critical Overrides & Audit Protocol"
       actions={
         <div className="flex items-center gap-2">
-          <button onClick={() => void loadAdminData(true)} className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors">
+          <button onClick={() => void loadAdminData(true)} className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-all active:scale-95">
             <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
-      }
-    >
+      }    >
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6 items-start animate-in fade-in duration-300">
         <div className="space-y-6">
           {/* ESTOP Control */}
@@ -128,7 +127,7 @@ export function AdminPage() {
               <button 
                 onClick={activateEstop}
                 disabled={activating || deactivating || config?.estop_active}
-                className={`btn-primary h-11 text-[10px] uppercase tracking-widest gap-2 ${config?.estop_active ? 'opacity-50 grayscale' : 'bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-500/20'}`}
+                className={`flex items-center justify-center h-11 px-6 rounded-full text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 transition-all active:scale-95 ${config?.estop_active ? 'opacity-40 grayscale cursor-not-allowed' : 'bg-rose-600 text-white hover:bg-rose-700 shadow-lg shadow-rose-500/20'}`}
               >
                 {activating ? <RefreshCw size={14} className="animate-spin" /> : <Power size={14} />}
                 Engage
@@ -136,7 +135,7 @@ export function AdminPage() {
               <button 
                 onClick={deactivateEstop}
                 disabled={activating || deactivating || !config?.estop_active}
-                className="btn-secondary h-11 text-[10px] uppercase tracking-widest gap-2 bg-[color:var(--surface-0)] border-[color:var(--border-subtle)]"
+                className="flex items-center justify-center h-11 px-6 rounded-full text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] text-[color:var(--text-primary)] transition-all hover:bg-[color:var(--surface-1)] active:scale-95 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {deactivating ? <RefreshCw size={14} className="animate-spin" /> : <ShieldAlert size={14} />}
                 Authorize

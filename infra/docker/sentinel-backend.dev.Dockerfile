@@ -5,6 +5,7 @@ ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        bubblewrap \
         ca-certificates \
         curl \
         diffutils \
@@ -13,6 +14,7 @@ RUN apt-get update \
         file \
         fluxbox \
         gawk \
+        git \
         gh \
         iputils-ping \
         jq \

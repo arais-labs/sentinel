@@ -50,7 +50,7 @@ interface AraiosIntegrationStatus {
 
 const navItems: NavItem[] = [
   { label: 'Sessions', path: '/sessions', icon: LayoutDashboard },
-  { label: 'Logs', path: '/logs', icon: Activity },
+  { label: 'Session Logs', path: '/logs', icon: Activity },
   { label: 'Memory', path: '/memory', icon: Database },
   { label: 'Triggers', path: '/triggers', icon: Zap },
   { label: 'Tools', path: '/tools', icon: Wrench },
@@ -147,42 +147,47 @@ export function AppShell({
       { id: 'araios', label: 'araiOS', href: switchLinks.araiosHref },
       { id: 'sentinel', label: 'Sentinel', href: switchLinks.sentinelHref },
     ];
+    const activeIndex = appSwitchItems.findIndex((item) => item.id === currentApp);
 
     return (
-    <div className="inline-flex items-center rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-0.5">
-      {appSwitchItems.map((item) => {
-        const active = item.id === currentApp;
-        if (active) {
+      <div className="relative inline-grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] p-0.5 overflow-hidden">
+        <div
+          className={`absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
+            activeIndex <= 0 ? 'left-0.5' : 'left-[calc(50%)]'
+          }`}
+        />
+        {appSwitchItems.map((item) => {
+          const active = item.id === currentApp;
+          const itemClasses =
+            'relative z-10 inline-flex h-7 items-center justify-center rounded-full px-3 text-[10px] font-bold uppercase tracking-wider transition-colors duration-200';
+          if (active) {
+            return (
+              <span key={item.id} className={`${itemClasses} text-[color:var(--text-primary)]`}>
+                {item.label}
+              </span>
+            );
+          }
+          if (!item.href) {
+            return (
+              <span
+                key={item.id}
+                className={`${itemClasses} text-[color:var(--text-muted)] opacity-50 cursor-not-allowed`}
+              >
+                {item.label}
+              </span>
+            );
+          }
           return (
-            <span
+            <a
               key={item.id}
-              className="inline-flex h-7 items-center rounded px-3 text-[10px] font-bold uppercase tracking-wider bg-[color:var(--surface-0)] text-[color:var(--text-primary)]"
+              href={item.href}
+              className={`${itemClasses} text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]`}
             >
               {item.label}
-            </span>
+            </a>
           );
-        }
-        if (!item.href) {
-          return (
-            <span
-              key={item.id}
-              className="inline-flex h-7 items-center rounded px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)] opacity-50 cursor-not-allowed"
-            >
-              {item.label}
-            </span>
-          );
-        }
-        return (
-          <a
-            key={item.id}
-            href={item.href}
-            className="inline-flex h-7 items-center rounded px-3 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
-          >
-            {item.label}
-          </a>
-        );
-      })}
-    </div>
+        })}
+      </div>
     );
   };
 
