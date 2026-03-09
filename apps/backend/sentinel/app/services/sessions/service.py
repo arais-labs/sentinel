@@ -22,6 +22,7 @@ from app.services.context_usage import (
     normalize_context_budget,
 )
 from app.services import session_bindings
+from app.services.agent.agent_modes import AgentMode, get_default_agent_mode
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
 from app.services.llm.ids import TierName
@@ -699,6 +700,7 @@ class SessionService:
         content: str,
         attachments: list[Any],
         tier: TierName | None,
+        agent_mode: AgentMode | None,
         system_prompt: str | None,
         temperature: float,
         max_iterations: int,
@@ -737,6 +739,7 @@ class SessionService:
             model=(tier or TierName.NORMAL).value,
             temperature=temperature,
             max_iterations=max_iterations,
+            agent_mode=agent_mode or get_default_agent_mode(),
             allow_high_risk=True,
             stream=False,
         )
