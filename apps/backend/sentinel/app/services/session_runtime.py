@@ -35,6 +35,7 @@ _MAX_RUNTIME_FILE_PREVIEW_BYTES = 200_000
 _DEFAULT_RUNTIME_GIT_ROOT_LIMIT = 200
 _DEFAULT_RUNTIME_GIT_DIFF_BYTES = 120_000
 _MAX_RUNTIME_GIT_DIFF_BYTES = 500_000
+_RUNTIME_ACTION_TEXT_MAX_CHARS = 12_000
 _runtime_meta_lock = asyncio.Lock()
 
 
@@ -95,6 +96,7 @@ async def mark_runtime_state(
     active: bool,
     command: str | None,
     pid: int | None,
+    action_details: dict[str, Any] | None = None,
 ) -> None:
     now = _utc_now().isoformat()
     root = runtime_root_dir(session_id)
@@ -128,15 +130,17 @@ async def mark_runtime_state(
                 },
             )
         elif not active and previous_active:
+            details: dict[str, Any] = {
+                "command": command if isinstance(command, str) and command else metadata.get("last_command"),
+                "pid": int(pid) if isinstance(pid, int) and pid > 0 else None,
+            }
+            details.update(_normalize_runtime_action_details(action_details))
             _append_runtime_action(
                 actions_path,
                 {
                     "timestamp": now,
                     "action": "command_finished",
-                    "details": {
-                        "command": command if isinstance(command, str) and command else metadata.get("last_command"),
-                        "pid": int(pid) if isinstance(pid, int) and pid > 0 else None,
-                    },
+                    "details": details,
                 },
             )
 
@@ -548,17 +552,23 @@ async def finalize_detached_runtime_job(
         if updated is None:
             return None
         _write_runtime_jobs(jobs_path, jobs)
+        stdout_tail = _tail_text(Path(str(updated.get("stdout_path") or "")), max_bytes=6_000)
+        stderr_tail = _tail_text(Path(str(updated.get("stderr_path") or "")), max_bytes=6_000)
         _append_runtime_action(
             actions_path,
             {
                 "timestamp": now,
                 "action": "detached_job_finished",
-                "details": {
-                    "job_id": updated["id"],
-                    "pid": updated.get("pid"),
-                    "status": updated["status"],
-                    "returncode": updated.get("returncode"),
-                },
+                "details": _normalize_runtime_action_details(
+                    {
+                        "job_id": updated["id"],
+                        "pid": updated.get("pid"),
+                        "status": updated["status"],
+                        "returncode": updated.get("returncode"),
+                        "stdout_tail": stdout_tail,
+                        "stderr_tail": stderr_tail,
+                    }
+                ),
             },
         )
         return updated
@@ -641,17 +651,24 @@ async def stop_detached_runtime_job(
         target["termination_signal"] = signal_name
         target["termination_reason"] = reason or "stopped"
         _write_runtime_jobs(jobs_path, jobs)
+        stdout_tail = _tail_text(Path(str(target.get("stdout_path") or "")), max_bytes=6_000)
+        stderr_tail = _tail_text(Path(str(target.get("stderr_path") or "")), max_bytes=6_000)
         _append_runtime_action(
             actions_path,
             {
                 "timestamp": now,
                 "action": "detached_job_stopped",
-                "details": {
-                    "job_id": target.get("id"),
-                    "pid": pid,
-                    "signal": signal_name,
-                    "reason": target.get("termination_reason"),
-                },
+                "details": _normalize_runtime_action_details(
+                    {
+                        "job_id": target.get("id"),
+                        "pid": pid,
+                        "status": target.get("status"),
+                        "signal": signal_name,
+                        "reason": target.get("termination_reason"),
+                        "stdout_tail": stdout_tail,
+                        "stderr_tail": stderr_tail,
+                    }
+                ),
             },
         )
         return target
@@ -686,17 +703,24 @@ async def stop_all_detached_runtime_jobs(
             item["termination_signal"] = "SIGKILL"
             item["termination_reason"] = reason or "stopped"
             stopped += 1
+            stdout_tail = _tail_text(Path(str(item.get("stdout_path") or "")), max_bytes=6_000)
+            stderr_tail = _tail_text(Path(str(item.get("stderr_path") or "")), max_bytes=6_000)
             _append_runtime_action(
                 actions_path,
                 {
                     "timestamp": now,
                     "action": "detached_job_stopped",
-                    "details": {
-                        "job_id": item.get("id"),
-                        "pid": pid,
-                        "signal": "SIGKILL",
-                        "reason": item.get("termination_reason"),
-                    },
+                    "details": _normalize_runtime_action_details(
+                        {
+                            "job_id": item.get("id"),
+                            "pid": pid,
+                            "status": item.get("status"),
+                            "signal": "SIGKILL",
+                            "reason": item.get("termination_reason"),
+                            "stdout_tail": stdout_tail,
+                            "stderr_tail": stderr_tail,
+                        }
+                    ),
                 },
             )
         if stopped > 0:
@@ -1270,3 +1294,41 @@ def _tail_text(path: Path, *, max_bytes: int) -> str:
     except OSError:
         return ""
     return data.decode("utf-8", errors="replace")
+
+
+def _truncate_runtime_action_text(value: str) -> str:
+    text = str(value)
+    if len(text) <= _RUNTIME_ACTION_TEXT_MAX_CHARS:
+        return text
+    return f"{text[:_RUNTIME_ACTION_TEXT_MAX_CHARS]}\n...[truncated]"
+
+
+def _normalize_runtime_action_details(
+    details: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(details, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for raw_key, value in details.items():
+        if not isinstance(raw_key, str):
+            continue
+        key = raw_key.strip()
+        if not key:
+            continue
+        if value is None:
+            normalized[key] = None
+            continue
+        if isinstance(value, bool):
+            normalized[key] = value
+            continue
+        if isinstance(value, int):
+            normalized[key] = value
+            continue
+        if isinstance(value, float):
+            if value != value or value in {float("inf"), float("-inf")}:
+                continue
+            normalized[key] = value
+            continue
+        if isinstance(value, str):
+            normalized[key] = _truncate_runtime_action_text(value)
+    return normalized

@@ -504,6 +504,7 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
 
         proc: asyncio.subprocess.Process | None = None
         detached_started = False
+        command_result_details: dict[str, Any] | None = None
         await mark_runtime_state(session_id, active=True, command=command_text, pid=None)
         try:
             if detached:
@@ -607,12 +608,22 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                     )
                 stdout, stderr = await _drain_runtime_exec_streams(proc)
 
-            return {
-                "ok": not timed_out and proc.returncode == 0,
+            stdout_text = _truncate_runtime_exec_text(stdout.decode("utf-8", errors="replace"))
+            stderr_text = _truncate_runtime_exec_text(stderr.decode("utf-8", errors="replace"))
+            ok = not timed_out and proc.returncode == 0
+            command_result_details = {
+                "ok": ok,
                 "timed_out": timed_out,
                 "returncode": proc.returncode,
-                "stdout": _truncate_runtime_exec_text(stdout.decode("utf-8", errors="replace")),
-                "stderr": _truncate_runtime_exec_text(stderr.decode("utf-8", errors="replace")),
+                "stdout": stdout_text,
+                "stderr": stderr_text,
+            }
+            return {
+                "ok": ok,
+                "timed_out": timed_out,
+                "returncode": proc.returncode,
+                "stdout": stdout_text,
+                "stderr": stderr_text,
                 "session_id": str(session_id),
                 "workspace": str(workspace_dir),
                 "cwd": str(run_dir),
@@ -625,6 +636,7 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                     active=False,
                     command=command_text,
                     pid=proc.pid if proc is not None else None,
+                    action_details=command_result_details,
                 )
 
     return ToolDefinition(
