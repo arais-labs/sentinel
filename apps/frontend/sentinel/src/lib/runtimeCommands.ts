@@ -28,11 +28,14 @@ export function runtimeActionCommand(entry: SessionRuntimeAction): string | null
   return typeof command === 'string' && command.trim().length > 0 ? command.trim() : null;
 }
 
+export type RuntimeCommandState = 'running' | 'completed' | 'failed' | 'cancelled';
+
 export interface RuntimeCommandRow {
-  entry: SessionRuntimeAction;
   command: string;
-  isRunning: boolean;
-  isStartEvent: boolean;
+  source: 'command' | 'detached_job';
+  state: RuntimeCommandState;
+  startedAt: string | null;
+  endedAt: string | null;
 }
 
 type BuildRuntimeCommandRowsOptions = {
@@ -47,37 +50,85 @@ export function buildRuntimeCommandRows(
   if (!runtimeStatus) return [];
   const actions = Array.isArray(runtimeStatus.actions) ? runtimeStatus.actions : [];
   if (actions.length === 0) return [];
-  const activeKeys = new Set<string>();
-  const rows: Array<RuntimeCommandRow & { key: string | null }> = [];
+
+  const pendingByKey = new Map<string, RuntimeCommandRow[]>();
+  const rows: RuntimeCommandRow[] = [];
+
+  function queuePending(key: string, row: RuntimeCommandRow): void {
+    const queue = pendingByKey.get(key);
+    if (queue) {
+      queue.push(row);
+      return;
+    }
+    pendingByKey.set(key, [row]);
+  }
+
+  function takePending(key: string): RuntimeCommandRow | null {
+    const queue = pendingByKey.get(key);
+    if (!queue || queue.length === 0) return null;
+    const row = queue.shift() ?? null;
+    if (queue.length === 0) {
+      pendingByKey.delete(key);
+    }
+    return row;
+  }
+
+  function finishState(entry: SessionRuntimeAction): RuntimeCommandState {
+    if (entry.action === 'detached_job_stopped') return 'cancelled';
+    if (entry.action === 'detached_job_finished') {
+      const status = typeof entry.details.status === 'string' ? entry.details.status.trim().toLowerCase() : '';
+      if (status === 'failed') return 'failed';
+      if (status === 'cancelled') return 'cancelled';
+      return 'completed';
+    }
+    return 'completed';
+  }
 
   for (let index = 0; index < actions.length; index += 1) {
     const entry = actions[index];
-    const command = runtimeActionCommand(entry);
     const key = actionKey(entry, index);
-    const isStartEvent = START_ACTIONS.has(entry.action);
-
-    if (isStartEvent && key) {
-      activeKeys.add(key);
-    } else if (FINISH_ACTIONS.has(entry.action) && key) {
-      activeKeys.delete(key);
+    if (START_ACTIONS.has(entry.action)) {
+      if (!key) continue;
+      const command = runtimeActionCommand(entry);
+      if (!command) continue;
+      queuePending(key, {
+        command,
+        source: entry.action === 'detached_job_started' ? 'detached_job' : 'command',
+        state: 'running',
+        startedAt: entry.timestamp,
+        endedAt: null,
+      });
+      continue;
     }
 
+    if (!FINISH_ACTIONS.has(entry.action) || !key) continue;
+    const pending = takePending(key);
+    if (pending) {
+      pending.state = finishState(entry);
+      pending.endedAt = entry.timestamp;
+      rows.push(pending);
+      continue;
+    }
+
+    const command = runtimeActionCommand(entry);
     if (!command) continue;
     rows.push({
-      entry,
       command,
-      isRunning: false,
-      isStartEvent,
-      key,
+      source: entry.action.startsWith('detached_job_') ? 'detached_job' : 'command',
+      state: finishState(entry),
+      startedAt: null,
+      endedAt: entry.timestamp,
     });
   }
 
-  for (const row of rows) {
-    row.isRunning = row.isStartEvent && row.key !== null && activeKeys.has(row.key);
+  for (const pendingRows of pendingByKey.values()) {
+    for (const pending of pendingRows) {
+      rows.push(pending);
+    }
   }
 
   const newestFirst = options.newestFirst !== false;
   const ordered = newestFirst ? rows.slice().reverse() : rows.slice();
   const normalizedLimit = Math.max(1, options.limit ?? 50);
-  return ordered.slice(0, normalizedLimit).map(({ key: _ignored, ...row }) => row);
+  return ordered.slice(0, normalizedLimit);
 }

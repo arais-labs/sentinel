@@ -4302,52 +4302,72 @@ export function SessionsPage() {
                       <div className="space-y-2">
                         <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Recent Commands</div>
                         {runtimeCommandActions.length > 0 ? (
-                          <div className="space-y-1.5">
+                          <div className="space-y-2">
                             {runtimeCommandActions.slice(0, 25).map((entry, index) => {
                               const command = entry.command || '';
-                              const isStarted = entry.entry.action === 'command_started' || entry.entry.action === 'detached_job_started';
-                              const cardTone = entry.isRunning
-                                ? 'border-emerald-500/45 bg-emerald-500/10'
-                                : isStarted
-                                  ? 'border-emerald-500/30 bg-emerald-500/5'
-                                  : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]';
+                              const isRunning = entry.state === 'running';
+                              const statusTone =
+                                entry.state === 'running'
+                                  ? 'border-[color:var(--border-subtle)] bg-emerald-500/[0.05]'
+                                  : entry.state === 'cancelled'
+                                    ? 'border-[color:var(--border-subtle)] bg-rose-500/[0.04]'
+                                    : entry.state === 'failed'
+                                      ? 'border-[color:var(--border-subtle)] bg-rose-500/[0.04]'
+                                      : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/65';
+                              const statusPillTone =
+                                entry.state === 'running'
+                                  ? 'border-emerald-500/35 bg-emerald-500/[0.10] text-emerald-300'
+                                  : entry.state === 'cancelled'
+                                    ? 'border-rose-500/40 bg-rose-500/[0.12] text-rose-300'
+                                    : entry.state === 'failed'
+                                      ? 'border-rose-500/35 bg-rose-500/[0.10] text-rose-300'
+                                      : 'border-sky-500/35 bg-sky-500/[0.12] text-sky-300';
+                              const accentTone =
+                                entry.state === 'running'
+                                  ? 'bg-emerald-400/80'
+                                  : entry.state === 'cancelled'
+                                    ? 'bg-rose-400/80'
+                                    : entry.state === 'failed'
+                                      ? 'bg-rose-400/80'
+                                      : 'bg-[color:var(--border-subtle)]/90';
+                              const sourceLabel = entry.source === 'detached_job' ? 'detached job' : 'command';
+                              const displayTimestamp = entry.endedAt || entry.startedAt;
                               return (
                                 <div
-                                  key={`${entry.entry.timestamp ?? 'na'}-${entry.entry.action}-${index}`}
-                                  className={`rounded-lg border px-2 py-1.5 ${cardTone}`}
+                                  key={`${displayTimestamp ?? 'na'}-${entry.source}-${index}`}
+                                  className={`relative overflow-hidden rounded-xl border px-3 py-2.5 ${statusTone}`}
                                 >
-                                  <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                                    <Clock3 size={10} className={entry.isRunning || isStarted ? 'text-emerald-400' : ''} />
-                                    <span className={entry.isRunning || isStarted ? 'text-emerald-300' : ''}>
-                                      {entry.entry.action.replaceAll('_', ' ')}
-                                    </span>
-                                    {entry.isRunning ? (
-                                      <span className="rounded-full border border-emerald-500/40 bg-emerald-500/12 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-emerald-300">
-                                        running
+                                  <div className={`absolute left-0 top-2 bottom-2 w-[2px] rounded-full ${accentTone}`} />
+                                  <div className="ml-2.5">
+                                    <div className="flex items-center gap-2 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                                      <Clock3 size={10} className={isRunning ? 'text-emerald-400' : 'opacity-70'} />
+                                      <span className="font-semibold">{sourceLabel}</span>
+                                      <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wider ${statusPillTone}`}>
+                                        {entry.state}
                                       </span>
-                                    ) : null}
-                                    <span className="ml-auto">{entry.entry.timestamp ? formatCompactDate(entry.entry.timestamp) : '—'}</span>
-                                  </div>
-                                  <div className="mt-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-1.5 py-1">
-                                    <Markdown
-                                      content={toMarkdownCodeFence(command || '[empty command]', 'bash')}
-                                      className="!text-[9px] markdown-workbench markdown-command-inline"
-                                    />
-                                  </div>
-                                  {entry.isRunning ? (
-                                    <div className="mt-1.5 flex justify-end">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          void stopCurrent();
-                                        }}
-                                        disabled={isStopping}
-                                        className="inline-flex items-center rounded-md border border-rose-500/40 bg-rose-500/12 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-rose-300 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                                      >
-                                        {isStopping ? 'Cancelling…' : 'Cancel'}
-                                      </button>
+                                      <span className="ml-auto font-semibold">{displayTimestamp ? formatCompactDate(displayTimestamp) : '—'}</span>
                                     </div>
-                                  ) : null}
+                                    <div className="mt-1.5">
+                                      <Markdown
+                                        content={toMarkdownCodeFence(command || '[empty command]', 'bash')}
+                                        className="!text-[9px] markdown-workbench markdown-command-inline"
+                                      />
+                                    </div>
+                                    {isRunning ? (
+                                      <div className="mt-1.5 flex justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            void stopCurrent();
+                                          }}
+                                          disabled={isStopping}
+                                          className="inline-flex items-center rounded-md border border-rose-500/40 bg-rose-500/12 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-rose-300 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                          {isStopping ? 'Cancelling…' : 'Cancel'}
+                                        </button>
+                                      </div>
+                                    ) : null}
+                                  </div>
                                 </div>
                               );
                             })}
