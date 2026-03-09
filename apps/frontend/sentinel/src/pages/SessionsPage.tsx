@@ -39,6 +39,8 @@ import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
 import { SessionMessageCard, buildToolArgumentsByCallId } from '../components/session/SessionMessageCard';
+import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
+import { BrowserPreview } from '../components/session/BrowserPreview';
 import { SubAgentTaskModal } from '../components/SubAgentTaskModal';
 import { SpawnSubAgentModal } from '../components/SpawnSubAgentModal';
 import { JsonBlock } from '../components/ui/JsonBlock';
@@ -258,13 +260,6 @@ function parseTier(value: string | null): ModelOption['tier'] | null {
     return value;
   }
   return null;
-}
-
-function sessionChannelKind(session: Session): 'default' | 'telegram_group' | 'telegram_dm' {
-  const title = (session.title ?? '').trim().toLowerCase();
-  if (title.startsWith('tg group ·')) return 'telegram_group';
-  if (title.startsWith('tg dm ·')) return 'telegram_dm';
-  return 'default';
 }
 
 function serializeToolArguments(value: unknown): string {
@@ -560,279 +555,6 @@ function ToolPayloadCompactSummary({
 }
 
 // --- Memoized Components ---
-
-const SessionRow = memo(({
-  session,
-  isActive,
-  onClick,
-  canDelete,
-  isDeleting,
-  onDelete,
-  onSetMain,
-  canRename,
-  isRenaming,
-  isEditing,
-  editTitle,
-  onEditTitleChange,
-  onSubmitRename,
-  onCancelRename,
-  onRename,
-  multiSelectMode,
-  selected,
-  onToggleSelect,
-}: {
-  session: Session;
-  isActive: boolean;
-  onClick: (id: string) => void;
-  canDelete: boolean;
-  isDeleting: boolean;
-  onDelete: (session: Session) => void;
-  onSetMain: (session: Session) => void;
-  canRename: boolean;
-  isRenaming: boolean;
-  isEditing: boolean;
-  editTitle: string;
-  onEditTitleChange: (value: string) => void;
-  onSubmitRename: (session: Session) => void;
-  onCancelRename: () => void;
-  onRename: (session: Session) => void;
-  multiSelectMode: boolean;
-  selected: boolean;
-  onToggleSelect: (id: string) => void;
-}) => (
-  <div className="group relative">
-    {multiSelectMode && canDelete ? (
-      <button
-        onClick={() => onToggleSelect(session.id)}
-        title={selected ? 'Unselect session' : 'Select session'}
-        className={`absolute left-2 top-2 h-6 w-6 rounded-md border flex items-center justify-center transition-colors ${
-          selected
-            ? 'border-sky-500/40 bg-sky-500/15'
-            : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)]'
-        }`}
-      >
-        <span className={`h-2.5 w-2.5 rounded-sm ${selected ? 'bg-sky-500' : 'bg-transparent'}`} />
-      </button>
-    ) : null}
-    {isEditing ? (
-      <div
-        className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
-          isActive
-            ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
-            : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)]'
-        } ${multiSelectMode ? 'pl-10 pr-3' : 'pr-3'}`}
-      >
-        <div className="flex items-center gap-2">
-          <input
-            autoFocus
-            value={editTitle}
-            onChange={(event) => onEditTitleChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                onSubmitRename(session);
-              } else if (event.key === 'Escape') {
-                event.preventDefault();
-                onCancelRename();
-              }
-            }}
-            className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 py-1 text-xs font-semibold text-[color:var(--text-primary)] focus:border-[color:var(--accent-solid)] focus:outline-none"
-            placeholder="Session title"
-            maxLength={200}
-          />
-          <button
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onSubmitRename(session);
-            }}
-            disabled={isRenaming}
-            title="Save title"
-            className="h-7 w-7 rounded-md border border-emerald-500/35 text-emerald-400 bg-[color:var(--surface-1)] hover:bg-emerald-500/10 flex items-center justify-center disabled:opacity-40"
-          >
-            {isRenaming ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-          </button>
-          <button
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onCancelRename();
-            }}
-            disabled={isRenaming}
-            title="Cancel rename"
-            className="h-7 w-7 rounded-md border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center disabled:opacity-40"
-          >
-            <X size={13} />
-          </button>
-        </div>
-        <span className="text-[10px] text-[color:var(--text-muted)]">{formatCompactDate(session.started_at)}</span>
-      </div>
-    ) : (
-      <button
-        onClick={() => {
-          if (multiSelectMode) {
-            if (canDelete) onToggleSelect(session.id);
-            return;
-          }
-          onClick(session.id);
-        }}
-        className={`w-full flex flex-col gap-1 p-3 rounded-lg text-left transition-colors duration-150 border ${
-          isActive
-            ? 'bg-[color:var(--surface-0)] shadow-sm border-[color:var(--border-strong)]'
-            : 'hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-transparent'
-        } ${multiSelectMode ? 'pl-10 pr-3' : 'pr-10'}`}
-      >
-        <div className="flex items-center justify-between gap-2">
-          {session.has_unread && !isActive ? (
-            <span className="h-2 w-2 shrink-0 rounded-full bg-sky-500" />
-          ) : null}
-          <span className="min-w-0 flex-1 text-xs font-semibold truncate">{session.title || 'Session'}</span>
-          <div className="flex shrink-0 items-center gap-1">
-            {sessionChannelKind(session) === 'telegram_group' ? (
-              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
-                <Users size={8} />
-                <span>{'TG\u00A0Group'}</span>
-              </span>
-            ) : null}
-            {sessionChannelKind(session) === 'telegram_dm' ? (
-              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-400">
-                <Send size={8} />
-                <span>{'TG\u00A0DM'}</span>
-              </span>
-            ) : null}
-            {session.is_main ? (
-              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-400">
-                <BadgeCheck size={8} />
-                Main
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <span className="text-[10px] text-[color:var(--text-muted)]">{formatCompactDate(session.started_at)}</span>
-      </button>
-    )}
-    {!isEditing && !multiSelectMode && !session.is_main ? (
-      <button
-        onClick={() => onSetMain(session)}
-        title="Set as main session"
-        className="absolute right-10 top-2 h-7 w-7 rounded-md border border-emerald-500/35 text-emerald-400 bg-[color:var(--surface-1)] hover:bg-emerald-500/10 flex items-center justify-center transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-      >
-        <BadgeCheck size={13} />
-      </button>
-    ) : null}
-    {!isEditing && !multiSelectMode && canRename ? (
-      <button
-        onClick={() => onRename(session)}
-        disabled={isRenaming}
-        title="Rename session"
-        className="absolute right-[4.5rem] top-2 h-7 w-7 rounded-md border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto disabled:opacity-40 disabled:pointer-events-none"
-      >
-        {isRenaming ? <Loader2 size={13} className="animate-spin" /> : <Pencil size={13} />}
-      </button>
-    ) : null}
-    {canDelete && !isEditing && !multiSelectMode ? (
-      <button
-        onClick={() => onDelete(session)}
-        disabled={isDeleting}
-        title="Delete session"
-        className="absolute right-2 top-2 h-7 w-7 rounded-md border border-rose-500/20 text-rose-500 bg-[color:var(--surface-1)] hover:bg-rose-500/10 flex items-center justify-center transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-      >
-        {isDeleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-      </button>
-    ) : null}
-  </div>
-));
-SessionRow.displayName = 'SessionRow';
-
-const BrowserPreview = memo(({
-                               url,
-                               isFullscreen,
-                               onClose
-                             }: {
-  url: string | null;
-  isFullscreen: boolean;
-  onClose: () => void
-}) => {
-  // Sanitize URL to prevent accidental character injection and FORCE 127.0.0.1
-  const cleanUrl = useMemo(() => {
-    if (!url) return null;
-    const normalized = url
-        .replace(/["']/g, '')
-        .replace('localhost', '127.0.0.1')
-        .trim();
-    try {
-      const parsed = new URL(normalized);
-      // Force fit-to-container behavior in embedded noVNC.
-      parsed.searchParams.set('resize', 'scale');
-      parsed.searchParams.set('autoconnect', '1');
-      parsed.searchParams.set('view_only', '0');
-      return parsed.toString();
-    } catch {
-      return normalized;
-    }
-  }, [url]);
-
-  if (!cleanUrl) {
-    return (
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-[color:var(--text-muted)] gap-3 bg-zinc-900 rounded-xl border border-[color:var(--border-strong)]">
-          <Globe size={32} strokeWidth={1} />
-          <p className="text-[10px] font-bold uppercase tracking-widest">No Active Browser</p>
-        </div>
-    );
-  }
-
-  return (
-      <>
-        <div
-            className={`fixed inset-0 z-[90] bg-black/80 backdrop-blur-md transition-opacity duration-500 ${isFullscreen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
-            onClick={onClose}
-        />
-
-        <div
-            onMouseDown={(e) => e.stopPropagation()}
-            className={`transition-all duration-500 ease-in-out bg-black shadow-2xl overflow-hidden ${
-                isFullscreen
-                    ? 'fixed inset-4 md:inset-12 z-[100] rounded-2xl border border-white/10'
-                    : 'absolute inset-0 rounded-none'
-            }`}
-        >
-          {isFullscreen && (
-              <div className="flex items-center justify-between px-6 py-3 border-b border-white/10 bg-zinc-900">
-                <div className="flex items-center gap-3">
-                  <Globe size={16} className="text-sky-400" />
-                  <div className="flex flex-col">
-                    <span className="font-bold text-[10px] tracking-widest text-white uppercase">Live Browser Session</span>
-                    <span className="text-[9px] text-sky-400/60 font-mono leading-none mt-1 uppercase text-emerald-400">interactive mode</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                      onClick={() => window.open(cleanUrl, '_blank')}
-                      className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition-colors"
-                      title="Open in new tab"
-                  >
-                    <ExternalLink size={16} />
-                  </button>
-                  <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition-colors">
-                    <X size={18} />
-                  </button>
-                </div>
-              </div>
-          )}
-          <div className={isFullscreen ? 'h-[calc(100%-53px)] w-full' : 'h-full w-full'}>
-            <iframe
-                src={cleanUrl}
-                className="w-full h-full border-none pointer-events-auto bg-black"
-                allow="fullscreen; clipboard-read; clipboard-write"
-                title="sentinel-browser"
-            />
-          </div>
-        </div>
-      </>
-  );
-});
-
-BrowserPreview.displayName = 'BrowserPreview';
 
 // --- Types ---
 
@@ -3146,139 +2868,34 @@ export function SessionsPage() {
             }`}
           >
             <div className={`flex flex-col h-full min-w-[16rem] transition-opacity duration-200 ${mode === 'advanced' ? 'opacity-100' : 'opacity-0'}`}>
-              <div className="p-3 border-b border-[color:var(--border-subtle)] space-y-2">
-                <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">History</h2>
-                <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
-                  {/* Sliding Indicator */}
-                  <div 
-                    className={`absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
-                      historyTab === 'sessions' ? 'left-0.5' : 'left-[calc(50%)]'
-                    }`}
-                  />
-                  
-                  <button
-                    onClick={() => setHistoryTab('sessions')}
-                    className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                      historyTab === 'sessions'
-                        ? 'text-[color:var(--text-primary)]'
-                        : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                    }`}
-                  >
-                    Sessions
-                  </button>
-                  <button
-                    onClick={() => setHistoryTab('sub_agents')}
-                    className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                      historyTab === 'sub_agents'
-                        ? 'text-[color:var(--text-primary)]'
-                        : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                    }`}
-                  >
-                    Sub-agents
-                  </button>
-                </div>
-                <div className="relative">
-                  <History size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
-                  <input
-                      className="input-field pl-8 h-8 rounded-full text-xs"
-                      placeholder="Search..."
-                      value={sessionFilter}
-                      onChange={(e) => setSessionFilter(e.target.value)}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    onClick={() => {
-                      setIsMultiSelectMode((current) => {
-                        const next = !current;
-                        if (!next) setSelectedSessionIds([]);
-                        return next;
-                      });
-                    }}
-                    className={`rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95 shadow-sm ${
-                      isMultiSelectMode 
-                        ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent' 
-                        : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] text-[color:var(--text-secondary)] hover:border-[color:var(--border-strong)] hover:text-[color:var(--text-primary)]'
-                    }`}
-                  >
-                    {isMultiSelectMode ? 'Done' : 'Select'}
-                  </button>
-                  {isMultiSelectMode ? (
-                    <button
-                      onClick={() =>
-                        setSelectedSessionIds((current) => {
-                          const set = new Set(current);
-                          if (allVisibleSelected) {
-                            selectableVisibleSessionIds.forEach((id) => set.delete(id));
-                          } else {
-                            selectableVisibleSessionIds.forEach((id) => set.add(id));
-                          }
-                          return Array.from(set);
-                        })
-                      }
-                      className="rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)] hover:border-[color:var(--border-strong)] hover:text-[color:var(--text-primary)] transition-all active:scale-95 shadow-sm"
-                    >
-                      {allVisibleSelected ? 'Unselect All' : 'Select All'}
-                    </button>
-                  ) : null}
-                </div>
-                {isMultiSelectMode ? (
-                  <div className="flex items-center justify-between gap-2 px-1 pt-2 border-t border-[color:var(--border-subtle)] animate-in slide-in-from-top-1">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                      {selectedSessionIds.length} <span className="opacity-50">Selected</span>
-                    </p>
-                    <button
-                      onClick={() => void deleteSelectedSessions()}
-                      disabled={selectedSessionIds.length === 0 || deletingSessionId !== null}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-rose-500/10 border border-rose-500/20 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500 hover:text-white transition-all active:scale-95 disabled:opacity-40 disabled:pointer-events-none shadow-sm"
-                    >
-                      <Trash2 size={11} />
-                      Delete Selected
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-              <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-                {filteredSessions.map((s) => (
-                    <SessionRow
-                      key={s.id}
-                      session={s}
-                      isActive={s.id === activeSessionId}
-                      onClick={onSessionClick}
-                      canDelete={Boolean(defaultSessionId) && s.id !== defaultSessionId}
-                      isDeleting={
-                        deletingSessionId === s.id ||
-                        deletingSessionId === 'bulk' ||
-                        settingMainSessionId === s.id
-                      }
-                      onDelete={deleteSession}
-                      onSetMain={setMainSession}
-                      isEditing={editingSessionId === s.id}
-                      editTitle={editingSessionTitle}
-                      onEditTitleChange={setEditingSessionTitle}
-                      onSubmitRename={submitRenameSession}
-                      onCancelRename={cancelRenameSession}
-                      canRename={(() => {
-                        const kind = sessionChannelKind(s);
-                        return kind !== 'telegram_group' && kind !== 'telegram_dm';
-                      })()}
-                      isRenaming={renamingSessionId === s.id}
-                      onRename={startRenameSession}
-                      multiSelectMode={isMultiSelectMode}
-                      selected={selectedSessionIdSet.has(s.id)}
-                      onToggleSelect={(id) =>
-                        setSelectedSessionIds((current) =>
-                          current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-                        )
-                      }
-                    />
-                ))}
-                {filteredSessions.length === 0 && (
-                    <div className="py-8 text-center text-[10px] text-[color:var(--text-muted)] uppercase tracking-widest">
-                      No sessions
-                    </div>
-                )}
-              </div>
+              <SessionHistorySidebar
+                historyTab={historyTab}
+                setHistoryTab={setHistoryTab}
+                sessionFilter={sessionFilter}
+                setSessionFilter={setSessionFilter}
+                isMultiSelectMode={isMultiSelectMode}
+                setIsMultiSelectMode={setIsMultiSelectMode}
+                selectedSessionIds={selectedSessionIds}
+                setSelectedSessionIds={setSelectedSessionIds}
+                allVisibleSelected={allVisibleSelected}
+                selectableVisibleSessionIds={selectableVisibleSessionIds}
+                deleteSelectedSessions={deleteSelectedSessions}
+                deletingSessionId={deletingSessionId}
+                filteredSessions={filteredSessions}
+                activeSessionId={activeSessionId}
+                onSessionClick={onSessionClick}
+                defaultSessionId={defaultSessionId}
+                editingSessionId={editingSessionId}
+                editingSessionTitle={editingSessionTitle}
+                setEditingSessionTitle={setEditingSessionTitle}
+                submitRenameSession={submitRenameSession}
+                cancelRenameSession={cancelRenameSession}
+                startRenameSession={startRenameSession}
+                setMainSession={setMainSession}
+                deleteSession={deleteSession}
+                renamingSessionId={renamingSessionId}
+                loadingSessions={false}
+              />
             </div>
           </aside>
 
@@ -3327,17 +2944,7 @@ export function SessionsPage() {
                 )}
               </div>
 
-              {/* Center: Thinking Status (Absolute) */}
-              <div className="absolute left-1/2 -translate-x-1/2 flex items-center pointer-events-none">
-                 {(streaming.isThinking || streaming.isCompactingContext) && (
-                   <div className="flex items-center gap-2.5 px-3.5 py-1.5 rounded-full bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] shadow-xl shadow-black/10 animate-in slide-in-from-top-2 duration-500">
-                     <Loader2 size={11} className="animate-spin opacity-80" />
-                     <span className="text-[10px] font-bold uppercase tracking-[0.15em]">
-                       {streaming.isCompactingContext ? 'Compacting Memory' : 'Sentinel Thinking'}
-                     </span>
-                   </div>
-                 )}
-              </div>
+              {/* Center: Toolbar metadata removed */}
 
               {/* Right: Controls & Context */}
               <div className="flex items-center gap-3">
@@ -3603,15 +3210,9 @@ export function SessionsPage() {
                     )}
 
                     {streaming.isThinking && !streaming.text && streaming.activeToolCalls.length === 0 && (
-                        <div className="flex items-center gap-3 px-4 py-3 rounded-2xl bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] w-fit animate-pulse">
-                          <div className="flex gap-1">
-                            <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] animate-bounce [animation-delay:-0.3s]" />
-                            <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] animate-bounce [animation-delay:-0.15s]" />
-                            <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] animate-bounce" />
-                          </div>
-                          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                            Sentinel is thinking
-                          </span>
+                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] animate-pulse">
+                          <Bot size={14} />
+                          Sentinel is thinking...
                         </div>
                     )}
 
@@ -3625,15 +3226,15 @@ export function SessionsPage() {
                     )}
 
                     {streaming.agentIteration > 0 || streaming.isThinking || streaming.isStreaming || streaming.activeToolCalls.length > 0 ? (
-                      <div className="sticky bottom-4 z-20 flex justify-center pointer-events-none">
+                      <div className="sticky bottom-2 z-20 flex justify-center pointer-events-none">
                         <button
                           type="button"
                           onClick={stopCurrent}
                           disabled={isStopping}
-                          className="pointer-events-auto inline-flex items-center gap-2.5 rounded-full border border-rose-500/40 bg-[color:var(--surface-0)]/90 backdrop-blur px-5 h-9 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500 hover:text-white transition-all active:scale-95 shadow-[0_8px_24px_rgba(244,63,94,0.2)] disabled:opacity-50"
+                          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-rose-500/40 bg-[color:var(--surface-0)]/90 backdrop-blur px-4 h-9 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500 hover:text-white transition-all active:scale-95 shadow-xl disabled:opacity-50"
                         >
                           <Square size={12} fill="currentColor" />
-                          {isStopping ? 'Stopping' : 'Stop Execution'}
+                          {isStopping ? 'Stopping...' : 'Stop Execution'}
                         </button>
                       </div>
                     ) : null}
@@ -3941,14 +3542,25 @@ export function SessionsPage() {
               className="relative z-30 hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
           >
             <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
-              <div className="grid grid-cols-3 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
+              <div className="relative grid grid-cols-3 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
+                {/* Sliding Indicator */}
+                <div 
+                  className={`absolute top-0.5 bottom-0.5 w-[calc(33.333%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
+                    rightRailTab === 'browser' 
+                      ? 'left-0.5' 
+                      : rightRailTab === 'sub_agents'
+                        ? 'left-[calc(33.333%)]'
+                        : 'left-[calc(66.666%-0.5px)]'
+                  }`}
+                />
+
                 <button
                   type="button"
                   onClick={() => setRightRailTab('browser')}
-                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                  className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                     rightRailTab === 'browser'
-                      ? 'bg-sky-500/15 text-sky-400'
-                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                      ? 'text-[color:var(--text-primary)]'
+                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                   }`}
                 >
                   Browser
@@ -3956,10 +3568,10 @@ export function SessionsPage() {
                 <button
                   type="button"
                   onClick={() => setRightRailTab('sub_agents')}
-                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                  className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                     rightRailTab === 'sub_agents'
-                      ? 'bg-emerald-500/15 text-emerald-400'
-                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                      ? 'text-[color:var(--text-primary)]'
+                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                   }`}
                 >
                   Sub-Agents
@@ -3967,10 +3579,10 @@ export function SessionsPage() {
                 <button
                   type="button"
                   onClick={() => setRightRailTab('runtime')}
-                  className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                  className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                     rightRailTab === 'runtime'
-                      ? 'bg-amber-500/15 text-amber-400'
-                      : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                      ? 'text-[color:var(--text-primary)]'
+                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                   }`}
                 >
                   Runtime
@@ -4032,7 +3644,7 @@ export function SessionsPage() {
                     />
                   </div>
 
-                  <div className="px-3 pb-3 space-y-2">
+                  <div className="p-3 space-y-2">
                     <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2.5">
                       <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Browser Status</div>
                       <div className="grid grid-cols-1 gap-2 text-[10px]">
@@ -4158,14 +3770,23 @@ export function SessionsPage() {
 
                 <div className="flex-1 min-h-0 flex flex-col">
                   <div className="border-b border-[color:var(--border-subtle)] px-4 py-2">
-                    <div className="grid grid-cols-2 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
+                    <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
+                      {/* Sliding Indicator */}
+                      <div 
+                        className={`absolute top-0.5 bottom-0.5 w-[calc(50%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
+                          runtimeInspectorTab === 'files' 
+                            ? 'left-0.5' 
+                            : 'left-[calc(50%)]'
+                        }`}
+                      />
+
                       <button
                         type="button"
                         onClick={() => setRuntimeInspectorTab('files')}
-                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                        className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                           runtimeInspectorTab === 'files'
-                            ? 'bg-sky-500/15 text-sky-400'
-                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                            ? 'text-[color:var(--text-primary)]'
+                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                         }`}
                       >
                         Files
@@ -4173,10 +3794,10 @@ export function SessionsPage() {
                       <button
                         type="button"
                         onClick={() => setRuntimeInspectorTab('commands')}
-                        className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                        className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                           runtimeInspectorTab === 'commands'
-                            ? 'bg-emerald-500/15 text-emerald-300'
-                            : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                            ? 'text-[color:var(--text-primary)]'
+                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                         }`}
                       >
                         Commands

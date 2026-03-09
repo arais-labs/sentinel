@@ -260,6 +260,25 @@ body {
   background-color: color-mix(in srgb, var(--surface-0) 70%, transparent);
 }
 
+@supports selector(:has(*)) {
+  .session-row::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 0.75rem;
+    background: rgb(0 0 0 / 0.2);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms ease;
+    z-index: 15;
+  }
+
+  .session-row:has(.session-row-action:hover)::after,
+  .session-row:has(.session-row-action:focus-visible)::after {
+    opacity: 1;
+  }
+}
+
 .markdown-body .markdown-pre-shell pre {
   @apply m-0 p-3 overflow-auto font-mono text-[12px];
 }
