@@ -509,14 +509,23 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
             <aside className="w-[390px] shrink-0 border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
               <div className="flex h-full min-h-0 flex-col">
                 <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2 shrink-0">
-                  <div className="grid grid-cols-2 gap-1 rounded-md border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-0)]">
+                  <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
+                    {/* Sliding Indicator */}
+                    <div 
+                      className={`absolute top-0.5 bottom-0.5 w-[calc(50%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
+                        runtimeInspectorTab === 'files' 
+                          ? 'left-0.5' 
+                          : 'left-[calc(50%)]'
+                      }`}
+                    />
+
                     <button
                       type="button"
                       onClick={() => setRuntimeInspectorTab('files')}
-                      className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                      className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                         runtimeInspectorTab === 'files'
-                          ? 'bg-sky-500/15 text-sky-300'
-                          : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                          ? 'text-[color:var(--text-primary)]'
+                          : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                       }`}
                     >
                       Files
@@ -524,17 +533,16 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
                     <button
                       type="button"
                       onClick={() => setRuntimeInspectorTab('commands')}
-                      className={`h-7 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                      className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
                         runtimeInspectorTab === 'commands'
-                          ? 'bg-emerald-500/15 text-emerald-300'
-                          : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                          ? 'text-[color:var(--text-primary)]'
+                          : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                       }`}
                     >
                       Commands
                     </button>
                   </div>
                 </div>
-
                 <div className="flex-1 min-h-0 overflow-y-auto p-4">
                   {runtimeInspectorTab === 'files' ? (
                     <div className="space-y-2">
