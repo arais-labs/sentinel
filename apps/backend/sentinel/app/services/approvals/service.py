@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 from uuid import UUID
 
@@ -15,6 +16,8 @@ from app.services.approvals.types import (
     ApprovalRecord,
     PendingApprovalMatch,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _ApprovalProvider(Protocol):
@@ -124,12 +127,22 @@ class ApprovalService:
     ) -> dict[str, ApprovalRecord]:
         if not unresolved_calls:
             return {}
+        logger.info(
+            "approval_match_start session_id=%s unresolved_count=%s",
+            session_id,
+            len(unresolved_calls),
+        )
 
         provider_keys: dict[str, list[tuple[str, str]]] = {}
+        call_debug: dict[str, dict[str, object]] = {}
         for call in unresolved_calls:
             call_id = str(call.get("id") or "").strip()
             if not call_id:
                 continue
+            call_debug[call_id] = {
+                "tool_name": str(call.get("name") or "").strip() or None,
+                "has_hint": isinstance(call.get("approval_hint"), dict),
+            }
             approval_hint = call.get("approval_hint")
             if isinstance(approval_hint, dict):
                 provider_name = str(approval_hint.get("provider") or "").strip().lower()
@@ -149,6 +162,7 @@ class ApprovalService:
                 provider_keys.setdefault(provider.name, []).append((call_id, pending.match_key))
 
         if not provider_keys:
+            logger.info("approval_match_no_candidates session_id=%s", session_id)
             return {}
 
         pending_by_provider: dict[str, dict[str, list[ApprovalRecord]]] = {}
@@ -172,7 +186,18 @@ class ApprovalService:
                 if not row.match_key:
                     continue
                 buckets.setdefault(row.match_key, []).append(row)
+            for items in buckets.values():
+                items.sort(
+                    key=lambda item: item.created_at.timestamp() if item.created_at else 0,
+                )
             pending_by_provider[provider_name] = buckets
+            logger.info(
+                "approval_match_provider_pending session_id=%s provider=%s requested_matches=%s pending_rows=%s",
+                session_id,
+                provider_name,
+                len(matches),
+                sum(len(items) for items in buckets.values()),
+            )
 
         resolved: dict[str, ApprovalRecord] = {}
         for provider_name, matches in provider_keys.items():
@@ -182,6 +207,26 @@ class ApprovalService:
                 if not items:
                     continue
                 resolved[call_id] = items.pop(0)
+        expected_call_ids = {
+            call_id
+            for matches in provider_keys.values()
+            for call_id, _ in matches
+        }
+        missing_call_ids = sorted(expected_call_ids - set(resolved.keys()))
+        for call_id in missing_call_ids:
+            debug = call_debug.get(call_id, {})
+            logger.warning(
+                "approval_match_missing session_id=%s tool_call_id=%s tool_name=%s has_hint=%s",
+                session_id,
+                call_id,
+                debug.get("tool_name"),
+                debug.get("has_hint"),
+            )
+        logger.info(
+            "approval_match_done session_id=%s resolved_count=%s",
+            session_id,
+            len(resolved),
+        )
         return resolved
 
     def _select_providers(self, provider: str | None) -> list[_ApprovalProvider]:

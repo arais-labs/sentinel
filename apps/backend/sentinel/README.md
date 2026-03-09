@@ -28,3 +28,8 @@ docker compose -f docker-compose.dev.yml exec -T sentinel-backend python -m pyte
 ## Health Check
 
 - `GET /api/v1/health`
+
+## runtime_exec Contract
+
+- `privilege=user` (default): confined Bubblewrap execution, workspace-scoped writes.
+- `privilege=root`: unconfined execution, requires approval.

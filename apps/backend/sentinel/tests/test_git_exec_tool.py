@@ -641,7 +641,7 @@ def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
         class _Decision:
             status = "rejected"
             decision_by = "admin"
-            decision_note = "nope"
+            decision_note = None
 
         _ = kwargs
         return _Decision()
@@ -650,7 +650,7 @@ def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    with pytest.raises(git_exec_module.ToolExecutionError, match="Approval rejected"):
+    with pytest.raises(git_exec_module.ToolExecutionError, match="User rejected action"):
         _run_via_executor(
             tool,
             {

@@ -483,17 +483,19 @@ export function TriggersPage() {
       subtitle="Autonomous Event Scheduling & Webhooks"
       actions={
         <div className="flex items-center gap-2">
-          <button onClick={() => void loadData()} className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors">
+          <button onClick={() => void loadData()} className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors active:scale-95">
             <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
           </button>
-          <div className="h-6 w-px bg-[color:var(--border-subtle)] mx-1" />
-          <button onClick={openCreateModal} className="btn-primary h-9 px-3 text-xs gap-2">
+          <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
+          <button 
+           onClick={openCreateModal} 
+           className="inline-flex h-9 items-center gap-2.5 rounded-full border border-transparent bg-[color:var(--accent-solid)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--app-bg)] transition-all hover:opacity-90 active:scale-95 shadow-md shadow-black/5"
+         >
             <Plus size={14} />
             New Automation
           </button>
         </div>
-      }
-    >
+      }    >
       <div className="max-w-7xl mx-auto space-y-6">
         <Panel className="p-4 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-4 flex-1">
@@ -592,24 +594,23 @@ export function TriggersPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
-                    <button
-                      onClick={() => void fireFromCard(trigger.id)}
-                      disabled={firingCardTriggerId === trigger.id}
-                      className="btn-secondary h-8 px-3 text-[10px] font-bold uppercase tracking-widest gap-1.5"
-                      title="Run now"
-                    >
-                      {firingCardTriggerId === trigger.id ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} fill="currentColor" />}
-                      Run
-                    </button>
-                    <button
-                      onClick={() => void removeTrigger(trigger)}
-                      className="p-2 rounded-md hover:bg-rose-500/10 text-rose-500 transition-colors"
-                      title="Purge"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </div>
+                   <button
+                     onClick={() => void fireFromCard(trigger.id)}
+                     disabled={firingCardTriggerId === trigger.id}
+                     className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-1)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:opacity-40 shadow-sm"
+                     title="Run now"
+                   >
+                     {firingCardTriggerId === trigger.id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} fill="currentColor" className="text-emerald-500/80" />}
+                     Run
+                   </button>
+                   <button
+                     onClick={() => void removeTrigger(trigger)}
+                     className="p-2 rounded-full hover:bg-rose-500/10 text-rose-500 transition-all active:scale-95"
+                     title="Purge"
+                   >
+                     <Trash2 size={16} />
+                   </button>
+                  </div>                </div>
               </Panel>
             ))}
           </div>

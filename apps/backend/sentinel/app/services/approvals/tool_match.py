@@ -9,6 +9,14 @@ def normalize_command(value: str) -> str:
     return " ".join(value.strip().split()).lower()
 
 
+def build_runtime_exec_match_key(*, command: str, privilege: str | None = None) -> str:
+    normalized = normalize_command(command)
+    scope = (privilege or "").strip().lower()
+    if scope == "root":
+        return f"runtime_exec:root:{normalized}"
+    return f"runtime_exec:{normalized}"
+
+
 def build_tool_match_key(
     *,
     tool_name: str,
@@ -20,6 +28,13 @@ def build_tool_match_key(
 
     command = payload.get("command")
     if isinstance(command, str) and command.strip():
+        if tool_name == "runtime_exec":
+            privilege_raw = payload.get("privilege")
+            privilege = privilege_raw if isinstance(privilege_raw, str) else None
+            return build_runtime_exec_match_key(
+                command=command,
+                privilege=privilege,
+            )
         return f"{tool_name}:{normalize_command(command)}"
 
     canonical = _canonical_payload(payload)

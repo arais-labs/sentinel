@@ -1,8 +1,11 @@
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import uuid
+from functools import lru_cache
 from unittest.mock import patch
 
 import jwt
@@ -18,6 +21,7 @@ from app.models import GitAccount
 from app.models.system import SystemSetting
 from app.services.tools import ToolExecutor, build_default_registry
 from app.services.tools.builtin import _validate_public_hostname
+from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus
 from tests.fake_db import FakeDB
 
 
@@ -69,6 +73,81 @@ def _install_app_tool_runtime(fake_db: FakeDB):
 def _restore_app_tool_runtime(previous_registry, previous_executor) -> None:
     app.state.tool_registry = previous_registry
     app.state.tool_executor = previous_executor
+
+
+def _runtime_exec_needs_root_test_mode() -> bool:
+    return os.name != "nt" and not _runtime_exec_user_sandbox_available()
+
+
+@lru_cache(maxsize=1)
+def _runtime_exec_user_sandbox_available() -> bool:
+    if os.name == "nt":
+        return False
+    bwrap_bin = shutil.which("bwrap")
+    if not bwrap_bin:
+        return False
+
+    # CI environments can have bwrap installed but disallow the required namespaces.
+    probe = [
+        bwrap_bin,
+        "--die-with-parent",
+        "--unshare-pid",
+        "--unshare-uts",
+        "--unshare-ipc",
+        "--ro-bind",
+        "/",
+        "/",
+        "--proc",
+        "/proc",
+        "--dev-bind",
+        "/dev",
+        "/dev",
+        "--",
+        "/bin/bash",
+        "-lc",
+        "true",
+    ]
+    try:
+        result = subprocess.run(
+            probe,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _enable_runtime_root_auto_approval_for_tests() -> None:
+    tool = app.state.tool_registry.get("runtime_exec")
+    assert tool is not None
+    assert tool.approval_gate is not None
+
+    async def _auto_approve(_tool_name, _payload, _requirement):
+        return ToolApprovalOutcome(
+            status=ToolApprovalOutcomeStatus.APPROVED,
+            approval={
+                "provider": "tool",
+                "approval_id": "apr_runtime_auto",
+                "status": "approved",
+                "pending": False,
+                "can_resolve": False,
+            },
+            message="approved",
+        )
+
+    tool.approval_gate.waiter = _auto_approve
+
+
+def _runtime_exec_input(*, command: str, session_id: str, **extra: object) -> dict[str, object]:
+    payload: dict[str, object] = {"command": command, "session_id": session_id}
+    payload.update(extra)
+    if _runtime_exec_needs_root_test_mode():
+        _enable_runtime_root_auto_approval_for_tests()
+        payload["privilege"] = "root"
+    return payload
 
 
 def test_tools_registry_and_execution():
@@ -234,13 +313,24 @@ def test_runtime_exec_runs_command():
 
         run = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "echo hello", "session_id": session_id}},
+            json={"input": _runtime_exec_input(command="echo hello", session_id=session_id)},
             headers=headers,
         )
         assert run.status_code == 200
         payload = run.json()["result"]
         assert payload["ok"] is True
         assert "hello" in payload["stdout"]
+
+        runtime = client.get(f"/api/v1/sessions/{session_id}/runtime", headers=headers)
+        assert runtime.status_code == 200
+        actions = runtime.json().get("actions", [])
+        finished_actions = [item for item in actions if item.get("action") == "command_finished"]
+        assert finished_actions
+        details = finished_actions[-1].get("details", {})
+        assert details.get("ok") is True
+        assert details.get("timed_out") is False
+        assert details.get("returncode") == 0
+        assert "hello" in str(details.get("stdout", ""))
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()
@@ -278,7 +368,13 @@ def test_runtime_exec_detached_job_lifecycle():
 
         run = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "sleep 30", "session_id": session_id, "detached": True}},
+            json={
+                "input": _runtime_exec_input(
+                    command="sleep 30",
+                    session_id=session_id,
+                    detached=True,
+                )
+            },
             headers=headers,
         )
         assert run.status_code == 200
@@ -319,6 +415,296 @@ def test_runtime_exec_detached_job_lifecycle():
         )
         assert stopped.status_code == 200
         assert stopped.json()["result"]["job"]["status"] in {"cancelled", "completed", "failed"}
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_exec_rejects_background_without_detached():
+    fake_db = FakeDB()
+    previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-exec-bg-reject"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = client.post(
+            "/api/v1/tools/runtime_exec/execute",
+            json={"input": {"command": "sleep 1 &", "session_id": session_id}},
+            headers=headers,
+        )
+        assert run.status_code == 422
+        assert "detached=true" in run.json()["error"]["message"]
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_exec_timeout_returns_result():
+    fake_db = FakeDB()
+    previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-exec-timeout"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = client.post(
+            "/api/v1/tools/runtime_exec/execute",
+            json={
+                "input": _runtime_exec_input(
+                    command="sleep 3",
+                    session_id=session_id,
+                    timeout_seconds=1,
+                )
+            },
+            headers=headers,
+        )
+        assert run.status_code == 200
+        payload = run.json()["result"]
+        assert payload["timed_out"] is True
+        assert payload["ok"] is False
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_exec_root_privilege_requires_approval():
+    fake_db = FakeDB()
+    previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    waiter_seen: dict[str, object] = {}
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-exec-root-approval"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        tool = app.state.tool_registry.get("runtime_exec")
+        assert tool is not None
+        assert tool.approval_gate is not None
+
+        async def _fake_waiter(_tool_name, _payload, requirement):
+            waiter_seen["action"] = requirement.action
+            return ToolApprovalOutcome(
+                status=ToolApprovalOutcomeStatus.APPROVED,
+                approval={
+                    "provider": "tool",
+                    "approval_id": "apr_runtime_root",
+                    "status": "approved",
+                    "pending": False,
+                    "can_resolve": False,
+                },
+                message="approved",
+            )
+
+        tool.approval_gate.waiter = _fake_waiter
+
+        run = client.post(
+            "/api/v1/tools/runtime_exec/execute",
+            json={
+                "input": {
+                    "command": "echo root-approved",
+                    "session_id": session_id,
+                    "privilege": "root",
+                }
+            },
+            headers=headers,
+        )
+        assert run.status_code == 200
+        payload = run.json()["result"]
+        assert payload["ok"] is True
+        assert "root-approved" in payload["stdout"]
+        assert payload["approval"]["provider"] == "tool"
+        assert payload["approval"]["approval_id"] == "apr_runtime_root"
+        assert waiter_seen["action"] == "runtime_exec.root"
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_exec_user_mode_confines_writes_to_workspace():
+    if not _runtime_exec_user_sandbox_available():
+        return
+
+    fake_db = FakeDB()
+    previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-exec-confined-user"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        allowed = client.post(
+            "/api/v1/tools/runtime_exec/execute",
+            json={
+                "input": {
+                    "command": "echo workspace-ok > allowed.txt && cat allowed.txt",
+                    "session_id": session_id,
+                    "privilege": "user",
+                }
+            },
+            headers=headers,
+        )
+        assert allowed.status_code == 200
+        allowed_payload = allowed.json()["result"]
+        assert allowed_payload["ok"] is True
+        assert "workspace-ok" in allowed_payload["stdout"]
+
+        blocked = client.post(
+            "/api/v1/tools/runtime_exec/execute",
+            json={
+                "input": {
+                    "command": "echo forbidden > /etc/runtime_exec_forbidden_test",
+                    "session_id": session_id,
+                    "privilege": "user",
+                }
+            },
+            headers=headers,
+        )
+        assert blocked.status_code == 200
+        blocked_payload = blocked.json()["result"]
+        assert blocked_payload["ok"] is False
+        assert blocked_payload["timed_out"] is False
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_exec_user_mode_python_venv_is_available_inside_sandbox():
+    if not _runtime_exec_user_sandbox_available():
+        return
+
+    fake_db = FakeDB()
+    previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-exec-user-venv"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = client.post(
+            "/api/v1/tools/runtime_exec/execute",
+            json={
+                "input": {
+                    "command": "python -c \"import os,sys;print(sys.prefix);print(os.environ.get('VIRTUAL_ENV',''))\"",
+                    "session_id": session_id,
+                    "privilege": "user",
+                    "use_python_venv": True,
+                }
+            },
+            headers=headers,
+        )
+        assert run.status_code == 200
+        payload = run.json()["result"]
+        assert payload["ok"] is True
+        assert "/venv" in payload["stdout"]
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()

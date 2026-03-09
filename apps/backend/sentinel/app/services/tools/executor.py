@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import time
 from typing import Any
 
@@ -14,6 +15,8 @@ from app.services.tools.registry import (
     ToolDefinition,
     ToolRegistry,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ToolExecutionError(RuntimeError):
@@ -72,6 +75,15 @@ class ToolExecutor:
             return None
 
         evaluation = await self._evaluate_gate(tool.name, gate, payload)
+        requirement = evaluation.requirement
+        logger.info(
+            "tool_approval_eval tool=%s decision=%s action=%s match_key=%s session_id=%s",
+            tool.name,
+            evaluation.decision.value,
+            requirement.action if requirement is not None else None,
+            requirement.match_key if requirement is not None else None,
+            payload.get("session_id"),
+        )
         if evaluation.decision == ToolApprovalDecision.ALLOW:
             return None
         if evaluation.decision == ToolApprovalDecision.DENY:
@@ -86,6 +98,14 @@ class ToolExecutor:
         if gate.waiter is None:
             raise ToolExecutionError(f"Tool '{tool.name}' requires approval but no waiter is configured.")
 
+        logger.info(
+            "tool_approval_wait tool=%s action=%s timeout_seconds=%s requested_by=%s match_key=%s",
+            tool.name,
+            requirement.action,
+            requirement.timeout_seconds,
+            requirement.requested_by,
+            requirement.match_key,
+        )
         outcome = await gate.waiter(tool.name, payload, requirement)
         approval_payload = dict(outcome.approval)
         if not isinstance(approval_payload.get("provider"), str):
@@ -96,6 +116,15 @@ class ToolExecutor:
             approval_payload["pending"] = False
         if "can_resolve" not in approval_payload:
             approval_payload["can_resolve"] = False
+        logger.info(
+            "tool_approval_outcome tool=%s status=%s provider=%s approval_id=%s pending=%s can_resolve=%s",
+            tool.name,
+            outcome.status.value,
+            approval_payload.get("provider"),
+            approval_payload.get("approval_id"),
+            approval_payload.get("pending"),
+            approval_payload.get("can_resolve"),
+        )
         if outcome.status != ToolApprovalOutcomeStatus.APPROVED:
             message = (outcome.message or "").strip() or f"Approval {outcome.status.value}."
             raise ToolExecutionError(message)

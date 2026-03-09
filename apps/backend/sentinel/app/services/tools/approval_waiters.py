@@ -197,7 +197,7 @@ def _status_message(status: str, decision_note: str | None) -> str:
     if status == "approved":
         return note or "Approval approved."
     if status == "rejected":
-        return note or "Approval rejected."
+        return note or "User rejected action."
     if status == "timed_out":
         return note or "Approval timed out."
     if status == "cancelled":

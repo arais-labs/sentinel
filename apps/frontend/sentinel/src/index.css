@@ -260,6 +260,25 @@ body {
   background-color: color-mix(in srgb, var(--surface-0) 70%, transparent);
 }
 
+@supports selector(:has(*)) {
+  .session-row::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 0.75rem;
+    background: rgb(0 0 0 / 0.2);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms ease;
+    z-index: 15;
+  }
+
+  .session-row:has(.session-row-action:hover)::after,
+  .session-row:has(.session-row-action:focus-visible)::after {
+    opacity: 1;
+  }
+}
+
 .markdown-body .markdown-pre-shell pre {
   @apply m-0 p-3 overflow-auto font-mono text-[12px];
 }
@@ -272,6 +291,49 @@ body {
 .markdown-body .markdown-pre-shell pre code.hljs {
   background: transparent;
   padding: 0;
+}
+
+.markdown-body.markdown-workbench .markdown-pre-shell {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.markdown-body.markdown-workbench .markdown-pre-bar {
+  display: none;
+}
+
+.markdown-body.markdown-workbench .markdown-pre-shell pre {
+  padding: 0;
+}
+
+.markdown-body.markdown-command-inline .markdown-pre-shell {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.markdown-body.markdown-command-inline .markdown-pre-bar {
+  display: none;
+}
+
+.markdown-body.markdown-command-inline .markdown-pre-shell pre {
+  font-size: 9px;
+  line-height: 1.25;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body.markdown-command-inline .markdown-pre-shell pre code,
+.markdown-body.markdown-command-inline .markdown-pre-shell pre code.hljs {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .markdown-body .katex-display {
@@ -362,6 +424,50 @@ body {
   from {
     opacity: 0;
     transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes logsClusterIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.994);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes logsClusterOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.992);
+  }
+}
+
+@keyframes workbenchDockIn {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes workbenchViewerIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
