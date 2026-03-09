@@ -291,6 +291,14 @@ body {
 
 .markdown-body.markdown-command-inline .markdown-pre-shell {
   margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.markdown-body.markdown-command-inline .markdown-pre-bar {
+  display: none;
 }
 
 .markdown-body.markdown-command-inline .markdown-pre-shell pre {
