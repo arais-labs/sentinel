@@ -2040,7 +2040,7 @@ export function LogsPage() {
 
   return (
     <AppShell
-      title="Control Plane"
+      title="Session Logs"
       subtitle="Operational Diagnostics"
       actions={
         <div className="flex items-center gap-2">

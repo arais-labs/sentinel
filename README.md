@@ -175,6 +175,16 @@ When switching between production-style and development compose files, run:
 docker compose down --remove-orphans
 ```
 
+## Runtime Exec Security Model
+
+`runtime_exec` supports two explicit modes:
+
+- `privilege=user` (default): confined execution with write access limited to the session workspace and runtime temp mounts
+- `privilege=root`: unconfined execution, approval-gated before command execution
+
+For long-running commands, use `detached=true`.
+Inline timeout results include a detached-mode hint.
+
 ## License
 
 Licensed under GNU AGPL-3.0 ([LICENSE](LICENSE)).
