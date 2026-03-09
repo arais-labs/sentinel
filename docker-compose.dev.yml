@@ -60,8 +60,8 @@ services:
       BROWSER_USER_DATA_DIR: /data/browser-profile
       UVICORN_RELOAD: "true"
     command: bash ./scripts/start-backend.sh
-    ports:
-      - "${SENTINEL_API_PORT:-8000}:8000"
+#    ports:
+#      - "${SENTINEL_API_PORT:-8000}:8000"
     volumes:
       - ./apps/backend/sentinel:/app
       - sentinel-browser-profile-dev:/data/browser-profile

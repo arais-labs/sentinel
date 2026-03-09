@@ -9,6 +9,8 @@ cd "$ROOT_DIR"
 
 INSTANCES_DIR="$ROOT_DIR/.instances"
 mkdir -p "$INSTANCES_DIR"
+BACKUPS_DIR="$ROOT_DIR/.instances/backups"
+mkdir -p "$BACKUPS_DIR"
 TMP_PICK="/tmp/sentinel_pick_$(id -u)"
 
 # Colors and Styling
@@ -118,6 +120,106 @@ sanitize_instance_name() {
 
 instance_env_file() { echo "$INSTANCES_DIR/${1}.env"; }
 instance_project_name() { echo "sentinel-${1}"; }
+instance_backup_dir() { echo "$BACKUPS_DIR/${1}"; }
+
+sql_quote_identifier() {
+  local value="$1"
+  value="${value//\"/\"\"}"
+  printf "\"%s\"" "$value"
+}
+
+file_sha256() {
+  local file="$1"
+  if require_cmd shasum; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  elif require_cmd openssl; then
+    openssl dgst -sha256 "$file" | awk '{print $NF}'
+  else
+    echo ""
+  fi
+}
+
+load_instance_db_credentials() {
+  local inst="$1"
+  local ef
+  ef="$(instance_env_file "$inst")"
+  DB_NAME="$(read_env_value "$ef" "POSTGRES_DB" || true)"
+  DB_USER="$(read_env_value "$ef" "POSTGRES_USER" || true)"
+  DB_PASSWORD="$(read_env_value "$ef" "POSTGRES_PASSWORD" || true)"
+
+  if [[ -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASSWORD" ]]; then
+    error "Missing DB credentials in '$ef'."
+    return 1
+  fi
+  return 0
+}
+
+ensure_instance_postgres_ready() {
+  local inst="$1"
+  if ! compose_instance "$inst" ps --services --status running 2>/dev/null | grep -q '^postgres$'; then
+    error "Postgres for '$inst' is not running."
+    return 1
+  fi
+
+  if ! compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
+    psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
+    error "Cannot connect to Postgres for '$inst'."
+    return 1
+  fi
+  return 0
+}
+
+get_instance_backups() {
+  local inst="$1"
+  local dir
+  dir="$(instance_backup_dir "$inst")"
+  [[ -d "$dir" ]] || return 0
+  find "$dir" -maxdepth 1 -type f -name "*.sql.gz" | sort -r
+}
+
+pick_backup_interactive() {
+  local inst="$1"
+  local title="$2"
+  local backups=()
+  while IFS= read -r file; do [[ -n "$file" ]] && backups+=("$file"); done < <(get_instance_backups "$inst")
+
+  if [[ ${#backups[@]} -eq 0 ]]; then
+    warn "No backups found for '$inst' in $(instance_backup_dir "$inst")."
+    return 1
+  fi
+
+  local options=()
+  local file
+  for file in "${backups[@]}"; do
+    options+=("$(basename "$file")")
+  done
+  options+=("⬅️  Go Back")
+
+  select_option "$title" "${options[@]}"
+  local idx=$?
+  if [[ $idx -eq ${#backups[@]} ]]; then
+    return 1
+  fi
+
+  echo "${backups[$idx]}" > "$TMP_PICK"
+  return 0
+}
+
+verify_backup_checksum() {
+  local backup_file="$1"
+  local checksum_file="${backup_file}.sha256"
+  [[ -f "$checksum_file" ]] || return 0
+
+  local expected actual
+  expected="$(awk '{print $1}' "$checksum_file" | head -n 1)"
+  actual="$(file_sha256 "$backup_file")"
+
+  if [[ -z "$expected" || -z "$actual" || "$expected" != "$actual" ]]; then
+    error "Checksum mismatch for $(basename "$backup_file")."
+    return 1
+  fi
+  return 0
+}
 
 select_option() {
   local title="$1"
@@ -991,6 +1093,186 @@ action_reset_auth_managed() {
   return 0
 }
 
+action_db_backup_create() {
+  ensure_docker_ready || return 0
+  local inst=""
+  rm -f "$TMP_PICK"
+  if pick_instance_interactive; then
+    inst=$(cat "$TMP_PICK")
+  fi
+  [[ -z "$inst" ]] && return 0
+
+  load_instance_db_credentials "$inst" || return 0
+  ensure_instance_postgres_ready "$inst" || return 0
+
+  local backup_dir ts backup_file temp_file checksum
+  backup_dir="$(instance_backup_dir "$inst")"
+  mkdir -p "$backup_dir"
+  ts="$(date +%Y%m%d-%H%M%S)"
+  backup_file="${backup_dir}/${ts}_${inst}.sql.gz"
+  temp_file="${backup_file}.tmp"
+
+  info "Creating DB backup for '$inst'..."
+  if compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
+      pg_dump -U "$DB_USER" "$DB_NAME" | gzip -c > "$temp_file"; then
+    mv "$temp_file" "$backup_file"
+    checksum="$(file_sha256 "$backup_file")"
+    if [[ -n "$checksum" ]]; then
+      printf "%s  %s\n" "$checksum" "$(basename "$backup_file")" > "${backup_file}.sha256"
+    fi
+    success "Backup created: $backup_file"
+  else
+    rm -f "$temp_file"
+    error "Backup failed for '$inst'."
+  fi
+  return 0
+}
+
+action_db_backup_list() {
+  local inst=""
+  rm -f "$TMP_PICK"
+  if pick_instance_interactive; then
+    inst=$(cat "$TMP_PICK")
+  fi
+  [[ -z "$inst" ]] && return 0
+
+  local backups=()
+  while IFS= read -r file; do [[ -n "$file" ]] && backups+=("$file"); done < <(get_instance_backups "$inst")
+  if [[ ${#backups[@]} -eq 0 ]]; then
+    info "No backups found for '$inst' in $(instance_backup_dir "$inst")."
+    return 0
+  fi
+
+  printf "\n${BOLD}BACKUPS FOR %s${RESET}\n" "$inst"
+  local file size mod
+  for file in "${backups[@]}"; do
+    size="$(du -h "$file" | awk '{print $1}')"
+    mod="$(date -r "$file" "+%Y-%m-%d %H:%M:%S")"
+    printf "  • %-36s  %8s  %s\n" "$(basename "$file")" "$size" "$mod"
+  done
+  return 0
+}
+
+action_db_backup_restore() {
+  ensure_docker_ready || return 0
+  local inst=""
+  rm -f "$TMP_PICK"
+  if pick_instance_interactive; then
+    inst=$(cat "$TMP_PICK")
+  fi
+  [[ -z "$inst" ]] && return 0
+
+  rm -f "$TMP_PICK"
+  if ! pick_backup_interactive "$inst" "RESTORE BACKUP"; then
+    return 0
+  fi
+  local backup_file
+  backup_file="$(cat "$TMP_PICK")"
+
+  load_instance_db_credentials "$inst" || return 0
+  ensure_instance_postgres_ready "$inst" || return 0
+  verify_backup_checksum "$backup_file" || return 0
+
+  warn "This will replace DB '$DB_NAME' for instance '$inst'."
+  warn "Backup selected: $(basename "$backup_file")"
+  read -r -p "Type RESTORE to confirm: " confirm < /dev/tty
+  [[ "$confirm" != "RESTORE" ]] && { info "Restore aborted."; return 0; }
+
+  local db_lit db_ident user_ident
+  db_lit="$(sql_quote_literal "$DB_NAME")"
+  db_ident="$(sql_quote_identifier "$DB_NAME")"
+  user_ident="$(sql_quote_identifier "$DB_USER")"
+
+  info "Terminating active DB sessions..."
+  if ! compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
+    psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d postgres \
+    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${db_lit} AND pid <> pg_backend_pid();" >/dev/null; then
+    error "Failed to terminate active sessions."
+    return 0
+  fi
+
+  info "Recreating database '$DB_NAME'..."
+  if ! compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
+    psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d postgres \
+    -c "DROP DATABASE IF EXISTS ${db_ident};" \
+    -c "CREATE DATABASE ${db_ident} OWNER ${user_ident};" >/dev/null; then
+    error "Failed to recreate database '$DB_NAME'."
+    return 0
+  fi
+
+  info "Restoring from $(basename "$backup_file")..."
+  if gunzip -c "$backup_file" | compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
+    psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" >/dev/null; then
+    success "Restore completed for '$inst'."
+  else
+    error "Restore failed for '$inst'."
+    return 0
+  fi
+
+  if compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
+      psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
+    success "Post-restore DB check passed."
+  else
+    warn "Post-restore DB check failed."
+  fi
+  return 0
+}
+
+action_db_backup_delete() {
+  local inst=""
+  rm -f "$TMP_PICK"
+  if pick_instance_interactive; then
+    inst=$(cat "$TMP_PICK")
+  fi
+  [[ -z "$inst" ]] && return 0
+
+  rm -f "$TMP_PICK"
+  if ! pick_backup_interactive "$inst" "DELETE BACKUP"; then
+    return 0
+  fi
+  local backup_file
+  backup_file="$(cat "$TMP_PICK")"
+
+  warn "Delete backup $(basename "$backup_file")?"
+  read -r -p "Type DELETE to confirm: " confirm < /dev/tty
+  if [[ "$confirm" == "DELETE" ]]; then
+    rm -f "$backup_file" "${backup_file}.sha256"
+    success "Backup deleted."
+  else
+    info "Delete aborted."
+  fi
+  return 0
+}
+
+action_db_backups_menu() {
+  local options=(
+    "📦  Backup Current Instance DB"
+    "🧾  List Backups"
+    "♻️  Restore Backup"
+    "🗑️   Delete Backup"
+    "⬅️  Back"
+  )
+
+  while true; do
+    echo -n "$CLEAR_SCREEN"
+    select_option "DATABASE BACKUPS" "${options[@]}"
+    local choice=$?
+
+    printf "\n\n"
+    case "$choice" in
+      0) action_db_backup_create ;;
+      1) action_db_backup_list ;;
+      2) action_db_backup_restore ;;
+      3) action_db_backup_delete ;;
+      4) return 0 ;;
+    esac
+
+    while read -r -t 0; do read -r; done < /dev/tty
+    printf "\n${DIM}Press Enter to return to Database Backups...${RESET}"
+    read -r _ < /dev/tty
+  done
+}
+
 action_manage_custom_auth() {
   ensure_docker_ready || return 0
   echo -n "$CURSOR_ON"
@@ -1053,6 +1335,7 @@ menu_loop() {
     "${ICON_START}  Start Instance"
     "${ICON_STOP}  Stop Instance"
     "🔐  Reset Auth (Managed Instance)"
+    "🗄️  Database Backups"
     "${ICON_LIST}  Global Status"
     "📜  Tail Logs"
     "🗑️   Delete Instance"
@@ -1072,11 +1355,12 @@ menu_loop() {
       1) action_up "" ;;
       2) action_down ;;
       3) action_reset_auth_managed ;;
-      4) action_list ;;
-      5) action_logs ;;
-      6) action_delete ;;
-      7) action_advanced_mode ;;
-      8) echo "Goodbye!"; exit 0 ;;
+      4) action_db_backups_menu ;;
+      5) action_list ;;
+      6) action_logs ;;
+      7) action_delete ;;
+      8) action_advanced_mode ;;
+      9) echo "Goodbye!"; exit 0 ;;
     esac
     
     # BUFFER FLUSH: Prevents skipping the "Press Enter" prompt due to trailing characters from Docker
