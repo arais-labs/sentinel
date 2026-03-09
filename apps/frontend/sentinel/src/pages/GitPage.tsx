@@ -234,13 +234,12 @@ export function GitPage() {
       actions={(
         <button
           onClick={() => void refreshAll()}
-          className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
+          className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-all active:scale-95"
           aria-label="Refresh"
         >
           <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />
         </button>
-      )}
-    >
+      )}    >
       <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-[1.2fr_1fr] gap-6 items-start">
         <div className="space-y-5">
           <Panel className="p-5 space-y-4">
