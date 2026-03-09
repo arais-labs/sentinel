@@ -647,6 +647,7 @@ function StreamToolCard({
   const pendingApproval = isWaitingApproval(call.metadata);
   const approvalRef = pendingApproval ? approvalRefFromMetadata(call.metadata) : null;
   const canResolveApproval = pendingApproval && approvalRef?.canResolve === true;
+  const approvalLinkMissing = pendingApproval && !approvalRef;
   const approvalActionBusy = approvalRef ? resolvingApprovalKey === approvalKey(approvalRef) : false;
 
   useEffect(() => {
@@ -733,6 +734,11 @@ function StreamToolCard({
                         Approve
                       </button>
                     </div>
+                  ) : null}
+                  {approvalLinkMissing ? (
+                    <p className="text-[10px] leading-relaxed text-amber-300">
+                      Pending approval detected but controls are unavailable. Refresh and stop/retry this run if it remains stuck.
+                    </p>
                   ) : null}
                 </div>
               </div>
@@ -2825,9 +2831,9 @@ export function SessionsPage() {
                   <Expand size={14} className="text-emerald-500/80" />
                   Focus
                 </button>
-                
+
                 <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
-                
+
                 <button
                     onClick={resetSession}
                     title="Start fresh (memories preserved)"
@@ -2909,7 +2915,7 @@ export function SessionsPage() {
                 <div className="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
                   <div className={`h-1.5 w-1.5 rounded-full transition-all duration-500 ${streaming.connection === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]'}`} />
                   <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--text-secondary)]">{streaming.connection === 'connected' ? 'Live' : 'Offline'}</span>
-                  
+
                   {/* Connection Tooltip */}
                   <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
                     <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Telemetry Link</div>
@@ -2971,7 +2977,7 @@ export function SessionsPage() {
                         <span className="text-[10px] font-mono font-bold text-[color:var(--text-primary)]">
                           {pct}<span className="text-[color:var(--text-muted)] opacity-60 ml-0.5">%</span>
                         </span>
-                        
+
                         {/* Context Tooltip */}
                         <div className="absolute top-full right-0 mt-2 px-3 py-2.5 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
                           <div className="font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-1.5 pb-1 border-b border-[color:var(--border-subtle)]">Context Window</div>
@@ -3032,7 +3038,7 @@ export function SessionsPage() {
                             normal: Sparkles,
                             hard: Brain,
                           }[tier as string] || Activity;
-                          
+
                           const tierColor = {
                             fast: 'text-emerald-500',
                             normal: 'text-sky-500',
@@ -3544,10 +3550,10 @@ export function SessionsPage() {
             <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
               <div className="relative grid grid-cols-3 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
                 {/* Sliding Indicator */}
-                <div 
+                <div
                   className={`absolute top-0.5 bottom-0.5 w-[calc(33.333%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
-                    rightRailTab === 'browser' 
-                      ? 'left-0.5' 
+                    rightRailTab === 'browser'
+                      ? 'left-0.5'
                       : rightRailTab === 'sub_agents'
                         ? 'left-[calc(33.333%)]'
                         : 'left-[calc(66.666%-0.5px)]'
@@ -3644,60 +3650,73 @@ export function SessionsPage() {
                     />
                   </div>
 
-                  <div className="p-3 space-y-2">
-                    <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2.5">
-                      <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Browser Status</div>
-                      <div className="grid grid-cols-1 gap-2 text-[10px]">
-                        <div className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
-                          <div className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Connection</div>
-                          <div className="font-semibold text-[color:var(--text-secondary)]">
-                            {liveView?.enabled
-                              ? liveView.available
-                                ? 'Connected'
-                                : 'Runtime unreachable'
-                              : 'Disabled'}
+                  <div className="p-3 space-y-4">
+                    <section>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2.5 px-1">Browser Status</div>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)]">Connection</span>
+                          <div className="flex items-center gap-2">
+                            {liveView?.enabled && liveView.available ? (
+                              <>
+                                <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
+                                <span className="text-[10px] font-mono font-bold text-emerald-500">CONNECTED</span>
+                              </>
+                            ) : (
+                              <>
+                                <div className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                                <span className="text-[10px] font-mono font-bold text-rose-500 uppercase">
+                                  {liveView?.enabled ? 'UNREACHABLE' : 'DISABLED'}
+                                </span>
+                              </>
+                            )}
                           </div>
                         </div>
-                        <div className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
-                          <div className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Stream URL</div>
-                          <div className="font-mono text-[10px] text-[color:var(--text-secondary)] break-all">
-                            {liveView?.url ?? 'No URL'}
+                        <div className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">Stream URL</span>
+                            <div className="flex-1 min-w-0 font-mono text-[10px] text-[color:var(--text-secondary)] truncate text-right">
+                              {liveView?.url || '—'}
+                            </div>
                           </div>
+                          {liveView?.reason && (
+                            <div className="mt-1 text-[9px] font-medium text-amber-500/80 leading-relaxed italic text-right truncate">
+                              {liveView.reason}
+                            </div>
+                          )}
                         </div>
-                        {liveView?.reason ? (
-                          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-300">
-                            {liveView.reason}
-                          </div>
-                        ) : null}
                       </div>
-                    </div>
+                    </section>
 
-                    <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-2.5">
-                      <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Recent Browser Actions</div>
+                    <section>
+                      <div className="flex items-center justify-between mb-2.5 px-1">
+                        <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Recent Browser Actions</div>
+                      </div>
                       {browserToolResults.length > 0 ? (
-                        <div className="space-y-1.5">
-                          {browserToolResults.slice(0, 8).map((item) => (
+                        <div className="space-y-1">
+                          {browserToolResults.slice(0, 12).map((item) => (
                             <div
                               key={item.id}
-                              className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2 py-1.5"
+                              className="flex items-center justify-between p-2.5 rounded-lg border border-transparent hover:border-[color:var(--border-subtle)] hover:bg-[color:var(--surface-1)] transition-all group active:scale-[0.99]"
                             >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[10px] font-semibold text-[color:var(--text-primary)]">
+                              <div className="flex items-center gap-3 min-0">
+                                <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] opacity-20 group-hover:opacity-100 transition-opacity" />
+                                <span className="text-[11px] font-bold text-[color:var(--text-primary)] truncate capitalize">
                                   {item.tool_name?.replace('browser_', '').replaceAll('_', ' ') || 'browser action'}
                                 </span>
-                                <span className="text-[9px] text-[color:var(--text-muted)]">
-                                  {formatCompactDate(item.created_at)}
-                                </span>
                               </div>
+                              <span className="text-[9px] font-mono text-[color:var(--text-muted)] shrink-0 opacity-60 group-hover:opacity-100">
+                                {formatCompactDate(item.created_at)}
+                              </span>
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
+                        <div className="py-8 text-center text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] opacity-40">
                           No browser tool activity yet.
                         </div>
                       )}
-                    </div>
+                    </section>
                   </div>
                 </div>
               </div>
@@ -3705,48 +3724,49 @@ export function SessionsPage() {
 
             {rightRailTab === 'sub_agents' ? (
               <div className="flex-1 min-h-0 flex flex-col">
-                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                <div className="flex-1 overflow-y-auto p-3 space-y-2.5 custom-scrollbar">
                   {tasks.map(t => (
-                    <div key={t.id} className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] shadow-sm space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-bold truncate">{t.name}</span>
-                        <StatusChip label={t.status} tone={taskStatusTone(t.status)} className="scale-75 origin-right" />
+                    <div key={t.id} className="group p-3.5 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--border-strong)] transition-all shadow-sm">
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <span className="text-xs font-bold text-[color:var(--text-primary)] truncate">{t.name}</span>
+                        <div className="shrink-0 scale-90 origin-right">
+                          <StatusChip label={t.status} tone={taskStatusTone(t.status)} />
+                        </div>
                       </div>
-                      <p className="text-[10px] text-[color:var(--text-secondary)] line-clamp-2 leading-relaxed">
+                      <p className="text-[10px] text-[color:var(--text-secondary)] line-clamp-2 leading-relaxed mb-3">
                         {t.scope || 'No scope defined.'}
                       </p>
-                      <div className="flex items-center gap-2 pt-1">
+                      <div className="flex items-center gap-2">
                         <button
                           onClick={() => { setSelectedTask(t); setIsTaskModalOpen(true); }}
-                          className="text-[10px] font-bold text-[color:var(--accent-solid)] hover:underline uppercase tracking-wide"
+                          className="flex-1 inline-flex items-center justify-center h-7 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] transition-all active:scale-95"
                         >
                           View Task
                         </button>
                         {(t.status === 'running' || t.status === 'pending') && (
-                          <>
-                            <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
-                            <button
-                              onClick={() => terminateTask(t.id)}
-                              className="text-[10px] font-bold text-rose-500 hover:underline uppercase tracking-wide"
-                            >
-                              Terminate
-                            </button>
-                          </>
+                          <button
+                            onClick={() => terminateTask(t.id)}
+                            className="inline-flex items-center justify-center h-7 px-3 rounded-full border border-rose-500/20 bg-rose-500/5 text-rose-500 text-[10px] font-bold uppercase tracking-wide hover:bg-rose-500 hover:text-white transition-all active:scale-95"
+                          >
+                            Terminate
+                          </button>
                         )}
                       </div>
                     </div>
                   ))}
                   {tasks.length === 0 && (
-                    <div className="h-32 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-50 gap-2">
-                      <Terminal size={24} strokeWidth={1} />
+                    <div className="py-12 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-3">
+                      <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
+                        <Terminal size={24} strokeWidth={1} />
+                      </div>
                       <p className="text-[10px] font-medium uppercase tracking-widest">Idle</p>
                     </div>
                   )}
                 </div>
-                <div className="p-4 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/30">
+                <div className="p-3 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 backdrop-blur">
                   <button
                     onClick={() => setIsSpawnModalOpen(true)}
-                    className="btn-primary w-full h-10 text-xs shadow-sm"
+                    className="w-full flex items-center justify-center gap-2 h-10 rounded-full bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] text-[11px] font-bold uppercase tracking-[0.1em] hover:opacity-90 transition-all active:scale-[0.98] shadow-md shadow-black/5"
                   >
                     <Plus size={14} />
                     Spawn Sub-Agent
@@ -3772,10 +3792,10 @@ export function SessionsPage() {
                   <div className="border-b border-[color:var(--border-subtle)] px-4 py-2">
                     <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
                       {/* Sliding Indicator */}
-                      <div 
+                      <div
                         className={`absolute top-0.5 bottom-0.5 w-[calc(50%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
-                          runtimeInspectorTab === 'files' 
-                            ? 'left-0.5' 
+                          runtimeInspectorTab === 'files'
+                            ? 'left-0.5'
                             : 'left-[calc(50%)]'
                         }`}
                       />
@@ -3890,13 +3910,12 @@ export function SessionsPage() {
                           </div>
                         ) : null}
                         {runtimeFiles?.entries?.length ? (
-                          <div className="relative">
-                            {runtimeFilesLoading ? (
-                              <div className="pointer-events-none absolute inset-x-0 -top-2 z-10 mx-auto w-fit rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2 py-0.5 text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                                Updating folder…
-                              </div>
-                            ) : null}
-                            <div className={`space-y-1.5 transition-all duration-150 ${runtimeFilesLoading ? 'opacity-80 blur-[0.2px]' : 'opacity-100'} ${runtimeFilesLoading ? '' : 'animate-[fade-in_180ms_ease-out]'}`}>
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between px-1">
+                              <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Workspace Explorer</div>
+                              {runtimeFilesLoading && <Loader2 size={10} className="animate-spin text-[color:var(--text-muted)]" />}
+                            </div>
+                            <div className="space-y-1.5">
                               {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
                                 <button
                                   key={`${entry.path}:${entry.kind}`}
@@ -3910,182 +3929,192 @@ export function SessionsPage() {
                                       void openRuntimeFile(entry.path);
                                     }
                                   }}
-                                  className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-2 text-left hover:border-[color:var(--accent-solid)]/40 transition-colors"
+                                  className="w-full group flex items-center justify-between p-2.5 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all active:scale-[0.99]"
                                 >
-                                  <div className="flex items-center gap-2 min-w-0">
+                                  <div className="flex items-center gap-3 min-w-0">
                                     {entry.kind === 'directory' ? (
-                                      <Folder size={13} className="text-sky-500 shrink-0" />
+                                      <Folder size={14} className="text-sky-500 shrink-0" />
                                     ) : (
-                                      <FileCode2 size={13} className="text-[color:var(--text-muted)] shrink-0" />
+                                      <FileCode2 size={14} className="text-[color:var(--text-muted)] shrink-0 group-hover:text-[color:var(--text-primary)] transition-colors" />
                                     )}
-                                    <span className="text-[11px] font-semibold truncate">{entry.name}</span>
-                                    <span className="text-[9px] text-[color:var(--text-muted)] shrink-0">
-                                      {entry.kind === 'directory' ? 'DIR' : formatBytes(entry.size_bytes)}
-                                    </span>
-                                    {entry.modified_at ? (
-                                      <span className="text-[9px] text-[color:var(--text-muted)] shrink-0">
-                                        {formatCompactDate(entry.modified_at)}
+                                    <div className="flex flex-col items-start min-w-0">
+                                      <span className="text-[11px] font-bold text-[color:var(--text-primary)] truncate">{entry.name}</span>
+                                      <div className="flex items-center gap-2 mt-0.5">
+                                        <span className="text-[9px] font-mono text-[color:var(--text-muted)] uppercase tracking-tight">
+                                          {entry.kind === 'directory' ? 'Folder' : formatBytes(entry.size_bytes)}
+                                        </span>
+                                        {entry.modified_at && (
+                                          <>
+                                            <div className="w-0.5 h-0.5 rounded-full bg-[color:var(--border-strong)]" />
+                                            <span className="text-[9px] font-mono text-[color:var(--text-muted)]">
+                                              {formatCompactDate(entry.modified_at)}
+                                            </span>
+                                          </>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    {entry.kind === 'directory' && entry.is_git_root && (
+                                      <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/5 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-violet-500">
+                                        <GitBranch size={9} />
+                                        {entry.git_detached_head ? 'detached' : entry.git_branch || 'repo'}
                                       </span>
-                                    ) : null}
-                                  {entry.kind === 'directory' && entry.is_git_root ? (
-                                    <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/35 bg-violet-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-violet-700 dark:text-violet-300">
-                                      <GitBranch size={9} />
-                                      {entry.git_detached_head
-                                        ? 'detached'
-                                        : entry.git_branch || 'repo'}
-                                    </span>
-                                    ) : null}
-                                    <ChevronRight size={12} className="ml-auto text-[color:var(--text-muted)] shrink-0" />
+                                    )}
+                                    <ChevronRight size={12} className="text-[color:var(--text-muted)] opacity-40 group-hover:opacity-100 transition-opacity" />
                                   </div>
                                 </button>
                               ))}
-                              {runtimeFiles.truncated ? (
-                                <p className="text-[9px] uppercase tracking-wider text-amber-500">List truncated to 400 entries</p>
-                              ) : null}
+                              {runtimeFiles.truncated && (
+                                <div className="p-3 text-center rounded-lg border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/20">
+                                  <p className="text-[9px] font-bold uppercase tracking-widest text-amber-500/80">List truncated to 400 entries</p>
+                                </div>
+                              )}
                             </div>
                           </div>
                         ) : runtimeFilesLoading ? (
-                          <div className="flex items-center gap-2 text-[10px] text-[color:var(--text-muted)] animate-[fade-in_140ms_ease-out]">
-                            <Loader2 size={12} className="animate-spin" />
-                            Loading workspace…
+                          <div className="py-12 flex flex-col items-center justify-center gap-3 text-[color:var(--text-muted)] animate-pulse">
+                            <Loader2 size={20} className="animate-spin" />
+                            <p className="text-[10px] font-bold uppercase tracking-widest">Mapping Workspace...</p>
                           </div>
                         ) : (
-                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70 animate-[fade-in_180ms_ease-out]">
-                            Workspace is empty.
+                          <div className="py-12 flex flex-col items-center justify-center gap-3 text-[color:var(--text-muted)] opacity-40">
+                            <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
+                              <FileCode2 size={20} strokeWidth={1.5} />
+                            </div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.1em]">Workspace is empty</p>
                           </div>
                         )}
                       </div>
                     ) : null}
 
                     {runtimeInspectorTab === 'commands' ? (
-                      <div className="space-y-2">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Recent Commands</div>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between px-1">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Recent Commands</div>
+                          <span className="text-[9px] font-mono text-[color:var(--text-muted)] opacity-60">Last 25</span>
+                        </div>
                         {runtimeCommandActions.length > 0 ? (
-                          <div className="space-y-2">
+                          <div className="space-y-2.5">
                             {runtimeCommandActions.slice(0, 25).map((entry) => {
-                              const command = entry.command || '';
                               const isRunning = entry.state === 'running';
-                              const output = entry.output;
                               const hasOutput = Boolean(
-                                output &&
-                                  (output.stdout.trim().length > 0 ||
-                                    output.stderr.trim().length > 0 ||
-                                    output.timedOut ||
-                                    output.returncode !== null ||
-                                    output.ok !== null),
+                                entry.output &&
+                                  (entry.output.stdout.trim().length > 0 ||
+                                    entry.output.stderr.trim().length > 0 ||
+                                    entry.output.timedOut ||
+                                    entry.output.returncode !== null ||
+                                    entry.output.ok !== null),
                               );
                               const isOutputCollapsed = runtimeCommandOutputCollapsed[entry.id] ?? true;
-                              const statusTone =
-                                entry.state === 'running'
-                                  ? 'border-[color:var(--border-subtle)] bg-emerald-500/[0.05]'
-                                  : entry.state === 'cancelled'
-                                    ? 'border-[color:var(--border-subtle)] bg-rose-500/[0.04]'
-                                    : entry.state === 'failed'
-                                      ? 'border-[color:var(--border-subtle)] bg-rose-500/[0.04]'
-                                      : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/65';
-                              const statusPillTone =
-                                entry.state === 'running'
-                                  ? 'border-emerald-500/35 bg-emerald-500/[0.10] text-emerald-300'
-                                  : entry.state === 'cancelled'
-                                    ? 'border-rose-500/40 bg-rose-500/[0.12] text-rose-300'
-                                    : entry.state === 'failed'
-                                      ? 'border-rose-500/35 bg-rose-500/[0.10] text-rose-300'
-                                      : 'border-sky-500/35 bg-sky-500/[0.12] text-sky-300';
-                              const accentTone =
-                                entry.state === 'running'
-                                  ? 'bg-emerald-400/80'
-                                  : entry.state === 'cancelled'
-                                    ? 'bg-rose-400/80'
-                                    : entry.state === 'failed'
-                                      ? 'bg-rose-400/80'
-                                      : 'bg-[color:var(--border-subtle)]/90';
-                              const sourceLabel = entry.source === 'detached_job' ? 'detached job' : 'command';
-                              const displayTimestamp = entry.endedAt || entry.startedAt;
+
                               return (
                                 <div
                                   key={entry.id}
-                                  className={`relative overflow-hidden rounded-xl border px-3 py-2.5 ${statusTone}`}
+                                  className={`group relative overflow-hidden rounded-xl border transition-all ${
+                                    isRunning
+                                      ? 'border-emerald-500/30 bg-emerald-500/[0.02] shadow-[0_4px_12px_rgba(16,185,129,0.05)]'
+                                      : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)]'
+                                  }`}
                                 >
-                                  <div className={`absolute left-0 top-2 bottom-2 w-[2px] rounded-full ${accentTone}`} />
-                                  <div className="ml-2.5">
-                                    <div className="flex items-center gap-2 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">
-                                      <Clock3 size={10} className={isRunning ? 'text-emerald-400' : 'opacity-70'} />
-                                      <span className="font-semibold">{sourceLabel}</span>
-                                      <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wider ${statusPillTone}`}>
-                                        {entry.state}
+                                  <div className="p-3">
+                                    <div className="flex items-center justify-between mb-2">
+                                      <div className="flex items-center gap-2">
+                                        <div className={`h-1.5 w-1.5 rounded-full ${
+                                          entry.state === 'running' ? 'bg-emerald-500 animate-pulse' :
+                                          entry.state === 'failed' || entry.state === 'cancelled' ? 'bg-rose-500' :
+                                          'bg-[color:var(--text-muted)] opacity-40'
+                                        }`} />
+                                        <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                          {entry.source === 'detached_job' ? 'DETACHED JOB' : 'SHELL'}
+                                        </span>
+                                        <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
+                                        <span className={`text-[8px] font-bold uppercase tracking-wider ${
+                                          entry.state === 'running' ? 'text-emerald-500' :
+                                          entry.state === 'failed' || entry.state === 'cancelled' ? 'text-rose-500' :
+                                          'text-[color:var(--text-muted)]'
+                                        }`}>
+                                          {entry.state}
+                                        </span>
+                                      </div>
+                                      <span className="text-[9px] font-mono text-[color:var(--text-muted)] opacity-60">
+                                        {formatCompactDate(entry.endedAt || entry.startedAt)}
                                       </span>
-                                      {hasOutput ? (
+                                    </div>
+
+                                    <div className="rounded-lg bg-black/5 dark:bg-black/40 p-2 border border-black/5">
+                                      <Markdown
+                                        content={toMarkdownCodeFence(entry.command || '[empty command]', 'bash')}
+                                        className="!text-[10px] markdown-command-inline"
+                                      />
+                                    </div>
+
+                                    {hasOutput && (
+                                      <div className="mt-2.5">
                                         <button
                                           type="button"
                                           onClick={() => toggleRuntimeCommandOutput(entry.id)}
-                                          className="inline-flex items-center rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/40 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--surface-2)]/65"
+                                          className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-80 transition-opacity"
                                         >
-                                          {isOutputCollapsed ? 'show output' : 'hide output'}
+                                          {isOutputCollapsed ? 'Show Output' : 'Hide Output'}
+                                          <ChevronDown size={10} className={`transition-transform ${isOutputCollapsed ? '' : 'rotate-180'}`} />
                                         </button>
-                                      ) : null}
-                                      <span className="ml-auto font-semibold">{displayTimestamp ? formatCompactDate(displayTimestamp) : '—'}</span>
-                                    </div>
-                                    <div className="mt-1.5">
-                                      <Markdown
-                                        content={toMarkdownCodeFence(command || '[empty command]', 'bash')}
-                                        className="!text-[9px] markdown-workbench markdown-command-inline"
-                                      />
-                                    </div>
-                                    {hasOutput && !isOutputCollapsed && output ? (
-                                      <div className="mt-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/65 p-2">
-                                        <div className="flex flex-wrap items-center gap-1 text-[8px] uppercase tracking-wider text-[color:var(--text-muted)]">
-                                          {output.ok !== null ? (
-                                            <span className="rounded-full border border-[color:var(--border-subtle)] px-1.5 py-0.5">
-                                              ok: {String(output.ok)}
-                                            </span>
-                                          ) : null}
-                                          {output.returncode !== null ? (
-                                            <span className="rounded-full border border-[color:var(--border-subtle)] px-1.5 py-0.5">
-                                              exit: {output.returncode}
-                                            </span>
-                                          ) : null}
-                                          {output.timedOut ? (
-                                            <span className="rounded-full border border-rose-500/40 bg-rose-500/12 px-1.5 py-0.5 text-rose-300">
-                                              timed out
-                                            </span>
-                                          ) : null}
-                                        </div>
-                                        {output.stdout.trim() ? (
-                                          <div className="mt-1.5">
-                                            <div className="text-[8px] font-bold uppercase tracking-wider text-emerald-300/90">stdout</div>
-                                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-[color:var(--text-secondary)]">{output.stdout}</pre>
+
+                                        {!isOutputCollapsed && entry.output && (
+                                          <div className="mt-2 space-y-2 animate-in slide-in-from-top-1 duration-200">
+                                            <div className="flex gap-2">
+                                              {entry.output.returncode !== null && (
+                                                <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-[color:var(--surface-2)] text-[color:var(--text-muted)]">
+                                                  EXIT: {entry.output.returncode}
+                                                </span>
+                                              )}
+                                              {entry.output.timedOut && (
+                                                <span className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500 uppercase tracking-widest">
+                                                  Timed Out
+                                                </span>
+                                              )}
+                                            </div>
+
+                                            {entry.output.stdout.trim() && (
+                                              <div className="space-y-1">
+                                                <div className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">stdout</div>
+                                                <pre className="p-2 rounded-lg bg-black/5 dark:bg-black/60 font-mono text-[10px] text-[color:var(--text-secondary)] overflow-auto max-h-48 whitespace-pre-wrap">{entry.output.stdout}</pre>
+                                              </div>
+                                            )}
+                                            {entry.output.stderr.trim() && (
+                                              <div className="space-y-1">
+                                                <div className="text-[8px] font-bold uppercase tracking-widest text-rose-500/80 px-1">stderr</div>
+                                                <pre className="p-2 rounded-lg bg-rose-500/5 dark:bg-rose-500/10 font-mono text-[10px] text-rose-600 dark:text-rose-300 overflow-auto max-h-48 whitespace-pre-wrap">{entry.output.stderr}</pre>
+                                              </div>
+                                            )}
                                           </div>
-                                        ) : null}
-                                        {output.stderr.trim() ? (
-                                          <div className="mt-1.5">
-                                            <div className="text-[8px] font-bold uppercase tracking-wider text-rose-300/90">stderr</div>
-                                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-rose-200/95">{output.stderr}</pre>
-                                          </div>
-                                        ) : null}
+                                        )}
                                       </div>
-                                    ) : null}
-                                    {isRunning ? (
-                                      <div className="mt-1.5 flex justify-end">
+                                    )}
+
+                                    {isRunning && (
+                                      <div className="mt-3 flex justify-end">
                                         <button
                                           type="button"
-                                          onClick={() => {
-                                            void stopCurrent();
-                                          }}
+                                          onClick={() => void stopCurrent()}
                                           disabled={isStopping}
-                                          className="inline-flex items-center rounded-md border border-rose-500/40 bg-rose-500/12 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-rose-300 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                          className="inline-flex items-center gap-1.5 h-7 px-3 rounded-full border border-rose-500/20 bg-rose-500/5 text-rose-500 text-[9px] font-bold uppercase tracking-wider hover:bg-rose-500 hover:text-white transition-all active:scale-95"
                                         >
-                                          {isStopping ? 'Cancelling…' : 'Cancel'}
+                                          {isStopping ? 'Stopping...' : 'Stop Execution'}
                                         </button>
                                       </div>
-                                    ) : null}
+                                    )}
                                   </div>
                                 </div>
                               );
                             })}
                           </div>
                         ) : (
-                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                            No runtime commands yet.
+                          <div className="py-12 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-3">
+                            <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
+                              <Terminal size={20} strokeWidth={1.5} />
+                            </div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.1em]">No shell history</p>
                           </div>
                         )}
                       </div>

@@ -141,6 +141,37 @@ async def stream_session(
                 pending_approval.provider,
                 pending_approval.approval_id,
             )
+        elif isinstance(call.get("approval_hint"), dict):
+            hint = call.get("approval_hint")
+            hint_provider = None
+            hint_match_key = None
+            if isinstance(hint, dict):
+                raw_provider = hint.get("provider")
+                raw_match_key = hint.get("match_key")
+                if isinstance(raw_provider, str) and raw_provider.strip():
+                    hint_provider = raw_provider.strip().lower()
+                if isinstance(raw_match_key, str) and raw_match_key.strip():
+                    hint_match_key = raw_match_key.strip()
+            pending_metadata["approval_linkage_missing"] = True
+            pending_metadata["pending"] = True
+            pending_metadata["approval"] = {
+                "provider": hint_provider or "tool",
+                "status": "pending",
+                "pending": True,
+                "can_resolve": False,
+                "match_key": hint_match_key,
+            }
+            pending_content["status"] = "pending"
+            pending_content["message"] = (
+                "Approval linkage missing for this pending tool call. "
+                "Refresh and stop/retry the run if controls do not appear."
+            )
+            logger.warning(
+                "ws_unresolved_tool_pending_linkage_missing session_id=%s tool_call_id=%s tool_name=%s",
+                session_key,
+                call_id,
+                call.get("name"),
+            )
         await websocket.send_json(
             {
                 "type": "toolcall_start",
