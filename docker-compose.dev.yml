@@ -36,6 +36,10 @@ services:
     build:
       context: .
       dockerfile: infra/docker/sentinel-backend.dev.Dockerfile
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
     environment:
       APP_ENV: development
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arai_stack}:${POSTGRES_PASSWORD:-arai_stack}@postgres:5432/${POSTGRES_DB:-arai_stack}
