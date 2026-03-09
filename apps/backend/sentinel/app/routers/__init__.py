@@ -1,5 +1,6 @@
 from app.routers import (
     admin,
+    agent_modes,
     approvals,
     auth,
     git,
@@ -21,6 +22,7 @@ from app.routers import (
 
 __all__ = [
     "admin",
+    "agent_modes",
     "approvals",
     "auth",
     "git",
