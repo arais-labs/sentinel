@@ -65,7 +65,10 @@ def test_chat_endpoint_calls_agent_loop_and_returns_response():
         payload = chat.json()
         assert payload["response"] == "Agent response"
         assert payload["iterations"] == 2
-        assert payload["usage"] == {"input_tokens": 11, "output_tokens": 7}
+        assert payload["usage"]["input_tokens"] == 11
+        assert payload["usage"]["output_tokens"] == 7
+        assert payload["usage"]["cache_creation_input_tokens"] == 0
+        assert payload["usage"]["cache_read_input_tokens"] == 0
         assert fake_loop.calls[0]["user_message"] == "hello model"
         assert fake_loop.calls[0]["agent_mode"] == "normal"
     finally:

@@ -172,10 +172,10 @@ def test_runtime_context_assembly_when_user_skips_everything():
         assert system_messages
         first_system = system_messages[0]
         assert DEFAULT_SYSTEM_PROMPT in first_system
-        assert "Current date and time:" in first_system
-        assert str(session.id) in first_system
 
         assembled = "\n\n---\n\n".join(system_messages)
+        assert "Current date and time:" in assembled
+        assert str(session.id) in assembled
         assert "## Delegation Policy" in assembled
         assert "## Trigger Automation Policy" in assembled
         assert "## Memory (pinned): Agent Identity" in assembled
@@ -284,9 +284,9 @@ def test_runtime_context_assembly_when_user_inputs_everything():
         assert system_messages
         first_system = system_messages[0]
         assert custom_prompt in first_system
-        assert str(session.id) in first_system
 
         assembled = "\n\n---\n\n".join(system_messages)
+        assert str(session.id) in assembled
         assert "## Delegation Policy" in assembled
         assert "## Trigger Automation Policy" in assembled
         assert "## Memory (pinned): Agent Identity" in assembled
