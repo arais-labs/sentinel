@@ -178,6 +178,17 @@ function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
 
 function humanizeAgentError(raw: string): string {
   const lower = raw.toLowerCase();
+  if (lower.includes('all providers failed')) {
+    const normalized = raw.replace(/\s+/g, ' ').trim();
+    if (normalized.toLowerCase().startsWith('all providers failed')) {
+      const firstDot = normalized.indexOf('.');
+      if (firstDot >= 0 && firstDot + 1 < normalized.length) {
+        return `All AI providers failed.${normalized.slice(firstDot + 1)}`.slice(0, 700);
+      }
+      return 'All AI providers failed.';
+    }
+    return normalized.slice(0, 700);
+  }
   if (lower.includes('rate_limit') || lower.includes('rate limit') || lower.includes('http_429') || lower.includes('429')) {
     return 'API rate limit reached. Please wait a moment and try again, or check your Anthropic account usage limits.';
   }
@@ -192,9 +203,6 @@ function humanizeAgentError(raw: string): string {
   }
   if (lower.includes('timeout') || lower.includes('timed out')) {
     return 'Request timed out. The server took too long to respond. Please try again.';
-  }
-  if (lower.includes('all providers failed')) {
-    return 'All AI providers failed. Please check your API keys and account status in Settings.';
   }
   // Truncate very long raw errors
   if (raw.length > 200) {
