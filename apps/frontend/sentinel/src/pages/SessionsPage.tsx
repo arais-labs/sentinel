@@ -58,6 +58,8 @@ import {
 } from '../lib/approvals';
 import { api } from '../lib/api';
 import type {
+  AgentModeOption,
+  AgentModesResponse,
   ApprovalToolCallMatchResponse,
   Message,
   MessageAttachment,
@@ -235,6 +237,7 @@ function hasUnresolvedToolCalls(messages: Message[]): boolean {
 const APPROVAL_HYDRATION_MAX_ATTEMPTS = 3;
 const APPROVAL_HYDRATION_RETRY_MS = 350;
 const APPROVAL_DEBUG_STORAGE_KEY = 'sentinel.debug.approvals';
+const AGENT_MODE_STORAGE_KEY = 'sentinel-selected-agent-mode';
 
 function isApprovalDebugEnabled(): boolean {
   if (typeof window === 'undefined') return false;
@@ -779,9 +782,15 @@ export function SessionsPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(routeSessionId ?? null);
 
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [agentModes, setAgentModes] = useState<AgentModeOption[]>([]);
+  const [selectedAgentMode, setSelectedAgentMode] = useState<string | null>(() => {
+    const raw = localStorage.getItem(AGENT_MODE_STORAGE_KEY);
+    return raw && raw.trim() ? raw.trim() : null;
+  });
   const [selectedTier, setSelectedTier] = useState(
     () => parseTier(localStorage.getItem('sentinel-selected-tier')) ?? 'normal',
   );
+  const [isAgentModeDropdownOpen, setIsAgentModeDropdownOpen] = useState(false);
   const [isEffortDropdownOpen, setIsEffortDropdownOpen] = useState(false);
   const [maxIterations, setMaxIterations] = useState(50);
 
@@ -848,18 +857,25 @@ export function SessionsPage() {
   }, [selectedTier]);
 
   useEffect(() => {
-    if (!isEffortDropdownOpen) return;
+    if (!selectedAgentMode) return;
+    localStorage.setItem(AGENT_MODE_STORAGE_KEY, selectedAgentMode);
+  }, [selectedAgentMode]);
+
+  useEffect(() => {
+    if (!isEffortDropdownOpen && !isAgentModeDropdownOpen) return;
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
       if (effortDropdownRef.current?.contains(target)) return;
+      if (agentModeDropdownRef.current?.contains(target)) return;
       setIsEffortDropdownOpen(false);
+      setIsAgentModeDropdownOpen(false);
     };
     document.addEventListener('mousedown', handlePointerDown);
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
     };
-  }, [isEffortDropdownOpen]);
+  }, [isEffortDropdownOpen, isAgentModeDropdownOpen]);
 
   const [isCompacting, setIsCompacting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -880,6 +896,7 @@ export function SessionsPage() {
   const wsRef = useRef<WebSocket | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const effortDropdownRef = useRef<HTMLDivElement | null>(null);
+  const agentModeDropdownRef = useRef<HTMLDivElement | null>(null);
   const fullscreenFrameRef = useRef<HTMLIFrameElement | null>(null);
   const intentionalCloseRef = useRef(false);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -1191,6 +1208,7 @@ export function SessionsPage() {
   useEffect(() => {
     void fetchSessions({ autoSelectIfEmpty: true });
     void fetchModels();
+    void fetchAgentModes();
     void fetchLiveView();
   }, []);
 
@@ -1536,6 +1554,29 @@ export function SessionsPage() {
       }
     } catch {
       setModels([]);
+    }
+  }
+
+  async function fetchAgentModes() {
+    try {
+      const payload = await api.get<AgentModesResponse>('/agent-modes');
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      setAgentModes(items);
+      if (items.length === 0) {
+        setSelectedAgentMode(null);
+        return;
+      }
+      const available = new Set(items.map((item) => item.id));
+      const saved = localStorage.getItem(AGENT_MODE_STORAGE_KEY);
+      const defaultMode = typeof payload.default_mode === 'string' ? payload.default_mode.trim() : '';
+      const selected =
+        (saved && available.has(saved) ? saved : null) ??
+        (defaultMode && available.has(defaultMode) ? defaultMode : null) ??
+        items[0].id;
+      setSelectedAgentMode(selected);
+    } catch {
+      setAgentModes([]);
+      setSelectedAgentMode(null);
     }
   }
 
@@ -2749,6 +2790,7 @@ export function SessionsPage() {
           attachments: composerAttachments,
           tier: selectedTier,
           max_iterations: maxIterations,
+          agent_mode: selectedAgentMode ?? undefined,
         })
       );
       setComposer('');
@@ -3024,7 +3066,10 @@ export function SessionsPage() {
                       };
                       return (
                         <button
-                          onClick={() => setIsEffortDropdownOpen(!isEffortDropdownOpen)}
+                          onClick={() => {
+                            setIsAgentModeDropdownOpen(false);
+                            setIsEffortDropdownOpen(!isEffortDropdownOpen);
+                          }}
                           className="flex items-center gap-2.5 px-3 h-8 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all shadow-sm"
                         >
                           <span className="text-[color:var(--text-secondary)]">{icons[tier] || <Activity size={11} />}</span>
@@ -3092,6 +3137,68 @@ export function SessionsPage() {
                           );
                         })}
                       </div>
+                  )}
+                </div>
+
+                {/* Agent Mode Selector */}
+                <div ref={agentModeDropdownRef} className="relative z-20 pl-2 border-l border-[color:var(--border-subtle)]">
+                  {(() => {
+                    const active = agentModes.find((item) => item.id === selectedAgentMode) ?? agentModes[0];
+                    return (
+                      <button
+                        onClick={() => {
+                          if (agentModes.length === 0) return;
+                          setIsEffortDropdownOpen(false);
+                          setIsAgentModeDropdownOpen((prev) => !prev);
+                        }}
+                        disabled={agentModes.length === 0}
+                        className="flex items-center gap-2.5 px-3 h-8 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={active?.description ?? 'Agent mode'}
+                      >
+                        <span className="text-[color:var(--text-secondary)]"><Bot size={11} /></span>
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)]">
+                          {active?.label ?? 'Agent Mode'}
+                        </span>
+                        <ChevronDown size={11} className={`transition-transform duration-300 opacity-40 ${isAgentModeDropdownOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                    );
+                  })()}
+
+                  {isAgentModeDropdownOpen && agentModes.length > 0 && (
+                    <div className="absolute top-full right-0 mt-2 w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl">
+                      {agentModes.map((modeOption) => {
+                        const active = selectedAgentMode === modeOption.id;
+                        return (
+                          <button
+                            key={modeOption.id}
+                            onClick={() => {
+                              setSelectedAgentMode(modeOption.id);
+                              setIsAgentModeDropdownOpen(false);
+                            }}
+                            className={`w-full flex items-start gap-3.5 px-4 py-3 transition-all text-left group ${
+                              active
+                                ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
+                                : 'hover:bg-[color:var(--surface-1)]'
+                            }`}
+                          >
+                            <div className={`mt-0.5 shrink-0 transition-transform group-hover:scale-110 duration-200 ${active ? 'text-[color:var(--app-bg)] opacity-90' : 'text-[color:var(--text-muted)]'}`}>
+                              <Bot size={14} />
+                            </div>
+                            <div className="flex flex-col gap-0.5 min-w-0">
+                              <div className={`text-[10px] font-bold uppercase tracking-widest ${active ? 'text-[color:var(--app-bg)]' : 'text-[color:var(--text-primary)]'}`}>
+                                {modeOption.label}
+                              </div>
+                              <div className={`text-[9px] font-medium leading-tight ${active ? 'text-[color:var(--app-bg)] opacity-70' : 'text-[color:var(--text-muted)]'}`}>
+                                {modeOption.description}
+                              </div>
+                            </div>
+                            {active && (
+                              <div className="ml-auto w-1 h-6 rounded-full bg-[color:var(--app-bg)]/20 my-auto shadow-sm" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
 

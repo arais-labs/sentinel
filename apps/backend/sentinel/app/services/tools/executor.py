@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any
 
+from app.services.agent.agent_modes import AgentMode, get_agent_mode_definition
 from app.services.tools.registry import (
     ToolApprovalDecision,
     ToolApprovalEvaluation,
@@ -37,6 +38,7 @@ class ToolExecutor:
         payload: dict[str, Any],
         *,
         allow_high_risk: bool,
+        agent_mode: AgentMode | str | None = None,
     ) -> tuple[Any, int]:
         tool = self._registry.get(name)
         if tool is None:
@@ -47,7 +49,12 @@ class ToolExecutor:
             raise PermissionError("High-risk tool execution disabled for this run context")
 
         self._validate_payload(tool, payload)
-        approved_metadata = await self._resolve_tool_approval(tool, payload)
+        mode_definition = get_agent_mode_definition(agent_mode)
+        approved_metadata = await self._resolve_tool_approval(
+            tool,
+            payload,
+            auto_approve_required=mode_definition.auto_approve_tool_gates,
+        )
         if approved_metadata:
             payload["__approval_gate"] = approved_metadata
 
@@ -69,6 +76,8 @@ class ToolExecutor:
         self,
         tool: ToolDefinition,
         payload: dict[str, Any],
+        *,
+        auto_approve_required: bool,
     ) -> dict[str, Any] | None:
         gate = tool.approval_gate
         if gate is None or gate.mode == ToolApprovalMode.NONE:
@@ -93,6 +102,29 @@ class ToolExecutor:
         requirement = evaluation.requirement
         if requirement is None:
             raise ToolExecutionError("Approval gate requires a request descriptor before execution.")
+        if auto_approve_required:
+            approval_payload = {
+                "provider": "tool",
+                "approval_id": f"auto:{tool.name}:{int(time.time() * 1000)}",
+                "status": ToolApprovalOutcomeStatus.APPROVED.value,
+                "pending": False,
+                "can_resolve": False,
+                "label": f"{tool.name} approval",
+                "action": requirement.action,
+                "description": requirement.description,
+                "decision_note": "Auto-approved by agent mode full_permission",
+            }
+            if requirement.match_key:
+                approval_payload["match_key"] = requirement.match_key
+            if requirement.requested_by:
+                approval_payload["decision_by"] = requirement.requested_by
+            logger.info(
+                "tool_approval_auto_approved tool=%s action=%s match_key=%s",
+                tool.name,
+                requirement.action,
+                requirement.match_key,
+            )
+            return approval_payload
         if requirement.timeout_seconds < 1:
             raise ToolExecutionError("Approval timeout must be a positive integer.")
         if gate.waiter is None:

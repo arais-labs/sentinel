@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import Message, Session
+from app.services.agent.agent_modes import AgentMode, normalize_agent_mode_value
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
 from app.services.llm.generic.types import AgentEvent, ImageContent, TextContent
@@ -52,6 +53,7 @@ class AgentLoopProtocol(Protocol):
         on_event: Any,
         model: str,
         max_iterations: int,
+        agent_mode: AgentMode,
         allow_high_risk: bool,
         persist_incremental: bool,
         user_metadata: dict[str, Any] | None = None,
@@ -143,8 +145,10 @@ async def persist_user_message(
     requested_tier: TierName | None,
     temperature: float,
     max_iterations: int,
+    agent_mode: AgentMode,
 ) -> Message:
     metadata: dict[str, Any] = web_ingress_metadata()
+    metadata["agent_mode"] = normalize_agent_mode_value(agent_mode)
     if attachments:
         metadata["attachments"] = attachments
     generation = build_generation_metadata(
@@ -199,6 +203,7 @@ async def run_agent_once(
     payload: str | list[TextContent | ImageContent],
     tier: TierName | None,
     max_iterations: int,
+    agent_mode: AgentMode,
     persist_user_message: bool,
 ) -> AgentRunOutcome:
     async def _broadcast_event(event: AgentEvent) -> None:
@@ -213,6 +218,7 @@ async def run_agent_once(
             on_event=_broadcast_event,
             model=(tier or TierName.NORMAL).value,
             max_iterations=max_iterations,
+            agent_mode=agent_mode,
             allow_high_risk=True,
             persist_incremental=True,
         )
@@ -259,6 +265,7 @@ async def maybe_auto_compact_and_resume(
     agent_loop: AgentLoopProtocol,
     tier: TierName | None,
     max_iterations: int,
+    agent_mode: AgentMode,
     auto_resume_prompt: str,
     compaction_service_cls: type[CompactionService] = CompactionService,
 ) -> None:
@@ -304,6 +311,7 @@ async def maybe_auto_compact_and_resume(
             payload=auto_resume_prompt,
             tier=tier,
             max_iterations=max_iterations,
+            agent_mode=agent_mode,
             persist_user_message=False,
         )
     except Exception:  # noqa: BLE001

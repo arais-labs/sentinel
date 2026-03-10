@@ -536,6 +536,7 @@ async def chat_session(
             content=payload.content,
             attachments=payload.attachments,
             tier=payload.tier,
+            agent_mode=payload.agent_mode,
             system_prompt=payload.system_prompt,
             temperature=payload.temperature,
             max_iterations=payload.max_iterations,

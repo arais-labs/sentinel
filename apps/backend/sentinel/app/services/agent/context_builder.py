@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import Memory, Message, SessionSummary
+from app.services.agent.agent_modes import AgentMode, get_agent_mode_definition
 from app.services.agent.policies import build_policy_messages
 from app.services.context_usage import (
     estimate_agent_messages_tokens,
@@ -67,6 +68,7 @@ class ContextBuilder:
         session_id: UUID,
         system_prompt: str | None = None,
         pending_user_message: str | None = None,
+        agent_mode: AgentMode | str | None = None,
     ) -> list[AgentMessage]:
         """Build runtime context from policies, memory, summary, and recent history."""
         prompt = (system_prompt or self._default_system_prompt).strip()
@@ -86,6 +88,19 @@ class ContextBuilder:
             )
         ]
         context.extend(build_policy_messages(self._available_tools))
+        mode_definition = get_agent_mode_definition(agent_mode)
+        if mode_definition.policy is not None:
+            context.append(
+                SystemMessage(
+                    content=mode_definition.policy.content,
+                    metadata={
+                        "layer": "policy",
+                        "kind": mode_definition.policy.kind,
+                        "title": mode_definition.policy.title,
+                        "explanation": mode_definition.policy.explanation,
+                    },
+                )
+            )
 
         context.extend(await self._memory_system_messages(db, pending_user_message))
 
