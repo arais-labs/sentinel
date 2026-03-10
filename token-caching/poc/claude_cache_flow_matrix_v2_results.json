@@ -1,0 +1,256 @@
+[
+  {
+    "case": "A_beta_scope_plus_cache_control_ttl1h",
+    "run_id": "46fcbf3200",
+    "beta_scope": true,
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+    },
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 27,
+        "cache_creation_input_tokens": 5181,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 5181
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 27,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 5181,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_created_tokens": 5181,
+      "run2_read_tokens": 5181,
+      "run1_created_bool": true,
+      "run2_read_bool": true
+    }
+  },
+  {
+    "case": "B_no_scope_beta_with_cache_control_ttl1h",
+    "run_id": "46fcbf3200",
+    "beta_scope": false,
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+    },
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 27,
+        "cache_creation_input_tokens": 5461,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 5461
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 27,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 5461,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_created_tokens": 5461,
+      "run2_read_tokens": 5461,
+      "run1_created_bool": true,
+      "run2_read_bool": true
+    }
+  },
+  {
+    "case": "C_scope_beta_no_cache_control",
+    "run_id": "46fcbf3200",
+    "beta_scope": true,
+    "cache_control": null,
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 4508,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 4508,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_created_tokens": 0,
+      "run2_read_tokens": 0,
+      "run1_created_bool": false,
+      "run2_read_bool": false
+    }
+  },
+  {
+    "case": "D_scope_beta_cache_control_ttl1h_stable_plus_one_char_change",
+    "run_id": "46fcbf3200",
+    "beta_scope": true,
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+    },
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 27,
+        "cache_creation_input_tokens": 6301,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 6301
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 27,
+        "cache_creation_input_tokens": 6302,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 6302
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_created_tokens": 6301,
+      "run2_read_tokens": 0,
+      "run1_created_bool": true,
+      "run2_read_bool": false
+    }
+  },
+  {
+    "case": "E_scope_beta_cache_control_no_ttl",
+    "run_id": "46fcbf3200",
+    "beta_scope": true,
+    "cache_control": {
+      "type": "ephemeral"
+    },
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 27,
+        "cache_creation_input_tokens": 4901,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 4901,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 27,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 4901,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_created_tokens": 4901,
+      "run2_read_tokens": 4901,
+      "run1_created_bool": true,
+      "run2_read_bool": true
+    }
+  },
+  {
+    "case": "F_scope_beta_cache_control_ttl5m",
+    "run_id": "46fcbf3200",
+    "beta_scope": true,
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "5m"
+    },
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 27,
+        "cache_creation_input_tokens": 4901,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 4901,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 27,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 4901,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_created_tokens": 4901,
+      "run2_read_tokens": 4901,
+      "run1_created_bool": true,
+      "run2_read_bool": true
+    }
+  }
+]
