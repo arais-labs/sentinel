@@ -1939,3 +1939,46 @@ def test_codex_execution_prelude_not_duplicated_when_already_present():
     )
     rendered = provider._with_codex_execution_prelude(instructions)  # type: ignore[attr-defined]
     assert rendered == instructions
+
+
+def test_anthropic_oauth_cache_block_budget_caps_at_four():
+    fake_client = _FakeAsyncClient(
+        post_response=_FakeResponse(
+            {
+                "model": "claude-sonnet-4-20250514",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 3},
+            }
+        )
+    )
+    provider = AnthropicProvider(
+        api_key="sk-ant-oat01-test",
+        base_url="https://api.anthropic.com",
+        client_factory=lambda: fake_client,
+    )
+
+    messages: list[AgentMessage | dict] = [
+        {"role": "system", "content": "stable system 1", "metadata": {"kind": "base_prompt"}},
+        {"role": "system", "content": "stable system 2", "metadata": {"kind": "base_prompt"}},
+        {"role": "system", "content": "dynamic", "metadata": {"kind": "runtime_info"}},
+    ]
+    for i in range(8):
+        messages.append(UserMessage(content=f"stable user {i}"))
+        messages.append({"role": "assistant", "content": f"stable assistant {i}"})
+
+    _run(provider.chat(messages, model="claude-sonnet-4-20250514", tools=[]))
+
+    sent = fake_client.post_calls[0]["json"]
+    count = 0
+    for block in sent.get("system", []) if isinstance(sent.get("system"), list) else []:
+        if isinstance(block, dict) and isinstance(block.get("cache_control"), dict):
+            count += 1
+    for msg in sent.get("messages", []):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("cache_control"), dict):
+                count += 1
+    assert count <= 4
