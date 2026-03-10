@@ -45,6 +45,81 @@ def _is_cacheable_history_block(
     return block.get("type") == "text" and isinstance(block.get("text"), str)
 
 
+_ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS = 4
+
+
+def _apply_cache_control_to_system_blocks(blocks: list[dict[str, Any]], *, budget: int) -> int:
+    applied = 0
+    if budget <= 0:
+        return applied
+    for block in blocks:
+        if applied >= budget:
+            break
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "text":
+            continue
+        if block.get("_runtime_dynamic") is True:
+            continue
+        text = block.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if block.get("cache_control") is not None:
+            continue
+        block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+        applied += 1
+    return applied
+
+
+def _apply_cache_control_to_history_messages(
+    messages: list[dict[str, Any]],
+    *,
+    budget: int,
+) -> int:
+    applied = 0
+    if budget <= 0:
+        return applied
+    for message in reversed(messages):
+        if applied >= budget:
+            break
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        if not _is_cacheable_history_block(role=str(role or ""), content_blocks=content):
+            continue
+        block = content[0]
+        if block.get("cache_control") is not None:
+            continue
+        block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+        applied += 1
+    return applied
+
+
+def _build_oauth_cache_aware_payload(
+    *,
+    system_blocks: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    system_copy = []
+    for block in system_blocks:
+        copied = dict(block)
+        copied.pop("_runtime_dynamic", None)
+        system_copy.append(copied)
+    messages_copy = [
+        {**msg, "content": [dict(block) for block in msg.get("content", [])] if isinstance(msg.get("content"), list) else msg.get("content")}
+        for msg in messages
+    ]
+
+    used = _apply_cache_control_to_system_blocks(system_copy, budget=_ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS)
+    remaining = max(0, _ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS - used)
+    if remaining > 0:
+        _apply_cache_control_to_history_messages(messages_copy, budget=remaining)
+    return system_copy, messages_copy
+
+
 class AnthropicProvider(LLMProvider):
     """Anthropic Messages API adapter with streaming event translation."""
 
@@ -107,18 +182,24 @@ class AnthropicProvider(LLMProvider):
             model, use_thinking, rc.thinking_budget, rc.max_tokens,
             len(tools) if tools else 0,
         )
+        anthropic_messages = self._to_anthropic_messages(messages)
         payload = {
             "model": model or "claude-sonnet-4-20250514",
             "max_tokens": rc.max_tokens,
             "temperature": 1.0 if use_thinking else temperature,
-            "messages": self._to_anthropic_messages(messages),
+            "messages": anthropic_messages,
         }
         if use_thinking:
             payload["thinking"] = {"type": "enabled", "budget_tokens": rc.thinking_budget}
         if self._is_oauth:
             system_blocks = self._extract_system_prompt_blocks(messages)
             if system_blocks:
-                payload["system"] = system_blocks
+                cached_system, cached_messages = _build_oauth_cache_aware_payload(
+                    system_blocks=system_blocks,
+                    messages=anthropic_messages,
+                )
+                payload["system"] = cached_system
+                payload["messages"] = cached_messages
         else:
             system_prompt = self._extract_system_prompt(messages)
             if system_prompt:
@@ -173,19 +254,25 @@ class AnthropicProvider(LLMProvider):
             model, use_thinking, rc.thinking_budget, rc.max_tokens,
             len(tools) if tools else 0,
         )
+        anthropic_messages = self._to_anthropic_messages(messages)
         payload = {
             "model": model or "claude-sonnet-4-20250514",
             "max_tokens": rc.max_tokens,
             "temperature": 1.0 if use_thinking else temperature,
             "stream": True,
-            "messages": self._to_anthropic_messages(messages),
+            "messages": anthropic_messages,
         }
         if use_thinking:
             payload["thinking"] = {"type": "enabled", "budget_tokens": rc.thinking_budget}
         if self._is_oauth:
             system_blocks = self._extract_system_prompt_blocks(messages)
             if system_blocks:
-                payload["system"] = system_blocks
+                cached_system, cached_messages = _build_oauth_cache_aware_payload(
+                    system_blocks=system_blocks,
+                    messages=anthropic_messages,
+                )
+                payload["system"] = cached_system
+                payload["messages"] = cached_messages
         else:
             system_prompt = self._extract_system_prompt(messages)
             if system_prompt:
@@ -349,8 +436,8 @@ class AnthropicProvider(LLMProvider):
             kind = metadata.get("kind") if isinstance(metadata, dict) else None
             is_dynamic = kind == "runtime_info"
             block: dict[str, Any] = {"type": "text", "text": text}
-            if not is_dynamic:
-                block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+            if is_dynamic:
+                block["_runtime_dynamic"] = True
             blocks.append(block)
         return blocks
 
@@ -401,8 +488,6 @@ class AnthropicProvider(LLMProvider):
                     blocks.append({"type": "text", "text": content})
                 if not blocks:
                     continue
-                if self._is_oauth and _is_cacheable_history_block(role="assistant", content_blocks=blocks):
-                    blocks[0]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
                 output.append({"role": "assistant", "content": blocks})
                 continue
 
@@ -426,8 +511,6 @@ class AnthropicProvider(LLMProvider):
                         )
             if not user_blocks:
                 continue
-            if self._is_oauth and _is_cacheable_history_block(role="user", content_blocks=user_blocks):
-                user_blocks[0]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
             output.append({"role": "user", "content": user_blocks})
         return output
 
