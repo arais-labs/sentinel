@@ -1,0 +1,327 @@
+[
+  {
+    "case": "A_working_scope_beta_and_cache_control_ttl1h",
+    "beta_scope": true,
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+    },
+    "change_stable_on_run2": false,
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 2521,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2521
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_cache_created": true,
+      "run2_cache_read": true
+    }
+  },
+  {
+    "case": "B_no_prompt_caching_scope_beta_but_cache_control",
+    "beta_scope": false,
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+    },
+    "change_stable_on_run2": false,
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_cache_created": false,
+      "run2_cache_read": true
+    }
+  },
+  {
+    "case": "C_scope_beta_but_no_cache_control",
+    "beta_scope": true,
+    "cache_control": null,
+    "change_stable_on_run2": false,
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 2541,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 2541,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_cache_created": false,
+      "run2_cache_read": false
+    }
+  },
+  {
+    "case": "D_scope_beta_cache_control_but_stable_changes_by_one_char",
+    "beta_scope": true,
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+    },
+    "change_stable_on_run2": true,
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 2522,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2522
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_cache_created": false,
+      "run2_cache_read": false
+    }
+  },
+  {
+    "case": "E_scope_beta_cache_control_dynamic_changes_only",
+    "beta_scope": true,
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+    },
+    "change_stable_on_run2": false,
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_cache_created": false,
+      "run2_cache_read": true
+    }
+  },
+  {
+    "case": "F_scope_beta_cache_control_no_ttl",
+    "beta_scope": true,
+    "cache_control": {
+      "type": "ephemeral"
+    },
+    "change_stable_on_run2": false,
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_cache_created": false,
+      "run2_cache_read": true
+    }
+  },
+  {
+    "case": "G_scope_beta_cache_control_ttl5m",
+    "beta_scope": true,
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "5m"
+    },
+    "change_stable_on_run2": false,
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_cache_created": false,
+      "run2_cache_read": true
+    }
+  },
+  {
+    "case": "H_non_allowlisted_style_manual_forced_markers",
+    "beta_scope": true,
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+    },
+    "change_stable_on_run2": false,
+    "run1": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "run2": {
+      "status": 200,
+      "error": "",
+      "usage": {
+        "input_tokens": 20,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2521,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 8
+      }
+    },
+    "summary": {
+      "run1_cache_created": false,
+      "run2_cache_read": true
+    },
+    "note": "query_source concept is client-side only; server sees markers+headers only"
+  }
+]
