@@ -382,6 +382,13 @@ def test_runtime_exec_detached_job_lifecycle():
         assert payload["ok"] is True
         assert payload["detached"] is True
         job_id = payload["job"]["id"]
+        if payload["privilege"] == "user":
+            assert payload["workspace"] == "/mnt"
+            assert payload["cwd"] == "/mnt"
+            assert payload["job"]["cwd"] == "/mnt"
+            assert str(payload["job"].get("stdout_path", "")).startswith("/mnt/")
+            assert str(payload["job"].get("stderr_path", "")).startswith("/mnt/")
+            assert "/tmp/sentinel/session_runtime" not in json.dumps(payload["job"])
 
         listed = client.post(
             "/api/v1/tools/runtime_jobs_list/execute",
@@ -390,7 +397,13 @@ def test_runtime_exec_detached_job_lifecycle():
         )
         assert listed.status_code == 200
         jobs = listed.json()["result"]["jobs"]
-        assert any(item["id"] == job_id for item in jobs)
+        listed_job = next((item for item in jobs if item["id"] == job_id), None)
+        assert listed_job is not None
+        if payload["privilege"] == "user":
+            assert listed_job["cwd"] == "/mnt"
+            assert str(listed_job.get("stdout_path", "")).startswith("/mnt/")
+            assert str(listed_job.get("stderr_path", "")).startswith("/mnt/")
+            assert "/tmp/sentinel/session_runtime" not in json.dumps(listed_job)
 
         status = client.post(
             "/api/v1/tools/runtime_job_status/execute",
@@ -398,7 +411,13 @@ def test_runtime_exec_detached_job_lifecycle():
             headers=headers,
         )
         assert status.status_code == 200
-        assert status.json()["result"]["job"]["id"] == job_id
+        status_job = status.json()["result"]["job"]
+        assert status_job["id"] == job_id
+        if payload["privilege"] == "user":
+            assert status_job["cwd"] == "/mnt"
+            assert str(status_job.get("stdout_path", "")).startswith("/mnt/")
+            assert str(status_job.get("stderr_path", "")).startswith("/mnt/")
+            assert "/tmp/sentinel/session_runtime" not in json.dumps(status_job)
 
         logs = client.post(
             "/api/v1/tools/runtime_job_logs/execute",
@@ -406,7 +425,14 @@ def test_runtime_exec_detached_job_lifecycle():
             headers=headers,
         )
         assert logs.status_code == 200
-        assert "stdout_tail" in logs.json()["result"]
+        logs_result = logs.json()["result"]
+        assert "stdout_tail" in logs_result
+        if payload["privilege"] == "user":
+            logs_job = logs_result["job"]
+            assert logs_job["cwd"] == "/mnt"
+            assert str(logs_job.get("stdout_path", "")).startswith("/mnt/")
+            assert str(logs_job.get("stderr_path", "")).startswith("/mnt/")
+            assert "/tmp/sentinel/session_runtime" not in json.dumps(logs_job)
 
         stopped = client.post(
             "/api/v1/tools/runtime_job_stop/execute",
@@ -635,6 +661,32 @@ def test_runtime_exec_user_mode_confines_writes_to_workspace():
         allowed_payload = allowed.json()["result"]
         assert allowed_payload["ok"] is True
         assert "workspace-ok" in allowed_payload["stdout"]
+        assert allowed_payload["workspace"] == "/mnt"
+        assert allowed_payload["cwd"] == "/mnt"
+
+        tmp_mapped = client.post(
+            "/api/v1/tools/runtime_exec/execute",
+            json={
+                "input": {
+                    "command": (
+                        "echo tmp-ok > /tmp/runtime_exec_probe.txt "
+                        "&& cat /tmp/runtime_exec_probe.txt "
+                        "&& test -f .runtime/sandbox/tmp/runtime_exec_probe.txt "
+                        "&& echo mapped-ok"
+                    ),
+                    "session_id": session_id,
+                    "privilege": "user",
+                }
+            },
+            headers=headers,
+        )
+        assert tmp_mapped.status_code == 200
+        tmp_payload = tmp_mapped.json()["result"]
+        assert tmp_payload["ok"] is True
+        assert "tmp-ok" in tmp_payload["stdout"]
+        assert "mapped-ok" in tmp_payload["stdout"]
+        assert tmp_payload["workspace"] == "/mnt"
+        assert tmp_payload["cwd"] == "/mnt"
 
         blocked = client.post(
             "/api/v1/tools/runtime_exec/execute",
@@ -704,7 +756,8 @@ def test_runtime_exec_user_mode_python_venv_is_available_inside_sandbox():
         assert run.status_code == 200
         payload = run.json()["result"]
         assert payload["ok"] is True
-        assert "/venv" in payload["stdout"]
+        assert "/tmp/.venv" in payload["stdout"]
+        assert payload["venv"] == "/tmp/.venv"
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()

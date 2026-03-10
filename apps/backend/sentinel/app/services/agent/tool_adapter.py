@@ -18,6 +18,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.services.agent.agent_modes import AgentMode
 from app.services.approvals.extractors import extract_approval_metadata_from_tool_result
 from app.services.estop import EstopService
 from app.services.llm.generic.credential_scrubber import scrub
@@ -68,6 +69,7 @@ class ToolAdapter:
         *,
         session_id: UUID | str | None = None,
         allow_high_risk: bool = False,
+        agent_mode: AgentMode | str | None = None,
     ) -> list[ToolResultMessage]:
         """Execute all tool calls for a turn and return normalized result messages."""
         tasks = [
@@ -76,6 +78,7 @@ class ToolAdapter:
                 db,
                 allow_high_risk=allow_high_risk,
                 session_id=session_id,
+                agent_mode=agent_mode,
             )
             for call in calls
         ]
@@ -113,6 +116,7 @@ class ToolAdapter:
         *,
         allow_high_risk: bool,
         session_id: UUID | str | None,
+        agent_mode: AgentMode | str | None,
     ) -> ToolResultMessage:
         """Execute a single tool call with estop enforcement and consistent error wrapping."""
         try:
@@ -135,6 +139,7 @@ class ToolAdapter:
                 call.name,
                 payload,
                 allow_high_risk=allow_high_risk,
+                agent_mode=agent_mode,
             )
             truncated, metadata = self._prepare_content_and_metadata(call.name, result)
             return ToolResultMessage(

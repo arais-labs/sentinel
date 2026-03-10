@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.logging_context import reset_log_session, set_log_session
 from app.models import Message, Session
+from app.services.agent.agent_modes import AgentMode, get_agent_mode_definition
 from app.services.context_usage import (
     build_context_usage_metrics,
     estimate_agent_messages_tokens,
@@ -125,6 +126,7 @@ class AgentLoop:
         max_iterations: int = 50,
         temperature: float = 0.7,
         model: str = TierName.NORMAL.value,
+        agent_mode: AgentMode | str | None = None,
         allow_high_risk: bool = False,
         persist_user_message: bool = True,
         stream: bool = True,
@@ -143,6 +145,8 @@ class AgentLoop:
             if isinstance(user_metadata, dict)
             else {}
         )
+        mode_definition = get_agent_mode_definition(agent_mode)
+        normalized_user_metadata["agent_mode"] = mode_definition.id.value
         user = UserMessage(content=user_message, metadata=normalized_user_metadata)
         created: list[AgentMessage] = []
         assistant_iterations: dict[int, int] = {}
@@ -176,6 +180,7 @@ class AgentLoop:
             session_id,
             system_prompt,
             pending_user_message=self._user_text(user_message),
+            agent_mode=mode_definition.id,
         )
         tools = self.tool_adapter.get_tool_schemas()
         runtime_system_prompt = self._extract_runtime_system_prompt(messages)
@@ -186,6 +191,7 @@ class AgentLoop:
             temperature=temperature,
             max_iterations=max_iterations,
             stream=stream,
+            agent_mode=mode_definition.id,
         )
         context_snapshot_pending = True
         messages.append(user)
@@ -508,6 +514,7 @@ class AgentLoop:
                     db,
                     session_id=session_id,
                     allow_high_risk=allow_high_risk,
+                    agent_mode=mode_definition.id,
                 )
                 messages.extend(tool_results)
                 created.extend(tool_results)
@@ -1167,6 +1174,7 @@ class AgentLoop:
         temperature: float,
         max_iterations: int,
         stream: bool,
+        agent_mode: AgentMode | str,
     ) -> dict[str, Any]:
         system_blocks: list[str] = []
         layered_context: list[dict[str, Any]] = []
@@ -1258,6 +1266,7 @@ class AgentLoop:
         return {
             "timestamp": datetime.now(UTC).isoformat(),
             "model": model,
+            "agent_mode": agent_mode.value if isinstance(agent_mode, AgentMode) else str(agent_mode),
             "temperature": temperature,
             "max_iterations": max_iterations,
             "stream": stream,

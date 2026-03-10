@@ -217,6 +217,7 @@ async def stream_session(
                 requested_tier=parsed.tier,
                 temperature=0.7,
                 max_iterations=parsed.max_iterations,
+                agent_mode=parsed.agent_mode,
             )
             session_has_messages = True
 
@@ -256,6 +257,7 @@ async def stream_session(
                 payload=build_user_payload(parsed),
                 tier=parsed.tier,
                 max_iterations=parsed.max_iterations,
+                agent_mode=parsed.agent_mode,
                 persist_user_message=False,
             )
             if outcome.failed:
@@ -272,6 +274,7 @@ async def stream_session(
                     agent_loop=agent_loop,
                     tier=parsed.tier,
                     max_iterations=parsed.max_iterations,
+                    agent_mode=parsed.agent_mode,
                     auto_resume_prompt=_COMPACTION_AUTO_RESUME_PROMPT,
                     compaction_service_cls=CompactionService,
                 )
