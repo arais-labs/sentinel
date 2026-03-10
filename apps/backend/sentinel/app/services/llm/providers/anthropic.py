@@ -6,6 +6,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -43,6 +44,9 @@ class AnthropicProvider(LLMProvider):
         self._base_url = base_url.rstrip("/")
         self._client_factory = client_factory or (lambda: httpx.AsyncClient(timeout=60))
         self._is_oauth = self._detect_oauth(api_key)
+        self._inference_api_key: str | None = None
+        self._oauth_exchange_attempted = False
+        self._oauth_exchange_error: str | None = None
 
     @staticmethod
     def _detect_oauth(token: str) -> bool:
@@ -96,9 +100,14 @@ class AnthropicProvider(LLMProvider):
         }
         if use_thinking:
             payload["thinking"] = {"type": "enabled", "budget_tokens": rc.thinking_budget}
-        system_prompt = self._extract_system_prompt(messages)
-        if system_prompt:
-            payload["system"] = system_prompt
+        if self._is_oauth:
+            system_blocks = self._extract_system_prompt_blocks(messages)
+            if system_blocks:
+                payload["system"] = system_blocks
+        else:
+            system_prompt = self._extract_system_prompt(messages)
+            if system_prompt:
+                payload["system"] = system_prompt
         if tools:
             payload["tools"] = [self._tool_schema(tool) for tool in tools]
 
@@ -106,20 +115,18 @@ class AnthropicProvider(LLMProvider):
             response = await client.post(
                 f"{self._base_url}/v1/messages",
                 json=payload,
-                headers=self._headers(thinking=use_thinking),
+                headers=await self._auth_headers(thinking=use_thinking, cache_scope=self._is_oauth),
             )
         response.raise_for_status()
 
         data = response.json()
         usage = data.get("usage") or {}
+        usage_payload = _token_usage_from_anthropic_usage(usage)
         return AssistantMessage(
             content=self._parse_content_blocks(data.get("content") or []),
             model=data.get("model") or model,
             provider=self.name,
-            usage=TokenUsage(
-                input_tokens=int(usage.get("input_tokens") or 0),
-                output_tokens=int(usage.get("output_tokens") or 0),
-            ),
+            usage=usage_payload,
             stop_reason=_map_anthropic_stop_reason(data.get("stop_reason")),
         )
 
@@ -160,18 +167,24 @@ class AnthropicProvider(LLMProvider):
         }
         if use_thinking:
             payload["thinking"] = {"type": "enabled", "budget_tokens": rc.thinking_budget}
-        system_prompt = self._extract_system_prompt(messages)
-        if system_prompt:
-            payload["system"] = system_prompt
+        if self._is_oauth:
+            system_blocks = self._extract_system_prompt_blocks(messages)
+            if system_blocks:
+                payload["system"] = system_blocks
+        else:
+            system_prompt = self._extract_system_prompt(messages)
+            if system_prompt:
+                payload["system"] = system_prompt
         if tools:
             payload["tools"] = [self._tool_schema(tool) for tool in tools]
 
+        usage_state = TokenUsage()
         async with self._client_factory() as client:
             async with client.stream(
                 "POST",
                 f"{self._base_url}/v1/messages",
                 json=payload,
-                headers=self._headers(thinking=use_thinking),
+                headers=await self._auth_headers(thinking=use_thinking, cache_scope=self._is_oauth),
             ) as response:
                 if response.is_error:
                     body = await response.aread()
@@ -191,27 +204,94 @@ class AnthropicProvider(LLMProvider):
                         event = json.loads(data_blob)
                     except json.JSONDecodeError:
                         continue
-                    for parsed in _parse_anthropic_stream_event(event):
+                    for parsed in _parse_anthropic_stream_event(event, usage_state=usage_state):
                         if parsed.type == "error":
                             detail = str(parsed.error or "Provider stream error")
                             raise RuntimeError(f"Anthropic stream sse_error: {detail}")
+                        if parsed.type == "done":
+                            parsed.message = AssistantMessage(usage=usage_state)
                         yield parsed
 
-    def _headers(self, *, thinking: bool = False) -> dict[str, str]:
+    async def _ensure_inference_api_key(self) -> None:
+        if not self._is_oauth:
+            return
+        if not self._supports_oauth_api_key_exchange():
+            return
+        if self._inference_api_key is not None:
+            return
+        if self._oauth_exchange_attempted:
+            return
+
+        self._oauth_exchange_attempted = True
+        token = self._api_key.strip()
+        if not token:
+            self._oauth_exchange_error = "empty oauth token"
+            return
+
+        headers = {
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "authorization": f"Bearer {token}",
+            "anthropic-beta": "oauth-2025-04-20",
+        }
+        exchange_url = f"{self._base_url}/api/oauth/claude_cli/create_api_key"
+        try:
+            async with self._client_factory() as client:
+                response = await client.post(exchange_url, headers=headers, json={})
+            is_error = bool(getattr(response, "is_error", False))
+            if is_error:
+                detail = response.text.strip()[:400]
+                self._oauth_exchange_error = f"http_{response.status_code}: {detail}"
+                logger.warning("Anthropic OAuth API key exchange failed: %s", self._oauth_exchange_error)
+                return
+            try:
+                payload = response.json()
+            except Exception:  # noqa: BLE001
+                payload = {}
+            exchanged_key: str | None = None
+            if isinstance(payload, dict):
+                candidate = payload.get("raw_key")
+                if isinstance(candidate, str) and candidate.strip():
+                    exchanged_key = candidate.strip()
+                if exchanged_key is None:
+                    candidate = payload.get("api_key")
+                    if isinstance(candidate, str) and candidate.strip():
+                        exchanged_key = candidate.strip()
+            if exchanged_key is not None:
+                self._inference_api_key = exchanged_key
+                logger.info("Anthropic OAuth API key exchange succeeded")
+                return
+            self._oauth_exchange_error = "response_missing_api_key"
+            logger.warning("Anthropic OAuth API key exchange missing raw_key/api_key in response")
+        except Exception as exc:  # noqa: BLE001
+            self._oauth_exchange_error = str(exc)
+            logger.warning("Anthropic OAuth API key exchange exception: %s", self._oauth_exchange_error)
+
+    async def _auth_headers(self, *, thinking: bool = False, cache_scope: bool = False) -> dict[str, str]:
+        if self._is_oauth:
+            await self._ensure_inference_api_key()
+        return self._headers(thinking=thinking, cache_scope=cache_scope)
+
+    def _headers(self, *, thinking: bool = False, cache_scope: bool = False) -> dict[str, str]:
         headers: dict[str, str] = {
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
         betas: list[str] = []
         if self._is_oauth:
-            headers["authorization"] = f"Bearer {self._api_key}"
-            betas.append("oauth-2025-04-20")
+            if self._inference_api_key:
+                headers["x-api-key"] = self._inference_api_key
+            else:
+                headers["authorization"] = f"Bearer {self._api_key}"
+                betas.append("oauth-2025-04-20")
         else:
             headers["x-api-key"] = self._api_key
         if thinking:
             betas.append("interleaved-thinking-2025-05-14")
+        if cache_scope and self._supports_prompt_cache_scope_beta():
+            betas.append("prompt-caching-scope-2026-01-05")
         if betas:
-            headers["anthropic-beta"] = ",".join(betas)
+            headers["anthropic-beta"] = ",".join(dict.fromkeys(betas))
         return headers
 
     def _extract_system_prompt(self, messages: Sequence[AgentMessage | dict]) -> str | None:
@@ -223,6 +303,41 @@ class AnthropicProvider(LLMProvider):
                 if isinstance(content, str) and content.strip():
                     parts.append(content.strip())
         return "\n\n".join(parts) if parts else None
+
+    def _supports_prompt_cache_scope_beta(self) -> bool:
+        try:
+            host = urlparse(self._base_url).hostname or ""
+        except ValueError:
+            return False
+        return host == "api.anthropic.com"
+
+    def _supports_oauth_api_key_exchange(self) -> bool:
+        try:
+            host = urlparse(self._base_url).hostname or ""
+        except ValueError:
+            return False
+        return host == "api.anthropic.com"
+
+    def _extract_system_prompt_blocks(self, messages: Sequence[AgentMessage | dict]) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        for message in messages:
+            if _message_role(message) != "system":
+                continue
+            content = _message_content(message)
+            if not isinstance(content, str):
+                continue
+            text = content.strip()
+            if not text:
+                continue
+
+            metadata = _message_metadata(message)
+            kind = metadata.get("kind") if isinstance(metadata, dict) else None
+            is_dynamic = kind == "runtime_info"
+            block: dict[str, Any] = {"type": "text", "text": text}
+            if not is_dynamic:
+                block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+            blocks.append(block)
+        return blocks
 
     def _to_anthropic_messages(self, messages: Sequence[AgentMessage | dict]) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []
@@ -341,6 +456,39 @@ def _message_content(message: AgentMessage | dict) -> Any:
     return getattr(message, "content", "")
 
 
+def _message_metadata(message: AgentMessage | dict) -> dict[str, Any]:
+    if isinstance(message, dict):
+        raw = message.get("metadata")
+    else:
+        raw = getattr(message, "metadata", None)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _token_usage_from_anthropic_usage(usage: dict[str, Any] | None) -> TokenUsage:
+    payload = usage if isinstance(usage, dict) else {}
+    cache_creation = payload.get("cache_creation")
+    cache_creation_payload = cache_creation if isinstance(cache_creation, dict) else {}
+    return TokenUsage(
+        input_tokens=_int_or_zero(payload.get("input_tokens")),
+        output_tokens=_int_or_zero(payload.get("output_tokens")),
+        cache_creation_input_tokens=_int_or_zero(payload.get("cache_creation_input_tokens")),
+        cache_read_input_tokens=_int_or_zero(payload.get("cache_read_input_tokens")),
+        cache_creation_ephemeral_1h_input_tokens=_int_or_zero(
+            cache_creation_payload.get("ephemeral_1h_input_tokens")
+        ),
+        cache_creation_ephemeral_5m_input_tokens=_int_or_zero(
+            cache_creation_payload.get("ephemeral_5m_input_tokens")
+        ),
+    )
+
+
 def _map_anthropic_stop_reason(reason: str | None) -> str:
     """Normalize Anthropic stop reasons to Sentinel stop_reason values."""
     mapping = {
@@ -351,7 +499,10 @@ def _map_anthropic_stop_reason(reason: str | None) -> str:
     return mapping.get(reason or "", "stop")
 
 
-def _parse_anthropic_stream_event(event: dict[str, Any]) -> list[AgentEvent]:
+def _parse_anthropic_stream_event(
+    event: dict[str, Any],
+    usage_state: TokenUsage | None = None,
+) -> list[AgentEvent]:
     """Translate one Anthropic SSE payload into Sentinel agent stream events."""
     event_type = event.get("type")
     index = event.get("index")
@@ -359,6 +510,19 @@ def _parse_anthropic_stream_event(event: dict[str, Any]) -> list[AgentEvent]:
     delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
 
     parsed: list[AgentEvent] = []
+    usage_payload = event.get("usage") if isinstance(event.get("usage"), dict) else None
+    if usage_state is not None and usage_payload:
+        delta_usage = _token_usage_from_anthropic_usage(usage_payload)
+        usage_state.input_tokens += delta_usage.input_tokens
+        usage_state.output_tokens += delta_usage.output_tokens
+        usage_state.cache_creation_input_tokens += delta_usage.cache_creation_input_tokens
+        usage_state.cache_read_input_tokens += delta_usage.cache_read_input_tokens
+        usage_state.cache_creation_ephemeral_1h_input_tokens += (
+            delta_usage.cache_creation_ephemeral_1h_input_tokens
+        )
+        usage_state.cache_creation_ephemeral_5m_input_tokens += (
+            delta_usage.cache_creation_ephemeral_5m_input_tokens
+        )
     if event_type == "message_start":
         parsed.append(AgentEvent(type="start"))
     elif event_type == "content_block_start":
