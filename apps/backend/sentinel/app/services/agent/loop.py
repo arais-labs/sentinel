@@ -1430,6 +1430,8 @@ class AgentLoop:
         Returns True only when the LLM responds with {"continue": true}.
         Any exception, timeout, or malformed JSON causes strict rejection (False).
         """
+        raw = ""
+        block_summary: list[str] = []
         try:
             # Collect last ~20 messages and build a compact summary
             tail = messages[-20:] if len(messages) > 20 else messages[:]
@@ -1476,6 +1478,7 @@ class AgentLoop:
                 self.provider.chat(analysis_messages, model=TierName.FAST.value, tools=[], temperature=0.0),
                 timeout=15.0,
             )
+            block_summary = self._summarize_response_blocks(response)
             raw = self._assistant_text(response).strip()
             # Strip markdown fences just in case
             if raw.startswith("```"):
@@ -1483,14 +1486,39 @@ class AgentLoop:
                 raw = raw.lstrip("json").strip()
             parsed = json.loads(raw)
             if not isinstance(parsed, dict):
-                logger.warning("Grace analysis: unexpected JSON type: session_id=%s raw=%r", session_id, raw)
+                logger.warning(
+                    "Grace analysis: unexpected JSON type: session_id=%s raw=%r blocks=%s",
+                    session_id,
+                    raw[:1200],
+                    block_summary,
+                )
                 return False
             decision = parsed.get("continue")
             if not isinstance(decision, bool):
-                logger.warning("Grace analysis: missing bool 'continue': session_id=%s raw=%r", session_id, raw)
+                logger.warning(
+                    "Grace analysis: missing bool 'continue': session_id=%s raw=%r blocks=%s",
+                    session_id,
+                    raw[:1200],
+                    block_summary,
+                )
                 return False
             logger.info("Grace analysis decision=%s reason=%r session_id=%s", decision, parsed.get("reason", ""), session_id)
             return decision
+        except json.JSONDecodeError:
+            logger.warning(
+                "Grace analysis invalid JSON (strict reject): session_id=%s raw=%r blocks=%s",
+                session_id,
+                raw[:1200],
+                block_summary,
+                exc_info=True,
+            )
+            return False
         except Exception:  # noqa: BLE001
-            logger.warning("Grace analysis failed (strict reject): session_id=%s", session_id, exc_info=True)
+            logger.warning(
+                "Grace analysis failed (strict reject): session_id=%s raw=%r blocks=%s",
+                session_id,
+                raw[:1200],
+                block_summary,
+                exc_info=True,
+            )
             return False
