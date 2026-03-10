@@ -255,6 +255,10 @@ class ChatRequest(BaseModel):
 class ChatUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_ephemeral_1h_input_tokens: int = 0
+    cache_creation_ephemeral_5m_input_tokens: int = 0
 
 
 class ChatResponse(BaseModel):

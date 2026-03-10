@@ -550,6 +550,14 @@ async def chat_session(
         usage={
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
+            "cache_creation_input_tokens": result.cache_creation_input_tokens,
+            "cache_read_input_tokens": result.cache_read_input_tokens,
+            "cache_creation_ephemeral_1h_input_tokens": (
+                result.cache_creation_ephemeral_1h_input_tokens
+            ),
+            "cache_creation_ephemeral_5m_input_tokens": (
+                result.cache_creation_ephemeral_5m_input_tokens
+            ),
         },
         error=result.error,
     )

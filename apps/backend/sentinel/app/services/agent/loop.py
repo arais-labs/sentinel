@@ -342,6 +342,14 @@ class AgentLoop:
 
             total_usage.input_tokens += final_response.usage.input_tokens
             total_usage.output_tokens += final_response.usage.output_tokens
+            total_usage.cache_creation_input_tokens += final_response.usage.cache_creation_input_tokens
+            total_usage.cache_read_input_tokens += final_response.usage.cache_read_input_tokens
+            total_usage.cache_creation_ephemeral_1h_input_tokens += (
+                final_response.usage.cache_creation_ephemeral_1h_input_tokens
+            )
+            total_usage.cache_creation_ephemeral_5m_input_tokens += (
+                final_response.usage.cache_creation_ephemeral_5m_input_tokens
+            )
             messages.append(final_response)
             created.append(final_response)
             assistant_iterations[id(final_response)] = iterations
@@ -444,6 +452,14 @@ class AgentLoop:
 
                 total_usage.input_tokens += response.usage.input_tokens
                 total_usage.output_tokens += response.usage.output_tokens
+                total_usage.cache_creation_input_tokens += response.usage.cache_creation_input_tokens
+                total_usage.cache_read_input_tokens += response.usage.cache_read_input_tokens
+                total_usage.cache_creation_ephemeral_1h_input_tokens += (
+                    response.usage.cache_creation_ephemeral_1h_input_tokens
+                )
+                total_usage.cache_creation_ephemeral_5m_input_tokens += (
+                    response.usage.cache_creation_ephemeral_5m_input_tokens
+                )
 
                 messages.append(response)
                 created.append(response)
@@ -768,6 +784,14 @@ class AgentLoop:
                     provider = event.message.provider
                 usage.input_tokens += event.message.usage.input_tokens
                 usage.output_tokens += event.message.usage.output_tokens
+                usage.cache_creation_input_tokens += event.message.usage.cache_creation_input_tokens
+                usage.cache_read_input_tokens += event.message.usage.cache_read_input_tokens
+                usage.cache_creation_ephemeral_1h_input_tokens += (
+                    event.message.usage.cache_creation_ephemeral_1h_input_tokens
+                )
+                usage.cache_creation_ephemeral_5m_input_tokens += (
+                    event.message.usage.cache_creation_ephemeral_5m_input_tokens
+                )
 
             if event.type == "text_start":
                 _remember("text", idx)
@@ -1007,6 +1031,14 @@ class AgentLoop:
                     "stop_reason": message.stop_reason,
                     "input_tokens": message.usage.input_tokens,
                     "output_tokens": message.usage.output_tokens,
+                    "cache_creation_input_tokens": message.usage.cache_creation_input_tokens,
+                    "cache_read_input_tokens": message.usage.cache_read_input_tokens,
+                    "cache_creation_ephemeral_1h_input_tokens": (
+                        message.usage.cache_creation_ephemeral_1h_input_tokens
+                    ),
+                    "cache_creation_ephemeral_5m_input_tokens": (
+                        message.usage.cache_creation_ephemeral_5m_input_tokens
+                    ),
                     "iteration": int(assistant_iterations.get(id(message), 0)),
                 }
                 if tool_calls_data:

@@ -76,6 +76,10 @@ class ChatRunResult:
     iterations: int
     input_tokens: int
     output_tokens: int
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_ephemeral_1h_input_tokens: int = 0
+    cache_creation_ephemeral_5m_input_tokens: int = 0
     error: str | None = None
 
 
@@ -750,6 +754,14 @@ class SessionService:
             iterations=result.iterations,
             input_tokens=result.usage.input_tokens,
             output_tokens=result.usage.output_tokens,
+            cache_creation_input_tokens=result.usage.cache_creation_input_tokens,
+            cache_read_input_tokens=result.usage.cache_read_input_tokens,
+            cache_creation_ephemeral_1h_input_tokens=(
+                result.usage.cache_creation_ephemeral_1h_input_tokens
+            ),
+            cache_creation_ephemeral_5m_input_tokens=(
+                result.usage.cache_creation_ephemeral_5m_input_tokens
+            ),
             error=getattr(result, "error", None),
         )
 

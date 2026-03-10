@@ -72,10 +72,10 @@ class ContextBuilder:
     ) -> list[AgentMessage]:
         """Build runtime context from policies, memory, summary, and recent history."""
         prompt = (system_prompt or self._default_system_prompt).strip()
-        prompt += (
-            f"\n\nCurrent date and time: {datetime.now(UTC).strftime('%A, %B %d, %Y at %H:%M UTC')}"
+        runtime_info = (
+            f"Current date and time: {datetime.now(UTC).strftime('%A, %B %d, %Y at %H:%M UTC')}"
+            f"\nYour current session ID is: {session_id}"
         )
-        prompt += f"\nYour current session ID is: {session_id}"
         context: list[AgentMessage] = [
             SystemMessage(
                 content=prompt,
@@ -85,7 +85,16 @@ class ContextBuilder:
                     "title": "Core Prompt",
                     "explanation": "Primary identity and run-time anchors injected every turn.",
                 },
-            )
+            ),
+            SystemMessage(
+                content=runtime_info,
+                metadata={
+                    "layer": "core",
+                    "kind": "runtime_info",
+                    "title": "Runtime Info",
+                    "explanation": "Per-turn runtime anchors that change across loop iterations.",
+                },
+            ),
         ]
         context.extend(build_policy_messages(self._available_tools))
         mode_definition = get_agent_mode_definition(agent_mode)
