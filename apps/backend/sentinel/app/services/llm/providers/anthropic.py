@@ -47,14 +47,30 @@ def _is_cacheable_history_block(
 
 _ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS = 4
 
+# Budget allocation: 1 slot for system, 3 for conversation history
+_SYSTEM_CACHE_BUDGET = 1
+_MESSAGE_CACHE_BUDGET = _ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS - _SYSTEM_CACHE_BUDGET
 
-def _apply_cache_control_to_system_blocks(blocks: list[dict[str, Any]], *, budget: int) -> int:
-    applied = 0
-    if budget <= 0:
-        return applied
-    for block in blocks:
-        if applied >= budget:
-            break
+
+def _build_cache_control(*, ttl: str = "1h") -> dict[str, Any]:
+    """Build a standard ephemeral cache_control marker."""
+    return {"type": "ephemeral", "ttl": ttl}
+
+
+def _apply_cache_to_last_stable_system_block(blocks: list[dict[str, Any]]) -> int:
+    """Place ONE cache_control marker on the last stable system block.
+
+    The system prompt is a contiguous prefix, so caching the last stable block
+    effectively caches the entire system prompt in one shot.  This is optimal
+    because Anthropic caches everything from the start of the request up to
+    each cache_control marker.
+
+    Dynamic blocks (runtime_info with timestamps/session IDs) are excluded
+    because they change every turn and would invalidate the cache.
+    """
+    # Walk backwards to find the last stable block
+    for i in range(len(blocks) - 1, -1, -1):
+        block = blocks[i]
         if not isinstance(block, dict):
             continue
         if block.get("type") != "text":
@@ -64,36 +80,50 @@ def _apply_cache_control_to_system_blocks(blocks: list[dict[str, Any]], *, budge
         text = block.get("text")
         if not isinstance(text, str) or not text.strip():
             continue
-        if block.get("cache_control") is not None:
-            continue
-        block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
-        applied += 1
-    return applied
+        block["cache_control"] = _build_cache_control()
+        return 1
+    return 0
 
 
-def _apply_cache_control_to_history_messages(
+def _apply_cache_breakpoints_to_messages(
     messages: list[dict[str, Any]],
     *,
-    budget: int,
+    budget: int = _MESSAGE_CACHE_BUDGET,
 ) -> int:
+    """Place cache_control breakpoints on the most recent cacheable messages.
+
+    Walks messages from newest to oldest and marks the last content block of
+    each eligible message.  This creates a rolling cache window that grows
+    with the conversation.
+
+    Eligible: user or assistant messages whose last content block is text or
+    tool_result.  Assistant messages ending in tool_use are skipped (they
+    change when the model re-plans).
+    """
     applied = 0
     if budget <= 0:
         return applied
+    budget = min(budget, _ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS)
     for message in reversed(messages):
         if applied >= budget:
             break
         if not isinstance(message, dict):
             continue
         role = message.get("role")
+        if role not in {"user", "assistant"}:
+            continue
         content = message.get("content")
-        if not isinstance(content, list):
+        if not isinstance(content, list) or not content:
             continue
-        if not _is_cacheable_history_block(role=str(role or ""), content_blocks=content):
+        last_block = content[-1]
+        if not isinstance(last_block, dict):
             continue
-        block = content[0]
-        if block.get("cache_control") is not None:
+        block_type = last_block.get("type")
+        if block_type not in {"text", "tool_result"}:
             continue
-        block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+        if last_block.get("cache_control") is not None:
+            continue
+        last_block["cache_control"] = _build_cache_control()
         applied += 1
     return applied
 
@@ -103,22 +133,43 @@ def _build_oauth_cache_aware_payload(
     system_blocks: list[dict[str, Any]],
     messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    system_copy = []
-    for block in system_blocks:
-        copied = dict(block)
-        copied.pop("_runtime_dynamic", None)
-        system_copy.append(copied)
+    """Build cache-optimized copies of system blocks and messages.
+
+    Strategy:
+    1. Place 1 cache_control on the LAST stable system block.  Because
+       Anthropic caches the contiguous prefix up to the marker, this
+       effectively caches the entire system prompt with a single slot.
+    2. Place remaining 3 slots on the most recent conversation messages
+       as rolling breakpoints.
+    """
+    # Deep-copy system blocks (keep _runtime_dynamic for cache logic)
+    system_copy: list[dict[str, Any]] = [dict(block) for block in system_blocks]
+
+    # Deep-copy messages
     messages_copy = [
-        {**msg, "content": [dict(block) for block in msg.get("content", [])] if isinstance(msg.get("content"), list) else msg.get("content")}
+        {
+            **msg,
+            "content": (
+                [dict(block) for block in msg.get("content", [])]
+                if isinstance(msg.get("content"), list)
+                else msg.get("content")
+            ),
+        }
         for msg in messages
     ]
 
-    used = _apply_cache_control_to_system_blocks(system_copy, budget=_ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS)
-    remaining = max(0, _ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS - used)
-    if remaining > 0:
-        _apply_cache_control_to_history_messages(messages_copy, budget=remaining)
-    return system_copy, messages_copy
+    # Step 1: 1 slot on last stable system block (caches entire system prefix)
+    sys_used = _apply_cache_to_last_stable_system_block(system_copy)
 
+    # Step 2: remaining slots go to message breakpoints
+    msg_budget = _ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS - sys_used
+    _apply_cache_breakpoints_to_messages(messages_copy, budget=msg_budget)
+
+    # Strip internal markers before returning
+    for block in system_copy:
+        block.pop("_runtime_dynamic", None)
+
+    return system_copy, messages_copy
 
 class AnthropicProvider(LLMProvider):
     """Anthropic Messages API adapter with streaming event translation."""
