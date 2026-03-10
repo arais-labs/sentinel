@@ -30,6 +30,21 @@ from app.services.llm.generic.types import (
 logger = logging.getLogger(__name__)
 
 
+def _is_cacheable_history_block(
+    *,
+    role: str,
+    content_blocks: list[dict[str, Any]],
+) -> bool:
+    if role not in {"user", "assistant"}:
+        return False
+    if not content_blocks:
+        return False
+    if len(content_blocks) > 1:
+        return False
+    block = content_blocks[0]
+    return block.get("type") == "text" and isinstance(block.get("text"), str)
+
+
 class AnthropicProvider(LLMProvider):
     """Anthropic Messages API adapter with streaming event translation."""
 
@@ -386,6 +401,8 @@ class AnthropicProvider(LLMProvider):
                     blocks.append({"type": "text", "text": content})
                 if not blocks:
                     continue
+                if self._is_oauth and _is_cacheable_history_block(role="assistant", content_blocks=blocks):
+                    blocks[0]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
                 output.append({"role": "assistant", "content": blocks})
                 continue
 
@@ -409,6 +426,8 @@ class AnthropicProvider(LLMProvider):
                         )
             if not user_blocks:
                 continue
+            if self._is_oauth and _is_cacheable_history_block(role="user", content_blocks=user_blocks):
+                user_blocks[0]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
             output.append({"role": "user", "content": user_blocks})
         return output
 
