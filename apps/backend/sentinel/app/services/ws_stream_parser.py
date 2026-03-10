@@ -10,6 +10,7 @@ from app.config import (
     CHAT_DEFAULT_ITERATIONS,
     CHAT_MAX_ITERATIONS,
 )
+from app.services.agent.agent_modes import AgentMode, get_default_agent_mode, parse_agent_mode
 from app.services.llm.ids import TierName, parse_tier_name
 
 _ALLOWED_IMAGE_MIME_TYPES = {
@@ -28,6 +29,7 @@ class ParsedWsMessage:
     tier: TierName | None
     max_iterations: int
     attachments: list[dict[str, Any]]
+    agent_mode: AgentMode
 
 
 def parse_ws_message(payload: str) -> ParsedWsMessage | None:
@@ -57,11 +59,17 @@ def parse_ws_message(payload: str) -> ParsedWsMessage | None:
         if isinstance(raw_iters, int) and 1 <= raw_iters <= CHAT_MAX_ITERATIONS
         else CHAT_DEFAULT_ITERATIONS
     )
+    raw_agent_mode = parsed.get("agent_mode")
+    parsed_agent_mode = parse_agent_mode(raw_agent_mode)
+    if raw_agent_mode is not None and parsed_agent_mode is None:
+        return None
+    agent_mode = parsed_agent_mode or get_default_agent_mode()
     return ParsedWsMessage(
         content=trimmed,
         tier=tier,
         max_iterations=max_iterations,
         attachments=attachments,
+        agent_mode=agent_mode,
     )
 
 

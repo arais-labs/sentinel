@@ -198,6 +198,17 @@ export interface ModelsResponse {
   default_tier: 'fast' | 'normal' | 'hard' | null;
 }
 
+export interface AgentModeOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface AgentModesResponse {
+  items: AgentModeOption[];
+  default_mode: string;
+}
+
 export interface SubAgentTask {
   id: string;
   session_id: string;
