@@ -4,6 +4,7 @@ import asyncio
 
 from app.models import Message, Session
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.services.agent.loop import _humanize_error
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import (
     AgentEvent,
@@ -256,6 +257,25 @@ def test_runtime_context_snapshot_includes_conversation_history_layer():
     assert tool_result_entry["is_error"] is False
 
     assert structured["history_message_count"] == 3
+
+
+def test_humanize_error_preserves_provider_diagnostics():
+    raw = (
+        "All providers failed. "
+        "anthropic:gpt-5: authentication_error invalid_api_key | "
+        "openai:gpt-5-mini: rate_limit_exceeded"
+    )
+    humanized = _humanize_error(raw)
+    assert humanized.startswith("All AI providers failed.")
+    assert "anthropic:gpt-5: authentication_error invalid_api_key" in humanized
+    assert "openai:gpt-5-mini: rate_limit_exceeded" in humanized
+
+
+def test_humanize_error_truncates_long_provider_diagnostics():
+    raw = "All providers failed. " + ("x" * 2_000)
+    humanized = _humanize_error(raw)
+    assert humanized.startswith("All AI providers failed.")
+    assert len(humanized) == 700
 
 
 def test_context_builder_injects_agent_mode_policy_layer_for_read_only():

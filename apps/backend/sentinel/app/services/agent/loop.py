@@ -65,7 +65,18 @@ logger = logging.getLogger(__name__)
 
 def _humanize_error(raw: str) -> str:
     """Return a user-friendly error message for common LLM failures."""
-    lower = raw.lower()
+    text = str(raw or "")
+    lower = text.lower()
+    if "all providers failed" in lower:
+        normalized = " ".join(text.split())
+        normalized_lower = normalized.lower()
+        if normalized_lower.startswith("all providers failed"):
+            parts = normalized.split(".", 1)
+            if len(parts) == 2 and parts[1].strip():
+                normalized = f"All AI providers failed.{parts[1]}"
+            else:
+                normalized = "All AI providers failed."
+        return normalized[:700] if len(normalized) > 700 else normalized
     if any(k in lower for k in ("rate_limit", "rate limit", "http_429", "429")):
         return "API rate limit reached. Please wait a moment and try again."
     if any(k in lower for k in ("authentication", "401", "invalid api key", "invalid_api_key")):
@@ -76,9 +87,7 @@ def _humanize_error(raw: str) -> str:
         return "The AI provider is currently overloaded. Please try again in a few moments."
     if any(k in lower for k in ("timeout", "timed out")):
         return "Request timed out. The server took too long to respond."
-    if "all providers failed" in lower:
-        return "All AI providers failed. Please check your API keys in Settings."
-    return raw[:300] if len(raw) > 300 else raw
+    return text[:300] if len(text) > 300 else text
 
 
 def _make_error_message(error_text: str) -> AssistantMessage:
