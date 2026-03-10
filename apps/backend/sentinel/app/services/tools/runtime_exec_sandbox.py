@@ -5,6 +5,9 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+RUNTIME_EXEC_SANDBOX_WORKSPACE = "/mnt"
+RUNTIME_EXEC_SANDBOX_VENV = "/tmp/.venv"
+
 
 class RuntimeExecSandboxError(RuntimeError):
     """Raised when confined runtime_exec sandbox execution cannot be prepared."""
@@ -22,7 +25,6 @@ def build_runtime_exec_command_args(
     privilege: str,
     workspace_dir: Path,
     run_dir: Path,
-    runtime_root: Path,
     use_python_venv: bool = False,
     venv_dir: Path | None = None,
 ) -> RuntimeExecCommandPlan:
@@ -43,13 +45,13 @@ def build_runtime_exec_command_args(
             "runtime_exec privilege=user requires bubblewrap (bwrap) installed in the backend image"
         )
 
-    writable = _prepare_writable_mounts(runtime_root)
+    writable = _prepare_writable_mounts(workspace_dir=workspace_dir)
     workspace = workspace_dir.resolve()
     cwd = run_dir.resolve()
     if cwd != workspace and workspace not in cwd.parents:
         raise RuntimeExecSandboxError("runtime_exec cwd must stay within workspace for confined mode")
     relative_cwd = cwd.relative_to(workspace).as_posix()
-    sandbox_workspace = "/workspace"
+    sandbox_workspace = RUNTIME_EXEC_SANDBOX_WORKSPACE
     sandbox_cwd = sandbox_workspace if relative_cwd in {"", "."} else f"{sandbox_workspace}/{relative_cwd}"
     return RuntimeExecCommandPlan(
         args=[
@@ -97,12 +99,14 @@ def build_runtime_exec_command_args(
         env_overrides={
             "HOME": sandbox_workspace,
             "PWD": sandbox_cwd,
+            "TMPDIR": "/tmp",
         },
     )
 
 
-def _prepare_writable_mounts(runtime_root: Path) -> dict[str, Path]:
-    sandbox_root = runtime_root / "sandbox"
+def _prepare_writable_mounts(*, workspace_dir: Path) -> dict[str, Path]:
+    # Keep user-mode writable scratch space inside the session workspace tree.
+    sandbox_root = workspace_dir / ".runtime" / "sandbox"
     paths = {
         "tmp": sandbox_root / "tmp",
         "var_tmp": sandbox_root / "var_tmp",
@@ -127,5 +131,5 @@ def _venv_mount_args(*, use_python_venv: bool, venv_dir: Path | None) -> list[st
     return [
         "--bind",
         str(resolved),
-        "/venv",
+        RUNTIME_EXEC_SANDBOX_VENV,
     ]

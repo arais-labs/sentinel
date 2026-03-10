@@ -36,6 +36,10 @@ services:
     build:
       context: .
       dockerfile: infra/docker/sentinel-backend.prod.Dockerfile
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
     restart: unless-stopped
     environment:
       APP_ENV: production
