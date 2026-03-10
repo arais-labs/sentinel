@@ -613,6 +613,24 @@ def _parse_anthropic_stream_event(
 
     parsed: list[AgentEvent] = []
     usage_payload = event.get("usage") if isinstance(event.get("usage"), dict) else None
+    # message_start carries usage inside event.message.usage with the full
+    # cache_creation breakdown (ephemeral_1h / ephemeral_5m).  message_delta
+    # repeats the *same* top-level counters in event.usage but omits the
+    # nested breakdown.  To avoid double-counting we only extract the
+    # ephemeral sub-fields from message_start here.
+    if usage_state is not None and event_type == "message_start":
+        msg = event.get("message")
+        if isinstance(msg, dict):
+            start_usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
+            if start_usage:
+                _cc = start_usage.get("cache_creation")
+                if isinstance(_cc, dict):
+                    usage_state.cache_creation_ephemeral_1h_input_tokens += _int_or_zero(
+                        _cc.get("ephemeral_1h_input_tokens")
+                    )
+                    usage_state.cache_creation_ephemeral_5m_input_tokens += _int_or_zero(
+                        _cc.get("ephemeral_5m_input_tokens")
+                    )
     if usage_state is not None and usage_payload:
         delta_usage = _token_usage_from_anthropic_usage(usage_payload)
         usage_state.input_tokens += delta_usage.input_tokens
