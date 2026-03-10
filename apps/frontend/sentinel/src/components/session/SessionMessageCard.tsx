@@ -1,5 +1,6 @@
 import { ChevronDown, Clock3, Globe, Loader2, Send, Users, Wrench, X } from 'lucide-react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { JsonBlock } from '../ui/JsonBlock';
 import { Markdown } from '../ui/Markdown';
@@ -567,46 +568,49 @@ export const SessionMessageCard = memo(({
                         className="rounded-lg max-w-full border border-sky-500/20 mt-1 cursor-zoom-in hover:opacity-90 transition-opacity"
                         style={{ maxHeight: '400px', objectFit: 'contain' }}
                       />
-                      {lightboxOpen && (
-                        <div
-                          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
-                          onClick={() => setLightboxOpen(false)}
-                          onMouseMove={onMouseMove}
-                          onMouseUp={onMouseUp}
-                        >
-                          <div
-                            className="relative overflow-hidden"
-                            style={{ width: '90vw', height: '90vh' }}
-                            onClick={(e) => e.stopPropagation()}
-                            onWheel={onWheel}
-                            onMouseDown={onMouseDown}
-                          >
-                            <img
-                              src={`data:image/png;base64,${screenshotBase64}`}
-                              alt="Browser screenshot"
-                              className="absolute rounded-xl shadow-2xl border border-white/10 select-none"
-                              style={{
-                                maxWidth: 'none',
-                                transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom})`,
-                                top: '50%',
-                                left: '50%',
-                                cursor: zoom > 1 ? 'grab' : 'zoom-in',
-                                transformOrigin: 'center',
-                              }}
-                              draggable={false}
-                            />
-                            <button
+                      {lightboxOpen && typeof document !== 'undefined'
+                        ? createPortal(
+                            <div
+                              className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
                               onClick={() => setLightboxOpen(false)}
-                              className="absolute top-3 right-3 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors z-10"
+                              onMouseMove={onMouseMove}
+                              onMouseUp={onMouseUp}
                             >
-                              <X size={16} />
-                            </button>
-                            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/50 text-white text-[10px] font-mono">
-                              {Math.round(zoom * 100)}% · scroll to zoom · drag to pan
-                            </div>
-                          </div>
-                        </div>
-                      )}
+                              <div
+                                className="relative overflow-hidden"
+                                style={{ width: '90vw', height: '90vh' }}
+                                onClick={(e) => e.stopPropagation()}
+                                onWheel={onWheel}
+                                onMouseDown={onMouseDown}
+                              >
+                                <img
+                                  src={`data:image/png;base64,${screenshotBase64}`}
+                                  alt="Browser screenshot"
+                                  className="absolute rounded-xl shadow-2xl border border-white/10 select-none"
+                                  style={{
+                                    maxWidth: 'none',
+                                    transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom})`,
+                                    top: '50%',
+                                    left: '50%',
+                                    cursor: zoom > 1 ? 'grab' : 'zoom-in',
+                                    transformOrigin: 'center',
+                                  }}
+                                  draggable={false}
+                                />
+                                <button
+                                  onClick={() => setLightboxOpen(false)}
+                                  className="absolute top-3 right-3 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors z-10"
+                                >
+                                  <X size={16} />
+                                </button>
+                                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/50 text-white text-[10px] font-mono">
+                                  {Math.round(zoom * 100)}% · scroll to zoom · drag to pan
+                                </div>
+                              </div>
+                            </div>,
+                            document.body,
+                          )
+                        : null}
                     </>
                   ) : (
                     <div className="space-y-2">
