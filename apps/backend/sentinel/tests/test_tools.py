@@ -1,11 +1,7 @@
-import asyncio
 import json
 import os
-import shutil
-import subprocess
 import tempfile
 import uuid
-from functools import lru_cache
 from unittest.mock import patch
 
 import jwt
@@ -75,51 +71,6 @@ def _restore_app_tool_runtime(previous_registry, previous_executor) -> None:
     app.state.tool_executor = previous_executor
 
 
-def _runtime_exec_needs_root_test_mode() -> bool:
-    return os.name != "nt" and not _runtime_exec_user_sandbox_available()
-
-
-@lru_cache(maxsize=1)
-def _runtime_exec_user_sandbox_available() -> bool:
-    if os.name == "nt":
-        return False
-    bwrap_bin = shutil.which("bwrap")
-    if not bwrap_bin:
-        return False
-
-    # CI environments can have bwrap installed but disallow the required namespaces.
-    probe = [
-        bwrap_bin,
-        "--die-with-parent",
-        "--unshare-pid",
-        "--unshare-uts",
-        "--unshare-ipc",
-        "--ro-bind",
-        "/",
-        "/",
-        "--proc",
-        "/proc",
-        "--dev-bind",
-        "/dev",
-        "/dev",
-        "--",
-        "/bin/bash",
-        "-lc",
-        "true",
-    ]
-    try:
-        result = subprocess.run(
-            probe,
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
-
-
 def _enable_runtime_root_auto_approval_for_tests() -> None:
     tool = app.state.tool_registry.get("runtime_exec")
     assert tool is not None
@@ -144,9 +95,6 @@ def _enable_runtime_root_auto_approval_for_tests() -> None:
 def _runtime_exec_input(*, command: str, session_id: str, **extra: object) -> dict[str, object]:
     payload: dict[str, object] = {"command": command, "session_id": session_id}
     payload.update(extra)
-    if _runtime_exec_needs_root_test_mode():
-        _enable_runtime_root_auto_approval_for_tests()
-        payload["privilege"] = "root"
     return payload
 
 
@@ -390,11 +338,11 @@ def test_runtime_exec_detached_job_lifecycle():
         assert payload["detached"] is True
         job_id = payload["job"]["id"]
         if payload["privilege"] == "user":
-            assert payload["workspace"] == "/mnt"
-            assert payload["cwd"] == "/mnt"
-            assert payload["job"]["cwd"] == "/mnt"
-            assert str(payload["job"].get("stdout_path", "")).startswith("/mnt/")
-            assert str(payload["job"].get("stderr_path", "")).startswith("/mnt/")
+            assert payload["workspace"] == "/workspace"
+            assert payload["cwd"] == "/workspace"
+            assert payload["job"]["cwd"] == "/workspace"
+            assert str(payload["job"].get("stdout_path", "")).startswith("/workspace/")
+            assert str(payload["job"].get("stderr_path", "")).startswith("/workspace/")
             assert "/tmp/sentinel/session_runtime" not in json.dumps(payload["job"])
 
         listed = client.post(
@@ -407,9 +355,9 @@ def test_runtime_exec_detached_job_lifecycle():
         listed_job = next((item for item in jobs if item["id"] == job_id), None)
         assert listed_job is not None
         if payload["privilege"] == "user":
-            assert listed_job["cwd"] == "/mnt"
-            assert str(listed_job.get("stdout_path", "")).startswith("/mnt/")
-            assert str(listed_job.get("stderr_path", "")).startswith("/mnt/")
+            assert listed_job["cwd"] == "/workspace"
+            assert str(listed_job.get("stdout_path", "")).startswith("/workspace/")
+            assert str(listed_job.get("stderr_path", "")).startswith("/workspace/")
             assert "/tmp/sentinel/session_runtime" not in json.dumps(listed_job)
 
         status = client.post(
@@ -421,9 +369,9 @@ def test_runtime_exec_detached_job_lifecycle():
         status_job = status.json()["result"]["job"]
         assert status_job["id"] == job_id
         if payload["privilege"] == "user":
-            assert status_job["cwd"] == "/mnt"
-            assert str(status_job.get("stdout_path", "")).startswith("/mnt/")
-            assert str(status_job.get("stderr_path", "")).startswith("/mnt/")
+            assert status_job["cwd"] == "/workspace"
+            assert str(status_job.get("stdout_path", "")).startswith("/workspace/")
+            assert str(status_job.get("stderr_path", "")).startswith("/workspace/")
             assert "/tmp/sentinel/session_runtime" not in json.dumps(status_job)
 
         logs = client.post(
@@ -436,9 +384,9 @@ def test_runtime_exec_detached_job_lifecycle():
         assert "stdout_tail" in logs_result
         if payload["privilege"] == "user":
             logs_job = logs_result["job"]
-            assert logs_job["cwd"] == "/mnt"
-            assert str(logs_job.get("stdout_path", "")).startswith("/mnt/")
-            assert str(logs_job.get("stderr_path", "")).startswith("/mnt/")
+            assert logs_job["cwd"] == "/workspace"
+            assert str(logs_job.get("stdout_path", "")).startswith("/workspace/")
+            assert str(logs_job.get("stderr_path", "")).startswith("/workspace/")
             assert "/tmp/sentinel/session_runtime" not in json.dumps(logs_job)
 
         stopped = client.post(
@@ -615,156 +563,6 @@ def test_runtime_exec_root_privilege_requires_approval():
         assert payload["approval"]["provider"] == "tool"
         assert payload["approval"]["approval_id"] == "apr_runtime_root"
         assert waiter_seen["action"] == "runtime_exec.root"
-    finally:
-        _restore_app_tool_runtime(previous_registry, previous_executor)
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-
-
-def test_runtime_exec_user_mode_confines_writes_to_workspace():
-    if not _runtime_exec_user_sandbox_available():
-        return
-
-    fake_db = FakeDB()
-    previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
-
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
-
-    try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
-        created_session = client.post(
-            "/api/v1/sessions",
-            json={"title": "runtime-exec-confined-user"},
-            headers=headers,
-        )
-        assert created_session.status_code == 200
-        session_id = created_session.json()["id"]
-
-        allowed = client.post(
-            "/api/v1/tools/runtime_exec/execute",
-            json={
-                "input": {
-                    "command": "echo workspace-ok > allowed.txt && cat allowed.txt",
-                    "session_id": session_id,
-                    "privilege": "user",
-                }
-            },
-            headers=headers,
-        )
-        assert allowed.status_code == 200
-        allowed_payload = allowed.json()["result"]
-        assert allowed_payload["ok"] is True
-        assert "workspace-ok" in allowed_payload["stdout"]
-        assert allowed_payload["workspace"] == "/mnt"
-        assert allowed_payload["cwd"] == "/mnt"
-
-        tmp_mapped = client.post(
-            "/api/v1/tools/runtime_exec/execute",
-            json={
-                "input": {
-                    "command": (
-                        "echo tmp-ok > /tmp/runtime_exec_probe.txt "
-                        "&& cat /tmp/runtime_exec_probe.txt "
-                        "&& test -f .runtime/sandbox/tmp/runtime_exec_probe.txt "
-                        "&& echo mapped-ok"
-                    ),
-                    "session_id": session_id,
-                    "privilege": "user",
-                }
-            },
-            headers=headers,
-        )
-        assert tmp_mapped.status_code == 200
-        tmp_payload = tmp_mapped.json()["result"]
-        assert tmp_payload["ok"] is True
-        assert "tmp-ok" in tmp_payload["stdout"]
-        assert "mapped-ok" in tmp_payload["stdout"]
-        assert tmp_payload["workspace"] == "/mnt"
-        assert tmp_payload["cwd"] == "/mnt"
-
-        blocked = client.post(
-            "/api/v1/tools/runtime_exec/execute",
-            json={
-                "input": {
-                    "command": "echo forbidden > /etc/runtime_exec_forbidden_test",
-                    "session_id": session_id,
-                    "privilege": "user",
-                }
-            },
-            headers=headers,
-        )
-        assert blocked.status_code == 200
-        blocked_payload = blocked.json()["result"]
-        assert blocked_payload["ok"] is False
-        assert blocked_payload["timed_out"] is False
-    finally:
-        _restore_app_tool_runtime(previous_registry, previous_executor)
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-
-
-def test_runtime_exec_user_mode_python_venv_is_available_inside_sandbox():
-    if not _runtime_exec_user_sandbox_available():
-        return
-
-    fake_db = FakeDB()
-    previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
-
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
-
-    try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
-        created_session = client.post(
-            "/api/v1/sessions",
-            json={"title": "runtime-exec-user-venv"},
-            headers=headers,
-        )
-        assert created_session.status_code == 200
-        session_id = created_session.json()["id"]
-
-        run = client.post(
-            "/api/v1/tools/runtime_exec/execute",
-            json={
-                "input": {
-                    "command": "python -c \"import os,sys;print(sys.prefix);print(os.environ.get('VIRTUAL_ENV',''))\"",
-                    "session_id": session_id,
-                    "privilege": "user",
-                    "use_python_venv": True,
-                }
-            },
-            headers=headers,
-        )
-        assert run.status_code == 200
-        payload = run.json()["result"]
-        assert payload["ok"] is True
-        assert "/tmp/.venv" in payload["stdout"]
-        assert payload["venv"] == "/tmp/.venv"
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()

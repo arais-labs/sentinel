@@ -8,14 +8,16 @@ from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from tests.fake_db import FakeDB
 
+_TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
 
-def test_playwright_live_view_requires_auth():
+
+def test_runtime_live_view_requires_auth():
     client = TestClient(app)
-    response = client.get("/api/v1/playwright/live-view")
+    response = client.get("/api/v1/runtime/live-view", params={"session_id": _TEST_SESSION_ID})
     assert response.status_code == 401
 
 
-def test_playwright_live_view_payload(monkeypatch):
+def test_runtime_live_view_payload(monkeypatch):
     fake_db = FakeDB()
 
     async def _override_get_db():
@@ -31,26 +33,33 @@ def test_playwright_live_view_payload(monkeypatch):
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
 
-    monkeypatch.setattr("app.routers.playwright.is_live_view_available", lambda: True)
+    monkeypatch.setattr(
+        "app.routers.runtime.is_runtime_available_for_session",
+        lambda session_id: True,
+    )
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        response = client.get("/api/v1/playwright/live-view", headers=headers)
+        response = client.get(
+            "/api/v1/runtime/live-view",
+            headers=headers,
+            params={"session_id": _TEST_SESSION_ID},
+        )
         assert response.status_code == 200
         payload = response.json()
         assert payload["enabled"] is True
         assert payload["available"] is True
-        assert payload["mode"] == "novnc"
-        assert "/vnc.html" in payload["url"]
+        assert "/vnc/" in payload["url"]
+        assert _TEST_SESSION_ID in payload["url"]
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
 
 
-def test_playwright_live_view_uses_origin_header(monkeypatch):
+def test_runtime_live_view_uses_origin_header(monkeypatch):
     fake_db = FakeDB()
 
     async def _override_get_db():
@@ -66,7 +75,10 @@ def test_playwright_live_view_uses_origin_header(monkeypatch):
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
 
-    monkeypatch.setattr("app.routers.playwright.is_live_view_available", lambda: True)
+    monkeypatch.setattr(
+        "app.routers.runtime.is_runtime_available_for_session",
+        lambda session_id: True,
+    )
 
     try:
         client = TestClient(app)
@@ -76,16 +88,20 @@ def test_playwright_live_view_uses_origin_header(monkeypatch):
             "Origin": "http://localhost:4747",
         }
 
-        response = client.get("/api/v1/playwright/live-view", headers=headers)
+        response = client.get(
+            "/api/v1/runtime/live-view",
+            headers=headers,
+            params={"session_id": _TEST_SESSION_ID},
+        )
         assert response.status_code == 200
         payload = response.json()
-        assert payload["url"].startswith("http://localhost:4747/vnc/vnc.html")
+        assert payload["url"].startswith(f"http://localhost:4747/vnc/{_TEST_SESSION_ID}/vnc.html")
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
 
 
-def test_playwright_live_view_uses_referer_when_origin_missing(monkeypatch):
+def test_runtime_live_view_uses_referer_when_origin_missing(monkeypatch):
     fake_db = FakeDB()
 
     async def _override_get_db():
@@ -101,7 +117,10 @@ def test_playwright_live_view_uses_referer_when_origin_missing(monkeypatch):
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
 
-    monkeypatch.setattr("app.routers.playwright.is_live_view_available", lambda: True)
+    monkeypatch.setattr(
+        "app.routers.runtime.is_runtime_available_for_session",
+        lambda session_id: True,
+    )
 
     try:
         client = TestClient(app)
@@ -111,16 +130,20 @@ def test_playwright_live_view_uses_referer_when_origin_missing(monkeypatch):
             "Referer": "http://localhost:4747/sentinel/sessions",
         }
 
-        response = client.get("/api/v1/playwright/live-view", headers=headers)
+        response = client.get(
+            "/api/v1/runtime/live-view",
+            headers=headers,
+            params={"session_id": _TEST_SESSION_ID},
+        )
         assert response.status_code == 200
         payload = response.json()
-        assert payload["url"].startswith("http://localhost:4747/vnc/vnc.html")
+        assert payload["url"].startswith(f"http://localhost:4747/vnc/{_TEST_SESSION_ID}/vnc.html")
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
 
 
-def test_playwright_reset_browser_endpoint(monkeypatch):
+def test_runtime_reset_browser_endpoint(monkeypatch):
     fake_db = FakeDB()
 
     async def _override_get_db():
@@ -128,6 +151,10 @@ def test_playwright_reset_browser_endpoint(monkeypatch):
 
     async def _noop_init_db():
         return None
+
+    class _StubPool:
+        async def get(self, session_id):
+            return _StubManager()
 
     class _StubManager:
         async def reset(self):
@@ -145,7 +172,7 @@ def test_playwright_reset_browser_endpoint(monkeypatch):
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
     monkeypatch.setattr(
-        "app.routers.playwright._resolve_browser_manager", lambda request: _StubManager()
+        "app.routers.runtime._resolve_browser_pool", lambda request: _StubPool()
     )
 
     try:
@@ -153,7 +180,11 @@ def test_playwright_reset_browser_endpoint(monkeypatch):
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        response = client.post("/api/v1/playwright/reset-browser", headers=headers)
+        response = client.post(
+            "/api/v1/runtime/reset",
+            headers=headers,
+            params={"session_id": _TEST_SESSION_ID},
+        )
         assert response.status_code == 200
         payload = response.json()
         assert payload["reset"] is True

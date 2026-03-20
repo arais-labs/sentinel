@@ -40,7 +40,7 @@ import { toast } from 'sonner';
 import { AppShell } from '../components/AppShell';
 import { SessionMessageCard, buildToolArgumentsByCallId } from '../components/session/SessionMessageCard';
 import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
-import { BrowserPreview } from '../components/session/BrowserPreview';
+import { DesktopPreview } from '../components/session/DesktopPreview';
 import { SubAgentTaskModal } from '../components/SubAgentTaskModal';
 import { SpawnSubAgentModal } from '../components/SpawnSubAgentModal';
 import { JsonBlock } from '../components/ui/JsonBlock';
@@ -66,7 +66,7 @@ import type {
   MessageListResponse,
   ModelOption,
   ModelsResponse,
-  PlaywrightLiveView,
+  RuntimeLiveView,
   Session,
   SessionContextUsage,
   SessionRuntimeFileEntry,
@@ -818,7 +818,7 @@ export function SessionsPage() {
 
   const [tasks, setTasks] = useState<SubAgentTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [rightRailTab, setRightRailTab] = useState<'browser' | 'sub_agents' | 'runtime'>('browser');
+  const [rightRailTab, setRightRailTab] = useState<'desktop' | 'sub_agents' | 'runtime'>('desktop');
   const [runtimeStatus, setRuntimeStatus] = useState<SessionRuntimeStatus | null>(null);
   const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
   const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
@@ -849,7 +849,8 @@ export function SessionsPage() {
   const [isTerminatingTask, setIsTerminatingTask] = useState(false);
   const [confirmTerminateTaskId, setConfirmTerminateTaskId] = useState<string | null>(null);
 
-  const [liveView, setLiveView] = useState<PlaywrightLiveView | null>(null);
+  const [liveView, setLiveView] = useState<RuntimeLiveView | null>(null);
+  const [runtimeBooting, setRuntimeBooting] = useState(false);
   const [mode, setMode] = useState<'solo' | 'advanced'>(
       () => (localStorage.getItem('sentinel-mode') as 'solo' | 'advanced') ?? 'advanced',
   );
@@ -887,8 +888,11 @@ export function SessionsPage() {
 
   const [isCompacting, setIsCompacting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
-  const [isResettingBrowser, setIsResettingBrowser] = useState(false);
-  const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(false);
+  const [isResettingRuntime, setIsResettingRuntime] = useState(false);
+  const [isRestartingContainer, setIsRestartingContainer] = useState(false);
+  const [resetMenuOpen, setResetMenuOpen] = useState(false);
+  const resetMenuRef = useRef<HTMLDivElement>(null);
+  const [isDesktopFullscreen, setIsDesktopFullscreen] = useState(false);
   const [rightPanelWidth, setRightPanelWidth] = useState(400);
   const [isResizing, setIsResizing] = useState(false);
 
@@ -1219,6 +1223,12 @@ export function SessionsPage() {
     void fetchAgentModes();
     void fetchLiveView();
   }, []);
+
+  // Re-fetch live view when the active session changes
+  useEffect(() => {
+    setRuntimeBooting(true);
+    void fetchLiveView();
+  }, [activeSessionId]);
 
   // Poll sessions every 30s to pick up unread changes
   useEffect(() => {
@@ -1589,25 +1599,54 @@ export function SessionsPage() {
   }
 
   async function fetchLiveView() {
+    const sid = activeSessionIdRef.current;
+    if (!sid) {
+      setLiveView(null);
+      setRuntimeBooting(false);
+      return;
+    }
     try {
-      const payload = await api.get<PlaywrightLiveView>('/playwright/live-view');
+      const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?session_id=${sid}`);
       setLiveView(payload);
+      if (payload.enabled && payload.available) {
+        setRuntimeBooting(false);
+      }
     } catch {
       setLiveView(null);
     }
   }
 
-  async function resetBrowser() {
-    if (isResettingBrowser) return;
-    setIsResettingBrowser(true);
+  async function resetRuntime() {
+    if (isResettingRuntime) return;
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    setIsResettingRuntime(true);
     try {
-      await api.post('/playwright/reset-browser', {});
-      toast.success('Browser runtime reset successful');
+      await api.post(`/runtime/reset?session_id=${sid}`, {});
+      toast.success('Runtime reset successful');
       await fetchLiveView();
     } catch {
-      toast.error('Failed to reset browser runtime');
+      toast.error('Failed to reset runtime');
     } finally {
-      setIsResettingBrowser(false);
+      setIsResettingRuntime(false);
+    }
+  }
+
+  async function restartContainer() {
+    if (isRestartingContainer) return;
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    setIsRestartingContainer(true);
+    setRuntimeBooting(true);
+    setLiveView(null);
+    try {
+      await api.post(`/runtime/restart-container?session_id=${sid}`, {});
+      toast.success('Container restarting...');
+    } catch {
+      toast.error('Failed to restart container');
+      setRuntimeBooting(false);
+    } finally {
+      setIsRestartingContainer(false);
     }
   }
 
@@ -1625,6 +1664,8 @@ export function SessionsPage() {
         return merged.map((item) => ({ ...item, is_main: item.id === fresh.id }));
       });
       setActiveSessionId(fresh.id);
+      setRuntimeBooting(true);
+      setLiveView(null);
       navigate(`/sessions/${fresh.id}`, { replace: true });
       toast.success('New session started. Memories preserved.');
     } catch {
@@ -1792,8 +1833,14 @@ export function SessionsPage() {
           silent,
         });
       }
-    } catch {
+    } catch (err) {
       if (sessionId !== activeSessionIdRef.current) return;
+      // Directory no longer exists — walk up to the nearest valid parent
+      if ((err as { status?: number }).status === 404 && path) {
+        const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+        void fetchRuntimeFiles(sessionId, parent, options);
+        return;
+      }
       setRuntimeFiles(null);
       setRuntimePath(path);
       setRuntimeChangedFiles(null);
@@ -2536,14 +2583,13 @@ export function SessionsPage() {
           const toolNameForRefresh = String(payload.tool_name ?? (event.tool_call as any)?.name ?? '').trim();
           if (
             toolNameForRefresh === 'spawn_sub_agent' ||
-            toolNameForRefresh === 'cancel_sub_agent' ||
-            toolNameForRefresh === 'pythonXagent'
+            toolNameForRefresh === 'cancel_sub_agent'
           ) {
             void fetchTasks(sessionId);
           }
           if (
             toolNameForRefresh === 'runtime_exec' ||
-            toolNameForRefresh === 'pythonXagent' ||
+            toolNameForRefresh === 'python' ||
             toolNameForRefresh === 'git_exec'
           ) {
             void fetchRuntimeStatus(sessionId, 120);
@@ -2658,6 +2704,25 @@ export function SessionsPage() {
       case 'compaction_failed':
         setStreaming((current) => ({ ...current, isCompactingContext: false }));
         toast.error((event.error as string) || 'Auto-compaction failed');
+        break;
+      case 'runtime_ready':
+        // noVNC may need a moment after the container reports ready — retry a few times
+        void (async () => {
+          for (let attempt = 0; attempt < 6; attempt++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const sid = activeSessionIdRef.current;
+            if (!sid) break;
+            try {
+              const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?session_id=${sid}`);
+              setLiveView(payload);
+              if (payload.enabled && payload.available) {
+                setRuntimeBooting(false);
+                return;
+              }
+            } catch { /* retry */ }
+          }
+          setRuntimeBooting(false);
+        })();
         break;
       case 'done': {
         const stopReason = event.stop_reason as string | undefined;
@@ -3673,7 +3738,7 @@ export function SessionsPage() {
                 {/* Sliding Indicator */}
                 <div
                   className={`absolute top-0.5 bottom-0.5 w-[calc(33.333%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
-                    rightRailTab === 'browser'
+                    rightRailTab === 'desktop'
                       ? 'left-0.5'
                       : rightRailTab === 'sub_agents'
                         ? 'left-[calc(33.333%)]'
@@ -3683,14 +3748,14 @@ export function SessionsPage() {
 
                 <button
                   type="button"
-                  onClick={() => setRightRailTab('browser')}
+                  onClick={() => setRightRailTab('desktop')}
                   className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                    rightRailTab === 'browser'
+                    rightRailTab === 'desktop'
                       ? 'text-[color:var(--text-primary)]'
                       : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                   }`}
                 >
-                  Browser
+                  Desktop
                 </button>
                 <button
                   type="button"
@@ -3718,8 +3783,8 @@ export function SessionsPage() {
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                    {rightRailTab === 'browser'
-                      ? 'Live Browser'
+                    {rightRailTab === 'desktop'
+                      ? 'Live Desktop'
                       : rightRailTab === 'sub_agents'
                         ? 'Sub-Agent Tasks'
                         : 'Workspace Runtime'}
@@ -3737,7 +3802,7 @@ export function SessionsPage() {
               </div>
             </div>
 
-            {rightRailTab === 'browser' ? (
+            {rightRailTab === 'desktop' ? (
               <div className="flex-1 min-h-0 flex flex-col">
                 <div className="flex items-center justify-between p-3 border-b border-[color:var(--border-subtle)]">
                   <div className="flex items-center gap-2">
@@ -3747,16 +3812,50 @@ export function SessionsPage() {
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
+                    {/* Reset dropdown */}
+                    <div className="relative" ref={resetMenuRef}>
+                      <button
+                        onClick={() => setResetMenuOpen((o) => !o)}
+                        disabled={isResettingRuntime || isRestartingContainer}
+                        className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-[color:var(--text-muted)] disabled:opacity-50 flex items-center gap-0.5"
+                        title="Reset options"
+                      >
+                        {isResettingRuntime || isRestartingContainer
+                          ? <RotateCcw size={14} className="animate-spin" />
+                          : <RotateCcw size={14} />}
+                        <ChevronDown size={10} />
+                      </button>
+                      {resetMenuOpen && (
+                        <div
+                          className="absolute right-0 top-full mt-1 z-50 w-48 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-xl overflow-hidden"
+                          onMouseLeave={() => setResetMenuOpen(false)}
+                        >
+                          <button
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+                            onClick={() => { setResetMenuOpen(false); void resetRuntime(); }}
+                          >
+                            <RotateCcw size={13} className="text-rose-400 shrink-0" />
+                            <div>
+                              <div className="font-semibold">Reset Chromium</div>
+                              <div className="text-[9px] text-[color:var(--text-muted)]">Restart browser only</div>
+                            </div>
+                          </button>
+                          <div className="h-px bg-[color:var(--border-subtle)]" />
+                          <button
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+                            onClick={() => { setResetMenuOpen(false); void restartContainer(); }}
+                          >
+                            <RefreshCw size={13} className="text-amber-400 shrink-0" />
+                            <div>
+                              <div className="font-semibold">Restart Container</div>
+                              <div className="text-[9px] text-[color:var(--text-muted)]">Full VM reset</div>
+                            </div>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     <button
-                      onClick={() => resetBrowser()}
-                      disabled={isResettingBrowser}
-                      className="p-1.5 rounded-md hover:bg-rose-500/10 transition-colors text-rose-500 disabled:opacity-50"
-                      title="Reset browser runtime"
-                    >
-                      <RotateCcw size={14} className={isResettingBrowser ? 'animate-spin' : ''} />
-                    </button>
-                    <button
-                      onClick={() => setIsBrowserFullscreen(true)}
+                      onClick={() => setIsDesktopFullscreen(true)}
                       className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-sky-500"
                       title="Open fullscreen"
                     >
@@ -3766,16 +3865,17 @@ export function SessionsPage() {
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto">
                   <div className="relative w-full aspect-video overflow-hidden border-b border-[color:var(--border-subtle)] bg-black">
-                    <BrowserPreview
-                      url={liveView?.url ?? null}
-                      isFullscreen={isBrowserFullscreen}
-                      onClose={() => setIsBrowserFullscreen(false)}
+                    <DesktopPreview
+                      url={liveView?.enabled && liveView?.available ? liveView.url : null}
+                      isFullscreen={isDesktopFullscreen}
+                      onClose={() => setIsDesktopFullscreen(false)}
+                      isBooting={runtimeBooting && !(liveView?.enabled && liveView?.available)}
                     />
                   </div>
 
                   <div className="p-3 space-y-4">
                     <section>
-                      <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2.5 px-1">Browser Status</div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2.5 px-1">Desktop Status</div>
                       <div className="space-y-1.5">
                         <div className="flex items-center justify-between p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]">
                           <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)]">Connection</span>
@@ -3784,6 +3884,11 @@ export function SessionsPage() {
                               <>
                                 <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
                                 <span className="text-[10px] font-mono font-bold text-emerald-500">CONNECTED</span>
+                              </>
+                            ) : runtimeBooting ? (
+                              <>
+                                <div className="h-1.5 w-1.5 rounded-full bg-sky-400 animate-pulse" />
+                                <span className="text-[10px] font-mono font-bold text-sky-400">STARTING</span>
                               </>
                             ) : (
                               <>
@@ -3813,7 +3918,7 @@ export function SessionsPage() {
 
                     <section>
                       <div className="flex items-center justify-between mb-2.5 px-1">
-                        <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Recent Browser Actions</div>
+                        <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Recent Actions</div>
                       </div>
                       {browserToolResults.length > 0 ? (
                         <div className="space-y-1">
@@ -3825,7 +3930,7 @@ export function SessionsPage() {
                               <div className="flex items-center gap-3 min-0">
                                 <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] opacity-20 group-hover:opacity-100 transition-opacity" />
                                 <span className="text-[11px] font-bold text-[color:var(--text-primary)] truncate capitalize">
-                                  {item.tool_name?.replace('browser_', '').replaceAll('_', ' ') || 'browser action'}
+                                  {item.tool_name?.replace('browser_', '').replaceAll('_', ' ') || 'action'}
                                 </span>
                               </div>
                               <span className="text-[9px] font-mono text-[color:var(--text-muted)] shrink-0 opacity-60 group-hover:opacity-100">
@@ -3836,7 +3941,7 @@ export function SessionsPage() {
                         </div>
                       ) : (
                         <div className="py-8 text-center text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] opacity-40">
-                          No browser tool activity yet.
+                          No activity yet.
                         </div>
                       )}
                     </section>

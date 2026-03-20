@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import io
 import ipaddress
@@ -49,18 +50,15 @@ from app.services.session_runtime import (
     mark_runtime_state,
     runtime_logs_dir,
     stop_detached_runtime_job,
-    runtime_venv_dir,
     runtime_workspace_dir,
 )
 from app.services.tools.approval_waiters import build_tool_db_approval_waiter
+from app.services.tools.browser_pool import BrowserPool
 from app.services.tools.browser_tool import BrowserManager
 from app.services.tools.editor import str_replace_editor_tool
 from app.services.tools.executor import ToolValidationError
-from app.services.tools.runtime_exec_sandbox import (
-    RUNTIME_EXEC_SANDBOX_VENV,
-    RuntimeExecSandboxError,
-    build_runtime_exec_command_args,
-)
+from app.services.runtime import get_runtime
+from app.services.runtime.ssh_client import SSHExecResult
 from app.services.tools.registry import (
     ToolApprovalEvaluation,
     ToolApprovalGate,
@@ -80,9 +78,7 @@ from app.services.tools.git_exec import git_exec_tool
 
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
 _ALLOWED_MEMORY_CATEGORIES = {"core", "preference", "project", "correction"}
-_MAX_PYTHON_XAGENT_OUTPUT_CHARS = 20_000
 _MAX_RUNTIME_EXEC_OUTPUT_CHARS = 50_000
-_python_xagent_runtime_lock = asyncio.Lock()
 _RUNTIME_EXEC_STREAM_READ_BYTES = 65_536
 _RUNTIME_EXEC_STREAM_DRAIN_SECONDS = 2.0
 _RUNTIME_EXEC_TIMEOUT_KILL_WAIT_SECONDS = 3.0
@@ -90,16 +86,105 @@ _RUNTIME_BACKGROUND_AMPERSAND_RE = re.compile(r"(?<!&)&(?!&)")
 _DEFAULT_RUNTIME_ROOT_APPROVAL_TIMEOUT_SECONDS = 600
 _MAX_RUNTIME_ROOT_APPROVAL_TIMEOUT_SECONDS = 3600
 
+_PYTHON_PAYLOAD_ENV = "SENTINEL_PYTHON_PAYLOAD_B64"
+_PYTHON_WORKSPACE_ENV = "SENTINEL_PYTHON_WORKSPACE"
+_PYTHON_VENV_ENV = "SENTINEL_PYTHON_VENV_PATH"
+_VENV_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+_PYTHON_EXEC_SCRIPT = """\
+set -e
+_VENV="$%s"
+if [ ! -f "$_VENV/bin/python" ]; then
+    mkdir -p "$(dirname "$_VENV")"
+    python3 -m venv "$_VENV"
+fi
+"$_VENV/bin/python" - <<'__SENTINEL_PYEOF__'
+import base64, contextlib, io, json, os, subprocess, sys, traceback
+
+_MAX_CHARS = 20000
+
+
+def _trunc(s):
+    if not s:
+        return ""
+    return s[:_MAX_CHARS] + "\\n...[truncated]" if len(s) > _MAX_CHARS else s
+
+
+def _fail(msg):
+    print(json.dumps({"ok": False, "error": msg, "stdout": "", "stderr": "", "exception": None, "result": None, "result_repr": None}))
+    sys.exit(1)
+
+
+_payload_b64 = os.environ.get("%s", "")
+if not _payload_b64:
+    _fail("Missing python payload")
+
+try:
+    _payload = json.loads(base64.b64decode(_payload_b64.encode("ascii")).decode("utf-8"))
+except Exception as _exc:
+    _fail(f"Invalid payload: {_exc}")
+
+_code = _payload.get("code", "")
+_requirements = _payload.get("requirements") or []
+_workspace = os.environ.get("%s", "/home/sentinel/workspace")
+
+if _requirements:
+    _pip = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--quiet", "--no-input"] + _requirements,
+        capture_output=True,
+        text=True,
+    )
+    if _pip.returncode != 0:
+        _fail(f"pip install failed: {_trunc(_pip.stderr or _pip.stdout)}")
+
+os.chdir(_workspace)
+_stdout_buf = io.StringIO()
+_stderr_buf = io.StringIO()
+_exception_text = None
+_globals_map = {"__name__": "__main__"}
+
+with contextlib.redirect_stdout(_stdout_buf), contextlib.redirect_stderr(_stderr_buf):
+    try:
+        exec(compile(_code, "<python>", "exec"), _globals_map, _globals_map)
+    except Exception:
+        _exception_text = traceback.format_exc()
+
+_result_value = _globals_map.get("result")
+
+
+def _to_json_or_repr(v):
+    if v is None:
+        return None, None
+    try:
+        json.dumps(v)
+        return v, None
+    except TypeError:
+        return None, repr(v)
+
+
+_result_json, _result_repr = _to_json_or_repr(_result_value)
+print(
+    json.dumps({
+        "ok": _exception_text is None,
+        "stdout": _trunc(_stdout_buf.getvalue()),
+        "stderr": _trunc(_stderr_buf.getvalue()),
+        "exception": _trunc(_exception_text),
+        "result": _result_json,
+        "result_repr": _result_repr,
+    })
+)
+__SENTINEL_PYEOF__
+""" % (_PYTHON_VENV_ENV, _PYTHON_PAYLOAD_ENV, _PYTHON_WORKSPACE_ENV)
+
 
 def build_default_registry(
     *,
     memory_search_service: MemorySearchService | None = None,
     embedding_service: EmbeddingService | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
-    browser_manager: BrowserManager | None = None,
+    browser_pool: BrowserPool | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
-    manager = browser_manager or BrowserManager()
+    pool = browser_pool or BrowserPool()
     registry.register(_file_read_tool())
     registry.register(_http_request_tool())
     if session_factory is not None:
@@ -111,23 +196,31 @@ def build_default_registry(
         registry.register(_runtime_job_logs_tool(session_factory=session_factory))
         registry.register(_runtime_job_stop_tool(session_factory=session_factory))
         registry.register(git_exec_tool(session_factory=session_factory))
-    registry.register(_browser_navigate_tool(manager))
-    registry.register(_browser_screenshot_tool(manager))
-    registry.register(_browser_click_tool(manager))
-    registry.register(_browser_type_tool(manager))
-    registry.register(_browser_select_tool(manager))
-    registry.register(_browser_wait_for_tool(manager))
-    registry.register(_browser_get_value_tool(manager))
-    registry.register(_browser_fill_form_tool(manager))
-    registry.register(_browser_press_key_tool(manager))
-    registry.register(_browser_scroll_tool(manager))
-    registry.register(_browser_get_text_tool(manager))
-    registry.register(_browser_snapshot_tool(manager))
-    registry.register(_browser_reset_tool(manager))
-    registry.register(_browser_tabs_tool(manager))
-    registry.register(_browser_tab_open_tool(manager))
-    registry.register(_browser_tab_focus_tool(manager))
-    registry.register(_browser_tab_close_tool(manager))
+    registry.register(_browser_navigate_tool(pool))
+    registry.register(_browser_screenshot_tool(pool))
+    registry.register(_browser_click_tool(pool))
+    registry.register(_browser_type_tool(pool))
+    registry.register(_browser_select_tool(pool))
+    registry.register(_browser_wait_for_tool(pool))
+    registry.register(_browser_get_value_tool(pool))
+    registry.register(_browser_fill_form_tool(pool))
+    registry.register(_browser_press_key_tool(pool))
+    registry.register(_browser_scroll_tool(pool))
+    registry.register(_browser_get_text_tool(pool))
+    registry.register(_browser_snapshot_tool(pool))
+    registry.register(_browser_reset_tool(pool))
+    registry.register(_browser_tabs_tool(pool))
+    registry.register(_browser_tab_open_tool(pool))
+    registry.register(_browser_tab_focus_tool(pool))
+    registry.register(_browser_tab_close_tool(pool))
+    registry.register(_browser_evaluate_tool(pool))
+    registry.register(_browser_get_html_tool(pool))
+    registry.register(_browser_get_cookies_tool(pool))
+    registry.register(_browser_set_cookies_tool(pool))
+    registry.register(_browser_console_logs_tool(pool))
+    registry.register(_browser_network_intercept_tool(pool))
+    registry.register(_browser_network_logs_tool(pool))
+    registry.register(_browser_clear_network_intercepts_tool(pool))
 
     if session_factory is not None:
         registry.register(_araios_api_tool(session_factory=session_factory))
@@ -430,6 +523,159 @@ def _normalize_query_params(query: dict[str, Any]) -> dict[str, str]:
         params[key_text] = str(value)
     return params
 
+async def _execute_via_ssh(
+    *,
+    session_id: UUID,
+    command_text: str,
+    privilege: str,
+    workspace_dir: Path,
+    cwd_raw: str | None,
+    env_payload: dict[str, Any],
+    timeout_seconds: int,
+    detached: bool,
+) -> dict[str, Any]:
+    """Execute a command on the remote runtime via SSH."""
+    runtime = await get_runtime().ensure(session_id)
+
+    sandbox_workspace = runtime.workspace_path
+
+    # Resolve cwd
+    sandbox_cwd = sandbox_workspace
+    if isinstance(cwd_raw, str) and cwd_raw.strip():
+        requested = cwd_raw.strip()
+        if Path(requested).is_absolute():
+            # Absolute path — must be under the remote workspace
+            if not requested.startswith(sandbox_workspace):
+                raise ToolValidationError(f"Field 'cwd' must stay within session workspace ({sandbox_workspace})")
+            sandbox_cwd = requested
+        else:
+            sandbox_cwd = f"{sandbox_workspace}/{requested}"
+
+    # Build env for the remote runtime
+    env: dict[str, str] = {
+        "HOME": sandbox_workspace,
+        "PWD": sandbox_cwd,
+        "TMPDIR": "/tmp",
+    }
+    for key, value in env_payload.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ToolValidationError("Environment variable keys must be non-empty strings")
+        if value is None:
+            env.pop(key, None)
+            continue
+        if not isinstance(value, (str, int, float, bool)):
+            raise ToolValidationError(
+                f"Environment variable '{key}' must be string/number/boolean/null"
+            )
+        env[key] = str(value)
+
+    # Wrap command in bash; use sudo for root privilege
+    if privilege == "root":
+        full_command = f"sudo bash -lc {_ssh_shell_quote(command_text)}"
+    else:
+        full_command = f"bash -lc {_ssh_shell_quote(command_text)}"
+
+    command_result_details: dict[str, Any] | None = None
+    await mark_runtime_state(session_id, active=True, command=command_text, pid=None)
+
+    try:
+        if detached:
+            logs_dir_vm = f"{sandbox_workspace}/.runtime/logs"
+            log_token = uuid4().hex[:10]
+            stdout_vm_path = f"{logs_dir_vm}/{log_token}.stdout.log"
+            stderr_vm_path = f"{logs_dir_vm}/{log_token}.stderr.log"
+
+            # Ensure logs dir exists on the remote
+            await runtime.ssh.run(f"mkdir -p {logs_dir_vm}", timeout=10)
+
+            pid = await runtime.ssh.run_detached(
+                full_command,
+                stdout_path=stdout_vm_path,
+                stderr_path=stderr_vm_path,
+                cwd=sandbox_cwd,
+                env=env,
+            )
+
+            # Register job with host-side log paths (visible via 9p share)
+            host_logs_dir = runtime_logs_dir(session_id)
+            host_logs_dir.mkdir(parents=True, exist_ok=True)
+            stdout_host = host_logs_dir / f"{log_token}.stdout.log"
+            stderr_host = host_logs_dir / f"{log_token}.stderr.log"
+            stdout_host.touch(exist_ok=True)
+            stderr_host.touch(exist_ok=True)
+
+            job = await register_detached_runtime_job(
+                session_id,
+                command=command_text,
+                cwd=workspace_dir,
+                pid=pid,
+                stdout_path=stdout_host,
+                stderr_path=stderr_host,
+            )
+
+            await mark_runtime_state(session_id, active=False, command=command_text, pid=pid)
+            return {
+                "ok": True,
+                "detached": True,
+                "job": job,
+                "session_id": str(session_id),
+                "workspace": sandbox_workspace,
+                "cwd": sandbox_cwd,
+                "privilege": privilege,
+            }
+
+        # Inline execution
+        timeout_hint: str | None = None
+        timed_out = False
+        try:
+            result = await runtime.ssh.run(
+                full_command,
+                cwd=sandbox_cwd,
+                env=env,
+                timeout=timeout_seconds,
+            )
+        except TimeoutError:
+            timed_out = True
+            timeout_hint = (
+                f"Command timed out after {timeout_seconds}s. "
+                "Use detached=true for long-running/background commands."
+            )
+            result = SSHExecResult(exit_status=-1, stdout="", stderr="[timed out]")
+
+        stdout_text = _truncate_runtime_exec_text(result.stdout)
+        stderr_text = _truncate_runtime_exec_text(result.stderr)
+        ok = not timed_out and result.exit_status == 0
+
+        command_result_details = {
+            "ok": ok,
+            "timed_out": timed_out,
+            "returncode": result.exit_status,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "message": timeout_hint,
+            "privilege": privilege,
+        }
+        return {
+            **command_result_details,
+            "session_id": str(session_id),
+            "workspace": sandbox_workspace,
+            "cwd": sandbox_cwd,
+        }
+    finally:
+        await mark_runtime_state(
+            session_id,
+            active=False,
+            command=command_text,
+            pid=None,
+            action_details=command_result_details,
+        )
+
+
+def _ssh_shell_quote(s: str) -> str:
+    """POSIX single-quoting for SSH commands."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
 def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         session_id_raw = payload.get("session_id")
@@ -470,10 +716,6 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                 "Use detached=true for long-running/background commands."
             )
 
-        use_python_venv = payload.get("use_python_venv", False)
-        if not isinstance(use_python_venv, bool):
-            raise ToolValidationError("Field 'use_python_venv' must be a boolean")
-
         cwd_raw = payload.get("cwd")
         if cwd_raw is not None and (not isinstance(cwd_raw, str) or not cwd_raw.strip()):
             raise ToolValidationError("Field 'cwd' must be a non-empty string when provided")
@@ -487,207 +729,17 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
         await _ensure_session_exists(session_factory, session_id)
         await ensure_runtime_layout(session_id)
         workspace_dir = runtime_workspace_dir(session_id)
-        venv_dir = runtime_venv_dir(session_id)
 
-        env = os.environ.copy()
-        env["HOME"] = str(workspace_dir)
-        env["PWD"] = str(workspace_dir)
-        base_path = env.get("PATH", "")
-        venv_bin: Path | None = None
-        if use_python_venv:
-            python_bin = _venv_python_path(venv_dir)
-            await _ensure_managed_runtime_venv(venv_dir, python_bin)
-            venv_bin = _venv_bin_dir(venv_dir)
-
-        for key, value in env_payload.items():
-            if not isinstance(key, str) or not key.strip():
-                raise ToolValidationError("Environment variable keys must be non-empty strings")
-            if value is None:
-                env.pop(key, None)
-                continue
-            if not isinstance(value, (str, int, float, bool)):
-                raise ToolValidationError(
-                    f"Environment variable '{key}' must be string/number/boolean/null"
-                )
-            env[key] = str(value)
-
-        run_dir = workspace_dir
-        if isinstance(cwd_raw, str) and cwd_raw.strip():
-            requested = cwd_raw.strip()
-            candidate = (
-                (workspace_dir / requested).resolve()
-                if not Path(requested).is_absolute()
-                else Path(requested).expanduser().resolve()
-            )
-            if candidate != workspace_dir and workspace_dir not in candidate.parents:
-                raise ToolValidationError("Field 'cwd' must stay within session workspace")
-            run_dir = candidate
-            run_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            command_plan = build_runtime_exec_command_args(
-                command=command_text,
-                privilege=privilege,
-                workspace_dir=workspace_dir,
-                run_dir=run_dir,
-                use_python_venv=use_python_venv,
-                venv_dir=venv_dir if use_python_venv else None,
-            )
-        except RuntimeExecSandboxError as exc:
-            raise ToolValidationError(str(exc)) from exc
-        if command_plan.env_overrides:
-            env.update(command_plan.env_overrides)
-        reported_workspace = str(workspace_dir)
-        reported_cwd = str(run_dir)
-        reported_venv = str(venv_dir) if use_python_venv else None
-        if privilege == "user":
-            reported_workspace = command_plan.env_overrides.get("HOME", reported_workspace)
-            reported_cwd = command_plan.env_overrides.get("PWD", reported_workspace)
-            if use_python_venv:
-                reported_venv = RUNTIME_EXEC_SANDBOX_VENV
-        if use_python_venv:
-            current_path = env.get("PATH", base_path)
-            if privilege == "user":
-                sandbox_venv_bin = f"{RUNTIME_EXEC_SANDBOX_VENV}/bin"
-                env["PATH"] = (
-                    f"{sandbox_venv_bin}{os.pathsep}{current_path}"
-                    if current_path
-                    else sandbox_venv_bin
-                )
-                env["VIRTUAL_ENV"] = RUNTIME_EXEC_SANDBOX_VENV
-            else:
-                if venv_bin is None:
-                    raise ToolValidationError("Failed to resolve virtualenv bin path")
-                env["PATH"] = f"{venv_bin}{os.pathsep}{current_path}" if current_path else str(venv_bin)
-                env["VIRTUAL_ENV"] = str(venv_dir)
-
-        proc: asyncio.subprocess.Process | None = None
-        detached_started = False
-        command_result_details: dict[str, Any] | None = None
-        await mark_runtime_state(session_id, active=True, command=command_text, pid=None)
-        try:
-            if detached:
-                logs_dir = runtime_logs_dir(session_id)
-                logs_dir.mkdir(parents=True, exist_ok=True)
-                log_token = uuid4().hex[:10]
-                stdout_path = logs_dir / f"{log_token}.stdout.log"
-                stderr_path = logs_dir / f"{log_token}.stderr.log"
-                stdout_path.touch(exist_ok=True)
-                stderr_path.touch(exist_ok=True)
-                with stdout_path.open("ab") as stdout_handle, stderr_path.open("ab") as stderr_handle:
-                    detached_kwargs: dict[str, Any] = {
-                        "cwd": str(run_dir),
-                        "env": env,
-                        "stdin": asyncio.subprocess.DEVNULL,
-                        "stdout": stdout_handle,
-                        "stderr": stderr_handle,
-                    }
-                    if os.name != "nt":
-                        detached_kwargs["start_new_session"] = True
-                    proc = await asyncio.create_subprocess_exec(
-                        *command_plan.args,
-                        **detached_kwargs,
-                    )
-
-                await mark_runtime_state(session_id, active=True, command=command_text, pid=proc.pid)
-                job = await register_detached_runtime_job(
-                    session_id,
-                    command=command_text,
-                    cwd=run_dir,
-                    pid=proc.pid,
-                    stdout_path=stdout_path,
-                    stderr_path=stderr_path,
-                )
-                detached_started = True
-                await mark_runtime_state(
-                    session_id,
-                    active=False,
-                    command=command_text,
-                    pid=proc.pid,
-                )
-                _watch_detached_runtime_process(proc=proc, session_id=session_id, job_id=str(job["id"]))
-                return {
-                    "ok": True,
-                    "detached": True,
-                    "job": job,
-                    "session_id": str(session_id),
-                    "workspace": reported_workspace,
-                    "cwd": reported_cwd,
-                    "venv": reported_venv,
-                    "privilege": privilege,
-                }
-
-            inline_kwargs: dict[str, Any] = {
-                "cwd": str(run_dir),
-                "env": env,
-                "stdout": asyncio.subprocess.PIPE,
-                "stderr": asyncio.subprocess.PIPE,
-            }
-            if os.name != "nt":
-                inline_kwargs["start_new_session"] = True
-            proc = await asyncio.create_subprocess_exec(
-                *command_plan.args,
-                **inline_kwargs,
-            )
-
-            await mark_runtime_state(session_id, active=True, command=command_text, pid=proc.pid)
-            timeout_hint: str | None = None
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-                timed_out = False
-            except TimeoutError:
-                timed_out = True
-                timeout_hint = (
-                    f"Command timed out after {timeout_seconds}s. "
-                    "Use detached=true for long-running/background commands."
-                )
-                if proc.returncode is None:
-                    if os.name == "nt":
-                        proc.kill()
-                    else:
-                        with contextlib.suppress(ProcessLookupError):
-                            os.killpg(proc.pid, signal.SIGKILL)
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(
-                        proc.wait(),
-                        timeout=_RUNTIME_EXEC_TIMEOUT_KILL_WAIT_SECONDS,
-                    )
-                stdout, stderr = await _drain_runtime_exec_streams(proc)
-
-            stdout_text = _truncate_runtime_exec_text(stdout.decode("utf-8", errors="replace"))
-            stderr_text = _truncate_runtime_exec_text(stderr.decode("utf-8", errors="replace"))
-            ok = not timed_out and proc.returncode == 0
-            command_result_details = {
-                "ok": ok,
-                "timed_out": timed_out,
-                "returncode": proc.returncode,
-                "stdout": stdout_text,
-                "stderr": stderr_text,
-                "message": timeout_hint,
-                "privilege": privilege,
-            }
-            return {
-                "ok": ok,
-                "timed_out": timed_out,
-                "returncode": proc.returncode,
-                "stdout": stdout_text,
-                "stderr": stderr_text,
-                "message": timeout_hint,
-                "session_id": str(session_id),
-                "workspace": reported_workspace,
-                "cwd": reported_cwd,
-                "venv": reported_venv,
-                "privilege": privilege,
-            }
-        finally:
-            if not detached_started:
-                await mark_runtime_state(
-                    session_id,
-                    active=False,
-                    command=command_text,
-                    pid=proc.pid if proc is not None else None,
-                    action_details=command_result_details,
-                )
+        return await _execute_via_ssh(
+            session_id=session_id,
+            command_text=command_text,
+            privilege=privilege,
+            workspace_dir=workspace_dir,
+            cwd_raw=cwd_raw,
+            env_payload=env_payload,
+            timeout_seconds=timeout_seconds,
+            detached=detached,
+        )
 
     return ToolDefinition(
         name="runtime_exec",
@@ -719,10 +771,6 @@ def _runtime_exec_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> 
                 "env": {
                     "type": "object",
                     "description": "Optional environment variable overrides",
-                },
-                "use_python_venv": {
-                    "type": "boolean",
-                    "description": "If true, prepends a session virtualenv to PATH for Python/pip flows",
                 },
                 "timeout_seconds": {
                     "type": "integer",
@@ -796,7 +844,6 @@ def _runtime_exec_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEva
                 "command": command.strip(),
                 "cwd": payload.get("cwd"),
                 "detached": bool(payload.get("detached", False)),
-                "use_python_venv": bool(payload.get("use_python_venv", False)),
             },
             requested_by=requested_by,
         )
@@ -1033,11 +1080,9 @@ def _runtime_job_stop_tool(*, session_factory: async_sessionmaker[AsyncSession])
     )
 
 
-def python_xagent_tool(
+def python_tool(
     *,
     session_factory: async_sessionmaker[AsyncSession],
-    orchestrator: Any,
-    browser_manager: BrowserManager | None = None,
 ) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         session_id_raw = payload.get("session_id")
@@ -1072,140 +1117,24 @@ def python_xagent_tool(
         if len(normalized_requirements) > 20:
             raise ToolValidationError("At most 20 requirement entries are allowed")
 
-        sub_agent_timeout = payload.get("sub_agent_timeout_seconds", 300)
-        if (
-            not isinstance(sub_agent_timeout, int)
-            or isinstance(sub_agent_timeout, bool)
-            or sub_agent_timeout < 1
-        ):
-            raise ToolValidationError(
-                "Field 'sub_agent_timeout_seconds' must be a positive integer"
-            )
-        sub_agent_timeout = min(sub_agent_timeout, 3600)
+        venv_name = _validate_python_venv_name(payload.get("venv_name"))
 
         await _ensure_session_exists(session_factory, session_id)
         await ensure_runtime_layout(session_id)
-        workspace_dir = runtime_workspace_dir(session_id)
-        venv_dir = runtime_venv_dir(session_id)
-        python_bin = _venv_python_path(venv_dir)
-        pip_bin = _venv_pip_path(venv_dir)
 
-        async with _python_xagent_runtime_lock:
-            await _ensure_managed_runtime_venv(venv_dir, python_bin)
-            if normalized_requirements:
-                await _install_managed_runtime_requirements(
-                    pip_bin=pip_bin,
-                    requirements=normalized_requirements,
-                    timeout_seconds=min(timeout_seconds, 240),
-                )
-
-            loop = asyncio.get_running_loop()
-            sub_agent_calls: list[dict[str, Any]] = []
-
-            def call_sub_agent(
-                objective: str,
-                context: Any | None = None,
-                *,
-                max_steps: int = 10,
-                timeout_seconds: int | None = None,
-                allowed_tools: list[str] | None = None,
-                browser_tab_id: str | None = None,
-            ) -> dict[str, Any]:
-                if not isinstance(objective, str) or not objective.strip():
-                    raise ValueError("objective must be a non-empty string")
-                if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
-                    raise ValueError("max_steps must be a positive integer")
-                max_steps = min(max_steps, 50)
-
-                effective_timeout = (
-                    timeout_seconds if timeout_seconds is not None else sub_agent_timeout
-                )
-                if (
-                    not isinstance(effective_timeout, int)
-                    or isinstance(effective_timeout, bool)
-                    or effective_timeout < 1
-                ):
-                    raise ValueError("timeout_seconds must be a positive integer")
-                effective_timeout = min(effective_timeout, 3600)
-                normalized_tools = [
-                    str(t) for t in (allowed_tools or []) if isinstance(t, str) and t
-                ]
-                normalized_browser_tab_id = (
-                    browser_tab_id.strip()
-                    if isinstance(browser_tab_id, str) and browser_tab_id.strip()
-                    else None
-                )
-                if browser_tab_id is not None and normalized_browser_tab_id is None:
-                    raise ValueError("browser_tab_id must be a non-empty string")
-
-                future = asyncio.run_coroutine_threadsafe(
-                    _run_python_xagent_sub_agent(
-                        session_factory=session_factory,
-                        orchestrator=orchestrator,
-                        browser_manager=browser_manager,
-                        session_id=session_id,
-                        objective=objective.strip(),
-                        context=_stringify_sub_agent_context(context),
-                        max_steps=max_steps,
-                        timeout_seconds=effective_timeout,
-                        allowed_tools=normalized_tools,
-                        browser_tab_id=normalized_browser_tab_id,
-                    ),
-                    loop,
-                )
-                result = future.result(timeout=max(30, effective_timeout + 15))
-                sub_agent_calls.append(
-                    {
-                        "task_id": result.get("task_id"),
-                        "objective": objective.strip(),
-                        "status": result.get("status"),
-                    }
-                )
-                return result
-
-            try:
-                execution = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        _run_python_xagent_code_sync,
-                        code=code,
-                        workspace_dir=workspace_dir,
-                        venv_dir=venv_dir,
-                        call_sub_agent=call_sub_agent,
-                    ),
-                    timeout=timeout_seconds,
-                )
-            except asyncio.TimeoutError:
-                return {
-                    "ok": False,
-                    "error": f"pythonXagent timed out after {timeout_seconds}s",
-                    "stdout": "",
-                    "stderr": "",
-                    "session_id": str(session_id),
-                    "workspace": str(workspace_dir),
-                    "venv": str(venv_dir),
-                    "requirements_installed": normalized_requirements,
-                    "sub_agent_calls": sub_agent_calls,
-                }
-
-            return {
-                "ok": execution["ok"],
-                "stdout": execution["stdout"],
-                "stderr": execution["stderr"],
-                "exception": execution["exception"],
-                "result": execution["result"],
-                "result_repr": execution["result_repr"],
-                "session_id": str(session_id),
-                "workspace": str(workspace_dir),
-                "venv": str(venv_dir),
-                "requirements_installed": normalized_requirements,
-                "sub_agent_calls": sub_agent_calls,
-            }
+        return await _run_python_in_runtime(
+            session_id=session_id,
+            code=code,
+            requirements=normalized_requirements,
+            venv_name=venv_name,
+            timeout_seconds=timeout_seconds,
+        )
 
     return ToolDefinition(
-        name="pythonXagent",
+        name="python",
         description=(
-            "Run Python code in a per-session virtualenv workspace. "
-            "Code can call call_sub_agent(objective, context, ...) to delegate sub-tasks."
+            "Run Python code in a persistent virtualenv inside the session's runtime container. "
+            "Assign to `result` to return a value. Use venv_name to manage separate named envs."
         ),
         risk_level="medium",
         parameters_schema={
@@ -1219,20 +1148,23 @@ def python_xagent_tool(
                 },
                 "code": {
                     "type": "string",
-                    "description": "Python code to execute. Optional `result` var is returned.",
+                    "description": "Python code to execute. Assign to `result` to return a value.",
                 },
                 "requirements": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional pip requirements to install in this session venv",
+                    "description": "pip packages to install in the session venv before running",
                 },
                 "timeout_seconds": {
                     "type": "integer",
-                    "description": "Execution timeout (default 60, max 600)",
+                    "description": "Execution timeout in seconds (default 60, max 600)",
                 },
-                "sub_agent_timeout_seconds": {
-                    "type": "integer",
-                    "description": "Default timeout for call_sub_agent helper calls (default 300, max 3600)",
+                "venv_name": {
+                    "type": "string",
+                    "description": (
+                        "Named venv to use (default: workspace/.venvs/default). "
+                        "Pass a name to use workspace/.venvs/<name> instead."
+                    ),
                 },
             },
         },
@@ -2057,7 +1989,7 @@ def spawn_sub_agent_tool(
     session_factory: async_sessionmaker[AsyncSession],
     orchestrator: Any,
     ws_manager: Any | None = None,
-    browser_manager: BrowserManager | None = None,
+    browser_pool: BrowserPool | None = None,
 ) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         from uuid import UUID as _UUID
@@ -2116,13 +2048,17 @@ def spawn_sub_agent_tool(
                 raise ToolValidationError("Max 3 concurrent sub-agent tasks per session")
             if (
                 normalized_browser_tab_id is None
-                and browser_manager is not None
+                and browser_pool is not None
                 and _sub_agent_may_use_browser(normalized_allowed_tools)
             ):
                 reserved_tab_ids = _active_sub_agent_tab_ids(active)
-                normalized_browser_tab_id = await _select_sub_agent_browser_tab_id(
-                    browser_manager, reserved_tab_ids=reserved_tab_ids
-                )
+                try:
+                    _mgr = await browser_pool.get(sid)
+                    normalized_browser_tab_id = await _select_sub_agent_browser_tab_id(
+                        _mgr, reserved_tab_ids=reserved_tab_ids
+                    )
+                except Exception:
+                    pass
                 auto_assigned_browser_tab = normalized_browser_tab_id is not None
 
             task = SubAgentTask(
@@ -2521,283 +2457,96 @@ async def _select_sub_agent_browser_tab_id(
         return None
 
 
-async def _run_python_xagent_sub_agent(
+def _validate_python_venv_name(name: Any) -> str | None:
+    if name is None:
+        return None
+    if not isinstance(name, str) or not name.strip():
+        raise ToolValidationError("Field 'venv_name' must be a non-empty string when provided")
+    cleaned = name.strip()
+    if not _VENV_NAME_RE.match(cleaned):
+        raise ToolValidationError(
+            "Field 'venv_name' must start with a letter and contain only letters, digits, hyphens, and underscores"
+        )
+    return cleaned
+
+
+def _python_venv_container_path(workspace_path: str, venv_name: str | None) -> str:
+    base = f"{workspace_path}/.venvs"
+    if not venv_name:
+        return f"{base}/default"
+    return f"{base}/{venv_name}"
+
+
+def _parse_python_output(stdout_text: str) -> dict[str, Any]:
+    lines = [line.strip() for line in stdout_text.splitlines() if line.strip()]
+    if not lines:
+        raise ToolValidationError("python tool produced no output")
+    try:
+        payload = json.loads(lines[-1])
+    except json.JSONDecodeError as exc:
+        raise ToolValidationError("python tool returned invalid response") from exc
+    if not isinstance(payload, dict):
+        raise ToolValidationError("python tool returned invalid response")
+    return payload
+
+
+async def _run_python_in_runtime(
     *,
-    session_factory: async_sessionmaker[AsyncSession],
-    orchestrator: Any,
-    browser_manager: BrowserManager | None,
-    session_id: UUID,
-    objective: str,
-    context: str | None,
-    max_steps: int,
-    timeout_seconds: int,
-    allowed_tools: list[str],
-    browser_tab_id: str | None = None,
-) -> dict[str, Any]:
-    async with session_factory() as db:
-        result = await db.execute(select(SubAgentTask).where(SubAgentTask.session_id == session_id))
-        tasks = result.scalars().all()
-        active = [item for item in tasks if item.status in {"pending", "running"}]
-        if len(active) >= 3:
-            raise ToolValidationError("Max 3 concurrent sub-agent tasks per session")
-        normalized_browser_tab_id = (
-            browser_tab_id.strip()
-            if isinstance(browser_tab_id, str) and browser_tab_id.strip()
-            else None
-        )
-        if (
-            normalized_browser_tab_id is None
-            and browser_manager is not None
-            and _sub_agent_may_use_browser(allowed_tools)
-        ):
-            normalized_browser_tab_id = await _select_sub_agent_browser_tab_id(
-                browser_manager, reserved_tab_ids=_active_sub_agent_tab_ids(active)
-            )
-
-        task = SubAgentTask(
-            session_id=session_id,
-            objective=objective,
-            context=context,
-            constraints=(
-                [{"type": "browser_tab", "tab_id": normalized_browser_tab_id}]
-                if normalized_browser_tab_id
-                else []
-            ),
-            allowed_tools=allowed_tools,
-            max_turns=max_steps,
-            timeout_seconds=timeout_seconds,
-            status="pending",
-        )
-        db.add(task)
-        await db.commit()
-        await db.refresh(task)
-        task_id = task.id
-
-    started = orchestrator.start_task(task_id)
-    if not started:
-        async with session_factory() as db:
-            result = await db.execute(select(SubAgentTask).where(SubAgentTask.id == task_id))
-            existing = result.scalars().first()
-            if existing is None:
-                raise ToolValidationError("Failed to load sub-agent task")
-            existing = await orchestrator.complete_task(db, existing)
-            return _python_xagent_sub_agent_result(existing)
-
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_seconds
-    while loop.time() < deadline:
-        async with session_factory() as db:
-            result = await db.execute(select(SubAgentTask).where(SubAgentTask.id == task_id))
-            current = result.scalars().first()
-            if current is None:
-                raise ToolValidationError("Sub-agent task disappeared")
-            if current.status in {"completed", "failed", "cancelled"}:
-                return _python_xagent_sub_agent_result(current)
-        await asyncio.sleep(0.5)
-
-    orchestrator.cancel_task(task_id)
-    async with session_factory() as db:
-        result = await db.execute(select(SubAgentTask).where(SubAgentTask.id == task_id))
-        timed_out = result.scalars().first()
-        if timed_out is not None:
-            timed_out.status = "failed"
-            timed_out.completed_at = datetime.now(UTC)
-            timed_out.result = {
-                "error": f"Sub-agent timed out after {timeout_seconds}s",
-            }
-            await db.commit()
-            return _python_xagent_sub_agent_result(timed_out)
-
-    return {
-        "task_id": str(task_id),
-        "status": "failed",
-        "error": f"Sub-agent timed out after {timeout_seconds}s",
-    }
-
-
-def _python_xagent_sub_agent_result(task: SubAgentTask) -> dict[str, Any]:
-    raw_result = task.result if isinstance(task.result, dict) else {}
-    final_text = raw_result.get("final_text")
-    if not isinstance(final_text, str):
-        final_text = (
-            raw_result.get("summary") if isinstance(raw_result.get("summary"), str) else None
-        )
-    browser_tab_id = _extract_browser_tab_constraint(task.constraints)
-    return {
-        "task_id": str(task.id),
-        "status": task.status,
-        "objective": task.objective,
-        "browser_tab_id": browser_tab_id,
-        "final_text": final_text,
-        "result": raw_result,
-        "max_steps": int(task.max_turns or 0),
-        "turns_used": int(task.turns_used or 0),
-        "grace_turns_used": max(0, int(task.turns_used or 0) - int(task.max_turns or 0)),
-        "tokens_used": int(task.tokens_used or 0),
-    }
-
-
-def _run_python_xagent_code_sync(
-    *,
+    session_id: UUID | str,
     code: str,
-    workspace_dir: Path,
-    venv_dir: Path,
-    call_sub_agent: Any,
-) -> dict[str, Any]:
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-
-    globals_map: dict[str, Any] = {
-        "__name__": "__main__",
-        "call_sub_agent": call_sub_agent,
-    }
-
-    stdout_buf = io.StringIO()
-    stderr_buf = io.StringIO()
-    exception_text: str | None = None
-
-    old_cwd = Path.cwd()
-    old_path = os.environ.get("PATH", "")
-    old_virtual_env = os.environ.get("VIRTUAL_ENV")
-    old_sys_path = list(sys.path)
-
-    venv_bin = _venv_bin_dir(venv_dir)
-    venv_site_packages = _venv_site_packages_dir(venv_dir)
-
-    try:
-        os.chdir(workspace_dir)
-        os.environ["PATH"] = f"{venv_bin}{os.pathsep}{old_path}" if old_path else str(venv_bin)
-        os.environ["VIRTUAL_ENV"] = str(venv_dir)
-        if venv_site_packages.exists():
-            sys.path.insert(0, str(venv_site_packages))
-
-        with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
-            try:
-                compiled = compile(code, "<pythonXagent>", "exec")
-                exec(compiled, globals_map, globals_map)
-            except Exception:  # noqa: BLE001
-                exception_text = traceback.format_exc()
-    finally:
-        os.chdir(old_cwd)
-        os.environ["PATH"] = old_path
-        if old_virtual_env is None:
-            os.environ.pop("VIRTUAL_ENV", None)
-        else:
-            os.environ["VIRTUAL_ENV"] = old_virtual_env
-        sys.path[:] = old_sys_path
-
-    result_value = globals_map.get("result", globals_map.get("_result"))
-    result_json, result_repr = _to_json_or_repr(result_value)
-    return {
-        "ok": exception_text is None,
-        "stdout": _truncate_python_tool_text(stdout_buf.getvalue()),
-        "stderr": _truncate_python_tool_text(stderr_buf.getvalue()),
-        "exception": (_truncate_python_tool_text(exception_text) if exception_text else None),
-        "result": result_json,
-        "result_repr": result_repr,
-    }
-
-
-async def _ensure_managed_runtime_venv(venv_dir: Path, python_bin: Path) -> None:
-    if python_bin.exists():
-        return
-    venv_dir.parent.mkdir(parents=True, exist_ok=True)
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "venv",
-        str(venv_dir),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-    except TimeoutError as exc:
-        proc.kill()
-        await proc.communicate()
-        raise ToolValidationError("Timed out while creating pythonXagent virtualenv") from exc
-    if proc.returncode != 0:
-        message = stderr.decode("utf-8", errors="replace") or stdout.decode(
-            "utf-8", errors="replace"
-        )
-        raise ToolValidationError(
-            f"Failed to create virtualenv: {_truncate_python_tool_text(message)}"
-        )
-    if not python_bin.exists():
-        raise ToolValidationError(
-            "Virtualenv creation finished but python executable was not found"
-        )
-
-
-async def _install_managed_runtime_requirements(
-    *,
-    pip_bin: Path,
     requirements: list[str],
+    venv_name: str | None,
     timeout_seconds: int,
-) -> None:
-    if not pip_bin.exists():
-        raise ToolValidationError("pip executable not found in virtualenv")
-    proc = await asyncio.create_subprocess_exec(
-        str(pip_bin),
-        "install",
-        "--disable-pip-version-check",
-        "--no-input",
-        *requirements,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+) -> dict[str, Any]:
+    runtime = await get_runtime().ensure(session_id)
+    workspace = runtime.workspace_path
+    venv_path = _python_venv_container_path(workspace, venv_name)
+
+    payload_b64 = base64.b64encode(
+        json.dumps(
+            {"code": code, "requirements": requirements},
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).decode("ascii")
+
+    command = (
+        f"export {_PYTHON_VENV_ENV}={venv_path}; "
+        f"export {_PYTHON_PAYLOAD_ENV}={payload_b64}; "
+        f"export {_PYTHON_WORKSPACE_ENV}={workspace}; "
+        f"{_PYTHON_EXEC_SCRIPT}"
     )
+
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-    except TimeoutError as exc:
-        proc.kill()
-        await proc.communicate()
-        raise ToolValidationError("Timed out while installing pythonXagent requirements") from exc
-    if proc.returncode != 0:
-        message = stderr.decode("utf-8", errors="replace") or stdout.decode(
-            "utf-8", errors="replace"
+        result = await runtime.ssh.run(
+            f"bash -lc {_ssh_shell_quote(command)}",
+            cwd=workspace,
+            timeout=timeout_seconds,
         )
-        raise ToolValidationError(f"pip install failed: {_truncate_python_tool_text(message)}")
+    except TimeoutError as exc:
+        raise ToolValidationError(
+            f"python tool timed out after {timeout_seconds}s"
+        ) from exc
 
+    payload = _parse_python_output(result.stdout)
 
-def _venv_bin_dir(venv_dir: Path) -> Path:
-    return venv_dir / ("Scripts" if os.name == "nt" else "bin")
+    if result.exit_status != 0 or payload.get("error"):
+        error = payload.get("error")
+        if isinstance(error, str) and error.strip():
+            raise ToolValidationError(error.strip())
+        detail = result.stderr.strip() or result.stdout.strip() or "python tool failed"
+        raise ToolValidationError(detail)
 
-
-def _venv_python_path(venv_dir: Path) -> Path:
-    bin_dir = _venv_bin_dir(venv_dir)
-    return bin_dir / ("python.exe" if os.name == "nt" else "python")
-
-
-def _venv_pip_path(venv_dir: Path) -> Path:
-    bin_dir = _venv_bin_dir(venv_dir)
-    return bin_dir / ("pip.exe" if os.name == "nt" else "pip")
-
-
-def _venv_site_packages_dir(venv_dir: Path) -> Path:
-    if os.name == "nt":
-        return venv_dir / "Lib" / "site-packages"
-    return (
-        venv_dir
-        / "lib"
-        / f"python{sys.version_info.major}.{sys.version_info.minor}"
-        / "site-packages"
-    )
-
-
-def _to_json_or_repr(value: Any) -> tuple[Any, str | None]:
-    if value is None:
-        return None, None
-    try:
-        json.dumps(value)
-        return value, None
-    except TypeError:
-        return None, repr(value)
-
-
-def _truncate_python_tool_text(value: str | None) -> str:
-    text = value or ""
-    if len(text) <= _MAX_PYTHON_XAGENT_OUTPUT_CHARS:
-        return text
-    return f"{text[:_MAX_PYTHON_XAGENT_OUTPUT_CHARS]}\n...[truncated]"
+    return {
+        "ok": bool(payload.get("ok")),
+        "stdout": str(payload.get("stdout") or ""),
+        "stderr": str(payload.get("stderr") or ""),
+        "exception": payload.get("exception"),
+        "result": payload.get("result"),
+        "result_repr": payload.get("result_repr"),
+        "workspace": workspace,
+        "venv": venv_path,
+    }
 
 
 def _truncate_runtime_exec_text(value: str | None) -> str:
@@ -2805,18 +2554,6 @@ def _truncate_runtime_exec_text(value: str | None) -> str:
     if len(text) <= _MAX_RUNTIME_EXEC_OUTPUT_CHARS:
         return text
     return f"{text[:_MAX_RUNTIME_EXEC_OUTPUT_CHARS]}\n...[truncated]"
-
-
-def _stringify_sub_agent_context(value: Any | None) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        normalized = value.strip()
-        return normalized if normalized else None
-    try:
-        return json.dumps(value, ensure_ascii=False)
-    except TypeError:
-        return repr(value)
 
 
 async def _validate_public_hostname(hostname: str) -> None:
@@ -2863,8 +2600,19 @@ def _optional_browser_tab_id(payload: dict[str, Any]) -> str | None:
     return tab_id.strip()
 
 
-def _browser_navigate_tool(manager: BrowserManager) -> ToolDefinition:
+async def _resolve_browser_manager(pool: BrowserPool, payload: dict[str, Any]) -> BrowserManager:
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ToolValidationError("Field 'session_id' must be a non-empty string")
+    return await pool.get(session_id.strip())
+
+
+_BROWSER_SESSION_PROP = {"session_id": {"type": "string", "description": "The agent session UUID"}}
+
+
+def _browser_navigate_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         url = payload.get("url")
         timeout_ms = payload.get("timeout_ms")
         tab_id = _optional_browser_tab_id(payload)
@@ -2890,8 +2638,9 @@ def _browser_navigate_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["url"],
+            "required": ["session_id", "url"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "url": {"type": "string"},
                 "timeout_ms": {"type": "integer", "minimum": 1},
                 "tab_id": {"type": "string"},
@@ -2901,8 +2650,9 @@ def _browser_navigate_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_screenshot_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_screenshot_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         full_page = payload.get("full_page", True)
         tab_id = _optional_browser_tab_id(payload)
         if not isinstance(full_page, bool):
@@ -2921,7 +2671,9 @@ def _browser_screenshot_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
+            "required": ["session_id"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "full_page": {"type": "boolean"},
                 "tab_id": {"type": "string"},
             },
@@ -2930,8 +2682,9 @@ def _browser_screenshot_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_click_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_click_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         selector = payload.get("selector")
         timeout_ms = payload.get("timeout_ms")
         tab_id = _optional_browser_tab_id(payload)
@@ -2958,8 +2711,9 @@ def _browser_click_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["selector"],
+            "required": ["session_id", "selector"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "selector": {"type": "string"},
                 "timeout_ms": {"type": "integer", "minimum": 1},
                 "tab_id": {"type": "string"},
@@ -2969,8 +2723,9 @@ def _browser_click_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_type_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_type_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         selector = payload.get("selector")
         text = payload.get("text")
         timeout_ms = payload.get("timeout_ms")
@@ -3000,8 +2755,9 @@ def _browser_type_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["selector", "text"],
+            "required": ["session_id", "selector", "text"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "selector": {"type": "string"},
                 "text": {"type": "string"},
                 "timeout_ms": {"type": "integer", "minimum": 1},
@@ -3012,8 +2768,9 @@ def _browser_type_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_select_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_select_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         selector = payload.get("selector")
         value = payload.get("value")
         label = payload.get("label")
@@ -3062,8 +2819,9 @@ def _browser_select_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["selector"],
+            "required": ["session_id", "selector"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "selector": {"type": "string"},
                 "value": {"type": "string"},
                 "label": {"type": "string"},
@@ -3076,8 +2834,9 @@ def _browser_select_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_wait_for_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_wait_for_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         selector = payload.get("selector")
         condition = payload.get("condition", "visible")
         timeout_ms = payload.get("timeout_ms")
@@ -3106,8 +2865,9 @@ def _browser_wait_for_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["selector"],
+            "required": ["session_id", "selector"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "selector": {"type": "string"},
                 "condition": {
                     "type": "string",
@@ -3128,8 +2888,9 @@ def _browser_wait_for_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_get_value_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_get_value_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         selector = payload.get("selector")
         tab_id = _optional_browser_tab_id(payload)
         if not isinstance(selector, str) or not selector.strip():
@@ -3146,8 +2907,9 @@ def _browser_get_value_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["selector"],
+            "required": ["session_id", "selector"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "selector": {"type": "string"},
                 "tab_id": {"type": "string"},
             },
@@ -3156,8 +2918,9 @@ def _browser_get_value_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_fill_form_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_fill_form_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         steps = payload.get("steps")
         continue_on_error = payload.get("continue_on_error", False)
         verify = payload.get("verify", False)
@@ -3187,8 +2950,9 @@ def _browser_fill_form_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["steps"],
+            "required": ["session_id", "steps"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "steps": {
                     "type": "array",
                     "minItems": 1,
@@ -3231,8 +2995,9 @@ def _browser_fill_form_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_press_key_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_press_key_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         key = payload.get("key")
         tab_id = _optional_browser_tab_id(payload)
         if not isinstance(key, str) or not key.strip():
@@ -3246,8 +3011,9 @@ def _browser_press_key_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["key"],
+            "required": ["session_id", "key"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "key": {"type": "string"},
                 "tab_id": {"type": "string"},
             },
@@ -3256,8 +3022,9 @@ def _browser_press_key_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_scroll_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_scroll_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         direction = payload.get("direction", "down")
         amount = payload.get("amount", 500)
         selector = payload.get("selector")
@@ -3288,7 +3055,9 @@ def _browser_scroll_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
+            "required": ["session_id"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "direction": {
                     "type": "string",
                     "enum": ["up", "down", "left", "right"],
@@ -3311,8 +3080,9 @@ def _browser_scroll_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_get_text_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_get_text_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         selector = payload.get("selector")
         tab_id = _optional_browser_tab_id(payload)
         if selector is not None and (not isinstance(selector, str) or not selector.strip()):
@@ -3335,7 +3105,9 @@ def _browser_get_text_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
+            "required": ["session_id"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "selector": {
                     "type": "string",
                     "description": "CSS selector to extract text from a specific element. Omit to get full page content.",
@@ -3347,8 +3119,9 @@ def _browser_get_text_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_snapshot_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_snapshot_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         interactive_only = payload.get("interactive_only", False)
         max_depth = payload.get("max_depth")
         tab_id = _optional_browser_tab_id(payload)
@@ -3380,7 +3153,9 @@ def _browser_snapshot_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
+            "required": ["session_id"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "interactive_only": {
                     "type": "boolean",
                     "description": "If true, return only interactive elements (buttons, links, inputs, etc.). Much smaller output.",
@@ -3396,10 +3171,9 @@ def _browser_snapshot_tool(manager: BrowserManager) -> ToolDefinition:
     )
 
 
-def _browser_reset_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_reset_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
-        if payload:
-            raise ToolValidationError("browser_reset does not accept input fields")
+        manager = await _resolve_browser_manager(pool, payload)
         return await manager.reset()
 
     return ToolDefinition(
@@ -3409,16 +3183,16 @@ def _browser_reset_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "properties": {},
+            "required": ["session_id"],
+            "properties": {**_BROWSER_SESSION_PROP},
         },
         execute=_execute,
     )
 
 
-def _browser_tabs_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_tabs_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
-        if payload:
-            raise ToolValidationError("browser_tabs does not accept input fields")
+        manager = await _resolve_browser_manager(pool, payload)
         return await manager.list_tabs()
 
     return ToolDefinition(
@@ -3431,14 +3205,16 @@ def _browser_tabs_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "properties": {},
+            "required": ["session_id"],
+            "properties": {**_BROWSER_SESSION_PROP},
         },
         execute=_execute,
     )
 
 
-def _browser_tab_open_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_tab_open_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         raw_url = payload.get("url", "about:blank")
         if not isinstance(raw_url, str):
             raise ToolValidationError("Field 'url' must be a string")
@@ -3454,19 +3230,22 @@ def _browser_tab_open_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
+            "required": ["session_id"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "url": {
                     "type": "string",
                     "description": "Optional URL to open in the new tab.",
-                }
+                },
             },
         },
         execute=_execute,
     )
 
 
-def _browser_tab_focus_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_tab_focus_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         tab_id = payload.get("tab_id")
         if not isinstance(tab_id, str) or not tab_id.strip():
             raise ToolValidationError("Field 'tab_id' must be a non-empty string")
@@ -3479,20 +3258,22 @@ def _browser_tab_focus_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["tab_id"],
+            "required": ["session_id", "tab_id"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "tab_id": {
                     "type": "string",
                     "description": "Tab identifier returned by browser_tabs.",
-                }
+                },
             },
         },
         execute=_execute,
     )
 
 
-def _browser_tab_close_tool(manager: BrowserManager) -> ToolDefinition:
+def _browser_tab_close_tool(pool: BrowserPool) -> ToolDefinition:
     async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
         tab_id = payload.get("tab_id")
         if not isinstance(tab_id, str) or not tab_id.strip():
             raise ToolValidationError("Field 'tab_id' must be a non-empty string")
@@ -3505,12 +3286,289 @@ def _browser_tab_close_tool(manager: BrowserManager) -> ToolDefinition:
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["tab_id"],
+            "required": ["session_id", "tab_id"],
             "properties": {
+                **_BROWSER_SESSION_PROP,
                 "tab_id": {
                     "type": "string",
                     "description": "Tab identifier returned by browser_tabs.",
-                }
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_evaluate_tool(pool: BrowserPool) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
+        expression = payload.get("expression")
+        if not isinstance(expression, str) or not expression.strip():
+            raise ToolValidationError("Field 'expression' must be a non-empty string")
+        tab_id = payload.get("tab_id")
+        return await manager.evaluate(expression.strip(), tab_id=tab_id)
+
+    return ToolDefinition(
+        name="browser_evaluate",
+        description=(
+            "Execute JavaScript in the browser page and return the result. "
+            "Use this to read DOM state, manipulate elements, or run any JS expression."
+        ),
+        risk_level="high",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id", "expression"],
+            "properties": {
+                **_BROWSER_SESSION_PROP,
+                "expression": {
+                    "type": "string",
+                    "description": "JavaScript expression or statement to evaluate in the page context.",
+                },
+                "tab_id": {
+                    "type": "string",
+                    "description": "Optional tab identifier. Defaults to the active tab.",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_get_html_tool(pool: BrowserPool) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
+        tab_id = payload.get("tab_id")
+        return await manager.get_html(tab_id=tab_id)
+
+    return ToolDefinition(
+        name="browser_get_html",
+        description="Return the full HTML source of the current page (or a specific tab).",
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id"],
+            "properties": {
+                **_BROWSER_SESSION_PROP,
+                "tab_id": {
+                    "type": "string",
+                    "description": "Optional tab identifier. Defaults to the active tab.",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_get_cookies_tool(pool: BrowserPool) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
+        tab_id = payload.get("tab_id")
+        return await manager.get_cookies(tab_id=tab_id)
+
+    return ToolDefinition(
+        name="browser_get_cookies",
+        description="Return all cookies for the current browser context.",
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id"],
+            "properties": {
+                **_BROWSER_SESSION_PROP,
+                "tab_id": {
+                    "type": "string",
+                    "description": "Optional tab identifier. Defaults to the active tab.",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_set_cookies_tool(pool: BrowserPool) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
+        cookies = payload.get("cookies")
+        if not isinstance(cookies, list) or not cookies:
+            raise ToolValidationError("Field 'cookies' must be a non-empty array")
+        return await manager.set_cookies(cookies)
+
+    return ToolDefinition(
+        name="browser_set_cookies",
+        description="Set one or more cookies in the browser context.",
+        risk_level="medium",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id", "cookies"],
+            "properties": {
+                **_BROWSER_SESSION_PROP,
+                "cookies": {
+                    "type": "array",
+                    "description": "Array of cookie objects to set.",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "value"],
+                        "properties": {
+                            "name": {"type": "string"},
+                            "value": {"type": "string"},
+                            "url": {"type": "string"},
+                            "domain": {"type": "string"},
+                            "path": {"type": "string"},
+                            "httpOnly": {"type": "boolean"},
+                            "secure": {"type": "boolean"},
+                            "sameSite": {"type": "string", "enum": ["Strict", "Lax", "None"]},
+                        },
+                    },
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_console_logs_tool(pool: BrowserPool) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
+        tab_id = payload.get("tab_id")
+        return await manager.get_console_logs(tab_id=tab_id)
+
+    return ToolDefinition(
+        name="browser_console_logs",
+        description=(
+            "Return captured browser console log entries (log, warn, error, info, debug) "
+            "for the active tab or a specific tab."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id"],
+            "properties": {
+                **_BROWSER_SESSION_PROP,
+                "tab_id": {
+                    "type": "string",
+                    "description": "Optional tab identifier. Defaults to the active tab.",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_network_intercept_tool(pool: BrowserPool) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
+        url_pattern = payload.get("url_pattern")
+        if not isinstance(url_pattern, str) or not url_pattern.strip():
+            raise ToolValidationError("Field 'url_pattern' must be a non-empty string")
+        tab_id = payload.get("tab_id")
+        action = payload.get("action", "log")
+        response_body = payload.get("response_body")
+        response_status = int(payload.get("response_status", 200))
+        return await manager.setup_network_intercept(
+            url_pattern.strip(),
+            action=action,
+            response_body=response_body,
+            response_status=response_status,
+            tab_id=tab_id,
+        )
+
+    return ToolDefinition(
+        name="browser_network_intercept",
+        description=(
+            "Set up network request interception for URLs matching a glob pattern. "
+            "action='log' records requests (retrieve with browser_network_logs). "
+            "action='block' aborts matching requests. "
+            "action='mock' returns a static response body."
+        ),
+        risk_level="medium",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id", "url_pattern"],
+            "properties": {
+                **_BROWSER_SESSION_PROP,
+                "url_pattern": {
+                    "type": "string",
+                    "description": "Glob pattern to match request URLs (e.g. '**/api/**', 'https://example.com/*').",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["log", "block", "mock"],
+                    "description": "What to do with matching requests: 'log' (default), 'block', or 'mock'.",
+                    "default": "log",
+                },
+                "response_body": {
+                    "type": "string",
+                    "description": "Response body to return when action='mock'.",
+                },
+                "response_status": {
+                    "type": "integer",
+                    "description": "HTTP status code to return when action='mock' (default 200).",
+                    "default": 200,
+                },
+                "tab_id": {
+                    "type": "string",
+                    "description": "Optional tab identifier. Defaults to the active tab.",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_network_logs_tool(pool: BrowserPool) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
+        tab_id = payload.get("tab_id")
+        return await manager.get_network_logs(tab_id=tab_id)
+
+    return ToolDefinition(
+        name="browser_network_logs",
+        description=(
+            "Return captured network request/response logs for intercepted URLs. "
+            "Set up interception first with browser_network_intercept."
+        ),
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id"],
+            "properties": {
+                **_BROWSER_SESSION_PROP,
+                "tab_id": {
+                    "type": "string",
+                    "description": "Optional tab identifier. Defaults to the active tab.",
+                },
+            },
+        },
+        execute=_execute,
+    )
+
+
+def _browser_clear_network_intercepts_tool(pool: BrowserPool) -> ToolDefinition:
+    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+        manager = await _resolve_browser_manager(pool, payload)
+        tab_id = payload.get("tab_id")
+        return await manager.clear_network_intercepts(tab_id=tab_id)
+
+    return ToolDefinition(
+        name="browser_clear_network_intercepts",
+        description="Remove all active network interception routes and clear captured network logs.",
+        risk_level="low",
+        parameters_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["session_id"],
+            "properties": {
+                **_BROWSER_SESSION_PROP,
+                "tab_id": {
+                    "type": "string",
+                    "description": "Optional tab identifier. Defaults to the active tab.",
+                },
             },
         },
         execute=_execute,

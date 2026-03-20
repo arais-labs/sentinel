@@ -7,7 +7,10 @@ from typing import Any
 
 from app.services.tools.builtin import build_default_registry
 from app.services.tools.browser_tool import BrowserManager
+from app.services.tools.browser_pool import BrowserPool
 from app.services.tools.executor import ToolExecutor
+
+_SID = "local"
 
 
 def _short(value: Any, *, limit: int = 260) -> str:
@@ -55,22 +58,34 @@ async def _execute_safe(
         return None
 
 
+class _LocalBrowserPool(BrowserPool):
+    """Thin pool wrapper that always returns the same local manager."""
+
+    def __init__(self, manager: BrowserManager) -> None:
+        super().__init__()
+        self._local = manager
+
+    async def get(self, session_id: Any = "") -> BrowserManager:  # type: ignore[override]
+        return self._local
+
+
 async def run_live_checks() -> RunResult:
     manager = BrowserManager(headless=True)
-    registry = build_default_registry(browser_manager=manager)
+    pool = _LocalBrowserPool(manager)
+    registry = build_default_registry(browser_pool=pool)
     executor = ToolExecutor(registry)
     status = RunResult()
 
     try:
         print("\n=== Scenario 1: Example.com Semantic Link Click ===")
         nav = await _execute(
-            executor, "browser_navigate", {"url": "https://example.com"}
+            executor, "browser_navigate", {"url": "https://example.com", "session_id": _SID}
         )
         start_url = nav.get("url", "")
         if "example.com" not in nav.get("url", ""):
             status.fail("scenario1: unexpected url after navigate")
 
-        snap = await _execute(executor, "browser_snapshot", {"interactive_only": True})
+        snap = await _execute(executor, "browser_snapshot", {"interactive_only": True, "session_id": _SID})
         if not snap.get("snapshot"):
             status.fail("scenario1: interactive snapshot empty")
 
@@ -81,14 +96,14 @@ async def run_live_checks() -> RunResult:
         click_res = await _execute_safe(
             executor,
             "browser_click",
-            {"selector": link_selector},
+            {"selector": link_selector, "session_id": _SID},
             status,
             "scenario1: unable to click primary example.com link",
         )
         heading = await _execute_safe(
             executor,
             "browser_get_text",
-            {"selector": "h1"},
+            {"selector": "h1", "session_id": _SID},
             status,
             "scenario1: could not read destination heading",
         )
@@ -110,16 +125,16 @@ async def run_live_checks() -> RunResult:
         await _execute(
             executor,
             "browser_navigate",
-            {"url": "https://www.selenium.dev/selenium/web/web-form.html"},
+            {"url": "https://www.selenium.dev/selenium/web/web-form.html", "session_id": _SID},
         )
-        snap = await _execute(executor, "browser_snapshot", {"interactive_only": True})
+        snap = await _execute(executor, "browser_snapshot", {"interactive_only": True, "session_id": _SID})
         if not snap.get("snapshot"):
             status.fail("scenario2: interactive snapshot empty")
 
         await _execute_safe(
             executor,
             "browser_type",
-            {"selector": "input[name='my-text']", "text": "sentinel-e2e"},
+            {"selector": "input[name='my-text']", "text": "sentinel-e2e", "session_id": _SID},
             status,
             "scenario2: failed typing plain text input",
         )
@@ -129,6 +144,7 @@ async def run_live_checks() -> RunResult:
             {
                 "selector": "textarea[name='my-textarea']",
                 "text": "hello from sentinel browser tools",
+                "session_id": _SID,
             },
             status,
             "scenario2: failed typing textarea",
@@ -136,7 +152,7 @@ async def run_live_checks() -> RunResult:
         await _execute_safe(
             executor,
             "browser_click",
-            {"selector": "input[name='my-check']"},
+            {"selector": "input[name='my-check']", "session_id": _SID},
             status,
             "scenario2: failed checkbox click",
         )
@@ -150,21 +166,21 @@ async def run_live_checks() -> RunResult:
         await _execute_safe(
             executor,
             "browser_click",
-            {"selector": radio_selector},
+            {"selector": radio_selector, "session_id": _SID},
             status,
             "scenario2: failed radio click",
         )
         await _execute_safe(
             executor,
             "browser_click",
-            {"selector": "select[name='my-select']"},
+            {"selector": "select[name='my-select']", "session_id": _SID},
             status,
             "scenario2: failed dropdown focus click",
         )
         await _execute_safe(
             executor,
             "browser_click",
-            {"selector": "option[value='2']"},
+            {"selector": "option[value='2']", "session_id": _SID},
             status,
             "scenario2: failed dropdown option click",
         )
@@ -172,7 +188,7 @@ async def run_live_checks() -> RunResult:
         selected = await _execute_safe(
             executor,
             "browser_get_text",
-            {"selector": "select[name='my-select'] option:checked"},
+            {"selector": "select[name='my-select'] option:checked", "session_id": _SID},
             status,
             "scenario2: failed reading dropdown selected option",
         )
@@ -182,7 +198,7 @@ async def run_live_checks() -> RunResult:
         textarea_text = await _execute_safe(
             executor,
             "browser_get_text",
-            {"selector": "textarea[name='my-textarea']"},
+            {"selector": "textarea[name='my-textarea']", "session_id": _SID},
             status,
             "scenario2: failed reading textarea",
         )
@@ -194,7 +210,7 @@ async def run_live_checks() -> RunResult:
         await _execute_safe(
             executor,
             "browser_screenshot",
-            {"full_page": True},
+            {"full_page": True, "session_id": _SID},
             status,
             "scenario2: failed taking full-page screenshot",
         )
@@ -203,46 +219,46 @@ async def run_live_checks() -> RunResult:
         await _execute_safe(
             executor,
             "browser_navigate",
-            {"url": "https://github.com/signup"},
+            {"url": "https://github.com/signup", "session_id": _SID},
             status,
             "scenario3: github navigate failed",
         )
         await _execute_safe(
             executor,
             "browser_snapshot",
-            {"interactive_only": True},
+            {"interactive_only": True, "session_id": _SID},
             status,
             "scenario3: github interactive snapshot failed",
         )
         try:
-            await _execute(executor, "browser_click", {"selector": "button: Accept"})
+            await _execute(executor, "browser_click", {"selector": "button: Accept", "session_id": _SID})
         except Exception as exc:  # noqa: BLE001
             print(f"cookie banner accept skipped: {exc}")
         await _execute_safe(
             executor,
             "browser_type",
-            {"selector": "textbox: Email", "text": "qa+sentinel-e2e@example.com"},
+            {"selector": "textbox: Email", "text": "qa+sentinel-e2e@example.com", "session_id": _SID},
             status,
             "scenario3: semantic email fill failed",
         )
         await _execute_safe(
             executor,
             "browser_type",
-            {"selector": "textbox: Password", "text": "S3ntinel_Test_2026!"},
+            {"selector": "textbox: Password", "text": "S3ntinel_Test_2026!", "session_id": _SID},
             status,
             "scenario3: semantic password fill failed",
         )
         await _execute_safe(
             executor,
             "browser_type",
-            {"selector": "textbox: Username", "text": "sentinel-qa-e2e-2026"},
+            {"selector": "textbox: Username", "text": "sentinel-qa-e2e-2026", "session_id": _SID},
             status,
             "scenario3: semantic username fill failed",
         )
         await _execute_safe(
             executor,
             "browser_screenshot",
-            {"full_page": True},
+            {"full_page": True, "session_id": _SID},
             status,
             "scenario3: github screenshot failed",
         )

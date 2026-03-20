@@ -116,7 +116,7 @@ def test_full_integration_happy_path():
         assert file_read.status_code == 200
         assert "integration tool check" in file_read.json()["result"]["content"]
 
-        live_view = client.get("/api/v1/playwright/live-view", headers=headers)
+        live_view = client.get("/api/v1/runtime/live-view", headers=headers)
         assert live_view.status_code == 200
         assert "enabled" in live_view.json()
 

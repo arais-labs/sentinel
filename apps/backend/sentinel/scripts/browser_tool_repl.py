@@ -7,12 +7,25 @@ from typing import Any
 
 from app.services.tools.builtin import build_default_registry
 from app.services.tools.browser_tool import BrowserManager
+from app.services.tools.browser_pool import BrowserPool
 from app.services.tools.executor import ToolExecutor
+
+
+class _LocalBrowserPool(BrowserPool):
+    """Thin pool wrapper that always returns the same local manager."""
+
+    def __init__(self, manager: BrowserManager) -> None:
+        super().__init__()
+        self._local = manager
+
+    async def get(self, session_id: Any = "") -> BrowserManager:  # type: ignore[override]
+        return self._local
 
 
 async def main() -> int:
     manager = BrowserManager(headless=False)
-    registry = build_default_registry(browser_manager=manager)
+    pool = _LocalBrowserPool(manager)
+    registry = build_default_registry(browser_pool=pool)
     executor = ToolExecutor(registry)
 
     print(json.dumps({"event": "ready"}), flush=True)

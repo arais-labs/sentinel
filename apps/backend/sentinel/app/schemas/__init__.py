@@ -16,9 +16,9 @@ from app.schemas.memory import (
     StoreMemoryRequest,
 )
 from app.schemas.models import ModelOptionResponse, ModelsResponse
-from app.schemas.playwright import (
-    PlaywrightBrowserResetResponse,
-    PlaywrightLiveViewResponse,
+from app.schemas.runtime import (
+    RuntimeResetResponse,
+    RuntimeLiveViewResponse,
 )
 from app.schemas.sessions import (
     CreateMessageRequest,
@@ -72,8 +72,8 @@ __all__ = [
     "ModelsResponse",
     "MessageListResponse",
     "MessageResponse",
-    "PlaywrightBrowserResetResponse",
-    "PlaywrightLiveViewResponse",
+    "RuntimeResetResponse",
+    "RuntimeLiveViewResponse",
     "SessionListResponse",
     "SessionResponse",
     "StoreMemoryRequest",

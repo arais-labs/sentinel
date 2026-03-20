@@ -92,6 +92,15 @@ class ConnectionManager:
             },
         )
 
+    async def broadcast_runtime_ready(self, session_id: str) -> None:
+        await self.broadcast(
+            session_id,
+            {
+                "type": "runtime_ready",
+                "session_id": session_id,
+            },
+        )
+
     async def broadcast_sub_agent_started(self, session_id: str, task_id: str, objective: str) -> None:
         await self.broadcast(
             session_id,

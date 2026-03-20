@@ -9,8 +9,6 @@ cd "$ROOT_DIR"
 
 INSTANCES_DIR="$ROOT_DIR/.instances"
 mkdir -p "$INSTANCES_DIR"
-BACKUPS_DIR="$ROOT_DIR/.instances/backups"
-mkdir -p "$BACKUPS_DIR"
 TMP_PICK="/tmp/sentinel_pick_$(id -u)"
 
 # Colors and Styling
@@ -68,12 +66,17 @@ error() { echo -e "${RED}${ICON_ERROR} [ERROR]${RESET} $*"; }
 require_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 get_instances() {
-  local files
+  local dirs
   shopt -s nullglob
-  files=("$INSTANCES_DIR"/*.env)
+  dirs=("$INSTANCES_DIR"/*/.)
   shopt -u nullglob
-  [[ ${#files[@]} -eq 0 ]] && return 0
-  for file in "${files[@]}"; do basename "$file" .env; done
+  [[ ${#dirs[@]} -eq 0 ]] && return 0
+  local dir
+  for dir in "${dirs[@]}"; do
+    local name
+    name="$(basename "$(dirname "$dir")")"
+    [[ -f "$INSTANCES_DIR/$name/.env" ]] && echo "$name"
+  done
 }
 
 check_port_occupied() {
@@ -118,9 +121,11 @@ sanitize_instance_name() {
   echo "${1:-main}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g'
 }
 
-instance_env_file() { echo "$INSTANCES_DIR/${1}.env"; }
+instance_dir() { echo "$INSTANCES_DIR/${1}"; }
+instance_env_file() { echo "$INSTANCES_DIR/${1}/.env"; }
 instance_project_name() { echo "sentinel-${1}"; }
-instance_backup_dir() { echo "$BACKUPS_DIR/${1}"; }
+instance_backup_dir() { echo "$INSTANCES_DIR/${1}/backups"; }
+instance_workspaces_dir() { echo "$INSTANCES_DIR/${1}/workspaces"; }
 
 sql_quote_identifier() {
   local value="$1"
@@ -864,7 +869,7 @@ action_create() {
   read -r -p "${BOLD}Instance name${RESET} [main]: " inst < /dev/tty
   inst="$(sanitize_instance_name "${inst:-main}")"
   local ef="$(instance_env_file "$inst")"
-  
+
   if [[ -f "$ef" ]]; then
     warn "Instance '$inst' already exists."
     read -r -p "Overwrite configuration? [y/N]: " ov < /dev/tty
@@ -888,6 +893,11 @@ action_create() {
   local auth_user="$(prompt_default "Admin Username (both apps)" "admin")"
   local auth_password="$(prompt_default "Admin Password (both apps)" "$(generate_secret 12)")"
 
+  local inst_dir workspaces_dir
+  inst_dir="$(instance_dir "$inst")"
+  workspaces_dir="$(instance_workspaces_dir "$inst")"
+  mkdir -p "$workspaces_dir"
+
   cat > "$ef" <<EOF
 STACK_PORT=$p
 POSTGRES_DB=$db
@@ -895,6 +905,7 @@ POSTGRES_USER=$u
 POSTGRES_PASSWORD=$pw
 JWT_SECRET_KEY=$jwt
 JWT_ALGORITHM=HS256
+RUNTIME_WORKSPACES_HOST_DIR=$workspaces_dir
 EOF
   chmod 600 "$ef"
   success "Config saved for '$inst'."
@@ -922,6 +933,8 @@ action_up() {
   [[ -z "$inst" ]] && return 0
 
   info "${ICON_START} Launching '$inst'${mode_label:+ (${mode_label})}..."
+  # Pre-build the runtime image (profiled service, not started by 'up')
+  "$compose_runner" "$inst" build sentinel-runtime 2>/dev/null || true
   if "$compose_runner" "$inst" up --build -d; then
     success "'$inst' is running."
     if [[ -n "$seed_user" && -n "$seed_password" ]]; then
@@ -1315,13 +1328,13 @@ action_delete() {
   fi
   [[ -z "$inst" ]] && return 0
   
-  warn "This will delete '$inst' config and data volumes."
+  warn "This will delete '$inst' config, workspaces, and data volumes."
   read -r -p "Type DELETE to confirm: " confirm < /dev/tty
   if [[ "$confirm" == "DELETE" ]]; then
     if docker info >/dev/null 2>&1; then
       compose_instance "$inst" down -v --remove-orphans || true
     fi
-    rm -f "$(instance_env_file "$inst")"
+    rm -rf "$(instance_dir "$inst")"
     success "Deleted."
   else
     info "Aborted."

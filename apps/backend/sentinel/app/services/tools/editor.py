@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import base64
-import contextlib
 import json
 import os
-import signal
 from typing import Any
 from uuid import UUID
 
@@ -16,10 +13,15 @@ from app.models import Session
 from app.services.session_runtime import ensure_runtime_layout, runtime_workspace_dir
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolDefinition
-from app.services.tools.runtime_exec_sandbox import RuntimeExecSandboxError, build_runtime_exec_command_args
+from app.services.runtime import get_runtime
 
 _STR_REPLACE_TIMEOUT_SECONDS = 120
+
+
+def _shell_quote(s: str) -> str:
+    return "'" + s.replace("'", "'\\''") + "'"
 _STR_REPLACE_PAYLOAD_ENV = "SENTINEL_STR_REPLACE_EDITOR_PAYLOAD_B64"
+_STR_REPLACE_WORKSPACE_ENV = "SENTINEL_STR_REPLACE_WORKSPACE"
 _STR_REPLACE_SCRIPT = """python3 - <<'PY'
 import base64
 import json
@@ -56,7 +58,7 @@ if not isinstance(new_str, str):
 if old_str == "":
     fail("Field 'old_str' must be a non-empty string")
 
-workspace = pathlib.Path("/mnt").resolve()
+workspace = pathlib.Path(os.environ.get("%s", "/home/sentinel/workspace")).resolve()
 target = (workspace / path_raw).resolve()
 if target != workspace and workspace not in target.parents:
     fail(f"Path outside allowed directory: {path_raw}")
@@ -96,7 +98,7 @@ print(
     )
 )
 PY
-""" % _STR_REPLACE_PAYLOAD_ENV
+""" % (_STR_REPLACE_PAYLOAD_ENV, _STR_REPLACE_WORKSPACE_ENV)
 
 
 async def _ensure_session_exists(
@@ -125,6 +127,7 @@ def _parse_str_replace_output(stdout_text: str) -> dict[str, Any]:
 
 async def _run_str_replace_in_runtime_exec(
     *,
+    session_id: UUID | str,
     workspace_dir: Any,
     path: str,
     old_str: str,
@@ -138,50 +141,27 @@ async def _run_str_replace_in_runtime_exec(
         ).encode("utf-8")
     ).decode("ascii")
 
-    env = os.environ.copy()
-    env[_STR_REPLACE_PAYLOAD_ENV] = payload_b64
-
-    try:
-        command_plan = build_runtime_exec_command_args(
-            command=_STR_REPLACE_SCRIPT,
-            privilege="user",
-            workspace_dir=workspace_dir,
-            run_dir=workspace_dir,
-            use_python_venv=False,
-            venv_dir=None,
-        )
-    except RuntimeExecSandboxError as exc:
-        raise ToolValidationError(str(exc)) from exc
-
-    if command_plan.env_overrides:
-        env.update(command_plan.env_overrides)
-
-    proc = await asyncio.create_subprocess_exec(
-        *command_plan.args,
-        cwd=str(workspace_dir),
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=(os.name != "nt"),
+    runtime = await get_runtime().ensure(session_id)
+    command = (
+        f"export {_STR_REPLACE_PAYLOAD_ENV}={payload_b64}; "
+        f"export {_STR_REPLACE_WORKSPACE_ENV}={runtime.workspace_path}; "
+        f"{_STR_REPLACE_SCRIPT}"
     )
+
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_STR_REPLACE_TIMEOUT_SECONDS)
+        result = await runtime.ssh.run(
+            f"bash -lc {_shell_quote(command)}",
+            cwd=runtime.workspace_path,
+            timeout=_STR_REPLACE_TIMEOUT_SECONDS,
+        )
     except TimeoutError:
-        if proc.returncode is None:
-            if os.name == "nt":
-                proc.kill()
-            else:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(proc.wait(), timeout=3)
         raise ToolValidationError("str_replace_editor timed out")
 
-    stdout_text = stdout.decode("utf-8", errors="replace")
-    stderr_text = stderr.decode("utf-8", errors="replace")
+    stdout_text = result.stdout
+    stderr_text = result.stderr
     payload = _parse_str_replace_output(stdout_text)
 
-    if proc.returncode != 0:
+    if result.exit_status != 0:
         error = payload.get("error")
         if isinstance(error, str) and error.strip():
             raise ToolValidationError(error.strip())
@@ -233,6 +213,7 @@ def str_replace_editor_tool(
         await ensure_runtime_layout(session_id)
         workspace_dir = runtime_workspace_dir(session_id)
         return await _run_str_replace_in_runtime_exec(
+            session_id=session_id,
             workspace_dir=workspace_dir,
             path=path_raw.strip(),
             old_str=old_str,
