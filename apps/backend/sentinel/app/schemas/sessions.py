@@ -67,7 +67,6 @@ class SessionRuntimeResponse(BaseModel):
     session_id: UUID
     runtime_exists: bool
     workspace_exists: bool
-    venv_exists: bool
     active: bool
     active_pid: int | None = None
     last_command: str | None = None

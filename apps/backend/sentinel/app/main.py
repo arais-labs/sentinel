@@ -9,6 +9,7 @@ from app.logging_context import configure_logging
 
 # Configure logging so our debug/info logs are visible and session-scoped.
 configure_logging()
+logger = logging.getLogger(__name__)
 # Set DEBUG for our agent/provider modules specifically
 logging.getLogger("app.services.agent").setLevel(logging.DEBUG)
 logging.getLogger("app.services.llm").setLevel(logging.DEBUG)
@@ -32,7 +33,7 @@ from app.routers import (
     memory,
     models,
     onboarding,
-    playwright,
+    runtime,
     settings as settings_router,
     sessions,
     sessions_compaction,
@@ -40,6 +41,7 @@ from app.routers import (
     telegram,
     tools,
     triggers,
+    vnc_proxy,
     ws,
     webhooks,
 )
@@ -54,12 +56,13 @@ from app.services.memory.search import MemorySearchService
 from app.services.session_runtime import run_session_runtime_janitor
 from app.services.session_naming import SessionNamingService
 from app.services.sub_agents import SubAgentOrchestrator
-from app.services.tools import BrowserManager, ToolExecutor, build_default_registry
+from app.services.tools import ToolExecutor, build_default_registry
+from app.services.tools.browser_pool import BrowserPool
 from app.services.tools.builtin import (
     cancel_sub_agent_tool,
     check_sub_agent_tool,
     list_sub_agents_tool,
-    python_xagent_tool,
+    python_tool,
     spawn_sub_agent_tool,
 )
 from app.services.trigger_scheduler import TriggerScheduler
@@ -132,13 +135,24 @@ async def lifespan(app: FastAPI):
                 )
             )
     memory_search_service = MemorySearchService(embedding_service)
-    browser_manager = BrowserManager()
+    browser_pool = BrowserPool()
+
+    # Recover running runtime containers that survived a backend restart/reload
+    try:
+        from app.services.runtime import get_runtime
+        _rt = get_runtime()
+        if hasattr(_rt, "recover_existing"):
+            _recovered = await _rt.recover_existing()
+            if _recovered:
+                logger.info("Recovered %d existing runtime container(s)", _recovered)
+    except Exception:
+        logger.debug("Runtime container recovery skipped", exc_info=True)
 
     registry = build_default_registry(
         memory_search_service=memory_search_service,
         embedding_service=embedding_service,
         session_factory=AsyncSessionLocal,
-        browser_manager=browser_manager,
+        browser_pool=browser_pool,
     )
     executor = ToolExecutor(registry)
 
@@ -155,18 +169,11 @@ async def lifespan(app: FastAPI):
     app.state.approval_service = ApprovalService(session_factory=AsyncSessionLocal)
     app.state.embedding_service = embedding_service
     app.state.memory_search_service = memory_search_service
-    app.state.browser_manager = browser_manager
+    app.state.browser_pool = browser_pool
     app.state.ws_manager = ws_manager
     app.state.agent_run_registry = run_registry
     app.state.llm_provider = provider
     app.state.agent_loop = None
-
-    if settings.browser_prewarm_on_start:
-        try:
-            await browser_manager.warmup()
-            logging.getLogger(__name__).info("Browser prewarm completed during startup.")
-        except Exception as exc:  # noqa: BLE001
-            logging.getLogger(__name__).warning("Browser prewarm failed during startup: %s", exc)
 
     async def _wakeup_main_agent(session_id: object) -> bool:
         """Server-initiated agent turn triggered by sub-agent completion.
@@ -348,7 +355,7 @@ async def lifespan(app: FastAPI):
                 session_factory=AsyncSessionLocal,
                 orchestrator=app.state.sub_agent_orchestrator,
                 ws_manager=ws_manager,
-                browser_manager=browser_manager,
+                browser_pool=browser_pool,
             )
         )
         registry.register(check_sub_agent_tool(session_factory=AsyncSessionLocal))
@@ -359,20 +366,14 @@ async def lifespan(app: FastAPI):
                 orchestrator=app.state.sub_agent_orchestrator,
             )
         )
-        registry.register(
-            python_xagent_tool(
-                session_factory=AsyncSessionLocal,
-                orchestrator=app.state.sub_agent_orchestrator,
-                browser_manager=browser_manager,
-            )
-        )
+        registry.register(python_tool(session_factory=AsyncSessionLocal))
         available_tools.update(
             {
                 "spawn_sub_agent",
                 "check_sub_agent",
                 "list_sub_agents",
                 "cancel_sub_agent",
-                "pythonXagent",
+                "python",
             }
         )
         # Rebuild executor and tool adapter with new tools
@@ -428,7 +429,7 @@ async def lifespan(app: FastAPI):
         from app.services.telegram_bridge import stop_telegram_bridge
 
         await stop_telegram_bridge(app.state)
-        await browser_manager.close()
+        await browser_pool.close_all()
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
@@ -465,6 +466,7 @@ app.include_router(models.router, prefix="/api/v1/models", tags=["models"])
 app.include_router(agent_modes_router.router, prefix="/api/v1/agent-modes", tags=["agent-modes"])
 app.include_router(onboarding.router, prefix="/api/v1/onboarding", tags=["onboarding"])
 app.include_router(settings_router.router, prefix="/api/v1/settings", tags=["settings"])
-app.include_router(playwright.router, prefix="/api/v1/playwright", tags=["playwright"])
+app.include_router(runtime.router, prefix="/api/v1/runtime", tags=["runtime"])
 app.include_router(telegram.router, prefix="/api/v1/telegram", tags=["telegram"])
+app.include_router(vnc_proxy.router, tags=["vnc"])
 app.include_router(ws.router, prefix="/ws/sessions", tags=["ws"])

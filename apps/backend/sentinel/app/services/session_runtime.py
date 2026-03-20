@@ -27,7 +27,7 @@ _RUNTIME_META_FILENAME = ".runtime_meta.json"
 _RUNTIME_ACTIONS_FILENAME = ".runtime_actions.jsonl"
 _RUNTIME_JOBS_FILENAME = ".runtime_jobs.json"
 _RUNTIME_LOGS_DIRNAME = "logs"
-_RUNTIME_PUBLIC_WORKSPACE = "/mnt"
+_RUNTIME_PUBLIC_WORKSPACE = "/workspace"
 _RUNTIME_PUBLIC_LOGS_DIR = f"{_RUNTIME_PUBLIC_WORKSPACE}/.runtime/logs"
 _DEFAULT_RUNTIME_ACTION_LIMIT = 40
 _DEFAULT_RUNTIME_FILE_LIMIT = 400
@@ -62,10 +62,6 @@ def runtime_root_dir(session_id: UUID | str) -> Path:
 
 def runtime_workspace_dir(session_id: UUID | str) -> Path:
     return runtime_root_dir(session_id) / "workspace"
-
-
-def runtime_venv_dir(session_id: UUID | str) -> Path:
-    return runtime_root_dir(session_id) / "venv"
 
 
 def runtime_logs_dir(session_id: UUID | str) -> Path:
@@ -155,13 +151,11 @@ def get_session_runtime_snapshot(
     session_key = str(session_id)
     root = runtime_root_dir(session_key)
     workspace = runtime_workspace_dir(session_key)
-    venv = runtime_venv_dir(session_key)
     metadata = _read_runtime_metadata(root / _RUNTIME_META_FILENAME)
     return {
         "session_id": session_key,
         "runtime_exists": root.exists(),
         "workspace_exists": workspace.exists(),
-        "venv_exists": venv.exists(),
         "active": bool(metadata.get("active")),
         "active_pid": _int_or_none(metadata.get("active_pid")),
         "last_command": _string_or_none(metadata.get("last_command")),
@@ -780,9 +774,26 @@ async def read_detached_runtime_job_logs(
 async def cleanup_session_runtime(
     session_id: UUID | str,
 ) -> dict[str, bool]:
+    from app.config import settings
+
     session_key = str(session_id)
+
+    # Stop runtime container/connection if one is running for this session
+    runtime_stopped = False
+    try:
+        from app.services.runtime import get_runtime
+        runtime_stopped = await get_runtime().stop(session_key)
+    except Exception:
+        logger.debug("Runtime stop skipped for session %s", session_key, exc_info=True)
+
     runtime_removed = await _remove_runtime_root(runtime_root_dir(session_key))
-    return {"runtime_removed": runtime_removed}
+
+    # Remove the persistent workspace volume directory for this session
+    ws_dir = Path(settings.runtime_workspaces_host_dir) / session_key
+    if ws_dir.exists():
+        await asyncio.to_thread(shutil.rmtree, ws_dir, True)
+
+    return {"runtime_removed": runtime_removed, "runtime_stopped": runtime_stopped}
 
 
 async def sweep_session_runtimes(
@@ -804,6 +815,8 @@ async def sweep_session_runtimes(
     removed_idle = 0
     removed_stale_active = 0
 
+    from app.config import settings
+
     for root in _list_runtime_dirs(_RUNTIME_BASE_DIR):
         session_key = root.name
         session = existing_sessions.get(session_key)
@@ -811,6 +824,10 @@ async def sweep_session_runtimes(
             if await _remove_runtime_root(root):
                 removed += 1
                 removed_orphans += 1
+            # Also clean up orphaned workspace volume dir
+            ws_dir = Path(settings.runtime_workspaces_host_dir) / session_key
+            if ws_dir.exists():
+                await asyncio.to_thread(shutil.rmtree, ws_dir, True)
 
     return {
         "removed": removed,

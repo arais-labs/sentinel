@@ -23,6 +23,7 @@ dependencies = [
   "playwright>=1.52.0,<2.0.0",
   "websockets>=12.0,<13.0",
   "python-telegram-bot>=21.0,<22.0",
+  "asyncssh>=2.17.0,<3.0.0",
 ]
 
 [project.optional-dependencies]

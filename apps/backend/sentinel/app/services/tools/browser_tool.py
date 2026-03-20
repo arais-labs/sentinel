@@ -176,10 +176,12 @@ class BrowserManager:
         timeout_ms: int = 3_000,
         headless: bool | None = None,
         user_data_dir: str | None = None,
+        cdp_endpoint: str | None = None,
     ) -> None:
         self._timeout_ms = timeout_ms
         self._headless = headless
         self._user_data_dir = user_data_dir or get_browser_user_data_dir()
+        self._cdp_endpoint = cdp_endpoint
         self._playwright_context: Any = None
         self._playwright: Any = None
         self._browser: Any = None
@@ -191,6 +193,9 @@ class BrowserManager:
         self._tab_action_locks: dict[str, _ReentrantAsyncLock] = {}
         self._locks_guard = asyncio.Lock()
         self._tab_admin_lock = _ReentrantAsyncLock()
+        self._console_logs: dict[int, list[dict]] = {}
+        self._network_logs: dict[int, list[dict]] = {}
+        self._active_routes: dict[int, list[str]] = {}
 
     def _resolve_timeout(self, timeout_ms: int | None) -> int:
         timeout = self._timeout_ms if timeout_ms is None else timeout_ms
@@ -951,6 +956,93 @@ class BrowserManager:
         finally:
             self._tab_admin_lock.release()
 
+    async def evaluate(self, expression: str, *, tab_id: str | None = None) -> dict[str, Any]:
+        """Execute JavaScript in the page context and return the result."""
+        page, _tid, _locked = await self._resolve_action_page(tab_id)
+        result = await page.evaluate(expression)
+        return {"result": result, "url": page.url}
+
+    async def get_html(self, selector: str | None = None, *, tab_id: str | None = None) -> dict[str, Any]:
+        """Get the outer HTML of the page or a specific element."""
+        page, _tid, _locked = await self._resolve_action_page(tab_id)
+        if selector:
+            element = await page.query_selector(selector)
+            if element is None:
+                return {"html": None, "found": False, "selector": selector}
+            html = await element.evaluate("el => el.outerHTML")
+            return {"html": html, "found": True, "selector": selector, "url": page.url}
+        html = await page.content()
+        return {"html": html, "url": page.url}
+
+    async def get_cookies(self, *, tab_id: str | None = None) -> dict[str, Any]:
+        """Return all cookies for the current page."""
+        page, _tid, _locked = await self._resolve_action_page(tab_id)
+        cookies = await page.context.cookies()
+        return {"cookies": cookies, "url": page.url, "count": len(cookies)}
+
+    async def set_cookies(self, cookies: list[dict], *, tab_id: str | None = None) -> dict[str, Any]:
+        """Set one or more cookies in the browser context."""
+        page, _tid, _locked = await self._resolve_action_page(tab_id)
+        await page.context.add_cookies(cookies)
+        return {"set": True, "count": len(cookies)}
+
+    async def get_console_logs(self, *, tab_id: str | None = None) -> dict[str, Any]:
+        """Return buffered console log messages for the current page."""
+        page, _tid, _locked = await self._resolve_action_page(tab_id)
+        key = id(page)
+        logs = list(self._console_logs.get(key, []))
+        return {"logs": logs, "count": len(logs), "url": page.url}
+
+    async def setup_network_intercept(
+        self,
+        url_pattern: str,
+        action: str = "log",
+        response_body: str | None = None,
+        response_status: int = 200,
+        *,
+        tab_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Intercept network requests matching a URL glob pattern.
+
+        action='log'   — record matching requests (retrieve with browser_network_logs).
+        action='block' — abort matching requests.
+        action='mock'  — return a static response_body instead.
+        """
+        page, _tid, _locked = await self._resolve_action_page(tab_id)
+        key = id(page)
+
+        async def _handler(route, request):
+            entry = {"url": request.url, "method": request.method, "action": action}
+            self._network_logs.setdefault(key, []).append(entry)
+            if len(self._network_logs[key]) > 200:
+                self._network_logs[key] = self._network_logs[key][-200:]
+            if action == "block":
+                await route.abort()
+            elif action == "mock":
+                await route.fulfill(status=response_status, body=response_body or "")
+            else:
+                await route.continue_()
+
+        await page.route(url_pattern, _handler)
+        self._active_routes.setdefault(key, []).append(url_pattern)
+        return {"intercepting": True, "pattern": url_pattern, "action": action}
+
+    async def get_network_logs(self, *, tab_id: str | None = None) -> dict[str, Any]:
+        """Return buffered network intercept log entries."""
+        page, _tid, _locked = await self._resolve_action_page(tab_id)
+        key = id(page)
+        logs = list(self._network_logs.get(key, []))
+        return {"logs": logs, "count": len(logs), "url": page.url}
+
+    async def clear_network_intercepts(self, *, tab_id: str | None = None) -> dict[str, Any]:
+        """Remove all active route intercepts on the current page."""
+        page, _tid, _locked = await self._resolve_action_page(tab_id)
+        await page.unroute_all()
+        key = id(page)
+        self._active_routes.pop(key, None)
+        self._network_logs.pop(key, None)
+        return {"cleared": True}
+
     def _parse_semantic_selector(self, selector: str) -> tuple[str, str] | None:
         # Accept snapshot-friendly selectors such as "textbox: Email" and "button: Accept".
         match = re.match(r"^\s*([a-zA-Z_][a-zA-Z0-9_-]*)\s*:\s*(.+?)\s*$", selector)
@@ -1499,12 +1591,18 @@ class BrowserManager:
                 pass
         if context is not None and hasattr(context, "close"):
             try:
-                await context.close()
+                # context.close() on a CDP connection closes the remote browser
+                # context and can kill Chromium — skip it for CDP.
+                if not self._cdp_endpoint:
+                    await context.close()
             except Exception:
                 pass
         if browser is not None and hasattr(browser, "close"):
             try:
-                await browser.close()
+                # browser.close() on a CDP connection terminates the remote
+                # Chromium process — skip it for CDP.
+                if not self._cdp_endpoint:
+                    await browser.close()
             except Exception:
                 pass
         if playwright is not None and hasattr(playwright, "stop"):
@@ -1523,11 +1621,28 @@ class BrowserManager:
         if async_playwright is None:
             raise RuntimeError("Playwright runtime is not available")
 
+        self._playwright_context = async_playwright()
+        self._playwright = await self._playwright_context.start()
+
+        # Remote CDP connection (runtime container)
+        if self._cdp_endpoint:
+            self._browser = await self._playwright.chromium.connect_over_cdp(self._cdp_endpoint)
+            self._context = self._browser.contexts[0] if self._browser.contexts else await self._browser.new_context()
+            await apply_stealth_init_script(self._context)
+            page = (
+                self._context.pages[0]
+                if self._context.pages
+                else await self._context.new_page()
+            )
+            self._register_page(page, make_active=True)
+            await self._maximize_window(page)
+            self._sync_tabs()
+            return page
+
+        # Local launch
         launch_options = build_chromium_launch_options(headless=self._headless)
         context_options = build_browser_context_options()
 
-        self._playwright_context = async_playwright()
-        self._playwright = await self._playwright_context.start()
         if self._user_data_dir:
             try:
                 self._context = (
@@ -1571,6 +1686,14 @@ class BrowserManager:
         if tab_id is None:
             tab_id = self._next_tab_id()
             self._tab_ids_by_page[page_key] = tab_id
+            # Capture console messages for this page
+            def _on_console(msg, _key=page_key):
+                entry = {"type": msg.type, "text": msg.text}
+                buf = self._console_logs.setdefault(_key, [])
+                buf.append(entry)
+                if len(buf) > 500:
+                    self._console_logs[_key] = buf[-500:]
+            page.on("console", _on_console)
         if make_active:
             self._active_tab_id = tab_id
             self._page = page

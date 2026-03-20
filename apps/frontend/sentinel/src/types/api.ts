@@ -36,7 +36,6 @@ export interface SessionRuntimeStatus {
   session_id: string;
   runtime_exists: boolean;
   workspace_exists: boolean;
-  venv_exists: boolean;
   active: boolean;
   active_pid: number | null;
   last_command: string | null;
@@ -401,7 +400,7 @@ export interface ApprovalToolCallMatchResponse {
   item: ApprovalRecord | null;
 }
 
-export interface PlaywrightLiveView {
+export interface RuntimeLiveView {
   enabled: boolean;
   available: boolean;
   mode?: string;

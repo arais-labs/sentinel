@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
-class PlaywrightLiveViewResponse(BaseModel):
+class RuntimeLiveViewResponse(BaseModel):
     enabled: bool
     available: bool
     mode: str = "novnc"
@@ -11,7 +11,7 @@ class PlaywrightLiveViewResponse(BaseModel):
     reason: str | None = None
 
 
-class PlaywrightBrowserResetResponse(BaseModel):
+class RuntimeResetResponse(BaseModel):
     reset: bool
     url: str
     profile_dir: str | None = None

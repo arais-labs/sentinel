@@ -78,17 +78,17 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
     chat_default_iterations: int = 25
     chat_max_iterations: int = 100
-    browser_live_view_enabled: bool = True
-    browser_live_public_url: str | None = None
-    browser_live_host: str = "127.0.0.1"
-    browser_live_port: int = 6080
-    browser_live_path: str = "/vnc.html"
-    browser_live_view_only: bool = False
-    browser_live_autoconnect: bool = True
-    browser_live_resize: str = "scale"
-    browser_live_probe_timeout_ms: int = 500
-    browser_prewarm_on_start: bool = False
-    browser_vnc_password: str | None = None
+    runtime_live_view_enabled: bool = True
+    runtime_live_public_url: str | None = None
+    runtime_live_host: str = "127.0.0.1"
+    runtime_live_port: int = 6080
+    runtime_live_path: str = "/vnc.html"
+    runtime_live_view_only: bool = False
+    runtime_live_autoconnect: bool = True
+    runtime_live_resize: str = "scale"
+    runtime_live_probe_timeout_ms: int = 500
+    runtime_prewarm_on_start: bool = False
+    runtime_vnc_password: str | None = None
     context_token_budget: int = 200_000
     stored_tool_result_max_chars: int = 4_000
     stored_tool_call_args_max_chars: int = 1_200
@@ -99,6 +99,22 @@ class Settings(BaseSettings):
     session_auto_rename_model_tier: str = "fast"
     git_push_approval_timeout_seconds: int = 600
     runtime_exec_root_approval_timeout_seconds: int = 600
+
+    # --- Runtime Execution ---
+    runtime_exec_backend: str = "docker"  # "docker" or "remote"
+    # Docker runtime
+    runtime_image: str = "sentinel-runtime"
+    runtime_docker_network: str = "sentinel_default"
+    runtime_memory_limit: str = "2g"
+    runtime_cpu_limit: float = 2.0
+    runtime_ssh_key_dir: str = "/data/runtime/ssh"
+    runtime_workspaces_host_dir: str = "/data/runtime/workspaces"
+    # Remote SSH runtime
+    runtime_ssh_host: str | None = None
+    runtime_ssh_port: int = 22
+    runtime_ssh_user: str = "sentinel"
+    runtime_ssh_key_path: str | None = None
+    runtime_ssh_workspace: str = "/home/sentinel/workspace"
 
     # --- Telegram ---
     telegram_bot_token: str | None = None

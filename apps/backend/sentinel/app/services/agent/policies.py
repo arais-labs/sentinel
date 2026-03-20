@@ -38,7 +38,7 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
         kind="delegation_policy",
         title="Delegation Policy",
         explanation="Rules for when and how to use sub-agents.",
-        enabled_when=_has_any("spawn_sub_agent", "pythonXagent"),
+        enabled_when=_has_any("spawn_sub_agent"),
         content=(
             "## Delegation Policy\n"
             "Prefer delegation for bounded one-off tasks that mostly produce inputs for later steps "

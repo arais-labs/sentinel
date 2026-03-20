@@ -32,6 +32,16 @@ services:
       postgres:
         condition: service_healthy
 
+  # Runtime image — built but not started as a service.
+  # sentinel-backend launches containers from this image dynamically.
+  sentinel-runtime:
+    build:
+      context: .
+      dockerfile: infra/docker/runtime.Dockerfile
+    image: sentinel-runtime
+    profiles:
+      - build-only
+
   sentinel-backend:
     build:
       context: .
@@ -53,6 +63,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      RUNTIME_LIVE_VIEW_ENABLED: "true"
       BROWSER_LIVE_VIEW_ENABLED: "true"
       BROWSER_LIVE_RESOLUTION: "1920x1080x24"
       BROWSER_VIEWPORT_WIDTH: "1920"
@@ -60,15 +71,28 @@ services:
       BROWSER_WINDOW_WIDTH: "1920"
       BROWSER_WINDOW_HEIGHT: "1080"
       BROWSER_DEVICE_SCALE_FACTOR: "1"
-      BROWSER_PREWARM_ON_START: "true"
-      BROWSER_USER_DATA_DIR: /data/browser-profile
+      RUNTIME_EXEC_BACKEND: ${RUNTIME_EXEC_BACKEND:-docker}
+      RUNTIME_IMAGE: sentinel-runtime
+      RUNTIME_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-sentinel}_default
+      RUNTIME_MEMORY_LIMIT: ${RUNTIME_MEMORY_LIMIT:-2g}
+      RUNTIME_CPU_LIMIT: ${RUNTIME_CPU_LIMIT:-2}
+      RUNTIME_SSH_KEY_DIR: /data/runtime/ssh
+      RUNTIME_SSH_HOST: ${RUNTIME_SSH_HOST:-}
+      RUNTIME_SSH_PORT: ${RUNTIME_SSH_PORT:-22}
+      RUNTIME_SSH_USER: ${RUNTIME_SSH_USER:-sentinel}
+      RUNTIME_SSH_KEY_PATH: ${RUNTIME_SSH_KEY_PATH:-}
+      RUNTIME_SSH_WORKSPACE: ${RUNTIME_SSH_WORKSPACE:-/home/sentinel/workspace}
+      RUNTIME_WORKSPACES_HOST_DIR: ${RUNTIME_WORKSPACES_HOST_DIR:-/data/runtime/workspaces}
+      SESSION_RUNTIME_BASE_DIR: /data/runtime/workspaces
       UVICORN_RELOAD: "true"
     command: bash ./scripts/start-backend.sh
 #    ports:
 #      - "${SENTINEL_API_PORT:-8000}:8000"
     volumes:
       - ./apps/backend/sentinel:/app
-      - sentinel-browser-profile-dev:/data/browser-profile
+      - sentinel-runtime-ssh-dev:/data/runtime/ssh
+      - ${RUNTIME_WORKSPACES_HOST_DIR:-/data/runtime/workspaces}:/data/runtime/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
@@ -124,4 +148,4 @@ services:
 
 volumes:
   pgdata_dev:
-  sentinel-browser-profile-dev:
+  sentinel-runtime-ssh-dev:

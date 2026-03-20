@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -43,6 +45,21 @@ from app.services.sessions import (
 )
 
 router = APIRouter()
+
+_logger = logging.getLogger(__name__)
+
+
+async def _provision_runtime(session_id: UUID, ws_manager: object | None = None) -> None:
+    """Eagerly provision the runtime container so it's ready when the user needs it."""
+    try:
+        from app.services.runtime import get_runtime
+        provider = get_runtime()
+        await provider.ensure(session_id)
+        _logger.info("Runtime provisioned for session %s", session_id)
+        if ws_manager is not None and hasattr(ws_manager, "broadcast_runtime_ready"):
+            await ws_manager.broadcast_runtime_ready(str(session_id))
+    except Exception:
+        _logger.warning("Background runtime provisioning failed for session %s", session_id, exc_info=True)
 
 
 def _resolve_session_service(request: Request) -> SessionService:
@@ -147,6 +164,8 @@ async def create_session(
         agent_id=user.agent_id,
         title=payload.title,
     )
+    ws = getattr(request.app.state, "ws_manager", None)
+    asyncio.create_task(_provision_runtime(session.id, ws_manager=ws))
     main_session_id = await service.get_main_session_id(db, user_id=user.sub)
     return await _session_response(session, service, main_session_id=main_session_id)
 
@@ -161,6 +180,8 @@ async def get_default_session(
     session = await service.get_default_session(
         db, user_id=user.sub, agent_id=user.agent_id
     )
+    ws = getattr(request.app.state, "ws_manager", None)
+    asyncio.create_task(_provision_runtime(session.id, ws_manager=ws))
     return await _session_response(session, service, main_session_id=session.id)
 
 
@@ -174,6 +195,8 @@ async def reset_default_session(
     session = await service.reset_default_session(
         db, user_id=user.sub, agent_id=user.agent_id
     )
+    ws = getattr(request.app.state, "ws_manager", None)
+    asyncio.create_task(_provision_runtime(session.id, ws_manager=ws))
     return await _session_response(session, service, main_session_id=session.id)
 
 
