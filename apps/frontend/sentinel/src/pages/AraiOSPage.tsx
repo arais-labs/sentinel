@@ -355,7 +355,7 @@ function DynamicDetailPane({ config, record, saving, onPatch, onDelete, onAction
 
   const fields = (config.fields || []).filter((f: any) => f.type !== 'readonly' || record[f.key]);
   const detailActions = (config.actions || []).filter((a: any) => a.placement === 'detail');
-  const titleField = config.list_config?.titleField || 'id';
+  const titleField = config.fields_config?.titleField || 'id';
 
   return (
     <div className="flex flex-col h-full">
@@ -364,12 +364,12 @@ function DynamicDetailPane({ config, record, saving, onPatch, onDelete, onAction
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-sm font-bold text-[color:var(--text-primary)] truncate">{record[titleField] || record.id}</h2>
-            {config.list_config?.subtitleField && (
-              <p className="text-[11px] text-[color:var(--text-muted)] truncate mt-0.5">{record[config.list_config.subtitleField]}</p>
+            {config.fields_config?.subtitleField && (
+              <p className="text-[11px] text-[color:var(--text-muted)] truncate mt-0.5">{record[config.fields_config.subtitleField]}</p>
             )}
           </div>
-          {config.list_config?.badgeField && record[config.list_config.badgeField] && (
-            <Badge>{record[config.list_config.badgeField]}</Badge>
+          {config.fields_config?.badgeField && record[config.fields_config.badgeField] && (
+            <Badge>{record[config.fields_config.badgeField]}</Badge>
           )}
         </div>
       </div>
@@ -848,11 +848,11 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
     return () => clearInterval(timer);
   }, [moduleName]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const filterField = config?.list_config?.filterField;
-  const titleField = config?.list_config?.titleField || 'id';
-  const subtitleField = config?.list_config?.subtitleField;
-  const badgeField = config?.list_config?.badgeField;
-  const metaField = config?.list_config?.metaField;
+  const filterField = config?.fields_config?.filterField;
+  const titleField = config?.fields_config?.titleField || 'id';
+  const subtitleField = config?.fields_config?.subtitleField;
+  const badgeField = config?.fields_config?.badgeField;
+  const metaField = config?.fields_config?.metaField;
 
   const filterValues = useMemo(() => {
     if (!filterField) return [];
@@ -942,35 +942,20 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
   if (!config && loading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
   if (!config) return null;
 
-  if (config.type === 'page') {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-[color:var(--border-subtle)]">
-          <button onClick={onBack} className="p-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors">
-            <ArrowLeft size={16} />
-          </button>
-          <span className="text-xs font-bold text-[color:var(--text-muted)] uppercase tracking-widest">{config.label}</span>
-        </div>
-        <div className="flex-1 min-h-0"><PageModule config={config} /></div>
-      </div>
-    );
-  }
+  // Determine available tabs based on module capabilities
+  const hasFields = (config.fields || []).length > 0;
+  const hasActions = (config.actions || []).length > 0;
+  const hasPage = Boolean(config.page_title);
+  const tabs: string[] = [];
+  if (hasFields) tabs.push('records');
+  if (hasActions) tabs.push('actions');
+  if (hasPage) tabs.push('page');
+  // If no capabilities at all, show records tab (empty state)
+  if (tabs.length === 0) tabs.push('records');
 
-  if (config.type === 'tool') {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-[color:var(--border-subtle)]">
-          <button onClick={onBack} className="p-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors">
-            <ArrowLeft size={16} />
-          </button>
-          <span className="text-xs font-bold text-[color:var(--text-muted)] uppercase tracking-widest">{config.label}</span>
-        </div>
-        <div className="flex-1 min-h-0"><ApiModule config={config} /></div>
-      </div>
-    );
-  }
+  // Default to first available tab, but respect user's choice if valid
+  const effectiveTab = tabs.includes(activeTab) ? activeTab : tabs[0];
 
-  // Data module
   const inputCls = 'h-8 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
 
   return (
@@ -982,12 +967,12 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
             <ArrowLeft size={16} />
           </button>
           <span className="text-sm font-medium text-[color:var(--text-secondary)]">{config.label}</span>
-          {hasStandaloneActions && (
+          {tabs.length > 1 && (
             <div className="flex items-center gap-1 ml-2">
-              {(['records', 'actions'] as const).map(tab => (
+              {tabs.map(tab => (
                 <button key={tab} onClick={() => setActiveTab(tab)}
                   className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors ${
-                    activeTab === tab
+                    effectiveTab === tab
                       ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
                       : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)]'
                   }`}>{tab}</button>
@@ -996,14 +981,14 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
           )}
         </div>
         <div className="flex items-center gap-2">
-          {activeTab === 'records' && (
+          {effectiveTab === 'records' && (
             <input className={`${inputCls} w-48`} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
           )}
           <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={copyPrompt}>
             <Copy size={12} />
             <span className="text-[10px] font-bold uppercase tracking-widest">{copied ? 'Copied!' : 'Prompt'}</span>
           </button>
-          {activeTab === 'records' && (
+          {effectiveTab === 'records' && (
             <button className="h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity flex items-center gap-1.5" onClick={() => setCreateOpen(true)}>
               <Plus size={12} />{createAction?.label || `New`}
             </button>
@@ -1012,14 +997,19 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
       </div>
 
       {/* Actions tab */}
-      {activeTab === 'actions' && hasStandaloneActions && (
+      {effectiveTab === 'actions' && (
         <div className="flex-1 min-h-0">
           <ApiModule config={{ ...config, actions: standaloneActions }} hideHeader />
         </div>
       )}
 
+      {/* Page tab */}
+      {effectiveTab === 'page' && (
+        <div className="flex-1 min-h-0"><PageModule config={config} /></div>
+      )}
+
       {/* Records tab */}
-      {activeTab === 'records' && (
+      {effectiveTab === 'records' && (
         <div className="flex flex-1 min-h-0">
           {/* Left list */}
           <div className="w-80 shrink-0 border-r border-[color:var(--border-subtle)] flex flex-col bg-[color:var(--surface-0)]">
@@ -1147,15 +1137,18 @@ function ModulesSection() {
           >
             <div className="flex items-center justify-between">
               <span className="text-sm font-bold text-[color:var(--text-primary)]">{mod.label}</span>
-              <span className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded border ${
-                mod.type === 'data' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
-                mod.type === 'tool' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
-                'bg-purple-500/10 text-purple-400 border-purple-500/20'
-              }`}>{mod.type}</span>
+              <div className="flex items-center gap-1">
+                {(mod.fields || []).length > 0 && <span className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">records</span>}
+                {(mod.actions || []).length > 0 && <span className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">actions</span>}
+                {mod.page_title && <span className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">page</span>}
+              </div>
             </div>
             <p className="text-[11px] text-[color:var(--text-muted)] leading-relaxed line-clamp-2">{mod.description || 'No description'}</p>
             <div className="text-[10px] text-[color:var(--text-muted)]">
-              {(mod.fields || []).length} fields &middot; {(mod.actions || []).length} actions
+              {(mod.fields || []).length > 0 && <>{(mod.fields || []).length} fields</>}
+              {(mod.fields || []).length > 0 && (mod.actions || []).length > 0 && <> · </>}
+              {(mod.actions || []).length > 0 && <>{(mod.actions || []).length} actions</>}
+              {(mod.fields || []).length === 0 && (mod.actions || []).length === 0 && !mod.page_title && <>empty module</>}
             </div>
           </button>
         ))}

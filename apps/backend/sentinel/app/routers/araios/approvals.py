@@ -100,8 +100,8 @@ _RESOURCE_FIELD_MAPS: dict[str, dict[str, str]] = {
 }
 
 _MODULE_MUTABLE_FIELDS = {
-    "label", "description", "icon", "type", "fields",
-    "list_config", "actions", "secrets", "order",
+    "label", "description", "icon", "fields",
+    "fields_config", "actions", "secrets", "order", "page_title",
 }
 
 _SLUG_RESOURCES = {"documents"}
@@ -199,18 +199,16 @@ async def _seed_module_permissions(name: str, db: AsyncSession) -> None:
         select(AraiosModule).where(AraiosModule.name == name)
     )
     mod = result.scalars().first()
-    if mod and mod.type == "tool":
-        defaults = [
-            (f"{name}.{a['id']}", "allow")
-            for a in (mod.actions or [])
-        ]
-    else:
-        defaults = [
-            (f"{name}.list", "allow"),
-            (f"{name}.create", "allow"),
-            (f"{name}.update", "allow"),
-            (f"{name}.delete", "approval"),
-        ]
+    defaults = [
+        (f"{name}.list", "allow"),
+        (f"{name}.create", "allow"),
+        (f"{name}.update", "allow"),
+        (f"{name}.delete", "approval"),
+    ]
+    if mod:
+        for a in (mod.actions or []):
+            if isinstance(a, dict) and a.get("id"):
+                defaults.append((f"{name}.{a['id']}", "allow"))
     result = await db.execute(
         select(AraiosPermission).where(
             AraiosPermission.action.in_([k for k, _ in defaults])
@@ -240,7 +238,7 @@ async def _execute_approval(db: AsyncSession, approval: AraiosApproval) -> None:
             select(AraiosModule).where(AraiosModule.name == parts[0])
         )
         mod = result.scalars().first()
-        if mod and mod.type == "tool":
+        if mod:
             action_def = next(
                 (a for a in (mod.actions or []) if a["id"] == parts[1]), None
             )
@@ -290,12 +288,11 @@ async def _execute_approval(db: AsyncSession, approval: AraiosApproval) -> None:
                 label=payload.get("label", module_name.title()),
                 description=payload.get("description", ""),
                 icon=payload.get("icon", "box"),
-                type=payload.get("type", "data"),
                 fields=payload.get("fields", []),
-                list_config=payload.get("list_config", {}),
+                fields_config=payload.get("fields_config", {}),
                 actions=payload.get("actions", []),
                 secrets=payload.get("secrets", []),
-                is_system=False,
+                page_title=payload.get("page_title"),
                 order=payload.get("order", 100),
             )
             db.add(mod)
@@ -337,10 +334,6 @@ async def _execute_approval(db: AsyncSession, approval: AraiosApproval) -> None:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Module '{module_name}' not found",
-                )
-            if mod.is_system:
-                raise HTTPException(
-                    status_code=400, detail="Cannot delete a system module"
                 )
             await db.delete(mod)
             await db.commit()

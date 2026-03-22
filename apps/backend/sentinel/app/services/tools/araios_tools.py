@@ -96,15 +96,16 @@ async def _seed_module_permissions(db: AsyncSession, name: str) -> None:
         select(AraiosModule).where(AraiosModule.name == name)
     )
     mod = result.scalars().first()
-    if mod and mod.type == "tool":
-        defaults = [(f"{name}.{a['id']}", "allow") for a in (mod.actions or [])]
-    else:
-        defaults = [
-            (f"{name}.list", "allow"),
-            (f"{name}.create", "allow"),
-            (f"{name}.update", "allow"),
-            (f"{name}.delete", "approval"),
-        ]
+    defaults = [
+        (f"{name}.list", "allow"),
+        (f"{name}.create", "allow"),
+        (f"{name}.update", "allow"),
+        (f"{name}.delete", "approval"),
+    ]
+    if mod:
+        for a in (mod.actions or []):
+            if isinstance(a, dict) and a.get("id"):
+                defaults.append((f"{name}.{a['id']}", "allow"))
     existing_result = await db.execute(
         select(AraiosPermission).where(
             AraiosPermission.action.in_([k for k, _ in defaults])
@@ -140,11 +141,11 @@ def araios_modules_tool(
                         {
                             "name": m.name, "label": m.label,
                             "description": m.description or "",
-                            "icon": m.icon, "type": m.type or "data",
+                            "icon": m.icon,
                             "fields": m.fields or [],
-                            "list_config": m.list_config or {},
+                            "fields_config": m.fields_config or {},
                             "actions": m.actions or [],
-                            "is_system": m.is_system, "order": m.order,
+                            "page_title": m.page_title,
                         }
                         for m in mods
                     ]
@@ -162,12 +163,12 @@ def araios_modules_tool(
                 return {
                     "name": mod.name, "label": mod.label,
                     "description": mod.description or "",
-                    "icon": mod.icon, "type": mod.type or "data",
+                    "icon": mod.icon,
                     "fields": mod.fields or [],
-                    "list_config": mod.list_config or {},
+                    "fields_config": mod.fields_config or {},
                     "actions": mod.actions or [],
                     "secrets": [{"key": s["key"], "label": s.get("label", s["key"]), "required": s.get("required", False)} for s in (mod.secrets or [])],
-                    "is_system": mod.is_system, "order": mod.order,
+                    "page_title": mod.page_title,
                 }
 
             if operation == "create":
@@ -183,12 +184,11 @@ def araios_modules_tool(
                     label=payload.get("label", name.title()),
                     description=payload.get("description", ""),
                     icon=payload.get("icon", "box"),
-                    type=payload.get("type", "data"),
                     fields=payload.get("fields", []),
-                    list_config=payload.get("list_config", {}),
+                    fields_config=payload.get("fields_config", {}),
                     actions=payload.get("actions", []),
                     secrets=payload.get("secrets", []),
-                    is_system=False,
+                    page_title=payload.get("page_title"),
                     order=payload.get("order", 100),
                 )
                 db.add(mod)
@@ -205,8 +205,6 @@ def araios_modules_tool(
                 mod = result.scalars().first()
                 if not mod:
                     raise ToolExecutionError(f"Module '{name}' not found")
-                if mod.is_system:
-                    raise ToolExecutionError("Cannot delete a system module")
                 await db.execute(delete(AraiosModuleRecord).where(AraiosModuleRecord.module_name == name))
                 await db.execute(delete(AraiosModuleSecret).where(AraiosModuleSecret.module_name == name))
                 await db.delete(mod)
@@ -218,27 +216,32 @@ def araios_modules_tool(
     return ToolDefinition(
         name="araios_modules",
         description=(
-            "Manage araiOS modules (the dynamic data/tool engine). "
-            "Operations: list, get, create, delete.\n\n"
-            "Module types:\n"
-            "- 'data': stores records with full CRUD. Define 'fields' for the record schema "
-            "and 'list_config' (titleField, subtitleField, badgeField, filterField) for the UI.\n"
-            "- 'tool': callable actions only, no records. MUST define 'actions' with executable Python code.\n"
-            "- 'page': single editable document.\n\n"
+            "Manage araiOS modules. Operations: list, get, create, delete.\n\n"
+            "A module is a unified container that can have any combination of:\n"
+            "- fields → the module stores records (CRUD via araios_records)\n"
+            "- actions → the module has executable Python code (run via araios_action)\n"
+            "- page_title → the module has a markdown page tab\n\n"
+            "Fields schema (for 'fields' array):\n"
+            "Each: {key, label, type ('text'|'textarea'|'email'|'url'|'number'|'date'|'select'|'badge'|'tags'|'readonly'), required, options}.\n\n"
+            "Fields config (for 'fields_config' object):\n"
+            "Controls how records display: {titleField, subtitleField, badgeField, filterField, metaField}.\n"
+            "Without fields_config, records show raw IDs in the UI.\n\n"
             "Action schema (for 'actions' array):\n"
-            "Each action object: {id, label, description, placement ('standalone'|'detail'), "
-            "params: [{key, label, type ('text'|'textarea'|'number'), required, placeholder}], "
+            "Each: {id, label, description, placement ('standalone'|'detail'), "
+            "params: [{key, label, type ('text'|'textarea'|'number'), required}], "
             "code: 'Python code string'}.\n"
-            "Available in action code: params (dict), secrets (dict), record (dict, detail actions only), "
-            "http (httpx.AsyncClient — use: await http.get(...)), json, re, math, base64, datetime, os.\n"
+            "Available in code: params, secrets, record (detail only), "
+            "http (httpx.AsyncClient), json, re, math, base64, datetime, os.\n"
             "Set 'result' dict to return output.\n\n"
-            "Secrets schema (for 'secrets' array): [{key, label, required, hint}]. "
-            "Values are configured by admin in the UI, never exposed to agents.\n\n"
-            "Example tool module actions:\n"
-            "[{\"id\": \"fetch\", \"label\": \"Fetch Data\", \"description\": \"Fetch from API\", "
-            "\"placement\": \"standalone\", \"params\": [{\"key\": \"url\", \"label\": \"URL\", "
-            "\"type\": \"text\", \"required\": true}], "
-            "\"code\": \"r = await http.get(params['url'], timeout=10)\\nresult = {'ok': True, 'data': r.json()}\"}]"
+            "Secrets schema: [{key, label, required, hint}]. Configured by admin.\n\n"
+            "Example — module with records + actions:\n"
+            "{name: 'tasks', label: 'Tasks', fields: [{key: 'title', label: 'Title', type: 'text', required: true}, "
+            "{key: 'status', label: 'Status', type: 'select', options: ['todo','done']}], "
+            "fields_config: {titleField: 'title', badgeField: 'status'}}\n\n"
+            "Example — module with actions only:\n"
+            "{name: 'weather', label: 'Weather', actions: [{id: 'check', label: 'Check Weather', "
+            "placement: 'standalone', params: [{key: 'city', label: 'City', type: 'text', required: true}], "
+            "code: \"r = await http.get(f'https://wttr.in/{params[\\\"city\\\"]}?format=j1')\\nresult = r.json()\"}]}"
         ),
         risk_level="medium",
         parameters_schema={
@@ -254,24 +257,23 @@ def araios_modules_tool(
                 "label": {"type": "string", "description": "Display name"},
                 "description": {"type": "string"},
                 "icon": {"type": "string", "description": "Lucide icon name (e.g. 'wrench', 'zap', 'file-text')"},
-                "type": {"type": "string", "enum": ["data", "tool", "page"]},
                 "fields": {
                     "type": "array",
-                    "description": "Field schema for data/page modules. Each: {key, label, type, required, options, placeholder}",
+                    "description": "Record schema. Each: {key, label, type, required, options}. If provided, module stores records.",
                 },
-                "list_config": {
+                "fields_config": {
                     "type": "object",
-                    "description": "UI config: {titleField, subtitleField, badgeField, filterField, metaField}",
+                    "description": "UI display config: {titleField, subtitleField, badgeField, filterField, metaField}",
                 },
                 "actions": {
                     "type": "array",
-                    "description": "Executable actions. Each: {id, label, description, placement, params, code}. Required for tool modules.",
+                    "description": "Executable actions. Each: {id, label, description, placement, params, code}.",
                 },
                 "secrets": {
                     "type": "array",
-                    "description": "Runtime secrets. Each: {key, label, required, hint}. Configured by admin in UI.",
+                    "description": "Runtime secrets. Each: {key, label, required, hint}.",
                 },
-                "order": {"type": "integer", "description": "Sidebar position (lower = higher)"},
+                "page_title": {"type": "string", "description": "If set, module has a markdown page tab with this title."},
                 "session_id": {"type": "string"},
             },
         },
