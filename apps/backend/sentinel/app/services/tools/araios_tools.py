@@ -219,9 +219,26 @@ def araios_modules_tool(
         name="araios_modules",
         description=(
             "Manage araiOS modules (the dynamic data/tool engine). "
-            "Operations: list (all modules), get (single module config), "
-            "create (register new module — may require approval), "
-            "delete (remove module — may require approval)."
+            "Operations: list, get, create, delete.\n\n"
+            "Module types:\n"
+            "- 'data': stores records with full CRUD. Define 'fields' for the record schema "
+            "and 'list_config' (titleField, subtitleField, badgeField, filterField) for the UI.\n"
+            "- 'tool': callable actions only, no records. MUST define 'actions' with executable Python code.\n"
+            "- 'page': single editable document.\n\n"
+            "Action schema (for 'actions' array):\n"
+            "Each action object: {id, label, description, placement ('standalone'|'detail'), "
+            "params: [{key, label, type ('text'|'textarea'|'number'), required, placeholder}], "
+            "code: 'Python code string'}.\n"
+            "Available in action code: params (dict), secrets (dict), record (dict, detail actions only), "
+            "http (httpx.AsyncClient — use: await http.get(...)), json, re, math, base64, datetime, os.\n"
+            "Set 'result' dict to return output.\n\n"
+            "Secrets schema (for 'secrets' array): [{key, label, required, hint}]. "
+            "Values are configured by admin in the UI, never exposed to agents.\n\n"
+            "Example tool module actions:\n"
+            "[{\"id\": \"fetch\", \"label\": \"Fetch Data\", \"description\": \"Fetch from API\", "
+            "\"placement\": \"standalone\", \"params\": [{\"key\": \"url\", \"label\": \"URL\", "
+            "\"type\": \"text\", \"required\": true}], "
+            "\"code\": \"r = await http.get(params['url'], timeout=10)\\nresult = {'ok': True, 'data': r.json()}\"}]"
         ),
         risk_level="medium",
         parameters_schema={
@@ -233,16 +250,28 @@ def araios_modules_tool(
                     "type": "string",
                     "enum": ["list", "get", "create", "delete"],
                 },
-                "name": {"type": "string", "description": "Module slug (required for get/create/delete)"},
-                "label": {"type": "string"},
+                "name": {"type": "string", "description": "Module slug, lowercase (required for get/create/delete)"},
+                "label": {"type": "string", "description": "Display name"},
                 "description": {"type": "string"},
-                "icon": {"type": "string"},
+                "icon": {"type": "string", "description": "Lucide icon name (e.g. 'wrench', 'zap', 'file-text')"},
                 "type": {"type": "string", "enum": ["data", "tool", "page"]},
-                "fields": {"type": "array"},
-                "list_config": {"type": "object"},
-                "actions": {"type": "array"},
-                "secrets": {"type": "array"},
-                "order": {"type": "integer"},
+                "fields": {
+                    "type": "array",
+                    "description": "Field schema for data/page modules. Each: {key, label, type, required, options, placeholder}",
+                },
+                "list_config": {
+                    "type": "object",
+                    "description": "UI config: {titleField, subtitleField, badgeField, filterField, metaField}",
+                },
+                "actions": {
+                    "type": "array",
+                    "description": "Executable actions. Each: {id, label, description, placement, params, code}. Required for tool modules.",
+                },
+                "secrets": {
+                    "type": "array",
+                    "description": "Runtime secrets. Each: {key, label, required, hint}. Configured by admin in UI.",
+                },
+                "order": {"type": "integer", "description": "Sidebar position (lower = higher)"},
                 "session_id": {"type": "string"},
             },
         },

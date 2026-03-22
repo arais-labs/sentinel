@@ -127,7 +127,15 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
             "Use araios_records to list/get/create/update/delete records within a module.\n"
             "Use araios_action to execute module actions (tool actions or record-scoped actions).\n"
             "Some operations may require approval — the approval gate handles this automatically.\n"
-            "Start by calling araios_modules with operation='list' to discover available modules."
+            "Start by calling araios_modules with operation='list' to discover available modules.\n\n"
+            "When creating a 'tool' module, you MUST include 'actions' with executable Python code.\n"
+            "A tool module without actions is useless — always define at least one action.\n"
+            "Each action needs: id, label, description, placement ('standalone'), params (array), and code (Python string).\n"
+            "Action code has access to: params, secrets, http (httpx async client), json, re, math, base64, datetime.\n"
+            "Set `result = {...}` at the end of code to return output.\n\n"
+            "When creating a 'data' module, define 'fields' (record schema) and 'list_config' (UI display config).\n"
+            "list_config should include titleField (which field to show as record title) at minimum.\n"
+            "Without list_config, the UI will only show raw record IDs."
         ),
     ),
     PolicyDefinition(
