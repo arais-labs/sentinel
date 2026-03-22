@@ -227,7 +227,7 @@ def araios_modules_tool(
             "Controls how records display: {titleField, subtitleField, badgeField, filterField, metaField}.\n"
             "Without fields_config, records show raw IDs in the UI.\n\n"
             "Action schema (for 'actions' array):\n"
-            "Each: {id, label, description, placement ('standalone'|'detail'), "
+            "Each: {id, label, description, type ('standalone'|'record'), "
             "params: [{key, label, type ('text'|'textarea'|'number'), required}], "
             "code: 'Python code string'}.\n"
             "Available in code: params, secrets, record (detail only), "
@@ -240,7 +240,7 @@ def araios_modules_tool(
             "fields_config: {titleField: 'title', badgeField: 'status'}}\n\n"
             "Example — module with actions only:\n"
             "{name: 'weather', label: 'Weather', actions: [{id: 'check', label: 'Check Weather', "
-            "placement: 'standalone', params: [{key: 'city', label: 'City', type: 'text', required: true}], "
+            "type: 'standalone', params: [{key: 'city', label: 'City', type: 'text', required: true}], "
             "code: \"r = await http.get(f'https://wttr.in/{params[\\\"city\\\"]}?format=j1')\\nresult = r.json()\"}]}"
         ),
         risk_level="medium",
@@ -267,7 +267,7 @@ def araios_modules_tool(
                 },
                 "actions": {
                     "type": "array",
-                    "description": "Executable actions. Each: {id, label, description, placement, params, code}.",
+                    "description": "Executable actions. Each: {id, label, description, type ('standalone'|'record'), params, code}.",
                 },
                 "secrets": {
                     "type": "array",

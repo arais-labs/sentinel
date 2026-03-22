@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
 import {
   Loader2,
   CheckCircle,
@@ -21,8 +22,19 @@ import {
   ChevronRight,
   FileText,
   AlertTriangle,
+  icons as lucideIcons,
+  type LucideIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+function resolveIcon(name: string | null | undefined): LucideIcon {
+  if (!name) return LayoutGrid;
+  // lucide icons object uses PascalCase keys (e.g. "Users", "FileText")
+  // but module icons are stored lowercase (e.g. "users", "file-text")
+  // Convert: "file-text" → "FileText", "users" → "Users"
+  const pascal = name.replace(/(^|[-_])([a-z])/g, (_, __, c) => c.toUpperCase());
+  return (lucideIcons as Record<string, LucideIcon>)[pascal] || LayoutGrid;
+}
 
 import { AppShell } from '../components/AppShell';
 
@@ -354,7 +366,7 @@ function DynamicDetailPane({ config, record, saving, onPatch, onDelete, onAction
   }
 
   const fields = (config.fields || []).filter((f: any) => f.type !== 'readonly' || record[f.key]);
-  const detailActions = (config.actions || []).filter((a: any) => a.placement === 'detail');
+  const detailActions = (config.actions || []).filter((a: any) => (a.type || a.placement) === 'record' || (a.type || a.placement) === 'detail');
   const titleField = config.fields_config?.titleField || 'id';
 
   return (
@@ -469,8 +481,22 @@ function DetailFieldView({ field, value, onBlur }: { field: any; value: any; onB
 
 function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: boolean }) {
   const [secretsStatus, setSecretsStatus] = useState<Record<string, boolean>>({});
+  const [records, setRecords] = useState<any[]>([]);
   const [search, setSearch] = useState('');
   const [copied, setCopied] = useState(false);
+
+  // Load records for record-type action pickers
+  const hasRecordActions = (config.actions || []).some((a: any) => {
+    const t = a.type || a.placement || 'standalone';
+    return t === 'record' || t === 'detail';
+  });
+
+  useEffect(() => {
+    if (!hasRecordActions || !(config.fields || []).length) return;
+    araiosApi<{ records: any[] }>(`/api/modules/${config.name}/records`)
+      .then(res => setRecords(res.records || []))
+      .catch(() => {});
+  }, [config.name, hasRecordActions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadSecrets = useCallback(async () => {
     if (!(config.secrets || []).length) return;
@@ -567,7 +593,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
           {(config.actions || []).filter((a: any) =>
             !search.trim() || a.label.toLowerCase().includes(search.toLowerCase()) || (a.description || '').toLowerCase().includes(search.toLowerCase())
           ).map((action: any) => (
-            <ActionCard key={action.id} action={action} moduleName={config.name} secretsStatus={secretsStatus} requiredSecrets={config.secrets || []} />
+            <ActionCard key={action.id} action={action} moduleName={config.name} secretsStatus={secretsStatus} requiredSecrets={config.secrets || []} records={records} fieldsConfig={config.fields_config} />
           ))}
         </div>
       </div>
@@ -610,27 +636,38 @@ function SecretCard({ moduleName, secret, onSaved }: { moduleName: string; secre
   );
 }
 
-function ActionCard({ action, moduleName, secretsStatus, requiredSecrets }: {
+function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, records, fieldsConfig }: {
   action: any; moduleName: string; secretsStatus: Record<string, boolean>; requiredSecrets: any[];
+  records?: any[]; fieldsConfig?: any;
 }) {
   const params = action.params || [];
   const [form, setForm] = useState<Record<string, string>>(() => Object.fromEntries(params.map((p: any) => [p.key, ''])));
+  const [selectedRecordId, setSelectedRecordId] = useState('');
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; data?: any; error?: string } | null>(null);
   const [expanded, setExpanded] = useState(false);
 
+  const actionType = action.type || action.placement || 'standalone';
+  const isRecordAction = actionType === 'record' || actionType === 'detail';
   const missingSecrets = requiredSecrets.filter((s: any) => s.required && !secretsStatus[s.key]);
-  const disabled = missingSecrets.length > 0;
+  const needsRecord = isRecordAction && !selectedRecordId;
+  const disabled = missingSecrets.length > 0 || needsRecord;
+
+  const titleField = fieldsConfig?.titleField || 'id';
 
   const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
 
   const run = async () => {
     const missing = params.filter((p: any) => p.required && !String(form[p.key] ?? '').trim());
     if (missing.length) { toast.error(`Required: ${missing.map((p: any) => p.label).join(', ')}`); return; }
+    if (isRecordAction && !selectedRecordId) { toast.error('Select a record first'); return; }
     try {
       setRunning(true);
       setResult(null);
-      const res = await araiosApi(`/api/modules/${moduleName}/action/${action.id}`, { method: 'POST', body: form });
+      const url = isRecordAction && selectedRecordId
+        ? `/api/modules/${moduleName}/records/${selectedRecordId}/action/${action.id}`
+        : `/api/modules/${moduleName}/action/${action.id}`;
+      const res = await araiosApi(url, { method: 'POST', body: form });
       const ok = res?.ok !== false;
       setResult({ ok, data: res });
       if (!ok) toast.error(res?.error || 'Action returned an error');
@@ -656,8 +693,21 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets }: {
         </button>
       </div>
 
-      {params.length > 0 && (
+      {(isRecordAction || params.length > 0) && (
         <div className="px-4 pb-4 space-y-3 border-t border-[color:var(--border-subtle)] pt-3">
+          {isRecordAction && (
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                Record <span className="text-rose-400 ml-1">*</span>
+              </label>
+              <select className={inputCls} value={selectedRecordId} onChange={e => setSelectedRecordId(e.target.value)}>
+                <option value="">— select a record —</option>
+                {(records || []).map((rec: any) => (
+                  <option key={rec.id} value={rec.id}>{rec[titleField] || rec.id}</option>
+                ))}
+              </select>
+            </div>
+          )}
           {params.map((param: any) => (
             <div key={param.key} className="space-y-1.5">
               <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
@@ -703,99 +753,60 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets }: {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 function PageModule({ config }: { config: any }) {
-  const [record, setRecord] = useState<any>(null);
-  const [form, setForm] = useState<Record<string, any>>({});
-  const [loading, setLoading] = useState(true);
+  const [content, setContent] = useState(config.page_content || '');
+  const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  const loadRecord = useCallback(async (silent = false) => {
-    try {
-      if (!silent) setLoading(true);
-      const res = await araiosApi<{ records: any[] }>(`/api/modules/${config.name}/records`);
-      const recs = res.records || [];
-      const rec = recs[0] || null;
-      setRecord(rec);
-      const data: Record<string, any> = {};
-      (config.fields || []).forEach((f: any) => { data[f.key] = rec ? (rec[f.key] ?? '') : ''; });
-      setForm(data);
-      setDirty(false);
-    } catch { toast.error('Failed to load'); }
-    finally { setLoading(false); }
-  }, [config]);
-
-  useEffect(() => { loadRecord(); }, [config.name]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const set = (key: string, val: any) => { setForm(prev => ({ ...prev, [key]: val })); setDirty(true); };
 
   const save = async () => {
     try {
       setSaving(true);
-      if (record) {
-        await araiosApi(`/api/modules/${config.name}/records/${record.id}`, { method: 'PATCH', body: form });
-      } else {
-        await araiosApi(`/api/modules/${config.name}/records`, { method: 'POST', body: form });
-      }
-      toast.success('Saved');
+      await araiosApi(`/api/modules/${config.name}`, { method: 'PATCH', body: { page_content: content } });
+      toast.success('Page saved');
       setDirty(false);
-      await loadRecord(true);
+      setEditing(false);
     } catch { toast.error('Could not save'); }
     finally { setSaving(false); }
   };
 
-  const copyPrompt = () => {
-    const BASE_URL = window.location.origin;
-    const base = `${BASE_URL}/api/modules/${config.name}`;
-    const flds = (config.fields || []).map((f: any) => `${f.key}${f.required ? '*' : ''} (${f.type})`).join(', ');
-    const text = [
-      `Module: ${config.label} (${config.name}) \u2014 ${config.description || ''}`,
-      'Type: page', '', 'Endpoints:',
-      `  GET   ${base}/records`, `  PATCH ${base}/records/:id`, '',
-      `Fields: ${flds || 'none'}`,
-    ].join('\n');
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    toast.success('Prompt copied');
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs text-[color:var(--text-primary)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
-
-  if (loading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
-
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
-        <span className="text-sm font-medium text-[color:var(--text-secondary)]">{config.label}</span>
+      <div className="flex items-center justify-between px-4 py-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+        <span className="text-sm font-medium text-[color:var(--text-secondary)]">{config.page_title}</span>
         <div className="flex items-center gap-2">
-          <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={copyPrompt}>
-            <Copy size={12} />
-            <span className="text-[10px] font-bold uppercase tracking-widest">{copied ? 'Copied!' : 'Prompt'}</span>
-          </button>
-          <button className="h-8 px-4 rounded-lg text-xs font-bold bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity disabled:opacity-40" onClick={save} disabled={saving || !dirty}>
-            {saving ? 'Saving...' : 'Save'}
-          </button>
+          {editing ? (
+            <>
+              <button className="h-7 px-3 rounded-lg text-[10px] font-bold text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => { setEditing(false); setContent(config.page_content || ''); setDirty(false); }}>
+                Cancel
+              </button>
+              <button className="h-7 px-3 rounded-lg text-[10px] font-bold bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity disabled:opacity-40" onClick={save} disabled={saving || !dirty}>
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+            </>
+          ) : (
+            <button className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-1.5" onClick={() => setEditing(true)}>
+              <Pencil size={11} /> Edit
+            </button>
+          )}
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-[720px] mx-auto space-y-5">
-          {(config.fields || []).map((field: any) => (
-            <div key={field.key} className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">{field.label}</label>
-              {field.type === 'textarea' ? (
-                <textarea className={`${inputCls} min-h-[120px] py-2 resize-y`} value={form[field.key] ?? ''} onChange={e => set(field.key, e.target.value)} rows={6} />
-              ) : field.type === 'select' ? (
-                <select className={inputCls} value={form[field.key] ?? ''} onChange={e => set(field.key, e.target.value)}>
-                  <option value="">{'\u2014'} select {'\u2014'}</option>
-                  {(field.options || []).map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
-                </select>
-              ) : (
-                <input className={inputCls} type={field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text'} value={form[field.key] ?? ''} onChange={e => set(field.key, e.target.value)} />
-              )}
+        <div className="max-w-[720px] mx-auto">
+          {editing ? (
+            <textarea
+              className="w-full min-h-[400px] rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-4 text-sm font-mono text-[color:var(--text-primary)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors resize-y"
+              value={content}
+              onChange={e => { setContent(e.target.value); setDirty(true); }}
+              placeholder="Write markdown content..."
+            />
+          ) : content ? (
+            <div className="prose prose-invert max-w-none text-sm text-[color:var(--text-primary)] leading-relaxed">
+              <ReactMarkdown>{content}</ReactMarkdown>
             </div>
-          ))}
+          ) : (
+            <EmptyState icon={FileText} label="No page content yet" />
+          )}
         </div>
       </div>
     </div>
@@ -871,7 +882,10 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
 
   const selectedRecord = useMemo(() => records.find((r: any) => r.id === selectedId) || null, [records, selectedId]);
 
-  const standaloneActions = useMemo(() => (config?.actions || []).filter((a: any) => (a.placement || 'standalone') === 'standalone'), [config]);
+  const standaloneActions = useMemo(() => (config?.actions || []).filter((a: any) => {
+    const t = a.type || a.placement || 'standalone';
+    return t === 'standalone';
+  }), [config]);
   const hasStandaloneActions = standaloneActions.length > 0;
   // Data modules always support record creation via the generic CRUD endpoint.
   // A custom 'create' action only overrides the button label.
@@ -999,7 +1013,7 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
       {/* Actions tab */}
       {effectiveTab === 'actions' && (
         <div className="flex-1 min-h-0">
-          <ApiModule config={{ ...config, actions: standaloneActions }} hideHeader />
+          <ApiModule config={config} hideHeader />
         </div>
       )}
 
@@ -1136,7 +1150,10 @@ function ModulesSection() {
             className="text-left rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-4 space-y-2 hover:border-[color:var(--border-strong)] transition-colors"
           >
             <div className="flex items-center justify-between">
-              <span className="text-sm font-bold text-[color:var(--text-primary)]">{mod.label}</span>
+              <div className="flex items-center gap-2.5">
+                {(() => { const Icon = resolveIcon(mod.icon); return <Icon size={16} className="text-[color:var(--text-muted)] shrink-0" />; })()}
+                <span className="text-sm font-bold text-[color:var(--text-primary)]">{mod.label}</span>
+              </div>
               <div className="flex items-center gap-1">
                 {(mod.fields || []).length > 0 && <span className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">records</span>}
                 {(mod.actions || []).length > 0 && <span className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">actions</span>}

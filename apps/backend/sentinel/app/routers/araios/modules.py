@@ -178,6 +178,7 @@ _MODULE_MUTABLE_FIELDS = (
     "description",
     "order",
     "page_title",
+    "page_content",
 )
 
 
