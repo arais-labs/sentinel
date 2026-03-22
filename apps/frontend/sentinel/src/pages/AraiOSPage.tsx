@@ -873,7 +873,8 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
 
   const standaloneActions = useMemo(() => (config?.actions || []).filter((a: any) => (a.placement || 'standalone') === 'standalone'), [config]);
   const hasStandaloneActions = standaloneActions.length > 0;
-  const hasCreate = (config?.actions || []).some((a: any) => a.type === 'create');
+  // Data modules always support record creation via the generic CRUD endpoint.
+  // A custom 'create' action only overrides the button label.
   const createAction = (config?.actions || []).find((a: any) => a.type === 'create');
 
   // CRUD
@@ -1002,7 +1003,7 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
             <Copy size={12} />
             <span className="text-[10px] font-bold uppercase tracking-widest">{copied ? 'Copied!' : 'Prompt'}</span>
           </button>
-          {activeTab === 'records' && hasCreate && (
+          {activeTab === 'records' && (
             <button className="h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity flex items-center gap-1.5" onClick={() => setCreateOpen(true)}>
               <Plus size={12} />{createAction?.label || `New`}
             </button>

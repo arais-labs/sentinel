@@ -769,6 +769,215 @@ function StreamToolCard({
   );
 }
 
+// --- Modules Rail Panel ---
+
+const ARAIOS_TOOL_NAMES = new Set(['araios_modules', 'araios_records', 'araios_action']);
+
+function ModulesRailPanel({ messages, completedToolCalls, activeToolCalls }: {
+  messages: Message[];
+  completedToolCalls: { id: string; name: string; argumentsJson: string; outputJson: string; isError: boolean; complete: boolean }[];
+  activeToolCalls: { id: string; name: string; argumentsJson: string; outputJson: string; isError: boolean; complete: boolean }[];
+}) {
+  const [modules, setModules] = useState<{ name: string; label: string; type: string; description: string }[]>([]);
+  const [modulesLoading, setModulesLoading] = useState(true);
+  const [expandedModule, setExpandedModule] = useState<string | null>(null);
+  const [moduleRecords, setModuleRecords] = useState<Record<string, any[]>>({});
+
+  // Load modules list
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        const res = await fetch('/api/modules', { credentials: 'include' });
+        if (res.ok) {
+          const data = await res.json();
+          if (mounted) setModules((data.modules || []).map((m: any) => ({ name: m.name, label: m.label, type: m.type || 'data', description: m.description || '' })));
+        }
+      } catch { /* ignore */ }
+      finally { if (mounted) setModulesLoading(false); }
+    };
+    load();
+    const timer = setInterval(load, 30000);
+    return () => { mounted = false; clearInterval(timer); };
+  }, []);
+
+  // Load records when expanding a module
+  useEffect(() => {
+    if (!expandedModule) return;
+    let mounted = true;
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/modules/${expandedModule}/records`, { credentials: 'include' });
+        if (res.ok) {
+          const data = await res.json();
+          if (mounted) setModuleRecords(prev => ({ ...prev, [expandedModule]: data.records || [] }));
+        }
+      } catch { /* ignore */ }
+    };
+    load();
+    return () => { mounted = false; };
+  }, [expandedModule]);
+
+  // Extract recent araios activity from completed tool calls + messages
+  const recentActivity = useMemo(() => {
+    const items: { id: string; tool: string; operation: string; module?: string; time: string; isError: boolean }[] = [];
+
+    // From completed streaming tool calls (current session, real-time)
+    for (const call of completedToolCalls) {
+      if (!ARAIOS_TOOL_NAMES.has(call.name)) continue;
+      try {
+        const args = JSON.parse(call.argumentsJson || '{}');
+        items.push({
+          id: call.id,
+          tool: call.name,
+          operation: args.operation || args.action_id || call.name.replace('araios_', ''),
+          module: args.module || args.name,
+          time: 'just now',
+          isError: call.isError,
+        });
+      } catch { /* ignore parse errors */ }
+    }
+
+    // From active streaming tool calls
+    for (const call of activeToolCalls) {
+      if (!ARAIOS_TOOL_NAMES.has(call.name)) continue;
+      try {
+        const args = JSON.parse(call.argumentsJson || '{}');
+        items.push({
+          id: `active-${call.id}`,
+          tool: call.name,
+          operation: args.operation || args.action_id || 'running...',
+          module: args.module || args.name,
+          time: 'now',
+          isError: false,
+        });
+      } catch { /* ignore */ }
+    }
+
+    // From persisted messages with araios tool names
+    for (const msg of messages) {
+      if (!msg.tool_name || !ARAIOS_TOOL_NAMES.has(msg.tool_name)) continue;
+      items.push({
+        id: msg.id,
+        tool: msg.tool_name,
+        operation: '',
+        module: '',
+        time: formatCompactDate(msg.created_at),
+        isError: false,
+      });
+    }
+
+    return items.slice(0, 20);
+  }, [completedToolCalls, activeToolCalls, messages]);
+
+  const TOOL_LABELS: Record<string, string> = {
+    araios_modules: 'Modules',
+    araios_records: 'Records',
+    araios_action: 'Action',
+  };
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex-1 overflow-y-auto custom-scrollbar">
+        {/* Recent Activity */}
+        {recentActivity.length > 0 && (
+          <div className="p-3 border-b border-[color:var(--border-subtle)]">
+            <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2 px-1">Recent Activity</div>
+            <div className="space-y-1">
+              {recentActivity.map((item) => (
+                <div key={item.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-[color:var(--surface-0)] border border-[color:var(--border-subtle)]">
+                  <div className={`h-1.5 w-1.5 rounded-full shrink-0 ${item.isError ? 'bg-rose-500' : item.time === 'now' ? 'bg-sky-400 animate-pulse' : 'bg-emerald-500'}`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[10px] font-bold text-[color:var(--text-primary)] truncate">
+                      {TOOL_LABELS[item.tool] || item.tool}
+                      {item.operation ? ` · ${item.operation}` : ''}
+                    </div>
+                    {item.module && (
+                      <div className="text-[9px] text-[color:var(--text-muted)] truncate">{item.module}</div>
+                    )}
+                  </div>
+                  <span className="text-[9px] text-[color:var(--text-muted)] shrink-0">{item.time}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Module Browser */}
+        <div className="p-3">
+          <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2 px-1">
+            Modules {!modulesLoading && <span className="text-[color:var(--text-muted)]">({modules.length})</span>}
+          </div>
+          {modulesLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 size={16} className="animate-spin text-[color:var(--text-muted)]" />
+            </div>
+          ) : modules.length === 0 ? (
+            <div className="py-8 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-2">
+              <Wrench size={20} strokeWidth={1} />
+              <p className="text-[10px] font-medium uppercase tracking-widest">No modules</p>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {modules.map((mod) => {
+                const isExpanded = expandedModule === mod.name;
+                const records = moduleRecords[mod.name];
+                return (
+                  <div key={mod.name} className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] overflow-hidden">
+                    <button
+                      onClick={() => setExpandedModule(isExpanded ? null : mod.name)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[color:var(--surface-1)] transition-colors"
+                    >
+                      <ChevronRight size={12} className={`shrink-0 text-[color:var(--text-muted)] transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[11px] font-bold text-[color:var(--text-primary)] truncate">{mod.label}</div>
+                      </div>
+                      <span className={`text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded ${
+                        mod.type === 'data' ? 'bg-blue-500/10 text-blue-400' :
+                        mod.type === 'tool' ? 'bg-amber-500/10 text-amber-400' :
+                        'bg-purple-500/10 text-purple-400'
+                      }`}>{mod.type}</span>
+                    </button>
+                    {isExpanded && (
+                      <div className="border-t border-[color:var(--border-subtle)] px-3 py-2 bg-[color:var(--surface-1)]/50">
+                        {mod.description && (
+                          <p className="text-[10px] text-[color:var(--text-muted)] mb-2 leading-relaxed">{mod.description}</p>
+                        )}
+                        {records === undefined ? (
+                          <div className="flex items-center gap-2 py-2 text-[10px] text-[color:var(--text-muted)]">
+                            <Loader2 size={10} className="animate-spin" /> Loading records...
+                          </div>
+                        ) : records.length === 0 ? (
+                          <p className="text-[10px] text-[color:var(--text-muted)] py-1">No records</p>
+                        ) : (
+                          <div className="space-y-0.5">
+                            {records.slice(0, 8).map((rec: any) => (
+                              <div key={rec.id} className="flex items-center gap-2 py-1 px-1 rounded text-[10px]">
+                                <div className="h-1 w-1 rounded-full bg-[color:var(--text-muted)] shrink-0" />
+                                <span className="text-[color:var(--text-primary)] truncate font-medium">
+                                  {rec[Object.keys(rec).find((k: string) => !['id', 'module_name', 'created_at', 'updated_at'].includes(k)) || 'id'] || rec.id}
+                                </span>
+                                <span className="text-[color:var(--text-muted)] shrink-0 ml-auto">{rec.id?.slice(0, 6)}</span>
+                              </div>
+                            ))}
+                            {records.length > 8 && (
+                              <p className="text-[9px] text-[color:var(--text-muted)] px-1">+{records.length - 8} more</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- Main Page Component ---
 
 export function SessionsPage() {
@@ -4372,17 +4581,11 @@ export function SessionsPage() {
             ) : null}
 
             {rightRailTab === 'modules' ? (
-              <div className="flex-1 min-h-0 flex flex-col">
-                <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
-                  <div className="py-12 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-3">
-                    <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
-                      <Wrench size={24} strokeWidth={1} />
-                    </div>
-                    <p className="text-[10px] font-medium uppercase tracking-widest">Modules</p>
-                    <p className="text-[10px] text-center max-w-[200px]">AraiOS module engine — approvals, permissions, and data modules will appear here.</p>
-                  </div>
-                </div>
-              </div>
+              <ModulesRailPanel
+                messages={messages}
+                completedToolCalls={streaming.completedToolCalls}
+                activeToolCalls={streaming.activeToolCalls}
+              />
             ) : null}
           </aside>
         </div>
