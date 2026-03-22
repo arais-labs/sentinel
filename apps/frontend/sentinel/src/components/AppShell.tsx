@@ -1,10 +1,9 @@
-import { PropsWithChildren, ReactNode, useEffect, useState } from 'react';
+import { PropsWithChildren, ReactNode, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Database,
   Zap,
-  Target,
   Wrench,
   Send,
   MonitorPlay,
@@ -14,12 +13,15 @@ import {
   Sun,
   Menu,
   X,
-  ChevronRight,
   Activity,
+  LayoutGrid,
+  CheckCircle,
+  Lock,
+  FileCode,
+  MessageCircle,
 } from 'lucide-react';
 
 import { APP_VERSION } from '../lib/env';
-import { api } from '../lib/api';
 import { useThemeStore } from '../store/theme-store';
 import { Logo } from './ui/Logo';
 
@@ -38,17 +40,7 @@ interface NavItem {
   icon: typeof LayoutDashboard;
 }
 
-interface AppSwitchItem {
-  id: 'araios' | 'sentinel';
-  label: string;
-  href: string;
-}
-
-interface AraiosIntegrationStatus {
-  araios_frontend_url: string | null;
-}
-
-const navItems: NavItem[] = [
+const sentinelNavItems: NavItem[] = [
   { label: 'Sessions', path: '/sessions', icon: LayoutDashboard },
   { label: 'Session Logs', path: '/logs', icon: Activity },
   { label: 'Memory', path: '/memory', icon: Database },
@@ -60,23 +52,23 @@ const navItems: NavItem[] = [
   { label: 'Settings', path: '/settings', icon: Settings },
 ];
 
+const araiosNavItems: NavItem[] = [
+  { label: 'Modules', path: '/araios/modules', icon: LayoutGrid },
+  { label: 'Approvals', path: '/araios/approvals', icon: CheckCircle },
+  { label: 'Permissions', path: '/araios/permissions', icon: Lock },
+  { label: 'Documents', path: '/araios/documents', icon: FileCode },
+  { label: 'Tasks', path: '/araios/tasks', icon: GitBranch },
+  { label: 'Coordination', path: '/araios/coordination', icon: MessageCircle },
+];
+
 function isActive(pathname: string, candidate: string) {
-  if (candidate === '/sessions') {
-    return pathname.startsWith('/sessions');
-  }
-  if (candidate === '/triggers') {
-    return pathname.startsWith('/triggers');
-  }
-  if (candidate === '/settings') {
-    return pathname.startsWith('/settings');
-  }
-  if (candidate === '/telegram') {
-    return pathname.startsWith('/telegram');
-  }
-  if (candidate === '/git') {
-    return pathname.startsWith('/git');
-  }
-  return pathname === candidate;
+  return pathname === candidate || pathname.startsWith(candidate + '/');
+}
+
+type AppMode = 'sentinel' | 'araios';
+
+function detectMode(pathname: string): AppMode {
+  return pathname.startsWith('/araios') ? 'araios' : 'sentinel';
 }
 
 export function AppShell({
@@ -94,102 +86,67 @@ export function AppShell({
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const defaultSentinelHref = `${window.location.origin.replace(/\/+$/, '')}/sentinel`;
-  const [switchLinks, setSwitchLinks] = useState<{ sentinelHref: string; araiosHref: string }>({
-    sentinelHref: defaultSentinelHref,
-    araiosHref: '',
-  });
 
-  useEffect(() => {
-    let mounted = true;
+  const currentMode = detectMode(location.pathname);
+  const navItems = currentMode === 'araios' ? araiosNavItems : sentinelNavItems;
 
-    const normalizeHref = (value: string | null | undefined): string => {
-      const trimmed = (value ?? '').trim().replace(/\/+$/, '');
-      if (!trimmed) {
-        return '';
-      }
-      if (trimmed.startsWith('/')) {
-        return trimmed;
-      }
-      try {
-        const parsed = new URL(trimmed);
-        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-          return parsed.toString().replace(/\/+$/, '');
-        }
-      } catch {
-        return '';
-      }
-      return '';
-    };
-
-    const syncSwitchLinks = async () => {
-      try {
-        const integration = await api.get<AraiosIntegrationStatus>('/settings/araios');
-        if (mounted) {
-          setSwitchLinks({
-            sentinelHref: defaultSentinelHref,
-            araiosHref: normalizeHref(integration.araios_frontend_url),
-          });
-        }
-      } catch {
-        // Keep disabled links when URL settings cannot be loaded.
-      }
-    };
-
-    void syncSwitchLinks();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  const renderAppSwitcher = (currentApp: 'araios' | 'sentinel') => {
-    const appSwitchItems: AppSwitchItem[] = [
-      { id: 'araios', label: 'araiOS', href: switchLinks.araiosHref },
-      { id: 'sentinel', label: 'Sentinel', href: switchLinks.sentinelHref },
-    ];
-    const activeIndex = appSwitchItems.findIndex((item) => item.id === currentApp);
-
-    return (
-      <div className="relative inline-grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] p-0.5 overflow-hidden">
-        <div
-          className={`absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
-            activeIndex <= 0 ? 'left-0.5' : 'left-[calc(50%)]'
-          }`}
-        />
-        {appSwitchItems.map((item) => {
-          const active = item.id === currentApp;
-          const itemClasses =
-            'relative z-10 inline-flex h-7 items-center justify-center rounded-full px-3 text-[10px] font-bold uppercase tracking-wider transition-colors duration-200';
-          if (active) {
-            return (
-              <span key={item.id} className={`${itemClasses} text-[color:var(--text-primary)]`}>
-                {item.label}
-              </span>
-            );
-          }
-          if (!item.href) {
-            return (
-              <span
-                key={item.id}
-                className={`${itemClasses} text-[color:var(--text-muted)] opacity-50 cursor-not-allowed`}
-              >
-                {item.label}
-              </span>
-            );
-          }
-          return (
-            <a
-              key={item.id}
-              href={item.href}
-              className={`${itemClasses} text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]`}
-            >
-              {item.label}
-            </a>
-          );
-        })}
-      </div>
-    );
+  const switchTo = (mode: AppMode) => {
+    if (mode === currentMode) return;
+    if (mode === 'araios') navigate('/araios/modules');
+    else navigate('/sessions');
   };
+
+  const renderSwitcher = () => (
+    <div className="relative inline-grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] p-0.5 overflow-hidden">
+      <div
+        className={`absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
+          currentMode === 'sentinel' ? 'left-0.5' : 'left-[calc(50%)]'
+        }`}
+      />
+      {(['sentinel', 'araios'] as const).map((mode) => {
+        const active = mode === currentMode;
+        return (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => switchTo(mode)}
+            className={`relative z-10 inline-flex h-7 items-center justify-center rounded-full px-3 text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 ${
+              active ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
+            }`}
+          >
+            {mode === 'sentinel' ? 'Sentinel' : 'araiOS'}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const renderNav = (items: NavItem[], onNavigate?: () => void) => (
+    <nav className="flex-1 overflow-y-auto overflow-x-hidden py-4 px-2 space-y-1">
+      {items.map((item) => {
+        const active = isActive(location.pathname, item.path);
+        return (
+          <button
+            key={item.path}
+            onClick={() => { navigate(item.path); onNavigate?.(); }}
+            className={`group flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              active
+                ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
+                : 'text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)] hover:text-[color:var(--text-primary)]'
+            }`}
+          >
+            <item.icon
+              size={18}
+              className={`shrink-0 transition-colors ${active ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-muted)] group-hover:text-[color:var(--text-primary)]'}`}
+            />
+            <span className={`transition-opacity duration-200 whitespace-nowrap ${isSidebarExpanded ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+              {item.label}
+            </span>
+          </button>
+        );
+      })}
+    </nav>
+  );
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">
@@ -214,30 +171,7 @@ export function AppShell({
           </div>
         </div>
 
-        <nav className="flex-1 overflow-y-auto overflow-x-hidden py-4 px-2 space-y-1">
-          {navItems.map((item) => {
-            const active = isActive(location.pathname, item.path);
-            return (
-              <button
-                key={item.path}
-                onClick={() => navigate(item.path)}
-                className={`group flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                  active
-                    ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
-                    : 'text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)] hover:text-[color:var(--text-primary)]'
-                }`}
-              >
-                <item.icon
-                  size={18}
-                  className={`shrink-0 transition-colors ${active ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-muted)] group-hover:text-[color:var(--text-primary)]'}`}
-                />
-                <span className={`transition-opacity duration-200 whitespace-nowrap ${isSidebarExpanded ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-                  {item.label}
-                </span>
-              </button>
-            );
-          })}
-        </nav>
+        {renderNav(navItems)}
 
         <div className="p-2 border-t border-[color:var(--border-subtle)]">
            <button
@@ -274,7 +208,7 @@ export function AppShell({
           </div>
 
           <div className="hidden md:flex items-center justify-center">
-            {renderAppSwitcher('sentinel')}
+            {renderSwitcher()}
           </div>
 
           <div className="flex items-center justify-end gap-2">
@@ -305,28 +239,10 @@ export function AppShell({
                 <X size={20} />
               </button>
             </div>
-            <nav className="flex-1 py-4 px-2 space-y-1">
-               {navItems.map((item) => {
-                const active = isActive(location.pathname, item.path);
-                return (
-                  <button
-                    key={item.path}
-                    onClick={() => {
-                      navigate(item.path);
-                      setIsMobileMenuOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors ${
-                      active
-                        ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
-                        : 'text-[color:var(--text-secondary)]'
-                    }`}
-                  >
-                    <item.icon size={18} className={active ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-muted)]'} />
-                    {item.label}
-                  </button>
-                );
-              })}
-            </nav>
+            <div className="p-3 border-b border-[color:var(--border-subtle)]">
+              {renderSwitcher()}
+            </div>
+            {renderNav(navItems, () => setIsMobileMenuOpen(false))}
             <div className="p-4 border-t border-[color:var(--border-subtle)]">
               <button
                 onClick={toggleTheme}

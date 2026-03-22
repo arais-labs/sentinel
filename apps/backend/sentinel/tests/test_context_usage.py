@@ -12,7 +12,7 @@ def test_estimate_db_message_tokens_counts_assistant_tool_calls_when_text_empty(
             "tool_calls": [
                 {
                     "id": "toolu_1",
-                    "name": "araios_api",
+                    "name": "araios_modules",
                     "arguments": {"path": "/api/agent", "method": "GET"},
                 }
             ]
@@ -29,7 +29,7 @@ def test_estimate_db_message_tokens_preserves_structural_tool_result_rows():
         role="tool_result",
         content="",
         tool_call_id="toolu_1",
-        tool_name="araios_api",
+        tool_name="araios_modules",
         metadata_json={},
     )
 

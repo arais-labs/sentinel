@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 def _status_to_code(status_code: int) -> str:
     mapping = {
+        202: "accepted",
         400: "bad_request",
         401: "unauthorized",
         403: "forbidden",

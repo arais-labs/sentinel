@@ -16,6 +16,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { ToolsPage } from './pages/ToolsPage';
 import { GitPage } from './pages/GitPage';
 import { TriggersPage } from './pages/TriggersPage';
+import { AraiOSPage } from './pages/AraiOSPage';
 import { useAuthStore } from './store/auth-store';
 import { useThemeStore } from './store/theme-store';
 import { api } from './lib/api';
@@ -108,6 +109,8 @@ export default function App() {
           <Route path="/showcase" element={<UiShowcasePage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/settings/admin" element={<AdminPage />} />
+          <Route path="/araios" element={<AraiOSPage />} />
+          <Route path="/araios/:section" element={<AraiOSPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/sessions" replace />} />

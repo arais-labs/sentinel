@@ -13,7 +13,7 @@ import { getAppTheme } from './theme';
 function Root() {
   const mode = useThemeStore((state) => state.theme);
   const theme = React.useMemo(() => getAppTheme(mode), [mode]);
-  const basename = (import.meta.env.VITE_ROUTER_BASENAME as string | undefined) ?? '/sentinel';
+  const basename = (import.meta.env.VITE_ROUTER_BASENAME as string | undefined) ?? '/';
 
   return (
     <ThemeProvider theme={theme}>

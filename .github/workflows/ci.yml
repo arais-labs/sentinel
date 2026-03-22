@@ -19,12 +19,8 @@ jobs:
         run: docker compose -f docker-compose.dev.yml config
 
   backend-tests:
-    name: Backend Tests (${{ matrix.backend }})
+    name: Backend Tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        backend: [sentinel, araios]
     steps:
       - uses: actions/checkout@v4
 
@@ -32,16 +28,14 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install sentinel backend deps
-        if: matrix.backend == 'sentinel'
+      - name: Install backend deps
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap
           python -m pip install --upgrade pip
           python -m pip install -e "apps/backend/sentinel[dev]"
 
-      - name: Test sentinel backend
-        if: matrix.backend == 'sentinel'
+      - name: Test backend
         env:
           JWT_SECRET_KEY: ci-test-secret-key-with-32-bytes-minimum
           DEV_TOKEN: sentinel-dev-token
@@ -51,30 +45,9 @@ jobs:
           python -m compileall app tests
           python -m pytest tests/test_auth_flow.py tests/test_validation.py tests/test_memory.py tests/test_tools.py tests/test_onboarding.py tests/test_playwright.py -q
 
-      - name: Install araios backend deps
-        if: matrix.backend == 'araios'
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/backend/araios[dev]"
-
-      - name: Test araios backend
-        if: matrix.backend == 'araios'
-        run: |
-          cd apps/backend/araios
-          python -m compileall app tests main.py
-          python -m pytest tests/test_health.py tests/test_documents.py tests/test_coordination.py tests/test_tasks.py -q
-
   frontend-build:
-    name: Frontend Build (${{ matrix.frontend.name }})
+    name: Frontend Build
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        frontend:
-          - name: sentinel
-            path: apps/frontend/sentinel
-          - name: araios
-            path: apps/frontend/araios
     steps:
       - uses: actions/checkout@v4
 
@@ -82,12 +55,12 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: ${{ matrix.frontend.path }}/package-lock.json
+          cache-dependency-path: apps/frontend/sentinel/package-lock.json
 
       - name: Install dependencies
-        working-directory: ${{ matrix.frontend.path }}
+        working-directory: apps/frontend/sentinel
         run: npm ci
 
       - name: Build
-        working-directory: ${{ matrix.frontend.path }}
+        working-directory: apps/frontend/sentinel
         run: npm run build

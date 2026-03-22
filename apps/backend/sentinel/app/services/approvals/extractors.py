@@ -17,11 +17,6 @@ def extract_approval_metadata_from_tool_result(
     if generic is not None:
         return generic
 
-    if tool_name == "araios_api":
-        payload = _extract_araios_approval(result)
-        if payload is not None:
-            return payload
-
     return None
 
 
@@ -69,7 +64,13 @@ def _extract_araios_approval(result: dict[str, Any]) -> dict[str, Any] | None:
     if status_code != 202 or not isinstance(body, dict):
         return None
 
+    # Try standard format: body.detail.approval
     detail = body.get("detail")
+    if not isinstance(detail, dict):
+        # Try error-envelope format: body.error.details.approval
+        error_obj = body.get("error")
+        if isinstance(error_obj, dict):
+            detail = error_obj.get("details")
     if not isinstance(detail, dict):
         return None
 

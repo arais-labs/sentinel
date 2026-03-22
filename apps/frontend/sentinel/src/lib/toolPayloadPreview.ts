@@ -42,9 +42,17 @@ const GENERIC_OUTPUT_PRIORITY = [
 ];
 
 const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: readonly string[] }> = {
-  araios_api: {
-    input: ['path', 'method', 'body', 'timeout_seconds'],
-    output: ['status_code', 'error', 'message', 'body'],
+  araios_modules: {
+    input: ['operation', 'name', 'type', 'label'],
+    output: ['ok', 'modules', 'module', 'message', 'error'],
+  },
+  araios_records: {
+    input: ['module', 'operation', 'record_id', 'data'],
+    output: ['ok', 'records', 'count', 'message', 'error'],
+  },
+  araios_action: {
+    input: ['module', 'action_id', 'record_id', 'params'],
+    output: ['ok', 'result', 'error'],
   },
   topolix_diagram: {
     input: ['title', 'summary', 'dsl'],

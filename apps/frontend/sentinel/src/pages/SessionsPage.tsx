@@ -818,7 +818,7 @@ export function SessionsPage() {
 
   const [tasks, setTasks] = useState<SubAgentTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [rightRailTab, setRightRailTab] = useState<'desktop' | 'sub_agents' | 'runtime'>('desktop');
+  const [rightRailTab, setRightRailTab] = useState<'desktop' | 'sub_agents' | 'runtime' | 'modules'>('desktop');
   const [runtimeStatus, setRuntimeStatus] = useState<SessionRuntimeStatus | null>(null);
   const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
   const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
@@ -3734,15 +3734,17 @@ export function SessionsPage() {
               className="relative z-30 hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
           >
             <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
-              <div className="relative grid grid-cols-3 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
+              <div className="relative grid grid-cols-4 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
                 {/* Sliding Indicator */}
                 <div
-                  className={`absolute top-0.5 bottom-0.5 w-[calc(33.333%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
+                  className={`absolute top-0.5 bottom-0.5 w-[calc(25%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
                     rightRailTab === 'desktop'
                       ? 'left-0.5'
                       : rightRailTab === 'sub_agents'
-                        ? 'left-[calc(33.333%)]'
-                        : 'left-[calc(66.666%-0.5px)]'
+                        ? 'left-[calc(25%)]'
+                        : rightRailTab === 'runtime'
+                          ? 'left-[calc(50%)]'
+                          : 'left-[calc(75%-0.5px)]'
                   }`}
                 />
 
@@ -3766,7 +3768,7 @@ export function SessionsPage() {
                       : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                   }`}
                 >
-                  Sub-Agents
+                  Agents
                 </button>
                 <button
                   type="button"
@@ -3779,6 +3781,17 @@ export function SessionsPage() {
                 >
                   Runtime
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setRightRailTab('modules')}
+                  className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
+                    rightRailTab === 'modules'
+                      ? 'text-[color:var(--text-primary)]'
+                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
+                  }`}
+                >
+                  Modules
+                </button>
               </div>
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
@@ -3787,7 +3800,9 @@ export function SessionsPage() {
                       ? 'Live Desktop'
                       : rightRailTab === 'sub_agents'
                         ? 'Sub-Agent Tasks'
-                        : 'Workspace Runtime'}
+                        : rightRailTab === 'runtime'
+                          ? 'Workspace Runtime'
+                          : 'araiOS Modules'}
                   </div>
                 </div>
                 {rightRailTab === 'sub_agents' ? (
@@ -4352,6 +4367,20 @@ export function SessionsPage() {
                       Opening {workbenchLoadingPath}
                     </div>
                   ) : null}
+                </div>
+              </div>
+            ) : null}
+
+            {rightRailTab === 'modules' ? (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+                  <div className="py-12 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-3">
+                    <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
+                      <Wrench size={24} strokeWidth={1} />
+                    </div>
+                    <p className="text-[10px] font-medium uppercase tracking-widest">Modules</p>
+                    <p className="text-[10px] text-center max-w-[200px]">AraiOS module engine — approvals, permissions, and data modules will appear here.</p>
+                  </div>
                 </div>
               </div>
             ) : null}

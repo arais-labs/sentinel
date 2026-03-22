@@ -19,7 +19,7 @@ def test_extracts_araios_approval_from_202_response():
         },
     }
 
-    approval = extract_approval_metadata_from_tool_result(tool_name="araios_api", result=result)
+    approval = extract_approval_metadata_from_tool_result(tool_name="araios_modules", result=result)
 
     assert isinstance(approval, dict)
     assert approval["provider"] == "araios"

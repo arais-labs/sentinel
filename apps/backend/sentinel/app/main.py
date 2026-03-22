@@ -45,6 +45,7 @@ from app.routers import (
     ws,
     webhooks,
 )
+from app.routers.araios import api_router as araios_api_router, platform_auth_router as araios_platform_auth_router
 from app.services.approvals import ApprovalService
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
 from app.services.agent_run_registry import AgentRunRegistry
@@ -115,6 +116,18 @@ async def lifespan(app: FastAPI):
             _s = _r.scalars().first()
             if _s:
                 setattr(settings, _settings_attr, _s.value)
+
+    # Seed AraiOS default permissions
+    async with AsyncSessionLocal() as _araios_db:
+        from app.models.araios import AraiosPermission
+        from app.services.araios.permissions import AGENT_PERMISSIONS as _ARAIOS_PERMS
+
+        _existing_result = await _araios_db.execute(_sel(AraiosPermission))
+        _existing_actions = {p.action for p in _existing_result.scalars().all()}
+        for _action, _level in _ARAIOS_PERMS.items():
+            if _action not in _existing_actions:
+                _araios_db.add(AraiosPermission(action=_action, level=_level))
+        await _araios_db.commit()
 
     embedding_key = settings.embedding_api_key or settings.openai_api_key
     embedding_service = None
@@ -470,3 +483,7 @@ app.include_router(runtime.router, prefix="/api/v1/runtime", tags=["runtime"])
 app.include_router(telegram.router, prefix="/api/v1/telegram", tags=["telegram"])
 app.include_router(vnc_proxy.router, tags=["vnc"])
 app.include_router(ws.router, prefix="/ws/sessions", tags=["ws"])
+
+# AraiOS routes — serves /api/* and /platform/auth/* for the AraiOS frontend
+app.include_router(araios_api_router, prefix="/api", tags=["araios"])
+app.include_router(araios_platform_auth_router, prefix="/platform/auth", tags=["araios-platform-auth"])
