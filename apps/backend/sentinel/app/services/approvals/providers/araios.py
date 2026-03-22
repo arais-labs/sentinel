@@ -1,23 +1,20 @@
+"""AraiOS approval provider — direct DB access (no HTTP self-calls)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.models.araios import AraiosApproval, AraiosModule, AraiosModuleSecret
 from app.services.approvals.types import (
     ApprovalConflictError,
     ApprovalNotFoundError,
     ApprovalProviderUnavailableError,
     ApprovalRecord,
     PendingApprovalMatch,
-)
-from app.services.araios_client import (
-    araios_request_with_auth,
-    join_araios_base_and_path,
-    load_araios_runtime_credentials,
 )
 
 
@@ -29,160 +26,190 @@ class AraiosApprovalProvider:
 
     async def list(
         self,
-        _db: AsyncSession,
+        db: AsyncSession,
         *,
         status_filter: str | None,
         limit: int,
         offset: int,
         session_id: UUID | None = None,
     ) -> tuple[list[ApprovalRecord], int]:
-        base_url, agent_api_key = await self._load_credentials()
-        request_kwargs: dict[str, Any] = {
-            "headers": {},
-            "params": {},
-        }
+        stmt = select(AraiosApproval).order_by(AraiosApproval.created_at.desc())
         if status_filter:
-            request_kwargs["params"]["status"] = status_filter
+            stmt = stmt.where(AraiosApproval.status == status_filter)
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
 
-        url = join_araios_base_and_path(base_url, "/api/approvals")
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await self._request(
-                client=client,
-                method="GET",
-                url=url,
-                request_kwargs=request_kwargs,
-                base_url=base_url,
-                agent_api_key=agent_api_key,
-            )
-
-        if response.status_code != 200:
-            raise ApprovalProviderUnavailableError(
-                f"AraiOS approvals listing failed with status {response.status_code}"
-            )
-
-        body = self._json_object(response)
-        approvals_raw = body.get("approvals")
-        if not isinstance(approvals_raw, list):
-            approvals_raw = []
-
-        mapped = [self._to_record(item) for item in approvals_raw if isinstance(item, dict)]
+        mapped = [self._to_record(row) for row in rows]
         if session_id is not None:
             wanted = str(session_id)
             mapped = [item for item in mapped if item.session_id == wanted]
 
         total = len(mapped)
-        paged = mapped[offset : offset + limit]
+        paged = mapped[offset: offset + limit]
         return paged, total
 
     async def resolve(
         self,
-        _db: AsyncSession,
+        db: AsyncSession,
         *,
         approval_id: str,
         decision: str,
         decision_by: str,
         note: str | None,
     ) -> ApprovalRecord:
-        base_url, agent_api_key = await self._load_credentials()
+        result = await db.execute(
+            select(AraiosApproval).where(AraiosApproval.id == approval_id)
+        )
+        approval = result.scalars().first()
+        if not approval:
+            raise ApprovalNotFoundError(f"AraiOS approval '{approval_id}' not found")
+        if approval.status != "pending":
+            raise ApprovalConflictError(
+                f"AraiOS approval is already {approval.status}"
+            )
+
+        # Execute the approved action
         if decision == "approve":
-            action = "approve"
+            await self._execute_approval(db, approval)
+            approval.status = "approved"
         elif decision == "reject":
-            action = "reject"
+            approval.status = "rejected"
         else:
             raise ApprovalConflictError("Unsupported approval decision")
 
-        url = join_araios_base_and_path(base_url, f"/api/approvals/{approval_id}/{action}")
-        request_kwargs: dict[str, Any] = {"headers": {}}
-        if isinstance(note, str) and note.strip():
-            request_kwargs["json"] = {"note": note.strip(), "resolved_by": decision_by}
+        approval.resolved_at = datetime.now(UTC)
+        approval.resolved_by = decision_by
+        await db.commit()
+        await db.refresh(approval)
+        return self._to_record(approval)
 
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await self._request(
-                client=client,
-                method="POST",
-                url=url,
-                request_kwargs=request_kwargs,
-                base_url=base_url,
-                agent_api_key=agent_api_key,
-            )
-
-        if response.status_code == 404:
-            raise ApprovalNotFoundError("AraiOS approval not found")
-        if response.status_code in {409, 422}:
-            raise ApprovalConflictError("AraiOS approval cannot be resolved in current state")
-        if response.status_code < 200 or response.status_code >= 300:
-            raise ApprovalProviderUnavailableError(
-                f"AraiOS approval resolution failed with status {response.status_code}"
-            )
-
-        payload = self._json_object(response)
-        return self._to_record(payload)
-
-    def pending_match_from_tool_call(self, *, tool_name: str, arguments: dict[str, object]) -> PendingApprovalMatch | None:
-        _ = tool_name, arguments
+    def pending_match_from_tool_call(
+        self, *, tool_name: str, arguments: dict[str, object]
+    ) -> PendingApprovalMatch | None:
         return None
 
-    async def _load_credentials(self) -> tuple[str, str]:
-        try:
-            return await load_araios_runtime_credentials(self._session_factory)
-        except ValueError as exc:
-            raise ApprovalProviderUnavailableError(str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise ApprovalProviderUnavailableError(f"AraiOS credentials unavailable: {exc}") from exc
+    # ── Internal ──
 
-    async def _request(
-        self,
-        *,
-        client: httpx.AsyncClient,
-        method: str,
-        url: str,
-        request_kwargs: dict[str, Any],
-        base_url: str,
-        agent_api_key: str,
-    ) -> httpx.Response:
-        try:
-            return await araios_request_with_auth(
-                client=client,
-                method=method,
-                url=url,
-                request_kwargs=request_kwargs,
-                base_url=base_url,
-                agent_api_key=agent_api_key,
+    async def _execute_approval(
+        self, db: AsyncSession, approval: AraiosApproval
+    ) -> None:
+        """Execute the stored action when an approval is approved."""
+        action = approval.action or ""
+        payload = approval.payload or {}
+        resource = approval.resource
+        resource_id = approval.resource_id
+
+        parts = action.split(".")
+        action_verb = parts[-1] if len(parts) >= 2 else action
+
+        # Module tool action
+        if len(parts) == 2:
+            mod_result = await db.execute(
+                select(AraiosModule).where(AraiosModule.name == parts[0])
             )
-        except ValueError as exc:
-            raise ApprovalProviderUnavailableError(str(exc)) from exc
-        except httpx.HTTPError as exc:
-            raise ApprovalProviderUnavailableError(f"AraiOS request failed: {exc}") from exc
+            mod = mod_result.scalars().first()
+            if mod and mod.type == "tool":
+                action_def = next(
+                    (a for a in (mod.actions or []) if a.get("id") == parts[1]),
+                    None,
+                )
+                if action_def and action_def.get("code"):
+                    from app.services.araios.executor import execute_action
 
-    @staticmethod
-    def _json_object(response: httpx.Response) -> dict[str, Any]:
-        try:
-            parsed = response.json()
-        except ValueError as exc:
-            raise ApprovalProviderUnavailableError("AraiOS response was not valid JSON") from exc
-        if not isinstance(parsed, dict):
-            raise ApprovalProviderUnavailableError("AraiOS response must be an object")
-        return parsed
+                    secrets: dict[str, str] = {}
+                    sec_result = await db.execute(
+                        select(AraiosModuleSecret).where(
+                            AraiosModuleSecret.module_name == mod.name
+                        )
+                    )
+                    for s in sec_result.scalars().all():
+                        secrets[s.key] = s.value
+                    params = payload if isinstance(payload, dict) else {}
+                    exec_result = await execute_action(
+                        action_def["code"], {"params": params, "secrets": secrets}
+                    )
+                    if not exec_result.get("ok", True):
+                        raise ApprovalConflictError(
+                            exec_result.get("error", "Action failed")
+                        )
+                    return
 
-    def _to_record(self, item: dict[str, Any]) -> ApprovalRecord:
-        approval_id = str(item.get("id") or "").strip()
-        status = str(item.get("status") or "pending").strip() or "pending"
-        action = str(item.get("action") or "").strip() or None
-        resource = str(item.get("resource") or "").strip() or None
-        description = str(item.get("description") or "").strip() or None
-        payload = item.get("payload")
-        if not isinstance(payload, dict):
-            payload = {}
+        # Module engine create/update/delete
+        if resource == "modules":
+            module_name = (resource_id or payload.get("name", "")).strip().lower()
+            if action_verb == "create" and module_name:
+                existing = await db.execute(
+                    select(AraiosModule).where(AraiosModule.name == module_name)
+                )
+                if existing.scalars().first():
+                    raise ApprovalConflictError(
+                        f"Module '{module_name}' already exists"
+                    )
+                mod = AraiosModule(
+                    name=module_name,
+                    label=payload.get("label", module_name.title()),
+                    description=payload.get("description", ""),
+                    icon=payload.get("icon", "box"),
+                    type=payload.get("type", "data"),
+                    fields=payload.get("fields", []),
+                    list_config=payload.get("list_config", {}),
+                    actions=payload.get("actions", []),
+                    secrets=payload.get("secrets", []),
+                    is_system=False,
+                    order=payload.get("order", 100),
+                )
+                db.add(mod)
+                await db.commit()
+                return
+            if action_verb == "delete" and module_name:
+                del_result = await db.execute(
+                    select(AraiosModule).where(AraiosModule.name == module_name)
+                )
+                mod = del_result.scalars().first()
+                if mod:
+                    await db.delete(mod)
+                    await db.commit()
+                return
 
-        session_id = payload.get("session_id") or payload.get("sentinel_session_id")
-        if session_id is not None:
-            session_id = str(session_id).strip() or None
+    def _to_record(self, item: AraiosApproval | Any) -> ApprovalRecord:
+        if isinstance(item, AraiosApproval):
+            approval_id = item.id or ""
+            status = item.status or "pending"
+            action = item.action
+            resource = item.resource
+            description = item.description
+            resource_id = item.resource_id
+            payload = item.payload or {}
+            created_at = item.created_at
+            resolved_at = item.resolved_at
+            resolved_by = item.resolved_by
+        else:
+            approval_id = str(item.get("id", ""))
+            status = str(item.get("status", "pending"))
+            action = item.get("action")
+            resource = item.get("resource")
+            description = item.get("description")
+            resource_id = item.get("resource_id")
+            payload = item.get("payload") or {}
+            created_at = _parse_datetime(item.get("created_at"))
+            resolved_at = _parse_datetime(item.get("resolved_at"))
+            resolved_by = item.get("resolved_by")
+
+        session_id = None
+        if isinstance(payload, dict):
+            sid = payload.get("session_id") or payload.get("sentinel_session_id")
+            if sid:
+                session_id = str(sid).strip() or None
 
         match_key = None
         if action:
-            resource_id = item.get("resource_id")
             match_key = "|".join(
-                part for part in [action.lower(), str(resource_id or "").strip().lower()] if part
+                part
+                for part in [
+                    action.lower(),
+                    str(resource_id or "").strip().lower(),
+                ]
+                if part
             ) or None
 
         return ApprovalRecord(
@@ -190,33 +217,30 @@ class AraiosApprovalProvider:
             approval_id=approval_id,
             status=status,
             pending=status == "pending",
-            label="AraiOS approval",
+            label=description or f"AraiOS: {action}" if action else "AraiOS approval",
             session_id=session_id,
             match_key=match_key,
             action=action,
             description=description,
             can_resolve=status == "pending",
-            decision_note=str(item.get("resolved_by") or "").strip() or None,
-            created_at=_parse_datetime(item.get("created_at")),
-            updated_at=_parse_datetime(item.get("resolved_at")) or _parse_datetime(item.get("created_at")),
+            decision_note=str(resolved_by or "").strip() or None,
+            created_at=created_at,
+            updated_at=resolved_at or created_at,
             expires_at=None,
             metadata={
                 "resource": resource,
-                "resource_id": item.get("resource_id"),
-                "resolved_by": item.get("resolved_by"),
+                "resource_id": resource_id,
+                "resolved_by": resolved_by,
             },
         )
 
 
 def _parse_datetime(value: object) -> datetime | None:
     if not isinstance(value, str):
+        if isinstance(value, datetime):
+            return value
         return None
-    text = value.strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(text)
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import {
   LogOut, ShieldAlert, User, Cpu, Hash, Info, ChevronRight,
-  Bot, Eye, EyeOff, Check, Loader2, RefreshCw, HelpCircle, X, Plug,
+  Bot, Eye, EyeOff, Check, Loader2, RefreshCw, HelpCircle, X,
 } from 'lucide-react';
 import { Link as RouterLink } from 'react-router-dom';
 
@@ -28,13 +28,6 @@ interface ProvidersStatusResponse {
     openai: ProviderStatus;
     gemini: ProviderStatus;
   };
-}
-
-interface AraiOSIntegrationResponse {
-  configured: boolean;
-  araios_frontend_url: string | null;
-  araios_backend_url: string | null;
-  masked_agent_api_key: string | null;
 }
 
 // ── OAuth help content ──────────────────────────────────────────────────────
@@ -241,29 +234,15 @@ export function SettingsPage() {
   const [providerStatus, setProviderStatus] = useState<ProvidersStatusResponse | null>(null);
   const [loadingProviders, setLoadingProviders] = useState(true);
   const [savingProvider, setSavingProvider] = useState<string | null>(null);
-  const [araiosStatus, setAraiosStatus] = useState<AraiOSIntegrationResponse | null>(null);
-  const [loadingAraiOS, setLoadingAraiOS] = useState(true);
-  const [savingAraiOS, setSavingAraiOS] = useState(false);
-  const [araiosFrontendUrl, setAraiosFrontendUrl] = useState('');
-  const [araiosBackendUrl, setAraiosBackendUrl] = useState('');
-  const [araiosAgentApiKey, setAraiosAgentApiKey] = useState('');
-  const [showAraiOSKey, setShowAraiOSKey] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
-      const [providers, araios] = await Promise.all([
-        api.get<ProvidersStatusResponse>('/settings/api-keys/status'),
-        api.get<AraiOSIntegrationResponse>('/settings/araios'),
-      ]);
+      const providers = await api.get<ProvidersStatusResponse>('/settings/api-keys/status');
       setProviderStatus(providers);
-      setAraiosStatus(araios);
-      setAraiosFrontendUrl(araios.araios_frontend_url || '');
-      setAraiosBackendUrl(araios.araios_backend_url || '');
     } catch {
       // silent — panel will show loading state
     } finally {
       setLoadingProviders(false);
-      setLoadingAraiOS(false);
     }
   }, []);
 
@@ -312,47 +291,6 @@ export function SettingsPage() {
       await fetchStatus();
     } catch {
       toast.error('Failed to set primary provider');
-    }
-  }
-
-  async function handleSaveAraiOS() {
-    if (!araiosFrontendUrl.trim()) {
-      toast.error('AraiOS frontend URL is required');
-      return;
-    }
-    if (!araiosBackendUrl.trim()) {
-      toast.error('AraiOS backend URL is required');
-      return;
-    }
-    setSavingAraiOS(true);
-    try {
-      await api.post('/settings/araios', {
-        enabled: true,
-        araios_frontend_url: araiosFrontendUrl.trim(),
-        araios_backend_url: araiosBackendUrl.trim(),
-        agent_api_key: araiosAgentApiKey.trim() || undefined,
-      });
-      toast.success('AraiOS integration updated');
-      setAraiosAgentApiKey('');
-      await fetchStatus();
-    } catch {
-      toast.error('Failed to update AraiOS integration');
-    } finally {
-      setSavingAraiOS(false);
-    }
-  }
-
-  async function handleDisableAraiOS() {
-    setSavingAraiOS(true);
-    try {
-      await api.post('/settings/araios', { enabled: false });
-      toast.success('AraiOS integration disabled');
-      setAraiosAgentApiKey('');
-      await fetchStatus();
-    } catch {
-      toast.error('Failed to disable AraiOS integration');
-    } finally {
-      setSavingAraiOS(false);
     }
   }
 
@@ -466,7 +404,7 @@ export function SettingsPage() {
               <h2 className="text-sm font-bold uppercase tracking-widest">LLM Providers</h2>
               <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-tighter">Configure &amp; manage LLM providers</p>
             </div>
-            <button onClick={() => { setLoadingProviders(true); setLoadingAraiOS(true); fetchStatus(); }}
+            <button onClick={() => { setLoadingProviders(true); fetchStatus(); }}
               className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors p-1">
               <RefreshCw size={14} className={loadingProviders ? 'animate-spin' : ''} />
             </button>
@@ -517,122 +455,6 @@ export function SettingsPage() {
               Changes take effect immediately. Each effort level (Fast / Normal / Deep Think) routes to the appropriate model per provider. The primary provider handles requests first; the other is used as fallback.
             </p>
           </div>
-        </Panel>
-
-        {/* AraiOS Integration Panel */}
-        <Panel className="p-6 space-y-6 md:col-span-2">
-          <div className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] pb-4">
-            <div className="p-2 rounded-lg bg-[color:var(--surface-2)] text-[color:var(--accent-solid)]">
-              <Plug size={20} />
-            </div>
-            <div className="flex-1">
-              <h2 className="text-sm font-bold uppercase tracking-widest">AraiOS Integration</h2>
-              <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-tighter">
-                Configure the araios_api tool endpoint and key
-              </p>
-            </div>
-            <button
-              onClick={() => { setLoadingProviders(true); setLoadingAraiOS(true); fetchStatus(); }}
-              className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors p-1"
-            >
-              <RefreshCw size={14} className={loadingAraiOS ? 'animate-spin' : ''} />
-            </button>
-          </div>
-
-          {loadingAraiOS && !araiosStatus ? (
-            <div className="flex items-center justify-center py-6 text-[color:var(--text-muted)]">
-              <Loader2 size={18} className="animate-spin" />
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[11px] font-bold uppercase tracking-widest">Status</div>
-                    <div className="text-[10px] text-[color:var(--text-muted)] mt-1">
-                      {araiosStatus?.configured ? 'Configured and ready for araios_api tool calls.' : 'Not configured.'}
-                    </div>
-                  </div>
-                  <StatusChip
-                    label={araiosStatus?.configured ? 'Connected' : 'Not configured'}
-                    tone={araiosStatus?.configured ? 'good' : 'warn'}
-                  />
-                </div>
-                {araiosStatus?.masked_agent_api_key && (
-                  <div className="mt-3 text-[10px] font-mono text-[color:var(--text-muted)]">
-                    {araiosStatus.masked_agent_api_key}
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Frontend URL</label>
-                <input
-                  value={araiosFrontendUrl}
-                  onChange={(e) => setAraiosFrontendUrl(e.target.value)}
-                  placeholder="http://localhost:4747/araios/"
-                  className="input-field h-10 font-mono text-xs"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Backend URL</label>
-                <input
-                  value={araiosBackendUrl}
-                  onChange={(e) => setAraiosBackendUrl(e.target.value)}
-                  placeholder="http://araios-backend:9000"
-                  className="input-field h-10 font-mono text-xs"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                  Agent API Key <span className="normal-case font-normal">(optional, for rotation)</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type={showAraiOSKey ? 'text' : 'password'}
-                    value={araiosAgentApiKey}
-                    onChange={(e) => setAraiosAgentApiKey(e.target.value)}
-                    placeholder="sk-arais-agent-..."
-                    className="input-field h-10 pr-10 font-mono text-xs w-full"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowAraiOSKey((value) => !value)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]"
-                  >
-                    {showAraiOSKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
-                </div>
-                <p className="text-[10px] text-[color:var(--text-muted)]">
-                  Leave blank to keep the current key. Enter a new key to rotate credentials.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={handleSaveAraiOS}
-                  disabled={
-                    savingAraiOS
-                    || !araiosFrontendUrl.trim()
-                    || !araiosBackendUrl.trim()
-                  }
-                  className="btn-primary h-10 px-4 text-[10px] font-bold uppercase tracking-widest"
-                >
-                  {savingAraiOS ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-                  Save AraiOS Config
-                </button>
-                <button
-                  onClick={handleDisableAraiOS}
-                  disabled={savingAraiOS || !araiosStatus?.configured}
-                  className="btn-secondary h-10 px-4 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500/10 hover:border-rose-500/20"
-                >
-                  Disable
-                </button>
-              </div>
-            </div>
-          )}
         </Panel>
       </div>
     </AppShell>

@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
-  Zap, ArrowRight, ArrowLeft, Check, Bot, User, Plug, Flag,
+  Zap, ArrowRight, ArrowLeft, Check, Bot, User, Flag,
   Eye, EyeOff, Loader2,
 } from 'lucide-react';
 import { api } from '../lib/api';
@@ -32,7 +32,6 @@ const STEPS: StepMeta[] = [
   { id: 'llm',      label: 'Providers',     icon: <Bot size={14} /> },
   { id: 'agent',    label: 'Your Agent',    icon: <Bot size={14} /> },
   { id: 'user',     label: 'About You',     icon: <User size={14} /> },
-  { id: 'araios',   label: 'AraisOS',       icon: <Plug size={14} />, optional: true },
   { id: 'done',     label: 'Launch',        icon: <Flag size={14} /> },
 ];
 
@@ -40,10 +39,6 @@ const STARTER_PROMPT_OPTIONS: StarterPromptOption[] = [
   {
     label: 'Priority Plan',
     prompt: 'Map my top priorities for this workspace, propose the first 3 high-impact automations, and execute the safest one now.',
-  },
-  {
-    label: 'AraiOS Discovery',
-    prompt: 'Use araios_api to inspect /api/agent, summarize available modules, and recommend the best module to build first.',
   },
   {
     label: 'Trigger Setup',
@@ -54,12 +49,6 @@ const STARTER_PROMPT_OPTIONS: StarterPromptOption[] = [
     prompt: 'Audit my current memory structure, propose a cleaner hierarchy with root categories, and apply the highest-value memory improvements.',
   },
 ];
-
-// ── helper ───────────────────────────────────────────────────────────────────
-
-function normalizeAraisUrl(value: string): string {
-  return value.trim().replace(/\/+$/, '');
-}
 
 // ── sub-components ───────────────────────────────────────────────────────────
 
@@ -103,15 +92,14 @@ function WelcomeStep() {
       <div className="space-y-3 max-w-md">
         <h1 className="text-3xl font-black tracking-tight text-[color:var(--text-primary)]">Welcome to Sentinel</h1>
         <p className="text-[color:var(--text-muted)] leading-relaxed text-sm">
-          Let's take 2 minutes to set up your workspace. We'll configure your AI agent,
-          create your memory foundation, and optionally connect AraisOS.
+          Let's take 2 minutes to set up your workspace. We'll configure your AI agent
+          and create your memory foundation.
         </p>
       </div>
-      <div className="grid grid-cols-3 gap-4 max-w-lg w-full">
+      <div className="grid grid-cols-2 gap-4 max-w-lg w-full">
         {[
           { label: 'Root Memories', desc: 'Your agent knows who it is and who you are' },
           { label: 'API Keys', desc: 'Connect Claude for intelligence' },
-          { label: 'AraisOS', desc: 'Optional platform integration' },
         ].map(item => (
           <div key={item.label} className="rounded-xl bg-[color:var(--surface-2)] p-4 space-y-1.5">
             <div className="text-[11px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)]">{item.label}</div>
@@ -390,148 +378,6 @@ function UserStep({ userName, setUserName, userContext, setUserContext }: {
   );
 }
 
-function AraisOSStep({
-  use,
-  setUse,
-  backendUrl,
-  setBackendUrl,
-  araiosFrontendUrl,
-  setAraiosFrontendUrl,
-  token,
-  setToken,
-  configured,
-}: {
-  use: boolean | null; setUse: (v: boolean) => void;
-  backendUrl: string; setBackendUrl: (v: string) => void;
-  araiosFrontendUrl: string; setAraiosFrontendUrl: (v: string) => void;
-  token: string; setToken: (v: string) => void;
-  configured: boolean;
-}) {
-  const [showToken, setShowToken] = useState(false);
-  const manageCredentialsUrl = (() => {
-    const trimmed = araiosFrontendUrl.trim();
-    if (!trimmed) {
-      return '/manage/';
-    }
-    try {
-      const parsed = new URL(trimmed);
-      return `${parsed.origin}/manage/`;
-    } catch {
-      return '/manage/';
-    }
-  })();
-
-  if (configured) {
-    return (
-      <div className="flex flex-col gap-5 max-w-lg">
-        <div>
-          <h2 className="text-xl font-black tracking-tight text-[color:var(--text-primary)]">AraisOS Integration</h2>
-          <p className="text-sm text-[color:var(--text-muted)] mt-1">
-            AraiOS is already configured for this workspace by the CLI setup.
-          </p>
-        </div>
-
-        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-400">Configured</p>
-          <p className="mt-1 text-[12px] text-[color:var(--text-secondary)]">
-            Onboarding can continue without entering URLs or token again.
-          </p>
-        </div>
-
-        <div className="space-y-2 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 py-3">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Frontend URL</p>
-            <p className="font-mono text-[11px] text-[color:var(--text-secondary)] break-all">{araiosFrontendUrl || 'Not set'}</p>
-          </div>
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Backend URL</p>
-            <p className="font-mono text-[11px] text-[color:var(--text-secondary)] break-all">{backendUrl || 'Not set'}</p>
-          </div>
-        </div>
-
-        <div className="rounded-lg bg-[color:var(--surface-2)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
-          Need to rotate credentials later? Open <a href={manageCredentialsUrl} target="_blank" rel="noreferrer" className="font-mono text-[color:var(--text-primary)] underline underline-offset-2">{manageCredentialsUrl}</a> and update Sentinel from Settings.
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-5 max-w-lg">
-      <div>
-        <h2 className="text-xl font-black tracking-tight text-[color:var(--text-primary)]">AraisOS Integration</h2>
-        <p className="text-sm text-[color:var(--text-muted)] mt-1">
-          AraisOS is a platform for creating and managing custom agent modules. Connecting it lets your agent discover, use, and register new capabilities.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        {[true, false].map(val => (
-          <button key={String(val)} onClick={() => setUse(val)}
-            className={`rounded-xl border-2 p-4 text-left transition-all ${use === val ? 'border-[color:var(--accent-solid)] bg-[color:var(--surface-2)]' : 'border-[color:var(--border)] bg-[color:var(--surface-1)] hover:border-[color:var(--border)]'}`}>
-            <div className="flex items-center gap-2 mb-1">
-              <div className={`h-4 w-4 rounded-full border-2 flex items-center justify-center ${use === val ? 'border-[color:var(--accent-solid)] bg-[color:var(--accent-solid)]' : 'border-[color:var(--border)]'}`}>
-                {use === val && <div className="h-2 w-2 rounded-full bg-[color:var(--app-bg)]" />}
-              </div>
-              <span className="text-[11px] font-bold uppercase tracking-widest">
-                {val ? 'Connect' : 'Skip'}
-              </span>
-            </div>
-            <p className="text-[11px] text-[color:var(--text-muted)] leading-snug">
-              {val ? 'Set up AraisOS integration with frontend/backend URLs and auth token.' : 'Skip for now. You can connect later.'}
-            </p>
-          </button>
-        ))}
-      </div>
-
-      {use === true && (
-        <div className="flex flex-col gap-4 animate-in fade-in duration-200">
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Frontend URL</label>
-            <input value={araiosFrontendUrl} onChange={e => setAraiosFrontendUrl(e.target.value)}
-              placeholder="http://localhost:4747/araios"
-              className="input-field h-11 font-mono text-sm" />
-          </div>
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">AraiOS Backend URL</label>
-            <input value={backendUrl} onChange={e => setBackendUrl(e.target.value)}
-              placeholder="http://araios-backend:9000"
-              className="input-field h-11 font-mono text-sm" />
-          </div>
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Agent API Key</label>
-            <div className="relative">
-              <input type={showToken ? 'text' : 'password'}
-                value={token} onChange={e => setToken(e.target.value)}
-                placeholder="sk-arais-agent-****"
-                className="input-field h-11 pr-10 font-mono text-sm" />
-              <button type="button" onClick={() => setShowToken(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]">
-                {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-            <p className="text-[10px] text-[color:var(--text-muted)]">
-              Use the long-lived <span className="font-bold text-[color:var(--text-primary)]">agent API key</span>.
-              Sentinel stores it securely in your workspace and the <span className="font-mono">araios_api</span> tool handles token exchange automatically.
-            </p>
-            <div className="rounded-lg bg-[color:var(--surface-2)] border border-[color:var(--border-subtle)] px-4 py-3 text-[11px] text-[color:var(--text-muted)] space-y-1.5">
-              <p>
-                First-time setup: use the agent token shown in the CLI when this instance was created.
-              </p>
-              <p>
-                If you do not have it, open <a href={araiosFrontendUrl} target="_blank" rel="noreferrer" className="font-mono text-[color:var(--text-primary)] underline underline-offset-2">{araiosFrontendUrl}</a> then manage tokens at <a href={manageCredentialsUrl} target="_blank" rel="noreferrer" className="font-mono text-[color:var(--text-primary)] underline underline-offset-2">{manageCredentialsUrl}</a>.
-              </p>
-            </div>
-          </div>
-          <div className="rounded-lg bg-[color:var(--surface-2)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
-            After setup, ask Sentinel to call <span className="font-mono text-[color:var(--text-primary)]">araios_api</span> with path <span className="font-mono text-[color:var(--text-primary)]">/api/agent</span> to discover available modules and endpoints.
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function DoneStep({ firstMessage, setFirstMessage, isCompleting, completedItems, promptOptions }: {
   firstMessage: string; setFirstMessage: (v: string) => void;
   isCompleting: boolean; completedItems: string[];
@@ -618,13 +464,6 @@ export function OnboardingPage() {
   const [userName, setUserName] = useState('');
   const [userContext, setUserContext] = useState('');
 
-  // AraisOS
-  const [useAraisOS, setUseAraisOS] = useState<boolean | null>(null);
-  const [araiosFrontendUrl, setAraiosFrontendUrl] = useState('');
-  const [araiosBackendUrl, setAraiosBackendUrl] = useState('');
-  const [araisToken, setAraisToken] = useState('');
-  const [araisConfigured, setAraisConfigured] = useState(false);
-
   // Done step
   const [firstMessage, setFirstMessage] = useState(
     STARTER_PROMPT_OPTIONS[0].prompt
@@ -634,62 +473,8 @@ export function OnboardingPage() {
 
   const isLastStep = step === STEPS.length - 1;
 
-  useEffect(() => {
-    let mounted = true;
-
-    async function initializeAraisDefaults() {
-      const origin = window.location.origin.replace(/\/$/, '');
-      const defaultAraiosFrontendUrl = `${origin}/araios`;
-      const defaultAraiosBackendUrl = 'http://araios-backend:9000';
-
-      let persistedAraiosFrontendUrl = '';
-      let persistedAraiosBackendUrl = '';
-      let persistedConfigured = false;
-
-      try {
-        const integration = await api.get<{
-          configured?: boolean;
-          araios_frontend_url?: string | null;
-          araios_backend_url?: string | null;
-        }>('/settings/araios');
-        persistedConfigured = !!integration.configured;
-        persistedAraiosFrontendUrl = normalizeAraisUrl(integration.araios_frontend_url || '');
-        persistedAraiosBackendUrl = normalizeAraisUrl(integration.araios_backend_url || '');
-      } catch {
-        persistedConfigured = false;
-        persistedAraiosFrontendUrl = '';
-        persistedAraiosBackendUrl = '';
-      }
-
-      if (mounted) {
-        setAraiosFrontendUrl(persistedAraiosFrontendUrl || defaultAraiosFrontendUrl);
-        setAraiosBackendUrl(persistedAraiosBackendUrl || defaultAraiosBackendUrl);
-        if (persistedConfigured) {
-          setUseAraisOS(true);
-          setAraisConfigured(true);
-        }
-      }
-    }
-
-    void initializeAraisDefaults();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
   function canProceed(): boolean {
-    const id = STEPS[step].id;
-    if (id === 'araios') {
-      if (araisConfigured) return true;
-      if (useAraisOS === null) return false;
-      if (useAraisOS === false) return true;
-      return (
-        !!araiosFrontendUrl.trim()
-        && !!araiosBackendUrl.trim()
-        && (!!araisToken.trim() || araisConfigured)
-      );
-    }
-    return true; // all other steps are optional content-wise
+    return true; // all steps are optional content-wise
   }
 
   async function handleFinish() {
@@ -742,29 +527,7 @@ export function OnboardingPage() {
       items.push('User profile memory created');
       setCompletedItems([...items]);
 
-      // 4. Persist AraiOS integration settings
-      if (useAraisOS === true) {
-        if (araisConfigured && !araisToken.trim()) {
-          items.push('AraiOS integration detected');
-        } else {
-          await api.post('/settings/araios', {
-            enabled: true,
-            araios_frontend_url: normalizeAraisUrl(araiosFrontendUrl),
-            araios_backend_url: normalizeAraisUrl(araiosBackendUrl),
-            agent_api_key: araisToken.trim() || undefined,
-          });
-          items.push('AraiOS integration configured');
-        }
-        setCompletedItems([...items]);
-      } else if (useAraisOS === false) {
-        const disablePayload: Record<string, unknown> = { enabled: false };
-        if (araiosFrontendUrl.trim()) {
-          disablePayload.araios_frontend_url = normalizeAraisUrl(araiosFrontendUrl);
-        }
-        await api.post('/settings/araios', disablePayload);
-      }
-
-      // 5. Mark onboarding complete; backend composes and persists system prompt
+      // 4. Mark onboarding complete; backend composes and persists system prompt
       await api.post('/onboarding/complete', {
         agent_name: identity.rawName || undefined,
         agent_role: identity.rawRole || undefined,
@@ -814,19 +577,6 @@ export function OnboardingPage() {
               {step === 2 && <AgentStep name={agentName} setName={setAgentName} role={agentRole} setRole={setAgentRole} personality={agentPersonality} setPersonality={setAgentPersonality} />}
               {step === 3 && <UserStep userName={userName} setUserName={setUserName} userContext={userContext} setUserContext={setUserContext} />}
               {step === 4 && (
-                <AraisOSStep
-                  use={useAraisOS}
-                  setUse={setUseAraisOS}
-                  backendUrl={araiosBackendUrl}
-                  setBackendUrl={setAraiosBackendUrl}
-                  araiosFrontendUrl={araiosFrontendUrl}
-                  setAraiosFrontendUrl={setAraiosFrontendUrl}
-                  token={araisToken}
-                  setToken={setAraisToken}
-                  configured={araisConfigured}
-                />
-              )}
-              {step === 5 && (
                 <DoneStep
                   firstMessage={firstMessage}
                   setFirstMessage={setFirstMessage}

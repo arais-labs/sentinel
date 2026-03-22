@@ -117,17 +117,17 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
     ),
     PolicyDefinition(
         kind="araios_policy",
-        title="araiOS API Policy",
-        explanation="Operational rules for reliable araiOS_api tool usage.",
-        enabled_when=_has_all("araios_api"),
+        title="araiOS Module Engine Policy",
+        explanation="How to use the araiOS module tools.",
+        enabled_when=_has_any("araios_modules", "araios_records", "araios_action"),
         content=(
-            "## araiOS API Policy\n"
-            "When interacting with araiOS, use the araios_api tool.\n"
-            "Start unfamiliar araiOS tasks with GET /api/agent to discover current endpoints and module capabilities.\n"
-            "Use relative API paths only (for example: /api/modules, /api/modules/:name/records).\n"
-            # "Do not call /platform/auth/token or /platform/auth/refresh directly; token exchange is handled by araios_api.\n"
-            # "Do not provide custom Authorization headers in araios_api calls.\n"
-            "If an araiOS path fails or seems unknown, refresh context with /api/agent before proceeding."
+            "## araiOS Module Engine Policy\n"
+            "araiOS provides a dynamic module engine for structured data and tool actions.\n"
+            "Use araios_modules to list/get/create/delete modules.\n"
+            "Use araios_records to list/get/create/update/delete records within a module.\n"
+            "Use araios_action to execute module actions (tool actions or record-scoped actions).\n"
+            "Some operations may require approval — the approval gate handles this automatically.\n"
+            "Start by calling araios_modules with operation='list' to discover available modules."
         ),
     ),
     PolicyDefinition(

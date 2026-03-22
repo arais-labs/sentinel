@@ -26,11 +26,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.models import Memory, Session, SubAgentTask
 from app.services.approvals.tool_match import build_runtime_exec_match_key
-from app.services.araios_client import (
-    araios_request_with_auth,
-    join_araios_base_and_path,
-    load_araios_runtime_credentials,
-)
 from app.services.embeddings import EmbeddingService
 from app.services.memory import (
     InvalidMemoryOperationError,
@@ -223,7 +218,14 @@ def build_default_registry(
     registry.register(_browser_clear_network_intercepts_tool(pool))
 
     if session_factory is not None:
-        registry.register(_araios_api_tool(session_factory=session_factory))
+        from app.services.tools.araios_tools import (
+            araios_modules_tool,
+            araios_records_tool,
+            araios_action_tool,
+        )
+        registry.register(araios_modules_tool(session_factory=session_factory))
+        registry.register(araios_records_tool(session_factory=session_factory))
+        registry.register(araios_action_tool(session_factory=session_factory))
         registry.register(
             _memory_store_tool(session_factory=session_factory, embedding_service=embedding_service)
         )
@@ -384,144 +386,6 @@ def _http_request_tool() -> ToolDefinition:
         execute=_execute,
     )
 
-
-def _araios_api_tool(*, session_factory: async_sessionmaker[AsyncSession]) -> ToolDefinition:
-    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
-        path = payload.get("path")
-        if not isinstance(path, str) or not path.strip():
-            raise ToolValidationError("Field 'path' must be a non-empty string")
-        if "://" in path:
-            raise ToolValidationError("Field 'path' must be a relative API path, not a full URL")
-
-        method = payload.get("method", "GET")
-        if not isinstance(method, str):
-            raise ToolValidationError("Field 'method' must be a string")
-        method = method.upper()
-        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
-            raise ToolValidationError("Unsupported HTTP method")
-
-        timeout_seconds = payload.get("timeout_seconds", 20)
-        if (
-            not isinstance(timeout_seconds, int)
-            or isinstance(timeout_seconds, bool)
-            or timeout_seconds <= 0
-        ):
-            raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
-
-        headers_payload = payload.get("headers", {})
-        if headers_payload is None:
-            headers_payload = {}
-        if not isinstance(headers_payload, dict):
-            raise ToolValidationError("Field 'headers' must be an object")
-        request_headers = {str(k): str(v) for k, v in headers_payload.items()}
-        for header_name in request_headers:
-            if header_name.lower() == "authorization":
-                raise ToolValidationError(
-                    "Custom Authorization header is not allowed for araios_api"
-                )
-
-        query_payload = payload.get("query", {})
-        if query_payload is None:
-            query_payload = {}
-        if not isinstance(query_payload, dict):
-            raise ToolValidationError("Field 'query' must be an object")
-        query_params = _normalize_query_params(query_payload)
-
-        request_kwargs: dict[str, Any] = {"headers": request_headers}
-        if query_params:
-            request_kwargs["params"] = query_params
-
-        if "body" in payload:
-            body = payload["body"]
-            if isinstance(body, (dict, list)):
-                request_kwargs["json"] = body
-            else:
-                request_kwargs["content"] = str(body)
-
-        try:
-            base_url, agent_api_key = await load_araios_runtime_credentials(session_factory)
-        except ValueError as exc:
-            raise ToolValidationError(str(exc)) from exc
-        request_url = join_araios_base_and_path(base_url, path)
-
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            try:
-                response = await araios_request_with_auth(
-                    client=client,
-                    method=method,
-                    url=request_url,
-                    request_kwargs=request_kwargs,
-                    base_url=base_url,
-                    agent_api_key=agent_api_key,
-                )
-            except ValueError as exc:
-                raise ToolValidationError(str(exc)) from exc
-
-        content_type = response.headers.get("content-type", "")
-        response_bytes = response.content
-        truncated = len(response_bytes) > _MAX_HTTP_RESPONSE_BYTES
-        visible_bytes = response_bytes[:_MAX_HTTP_RESPONSE_BYTES]
-
-        if "application/json" in content_type and not truncated:
-            try:
-                parsed_body: Any = response.json()
-            except ValueError:
-                parsed_body = response.text
-        else:
-            parsed_body = visible_bytes.decode("utf-8", errors="replace")
-            if truncated:
-                parsed_body += "\n... [truncated - response exceeded 1 MB]"
-
-        return {
-            "status_code": response.status_code,
-            "headers": dict(response.headers),
-            "body": parsed_body,
-            "truncated": truncated,
-        }
-
-    return ToolDefinition(
-        name="araios_api",
-        description=(
-            "Call the configured araiOS backend using relative paths (for example: '/api/agent'). "
-            "Start discovery with path '/api/agent' to inspect available modules/endpoints. "
-            "Authentication is handled automatically via integrated agent API key exchange; "
-            "do not provide Authorization headers manually."
-        ),
-        risk_level="medium",
-        parameters_schema={
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["path"],
-            "properties": {
-                "path": {"type": "string"},
-                "method": {
-                    "type": "string",
-                    "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
-                },
-                "query": {"type": "object"},
-                "headers": {"type": "object"},
-                "body": {"type": "object"},
-                "timeout_seconds": {"type": "integer"},
-            },
-        },
-        execute=_execute,
-    )
-
-
-def _normalize_query_params(query: dict[str, Any]) -> dict[str, str]:
-    params: dict[str, str] = {}
-    for key, value in query.items():
-        key_text = str(key).strip()
-        if not key_text:
-            raise ToolValidationError("Query parameter keys must be non-empty")
-        if value is None:
-            continue
-        if not isinstance(value, (str, int, float, bool)):
-            raise ToolValidationError(
-                f"Query parameter '{key_text}' must be a string, number, boolean, or null"
-            )
-        params[key_text] = str(value)
-    return params
 
 async def _execute_via_ssh(
     *,

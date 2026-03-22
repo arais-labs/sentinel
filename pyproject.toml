@@ -7,6 +7,5 @@ extend-exclude = '''
   /node_modules/
   | /reports/
   | /docs/images/
-  | /apps/backend/araios/static/assets/
 )
 '''

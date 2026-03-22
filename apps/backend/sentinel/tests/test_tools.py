@@ -135,7 +135,7 @@ def test_tools_registry_and_execution():
         } <= names
         assert {"runtime_jobs_list", "runtime_job_status", "runtime_job_logs", "runtime_job_stop"} <= names
         assert "browser_reset" in names
-        assert "araios_api" in names
+        assert "araios_modules" in names
 
         detail = client.get("/api/v1/tools/file_read", headers=headers)
         assert detail.status_code == 200
@@ -641,9 +641,9 @@ def test_http_request_ssrf_blocked():
 
 def test_http_request_ssrf_allow_hosts_bypasses_private_check():
     previous = os.environ.get("SSRF_ALLOW_HOSTS")
-    os.environ["SSRF_ALLOW_HOSTS"] = "araios-backend"
+    os.environ["SSRF_ALLOW_HOSTS"] = "sentinel-backend"
     try:
-        asyncio.run(_validate_public_hostname("araios-backend"))
+        asyncio.run(_validate_public_hostname("sentinel-backend"))
     finally:
         if previous is None:
             os.environ.pop("SSRF_ALLOW_HOSTS", None)
@@ -705,15 +705,9 @@ class _FakeAraiOSAsyncClient:
         )
 
 
-def test_araios_api_tool_executes_with_configured_integration():
+def test_araios_modules_tool_executes_with_configured_integration():
     fake_db = FakeDB()
     previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
-    fake_db.add(
-        SystemSetting(key="araios_backend_url", value="http://araios-backend:9000")
-    )
-    fake_db.add(
-        SystemSetting(key="araios_integration_agent_api_key", value="sk-arais-agent-test-token")
-    )
 
     async def _override_get_db():
         yield fake_db
@@ -734,21 +728,21 @@ def test_araios_api_tool_executes_with_configured_integration():
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         with patch("app.services.tools.builtin.httpx.AsyncClient", _FakeAraiOSAsyncClient):
             response = client.post(
-                "/api/v1/tools/araios_api/execute",
+                "/api/v1/tools/araios_modules/execute",
                 json={"input": {"path": "/api/agent", "method": "GET"}},
                 headers=headers,
             )
         assert response.status_code == 200
         body = response.json()["result"]["body"]
         assert body["ok"] is True
-        assert body["url"] == "http://araios-backend:9000/api/agent"
+        assert body["url"] == "http://sentinel-backend:8000/api/agent"
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()
         app_main.init_db = old_init
 
 
-def test_araios_api_tool_requires_integration_configuration():
+def test_araios_modules_tool_requires_integration_configuration():
     fake_db = FakeDB()
     previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
 
@@ -770,7 +764,7 @@ def test_araios_api_tool_requires_integration_configuration():
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         response = client.post(
-            "/api/v1/tools/araios_api/execute",
+            "/api/v1/tools/araios_modules/execute",
             json={"input": {"path": "/api/agent", "method": "GET"}},
             headers=headers,
         )

@@ -17,51 +17,6 @@ from app.services.settings_service import SettingsService
 router = APIRouter()
 
 
-class SetAraiOSIntegrationRequest(BaseModel):
-    enabled: bool = True
-    araios_frontend_url: str | None = None
-    araios_backend_url: str | None = None
-    agent_api_key: str | None = None
-
-
-@router.get("/araios")
-async def get_araios_integration(
-    _: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-    settings_service: SettingsService = Depends(get_settings_service),
-) -> dict[str, str | bool | None]:
-    status = await settings_service.get_araios_integration(db)
-    return {
-        "configured": status.configured,
-        "araios_frontend_url": status.araios_frontend_url,
-        "araios_backend_url": status.araios_backend_url,
-        "masked_agent_api_key": status.masked_agent_api_key,
-    }
-
-
-@router.post("/araios")
-async def set_araios_integration(
-    payload: SetAraiOSIntegrationRequest,
-    _: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-    settings_service: SettingsService = Depends(get_settings_service),
-) -> dict[str, str | bool | None]:
-    status = await settings_service.set_araios_integration(
-        db,
-        enabled=payload.enabled,
-        araios_frontend_url=payload.araios_frontend_url,
-        araios_backend_url=payload.araios_backend_url,
-        agent_api_key=payload.agent_api_key,
-    )
-    return {
-        "success": True,
-        "configured": status.configured,
-        "araios_frontend_url": status.araios_frontend_url,
-        "araios_backend_url": status.araios_backend_url,
-        "masked_agent_api_key": status.masked_agent_api_key,
-    }
-
-
 class SetApiKeysRequest(BaseModel):
     anthropic_api_key: str | None = None
     anthropic_oauth_token: str | None = None

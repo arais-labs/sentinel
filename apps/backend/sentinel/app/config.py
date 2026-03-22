@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     runtime_ssh_key_path: str | None = None
     runtime_ssh_workspace: str = "/home/sentinel/workspace"
 
+    # --- AraiOS ---
+    araios_auth_username: str = "admin"
+    araios_auth_password: str = "admin"
+
     # --- Telegram ---
     telegram_bot_token: str | None = None
     telegram_owner_user_id: str | None = None

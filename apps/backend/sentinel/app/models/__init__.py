@@ -1,3 +1,21 @@
+from app.models.araios import (
+    AraiosApproval,
+    AraiosClient,
+    AraiosCompetitor,
+    AraiosCoordinationMessage,
+    AraiosDocument,
+    AraiosLaunchPrepTask,
+    AraiosLead,
+    AraiosModule,
+    AraiosModuleRecord,
+    AraiosModuleSecret,
+    AraiosPermission,
+    AraiosPositioning,
+    AraiOSPlatformApiKey,
+    AraiosProposal,
+    AraiosSecurityFinding,
+    AraiosTask,
+)
 from app.models.audit import AuditLog
 from app.models.base import Base
 from app.models.git import GitAccount
@@ -11,6 +29,22 @@ from app.models.tokens import RevokedToken
 from app.models.triggers import Trigger, TriggerLog
 
 __all__ = [
+    "AraiosApproval",
+    "AraiosClient",
+    "AraiosCompetitor",
+    "AraiosCoordinationMessage",
+    "AraiosDocument",
+    "AraiosLaunchPrepTask",
+    "AraiosLead",
+    "AraiosModule",
+    "AraiosModuleRecord",
+    "AraiosModuleSecret",
+    "AraiosPermission",
+    "AraiOSPlatformApiKey",
+    "AraiosPositioning",
+    "AraiosProposal",
+    "AraiosSecurityFinding",
+    "AraiosTask",
     "AuditLog",
     "Base",
     "GitAccount",
