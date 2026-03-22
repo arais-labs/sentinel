@@ -122,20 +122,19 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
         enabled_when=_has_any("araios_modules", "araios_records", "araios_action"),
         content=(
             "## araiOS Module Engine Policy\n"
-            "araiOS provides a dynamic module engine for structured data and tool actions.\n"
+            "araiOS provides a unified module engine. Each module can have any combination of:\n"
+            "- **fields** → module stores records (managed via araios_records)\n"
+            "- **actions** → module has executable Python code (run via araios_action)\n"
+            "- **page_title** → module has a markdown documentation page\n\n"
             "Use araios_modules to list/get/create/delete modules.\n"
-            "Use araios_records to list/get/create/update/delete records within a module.\n"
-            "Use araios_action to execute module actions (tool actions or record-scoped actions).\n"
-            "Some operations may require approval — the approval gate handles this automatically.\n"
-            "Start by calling araios_modules with operation='list' to discover available modules.\n\n"
-            "When creating a 'tool' module, you MUST include 'actions' with executable Python code.\n"
-            "A tool module without actions is useless — always define at least one action.\n"
-            "Each action needs: id, label, description, placement ('standalone'), params (array), and code (Python string).\n"
-            "Action code has access to: params, secrets, http (httpx async client), json, re, math, base64, datetime.\n"
-            "Set `result = {...}` at the end of code to return output.\n\n"
-            "When creating a 'data' module, define 'fields' (record schema) and 'list_config' (UI display config).\n"
-            "list_config should include titleField (which field to show as record title) at minimum.\n"
-            "Without list_config, the UI will only show raw record IDs."
+            "Use araios_records for record CRUD (only works if module has fields).\n"
+            "Use araios_action to run actions (only works if module has actions).\n"
+            "Some operations may require approval — handled automatically.\n\n"
+            "When creating a module with fields, also set fields_config with at least titleField.\n"
+            "Without fields_config, records display as raw IDs in the UI.\n\n"
+            "When creating actions, each needs: id, label, code (Python string).\n"
+            "Code has access to: params, secrets, record (detail actions), http (httpx), json, re, math, base64, datetime.\n"
+            "Set `result = {...}` to return output."
         ),
     ),
     PolicyDefinition(

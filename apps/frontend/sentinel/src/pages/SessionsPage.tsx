@@ -932,11 +932,11 @@ function ModulesRailPanel({ messages, completedToolCalls, activeToolCalls }: {
                       <div className="flex-1 min-w-0">
                         <div className="text-[11px] font-bold text-[color:var(--text-primary)] truncate">{mod.label}</div>
                       </div>
-                      <span className={`text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded ${
-                        mod.type === 'data' ? 'bg-blue-500/10 text-blue-400' :
-                        mod.type === 'tool' ? 'bg-amber-500/10 text-amber-400' :
-                        'bg-purple-500/10 text-purple-400'
-                      }`}>{mod.type}</span>
+                      <div className="flex items-center gap-0.5">
+                        {(mod.fields?.length > 0) && <span className="text-[7px] font-bold uppercase px-1 py-0.5 rounded bg-blue-500/10 text-blue-400">R</span>}
+                        {(mod.actions?.length > 0) && <span className="text-[7px] font-bold uppercase px-1 py-0.5 rounded bg-amber-500/10 text-amber-400">A</span>}
+                        {mod.page_title && <span className="text-[7px] font-bold uppercase px-1 py-0.5 rounded bg-purple-500/10 text-purple-400">P</span>}
+                      </div>
                     </button>
                     {isExpanded && (
                       <div className="border-t border-[color:var(--border-subtle)] px-3 py-2 bg-[color:var(--surface-1)]/50">

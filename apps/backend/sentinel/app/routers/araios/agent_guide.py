@@ -36,10 +36,12 @@ async def get_agent_guide(
             "name": m.name,
             "label": m.label,
             "description": m.description,
-            "type": m.type,
             "icon": m.icon,
-            "fieldCount": len(m.fields) if m.fields else 0,
-            "isSystem": m.is_system,
+            "has_fields": bool(m.fields),
+            "has_actions": bool(m.actions),
+            "has_page": bool(m.page_title),
+            "field_count": len(m.fields) if m.fields else 0,
+            "action_count": len(m.actions) if m.actions else 0,
         }
         for m in modules
     ]

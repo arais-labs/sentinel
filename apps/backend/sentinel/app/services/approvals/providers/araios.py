@@ -108,7 +108,7 @@ class AraiosApprovalProvider:
                 select(AraiosModule).where(AraiosModule.name == parts[0])
             )
             mod = mod_result.scalars().first()
-            if mod and mod.type == "tool":
+            if mod:
                 action_def = next(
                     (a for a in (mod.actions or []) if a.get("id") == parts[1]),
                     None,
@@ -150,12 +150,11 @@ class AraiosApprovalProvider:
                     label=payload.get("label", module_name.title()),
                     description=payload.get("description", ""),
                     icon=payload.get("icon", "box"),
-                    type=payload.get("type", "data"),
                     fields=payload.get("fields", []),
-                    list_config=payload.get("list_config", {}),
+                    fields_config=payload.get("fields_config", {}),
                     actions=payload.get("actions", []),
                     secrets=payload.get("secrets", []),
-                    is_system=False,
+                    page_title=payload.get("page_title"),
                     order=payload.get("order", 100),
                 )
                 db.add(mod)

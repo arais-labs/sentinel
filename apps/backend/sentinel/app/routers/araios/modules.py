@@ -171,13 +171,13 @@ async def _module_or_404(name: str, db: AsyncSession) -> AraiosModule:
 _MODULE_MUTABLE_FIELDS = (
     "label",
     "icon",
-    "type",
     "fields",
-    "list_config",
+    "fields_config",
     "actions",
     "secrets",
     "description",
     "order",
+    "page_title",
 )
 
 
@@ -282,12 +282,11 @@ def _serialize_module(m: AraiosModule) -> dict:
         "label": m.label,
         "description": m.description or "",
         "icon": m.icon,
-        "type": m.type or "data",
         "fields": m.fields or [],
-        "list_config": m.list_config or {},
+        "fields_config": m.fields_config or {},
         "actions": m.actions or [],
         "secrets": m.secrets or [],
-        "is_system": m.is_system,
+        "page_title": m.page_title,
         "order": m.order,
     }
 
@@ -346,15 +345,17 @@ async def _seed_module_permissions(name: str, db: AsyncSession) -> None:
         select(AraiosModule).where(AraiosModule.name == name)
     )
     mod = result.scalars().first()
-    if mod and mod.type == "tool":
-        defaults = [(f"{name}.{a['id']}", "allow") for a in (mod.actions or [])]
-    else:
-        defaults = [
-            (f"{name}.list", "allow"),
-            (f"{name}.create", "allow"),
-            (f"{name}.update", "allow"),
-            (f"{name}.delete", "approval"),
-        ]
+    # Always seed CRUD permissions + per-action permissions
+    defaults = [
+        (f"{name}.list", "allow"),
+        (f"{name}.create", "allow"),
+        (f"{name}.update", "allow"),
+        (f"{name}.delete", "approval"),
+    ]
+    if mod:
+        for a in (mod.actions or []):
+            if isinstance(a, dict) and a.get("id"):
+                defaults.append((f"{name}.{a['id']}", "allow"))
     action_keys = [k for k, _ in defaults]
     result = await db.execute(
         select(AraiosPermission).where(AraiosPermission.action.in_(action_keys))
@@ -405,12 +406,11 @@ async def create_module(
         label=body.get("label", name.title()),
         description=body.get("description", ""),
         icon=body.get("icon", "box"),
-        type=body.get("type", "data"),
         fields=body.get("fields", []),
-        list_config=body.get("list_config", {}),
+        fields_config=body.get("fields_config", {}),
         actions=body.get("actions", []),
         secrets=body.get("secrets", []),
-        is_system=body.get("is_system", False),
+        page_title=body.get("page_title"),
         order=body.get("order", 100),
     )
     db.add(mod)
@@ -454,8 +454,6 @@ async def delete_module(
     role: str = Depends(get_role),
 ):
     mod = await _module_or_404(name, db)
-    if mod.is_system:
-        raise HTTPException(status_code=400, detail="Cannot delete a system module")
     await _check_action_permission(
         "modules.delete", role, db, {}, resource="modules", resource_id=mod.name
     )
