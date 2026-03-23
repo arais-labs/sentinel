@@ -1,4 +1,4 @@
-from app.services.approvals.service import (
+from app.services.tools.approval.service import (
     ApprovalConflictError,
     ApprovalNotFoundError,
     ApprovalProviderUnavailableError,

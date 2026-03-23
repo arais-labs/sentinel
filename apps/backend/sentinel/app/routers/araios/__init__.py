@@ -7,12 +7,10 @@ from fastapi import APIRouter
 
 from app.routers.araios import (
     agent_guide,
-    approvals,
     coordination,
     documents,
     manifest,
     modules,
-    permissions,
     platform_auth,
     settings,
     tasks,
@@ -21,8 +19,6 @@ from app.routers.araios import (
 # Main AraiOS API router — mounted at /api
 api_router = APIRouter()
 api_router.include_router(modules.router, prefix="/modules", tags=["araios-modules"])
-api_router.include_router(approvals.router, prefix="/approvals", tags=["araios-approvals"])
-api_router.include_router(permissions.router, prefix="/permissions", tags=["araios-permissions"])
 api_router.include_router(coordination.router, prefix="/coordination", tags=["araios-coordination"])
 api_router.include_router(documents.router, prefix="/documents", tags=["araios-documents"])
 api_router.include_router(tasks.router, prefix="/tasks", tags=["araios-tasks"])

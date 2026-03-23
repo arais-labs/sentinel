@@ -14,7 +14,6 @@ from app.models.araios import (
     AraiosModuleRecord,
     AraiosModuleSecret,
     AraiosPermission,
-    AraiosApproval,
     araios_gen_id,
 )
 from app.services.araios.executor import execute_action
@@ -41,139 +40,6 @@ def _native_tool_icon(tool_name: str) -> str:
     if "module" in lower:
         return "boxes"
     return "box"
-
-
-# ── Auth helpers ──
-
-
-async def get_role(user: TokenPayload = Depends(require_auth)) -> str:
-    return user.role
-
-
-def _require_araios_permission(action: str):
-    """Dependency factory – returns an async dependency that enforces AraiOS
-    permission logic for *action*.
-
-    * admin  -> always passes
-    * allow  -> passes
-    * deny   -> 403
-    * approval -> creates AraiosApproval, raises 202
-    """
-
-    async def _dependency(
-        user: TokenPayload = Depends(require_auth),
-        db: AsyncSession = Depends(get_db),
-    ) -> None:
-        if user.role == "admin":
-            return
-
-        result = await db.execute(
-            select(AraiosPermission).where(AraiosPermission.action == action)
-        )
-        row = result.scalars().first()
-        perm = row.level if row else "allow"
-
-        if perm == "allow":
-            return
-
-        if perm == "deny":
-            raise HTTPException(
-                status_code=403,
-                detail=f"Action '{action}' is not allowed for agent role",
-            )
-
-        if perm == "approval":
-            approval_resource = (
-                action.rsplit(".", 1)[0] if "." in action else action
-            )
-            description = f"Agent requested: {action}"
-            approval = AraiosApproval(
-                id=araios_gen_id(),
-                status="pending",
-                action=action,
-                resource=approval_resource,
-                description=description,
-            )
-            db.add(approval)
-            await db.commit()
-            await db.refresh(approval)
-            raise HTTPException(
-                status_code=202,
-                detail={
-                    "message": "Action requires approval",
-                    "approval": {
-                        "id": approval.id,
-                        "status": approval.status,
-                        "action": approval.action,
-                        "description": approval.description,
-                    },
-                },
-            )
-
-    return _dependency
-
-
-# ── Inline permission check (for action execution) ──
-
-
-async def _check_action_permission(
-    action: str,
-    role: str,
-    db: AsyncSession,
-    body: dict | None = None,
-    *,
-    resource: str | None = None,
-    resource_id: str | None = None,
-) -> None:
-    if role == "admin":
-        return
-
-    result = await db.execute(
-        select(AraiosPermission).where(AraiosPermission.action == action)
-    )
-    row = result.scalars().first()
-    perm = row.level if row else "allow"
-
-    if perm == "allow":
-        return
-
-    if perm == "deny":
-        raise HTTPException(
-            status_code=403,
-            detail=f"Action '{action}' is not allowed for agent role",
-        )
-
-    if perm == "approval":
-        approval_resource = resource or (
-            action.rsplit(".", 1)[0] if "." in action else action
-        )
-        description = f"Agent requested: {action}" + (
-            f" on {resource_id}" if resource_id else ""
-        )
-        approval = AraiosApproval(
-            id=araios_gen_id(),
-            status="pending",
-            action=action,
-            resource=approval_resource,
-            resource_id=resource_id,
-            description=description,
-            payload=body,
-        )
-        db.add(approval)
-        await db.commit()
-        await db.refresh(approval)
-        raise HTTPException(
-            status_code=202,
-            detail={
-                "message": "Action requires approval",
-                "approval": {
-                    "id": approval.id,
-                    "status": approval.status,
-                    "action": approval.action,
-                    "description": approval.description,
-                },
-            },
-        )
 
 
 # ── Helpers ──
@@ -400,7 +266,6 @@ async def _seed_module_permissions(name: str, db: AsyncSession) -> None:
 async def list_modules(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_require_araios_permission("modules.list")),
 ):
     result = await db.execute(
         select(AraiosModule).order_by(AraiosModule.order, AraiosModule.name)
@@ -416,7 +281,7 @@ async def list_modules(
         if tool_registry is not None:
             user_module_names = {m["name"] for m in user_modules}
             # Skip araios meta-tools — they're plumbing, not user-facing
-            skip = {"modules_discovery"}
+            skip = {"module_manager"}
             for tool in tool_registry.list_all():
                 if tool.name in user_module_names or tool.name in skip:
                     continue
@@ -443,7 +308,6 @@ async def list_modules(
 async def create_module(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    role: str = Depends(get_role),
 ):
     name = _normalize_module_name(body.get("name"))
     if not name:
@@ -455,9 +319,6 @@ async def create_module(
         raise HTTPException(
             status_code=409, detail=f"Module '{name}' already exists"
         )
-    await _check_action_permission(
-        "modules.create", role, db, body, resource="modules", resource_id=name
-    )
     mod = AraiosModule(
         name=name,
         label=body.get("label", name.title()),
@@ -481,7 +342,6 @@ async def create_module(
 async def get_module(
     name: str,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_require_araios_permission("modules.list")),
 ):
     return _serialize_module(await _module_or_404(name, db))
 
@@ -491,13 +351,9 @@ async def update_module(
     name: str,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    role: str = Depends(get_role),
 ):
     mod = await _module_or_404(name, db)
     updates = _extract_module_updates(body)
-    await _check_action_permission(
-        "modules.update", role, db, body, resource="modules", resource_id=mod.name
-    )
     _apply_module_updates(mod, updates)
     await db.commit()
     await db.refresh(mod)
@@ -508,12 +364,8 @@ async def update_module(
 async def delete_module(
     name: str,
     db: AsyncSession = Depends(get_db),
-    role: str = Depends(get_role),
 ):
     mod = await _module_or_404(name, db)
-    await _check_action_permission(
-        "modules.delete", role, db, {}, resource="modules", resource_id=mod.name
-    )
     # Delete child records and secrets first (FK constraint)
     await db.execute(delete(AraiosModuleRecord).where(AraiosModuleRecord.module_name == name))
     await db.execute(delete(AraiosModuleSecret).where(AraiosModuleSecret.module_name == name))
@@ -531,7 +383,6 @@ async def list_records(
     filter_field: Optional[str] = Query(None),
     filter_value: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_require_araios_permission("modules.list")),
 ):
     await _module_or_404(name, db)
     result = await db.execute(
@@ -553,7 +404,6 @@ async def create_record(
     name: str,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_require_araios_permission("modules.list")),
 ):
     await _module_or_404(name, db)
     data = {
@@ -573,7 +423,6 @@ async def get_record(
     name: str,
     record_id: str,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_require_araios_permission("modules.list")),
 ):
     return _serialize_record(await _record_or_404(name, record_id, db))
 
@@ -584,7 +433,6 @@ async def update_record(
     record_id: str,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_require_araios_permission("modules.list")),
 ):
     rec = await _record_or_404(name, record_id, db)
     data = dict(rec.data or {})
@@ -602,7 +450,6 @@ async def delete_record(
     name: str,
     record_id: str,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_require_araios_permission("modules.list")),
 ):
     rec = await _record_or_404(name, record_id, db)
     await db.delete(rec)
@@ -617,7 +464,6 @@ async def delete_record(
 async def secrets_status(
     name: str,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_require_araios_permission("modules.list")),
 ):
     mod = await _module_or_404(name, db)
     result = await db.execute(
@@ -636,7 +482,6 @@ async def set_secret(
     key: str,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_require_araios_permission("modules.create")),
 ):
     await _module_or_404(name, db)
     value = body.get("value", "")
@@ -662,7 +507,6 @@ async def delete_secret(
     name: str,
     key: str,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_require_araios_permission("modules.create")),
 ):
     await db.execute(
         delete(AraiosModuleSecret).where(
@@ -684,10 +528,8 @@ async def run_record_action(
     action_id: str,
     body: dict | None = None,
     db: AsyncSession = Depends(get_db),
-    role: str = Depends(get_role),
 ):
     params = _normalize_action_params(body)
-    await _check_action_permission(f"{name}.{action_id}", role, db, params)
     mod = await _module_or_404(name, db)
     rec = await _record_or_404(name, record_id, db)
     action = next(
@@ -716,10 +558,8 @@ async def run_module_action(
     action_id: str,
     body: dict | None = None,
     db: AsyncSession = Depends(get_db),
-    role: str = Depends(get_role),
 ):
     params = _normalize_action_params(body)
-    await _check_action_permission(f"{name}.{action_id}", role, db, params)
     mod = await _module_or_404(name, db)
     action = next(
         (a for a in (mod.actions or []) if a.get("id") == action_id), None

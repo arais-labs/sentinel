@@ -1,4 +1,4 @@
-"""Native module: modules_discovery — manage araiOS modules, records, and actions."""
+"""Native module: module_manager — manage araiOS modules, records, and actions."""
 from __future__ import annotations
 
 import logging
@@ -16,8 +16,6 @@ from app.models.araios import (
     araios_gen_id,
 )
 from app.services.araios.executor import execute_action
-from app.services.tools.registry import ToolApprovalEvaluation, ToolApprovalRequirement
-
 logger = logging.getLogger(__name__)
 
 
@@ -361,32 +359,3 @@ async def handle_run_action(payload: dict[str, Any]) -> dict[str, Any]:
             context["record"] = _serialize_record(rec)
 
         return await execute_action(code, context)
-
-
-def _delete_module_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEvaluation:
-    module_name = str(payload.get("name") or "").strip().lower()
-    if not module_name:
-        raise ValueError("'name' is required for delete_module")
-    return ToolApprovalEvaluation.require(
-        ToolApprovalRequirement(
-            action="modules.delete",
-            description=f"Delete module '{module_name}' and all of its records and secrets.",
-        )
-    )
-
-
-def _run_action_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEvaluation:
-    module_name = str(payload.get("module") or "").strip().lower()
-    action_id = str(payload.get("action_id") or "").strip()
-    if not module_name or not action_id:
-        raise ValueError("'module' and 'action_id' are required for run_action approval")
-    record_id = str(payload.get("record_id") or "").strip()
-    description = f"Execute module action '{module_name}.{action_id}'"
-    if record_id:
-        description += f" for record '{record_id}'"
-    return ToolApprovalEvaluation.require(
-        ToolApprovalRequirement(
-            action=f"{module_name}.{action_id}",
-            description=description + ".",
-        )
-    )

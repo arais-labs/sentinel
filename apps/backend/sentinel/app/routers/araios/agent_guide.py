@@ -51,7 +51,7 @@ async def get_agent_guide(
             "name": "AraiOS",
             "description": (
                 "AraiOS is the operating-system layer for ARAIS — it provides modules, "
-                "permissions, coordination, documents, tasks, and settings to AI agents "
+                "coordination, documents, tasks, and settings to AI agents "
                 "and human operators."
             ),
             "settings": system_settings,
@@ -62,16 +62,12 @@ async def get_agent_guide(
             "example": "Authorization: Bearer <token>",
             "roles": {
                 "admin": "Full access to all endpoints and settings",
-                "agent": "Access governed by the permissions system",
+                "agent": "Access to the AraiOS application surface",
             },
         },
         "endpoints": {
             "manifest": {
-                "GET /api/v1/araios/manifest": "Full system manifest with modules, endpoints, permissions",
-            },
-            "permissions": {
-                "GET /api/v1/araios/permissions": "List all permission rules",
-                "PATCH /api/v1/araios/permissions/{action}": "Update a permission level (admin only)",
+                "GET /api/v1/araios/manifest": "Full system manifest with modules and endpoints",
             },
             "coordination": {
                 "GET /api/v1/araios/coordination": "List coordination messages (query: limit)",
@@ -94,14 +90,6 @@ async def get_agent_guide(
                 "GET /api/v1/araios/settings": "List all system settings",
                 "PUT /api/v1/araios/settings/{key}": "Set a system setting (admin only)",
             },
-        },
-        "permissionsSystem": {
-            "description": (
-                "Non-admin (agent) roles are governed by per-action permission levels. "
-                "Each action can be: 'allow' (proceed), 'deny' (403), or 'approval' (202 with pending approval)."
-            ),
-            "levels": ["allow", "deny", "approval"],
-            "example": "If 'tasks.create' is set to 'approval', the agent receives a 202 with an approval ID.",
         },
         "moduleCreation": {
             "description": (

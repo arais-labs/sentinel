@@ -178,7 +178,7 @@ def test_compaction_retains_coherent_recent_turn_not_just_last_10_rows():
                 content=f'{{"status":"ok","idx":{idx}}}',
                 metadata_json={"is_error": False},
                 tool_call_id=f"tool_{idx}",
-                tool_name="modules_discovery",
+                tool_name="module_manager",
             )
         )
     fake_db.add(

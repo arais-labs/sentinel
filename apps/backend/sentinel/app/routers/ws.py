@@ -15,7 +15,6 @@ from app.dependencies import get_db
 from app.logging_context import reset_log_session, set_log_session
 from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
 from app.models import Message, ToolApproval
-from app.services.approvals import ApprovalService
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
 from app.services.messages import normalize_generation_metadata, with_generation_metadata
@@ -94,22 +93,13 @@ async def stream_session(
         }
     )
 
-    approval_service = _resolve_approval_service(websocket)
-    pending_matches = await approval_service.match_pending_for_unresolved_calls(
-        db,
-        session_id=id,
-        unresolved_calls=unresolved_calls,
-    )
     logger.info(
-        "ws_unresolved_tool_rehydrate session_id=%s unresolved_count=%s pending_matches=%s",
+        "ws_unresolved_tool_rehydrate session_id=%s unresolved_count=%s",
         session_key,
         len(unresolved_calls),
-        len(pending_matches),
     )
 
     for call in unresolved_calls:
-        call_id = str(call.get("id") or "")
-        pending_approval = pending_matches.get(call_id)
         pending_metadata: dict[str, object] = {
             "rehydrated": True,
         }
@@ -117,61 +107,6 @@ async def stream_session(
             "status": "running",
             "message": "Tool call is still running or waiting for completion.",
         }
-        if pending_approval is not None:
-            pending_metadata["pending"] = True
-            approval_payload = {
-                "provider": pending_approval.provider,
-                "approval_id": pending_approval.approval_id,
-                "status": pending_approval.status,
-                "pending": pending_approval.pending,
-                "can_resolve": pending_approval.can_resolve,
-                "label": pending_approval.label,
-                "session_id": pending_approval.session_id,
-                "match_key": pending_approval.match_key,
-            }
-            pending_metadata["approval"] = approval_payload
-            pending_content["approval"] = approval_payload
-            pending_content["status"] = "pending"
-            pending_content["message"] = "Tool call still running or waiting for approval."
-            logger.info(
-                "ws_unresolved_tool_pending_match session_id=%s tool_call_id=%s tool_name=%s provider=%s approval_id=%s",
-                session_key,
-                call_id,
-                call.get("name"),
-                pending_approval.provider,
-                pending_approval.approval_id,
-            )
-        elif isinstance(call.get("approval_hint"), dict):
-            hint = call.get("approval_hint")
-            hint_provider = None
-            hint_match_key = None
-            if isinstance(hint, dict):
-                raw_provider = hint.get("provider")
-                raw_match_key = hint.get("match_key")
-                if isinstance(raw_provider, str) and raw_provider.strip():
-                    hint_provider = raw_provider.strip().lower()
-                if isinstance(raw_match_key, str) and raw_match_key.strip():
-                    hint_match_key = raw_match_key.strip()
-            pending_metadata["approval_linkage_missing"] = True
-            pending_metadata["pending"] = True
-            pending_metadata["approval"] = {
-                "provider": hint_provider or "tool",
-                "status": "pending",
-                "pending": True,
-                "can_resolve": False,
-                "match_key": hint_match_key,
-            }
-            pending_content["status"] = "pending"
-            pending_content["message"] = (
-                "Approval linkage missing for this pending tool call. "
-                "Refresh and stop/retry the run if controls do not appear."
-            )
-            logger.warning(
-                "ws_unresolved_tool_pending_linkage_missing session_id=%s tool_call_id=%s tool_name=%s",
-                session_key,
-                call_id,
-                call.get("name"),
-            )
         await websocket.send_json(
             {
                 "type": "toolcall_start",
@@ -297,14 +232,6 @@ def _resolve_run_registry(websocket: WebSocket) -> AgentRunRegistry:
     if isinstance(registry, AgentRunRegistry):
         return registry
     raise RuntimeError("Agent run registry is not initialized on app.state")
-
-
-def _resolve_approval_service(websocket: WebSocket) -> ApprovalService:
-    service = getattr(websocket.app.state, "approval_service", None)
-    if isinstance(service, ApprovalService):
-        return service
-    raise RuntimeError("Approval service is not initialized on app.state")
-
 
 async def _materialize_interrupted_tool_results(
     db: AsyncSession,

@@ -6,10 +6,9 @@ import pytest
 
 from app.models import GitAccount, Session
 from app.services.araios.system_modules.git_exec import handlers as git_exec_module
-from app.services.araios.system_modules.git_exec.module import MODULE as GIT_EXEC_MODULE
-from app.services.tools.executor import ToolExecutor, ToolValidationError
-from app.services.tools.registry_builder import _resolve_gate
-from app.services.tools.registry import ToolRegistry
+from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
+from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus, ToolRegistry
+from app.services.tools.registry_builder import build_default_registry
 from tests.fake_db import FakeDB
 
 
@@ -17,10 +16,10 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _run_via_executor(tool, payload: dict):
+def _run_via_executor(tool, payload: dict, *, approval_waiter=None):
     registry = ToolRegistry()
     registry.register(tool)
-    executor = ToolExecutor(registry)
+    executor = ToolExecutor(registry, approval_waiter=approval_waiter)
     result, _ = _run(executor.execute("git_exec", payload))
     return result
 
@@ -47,16 +46,10 @@ class _SessionFactory:
 def _git_exec_tool(*, session_factory=None):
     if session_factory is not None:
         git_exec_module.AsyncSessionLocal = session_factory
-    action_gates = {
-        action.id: _resolve_gate(
-            action.approval,
-            handler_key=f"{GIT_EXEC_MODULE.name}.{action.id}",
-            waiter=None,
-        )
-        for action in (GIT_EXEC_MODULE.actions or [])
-        if action.handler
-    }
-    return GIT_EXEC_MODULE.to_tool_definitions(action_gates=action_gates)[0]
+    registry = build_default_registry(session_factory=session_factory)
+    tool = registry.get("git_exec")
+    assert tool is not None
+    return tool
 
 
 git_exec_module.git_exec_tool = _git_exec_tool
@@ -197,7 +190,7 @@ def test_git_exec_supports_gh_repo_list_with_account_token(monkeypatch):
     result = _run(
         tool.execute(
             {
-                "command": "run",
+                "command": "run_read",
                 "session_id": str(session.id),
                 "cli_command": "gh repo list arais-labs --limit 5",
             }
@@ -260,7 +253,7 @@ def test_git_exec_supports_gh_pr_view_with_read_token(monkeypatch):
     result = _run(
         tool.execute(
             {
-                "command": "run",
+                "command": "run_read",
                 "session_id": str(session.id),
                 "cli_command": "gh pr view 37 --json state,mergeStateStatus,isDraft",
             }
@@ -288,7 +281,7 @@ def test_git_exec_rejects_unsupported_gh_write_command():
         _run(
             tool.execute(
                 {
-                    "command": "run",
+                    "command": "run_read",
                     "session_id": str(session.id),
                     "cli_command": "gh repo create arais-labs/new-repo --private",
                 }
@@ -306,7 +299,7 @@ def test_git_exec_rejects_gh_auth_with_clear_guidance():
         _run(
             tool.execute(
                 {
-                    "command": "run",
+                    "command": "run_read",
                     "session_id": str(session.id),
                     "cli_command": "gh auth status",
                 }
@@ -324,7 +317,7 @@ def test_git_exec_rejects_gh_api_unsupported_method():
         _run(
             tool.execute(
                 {
-                    "command": "run",
+                    "command": "run_read",
                     "session_id": str(session.id),
                     "cli_command": "gh api -X DELETE /orgs/arais-labs/repos",
                 }
@@ -366,35 +359,25 @@ def test_git_exec_supports_gh_api_post_with_approval(monkeypatch):
             "command": " ".join(args),
         }
 
-    async def _fake_create_push_approval(**kwargs):
-        class _Approval:
-            def __init__(self, approval_id):
-                self.id = approval_id
-
-        captured["approval_kwargs"] = kwargs
-        return _Approval(session.id)
-
-    async def _fake_wait_for_push_approval(**kwargs):
-        class _Decision:
-            status = "approved"
-            decision_by = "admin"
-            decision_note = "ok"
-
-        captured["wait_kwargs"] = kwargs
-        return _Decision()
-
     monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
-    monkeypatch.setattr(git_exec_module, "_create_push_approval", _fake_create_push_approval)
-    monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    async def _fake_waiter(tool_name, payload, requirement, pending_callback=None):
+        _ = tool_name, payload, requirement, pending_callback
+        return ToolApprovalOutcome(
+            status=ToolApprovalOutcomeStatus.APPROVED,
+            approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
+            message="ok",
+        )
+
     result = _run_via_executor(
         tool,
         {
-            "command": "run",
+            "command": "run_write",
             "session_id": str(session.id),
             "cli_command": "gh api -X POST /repos/exampleco/exampleco-gitops/pulls -f title='Test PR'",
         },
+        approval_waiter=_fake_waiter,
     )
 
     assert result["ok"] is True
@@ -441,35 +424,25 @@ def test_git_exec_supports_gh_api_put_with_approval(monkeypatch):
             "command": " ".join(args),
         }
 
-    async def _fake_create_push_approval(**kwargs):
-        class _Approval:
-            def __init__(self, approval_id):
-                self.id = approval_id
-
-        captured["approval_kwargs"] = kwargs
-        return _Approval(session.id)
-
-    async def _fake_wait_for_push_approval(**kwargs):
-        class _Decision:
-            status = "approved"
-            decision_by = "admin"
-            decision_note = "ok"
-
-        captured["wait_kwargs"] = kwargs
-        return _Decision()
-
     monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
-    monkeypatch.setattr(git_exec_module, "_create_push_approval", _fake_create_push_approval)
-    monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    async def _fake_waiter(tool_name, payload, requirement, pending_callback=None):
+        _ = tool_name, payload, requirement, pending_callback
+        return ToolApprovalOutcome(
+            status=ToolApprovalOutcomeStatus.APPROVED,
+            approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
+            message="ok",
+        )
+
     result = _run_via_executor(
         tool,
         {
-            "command": "run",
+            "command": "run_write",
             "session_id": str(session.id),
             "cli_command": "gh api -X PUT /repos/exampleco/exampleco-gitops/pulls/35/merge -f merge_method=merge",
         },
+        approval_waiter=_fake_waiter,
     )
 
     assert result["ok"] is True
@@ -517,38 +490,28 @@ def test_git_exec_supports_gh_pr_create_with_approval(monkeypatch):
             "command": " ".join(args),
         }
 
-    async def _fake_create_push_approval(**kwargs):
-        class _Approval:
-            def __init__(self, approval_id):
-                self.id = approval_id
-
-        captured["approval_kwargs"] = kwargs
-        return _Approval(session.id)
-
-    async def _fake_wait_for_push_approval(**kwargs):
-        class _Decision:
-            status = "approved"
-            decision_by = "admin"
-            decision_note = "ok"
-
-        captured["wait_kwargs"] = kwargs
-        return _Decision()
-
     monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
-    monkeypatch.setattr(git_exec_module, "_create_push_approval", _fake_create_push_approval)
-    monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    async def _fake_waiter(tool_name, payload, requirement, pending_callback=None):
+        _ = tool_name, payload, requirement, pending_callback
+        return ToolApprovalOutcome(
+            status=ToolApprovalOutcomeStatus.APPROVED,
+            approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
+            message="ok",
+        )
+
     result = _run_via_executor(
         tool,
         {
-            "command": "run",
+            "command": "run_write",
             "session_id": str(session.id),
             "cli_command": (
                 "gh pr create --repo exampleco/exampleco-gitops "
                 "--base main --head feat/test --title 'Test' --body 'Body'"
             ),
         },
+        approval_waiter=_fake_waiter,
     )
 
     assert result["ok"] is True
@@ -596,38 +559,28 @@ def test_git_exec_supports_gh_pr_merge_with_approval(monkeypatch):
             "command": " ".join(args),
         }
 
-    async def _fake_create_push_approval(**kwargs):
-        class _Approval:
-            def __init__(self, approval_id):
-                self.id = approval_id
-
-        captured["approval_kwargs"] = kwargs
-        return _Approval(session.id)
-
-    async def _fake_wait_for_push_approval(**kwargs):
-        class _Decision:
-            status = "approved"
-            decision_by = "admin"
-            decision_note = "ok"
-
-        captured["wait_kwargs"] = kwargs
-        return _Decision()
-
     monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
-    monkeypatch.setattr(git_exec_module, "_create_push_approval", _fake_create_push_approval)
-    monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    async def _fake_waiter(tool_name, payload, requirement, pending_callback=None):
+        _ = tool_name, payload, requirement, pending_callback
+        return ToolApprovalOutcome(
+            status=ToolApprovalOutcomeStatus.APPROVED,
+            approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
+            message="ok",
+        )
+
     result = _run_via_executor(
         tool,
         {
-            "command": "run",
+            "command": "run_write",
             "session_id": str(session.id),
             "cli_command": (
                 "gh pr merge 35 --repo exampleco/exampleco-gitops "
                 "--merge --delete-branch"
             ),
         },
+        approval_waiter=_fake_waiter,
     )
 
     assert result["ok"] is True
@@ -658,35 +611,24 @@ def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
     )
     session_factory = _SessionFactory(fake_db)
 
-    async def _fake_create_push_approval(**kwargs):
-        class _Approval:
-            def __init__(self, approval_id):
-                self.id = approval_id
-
-        _ = kwargs
-        return _Approval(session.id)
-
-    async def _fake_wait_for_push_approval(**kwargs):
-        class _Decision:
-            status = "rejected"
-            decision_by = "admin"
-            decision_note = None
-
-        _ = kwargs
-        return _Decision()
-
-    monkeypatch.setattr(git_exec_module, "_create_push_approval", _fake_create_push_approval)
-    monkeypatch.setattr(git_exec_module, "_wait_for_push_approval", _fake_wait_for_push_approval)
-
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    with pytest.raises(git_exec_module.ToolExecutionError, match="User rejected action"):
+    async def _fake_waiter(tool_name, payload, requirement, pending_callback=None):
+        _ = tool_name, payload, requirement, pending_callback
+        return ToolApprovalOutcome(
+            status=ToolApprovalOutcomeStatus.REJECTED,
+            approval={"provider": "git_exec", "approval_id": str(session.id), "status": "rejected", "pending": False, "can_resolve": False},
+            message="User rejected action.",
+        )
+
+    with pytest.raises(ToolExecutionError, match="User rejected action"):
         _run_via_executor(
             tool,
-        {
-            "command": "run",
-            "session_id": str(session.id),
-            "cli_command": "gh api -X POST /repos/exampleco/exampleco-gitops/pulls",
-        },
+            {
+                "command": "run_write",
+                "session_id": str(session.id),
+                "cli_command": "gh api -X POST /repos/exampleco/exampleco-gitops/pulls",
+            },
+            approval_waiter=_fake_waiter,
         )
 
 
@@ -743,7 +685,7 @@ def test_git_exec_uses_explicit_git_account_name_for_clone(monkeypatch):
     result = _run(
         tool.execute(
             {
-                "command": "run",
+                "command": "run_read",
                 "session_id": str(session.id),
                 "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
                 "git_account_name": "arailex",
@@ -777,7 +719,7 @@ def test_git_exec_rejects_unknown_explicit_git_account_name():
         _run(
             tool.execute(
                 {
-                    "command": "run",
+                    "command": "run_read",
                     "session_id": str(session.id),
                     "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
                     "git_account_name": "arailex",
@@ -807,7 +749,7 @@ def test_git_exec_rejects_explicit_git_account_scope_mismatch():
         _run(
             tool.execute(
                 {
-                    "command": "run",
+                    "command": "run_read",
                     "session_id": str(session.id),
                     "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
                     "git_account_name": "secondary",

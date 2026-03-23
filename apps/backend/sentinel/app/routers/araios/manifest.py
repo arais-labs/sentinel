@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends
 
 from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
-from app.models.araios import AraiosModule, AraiosPermission
+from app.models.araios import AraiosModule
 from app.models.system import SystemSetting
 
 router = APIRouter(tags=["araios-manifest"])
@@ -50,10 +50,6 @@ async def get_manifest(
     mod_result = await db.execute(select(AraiosModule).order_by(AraiosModule.order))
     modules = [_module_dict(m) for m in mod_result.scalars().all()]
 
-    # Permissions
-    perm_result = await db.execute(select(AraiosPermission))
-    permissions = {p.action: p.level for p in perm_result.scalars().all()}
-
     # System settings
     settings_result = await db.execute(select(SystemSetting))
     system_settings = {s.key: s.value for s in settings_result.scalars().all()}
@@ -62,8 +58,6 @@ async def get_manifest(
     endpoints = [
         {"method": "GET", "path": "/api/v1/araios/manifest", "description": "This manifest"},
         {"method": "GET", "path": "/api/v1/araios/agent-guide", "description": "Full agent guide"},
-        {"method": "GET", "path": "/api/v1/araios/permissions", "description": "List permissions"},
-        {"method": "PATCH", "path": "/api/v1/araios/permissions/{action}", "description": "Update permission"},
         {"method": "GET", "path": "/api/v1/araios/coordination", "description": "List coordination messages"},
         {"method": "POST", "path": "/api/v1/araios/coordination", "description": "Send coordination message"},
         {"method": "GET", "path": "/api/v1/araios/documents", "description": "List documents"},
@@ -83,7 +77,6 @@ async def get_manifest(
         "version": "1.0",
         "modules": modules,
         "endpoints": endpoints,
-        "permissions": permissions,
         "systemSettings": system_settings,
         "auth": {
             "type": "bearer",

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from app.services.araios.module_types import ActionDefinition, ApprovalDefinition, ModuleDefinition
+from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import (
-    _runtime_exec_approval_evaluator,
     handle_job_logs,
     handle_job_status,
     handle_job_stop,
     handle_jobs_list,
-    handle_run,
+    handle_run_root,
+    handle_run_user,
 )
 
 
@@ -28,15 +28,9 @@ def _run_parameters_schema() -> dict:
         "properties": {
             "session_id": _session_id_prop(),
             "shell_command": {"type": "string", "description": "Shell command to execute."},
-            "privilege": {
-                "type": "string",
-                "enum": ["user", "root"],
-                "description": "Execution privilege mode (default user). root requires approval.",
-            },
             "cwd": {"type": "string", "description": "Working directory inside the session workspace."},
             "env": {"type": "object", "description": "Environment variable overrides."},
             "timeout_seconds": {"type": "integer", "description": "Execution timeout in seconds (default 300, max 1800)."},
-            "approval_timeout_seconds": {"type": "integer", "description": "Root approval wait timeout in seconds (default 600, max 3600)."},
             "detached": {"type": "boolean", "description": "Run in the background as a tracked job."},
         },
     }
@@ -97,8 +91,8 @@ MODULE = ModuleDefinition(
     label="Runtime Exec",
     description=(
         "Execute arbitrary shell commands in a per-session runtime workspace. "
-        "privilege=user runs in a confined sandbox limited to workspace writes. "
-        "privilege=root runs unconfined and requires explicit approval."
+        "User commands run in a confined sandbox limited to workspace writes. "
+        "Root commands run unconfined and can be approval-gated."
     ),
     icon="terminal",
     pinned=True,
@@ -106,15 +100,20 @@ MODULE = ModuleDefinition(
     grouped_tool=True,
     actions=[
         ActionDefinition(
-            id="run",
-            label="Run Command",
-            description="Run a shell command inside the session runtime workspace.",
+            id="run_user",
+            label="Run User Command",
+            description="Run a user-privileged shell command inside the session runtime workspace.",
             streaming=True,
-            handler=handle_run,
-            approval=ApprovalDefinition(
-                mode="conditional",
-                evaluator=_runtime_exec_approval_evaluator,
-            ),
+            handler=handle_run_user,
+            parameters_schema=_run_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="run_root",
+            label="Run Root Command",
+            description="Run a root-privileged shell command inside the session runtime workspace.",
+            streaming=True,
+            handler=handle_run_root,
+            approval=True,
             parameters_schema=_run_parameters_schema(),
         ),
         ActionDefinition(

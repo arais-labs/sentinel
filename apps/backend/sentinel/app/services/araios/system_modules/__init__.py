@@ -16,7 +16,7 @@ _SYSTEM_MODULE_NAMES = (
     "sub_agents",
     "telegram",
     "triggers",
-    "modules_discovery",
+    "module_manager",
     "tasks",
     "documents",
     "coordination",

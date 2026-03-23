@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from app.services.araios.module_types import ActionDefinition, ApprovalDefinition, ModuleDefinition
+from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import (
-    _git_exec_approval_waiter,
-    _git_exec_write_approval_evaluator,
     handle_accounts,
-    handle_run,
+    handle_run_read,
+    handle_run_write,
 )
 
 
@@ -32,10 +31,6 @@ def _run_parameters_schema() -> dict:
             "timeout_seconds": {
                 "type": "integer",
                 "description": "Execution timeout in seconds (default 600, max 3600).",
-            },
-            "approval_timeout_seconds": {
-                "type": "integer",
-                "description": "Write approval wait timeout in seconds (default 600, max 3600).",
             },
             "git_account_name": {
                 "type": "string",
@@ -87,15 +82,18 @@ MODULE = ModuleDefinition(
     grouped_tool=True,
     actions=[
         ActionDefinition(
-            id="run",
-            label="Run Git Command",
-            description="Execute a git or supported gh command inside the session workspace.",
-            handler=handle_run,
-            approval=ApprovalDefinition(
-                mode="conditional",
-                evaluator=_git_exec_write_approval_evaluator,
-                waiter=_git_exec_approval_waiter,
-            ),
+            id="run_read",
+            label="Run Standard Git Command",
+            description="Execute a non-approval-gated git or supported gh command inside the session workspace.",
+            handler=handle_run_read,
+            parameters_schema=_run_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="run_write",
+            label="Run Write Git Command",
+            description="Execute an approval-gated git or supported gh write command inside the session workspace.",
+            handler=handle_run_write,
+            approval=True,
             parameters_schema=_run_parameters_schema(),
         ),
         ActionDefinition(

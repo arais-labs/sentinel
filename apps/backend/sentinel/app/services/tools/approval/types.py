@@ -13,7 +13,6 @@ class ApprovalRecord:
     pending: bool
     label: str
     session_id: str | None = None
-    match_key: str | None = None
     command: str | None = None
     action: str | None = None
     description: str | None = None
@@ -23,21 +22,6 @@ class ApprovalRecord:
     updated_at: datetime | None = None
     expires_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class PendingApprovalMatch:
-    provider: str
-    match_key: str
-
-
-@dataclass(slots=True)
-class PendingApprovalRef:
-    provider: str
-    approval_id: str
-    status: str
-    pending: bool
-    can_resolve: bool
 
 
 class ApprovalProviderError(RuntimeError):

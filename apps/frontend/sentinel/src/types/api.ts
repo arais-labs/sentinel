@@ -396,10 +396,6 @@ export interface ApprovalListResponse {
   total: number;
 }
 
-export interface ApprovalToolCallMatchResponse {
-  item: ApprovalRecord | null;
-}
-
 export interface RuntimeLiveView {
   enabled: boolean;
   available: boolean;

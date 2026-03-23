@@ -97,9 +97,6 @@ class Settings(BaseSettings):
     session_auto_rename_every_messages: int = 10
     session_auto_rename_context_messages: int = 24
     session_auto_rename_model_tier: str = "fast"
-    git_push_approval_timeout_seconds: int = 600
-    runtime_exec_root_approval_timeout_seconds: int = 600
-
     # --- Runtime Execution ---
     runtime_exec_backend: str = "docker"  # "docker" or "remote"
     # Docker runtime

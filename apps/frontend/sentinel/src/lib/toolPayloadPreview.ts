@@ -62,7 +62,7 @@ const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: r
     input: ['command', 'query', 'id', 'parent_id', 'root_id', 'content', 'node_ids', 'target_parent_id'],
     output: ['items', 'roots', 'total', 'id', 'deleted', 'moved_node_ids', 'expanded_items'],
   },
-  modules_discovery: {
+  module_manager: {
     input: ['command', 'module', 'name', 'record_id', 'action_id', 'data', 'params'],
     output: ['modules', 'records', 'count', 'ok', 'message', 'result'],
   },
@@ -75,7 +75,7 @@ const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: r
     output: ['tasks', 'id', 'title', 'status', 'priority', 'ok', 'message'],
   },
   runtime_exec: {
-    input: ['command', 'shell_command', 'privilege', 'cwd', 'job_id', 'detached'],
+    input: ['command', 'shell_command', 'cwd', 'job_id', 'detached'],
     output: ['stdout', 'ok', 'returncode', 'timed_out', 'stderr', 'job', 'items'],
   },
   triggers: {

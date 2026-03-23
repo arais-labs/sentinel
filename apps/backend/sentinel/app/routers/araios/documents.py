@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Header
 
 from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
-from app.models.araios import AraiosDocument, AraiosPermission, AraiosApproval, araios_gen_id
+from app.models.araios import AraiosDocument, araios_gen_id
 from app.schemas.araios import (
     DocumentCreate,
     DocumentUpdate,
@@ -19,44 +19,6 @@ from app.schemas.araios import (
 
 
 router = APIRouter(tags=["araios-documents"])
-
-
-# ── Helpers ──
-
-
-def _require_araios_permission(action: str):
-    async def _check(
-        user: TokenPayload = Depends(require_auth),
-        db: AsyncSession = Depends(get_db),
-    ):
-        if user.role == "admin":
-            return
-        result = await db.execute(select(AraiosPermission).where(AraiosPermission.action == action))
-        perm = result.scalars().first()
-        level = perm.level if perm else "deny"
-        if level == "allow":
-            return
-        if level == "deny":
-            raise HTTPException(status_code=403, detail=f"Action '{action}' is not allowed for agent role")
-        if level == "approval":
-            approval = AraiosApproval(
-                id=araios_gen_id(),
-                status="pending",
-                action=action,
-                description=f"Agent requested: {action}",
-            )
-            db.add(approval)
-            await db.commit()
-            await db.refresh(approval)
-            raise HTTPException(
-                status_code=202,
-                detail={
-                    "message": "Action requires approval",
-                    "approval": {"id": approval.id, "status": approval.status, "action": approval.action},
-                },
-            )
-
-    return _check
 
 
 def _get_agent_id(user: TokenPayload = Depends(require_auth)) -> str:
@@ -126,7 +88,6 @@ async def get_document(
 async def create_document(
     body: DocumentCreate,
     agent_id: str = Depends(_get_agent_id),
-    _perm: None = Depends(_require_araios_permission("documents.create")),
     db: AsyncSession = Depends(get_db),
 ):
     # Check slug uniqueness
@@ -155,7 +116,6 @@ async def update_document(
     slug: str,
     body: DocumentUpdate,
     agent_id: str = Depends(_get_agent_id),
-    _perm: None = Depends(_require_araios_permission("documents.update")),
     db: AsyncSession = Depends(get_db),
     if_match: str | None = Header(None, alias="If-Match"),
 ):
@@ -189,7 +149,6 @@ async def update_document(
 @router.delete("/{slug}", response_model=OkResponse)
 async def delete_document(
     slug: str,
-    _perm: None = Depends(_require_araios_permission("documents.delete")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(AraiosDocument).where(AraiosDocument.slug == slug))
