@@ -92,6 +92,42 @@ def _normalize_module_name(value: Any) -> str:
     return value.strip().lower()
 
 
+_FIELD_EXAMPLE = '{"key": "email", "label": "Email", "type": "email"}'
+_VALID_FIELD_TYPES = {
+    "text", "textarea", "email", "url", "number", "date",
+    "select", "badge", "tags", "readonly",
+}
+
+
+def _validate_fields(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail=f"'fields' must be an array. Example item: {_FIELD_EXAMPLE}")
+    validated: list[dict[str, Any]] = []
+    for i, f in enumerate(value):
+        if not isinstance(f, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Field at index {i} must be an object, got {type(f).__name__!r}. "
+                    f"Each field must have 'key' and 'label' strings. Example: {_FIELD_EXAMPLE}"
+                ),
+            )
+        if not isinstance(f.get("key"), str) or not f["key"].strip():
+            raise HTTPException(status_code=400, detail=f"Field at index {i} is missing required 'key' (non-empty string)")
+        if not isinstance(f.get("label"), str) or not f["label"].strip():
+            raise HTTPException(status_code=400, detail=f"Field at index {i} (key={f.get('key')!r}) is missing required 'label' (non-empty string)")
+        field_type = f.get("type", "text")
+        if field_type not in _VALID_FIELD_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Field {f['key']!r} has invalid type {field_type!r}. Valid types: {sorted(_VALID_FIELD_TYPES)}",
+            )
+        validated.append(f)
+    return validated
+
+
 def _validate_permissions_payload(value: Any) -> dict[str, Any]:
     if value is None:
         return {}
@@ -169,13 +205,14 @@ async def _create_dynamic_module(
     actions = _validate_action_updates(body.get("actions", []))
     permissions = _validate_permissions_payload(permissions)
     records = _normalize_seed_records(seed_records)
+    fields = _validate_fields(body.get("fields"))
 
     mod = AraiosModule(
         name=name,
         label=body.get("label", name.title()),
         description=body.get("description", ""),
         icon=body.get("icon", "box"),
-        fields=body.get("fields", []),
+        fields=fields,
         fields_config=body.get("fields_config", {}),
         actions=actions,
         secrets=body.get("secrets", []),
@@ -213,6 +250,8 @@ def _extract_module_updates(body: dict[str, Any]) -> dict[str, Any]:
             value = body[field]
             if field == "actions":
                 value = _validate_action_updates(value)
+            elif field == "fields":
+                value = _validate_fields(value)
             updates[field] = value
     if not updates:
         raise HTTPException(
