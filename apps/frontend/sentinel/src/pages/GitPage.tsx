@@ -85,7 +85,7 @@ export function GitPage() {
     setLoading(true);
     try {
       const approvalQuery = new URLSearchParams();
-      approvalQuery.set('provider', 'git');
+      approvalQuery.set('provider', 'git_exec');
       if (approvalStatusFilter !== 'all') approvalQuery.set('status', approvalStatusFilter);
       const [accountsPayload, approvalsPayload] = await Promise.all([
         api.get<GitAccountListResponse>('/git/accounts'),
@@ -214,7 +214,7 @@ export function GitPage() {
   async function resolveApproval(approvalId: string, decision: 'approve' | 'reject') {
     setResolvingApprovalId(approvalId);
     try {
-      await api.post(`/approvals/git/${approvalId}/${decision}`, {
+      await api.post(`/approvals/git_exec/${approvalId}/${decision}`, {
         note: decision === 'approve' ? 'User approved action.' : 'User rejected action.',
       });
       toast.success(`Push ${decision}d`);

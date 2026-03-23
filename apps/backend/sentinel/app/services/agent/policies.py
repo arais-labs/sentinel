@@ -120,16 +120,16 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
         kind="araios_policy",
         title="araiOS Module Engine Policy",
         explanation="How to use the araiOS module tools.",
-        enabled_when=_has_any("modules_discovery"),
+        enabled_when=_has_any("module_manager"),
         content=(
             "## araiOS Module Engine Policy\n"
             "araiOS provides a unified module engine. Each module can have any combination of:\n"
             "- **fields** → module stores records\n"
             "- **actions** → module has executable Python code\n"
             "- **page_title** → module has a markdown documentation page\n\n"
-            "Use modules_discovery with command=list_modules/get_module/create_module/delete_module for module CRUD.\n"
-            "Use modules_discovery with command=list_records/get_record/create_record/update_record/delete_record for record CRUD.\n"
-            "Use modules_discovery with command=run_action to execute module actions.\n"
+            "Use module_manager with command=list_modules/get_module/create_module/delete_module for module CRUD.\n"
+            "Use module_manager with command=list_records/get_record/create_record/update_record/delete_record for record CRUD.\n"
+            "Use module_manager with command=run_action to execute module actions.\n"
             "Some operations may require approval — handled automatically.\n\n"
             "When creating a module with fields, also set fields_config with at least titleField.\n"
             "Without fields_config, records display as raw IDs in the UI.\n\n"

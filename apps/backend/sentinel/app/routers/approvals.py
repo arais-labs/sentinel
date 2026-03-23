@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import logging
 from typing import Literal
 from uuid import UUID
 
@@ -12,20 +10,17 @@ from app.middleware.auth import TokenPayload, require_admin
 from app.schemas.approvals import (
     ApprovalListResponse,
     ApprovalRecordResponse,
-    ApprovalToolCallMatchResponse,
     ResolveApprovalRequest,
 )
-from app.services.approvals import (
+from app.services.tools.approval import (
     ApprovalConflictError,
     ApprovalNotFoundError,
     ApprovalProviderUnavailableError,
     ApprovalService,
 )
-from app.services.approvals.types import ApprovalRecord
-from app.services.ws_stream_service import load_history, unresolved_tool_calls_from_history
+from app.services.tools.approval.types import ApprovalRecord
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
 
 @router.get("")
@@ -52,62 +47,6 @@ async def list_approvals(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return ApprovalListResponse(items=[_record_response(item) for item in items], total=total)
-
-
-@router.get("/match-pending-tool-call")
-async def match_pending_tool_call(
-    session_id: UUID = Query(...),
-    tool_call_id: str = Query(..., min_length=1),
-    _: TokenPayload = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-) -> ApprovalToolCallMatchResponse:
-    logger.info(
-        "approval_match_tool_call_request session_id=%s tool_call_id=%s",
-        session_id,
-        tool_call_id.strip(),
-    )
-    service = _resolve_approval_service()
-    history = await load_history(db, session_id)
-    unresolved = unresolved_tool_calls_from_history(history)
-    normalized_call_id = tool_call_id.strip()
-    call = next(
-        (
-            item
-            for item in unresolved
-            if str(item.get("id") or "").strip() == normalized_call_id
-        ),
-        None,
-    )
-    if call is None:
-        logger.info(
-            "approval_match_tool_call_unresolved_missing session_id=%s tool_call_id=%s unresolved_count=%s",
-            session_id,
-            normalized_call_id,
-            len(unresolved),
-        )
-        return ApprovalToolCallMatchResponse(item=None)
-
-    matched = await service.match_pending_for_unresolved_calls(
-        db,
-        session_id=session_id,
-        unresolved_calls=[call],
-    )
-    record = matched.get(normalized_call_id)
-    if record is None:
-        logger.info(
-            "approval_match_tool_call_not_found session_id=%s tool_call_id=%s",
-            session_id,
-            normalized_call_id,
-        )
-        return ApprovalToolCallMatchResponse(item=None)
-    logger.info(
-        "approval_match_tool_call_found session_id=%s tool_call_id=%s provider=%s approval_id=%s",
-        session_id,
-        normalized_call_id,
-        record.provider,
-        record.approval_id,
-    )
-    return ApprovalToolCallMatchResponse(item=_record_response(record))
 
 
 @router.post("/{provider}/{approval_id}/approve")
@@ -197,7 +136,6 @@ def _record_response(record: ApprovalRecord) -> ApprovalRecordResponse:
         pending=record.pending,
         label=record.label,
         session_id=session_uuid,
-        match_key=record.match_key,
         command=record.command,
         action=record.action,
         description=record.description,

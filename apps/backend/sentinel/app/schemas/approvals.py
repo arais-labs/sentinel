@@ -14,7 +14,6 @@ class ApprovalRecordResponse(BaseModel):
     pending: bool
     label: str
     session_id: UUID | None = None
-    match_key: str | None = None
     command: str | None = None
     action: str | None = None
     description: str | None = None
@@ -29,11 +28,6 @@ class ApprovalRecordResponse(BaseModel):
 class ApprovalListResponse(BaseModel):
     items: list[ApprovalRecordResponse]
     total: int
-
-
-class ApprovalToolCallMatchResponse(BaseModel):
-    item: ApprovalRecordResponse | None = None
-
 
 class ResolveApprovalRequest(BaseModel):
     note: str | None = None

@@ -46,7 +46,6 @@ from app.routers import (
     webhooks,
 )
 from app.routers.araios import api_router as araios_api_router, platform_auth_router as araios_platform_auth_router
-from app.services.approvals import ApprovalService
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
 from app.services.agent_run_registry import AgentRunRegistry
 from app.services.araios.runtime_services import configure_runtime_services
@@ -59,6 +58,11 @@ from app.services.session_runtime import run_session_runtime_janitor
 from app.services.session_naming import SessionNamingService
 from app.services.sub_agents import SubAgentOrchestrator
 from app.services.tools import ToolExecutor
+from app.services.tools.approval import ApprovalService
+from app.services.tools.approval.approval_waiters import (
+    build_tool_db_approval_result_recorder,
+    build_tool_db_approval_waiter,
+)
 from app.services.tools.registry_builder import build_default_registry
 from app.services.browser.pool import BrowserPool
 from app.services.trigger_scheduler import TriggerScheduler
@@ -115,11 +119,11 @@ async def lifespan(app: FastAPI):
     # Seed AraiOS default permissions
     async with AsyncSessionLocal() as _araios_db:
         from app.models.araios import AraiosPermission
-        from app.services.araios.permissions import AGENT_PERMISSIONS as _ARAIOS_PERMS
+        from app.services.araios.permissions import combined_agent_permissions
 
         _existing_result = await _araios_db.execute(_sel(AraiosPermission))
         _existing_actions = {p.action for p in _existing_result.scalars().all()}
-        for _action, _level in _ARAIOS_PERMS.items():
+        for _action, _level in combined_agent_permissions().items():
             if _action not in _existing_actions:
                 _araios_db.add(AraiosPermission(action=_action, level=_level))
         await _araios_db.commit()
@@ -163,7 +167,11 @@ async def lifespan(app: FastAPI):
         logger.debug("Runtime container recovery skipped", exc_info=True)
 
     registry = build_default_registry(session_factory=AsyncSessionLocal)
-    executor = ToolExecutor(registry)
+    executor = ToolExecutor(
+        registry,
+        approval_waiter=build_tool_db_approval_waiter(session_factory=AsyncSessionLocal),
+        approval_result_recorder=build_tool_db_approval_result_recorder(session_factory=AsyncSessionLocal),
+    )
 
     available_tools = {tool.name for tool in registry.list_all()}
     ws_manager = ConnectionManager()

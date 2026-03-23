@@ -7,30 +7,28 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ToolApproval
-from app.services.approvals.tool_match import build_tool_match_key
-from app.services.approvals.types import (
+from app.services.tools.approval.types import (
     ApprovalConflictError,
     ApprovalNotFoundError,
     ApprovalRecord,
-    PendingApprovalMatch,
 )
 
 
 class ToolApprovalProvider:
-    name = "tool"
-
     async def list(
         self,
         db: AsyncSession,
         *,
+        provider: str | None,
         status_filter: str | None,
         limit: int,
         offset: int,
         session_id: UUID | None = None,
     ) -> tuple[list[ApprovalRecord], int]:
-        result = await db.execute(
-            select(ToolApproval).where(ToolApproval.provider == self.name)
-        )
+        stmt = select(ToolApproval)
+        if isinstance(provider, str) and provider.strip():
+            stmt = stmt.where(ToolApproval.provider == provider.strip())
+        result = await db.execute(stmt)
         rows = result.scalars().all()
         if status_filter:
             rows = [row for row in rows if row.status == status_filter]
@@ -45,6 +43,7 @@ class ToolApprovalProvider:
         self,
         db: AsyncSession,
         *,
+        provider: str,
         approval_id: str,
         decision: str,
         decision_by: str,
@@ -58,7 +57,7 @@ class ToolApprovalProvider:
         result = await db.execute(
             select(ToolApproval).where(
                 ToolApproval.id == approval_uuid,
-                ToolApproval.provider == self.name,
+                ToolApproval.provider == provider,
             )
         )
         row = result.scalars().first()
@@ -84,26 +83,16 @@ class ToolApprovalProvider:
         await db.refresh(row)
         return self._to_record(row)
 
-    def pending_match_from_tool_call(
-        self,
-        *,
-        tool_name: str,
-        arguments: dict[str, object],
-    ) -> PendingApprovalMatch | None:
-        match_key = build_tool_match_key(tool_name=tool_name, payload=arguments)
-        return PendingApprovalMatch(provider=self.name, match_key=match_key)
-
     def _to_record(self, row: ToolApproval) -> ApprovalRecord:
         metadata = dict(row.payload_json or {})
         metadata.setdefault("tool_name", row.tool_name)
         return ApprovalRecord(
-            provider=self.name,
+            provider=row.provider,
             approval_id=str(row.id),
             status=row.status,
             pending=row.status == "pending",
             label=f"{row.tool_name} approval",
             session_id=str(row.session_id) if row.session_id else None,
-            match_key=row.match_key,
             action=row.action,
             description=row.description,
             can_resolve=row.status == "pending",

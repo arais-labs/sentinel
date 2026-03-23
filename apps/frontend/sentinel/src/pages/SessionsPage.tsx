@@ -60,7 +60,6 @@ import { api } from '../lib/api';
 import type {
   AgentModeOption,
   AgentModesResponse,
-  ApprovalToolCallMatchResponse,
   Message,
   MessageAttachment,
   MessageListResponse,
@@ -242,8 +241,6 @@ function hasUnresolvedToolCalls(messages: Message[]): boolean {
   return pendingIds.size > 0;
 }
 
-const APPROVAL_HYDRATION_MAX_ATTEMPTS = 3;
-const APPROVAL_HYDRATION_RETRY_MS = 350;
 const APPROVAL_DEBUG_STORAGE_KEY = 'sentinel.debug.approvals';
 const AGENT_MODE_STORAGE_KEY = 'sentinel-selected-agent-mode';
 
@@ -260,10 +257,6 @@ function isApprovalDebugEnabled(): boolean {
 function approvalDebugLog(event: string, details: Record<string, unknown>): void {
   if (!isApprovalDebugEnabled()) return;
   console.info(`[approval-debug] ${event}`, details);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function parseTier(value: string | null): ModelOption['tier'] | null {
@@ -782,7 +775,7 @@ function StreamToolCard({
 
 // --- Modules Rail Panel ---
 
-const ARAIOS_TOOL_NAMES = new Set(['modules_discovery']);
+const ARAIOS_TOOL_NAMES = new Set(['module_manager']);
 
 function ModulesRailPanel({ messages, completedToolCalls, activeToolCalls }: {
   messages: Message[];
@@ -882,7 +875,7 @@ function ModulesRailPanel({ messages, completedToolCalls, activeToolCalls }: {
   }, [completedToolCalls, activeToolCalls, messages]);
 
   const TOOL_LABELS: Record<string, string> = {
-    modules_discovery: 'Modules',
+    module_manager: 'Module Manager',
   };
 
   return (
@@ -1134,7 +1127,6 @@ export function SessionsPage() {
   const activeSessionIdRef = useRef<string | null>(routeSessionId ?? null);
   const contextUsageRequestRef = useRef(0);
   const wsInstanceRef = useRef(0);
-  const approvalLookupInFlightRef = useRef<Set<string>>(new Set());
 
   // Keep refs in sync so WS callbacks can read current values
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
@@ -2376,102 +2368,6 @@ export function SessionsPage() {
     }
   }, [updateStreamingCallApproval]);
 
-  async function hydrateApprovalForCall(
-    sessionId: string,
-    callId: string,
-    contentIndex: number | null,
-  ) {
-    if (!callId) return;
-    const lookupKey = streamingCallKeyFromParts(callId, contentIndex);
-    if (approvalLookupInFlightRef.current.has(lookupKey)) return;
-    approvalLookupInFlightRef.current.add(lookupKey);
-    approvalDebugLog('ui.approval.hydrate.start', {
-      session_id: sessionId,
-      tool_call_id: callId,
-      content_index: contentIndex,
-      lookup_key: lookupKey,
-    });
-    try {
-      for (let attempt = 0; attempt < APPROVAL_HYDRATION_MAX_ATTEMPTS; attempt += 1) {
-        try {
-          const query = new URLSearchParams();
-          query.set('session_id', sessionId);
-          query.set('tool_call_id', callId);
-          const toolCallMatch = await api.get<ApprovalToolCallMatchResponse>(
-            `/approvals/match-pending-tool-call?${query.toString()}`,
-          );
-          const matched = toolCallMatch.item;
-          approvalDebugLog('ui.approval.hydrate.tool_call_attempt', {
-            session_id: sessionId,
-            tool_call_id: callId,
-            attempt: attempt + 1,
-            matched: Boolean(matched),
-          });
-          if (matched) {
-            setStreaming((current) => {
-              const patchCall = (call: StreamingToolCall): StreamingToolCall => {
-                if (call.id !== callId) return call;
-                return {
-                  ...call,
-                  metadata: {
-                    ...call.metadata,
-                    pending: true,
-                    approval: {
-                      provider: matched.provider,
-                      approval_id: matched.approval_id,
-                      status: matched.status,
-                      pending: matched.pending,
-                      can_resolve: matched.can_resolve,
-                      label: matched.label,
-                      match_key: matched.match_key,
-                    },
-                  },
-                };
-              };
-              return {
-                ...current,
-                activeToolCalls: current.activeToolCalls.map(patchCall),
-                completedToolCalls: current.completedToolCalls.map(patchCall),
-              };
-            });
-            approvalDebugLog('ui.approval.hydrate.matched', {
-              session_id: sessionId,
-              tool_call_id: callId,
-              attempt: attempt + 1,
-              provider: matched.provider,
-              approval_id: matched.approval_id,
-              status: matched.status,
-              pending: matched.pending,
-            });
-            return;
-          }
-        } catch {
-          approvalDebugLog('ui.approval.hydrate.attempt_error', {
-            session_id: sessionId,
-            tool_call_id: callId,
-            attempt: attempt + 1,
-          });
-          // best-effort retry until attempts are exhausted
-        }
-        if (attempt < APPROVAL_HYDRATION_MAX_ATTEMPTS - 1) {
-          await sleep(APPROVAL_HYDRATION_RETRY_MS);
-        }
-      }
-    } catch {
-      approvalDebugLog('ui.approval.hydrate.error', {
-        session_id: sessionId,
-        tool_call_id: callId,
-      });
-      // best effort hydration
-    } finally {
-      approvalLookupInFlightRef.current.delete(lookupKey);
-      approvalDebugLog('ui.approval.hydrate.done', {
-        session_id: sessionId,
-        tool_call_id: callId,
-      });
-    }
-  }
-
   // WebSocket Logic
   function disconnectWs() {
     intentionalCloseRef.current = true;
@@ -2671,7 +2567,6 @@ export function SessionsPage() {
                 : [...current.timeline, { kind: 'tool', key: `tool-${callKey}`, callKey }],
             };
           });
-          void hydrateApprovalForCall(sessionId, callId, contentIndex);
         }
         break;
       case 'toolcall_delta':
@@ -2689,10 +2584,6 @@ export function SessionsPage() {
             if (targetIndex < 0) targetIndex = next.length - 1;
             const call = next[targetIndex];
             const mergedArguments = mergeStreamingToolArguments(call.argumentsJson, delta);
-            const hasApprovalRef = Boolean(approvalRefFromMetadata(call.metadata));
-            if (!hasApprovalRef && call.id) {
-              void hydrateApprovalForCall(sessionId, call.id, call.contentIndex);
-            }
             next[targetIndex] = {
               ...call,
               argumentsJson: mergedArguments,
@@ -2703,10 +2594,6 @@ export function SessionsPage() {
         break;
       case 'toolcall_end':
         {
-          const hydrationCandidates: Array<{
-            callId: string;
-            contentIndex: number | null;
-          }> = [];
           const eventCallId = String((event.tool_call as any)?.id ?? '');
           const eventContentIndex = typeof event.content_index === 'number' ? event.content_index : null;
           const eventToolName = String((event.tool_call as any)?.name ?? '');
@@ -2753,12 +2640,6 @@ export function SessionsPage() {
             const alreadyDone = current.completedToolCalls.some(
               (item) => item.id === hydratedDoneCall.id && item.contentIndex === hydratedDoneCall.contentIndex,
             );
-            if (!callApprovalRef && Boolean(hydratedDoneCall.id)) {
-              hydrationCandidates.push({
-                callId: hydratedDoneCall.id,
-                contentIndex: hydratedDoneCall.contentIndex,
-              });
-            }
             if (alreadyDone) {
               return { ...current, activeToolCalls: nextActive };
             }
@@ -2768,19 +2649,6 @@ export function SessionsPage() {
               completedToolCalls: [...current.completedToolCalls, { ...hydratedDoneCall, complete: true }],
             };
           });
-          const pendingHydration = hydrationCandidates[0];
-          if (pendingHydration) {
-            approvalDebugLog('ws.toolcall_end.hydrate_queue', {
-              session_id: sessionId,
-              tool_call_id: pendingHydration.callId,
-              content_index: pendingHydration.contentIndex,
-            });
-            void hydrateApprovalForCall(
-              sessionId,
-              pendingHydration.callId,
-              pendingHydration.contentIndex,
-            );
-          }
         }
         break;
       case 'tool_result':

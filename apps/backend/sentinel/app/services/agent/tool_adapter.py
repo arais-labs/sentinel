@@ -18,12 +18,13 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.models import Message
 from app.services.agent.agent_modes import AgentMode
-from app.services.approvals.extractors import extract_approval_metadata_from_tool_result
 from app.services.estop import EstopService
 from app.services.llm.generic.credential_scrubber import scrub
 from app.services.llm.generic.types import ToolCallContent, ToolResultMessage, ToolSchema
 from app.services.tools.executor import ToolExecutor
+from app.services.tools.approval.extractors import extract_approval_metadata_from_tool_result
 from app.services.tools.registry import ToolRegistry
 
 MAX_TOOL_RESULT_BYTES = 50_000
@@ -69,6 +70,7 @@ class ToolAdapter:
         *,
         session_id: UUID | str | None = None,
         agent_mode: AgentMode | str | None = None,
+        on_pending_tool_result: Any = None,
     ) -> list[ToolResultMessage]:
         """Execute all tool calls for a turn and return normalized result messages."""
         tasks = [
@@ -77,6 +79,7 @@ class ToolAdapter:
                 db,
                 session_id=session_id,
                 agent_mode=agent_mode,
+                on_pending_tool_result=on_pending_tool_result,
             )
             for call in calls
         ]
@@ -114,8 +117,11 @@ class ToolAdapter:
         *,
         session_id: UUID | str | None,
         agent_mode: AgentMode | str | None,
+        on_pending_tool_result: Any = None,
     ) -> ToolResultMessage:
         """Execute a single tool call with estop enforcement and consistent error wrapping."""
+        pending_message_id: str | None = None
+
         try:
             tool = self._registry.get(call.name)
             if tool is None:
@@ -132,12 +138,27 @@ class ToolAdapter:
             supports_session_id = isinstance(schema_properties, dict) and "session_id" in schema_properties
             if session_id is not None and supports_session_id:
                 payload["session_id"] = str(session_id)
+
+            async def _on_pending_approval(approval_payload: dict[str, Any]) -> None:
+                nonlocal pending_message_id
+                pending_result = self._build_pending_tool_result_message(call, approval_payload)
+                if self._session_factory is not None and session_id is not None:
+                    pending_message_id = await self._persist_tool_result_message(
+                        session_id=session_id,
+                        tool_result=pending_result,
+                    )
+                if callable(on_pending_tool_result):
+                    await on_pending_tool_result(pending_result)
+
             result, _duration_ms = await self._executor.execute(
                 call.name,
                 payload,
                 agent_mode=agent_mode,
+                on_pending_approval=_on_pending_approval,
             )
             truncated, metadata = self._prepare_content_and_metadata(call.name, result)
+            if pending_message_id is not None:
+                metadata["__persisted_message_id"] = pending_message_id
             return ToolResultMessage(
                 tool_call_id=call.id,
                 tool_name=call.name,
@@ -153,11 +174,15 @@ class ToolAdapter:
                 is_error=True,
             )
         except Exception as exc:  # noqa: BLE001
+            metadata: dict[str, Any] = {}
+            if pending_message_id is not None:
+                metadata["__persisted_message_id"] = pending_message_id
             return ToolResultMessage(
                 tool_call_id=call.id,
                 tool_name=call.name,
                 content=scrub(self._truncate_content(str(exc))),
                 is_error=True,
+                metadata=metadata,
             )
 
     def _prepare_content_and_metadata(self, tool_name: str, result: Any) -> tuple[str, dict[str, Any]]:
@@ -183,16 +208,54 @@ class ToolAdapter:
                 approval.get("pending"),
                 approval.get("can_resolve"),
             )
-        elif tool_name == "git_exec":
-            logger.info(
-                "tool_result_approval_metadata tool=%s provider=%s approval_id=%s status=%s pending=%s",
-                tool_name,
-                None,
-                None,
-                None,
-                None,
-            )
         return truncated, metadata
+
+    def _build_pending_tool_result_message(
+        self,
+        call: ToolCallContent,
+        approval_payload: dict[str, Any],
+    ) -> ToolResultMessage:
+        content = json.dumps(
+            {
+                "status": "pending",
+                "message": approval_payload.get("description") or "Action requires approval.",
+                "approval": approval_payload,
+            },
+            default=str,
+        )
+        return ToolResultMessage(
+            tool_call_id=call.id,
+            tool_name=call.name,
+            content=scrub(self._truncate_content(content)),
+            is_error=False,
+            metadata={
+                "approval": approval_payload,
+                "pending": True,
+            },
+        )
+
+    async def _persist_tool_result_message(
+        self,
+        *,
+        session_id: UUID | str,
+        tool_result: ToolResultMessage,
+    ) -> str:
+        if self._session_factory is None:
+            raise RuntimeError("ToolAdapter session_factory is required to persist pending tool results.")
+        normalized_session_id = session_id if isinstance(session_id, UUID) else UUID(str(session_id))
+        async with self._session_factory() as db:
+            row = Message(
+                session_id=normalized_session_id,
+                role="tool_result",
+                content=tool_result.content,
+                metadata_json=dict(tool_result.metadata or {}),
+                tool_call_id=tool_result.tool_call_id or None,
+                tool_name=tool_result.tool_name or None,
+            )
+            db.add(row)
+            await db.commit()
+            await db.refresh(row)
+            return str(row.id)
 
     def _schema_for_model(self, raw_schema: Any) -> dict[str, Any]:
         if not isinstance(raw_schema, dict):

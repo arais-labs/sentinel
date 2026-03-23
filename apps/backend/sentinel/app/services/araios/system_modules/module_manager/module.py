@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from app.services.araios.module_types import ActionDefinition, ApprovalDefinition, ModuleDefinition
+from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import (
-    _delete_module_approval_evaluator,
-    _run_action_approval_evaluator,
     handle_create_module,
     handle_create_record,
     handle_delete_module,
@@ -155,8 +153,8 @@ def _run_action_parameters_schema() -> dict:
 
 
 MODULE = ModuleDefinition(
-    name="modules_discovery",
-    label="Modules & Records",
+    name="module_manager",
+    label="Module Manager",
     description="Unified araiOS module engine for module CRUD, record CRUD, and action execution.",
     icon="boxes",
     pinned=False,
@@ -189,10 +187,7 @@ MODULE = ModuleDefinition(
             label="Delete Module",
             description="Delete one araiOS module and its related data.",
             handler=handle_delete_module,
-            approval=ApprovalDefinition(
-                mode="conditional",
-                evaluator=_delete_module_approval_evaluator,
-            ),
+            approval=True,
             parameters_schema=_delete_module_parameters_schema(),
         ),
         ActionDefinition(
@@ -235,10 +230,7 @@ MODULE = ModuleDefinition(
             label="Run Module Action",
             description="Execute a module action for a module or record.",
             handler=handle_run_action,
-            approval=ApprovalDefinition(
-                mode="conditional",
-                evaluator=_run_action_approval_evaluator,
-            ),
+            approval=True,
             parameters_schema=_run_action_parameters_schema(),
         ),
     ],

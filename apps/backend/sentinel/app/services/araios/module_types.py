@@ -6,17 +6,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import inspect
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
+
+from app.models.araios import AraiosPermission
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import (
-    ToolApprovalDecision,
     ToolApprovalEvaluation,
-    ToolApprovalGate,
-    ToolApprovalMode,
     ToolApprovalRequirement,
     ToolDefinition,
 )
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 _GROUPED_ACTION_FIELD = "command"
 
@@ -74,58 +77,6 @@ class ParamDefinition:
 
 
 @dataclass
-class ApprovalDefinition:
-    """Approval configuration for a system-module action."""
-
-    mode: str
-    evaluator: Any | None = None
-    waiter: Any | None = None
-    action: str | None = None
-    description: str | None = None
-    timeout_seconds: int | None = None
-    metadata: dict[str, Any] | None = None
-    requested_by: str | None = None
-    match_key: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {"mode": self.mode}
-        if self.action:
-            data["action"] = self.action
-        if self.description:
-            data["description"] = self.description
-        if self.timeout_seconds is not None:
-            data["timeout_seconds"] = self.timeout_seconds
-        if self.metadata:
-            data["metadata"] = self.metadata
-        if self.requested_by:
-            data["requested_by"] = self.requested_by
-        if self.match_key:
-            data["match_key"] = self.match_key
-        return data
-
-    @staticmethod
-    def from_value(value: Any) -> "ApprovalDefinition" | dict[str, Any] | None:
-        if value is None or isinstance(value, ApprovalDefinition):
-            return value
-        if not isinstance(value, dict):
-            return None
-        evaluator = value.get("evaluator")
-        if callable(evaluator):
-            return ApprovalDefinition(
-                mode=str(value.get("mode", "none")),
-                evaluator=evaluator,
-                waiter=value.get("waiter") if callable(value.get("waiter")) else None,
-                action=value.get("action"),
-                description=value.get("description"),
-                timeout_seconds=value.get("timeout_seconds"),
-                metadata=value.get("metadata"),
-                requested_by=value.get("requested_by"),
-                match_key=value.get("match_key"),
-            )
-        return value
-
-
-@dataclass
 class ActionDefinition:
     """An executable action within a module."""
     id: str
@@ -137,7 +88,7 @@ class ActionDefinition:
     code: str | None = None       # user modules — Python executed in runtime
     handler: Any | None = None    # system modules — the actual async handler function
     streaming: bool = False
-    approval: ApprovalDefinition | dict[str, Any] | None = None
+    approval: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -159,10 +110,7 @@ class ActionDefinition:
         if self.streaming:
             d["streaming"] = True
         if self.approval:
-            if isinstance(self.approval, ApprovalDefinition):
-                d["approval"] = self.approval.to_dict()
-            elif isinstance(self.approval, dict):
-                d["approval"] = {k: v for k, v in self.approval.items() if not callable(v)}
+            d["approval"] = True
         return d
 
     def to_tool_definition(
@@ -171,7 +119,7 @@ class ActionDefinition:
         module_name: str,
         module_description: str,
         action_count: int,
-        approval_gate: ToolApprovalGate | None = None,
+        approval_check: Any | None = None,
     ) -> ToolDefinition:
         """Convert this action into a ToolDefinition for the agent loop."""
         if not self.handler:
@@ -189,7 +137,7 @@ class ActionDefinition:
             description=description,
             parameters_schema=self.get_parameters_schema() or {},
             execute=self.handler,
-            approval_gate=approval_gate,
+            approval_check=approval_check,
         )
 
     def get_parameters_schema(self) -> dict[str, Any] | None:
@@ -325,7 +273,7 @@ class ModuleDefinition:
                     code=a.get("code"),
                     handler=a.get("handler"),
                     streaming=a.get("streaming", False),
-                    approval=ApprovalDefinition.from_value(a.get("approval")),
+                    approval=_normalize_approval_value(a.get("approval")),
                 )
                 for a in raw_actions
                 if isinstance(a, dict) and "id" in a
@@ -365,22 +313,29 @@ class ModuleDefinition:
     def to_tool_definitions(
         self,
         *,
-        action_gates: dict[str, ToolApprovalGate | None] | None = None,
+        session_factory: "async_sessionmaker[AsyncSession] | None" = None,
     ) -> list[ToolDefinition]:
         actions = [action for action in (self.actions or []) if action.handler]
         if not actions:
             return []
 
-        gates = action_gates or {}
+        checks = {
+            action.id: _resolve_action_approval_check(
+                module_name=self.name,
+                action=action,
+                session_factory=session_factory,
+            )
+            for action in actions
+        }
         if self.grouped_tool:
-            return [self._to_grouped_tool_definition(actions=actions, action_gates=gates)]
+            return [self._to_grouped_tool_definition(actions=actions, action_checks=checks)]
 
         return [
             action.to_tool_definition(
                 module_name=self.name,
                 module_description=self.description,
                 action_count=len(actions),
-                approval_gate=gates.get(action.id),
+                approval_check=checks.get(action.id),
             )
             for action in actions
         ]
@@ -389,7 +344,7 @@ class ModuleDefinition:
         self,
         *,
         actions: list[ActionDefinition],
-        action_gates: dict[str, ToolApprovalGate | None],
+        action_checks: dict[str, Any | None],
     ) -> ToolDefinition:
         action_map = {action.id: action for action in actions}
         schema = _build_grouped_parameters_schema(
@@ -406,10 +361,10 @@ class ModuleDefinition:
             _validate_payload_against_schema(forwarded, action.get_parameters_schema() or {})
             return await action.handler(forwarded)
 
-        approval_gate = _build_grouped_approval_gate(
+        approval_check = _build_grouped_approval_check(
             module_name=self.name,
             action_map=action_map,
-            action_gates=action_gates,
+            action_checks=action_checks,
         )
 
         return ToolDefinition(
@@ -417,8 +372,73 @@ class ModuleDefinition:
             description=self.description or self.label,
             parameters_schema=schema,
             execute=_execute,
-            approval_gate=approval_gate,
+            approval_check=approval_check,
         )
+
+
+def _resolve_action_approval_check(
+    *,
+    module_name: str,
+    action: ActionDefinition,
+    session_factory: "async_sessionmaker[AsyncSession] | None",
+) -> Any | None:
+    default_level = _default_permission_level(action.approval)
+    action_key = f"{module_name}.{action.id}"
+    description = (action.description or action.label or action_key).strip()
+
+    async def _evaluate() -> ToolApprovalEvaluation:
+        level = default_level
+        if session_factory is not None:
+            level = await _load_permission_level(
+                session_factory=session_factory,
+                action_key=action_key,
+                default_level=default_level,
+            )
+        if level == "deny":
+            return ToolApprovalEvaluation.deny(
+                f"Execution denied by AraiOS permission for action '{action_key}'."
+            )
+        if level == "approval":
+            return ToolApprovalEvaluation.require(
+                ToolApprovalRequirement(
+                    action=action_key,
+                    description=description,
+                )
+            )
+        return ToolApprovalEvaluation.allow()
+
+    if session_factory is None and default_level == "allow":
+        return None
+    return _evaluate
+
+
+async def _load_permission_level(
+    *,
+    session_factory: "async_sessionmaker[AsyncSession]",
+    action_key: str,
+    default_level: str,
+) -> str:
+    async with session_factory() as db:
+        result = await db.execute(
+            select(AraiosPermission).where(AraiosPermission.action == action_key)
+        )
+        permission = result.scalars().first()
+    level = str(getattr(permission, "level", "") or "").strip().lower()
+    if level in {"allow", "approval", "deny"}:
+        return level
+    return default_level
+
+
+def _default_permission_level(approval: bool) -> str:
+    return "approval" if approval else "allow"
+
+
+def _normalize_approval_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        return value.get("required") is not False
+    return False
 
 
 def _resolve_grouped_action(
@@ -493,13 +513,13 @@ def _build_grouped_parameters_schema(
     }
 
 
-def _build_grouped_approval_gate(
+def _build_grouped_approval_check(
     *,
     module_name: str,
     action_map: dict[str, ActionDefinition],
-    action_gates: dict[str, ToolApprovalGate | None],
-) -> ToolApprovalGate | None:
-    if not any(action_gates.get(action_id) for action_id in action_map):
+    action_checks: dict[str, Any | None],
+) -> Any | None:
+    if not any(action_checks.get(action_id) for action_id in action_map):
         return None
 
     async def _evaluate(payload: dict[str, Any]) -> ToolApprovalEvaluation:
@@ -507,83 +527,44 @@ def _build_grouped_approval_gate(
             payload=payload,
             action_map=action_map,
         )
-        gate = action_gates.get(action.id)
-        if gate is None or gate.mode == ToolApprovalMode.NONE:
+        approval_check = action_checks.get(action.id)
+        if approval_check is None:
             return ToolApprovalEvaluation.allow()
 
         forwarded = dict(payload)
         forwarded.pop(_GROUPED_ACTION_FIELD, None)
-
-        if gate.mode == ToolApprovalMode.REQUIRED:
-            evaluated = await _run_gate_evaluator(gate=gate, payload=forwarded)
-            if evaluated is not None:
-                if evaluated.decision == ToolApprovalDecision.DENY:
-                    return evaluated
-                if (
-                    evaluated.decision == ToolApprovalDecision.REQUIRE
-                    and evaluated.requirement is not None
-                ):
-                    return evaluated
-            return ToolApprovalEvaluation.require(
-                gate.required
-                if gate.required is not None
-                else ToolApprovalRequirement(
-                    action=f"{module_name}.{action.id}",
-                    description=f"{module_name}.{action.id} requires approval.",
-                )
-            )
-
-        if gate.mode == ToolApprovalMode.CONDITIONAL:
-            if gate.evaluator is None:
-                raise RuntimeError(
-                    f"Grouped action '{module_name}.{action.id}' uses conditional approval without evaluator."
-                )
-            evaluated = await _run_gate_evaluator(gate=gate, payload=forwarded)
-            if evaluated is None:
-                raise RuntimeError(
-                    f"Grouped action '{module_name}.{action.id}' approval evaluator returned invalid response type."
-                )
-            return evaluated
-
-        return ToolApprovalEvaluation.allow()
-
-    async def _waiter(
-        tool_name: str,
-        payload: dict[str, Any],
-        requirement: ToolApprovalRequirement,
-    ) -> Any:
-        action = _resolve_grouped_action(
-            payload=payload,
-            action_map=action_map,
+        return await _invoke_approval_check(
+            approval_check=approval_check,
+            payload=forwarded,
+            error_context=f"Grouped action '{module_name}.{action.id}' approval check",
         )
-        gate = action_gates.get(action.id)
-        if gate is None or gate.waiter is None:
-            raise RuntimeError(
-                f"Grouped action '{module_name}.{action.id}' requires approval but has no waiter."
-            )
-        forwarded = dict(payload)
-        forwarded.pop(_GROUPED_ACTION_FIELD, None)
-        return await gate.waiter(tool_name, forwarded, requirement)
 
-    return ToolApprovalGate(
-        mode=ToolApprovalMode.CONDITIONAL,
-        evaluator=_evaluate,
-        waiter=_waiter,
-    )
+    return _evaluate
 
 
-async def _run_gate_evaluator(
+async def _invoke_approval_check(
     *,
-    gate: ToolApprovalGate,
+    approval_check: Any,
     payload: dict[str, Any],
-) -> ToolApprovalEvaluation | None:
-    if gate.evaluator is None:
-        return None
-    evaluated = gate.evaluator(payload)
+    error_context: str,
+) -> ToolApprovalEvaluation:
+    evaluator_signature = inspect.signature(approval_check)
+    positional_params = [
+        parameter
+        for parameter in evaluator_signature.parameters.values()
+        if parameter.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+    ]
+    if positional_params:
+        evaluated = approval_check(payload)
+    else:
+        evaluated = approval_check()
     if inspect.isawaitable(evaluated):
         evaluated = await evaluated
     if not isinstance(evaluated, ToolApprovalEvaluation):
-        raise RuntimeError("Approval evaluator returned invalid response type.")
+        raise RuntimeError(f"{error_context} returned invalid response type.")
     return evaluated
 
 

@@ -30,8 +30,6 @@ from app.services.agent.tool_image_reinjection import (
     build_tool_image_reinjection_messages,
 )
 from app.services.agent.tool_adapter import ToolAdapter
-from app.services.approvals.tool_match import build_runtime_exec_match_key
-from app.services.approvals.providers.git import normalize_git_command
 from app.services.estop import EstopLevel, EstopService
 from app.services.messages import (
     build_generation_metadata,
@@ -517,11 +515,36 @@ class AgentLoop:
                     if on_event is not None and should_emit_start:
                         await on_event(AgentEvent(type="toolcall_start", tool_call=tool_call))
 
+                async def _emit_pending_tool_result(tool_result: ToolResultMessage) -> None:
+                    if on_event is None:
+                        return
+                    await on_event(
+                        AgentEvent(
+                            type="tool_result",
+                            tool_result=ToolResultContent(
+                                tool_call_id=tool_result.tool_call_id,
+                                tool_name=tool_result.tool_name,
+                                content=tool_result.content,
+                                is_error=tool_result.is_error,
+                                metadata=self._stream_safe_tool_metadata(tool_result.metadata),
+                                tool_arguments=(
+                                    tool_arguments_by_call_id.get(tool_result.tool_call_id)
+                                    if isinstance(
+                                        tool_arguments_by_call_id.get(tool_result.tool_call_id),
+                                        dict,
+                                    )
+                                    else None
+                                ),
+                            ),
+                        )
+                    )
+
                 tool_results = await self.tool_adapter.execute_tool_calls(
                     tool_calls,
                     db,
                     session_id=session_id,
                     agent_mode=mode_definition.id,
+                    on_pending_tool_result=_emit_pending_tool_result,
                 )
                 messages.extend(tool_results)
                 created.extend(tool_results)
@@ -1001,12 +1024,6 @@ class AgentLoop:
                         "arguments": self._sanitize_tool_call_arguments(block.arguments),
                         "thought_signature": block.thought_signature,
                     }
-                    approval_hint = self._approval_hint_for_tool_call(
-                        tool_name=block.name,
-                        arguments=block.arguments,
-                    )
-                    if approval_hint is not None:
-                        persisted_call["approval_hint"] = approval_hint
                     tool_calls_data.append(persisted_call)
                 metadata: dict[str, Any] = {
                     "provider": message.provider,
@@ -1043,9 +1060,10 @@ class AgentLoop:
                 continue
 
             if isinstance(message, ToolResultMessage):
+                raw_metadata = dict(message.metadata or {})
+                persisted_message_id = raw_metadata.pop("__persisted_message_id", None)
                 metadata = {"is_error": message.is_error}
-                if message.metadata:
-                    metadata.update(message.metadata)
+                metadata.update({k: v for k, v in raw_metadata.items() if not str(k).startswith("__")})
                 metadata = with_generation_metadata(
                     metadata,
                     generation=latest_assistant_generation or requested_generation,
@@ -1055,16 +1073,28 @@ class AgentLoop:
                 )
                 if truncation_meta:
                     metadata.update(truncation_meta)
-                record = Message(
-                    session_id=session_id,
-                    role="tool_result",
-                    content=stored_content,
-                    metadata_json=metadata,
-                    tool_call_id=message.tool_call_id or None,
-                    tool_name=message.tool_name or None,
-                    created_at=created_at,
-                )
-                db.add(record)
+                existing_record = None
+                if isinstance(persisted_message_id, str) and persisted_message_id.strip():
+                    try:
+                        existing_record = await db.get(Message, UUID(persisted_message_id.strip()))
+                    except ValueError:
+                        existing_record = None
+                if existing_record is not None:
+                    existing_record.content = stored_content
+                    existing_record.metadata_json = metadata
+                    existing_record.tool_call_id = message.tool_call_id or None
+                    existing_record.tool_name = message.tool_name or None
+                else:
+                    record = Message(
+                        session_id=session_id,
+                        role="tool_result",
+                        content=stored_content,
+                        metadata_json=metadata,
+                        tool_call_id=message.tool_call_id or None,
+                        tool_name=message.tool_name or None,
+                        created_at=created_at,
+                    )
+                    db.add(record)
 
         if session_record is not None:
             apply_conversation_message_delta(session_record, conversation_delta)
@@ -1342,32 +1372,6 @@ class AgentLoop:
             "original_chars": len(serialized),
         }
 
-    @staticmethod
-    def _approval_hint_for_tool_call(
-        *,
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, str] | None:
-        if tool_name == "git_exec":
-            cli_command = arguments.get("cli_command")
-            if isinstance(cli_command, str) and cli_command.strip():
-                return {"provider": "git", "match_key": normalize_git_command(cli_command)}
-            return None
-        if tool_name == "runtime_exec":
-            shell_command = arguments.get("shell_command")
-            if not isinstance(shell_command, str) or not shell_command.strip():
-                return None
-            privilege = str(arguments.get("privilege") or "user").strip().lower()
-            if privilege == "root":
-                return {
-                    "provider": "tool",
-                    "match_key": build_runtime_exec_match_key(
-                        command=shell_command,
-                        privilege="root",
-                    ),
-                }
-        return None
-
     def _truncate_tool_result_for_storage(self, content: str) -> tuple[str, dict[str, Any]]:
         """Cap stored tool-result payload size while preserving debug metadata."""
         max_chars = max(200, int(settings.stored_tool_result_max_chars))
@@ -1408,7 +1412,11 @@ class AgentLoop:
         """Strip heavy fields (e.g. base64 blobs) from live WS tool_result events."""
         if not metadata:
             return {}
-        safe = dict(metadata)
+        safe = {
+            key: value
+            for key, value in metadata.items()
+            if not str(key).startswith("__")
+        }
         attachments = safe.get("attachments")
         if isinstance(attachments, list):
             safe["attachment_count"] = len(attachments)

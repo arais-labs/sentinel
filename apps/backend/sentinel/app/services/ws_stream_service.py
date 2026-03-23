@@ -109,7 +109,6 @@ def unresolved_tool_calls_from_history(history: list[dict[str, Any]]) -> list[di
                     continue
                 name = str(raw_call.get("name") or "unknown")
                 arguments = raw_call.get("arguments")
-                approval_hint = raw_call.get("approval_hint")
                 generation = normalize_generation_metadata(
                     metadata.get("generation") if isinstance(metadata.get("generation"), dict) else None
                 )
@@ -117,7 +116,6 @@ def unresolved_tool_calls_from_history(history: list[dict[str, Any]]) -> list[di
                     "id": call_id,
                     "name": name,
                     "arguments": arguments if isinstance(arguments, dict) else {},
-                    "approval_hint": approval_hint if isinstance(approval_hint, dict) else None,
                     "generation": generation,
                 }
                 pending_order.append(call_id)

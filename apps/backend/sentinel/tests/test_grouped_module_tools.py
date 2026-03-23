@@ -180,8 +180,8 @@ def test_grouped_tool_requires_explicit_selector_field():
         grouped_tool=True,
         actions=[
             ActionDefinition(
-                id="run",
-                label="Run",
+                id="run_read",
+                label="Run Read",
                 handler=_handle_click,
                 parameters_schema={
                     "type": "object",

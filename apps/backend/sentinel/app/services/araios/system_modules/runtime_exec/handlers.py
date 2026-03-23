@@ -8,9 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from app.config import settings
 from app.database.database import AsyncSessionLocal
-from app.services.approvals.tool_match import build_runtime_exec_match_key
 from app.services.runtime import get_runtime
 from app.services.runtime.ssh_client import SSHExecResult
 from app.services.session_runtime import (
@@ -26,10 +24,6 @@ from app.services.session_runtime import (
     stop_detached_runtime_job,
 )
 from app.services.tools.executor import ToolValidationError
-from app.services.tools.registry import (
-    ToolApprovalEvaluation,
-    ToolApprovalRequirement,
-)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -40,10 +34,6 @@ _RUNTIME_EXEC_STREAM_READ_BYTES = 65_536
 _RUNTIME_EXEC_STREAM_DRAIN_SECONDS = 2.0
 _RUNTIME_EXEC_TIMEOUT_KILL_WAIT_SECONDS = 3.0
 _RUNTIME_BACKGROUND_AMPERSAND_RE = re.compile(r"(?<!&)&(?!&)")
-_DEFAULT_RUNTIME_ROOT_APPROVAL_TIMEOUT_SECONDS = 600
-_MAX_RUNTIME_ROOT_APPROVAL_TIMEOUT_SECONDS = 3600
-ALLOWED_RUNTIME_EXEC_OPERATIONS = ("run", "jobs_list", "job_status", "job_logs", "job_stop")
-
 # ---------------------------------------------------------------------------
 # Internal helpers (moved from builtin.py)
 # ---------------------------------------------------------------------------
@@ -126,24 +116,6 @@ def _watch_detached_runtime_process(
             )
 
     asyncio.create_task(_watch())
-
-
-def _runtime_exec_approval_timeout_from_payload(payload: dict[str, Any]) -> int:
-    approval_timeout_seconds = payload.get(
-        "approval_timeout_seconds",
-        getattr(
-            settings,
-            "runtime_exec_root_approval_timeout_seconds",
-            _DEFAULT_RUNTIME_ROOT_APPROVAL_TIMEOUT_SECONDS,
-        ),
-    )
-    if (
-        not isinstance(approval_timeout_seconds, int)
-        or isinstance(approval_timeout_seconds, bool)
-        or approval_timeout_seconds < 1
-    ):
-        raise ToolValidationError("Field 'approval_timeout_seconds' must be a positive integer")
-    return min(approval_timeout_seconds, _MAX_RUNTIME_ROOT_APPROVAL_TIMEOUT_SECONDS)
 
 
 async def _ensure_session_exists(session_id: UUID) -> None:
@@ -305,49 +277,16 @@ async def _execute_via_ssh(
         )
 
 
-def _runtime_exec_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEvaluation:
-    privilege_raw = payload.get("privilege", "user")
-    privilege = privilege_raw.strip().lower() if isinstance(privilege_raw, str) else "user"
-    if privilege != "root":
-        return ToolApprovalEvaluation.allow()
-
-    shell_command = payload.get("shell_command")
-    if not isinstance(shell_command, str) or not shell_command.strip():
-        return ToolApprovalEvaluation.allow()
-
-    session_id = payload.get("session_id")
-    requested_by = (
-        f"session:{session_id.strip()}"
-        if isinstance(session_id, str) and session_id.strip()
-        else None
-    )
-    return ToolApprovalEvaluation.require(
-        ToolApprovalRequirement(
-            action="runtime_exec.root",
-            description=f"Allow root runtime command: {shell_command.strip()}",
-            timeout_seconds=_runtime_exec_approval_timeout_from_payload(payload),
-            match_key=build_runtime_exec_match_key(
-                command=shell_command,
-                privilege="root",
-            ),
-            metadata={
-                "tool_name": "runtime_exec",
-                "privilege": "root",
-                "command": shell_command.strip(),
-                "cwd": payload.get("cwd"),
-                "detached": bool(payload.get("detached", False)),
-            },
-            requested_by=requested_by,
-        )
-    )
-
-
 # ---------------------------------------------------------------------------
 # Handler functions (module-level)
 # ---------------------------------------------------------------------------
 
 
-async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
+async def _handle_run_with_privilege(
+    payload: dict[str, Any],
+    *,
+    privilege: str,
+) -> dict[str, Any]:
     session_id_raw = payload.get("session_id")
     if not isinstance(session_id_raw, str) or not session_id_raw.strip():
         raise ToolValidationError("Field 'session_id' must be a non-empty string")
@@ -360,13 +299,6 @@ async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(shell_command, str) or not shell_command.strip():
         raise ToolValidationError("Field 'shell_command' must be a non-empty string")
     command_text = shell_command.strip()
-
-    privilege_raw = payload.get("privilege", "user")
-    if not isinstance(privilege_raw, str) or not privilege_raw.strip():
-        raise ToolValidationError("Field 'privilege' must be one of: user, root")
-    privilege = privilege_raw.strip().lower()
-    if privilege not in {"user", "root"}:
-        raise ToolValidationError("Field 'privilege' must be one of: user, root")
 
     timeout_seconds = payload.get("timeout_seconds", 300)
     if (
@@ -410,6 +342,14 @@ async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
         timeout_seconds=timeout_seconds,
         detached=detached,
     )
+
+
+async def handle_run_user(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _handle_run_with_privilege(payload, privilege="user")
+
+
+async def handle_run_root(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _handle_run_with_privilege(payload, privilege="root")
 
 
 async def handle_jobs_list(payload: dict[str, Any]) -> dict[str, Any]:

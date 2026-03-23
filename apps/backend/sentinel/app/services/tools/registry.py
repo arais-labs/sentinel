@@ -6,20 +6,16 @@ from typing import Any, Awaitable, Callable
 
 
 ToolExecutorFn = Callable[[dict[str, Any]], Awaitable[Any]]
-ToolApprovalEvaluatorFn = Callable[
-    [dict[str, Any]],
-    "ToolApprovalEvaluation" | Awaitable["ToolApprovalEvaluation"],
-]
+ToolApprovalCheckFn = (
+    Callable[[], "ToolApprovalEvaluation" | Awaitable["ToolApprovalEvaluation"]]
+    | Callable[[dict[str, Any]], "ToolApprovalEvaluation" | Awaitable["ToolApprovalEvaluation"]]
+)
+ToolApprovalPendingFn = Callable[[dict[str, Any]], Awaitable[None]]
 ToolApprovalWaiterFn = Callable[
-    [str, dict[str, Any], "ToolApprovalRequirement"],
+    [str, dict[str, Any], "ToolApprovalRequirement", ToolApprovalPendingFn | None],
     "Awaitable[ToolApprovalOutcome]",
 ]
-
-
-class ToolApprovalMode(StrEnum):
-    NONE = "none"
-    REQUIRED = "required"
-    CONDITIONAL = "conditional"
+ToolApprovalResultRecorderFn = Callable[[str, Any], Awaitable[None]]
 
 
 class ToolApprovalDecision(StrEnum):
@@ -40,7 +36,6 @@ class ToolApprovalRequirement:
     action: str
     description: str
     timeout_seconds: int = 600
-    match_key: str | None = None
     metadata: dict[str, Any] | None = None
     requested_by: str | None = None
 
@@ -72,21 +67,13 @@ class ToolApprovalOutcome:
 
 
 @dataclass(slots=True)
-class ToolApprovalGate:
-    mode: ToolApprovalMode
-    evaluator: ToolApprovalEvaluatorFn | None = None
-    waiter: ToolApprovalWaiterFn | None = None
-    required: ToolApprovalRequirement | None = None
-
-
-@dataclass(slots=True)
 class ToolDefinition:
     name: str
     description: str
     parameters_schema: dict[str, Any]
     execute: ToolExecutorFn
     enabled: bool = True
-    approval_gate: ToolApprovalGate | None = None
+    approval_check: ToolApprovalCheckFn | None = None
 
 
 class ToolRegistry:

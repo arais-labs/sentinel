@@ -191,25 +191,6 @@ class AraiosSecurityFinding(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-
-# ── Approvals ──
-
-
-class AraiosApproval(Base):
-    __tablename__ = "approvals"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=araios_gen_id)
-    status: Mapped[str] = mapped_column(String, server_default=text("'pending'"))
-    action: Mapped[str] = mapped_column(String, nullable=False)
-    resource: Mapped[str | None] = mapped_column(String, nullable=True)
-    resource_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    resolved_by: Mapped[str | None] = mapped_column(String, nullable=True)
-
-
 # ── Permissions ──
 
 

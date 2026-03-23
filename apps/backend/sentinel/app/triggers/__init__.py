@@ -1,1 +1,0 @@
-"""Triggers subsystem package placeholders."""

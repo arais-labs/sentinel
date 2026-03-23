@@ -392,20 +392,14 @@ def test_stop_session_generation_cancels_pending_git_approvals():
         session_id = uuid.UUID(session_resp.json()["id"])
 
         pending = ToolApproval(
-            provider="git",
+            provider="git_exec",
             tool_name="git_exec",
             session_id=session_id,
-            action="git.push",
-            description="Allow write operation: git push origin main",
-            match_key="git push origin main",
+            action="git_exec.run_write",
+            description="Execute an approval-gated git or supported gh write command inside the session workspace.",
             status="pending",
             requested_by="session:test",
-            payload_json={
-                "account_id": str(uuid.uuid4()),
-                "repo_url": "https://github.com/acme/repo",
-                "remote_name": "origin",
-                "command": "git push origin main",
-            },
+            payload_json={"tool_name": "git_exec"},
             expires_at=datetime.now(UTC) + timedelta(minutes=10),
         )
         fake_db.add(pending)
@@ -464,7 +458,7 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
                         {
                             "id": "toolu_pending_runtime",
                             "name": "runtime_exec",
-                            "arguments": {"command": "run", "shell_command": "sleep 20"},
+                            "arguments": {"command": "run_user", "shell_command": "sleep 20"},
                         }
                     ]
                 },

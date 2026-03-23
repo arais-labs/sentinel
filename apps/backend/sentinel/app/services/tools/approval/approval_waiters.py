@@ -9,11 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import ToolApproval
-from app.services.approvals.tool_match import build_tool_match_key
 from app.services.tools.registry import (
     ToolApprovalOutcome,
     ToolApprovalOutcomeStatus,
     ToolApprovalRequirement,
+    ToolApprovalResultRecorderFn,
     ToolApprovalWaiterFn,
 )
 
@@ -28,6 +28,7 @@ def build_tool_db_approval_waiter(
         tool_name: str,
         payload: dict[str, Any],
         requirement: ToolApprovalRequirement,
+        pending_callback: Any = None,
     ) -> ToolApprovalOutcome:
         session_id = _extract_session_id(payload)
         timeout_seconds = max(1, int(requirement.timeout_seconds))
@@ -38,22 +39,16 @@ def build_tool_db_approval_waiter(
             if isinstance(requirement.requested_by, str) and requirement.requested_by.strip()
             else (f"session:{session_id}" if session_id is not None else None)
         )
-        match_key = build_tool_match_key(
-            tool_name=tool_name,
-            payload=payload,
-            explicit=requirement.match_key,
-        )
         metadata = dict(requirement.metadata or {})
         metadata.setdefault("tool_name", tool_name)
 
         async with session_factory() as db:
             row = ToolApproval(
-                provider="tool",
+                provider=tool_name,
                 tool_name=tool_name,
                 session_id=session_id,
                 action=requirement.action.strip(),
                 description=requirement.description.strip() if requirement.description else None,
-                match_key=match_key,
                 status="pending",
                 requested_by=requested_by,
                 payload_json=metadata or None,
@@ -64,6 +59,8 @@ def build_tool_db_approval_waiter(
             await db.refresh(row)
 
         approval_payload = _approval_payload(row)
+        if callable(pending_callback):
+            await pending_callback(approval_payload)
         try:
             decision = await _wait_for_resolution(
                 session_factory=session_factory,
@@ -96,6 +93,27 @@ def build_tool_db_approval_waiter(
         )
 
     return _waiter
+
+
+def build_tool_db_approval_result_recorder(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> ToolApprovalResultRecorderFn:
+    async def _record(approval_id: str, result: Any) -> None:
+        try:
+            approval_uuid = UUID(str(approval_id))
+        except ValueError:
+            return
+
+        async with session_factory() as db:
+            db_result = await db.execute(select(ToolApproval).where(ToolApproval.id == approval_uuid))
+            approval = db_result.scalars().first()
+            if approval is None:
+                return
+            approval.result_json = result if isinstance(result, dict) else {"result": result}
+            await db.commit()
+
+    return _record
 
 
 def _extract_session_id(payload: dict[str, Any]) -> UUID | None:
@@ -179,7 +197,7 @@ async def _cancel_pending_approval(
 
 def _approval_payload(row: ToolApproval) -> dict[str, Any]:
     return {
-        "provider": "tool",
+        "provider": row.provider,
         "approval_id": str(row.id),
         "status": row.status,
         "pending": row.status == "pending",
@@ -187,7 +205,6 @@ def _approval_payload(row: ToolApproval) -> dict[str, Any]:
         "label": f"{row.tool_name} approval",
         "action": row.action,
         "description": row.description,
-        "match_key": row.match_key,
         "session_id": str(row.session_id) if row.session_id else None,
     }
 

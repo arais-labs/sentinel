@@ -4,10 +4,18 @@ import asyncio
 import json
 from uuid import uuid4
 
+from app.models import Message
 from app.services.agent import ToolAdapter
 from app.services.llm.generic.types import ToolCallContent
 from app.services.tools.executor import ToolExecutor
-from app.services.tools.registry import ToolDefinition, ToolRegistry
+from app.services.tools.registry import (
+    ToolApprovalEvaluation,
+    ToolApprovalOutcome,
+    ToolApprovalOutcomeStatus,
+    ToolApprovalRequirement,
+    ToolDefinition,
+    ToolRegistry,
+)
 from tests.fake_db import FakeDB
 
 
@@ -144,3 +152,112 @@ def test_tool_adapter_overrides_model_provided_session_id():
 
     assert seen_payloads[0]["session_id"] == str(context_session_id)
 
+
+class _FakeSessionFactory:
+    def __init__(self, db: FakeDB) -> None:
+        self._db = db
+
+    class _SessionContext:
+        def __init__(self, db: FakeDB) -> None:
+            self._db = db
+
+        async def __aenter__(self) -> FakeDB:
+            return self._db
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    def __call__(self) -> "_FakeSessionFactory._SessionContext":
+        return self._SessionContext(self._db)
+
+
+def test_tool_adapter_persists_pending_tool_result_for_approval():
+    registry = ToolRegistry()
+    seen_payloads: list[dict] = []
+
+    async def _execute(payload):
+        seen_payloads.append(dict(payload))
+        return {"ok": True}
+
+    async def _waiter(tool_name, payload, requirement, pending_callback):
+        approval_payload = {
+            "provider": "approval_tool",
+            "approval_id": "approval-1",
+            "status": "pending",
+            "pending": True,
+            "can_resolve": True,
+            "label": f"{tool_name} approval",
+            "action": requirement.action,
+            "description": requirement.description,
+        }
+        if pending_callback is not None:
+            await pending_callback(approval_payload)
+        return ToolApprovalOutcome(
+            status=ToolApprovalOutcomeStatus.APPROVED,
+            approval={
+                **approval_payload,
+                "status": "approved",
+                "pending": False,
+                "can_resolve": False,
+            },
+            message="Approval approved.",
+        )
+
+    registry.register(
+        ToolDefinition(
+            name="approval_tool",
+            description="Needs approval",
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["session_id", "query"],
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "query": {"type": "string"},
+                },
+            },
+            execute=_execute,
+            approval_check=lambda: ToolApprovalEvaluation.require(
+                ToolApprovalRequirement(
+                    action="approval_tool.execute",
+                    description="Approval required.",
+                ),
+            ),
+        )
+    )
+
+    fake_db = FakeDB()
+    adapter = ToolAdapter(
+        registry,
+        ToolExecutor(registry, approval_waiter=_waiter),
+        session_factory=_FakeSessionFactory(fake_db),
+    )
+    streamed_pending: list[object] = []
+    session_id = uuid4()
+
+    async def _capture_pending(item: object) -> None:
+        streamed_pending.append(item)
+
+    [result] = _run(
+        adapter.execute_tool_calls(
+            [ToolCallContent(id="c1", name="approval_tool", arguments={"query": "ping"})],
+            fake_db,
+            session_id=session_id,
+            on_pending_tool_result=_capture_pending,
+        )
+    )
+
+    assert result.is_error is False
+    assert seen_payloads[0]["session_id"] == str(session_id)
+    assert len(streamed_pending) == 1
+    pending_rows = fake_db.storage[Message]
+    assert len(pending_rows) == 1
+    row = pending_rows[0]
+    assert row.role == "tool_result"
+    assert row.tool_call_id == "c1"
+    assert row.tool_name == "approval_tool"
+    assert row.metadata_json["pending"] is True
+    assert row.metadata_json["approval"]["approval_id"] == "approval-1"
+    assert result.metadata is not None
+    assert result.metadata["approval"]["status"] == "approved"
+    assert isinstance(result.metadata["__persisted_message_id"], str)

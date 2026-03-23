@@ -1,5 +1,4 @@
 from app.models.araios import (
-    AraiosApproval,
     AraiosClient,
     AraiosCompetitor,
     AraiosCoordinationMessage,
@@ -29,7 +28,6 @@ from app.models.tokens import RevokedToken
 from app.models.triggers import Trigger, TriggerLog
 
 __all__ = [
-    "AraiosApproval",
     "AraiosClient",
     "AraiosCompetitor",
     "AraiosCoordinationMessage",

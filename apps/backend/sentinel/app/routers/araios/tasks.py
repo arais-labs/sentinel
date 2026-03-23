@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
-from app.models.araios import AraiosTask, AraiosPermission, AraiosApproval, araios_gen_id
+from app.models.araios import AraiosTask, araios_gen_id
 from app.schemas.araios import TaskCreate, TaskUpdate, TaskOut, TaskListResponse, OkResponse
 
 router = APIRouter(tags=["araios-tasks"])
@@ -54,44 +54,6 @@ def _to_dict(task: AraiosTask) -> dict[str, Any]:
     return d
 
 
-# ── Helpers ──
-
-
-def _require_araios_permission(action: str):
-    async def _check(
-        user: TokenPayload = Depends(require_auth),
-        db: AsyncSession = Depends(get_db),
-    ):
-        if user.role == "admin":
-            return
-        result = await db.execute(select(AraiosPermission).where(AraiosPermission.action == action))
-        perm = result.scalars().first()
-        level = perm.level if perm else "deny"
-        if level == "allow":
-            return
-        if level == "deny":
-            raise HTTPException(status_code=403, detail=f"Action '{action}' is not allowed for agent role")
-        if level == "approval":
-            approval = AraiosApproval(
-                id=araios_gen_id(),
-                status="pending",
-                action=action,
-                description=f"Agent requested: {action}",
-            )
-            db.add(approval)
-            await db.commit()
-            await db.refresh(approval)
-            raise HTTPException(
-                status_code=202,
-                detail={
-                    "message": "Action requires approval",
-                    "approval": {"id": approval.id, "status": approval.status, "action": approval.action},
-                },
-            )
-
-    return _check
-
-
 def _get_agent_id(user: TokenPayload = Depends(require_auth)) -> str:
     return user.agent_id or user.sub
 
@@ -133,7 +95,6 @@ async def list_tasks(
 async def create_task(
     body: TaskCreate,
     agent_id: str = Depends(_get_agent_id),
-    _perm: None = Depends(_require_araios_permission("tasks.create")),
     db: AsyncSession = Depends(get_db),
 ):
     data = _map_input(body.model_dump(exclude_none=True))
@@ -151,7 +112,6 @@ async def update_task(
     task_id: str,
     body: TaskUpdate,
     agent_id: str = Depends(_get_agent_id),
-    _perm: None = Depends(_require_araios_permission("tasks.update")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(AraiosTask).where(AraiosTask.id == task_id))
@@ -173,7 +133,6 @@ async def update_task(
 @router.delete("/{task_id}", response_model=OkResponse)
 async def delete_task(
     task_id: str,
-    _perm: None = Depends(_require_araios_permission("tasks.delete")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(AraiosTask).where(AraiosTask.id == task_id))
