@@ -1,6 +1,4 @@
 import os
-import sys
-import types
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -10,15 +8,6 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-if "asyncssh" not in sys.modules:
-    async def _asyncssh_connect_stub(*args, **kwargs):  # noqa: ARG001
-        raise RuntimeError("asyncssh stub should not be called in websocket tests")
-
-    sys.modules["asyncssh"] = types.SimpleNamespace(
-        SSHClientConnection=object,
-        Error=RuntimeError,
-        connect=_asyncssh_connect_stub,
-    )
 
 from app.dependencies import get_db
 from app.main import app
@@ -63,9 +52,18 @@ def test_ws_connect_send_ack_and_rejections():
     from app import main as app_main
 
     old_init = app_main.init_db
+    old_agent_loop = getattr(app.state, "agent_loop", None)
+    from app.routers import sessions as sessions_router
+
+    async def _noop_provision_runtime(session_id, ws_manager=None):  # noqa: ARG001
+        return None
+
+    old_provision_runtime = sessions_router._provision_runtime
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.state.agent_loop = None
+    sessions_router._provision_runtime = _noop_provision_runtime
 
     try:
         client = TestClient(app)
@@ -155,6 +153,8 @@ def test_ws_connect_send_ack_and_rejections():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
+        app.state.agent_loop = old_agent_loop
+        sessions_router._provision_runtime = old_provision_runtime
 
 
 def test_ws_rejects_invalid_agent_mode_payload():

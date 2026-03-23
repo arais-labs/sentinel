@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.database import AsyncSessionLocal
 from app.models import GitAccount, Session
-from app.services.session_runtime import ensure_runtime_layout, runtime_workspace_dir
+from app.services.runtime.session_runtime import ensure_runtime_layout, runtime_workspace_dir
 from app.services.tools.executor import ToolValidationError
 
 logger = logging.getLogger(__name__)

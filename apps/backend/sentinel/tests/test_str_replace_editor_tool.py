@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.tools.editor import _parse_str_replace_output
+from app.services.araios.system_modules.str_replace_editor.handlers import _parse_str_replace_output
 from app.services.tools.executor import ToolValidationError
 
 

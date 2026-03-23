@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.services.araios.dynamic_modules import load_dynamic_module_tool_definitions
-from app.services.runtime_rebuild import RuntimeRebuildService
+from app.services.runtime.runtime_rebuild import RuntimeRebuildService
 from app.services.tools.approval.approval_waiters import (
     build_tool_db_approval_result_recorder,
     build_tool_db_approval_waiter,

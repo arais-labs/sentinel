@@ -11,7 +11,7 @@ from app.dependencies import (
 )
 from app.middleware.auth import TokenPayload, require_auth
 from app.services.onboarding_service import OnboardingService
-from app.services.runtime_rebuild import RuntimeRebuildService
+from app.services.runtime.runtime_rebuild import RuntimeRebuildService
 
 router = APIRouter()
 

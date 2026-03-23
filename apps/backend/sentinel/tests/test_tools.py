@@ -1,9 +1,7 @@
 import asyncio
 import json
 import os
-import sys
 import tempfile
-import types
 import uuid
 from unittest.mock import patch
 
@@ -12,15 +10,6 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
-if "asyncssh" not in sys.modules:
-    async def _asyncssh_connect_stub(*args, **kwargs):  # noqa: ARG001
-        raise RuntimeError("asyncssh stub should not be called in test_tools")
-
-    sys.modules["asyncssh"] = types.SimpleNamespace(
-        SSHClientConnection=object,
-        Error=RuntimeError,
-        connect=_asyncssh_connect_stub,
-    )
 
 from app.dependencies import get_db
 from app.main import app

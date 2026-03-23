@@ -10,7 +10,7 @@ from uuid import UUID
 
 from app.database.database import AsyncSessionLocal
 from app.services.runtime import get_runtime
-from app.services.session_runtime import ensure_runtime_layout
+from app.services.runtime.session_runtime import ensure_runtime_layout
 from app.services.tools.executor import ToolValidationError
 
 # ---------------------------------------------------------------------------

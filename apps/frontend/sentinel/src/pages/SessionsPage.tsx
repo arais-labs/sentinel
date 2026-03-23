@@ -32,6 +32,7 @@ import {
   Check,
   Pencil,
   GitBranch,
+  Boxes,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';

@@ -8,7 +8,7 @@ from app.config import Settings, settings
 from app.database.database import get_db_session
 from app.services.llm.generic.base import LLMProvider
 from app.services.onboarding_service import OnboardingService
-from app.services.runtime_rebuild import RuntimeRebuildService
+from app.services.runtime.runtime_rebuild import RuntimeRebuildService
 from app.services.settings_service import SettingsService
 
 

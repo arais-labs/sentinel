@@ -54,7 +54,7 @@ from app.services.llm.factory import build_tier_provider_from_settings
 from app.services.llm.ids import TierName
 from app.services.memory.backfill import run_memory_embedding_backfill
 from app.services.memory.search import MemorySearchService
-from app.services.session_runtime import run_session_runtime_janitor
+from app.services.runtime.session_runtime import run_session_runtime_janitor
 from app.services.session_naming import SessionNamingService
 from app.services.sub_agents import SubAgentOrchestrator
 from app.services.tools import ToolExecutor

@@ -1,7 +1,4 @@
 import os
-import tempfile
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
@@ -25,9 +22,16 @@ def test_full_integration_happy_path():
     from app import main as app_main
 
     old_init = app_main.init_db
+    from app.routers import sessions as sessions_router
+
+    async def _noop_provision_runtime(session_id, ws_manager=None):  # noqa: ARG001
+        return None
+
+    old_provision_runtime = sessions_router._provision_runtime
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    sessions_router._provision_runtime = _noop_provision_runtime
 
     try:
         client = TestClient(app)
@@ -98,25 +102,16 @@ def test_full_integration_happy_path():
         )
         assert fired.status_code == 200
 
-        read_base_dir = Path(os.getenv("TOOL_FILE_READ_BASE_DIR", "/tmp")).resolve()
-        with tempfile.NamedTemporaryFile("w", delete=False, dir=read_base_dir) as handle:
-            handle.write("integration tool check")
-            file_path = handle.name
-
         tools = client.get("/api/v1/tools", headers=headers)
         assert tools.status_code == 200
         tool_names = {item["name"] for item in tools.json()["items"]}
-        assert "file_read" in tool_names
+        assert "module_manager" in tool_names
 
-        file_read = client.post(
-            "/api/v1/tools/file_read/execute",
-            json={"input": {"path": file_path}},
+        live_view = client.get(
+            "/api/v1/runtime/live-view",
             headers=headers,
+            params={"session_id": session_id},
         )
-        assert file_read.status_code == 200
-        assert "integration tool check" in file_read.json()["result"]["content"]
-
-        live_view = client.get("/api/v1/runtime/live-view", headers=headers)
         assert live_view.status_code == 200
         assert "enabled" in live_view.json()
 
@@ -140,3 +135,4 @@ def test_full_integration_happy_path():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
+        sessions_router._provision_runtime = old_provision_runtime

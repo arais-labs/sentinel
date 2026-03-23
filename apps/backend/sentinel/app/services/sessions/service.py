@@ -28,7 +28,7 @@ from app.services.llm.generic.types import ImageContent, TextContent, UserMessag
 from app.services.llm.ids import TierName
 from app.services.memory import MemoryRepository, MemoryService
 from app.services.messages import normalize_generation_metadata, with_generation_metadata
-from app.services.session_runtime import (
+from app.services.runtime.session_runtime import (
     cleanup_session_runtime,
     get_session_runtime_snapshot,
     list_runtime_workspace_git_changed_files,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.services.runtime_rebuild import RuntimeRebuildService
+from app.services.runtime.runtime_rebuild import RuntimeRebuildService
 
 
 class _FakeRegistry:
@@ -40,7 +40,7 @@ class _FakeAgentLoop:
 
 
 def test_rebuild_agent_loop_syncs_scheduler_loop(monkeypatch):
-    import app.services.runtime_rebuild as runtime_rebuild_module
+    import app.services.runtime.runtime_rebuild as runtime_rebuild_module
 
     monkeypatch.setattr(
         runtime_rebuild_module,
@@ -69,7 +69,7 @@ def test_rebuild_agent_loop_syncs_scheduler_loop(monkeypatch):
 
 
 def test_rebuild_agent_loop_with_no_provider_clears_scheduler_loop(monkeypatch):
-    import app.services.runtime_rebuild as runtime_rebuild_module
+    import app.services.runtime.runtime_rebuild as runtime_rebuild_module
 
     monkeypatch.setattr(
         runtime_rebuild_module,
