@@ -130,7 +130,6 @@ def test_orchestrator_scopes_allowed_tools():
         ToolDefinition(
             name="allowed_tool",
             description="allowed",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_allowed_exec,
         )
@@ -139,7 +138,6 @@ def test_orchestrator_scopes_allowed_tools():
         ToolDefinition(
             name="blocked_tool",
             description="blocked",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_blocked_exec,
         )

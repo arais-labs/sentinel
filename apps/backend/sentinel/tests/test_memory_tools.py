@@ -5,18 +5,37 @@ import asyncio
 import pytest
 
 from app.models import Memory, Message, Session
+from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
+from app.services.araios.system_modules.memory import handlers as memory_module
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent, TokenUsage
 from app.services.memory.search import MemorySearchResult, MemorySearchService
 from app.services.tools import ToolExecutor
 from app.services.tools.executor import ToolValidationError
-from app.services.tools.builtin import build_default_registry
+from app.services.tools.registry_builder import build_default_registry
 from tests.fake_db import FakeDB
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _memory_input(command: str, **payload):
+    data = {"command": command}
+    data.update(payload)
+    return data
+
+
+def _memory_registry(memory_db: FakeDB):
+    session_factory = _SessionFactory(memory_db)
+    memory_module.AsyncSessionLocal = session_factory
+    reset_runtime_services()
+    configure_runtime_services(
+        memory_search_service=_StaticMemorySearch(memory_db),
+        embedding_service=_FakeEmbedding(),
+    )
+    return build_default_registry(session_factory=session_factory)
 
 
 class _FakeEmbedding:
@@ -87,19 +106,13 @@ class _SequenceProvider(LLMProvider):
 
 def test_memory_store_and_search_tools_execute():
     memory_db = FakeDB()
-    session_factory = _SessionFactory(memory_db)
-    registry = build_default_registry(
-        memory_search_service=_StaticMemorySearch(memory_db),
-        embedding_service=_FakeEmbedding(),
-        session_factory=session_factory,
-    )
+    registry = _memory_registry(memory_db)
     executor = ToolExecutor(registry)
 
     stored, _ = _run(
         executor.execute(
-            "memory_store",
-            {"content": "Store this memory", "category": "project", "metadata": {}},
-            allow_high_risk=True,
+            "memory",
+            _memory_input("store", content="Store this memory", category="project", metadata={}),
         )
     )
     assert stored["embedded"] is True
@@ -107,9 +120,8 @@ def test_memory_store_and_search_tools_execute():
 
     searched, _ = _run(
         executor.execute(
-            "memory_search",
-            {"query": "store", "limit": 5},
-            allow_high_risk=True,
+            "memory",
+            _memory_input("search", query="store", limit=5),
         )
     )
     assert searched["total"] == 1
@@ -120,15 +132,11 @@ def test_agent_loop_can_call_memory_search_tool():
     memory_db = FakeDB()
     memory_db.add(Memory(content="Remember alpha", category="project", metadata_json={}))
 
-    registry = build_default_registry(
-        memory_search_service=_StaticMemorySearch(memory_db),
-        embedding_service=_FakeEmbedding(),
-        session_factory=_SessionFactory(memory_db),
-    )
+    registry = _memory_registry(memory_db)
     provider = _SequenceProvider(
         [
             AssistantMessage(
-                content=[ToolCallContent(id="call_mem", name="memory_search", arguments={"query": "alpha"})],
+                content=[ToolCallContent(id="call_mem", name="memory", arguments={"command": "search", "query": "alpha"})],
                 model="m",
                 provider="p",
                 usage=TokenUsage(),
@@ -154,18 +162,13 @@ def test_agent_loop_can_call_memory_search_tool():
     assert result.final_text == "Used memory"
     rows = [m for m in loop_db.storage[Message] if m.session_id == session.id]
     tool_row = next(row for row in rows if row.role == "tool_result")
-    assert tool_row.tool_name == "memory_search"
+    assert tool_row.tool_name == "memory"
     assert "Remember alpha" in tool_row.content
 
 
 def test_memory_tree_tool_returns_nested_structure():
     memory_db = FakeDB()
-    session_factory = _SessionFactory(memory_db)
-    registry = build_default_registry(
-        memory_search_service=_StaticMemorySearch(memory_db),
-        embedding_service=_FakeEmbedding(),
-        session_factory=session_factory,
-    )
+    registry = _memory_registry(memory_db)
     executor = ToolExecutor(registry)
 
     root_a = Memory(
@@ -209,9 +212,8 @@ def test_memory_tree_tool_returns_nested_structure():
 
     tree, _ = _run(
         executor.execute(
-            "memory_tree",
-            {"max_depth": 5},
-            allow_high_risk=True,
+            "memory",
+            _memory_input("tree", max_depth=5),
         )
     )
 
@@ -225,12 +227,7 @@ def test_memory_tree_tool_returns_nested_structure():
 
 def test_memory_tree_tool_respects_depth_limit_and_include_content():
     memory_db = FakeDB()
-    session_factory = _SessionFactory(memory_db)
-    registry = build_default_registry(
-        memory_search_service=_StaticMemorySearch(memory_db),
-        embedding_service=_FakeEmbedding(),
-        session_factory=session_factory,
-    )
+    registry = _memory_registry(memory_db)
     executor = ToolExecutor(registry)
 
     root = Memory(
@@ -262,9 +259,8 @@ def test_memory_tree_tool_respects_depth_limit_and_include_content():
 
     tree, _ = _run(
         executor.execute(
-            "memory_tree",
-            {"root_id": str(root.id), "max_depth": 1, "include_content": True},
-            allow_high_risk=True,
+            "memory",
+            _memory_input("tree", root_id=str(root.id), max_depth=1, include_content=True),
         )
     )
 
@@ -279,12 +275,7 @@ def test_memory_tree_tool_respects_depth_limit_and_include_content():
 
 def test_memory_delete_tool_deletes_subtree():
     memory_db = FakeDB()
-    session_factory = _SessionFactory(memory_db)
-    registry = build_default_registry(
-        memory_search_service=_StaticMemorySearch(memory_db),
-        embedding_service=_FakeEmbedding(),
-        session_factory=session_factory,
-    )
+    registry = _memory_registry(memory_db)
     executor = ToolExecutor(registry)
 
     root = Memory(
@@ -320,9 +311,8 @@ def test_memory_delete_tool_deletes_subtree():
 
     deleted, _ = _run(
         executor.execute(
-            "memory_delete",
-            {"id": str(root.id)},
-            allow_high_risk=True,
+            "memory",
+            _memory_input("delete", id=str(root.id)),
         )
     )
     assert deleted["deleted"] is True
@@ -337,41 +327,29 @@ def test_memory_delete_tool_deletes_subtree():
 
 def test_memory_delete_tool_rejects_invalid_or_unknown_id():
     memory_db = FakeDB()
-    session_factory = _SessionFactory(memory_db)
-    registry = build_default_registry(
-        memory_search_service=_StaticMemorySearch(memory_db),
-        embedding_service=_FakeEmbedding(),
-        session_factory=session_factory,
-    )
+    registry = _memory_registry(memory_db)
     executor = ToolExecutor(registry)
 
     with pytest.raises(ToolValidationError, match="Field 'id' must be a valid UUID string"):
         _run(
             executor.execute(
-                "memory_delete",
-                {"id": "not-a-uuid"},
-                allow_high_risk=True,
-            )
+                "memory",
+                _memory_input("delete", id="not-a-uuid"),
+                )
         )
 
     with pytest.raises(ToolValidationError, match="Memory node not found"):
         _run(
             executor.execute(
-                "memory_delete",
-                {"id": "7f07395b-9e02-41cd-9952-65792509f7e4"},
-                allow_high_risk=True,
-            )
+                "memory",
+                _memory_input("delete", id="7f07395b-9e02-41cd-9952-65792509f7e4"),
+                )
         )
 
 
 def test_memory_move_tool_moves_subtree_to_another_root():
     memory_db = FakeDB()
-    session_factory = _SessionFactory(memory_db)
-    registry = build_default_registry(
-        memory_search_service=_StaticMemorySearch(memory_db),
-        embedding_service=_FakeEmbedding(),
-        session_factory=session_factory,
-    )
+    registry = _memory_registry(memory_db)
     executor = ToolExecutor(registry)
 
     root_a = Memory(title="Root A", content="A", category="project", metadata_json={})
@@ -398,9 +376,8 @@ def test_memory_move_tool_moves_subtree_to_another_root():
 
     moved, _ = _run(
         executor.execute(
-            "memory_move",
-            {"node_ids": [str(child.id)], "target_parent_id": str(root_b.id)},
-            allow_high_risk=True,
+            "memory",
+            _memory_input("move", node_ids=[str(child.id)], target_parent_id=str(root_b.id)),
         )
     )
 
@@ -412,12 +389,7 @@ def test_memory_move_tool_moves_subtree_to_another_root():
 
 def test_memory_move_tool_rejects_cycle_or_conflicting_nodes():
     memory_db = FakeDB()
-    session_factory = _SessionFactory(memory_db)
-    registry = build_default_registry(
-        memory_search_service=_StaticMemorySearch(memory_db),
-        embedding_service=_FakeEmbedding(),
-        session_factory=session_factory,
-    )
+    registry = _memory_registry(memory_db)
     executor = ToolExecutor(registry)
 
     root = Memory(title="Root", content="root", category="project", metadata_json={})
@@ -434,30 +406,23 @@ def test_memory_move_tool_rejects_cycle_or_conflicting_nodes():
     with pytest.raises(ToolValidationError, match="own descendant"):
         _run(
             executor.execute(
-                "memory_move",
-                {"node_ids": [str(root.id)], "target_parent_id": str(child.id)},
-                allow_high_risk=True,
-            )
+                "memory",
+                _memory_input("move", node_ids=[str(root.id)], target_parent_id=str(child.id)),
+                )
         )
 
     with pytest.raises(ToolValidationError, match="ancestor and its descendant"):
         _run(
             executor.execute(
-                "memory_move",
-                {"node_ids": [str(root.id), str(child.id)], "to_root": True},
-                allow_high_risk=True,
-            )
+                "memory",
+                _memory_input("move", node_ids=[str(root.id), str(child.id)], to_root=True),
+                )
         )
 
 
 def test_memory_move_tool_rejects_system_memory_nodes():
     memory_db = FakeDB()
-    session_factory = _SessionFactory(memory_db)
-    registry = build_default_registry(
-        memory_search_service=_StaticMemorySearch(memory_db),
-        embedding_service=_FakeEmbedding(),
-        session_factory=session_factory,
-    )
+    registry = _memory_registry(memory_db)
     executor = ToolExecutor(registry)
 
     system_root = Memory(
@@ -481,24 +446,19 @@ def test_memory_move_tool_rejects_system_memory_nodes():
     with pytest.raises(ToolValidationError, match="protected system memory"):
         _run(
             executor.execute(
-                "memory_move",
+                "memory",
                 {
+                    "command": "move",
                     "node_ids": [str(system_root.id)],
                     "target_parent_id": str(other_root.id),
                 },
-                allow_high_risk=True,
-            )
+                )
         )
 
 
 def test_memory_move_tool_rejects_target_parent_that_is_system_memory():
     memory_db = FakeDB()
-    session_factory = _SessionFactory(memory_db)
-    registry = build_default_registry(
-        memory_search_service=_StaticMemorySearch(memory_db),
-        embedding_service=_FakeEmbedding(),
-        session_factory=session_factory,
-    )
+    registry = _memory_registry(memory_db)
     executor = ToolExecutor(registry)
 
     system_root = Memory(
@@ -522,13 +482,13 @@ def test_memory_move_tool_rejects_target_parent_that_is_system_memory():
     with pytest.raises(ToolValidationError, match="under a protected system memory"):
         _run(
             executor.execute(
-                "memory_move",
+                "memory",
                 {
+                    "command": "move",
                     "node_ids": [str(other_root.id)],
                     "target_parent_id": str(system_root.id),
                 },
-                allow_high_risk=True,
-            )
+                )
         )
 
 
@@ -674,7 +634,7 @@ def test_context_builder_strips_orphan_tool_use_for_anthropic_compat():
             content="Using tool",
             metadata_json={
                 "tool_calls": [
-                    {"id": "toolu_orphan", "name": "memory_search", "arguments": {"query": "alpha"}}
+                    {"id": "toolu_orphan", "name": "memory", "arguments": {"command": "search", "query": "alpha"}}
                 ]
             },
         )
@@ -709,8 +669,8 @@ def test_context_builder_keeps_only_matching_tool_results_for_tool_use_turn():
             content="Using tool",
             metadata_json={
                 "tool_calls": [
-                    {"id": "toolu_a", "name": "memory_search", "arguments": {"query": "alpha"}},
-                    {"id": "toolu_b", "name": "memory_search", "arguments": {"query": "beta"}},
+                    {"id": "toolu_a", "name": "memory", "arguments": {"command": "search", "query": "alpha"}},
+                    {"id": "toolu_b", "name": "memory", "arguments": {"command": "search", "query": "beta"}},
                 ]
             },
         )
@@ -721,7 +681,7 @@ def test_context_builder_keeps_only_matching_tool_results_for_tool_use_turn():
             role="tool_result",
             content='{"ok": true, "id": "a"}',
             tool_call_id="toolu_a",
-            tool_name="memory_search",
+            tool_name="memory",
             metadata_json={},
         )
     )
@@ -731,7 +691,7 @@ def test_context_builder_keeps_only_matching_tool_results_for_tool_use_turn():
             role="tool_result",
             content='{"ok": true, "id": "z"}',
             tool_call_id="toolu_z",
-            tool_name="memory_search",
+            tool_name="memory",
             metadata_json={},
         )
     )
@@ -741,7 +701,7 @@ def test_context_builder_keeps_only_matching_tool_results_for_tool_use_turn():
             role="tool_result",
             content='{"ok": true, "id": "b"}',
             tool_call_id="toolu_b",
-            tool_name="memory_search",
+            tool_name="memory",
             metadata_json={},
         )
     )
@@ -763,7 +723,7 @@ def test_context_builder_adds_delegation_policy_when_tools_available():
 
     builder = ContextBuilder(
         default_system_prompt="sys",
-        available_tools={"spawn_sub_agent", "check_sub_agent"},
+        available_tools={"sub_agents"},
     )
     context = _run(builder.build(db, session.id))
     system_messages = [m.content for m in context if getattr(m, "role", "") == "system"]
@@ -771,4 +731,4 @@ def test_context_builder_adds_delegation_policy_when_tools_available():
     delegation = next((msg for msg in system_messages if "## Delegation Policy" in msg), None)
     assert delegation is not None
     assert "bounded one-off tasks" in delegation
-    assert "check_sub_agent" in delegation
+    assert "command=check" in delegation

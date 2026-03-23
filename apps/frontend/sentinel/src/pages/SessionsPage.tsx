@@ -302,6 +302,17 @@ function hasMeaningfulToolArguments(raw: string): boolean {
   return true;
 }
 
+function browserCommandLabelFromArguments(raw: string | undefined): string {
+  if (!raw) return 'browser';
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const command = typeof parsed.command === 'string' ? parsed.command.trim() : '';
+    return command ? command.replaceAll('_', ' ') : 'browser';
+  } catch {
+    return 'browser';
+  }
+}
+
 function mergeStreamingToolArguments(current: string, delta: string): string {
   if (!delta) return current;
   const trimmedCurrent = current.trim();
@@ -771,7 +782,7 @@ function StreamToolCard({
 
 // --- Modules Rail Panel ---
 
-const ARAIOS_TOOL_NAMES = new Set(['araios_modules', 'araios_records', 'araios_action']);
+const ARAIOS_TOOL_NAMES = new Set(['modules_discovery']);
 
 function ModulesRailPanel({ messages, completedToolCalls, activeToolCalls }: {
   messages: Message[];
@@ -830,7 +841,7 @@ function ModulesRailPanel({ messages, completedToolCalls, activeToolCalls }: {
         items.push({
           id: call.id,
           tool: call.name,
-          operation: args.operation || args.action_id || call.name.replace('araios_', ''),
+          operation: args.command || args.action_id || 'run',
           module: args.module || args.name,
           time: 'just now',
           isError: call.isError,
@@ -846,7 +857,7 @@ function ModulesRailPanel({ messages, completedToolCalls, activeToolCalls }: {
         items.push({
           id: `active-${call.id}`,
           tool: call.name,
-          operation: args.operation || args.action_id || 'running...',
+          operation: args.command || args.action_id || 'running...',
           module: args.module || args.name,
           time: 'now',
           isError: false,
@@ -871,9 +882,7 @@ function ModulesRailPanel({ messages, completedToolCalls, activeToolCalls }: {
   }, [completedToolCalls, activeToolCalls, messages]);
 
   const TOOL_LABELS: Record<string, string> = {
-    araios_modules: 'Modules',
-    araios_records: 'Records',
-    araios_action: 'Action',
+    modules_discovery: 'Modules',
   };
 
   return (
@@ -1223,7 +1232,7 @@ export function SessionsPage() {
           (message) =>
             message.role === 'tool_result' &&
             typeof message.tool_name === 'string' &&
-            message.tool_name.startsWith('browser_')
+            message.tool_name === 'browser'
         )
         .slice(-25)
         .reverse(),
@@ -2790,10 +2799,7 @@ export function SessionsPage() {
             metadata_status: metadataApproval?.status ?? null,
           });
           const toolNameForRefresh = String(payload.tool_name ?? (event.tool_call as any)?.name ?? '').trim();
-          if (
-            toolNameForRefresh === 'spawn_sub_agent' ||
-            toolNameForRefresh === 'cancel_sub_agent'
-          ) {
+          if (toolNameForRefresh === 'sub_agents') {
             void fetchTasks(sessionId);
           }
           if (
@@ -4154,7 +4160,7 @@ export function SessionsPage() {
                               <div className="flex items-center gap-3 min-0">
                                 <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] opacity-20 group-hover:opacity-100 transition-opacity" />
                                 <span className="text-[11px] font-bold text-[color:var(--text-primary)] truncate capitalize">
-                                  {item.tool_name?.replace('browser_', '').replaceAll('_', ' ') || 'action'}
+                                  {browserCommandLabelFromArguments(toolArgumentsByCallId.get(item.tool_call_id || ''))}
                                 </span>
                               </div>
                               <span className="text-[9px] font-mono text-[color:var(--text-muted)] shrink-0 opacity-60 group-hover:opacity-100">

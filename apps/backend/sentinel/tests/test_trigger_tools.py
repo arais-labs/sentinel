@@ -4,14 +4,10 @@ import asyncio
 from datetime import UTC, datetime
 
 from app.models import Session, Trigger
+from app.services.araios.system_modules import triggers as triggers_module
+from app.services.araios.system_modules.triggers import handlers as trigger_handlers_module
 from app.services.tools.executor import ToolExecutor, ToolValidationError
 from app.services.tools.registry import ToolRegistry
-from app.services.tools.trigger_tools import (
-    trigger_create_tool,
-    trigger_delete_tool,
-    trigger_list_tool,
-    trigger_update_tool,
-)
 from tests.fake_db import FakeDB
 
 
@@ -40,11 +36,15 @@ class _SessionFactory:
 
 def _executor_for(db: FakeDB) -> ToolExecutor:
     registry = ToolRegistry()
-    session_factory = _SessionFactory(db)
-    registry.register(trigger_create_tool(session_factory))
-    registry.register(trigger_list_tool(session_factory))
-    registry.register(trigger_update_tool(session_factory))
-    registry.register(trigger_delete_tool(session_factory))
+    trigger_handlers_module.AsyncSessionLocal = _SessionFactory(db)
+    action = (triggers_module.MODULE.actions or [])[0]
+    registry.register(
+        action.to_tool_definition(
+            module_name=triggers_module.MODULE.name,
+            module_description=triggers_module.MODULE.description,
+            action_count=1,
+        )
+    )
     return ToolExecutor(registry)
 
 
@@ -56,16 +56,16 @@ def test_trigger_create_binds_owner_from_context_session():
 
     _run(
         executor.execute(
-            "trigger_create",
+            "triggers",
             {
+                "command": "create",
                 "name": "daily",
                 "type": "heartbeat",
                 "config": {"interval_seconds": 60},
                 "action_type": "tool_call",
-                "action_config": {"name": "memory_roots", "arguments": {}},
+                "action_config": {"name": "memory", "arguments": {"command": "roots"}},
                 "session_id": str(session.id),
             },
-            allow_high_risk=True,
         )
     )
 
@@ -85,8 +85,9 @@ def test_trigger_create_invalid_specific_target_falls_back_to_main():
 
     result, _ = _run(
         executor.execute(
-            "trigger_create",
+            "triggers",
             {
+                "command": "create",
                 "name": "daily",
                 "type": "heartbeat",
                 "config": {"interval_seconds": 60},
@@ -98,7 +99,6 @@ def test_trigger_create_invalid_specific_target_falls_back_to_main():
                 },
                 "session_id": str(session.id),
             },
-            allow_high_risk=True,
         )
     )
 
@@ -116,16 +116,16 @@ def test_trigger_create_rejects_missing_owner_context():
     try:
         _run(
             executor.execute(
-                "trigger_create",
+                "triggers",
                 {
+                    "command": "create",
                     "name": "daily",
                     "type": "heartbeat",
                     "config": {"interval_seconds": 60},
                     "action_type": "tool_call",
-                    "action_config": {"name": "memory_roots", "arguments": {}},
+                    "action_config": {"name": "memory", "arguments": {"command": "roots"}},
                 },
-                allow_high_risk=True,
-            )
+                )
         )
         raised = False
     except ToolValidationError as exc:
@@ -168,16 +168,14 @@ def test_trigger_list_is_owner_scoped_by_session():
 
     user_a_list, _ = _run(
         executor.execute(
-            "trigger_list",
-            {"session_id": str(user_a_session.id)},
-            allow_high_risk=True,
+            "triggers",
+            {"command": "list", "session_id": str(user_a_session.id)},
         )
     )
     user_b_list, _ = _run(
         executor.execute(
-            "trigger_list",
-            {"session_id": str(user_b_session.id)},
-            allow_high_risk=True,
+            "triggers",
+            {"command": "list", "session_id": str(user_b_session.id)},
         )
     )
 

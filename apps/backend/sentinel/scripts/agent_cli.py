@@ -93,7 +93,6 @@ class CliToolAdapter:
             result, _duration_ms = await self._executor.execute(
                 call.name,
                 dict(payload),
-                allow_high_risk=True,
             )
             content = self._truncate_content(json.dumps(result, default=str))
             return ToolResultMessage(
@@ -409,7 +408,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="file_read",
             description="Read text content from a local file path with byte limit.",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -426,7 +424,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="http_request",
             description="Make outbound HTTP requests.",
-            risk_level="medium",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -446,7 +443,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_navigate",
             description="Navigate browser to a URL.",
-            risk_level="medium",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -466,7 +462,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_screenshot",
             description="Take a browser screenshot.",
-            risk_level="medium",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -479,7 +474,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_click",
             description="Click an element by selector.",
-            risk_level="medium",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -499,7 +493,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_type",
             description="Type text into an element by selector.",
-            risk_level="medium",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -521,7 +514,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_select",
             description="Select an option in a <select> field.",
-            risk_level="medium",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -547,7 +539,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_wait_for",
             description="Wait for an element state.",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -572,7 +563,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_get_value",
             description="Get current value/state for an element.",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -586,7 +576,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_fill_form",
             description="Execute a sequence of form steps.",
-            risk_level="medium",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -624,7 +613,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_press_key",
             description="Press a keyboard key in the current page.",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -638,7 +626,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_get_text",
             description="Extract visible text from page or selector.",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -653,7 +640,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_snapshot",
             description="Get accessibility snapshot for page understanding.",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -672,7 +658,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_reset",
             description="Close and relaunch browser context.",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": False, "properties": {}},
             execute=lambda payload: browser_manager.reset(),
         )
@@ -681,7 +666,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_tabs",
             description="List current browser tabs.",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": False, "properties": {}},
             execute=lambda payload: browser_manager.list_tabs(),
         )
@@ -690,7 +674,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_tab_open",
             description="Open a new browser tab.",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -703,7 +686,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_tab_focus",
             description="Focus an existing browser tab.",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -717,7 +699,6 @@ def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolR
         ToolDefinition(
             name="browser_tab_close",
             description="Close an existing browser tab.",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,

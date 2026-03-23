@@ -12,34 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.models import Session, SubAgentTask
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.services.araios.system_modules.browser import (
+    BROWSER_TAB_MANAGEMENT_COMMANDS,
+    BROWSER_TAB_TARGETABLE_COMMANDS,
+)
 from app.services.llm.ids import TierName
 from app.services.llm.generic.types import AgentEvent
 from app.services.tools import ToolDefinition, ToolExecutor, ToolRegistry
-
-_BROWSER_TAB_TARGETABLE_TOOLS = frozenset(
-    {
-        "browser_navigate",
-        "browser_screenshot",
-        "browser_click",
-        "browser_type",
-        "browser_select",
-        "browser_wait_for",
-        "browser_get_value",
-        "browser_fill_form",
-        "browser_press_key",
-        "browser_get_text",
-        "browser_snapshot",
-    }
-)
-_BROWSER_TAB_MANAGEMENT_TOOLS = frozenset(
-    {
-        "browser_tabs",
-        "browser_tab_open",
-        "browser_tab_focus",
-        "browser_tab_close",
-        "browser_reset",
-    }
-)
+from app.services.tools.executor import ToolValidationError
 
 
 class SubAgentOrchestrator:
@@ -189,7 +169,6 @@ class SubAgentOrchestrator:
                         model=self._SUB_AGENT_TIER,
                         max_iterations=max(1, task.max_turns),
                         stream=False,
-                        allow_high_risk=True,
                         inject_queue=queue,
                         persist_incremental=True,
                         on_event=_on_sub_agent_event,
@@ -271,9 +250,6 @@ class SubAgentOrchestrator:
         else:
             allowed = {tool.name for tool in self._base_tool_registry.list_all()}
 
-        if pinned_tab_id is not None:
-            allowed -= _BROWSER_TAB_MANAGEMENT_TOOLS
-
         scoped_registry = ToolRegistry()
         for tool in self._base_tool_registry.list_all():
             if tool.name not in allowed:
@@ -303,7 +279,7 @@ class SubAgentOrchestrator:
         tool: ToolDefinition,
         pinned_tab_id: str | None,
     ) -> ToolDefinition:
-        if pinned_tab_id is None or tool.name not in _BROWSER_TAB_TARGETABLE_TOOLS:
+        if pinned_tab_id is None or tool.name != "browser":
             return tool
 
         schema = copy.deepcopy(tool.parameters_schema) if isinstance(tool.parameters_schema, dict) else {}
@@ -316,13 +292,23 @@ class SubAgentOrchestrator:
 
         async def _execute(payload: dict) -> dict:
             scoped_payload = dict(payload or {})
-            scoped_payload["tab_id"] = pinned_tab_id
+            command = scoped_payload.get("command")
+            normalized_command = (
+                command.strip().lower()
+                if isinstance(command, str) and command.strip()
+                else None
+            )
+            if normalized_command in BROWSER_TAB_MANAGEMENT_COMMANDS:
+                raise ToolValidationError(
+                    f"Browser command '{normalized_command}' is not allowed when browser_tab_id is pinned"
+                )
+            if normalized_command in BROWSER_TAB_TARGETABLE_COMMANDS:
+                scoped_payload["tab_id"] = pinned_tab_id
             return await tool.execute(scoped_payload)
 
         return ToolDefinition(
             name=tool.name,
             description=tool.description,
-            risk_level=tool.risk_level,
             parameters_schema=schema,
             execute=_execute,
             enabled=tool.enabled,

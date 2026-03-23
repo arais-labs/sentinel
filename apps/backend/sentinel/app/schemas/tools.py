@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 class ToolSummaryResponse(BaseModel):
     name: str
     description: str
-    risk_level: str
     enabled: bool
 
 

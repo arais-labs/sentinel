@@ -5,7 +5,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
-from app.services.estop import EstopService
 from app.schemas.tools import (
     ToolDetailResponse,
     ToolExecuteRequest,
@@ -13,14 +12,14 @@ from app.schemas.tools import (
     ToolListResponse,
     ToolSummaryResponse,
 )
-from app.services.tools import ToolExecutor, ToolRegistry, build_default_registry
+from app.services.tools import ToolExecutor, ToolRegistry
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
+from app.services.tools.registry_builder import build_default_registry
 
 router = APIRouter()
 
 _registry = build_default_registry()
 _executor = ToolExecutor(_registry)
-_estop = EstopService()
 
 
 @router.get("")
@@ -47,7 +46,6 @@ async def get_tool(
     return ToolDetailResponse(
         name=tool.name,
         description=tool.description,
-        risk_level=tool.risk_level,
         enabled=tool.enabled,
         parameters_schema=tool.parameters_schema,
     )
@@ -67,15 +65,10 @@ async def execute_tool(
     if tool is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
 
-    estop_active = await _estop.is_active(db)
-    if estop_active and tool.risk_level == "high":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Emergency stop active")
-
     try:
         result, duration_ms = await executor.execute(
             name,
             payload.input,
-            allow_high_risk=not estop_active,
         )
     except ToolValidationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
@@ -91,7 +84,6 @@ def _summary(tool) -> ToolSummaryResponse:
     return ToolSummaryResponse(
         name=tool.name,
         description=tool.description,
-        risk_level=tool.risk_level,
         enabled=tool.enabled,
     )
 

@@ -1808,7 +1808,7 @@ def test_codex_stream_sanitizes_nested_object_tool_schemas():
     }
     tools = [
         ToolSchema(
-            name="araios_modules",
+            name="modules_discovery",
             description="Call AraiOS",
             parameters=raw_parameters,
         )

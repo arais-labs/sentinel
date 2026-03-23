@@ -9,12 +9,13 @@ import pytest
 
 from app.config import settings
 from app.models import Session, SessionBinding
+from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
+from app.services.araios.system_modules.telegram import handlers as telegram_handlers_module
+from app.services.araios.system_modules.telegram.module import MODULE as TELEGRAM_MODULE
 from app.services import session_bindings
 from app.services.telegram_bridge import (
     TelegramBridge,
-    send_telegram_message_tool,
     start_telegram_bridge,
-    telegram_manage_integration_tool,
 )
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
 from tests.fake_db import FakeDB
@@ -22,6 +23,18 @@ from tests.fake_db import FakeDB
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _telegram_tool(app_state):
+    reset_runtime_services()
+    configure_runtime_services(app_state=app_state)
+    action = TELEGRAM_MODULE.actions[0]
+    assert action is not None
+    return action.to_tool_definition(
+        module_name=TELEGRAM_MODULE.name,
+        module_description=TELEGRAM_MODULE.description,
+        action_count=1,
+    )
 
 
 def _build_bridge(*, db: FakeDB, user_id: str) -> TelegramBridge:
@@ -107,7 +120,7 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
     app_state = type(
         "State", (), {"telegram_bridge": None, "telegram_stop_event": None, "telegram_task": None}
     )()
-    tool = telegram_manage_integration_tool(app_state)
+    tool = _telegram_tool(app_state)
 
     old_token = settings.telegram_bot_token
     old_owner = settings.telegram_owner_user_id
@@ -138,11 +151,11 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
                 new=AsyncMock(return_value=True),
             ) as start_mock,
             patch(
-                "app.services.telegram_bridge.AsyncSessionLocal",
+                "app.services.araios.system_modules.telegram.handlers.AsyncSessionLocal",
                 return_value=_DBFactory(),
             ),
             patch(
-                "app.services.telegram_bridge.session_bindings.resolve_or_create_main_session",
+                "app.services.araios.system_modules.telegram.handlers.session_bindings.resolve_or_create_main_session",
                 new=AsyncMock(return_value=Session(user_id="admin", title="Main")),
             ),
             patch(
@@ -153,7 +166,7 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
             result = _run(
                 tool.execute(
                     {
-                        "action": "configure",
+                        "command": "configure",
                         "bot_token": "12345:abcde",
                         "session_id": "317dc122-62fd-481e-ba03-907ec45a7c5a",
                     }
@@ -175,17 +188,17 @@ def test_telegram_manage_tool_requires_session_for_mutations():
     app_state = type(
         "State", (), {"telegram_bridge": None, "telegram_stop_event": None, "telegram_task": None}
     )()
-    tool = telegram_manage_integration_tool(app_state)
+    tool = _telegram_tool(app_state)
 
     with pytest.raises(ToolValidationError, match="session_id"):
-        _run(tool.execute({"action": "start"}))
+        _run(tool.execute({"command": "start"}))
 
 
 def test_telegram_manage_tool_bind_owner_requires_connected_chat():
     app_state = type(
         "State", (), {"telegram_bridge": None, "telegram_stop_event": None, "telegram_task": None}
     )()
-    tool = telegram_manage_integration_tool(app_state)
+    tool = _telegram_tool(app_state)
 
     with patch(
         "app.services.telegram_bridge.resolve_owner_user_id_from_session",
@@ -195,7 +208,7 @@ def test_telegram_manage_tool_bind_owner_requires_connected_chat():
             _run(
                 tool.execute(
                     {
-                        "action": "bind_owner",
+                        "command": "bind_owner",
                         "session_id": "317dc122-62fd-481e-ba03-907ec45a7c5a",
                         "chat_id": 12345,
                     }
@@ -207,7 +220,7 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
     app_state = type(
         "State", (), {"telegram_bridge": None, "telegram_stop_event": None, "telegram_task": None}
     )()
-    tool = telegram_manage_integration_tool(app_state)
+    tool = _telegram_tool(app_state)
 
     old_token = settings.telegram_bot_token
     old_owner = settings.telegram_owner_user_id
@@ -233,11 +246,11 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
                 new=AsyncMock(return_value="new-admin"),
             ),
             patch(
-                "app.services.telegram_bridge._upsert_setting",
+                "app.services.araios.system_modules.telegram.handlers._upsert_setting",
                 new=AsyncMock(return_value=None),
             ) as upsert_mock,
             patch(
-                "app.services.telegram_bridge._delete_setting",
+                "app.services.araios.system_modules.telegram.handlers._delete_setting",
                 new=AsyncMock(return_value=None),
             ) as delete_mock,
             patch(
@@ -245,11 +258,11 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
                 new=AsyncMock(return_value=True),
             ) as start_mock,
             patch(
-                "app.services.telegram_bridge.AsyncSessionLocal",
+                "app.services.araios.system_modules.telegram.handlers.AsyncSessionLocal",
                 return_value=_DBFactory(),
             ),
             patch(
-                "app.services.telegram_bridge.session_bindings.resolve_or_create_main_session",
+                "app.services.araios.system_modules.telegram.handlers.session_bindings.resolve_or_create_main_session",
                 new=AsyncMock(return_value=Session(user_id="new-admin", title="Main")),
             ),
             patch(
@@ -260,7 +273,7 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
             result = _run(
                 tool.execute(
                     {
-                        "action": "start",
+                        "command": "start",
                         "session_id": "317dc122-62fd-481e-ba03-907ec45a7c5a",
                     }
                 )
@@ -293,13 +306,13 @@ def test_send_telegram_message_tool_refuses_owner_chat_by_default():
             return True
 
     app_state = type("State", (), {"telegram_bridge": _Bridge()})()
-    tool = send_telegram_message_tool(app_state)
+    tool = _telegram_tool(app_state)
 
     old_owner_chat = settings.telegram_owner_chat_id
     settings.telegram_owner_chat_id = "12345"
     try:
         with pytest.raises(ToolExecutionError, match="owner Telegram DM"):
-            _run(tool.execute({"chat_id": 12345, "message": "hello"}))
+            _run(tool.execute({"command": "send", "chat_id": 12345, "message": "hello"}))
     finally:
         settings.telegram_owner_chat_id = old_owner_chat
 

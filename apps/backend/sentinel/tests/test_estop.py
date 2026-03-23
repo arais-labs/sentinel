@@ -66,11 +66,11 @@ def test_estop_service_enforce_tool_rules():
     service = EstopService()
 
     _run(service.set_level(db, EstopLevel.NONE))
-    _run(service.enforce_tool(db, "file_read", "low"))
+    _run(service.enforce_tool(db, "file_read"))
 
     _run(service.set_level(db, EstopLevel.TOOL_FREEZE))
     try:
-        _run(service.enforce_tool(db, "file_read", "low"))
+        _run(service.enforce_tool(db, "file_read"))
         raised = False
     except PermissionError:
         raised = True
@@ -78,7 +78,7 @@ def test_estop_service_enforce_tool_rules():
 
     _run(service.set_level(db, EstopLevel.NETWORK_KILL))
     try:
-        _run(service.enforce_tool(db, "browser_navigate", "medium"))
+        _run(service.enforce_tool(db, "browser_navigate"))
         raised_network = False
     except PermissionError:
         raised_network = True
@@ -86,7 +86,7 @@ def test_estop_service_enforce_tool_rules():
 
     _run(service.set_level(db, EstopLevel.KILL_ALL))
     try:
-        _run(service.enforce_tool(db, "file_read", "low"))
+        _run(service.enforce_tool(db, "file_read"))
         raised_kill_all = False
     except PermissionError:
         raised_kill_all = True
@@ -148,7 +148,6 @@ def test_tool_adapter_checks_estop_before_execution():
         ToolDefinition(
             name="echo",
             description="echo",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_echo,
         )
@@ -159,7 +158,6 @@ def test_tool_adapter_checks_estop_before_execution():
         adapter.execute_tool_calls(
             [ToolCallContent(id="c1", name="echo", arguments={})],
             db,
-            allow_high_risk=True,
         )
     )
     assert len(results) == 1
@@ -172,7 +170,7 @@ def test_tool_adapter_enforces_estop_per_call_not_once_per_batch():
         def __init__(self) -> None:
             self.calls = 0
 
-        async def enforce_tool(self, db, tool_name: str, risk_level: str) -> None:  # noqa: ARG002
+        async def enforce_tool(self, db, tool_name: str) -> None:  # noqa: ARG002
             self.calls += 1
             if self.calls >= 2:
                 raise PermissionError("Emergency stop TOOL_FREEZE blocks all tool execution")
@@ -187,7 +185,6 @@ def test_tool_adapter_enforces_estop_per_call_not_once_per_batch():
         ToolDefinition(
             name="echo",
             description="echo",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_echo,
         )
@@ -202,7 +199,6 @@ def test_tool_adapter_enforces_estop_per_call_not_once_per_batch():
                 ToolCallContent(id="c2", name="echo", arguments={"v": 2}),
             ],
             db,
-            allow_high_risk=True,
         )
     )
 

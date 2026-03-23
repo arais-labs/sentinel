@@ -1,3 +1,5 @@
+"""Native module: str_replace_editor — exact string replacement in files."""
+
 from __future__ import annotations
 
 import base64
@@ -7,19 +9,24 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.database.database import AsyncSessionLocal
 from app.models import Session
 from app.services.session_runtime import ensure_runtime_layout, runtime_workspace_dir
 from app.services.tools.executor import ToolValidationError
-from app.services.tools.registry import ToolDefinition
 from app.services.runtime import get_runtime
 
 _STR_REPLACE_TIMEOUT_SECONDS = 120
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _shell_quote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
+
+
 _STR_REPLACE_PAYLOAD_ENV = "SENTINEL_STR_REPLACE_EDITOR_PAYLOAD_B64"
 _STR_REPLACE_WORKSPACE_ENV = "SENTINEL_STR_REPLACE_WORKSPACE"
 _STR_REPLACE_SCRIPT = """python3 - <<'PY'
@@ -101,11 +108,8 @@ PY
 """ % (_STR_REPLACE_PAYLOAD_ENV, _STR_REPLACE_WORKSPACE_ENV)
 
 
-async def _ensure_session_exists(
-    session_factory: async_sessionmaker[AsyncSession],
-    session_id: UUID,
-) -> None:
-    async with session_factory() as db:
+async def _ensure_session_exists(session_id: UUID) -> None:
+    async with AsyncSessionLocal() as db:
         result = await db.execute(select(Session).where(Session.id == session_id))
         session = result.scalars().first()
         if session is None:
@@ -182,61 +186,42 @@ async def _run_str_replace_in_runtime_exec(
     }
 
 
-def str_replace_editor_tool(
-    *,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> ToolDefinition:
-    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
-        session_id_raw = payload.get("session_id")
-        if not isinstance(session_id_raw, str) or not session_id_raw.strip():
-            raise ToolValidationError("Field 'session_id' must be a non-empty string")
-        try:
-            session_id = UUID(session_id_raw.strip())
-        except ValueError as exc:
-            raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+# ---------------------------------------------------------------------------
+# Handler functions (module-level)
+# ---------------------------------------------------------------------------
 
-        path_raw = payload.get("path")
-        if not isinstance(path_raw, str) or not path_raw.strip():
-            raise ToolValidationError("Field 'path' must be a non-empty string")
 
-        old_str = payload.get("old_str")
-        if not isinstance(old_str, str):
-            raise ToolValidationError("Field 'old_str' must be a string")
-        if old_str == "":
-            raise ToolValidationError("Field 'old_str' must be a non-empty string")
+async def handle_edit(payload: dict[str, Any]) -> dict[str, Any]:
+    session_id_raw = payload.get("session_id")
+    if not isinstance(session_id_raw, str) or not session_id_raw.strip():
+        raise ToolValidationError("Field 'session_id' must be a non-empty string")
+    try:
+        session_id = UUID(session_id_raw.strip())
+    except ValueError as exc:
+        raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
 
-        new_str = payload.get("new_str")
-        if not isinstance(new_str, str):
-            raise ToolValidationError("Field 'new_str' must be a string")
+    path_raw = payload.get("path")
+    if not isinstance(path_raw, str) or not path_raw.strip():
+        raise ToolValidationError("Field 'path' must be a non-empty string")
 
-        await _ensure_session_exists(session_factory, session_id)
-        await ensure_runtime_layout(session_id)
-        workspace_dir = runtime_workspace_dir(session_id)
-        return await _run_str_replace_in_runtime_exec(
-            session_id=session_id,
-            workspace_dir=workspace_dir,
-            path=path_raw.strip(),
-            old_str=old_str,
-            new_str=new_str,
-        )
+    old_str = payload.get("old_str")
+    if not isinstance(old_str, str):
+        raise ToolValidationError("Field 'old_str' must be a string")
+    if old_str == "":
+        raise ToolValidationError("Field 'old_str' must be a non-empty string")
 
-    return ToolDefinition(
-        name="str_replace_editor",
-        description=(
-            "Replace an exact string in a file with a new string. "
-            "Runs through the same user sandbox runtime path as runtime_exec and requires a unique exact match."
-        ),
-        risk_level="high",
-        parameters_schema={
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["path", "old_str", "new_str"],
-            "properties": {
-                "session_id": {"type": "string", "description": "Current session ID (auto-injected in agent loop)"},
-                "path": {"type": "string", "description": "Path to the file relative to workspace"},
-                "old_str": {"type": "string", "description": "The exact string to find in the file (must be unique)"},
-                "new_str": {"type": "string", "description": "The replacement string"},
-            },
-        },
-        execute=_execute,
+    new_str = payload.get("new_str")
+    if not isinstance(new_str, str):
+        raise ToolValidationError("Field 'new_str' must be a string")
+
+    await _ensure_session_exists(session_id)
+    await ensure_runtime_layout(session_id)
+    workspace_dir = runtime_workspace_dir(session_id)
+    return await _run_str_replace_in_runtime_exec(
+        session_id=session_id,
+        workspace_dir=workspace_dir,
+        path=path_raw.strip(),
+        old_str=old_str,
+        new_str=new_str,
     )
+

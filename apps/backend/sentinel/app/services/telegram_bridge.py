@@ -91,7 +91,6 @@ class _AgentLoopProtocol(Protocol):
         max_iterations: int = 50,
         temperature: float = 0.7,
         model: str = TierName.NORMAL.value,
-        allow_high_risk: bool = False,
         persist_user_message: bool = True,
         stream: bool = True,
         timeout_seconds: float | None = None,
@@ -1161,7 +1160,7 @@ class TelegramBridge:
                 if event.type != "tool_result" or event.tool_result is None:
                     return
                 tool_result = event.tool_result
-                if tool_result.tool_name != "send_telegram_message" or tool_result.is_error:
+                if tool_result.tool_name != "telegram" or tool_result.is_error:
                     return
                 payload = self._parse_json_dict(tool_result.content)
                 if payload.get("success") is not True:
@@ -1186,7 +1185,6 @@ class TelegramBridge:
                     on_event=_on_event,
                     model=TierName.NORMAL.value,
                     max_iterations=25,
-                    allow_high_risk=True,
                 )
             )
 
@@ -1325,7 +1323,6 @@ def send_telegram_message_tool(app_state_ref: object) -> "ToolDefinition":
             "Use this when asked to message someone on Telegram. "
             "By default this refuses owner DM chat to keep owner flow in shared session/UI."
         ),
-        risk_level="medium",
         parameters_schema={
             "type": "object",
             "additionalProperties": False,
@@ -1582,7 +1579,6 @@ def telegram_manage_integration_tool(app_state_ref: object) -> "ToolDefinition":
             "Actions: status, configure, start, stop, delete_config, bind_owner, clear_owner. "
             "Action disable remains as a backward-compatible alias of delete_config."
         ),
-        risk_level="medium",
         parameters_schema={
             "type": "object",
             "additionalProperties": False,

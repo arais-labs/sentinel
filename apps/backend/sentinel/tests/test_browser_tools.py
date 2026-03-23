@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import base64
 
-from app.services.tools.builtin import build_default_registry
-from app.services.tools.browser_tool import BrowserManager
+from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
+from app.services.browser.manager import BrowserManager
 from app.services.tools.executor import ToolExecutor, ToolValidationError
+from app.services.tools.registry_builder import build_default_registry
 
 
 def _run(coro):
@@ -213,25 +214,10 @@ def _stub_pool(manager=None):
     return _StubBrowserPool(manager)
 
 
-def test_browser_tools_registered_with_expected_risk_levels():
-    registry = build_default_registry(browser_pool=_stub_pool())
-    by_name = {tool.name: tool for tool in registry.list_all()}
-
-    assert by_name["browser_navigate"].risk_level == "medium"
-    assert by_name["browser_screenshot"].risk_level == "medium"
-    assert by_name["browser_click"].risk_level == "medium"
-    assert by_name["browser_type"].risk_level == "medium"
-    assert by_name["browser_select"].risk_level == "medium"
-    assert by_name["browser_wait_for"].risk_level == "low"
-    assert by_name["browser_get_value"].risk_level == "low"
-    assert by_name["browser_fill_form"].risk_level == "medium"
-    assert by_name["browser_get_text"].risk_level == "low"
-    assert by_name["browser_snapshot"].risk_level == "low"
-    assert by_name["browser_reset"].risk_level == "low"
-    assert by_name["browser_tabs"].risk_level == "low"
-    assert by_name["browser_tab_open"].risk_level == "medium"
-    assert by_name["browser_tab_focus"].risk_level == "low"
-    assert by_name["browser_tab_close"].risk_level == "medium"
+def _browser_registry(manager=None):
+    reset_runtime_services()
+    configure_runtime_services(browser_pool=_stub_pool(manager))
+    return build_default_registry()
 
 
 def test_browser_manager_lazy_init_and_actions():
@@ -449,13 +435,12 @@ def test_browser_click_passes_optional_tab_id_to_manager():
             observed["tab_id"] = tab_id
             return {"clicked": True, "selector": selector}
 
-    registry = build_default_registry(browser_pool=_stub_pool(_CaptureManager()))
+    registry = _browser_registry(_CaptureManager())
     executor = ToolExecutor(registry)
     result, _ = _run(
         executor.execute(
             "browser_click",
             {"session_id": _SID, "selector": "button: Continue", "tab_id": "t7"},
-            allow_high_risk=True,
         )
     )
     assert result["clicked"] is True
@@ -463,13 +448,12 @@ def test_browser_click_passes_optional_tab_id_to_manager():
 
 
 def test_browser_snapshot_rejects_unexpected_payload_fields():
-    registry = build_default_registry(browser_pool=_stub_pool())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
         _run(
             executor.execute(
-                "browser_snapshot", {"session_id": _SID, "unexpected": True}, allow_high_risk=True
-            )
+                "browser_snapshot", {"session_id": _SID, "unexpected": True}            )
         )
         raised = False
     except ToolValidationError:
@@ -478,69 +462,69 @@ def test_browser_snapshot_rejects_unexpected_payload_fields():
 
 
 def test_browser_reset_tool_executes():
-    registry = build_default_registry(browser_pool=_stub_pool())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser_reset", {"session_id": _SID}, allow_high_risk=True))
+    result, _ = _run(executor.execute("browser_reset", {"session_id": _SID}))
     assert result["reset"] is True
     assert result["url"] == "about:blank"
 
 
 def test_browser_tabs_tool_executes():
-    registry = build_default_registry(browser_pool=_stub_pool())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser_tabs", {"session_id": _SID}, allow_high_risk=True))
+    result, _ = _run(executor.execute("browser_tabs", {"session_id": _SID}))
     assert result["active_tab_id"] == "t1"
     assert result["tabs"][0]["tab_id"] == "t1"
 
 
 def test_browser_tab_open_defaults_to_blank():
-    registry = build_default_registry(browser_pool=_stub_pool())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser_tab_open", {"session_id": _SID}, allow_high_risk=True))
+    result, _ = _run(executor.execute("browser_tab_open", {"session_id": _SID}))
     assert result["opened"] is True
     assert result["url"] == "about:blank"
 
 
 def test_browser_tab_focus_requires_tab_id():
-    registry = build_default_registry(browser_pool=_stub_pool())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser_tab_focus", {"session_id": _SID}, allow_high_risk=True))
+        _run(executor.execute("browser_tab_focus", {"session_id": _SID}))
         raised = False
     except ToolValidationError:
         raised = True
     assert raised is True
 
     result, _ = _run(
-        executor.execute("browser_tab_focus", {"session_id": _SID, "tab_id": "t1"}, allow_high_risk=True)
+        executor.execute("browser_tab_focus", {"session_id": _SID, "tab_id": "t1"})
     )
     assert result["focused"] is True
     assert result["tab_id"] == "t1"
 
 
 def test_browser_tab_close_requires_tab_id():
-    registry = build_default_registry(browser_pool=_stub_pool())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser_tab_close", {"session_id": _SID}, allow_high_risk=True))
+        _run(executor.execute("browser_tab_close", {"session_id": _SID}))
         raised = False
     except ToolValidationError:
         raised = True
     assert raised is True
 
     result, _ = _run(
-        executor.execute("browser_tab_close", {"session_id": _SID, "tab_id": "t2"}, allow_high_risk=True)
+        executor.execute("browser_tab_close", {"session_id": _SID, "tab_id": "t2"})
     )
     assert result["closed"] is True
     assert result["tab_id"] == "t2"
 
 
 def test_browser_select_requires_selector_and_choice():
-    registry = build_default_registry(browser_pool=_stub_pool())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
 
     try:
-        _run(executor.execute("browser_select", {"session_id": _SID}, allow_high_risk=True))
+        _run(executor.execute("browser_select", {"session_id": _SID}))
         raised = False
     except ToolValidationError:
         raised = True
@@ -551,8 +535,7 @@ def test_browser_select_requires_selector_and_choice():
             executor.execute(
                 "browser_select",
                 {"session_id": _SID, "selector": "combobox: Month"},
-                allow_high_risk=True,
-            )
+                )
         )
         raised = False
     except ToolValidationError:
@@ -563,21 +546,19 @@ def test_browser_select_requires_selector_and_choice():
         executor.execute(
             "browser_select",
             {"session_id": _SID, "selector": "combobox: Month", "value": "1"},
-            allow_high_risk=True,
         )
     )
     assert result["selected_values"] == ["1"]
 
 
 def test_browser_wait_for_accepts_conditions():
-    registry = build_default_registry(browser_pool=_stub_pool())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
 
     result, _ = _run(
         executor.execute(
             "browser_wait_for",
             {"session_id": _SID, "selector": "button: Next", "condition": "enabled", "timeout_ms": 4000},
-            allow_high_risk=True,
         )
     )
     assert result["satisfied"] is True
@@ -585,10 +566,10 @@ def test_browser_wait_for_accepts_conditions():
 
 
 def test_browser_get_value_requires_selector():
-    registry = build_default_registry(browser_pool=_stub_pool())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser_get_value", {"session_id": _SID}, allow_high_risk=True))
+        _run(executor.execute("browser_get_value", {"session_id": _SID}))
         raised = False
     except ToolValidationError:
         raised = True
@@ -596,11 +577,11 @@ def test_browser_get_value_requires_selector():
 
 
 def test_browser_fill_form_requires_non_empty_steps():
-    registry = build_default_registry(browser_pool=_stub_pool())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
 
     try:
-        _run(executor.execute("browser_fill_form", {"session_id": _SID}, allow_high_risk=True))
+        _run(executor.execute("browser_fill_form", {"session_id": _SID}))
         raised = False
     except ToolValidationError:
         raised = True
@@ -617,7 +598,6 @@ def test_browser_fill_form_requires_non_empty_steps():
                 ],
                 "verify": True,
             },
-            allow_high_risk=True,
         )
     )
     assert result["ok"] is True

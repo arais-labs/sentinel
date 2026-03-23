@@ -322,7 +322,6 @@ def test_agent_loop_tool_use_path_runs_tool_and_finishes_second_iteration():
         ToolDefinition(
             name="lookup",
             description="Lookup",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_tool_exec,
         )
@@ -448,7 +447,6 @@ def test_agent_loop_stream_keeps_tool_call_when_empty_text_starts_same_index():
         ToolDefinition(
             name="lookup",
             description="Lookup",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_tool_exec,
         )
@@ -502,7 +500,6 @@ def test_agent_loop_reinjects_tool_screenshot_as_image_content():
         ToolDefinition(
             name="browser_screenshot",
             description="Screenshot",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_screenshot_tool,
         )
@@ -564,7 +561,6 @@ def test_agent_loop_auto_injects_session_id_for_tools_that_declare_it():
         ToolDefinition(
             name="session_echo",
             description="Echo current session id",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -651,7 +647,6 @@ def test_agent_loop_tool_errors_do_not_crash_and_are_persisted_as_error():
         ToolDefinition(
             name="broken",
             description="Broken",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_broken,
         )
@@ -734,7 +729,6 @@ def test_agent_loop_streaming_tool_use_assembles_arguments_for_execution():
         ToolDefinition(
             name="lookup",
             description="Lookup",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_tool_exec,
         )
@@ -849,7 +843,6 @@ def test_tool_result_content_is_truncated_before_persist():
         ToolDefinition(
             name="big",
             description="Big",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_big_tool,
         )
@@ -900,7 +893,6 @@ def test_assistant_tool_call_arguments_are_sanitized_when_oversized():
         ToolDefinition(
             name="big",
             description="Big",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_noop,
         )
@@ -988,7 +980,6 @@ def test_agent_loop_persists_distinct_created_at_order_and_iteration_metadata():
         ToolDefinition(
             name="lookup",
             description="Lookup",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_lookup,
         )

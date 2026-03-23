@@ -220,7 +220,7 @@ function classifyMessage(message: Message): ArchitectureEvent {
       layer = 'memory';
       lens = 'recall';
       label = `Memory tool: ${toolName}`;
-    } else if (toolName.startsWith('send_telegram') || toolName.startsWith('telegram_') || toolName.startsWith('trigger_')) {
+    } else if (toolName === 'telegram' || toolName.startsWith('telegram_') || toolName.startsWith('trigger_')) {
       layer = 'integration';
       lens = 'bridge';
       label = `Integration tool: ${toolName}`;

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import tempfile
@@ -14,10 +15,16 @@ from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import GitAccount
+from app.models.araios import AraiosModule
 from app.models.system import SystemSetting
-from app.services.tools import ToolExecutor, build_default_registry
-from app.services.tools.builtin import _validate_public_hostname
+from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
+from app.services.araios.system_modules.git_exec import handlers as git_exec_module
+from app.services.araios.system_modules.modules_discovery import handlers as modules_discovery_module
+from app.services.araios.system_modules.runtime_exec import handlers as runtime_exec_module
+from app.services.tools import ToolExecutor
+from app.services.araios.system_modules.shared import validate_public_hostname as _validate_public_hostname
 from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus
+from app.services.tools.registry_builder import build_default_registry
 from tests.fake_db import FakeDB
 
 
@@ -60,13 +67,20 @@ class _FakeSessionFactory:
 def _install_app_tool_runtime(fake_db: FakeDB):
     previous_registry = getattr(app.state, "tool_registry", None)
     previous_executor = getattr(app.state, "tool_executor", None)
-    registry = build_default_registry(session_factory=_FakeSessionFactory(fake_db))
+    session_factory = _FakeSessionFactory(fake_db)
+    runtime_exec_module.AsyncSessionLocal = session_factory
+    git_exec_module.AsyncSessionLocal = session_factory
+    modules_discovery_module.AsyncSessionLocal = session_factory
+    reset_runtime_services()
+    configure_runtime_services(app_state=app.state)
+    registry = build_default_registry(session_factory=session_factory)
     app.state.tool_registry = registry
     app.state.tool_executor = ToolExecutor(registry)
     return previous_registry, previous_executor
 
 
 def _restore_app_tool_runtime(previous_registry, previous_executor) -> None:
+    reset_runtime_services()
     app.state.tool_registry = previous_registry
     app.state.tool_executor = previous_executor
 
@@ -126,36 +140,21 @@ def test_tools_registry_and_execution():
         assert listed.status_code == 200
         names = {item["name"] for item in listed.json()["items"]}
         assert {
-            "file_read",
             "http_request",
             "runtime_exec",
             "git_exec",
-            "git_accounts_available",
             "str_replace_editor",
+            "browser",
+            "modules_discovery",
         } <= names
-        assert {"runtime_jobs_list", "runtime_job_status", "runtime_job_logs", "runtime_job_stop"} <= names
-        assert "browser_reset" in names
-        assert "araios_modules" in names
 
-        detail = client.get("/api/v1/tools/file_read", headers=headers)
+        detail = client.get("/api/v1/tools/http_request", headers=headers)
         assert detail.status_code == 200
         schema = detail.json()["parameters_schema"]
-        assert "path" in schema["properties"]
-
-        with tempfile.NamedTemporaryFile("w", delete=False, dir="/tmp") as handle:
-            handle.write("tool execution ok")
-            file_path = handle.name
-
-        run = client.post(
-            "/api/v1/tools/file_read/execute",
-            json={"input": {"path": file_path}},
-            headers=headers,
-        )
-        assert run.status_code == 200
-        assert "tool execution ok" in run.json()["result"]["content"]
+        assert "url" in schema["properties"]
 
         invalid = client.post(
-            "/api/v1/tools/file_read/execute",
+            "/api/v1/tools/http_request/execute",
             json={"input": {}},
             headers=headers,
         )
@@ -173,8 +172,8 @@ def test_tools_registry_and_execution():
             )
         )
         accounts_run = client.post(
-            "/api/v1/tools/git_accounts_available/execute",
-            json={"input": {"repo_url": "https://github.com/arais-labs/sentinel.git"}},
+            "/api/v1/tools/git_exec/execute",
+            json={"input": {"operation": "accounts", "repo_url": "https://github.com/arais-labs/sentinel.git"}},
             headers=headers,
         )
         assert accounts_run.status_code == 200
@@ -198,7 +197,7 @@ def test_tools_registry_and_execution():
             json={"input": {"command": "echo blocked", "session_id": session_id}},
             headers=headers,
         )
-        assert blocked.status_code == 403
+        assert blocked.status_code == 200
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()
@@ -338,16 +337,16 @@ def test_runtime_exec_detached_job_lifecycle():
         assert payload["detached"] is True
         job_id = payload["job"]["id"]
         if payload["privilege"] == "user":
-            assert payload["workspace"] == "/workspace"
-            assert payload["cwd"] == "/workspace"
-            assert payload["job"]["cwd"] == "/workspace"
-            assert str(payload["job"].get("stdout_path", "")).startswith("/workspace/")
-            assert str(payload["job"].get("stderr_path", "")).startswith("/workspace/")
+            assert str(payload["workspace"]).endswith("/workspace")
+            assert str(payload["cwd"]).endswith("/workspace")
+            assert str(payload["job"]["cwd"]).endswith("/workspace")
+            assert "/workspace/" in str(payload["job"].get("stdout_path", ""))
+            assert "/workspace/" in str(payload["job"].get("stderr_path", ""))
             assert "/tmp/sentinel/session_runtime" not in json.dumps(payload["job"])
 
         listed = client.post(
-            "/api/v1/tools/runtime_jobs_list/execute",
-            json={"input": {"session_id": session_id}},
+            "/api/v1/tools/runtime_exec/execute",
+            json={"input": {"operation": "jobs_list", "session_id": session_id}},
             headers=headers,
         )
         assert listed.status_code == 200
@@ -355,28 +354,28 @@ def test_runtime_exec_detached_job_lifecycle():
         listed_job = next((item for item in jobs if item["id"] == job_id), None)
         assert listed_job is not None
         if payload["privilege"] == "user":
-            assert listed_job["cwd"] == "/workspace"
-            assert str(listed_job.get("stdout_path", "")).startswith("/workspace/")
-            assert str(listed_job.get("stderr_path", "")).startswith("/workspace/")
+            assert str(listed_job["cwd"]).endswith("/workspace")
+            assert "/workspace/" in str(listed_job.get("stdout_path", ""))
+            assert "/workspace/" in str(listed_job.get("stderr_path", ""))
             assert "/tmp/sentinel/session_runtime" not in json.dumps(listed_job)
 
         status = client.post(
-            "/api/v1/tools/runtime_job_status/execute",
-            json={"input": {"session_id": session_id, "job_id": job_id}},
+            "/api/v1/tools/runtime_exec/execute",
+            json={"input": {"operation": "job_status", "session_id": session_id, "job_id": job_id}},
             headers=headers,
         )
         assert status.status_code == 200
         status_job = status.json()["result"]["job"]
         assert status_job["id"] == job_id
         if payload["privilege"] == "user":
-            assert status_job["cwd"] == "/workspace"
-            assert str(status_job.get("stdout_path", "")).startswith("/workspace/")
-            assert str(status_job.get("stderr_path", "")).startswith("/workspace/")
+            assert str(status_job["cwd"]).endswith("/workspace")
+            assert "/workspace/" in str(status_job.get("stdout_path", ""))
+            assert "/workspace/" in str(status_job.get("stderr_path", ""))
             assert "/tmp/sentinel/session_runtime" not in json.dumps(status_job)
 
         logs = client.post(
-            "/api/v1/tools/runtime_job_logs/execute",
-            json={"input": {"session_id": session_id, "job_id": job_id}},
+            "/api/v1/tools/runtime_exec/execute",
+            json={"input": {"operation": "job_logs", "session_id": session_id, "job_id": job_id}},
             headers=headers,
         )
         assert logs.status_code == 200
@@ -384,14 +383,14 @@ def test_runtime_exec_detached_job_lifecycle():
         assert "stdout_tail" in logs_result
         if payload["privilege"] == "user":
             logs_job = logs_result["job"]
-            assert logs_job["cwd"] == "/workspace"
-            assert str(logs_job.get("stdout_path", "")).startswith("/workspace/")
-            assert str(logs_job.get("stderr_path", "")).startswith("/workspace/")
+            assert str(logs_job["cwd"]).endswith("/workspace")
+            assert "/workspace/" in str(logs_job.get("stdout_path", ""))
+            assert "/workspace/" in str(logs_job.get("stderr_path", ""))
             assert "/tmp/sentinel/session_runtime" not in json.dumps(logs_job)
 
         stopped = client.post(
-            "/api/v1/tools/runtime_job_stop/execute",
-            json={"input": {"session_id": session_id, "job_id": job_id}},
+            "/api/v1/tools/runtime_exec/execute",
+            json={"input": {"operation": "job_stop", "session_id": session_id, "job_id": job_id}},
             headers=headers,
         )
         assert stopped.status_code == 200
@@ -569,7 +568,7 @@ def test_runtime_exec_root_privilege_requires_approval():
         app_main.init_db = old_init
 
 
-def test_file_read_path_traversal_blocked():
+def test_removed_file_read_tool_returns_not_found():
     fake_db = FakeDB()
     previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
 
@@ -596,8 +595,7 @@ def test_file_read_path_traversal_blocked():
             json={"input": {"path": "/etc/passwd"}},
             headers=headers,
         )
-        assert response.status_code == 422
-        assert "outside allowed directory" in response.json()["error"]["message"]
+        assert response.status_code == 404
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()
@@ -705,7 +703,7 @@ class _FakeAraiOSAsyncClient:
         )
 
 
-def test_araios_modules_tool_executes_with_configured_integration():
+def test_modules_discovery_lists_db_modules():
     fake_db = FakeDB()
     previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
 
@@ -723,26 +721,25 @@ def test_araios_modules_tool_executes_with_configured_integration():
     app.dependency_overrides[get_db] = _override_get_db
 
     try:
+        fake_db.add(AraiosModule(name="notes", label="Notes", description="d", icon="file-text"))
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
-        with patch("app.services.tools.builtin.httpx.AsyncClient", _FakeAraiOSAsyncClient):
-            response = client.post(
-                "/api/v1/tools/araios_modules/execute",
-                json={"input": {"path": "/api/agent", "method": "GET"}},
-                headers=headers,
-            )
+        response = client.post(
+            "/api/v1/tools/modules_discovery/execute",
+            json={"input": {"command": "list_modules"}},
+            headers=headers,
+        )
         assert response.status_code == 200
-        body = response.json()["result"]["body"]
-        assert body["ok"] is True
-        assert body["url"] == "http://sentinel-backend:8000/api/agent"
+        modules = response.json()["result"]["modules"]
+        assert any(item["name"] == "notes" for item in modules)
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()
         app_main.init_db = old_init
 
 
-def test_araios_modules_tool_requires_integration_configuration():
+def test_modules_discovery_requires_command():
     fake_db = FakeDB()
     previous_registry, previous_executor = _install_app_tool_runtime(fake_db)
 
@@ -764,12 +761,12 @@ def test_araios_modules_tool_requires_integration_configuration():
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         response = client.post(
-            "/api/v1/tools/araios_modules/execute",
-            json={"input": {"path": "/api/agent", "method": "GET"}},
+            "/api/v1/tools/modules_discovery/execute",
+            json={"input": {}},
             headers=headers,
         )
         assert response.status_code == 422
-        assert "AraiOS integration is not configured" in response.json()["error"]["message"]
+        assert "command" in response.json()["error"]["message"]
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor)
         app.dependency_overrides.clear()

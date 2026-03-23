@@ -250,6 +250,8 @@ class AraiosModule(Base):
     secrets: Mapped[list | None] = mapped_column(JSON, nullable=True)
     page_title: Mapped[str | None] = mapped_column(String, nullable=True)
     page_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    system: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     order: Mapped[int] = mapped_column(Integer, server_default=text("100"))
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(

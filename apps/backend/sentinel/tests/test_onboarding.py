@@ -158,12 +158,8 @@ def test_runtime_context_assembly_when_user_skips_everything():
         builder = ContextBuilder(
             default_system_prompt=settings.default_system_prompt,
             available_tools={
-                "spawn_sub_agent",
-                "check_sub_agent",
-                "trigger_create",
-                "trigger_list",
-                "trigger_update",
-                "trigger_delete",
+                "sub_agents",
+                "triggers",
             },
         )
         context = _run(builder.build(fake_db, session.id, pending_user_message="please automate recurring checks"))
@@ -270,12 +266,8 @@ def test_runtime_context_assembly_when_user_inputs_everything():
         builder = ContextBuilder(
             default_system_prompt=settings.default_system_prompt,
             available_tools={
-                "spawn_sub_agent",
-                "check_sub_agent",
-                "trigger_create",
-                "trigger_list",
-                "trigger_update",
-                "trigger_delete",
+                "sub_agents",
+                "triggers",
             },
         )
         context = _run(builder.build(fake_db, session.id, pending_user_message="set up weekly status trigger"))
@@ -433,5 +425,3 @@ def test_onboarding_complete_keeps_existing_agent_identity_memory():
         settings.default_system_prompt = old_prompt
         app.dependency_overrides.clear()
         app_main.init_db = old_init
-
-
