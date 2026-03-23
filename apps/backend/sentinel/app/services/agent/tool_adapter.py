@@ -90,6 +90,16 @@ class ToolAdapter:
             if isinstance(item, ToolResultMessage):
                 output.append(item)
                 continue
+            if isinstance(item, asyncio.CancelledError):
+                output.append(
+                    ToolResultMessage(
+                        tool_call_id=call.id,
+                        tool_name=call.name,
+                        content=scrub(self._truncate_content('{"status":"cancelled","message":"Tool call cancelled."}')),
+                        is_error=True,
+                    )
+                )
+                continue
             if isinstance(item, Exception):
                 output.append(
                     ToolResultMessage(
@@ -172,6 +182,26 @@ class ToolAdapter:
                 tool_name=call.name,
                 content=scrub(self._truncate_content(f"Tool '{call.name}' is not registered")),
                 is_error=True,
+            )
+        except asyncio.CancelledError:
+            metadata: dict[str, Any] = {}
+            if pending_message_id is not None:
+                metadata["__persisted_message_id"] = pending_message_id
+            return ToolResultMessage(
+                tool_call_id=call.id,
+                tool_name=call.name,
+                content=scrub(
+                    self._truncate_content(
+                        json.dumps(
+                            {
+                                "status": "cancelled",
+                                "message": "Tool call cancelled while waiting for approval.",
+                            }
+                        )
+                    )
+                ),
+                is_error=True,
+                metadata=metadata,
             )
         except Exception as exc:  # noqa: BLE001
             metadata: dict[str, Any] = {}
