@@ -63,7 +63,7 @@ from app.services.tools.approval.approval_waiters import (
     build_tool_db_approval_result_recorder,
     build_tool_db_approval_waiter,
 )
-from app.services.tools.registry_builder import build_default_registry
+from app.services.tools.runtime_registry import build_runtime_registry
 from app.services.browser.pool import BrowserPool
 from app.services.trigger_scheduler import TriggerScheduler
 from app.services.ws_manager import ConnectionManager
@@ -166,7 +166,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("Runtime container recovery skipped", exc_info=True)
 
-    registry = build_default_registry(session_factory=AsyncSessionLocal)
+    registry = await build_runtime_registry(session_factory=AsyncSessionLocal)
     executor = ToolExecutor(
         registry,
         approval_waiter=build_tool_db_approval_waiter(session_factory=AsyncSessionLocal),
@@ -183,6 +183,7 @@ async def lifespan(app: FastAPI):
     provider = build_tier_provider_from_settings(settings)
     app.state.tool_registry = registry
     app.state.tool_executor = executor
+    app.state.db_session_factory = AsyncSessionLocal
     app.state.approval_service = ApprovalService(session_factory=AsyncSessionLocal)
     app.state.embedding_service = embedding_service
     app.state.memory_search_service = memory_search_service

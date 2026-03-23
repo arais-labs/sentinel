@@ -557,7 +557,23 @@ class SessionService:
                     "message": "Tool call cancelled by user via stop.",
                 }
             )
+            call_ids = [str(call.get("id") or "").strip() for call in unresolved_tool_calls if str(call.get("id") or "").strip()]
+            existing_result = await db.execute(
+                select(Message).where(
+                    Message.session_id == session_id,
+                    Message.role == "tool_result",
+                    Message.tool_call_id.in_(call_ids),
+                )
+            )
+            existing_messages = {
+                str(row.tool_call_id or "").strip(): row
+                for row in existing_result.scalars().all()
+                if str(row.tool_call_id or "").strip()
+            }
             for call in unresolved_tool_calls:
+                call_id = str(call.get("id") or "").strip()
+                if not call_id:
+                    continue
                 generation = normalize_generation_metadata(
                     call.get("generation") if isinstance(call.get("generation"), dict) else None
                 )
@@ -565,13 +581,23 @@ class SessionService:
                     {"pending": False, "cancelled_by_stop": True},
                     generation=generation,
                 )
+                existing_message = existing_messages.get(call_id)
+                if existing_message is not None:
+                    self._apply_terminal_tool_result_update(
+                        existing_message,
+                        content=content,
+                        metadata=metadata,
+                        approval_status="cancelled",
+                        decision_note="Cancelled by user via stop",
+                    )
+                    continue
                 db.add(
                     Message(
                         session_id=session_id,
                         role="tool_result",
                         content=content,
                         metadata_json=metadata,
-                        tool_call_id=call["id"],
+                        tool_call_id=call_id,
                         tool_name=call["name"],
                     )
                 )
@@ -584,6 +610,27 @@ class SessionService:
             reason="Cancelled by user via stop",
         )
         return cancelled
+
+    @staticmethod
+    def _apply_terminal_tool_result_update(
+        message: Message,
+        *,
+        content: str,
+        metadata: dict[str, Any],
+        approval_status: str,
+        decision_note: str,
+    ) -> None:
+        existing_metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+        approval = existing_metadata.get("approval")
+        if isinstance(approval, dict):
+            next_approval = dict(approval)
+            next_approval["status"] = approval_status
+            next_approval["pending"] = False
+            next_approval["can_resolve"] = False
+            next_approval["decision_note"] = decision_note
+            metadata["approval"] = next_approval
+        message.content = content
+        message.metadata_json = metadata
 
     async def _unresolved_tool_calls(
         self,

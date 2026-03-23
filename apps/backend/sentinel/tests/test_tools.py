@@ -26,7 +26,7 @@ from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import GitAccount
-from app.models.araios import AraiosModule
+from app.models.araios import AraiosModule, AraiosPermission
 from app.models.system import SystemSetting
 from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
 from app.services.araios.system_modules.git_exec import handlers as git_exec_module
@@ -36,7 +36,7 @@ from app.services.runtime.ssh_client import SSHExecResult
 from app.services.tools import ToolExecutor
 from app.services.araios.system_modules.shared import validate_public_hostname as _validate_public_hostname
 from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus
-from app.services.tools.registry_builder import build_default_registry
+from app.services.tools.runtime_registry import build_runtime_registry
 from tests.fake_db import FakeDB
 
 
@@ -136,9 +136,10 @@ def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
     runtime_exec_module.get_runtime = lambda: _FakeRuntimeProvider()
     reset_runtime_services()
     configure_runtime_services(app_state=app.state)
-    registry = build_default_registry(session_factory=session_factory)
+    registry = asyncio.run(build_runtime_registry(session_factory=session_factory))
     app.state.tool_registry = registry
     app.state.tool_executor = ToolExecutor(registry, approval_waiter=approval_waiter)
+    app.state.db_session_factory = session_factory
     return previous_registry, previous_executor, previous_get_runtime
 
 
@@ -147,6 +148,7 @@ def _restore_app_tool_runtime(previous_registry, previous_executor, previous_get
     runtime_exec_module.get_runtime = previous_get_runtime
     app.state.tool_registry = previous_registry
     app.state.tool_executor = previous_executor
+    app.state.db_session_factory = None
 
 
 def _runtime_exec_input(
@@ -817,3 +819,363 @@ def test_module_manager_requires_command():
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()
         app_main.init_db = old_init
+
+
+def test_module_manager_create_registers_dynamic_tool_and_permissions():
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        create_payload = {
+            "command": "create_module",
+            "name": "clients",
+            "label": "Clients",
+            "description": "Track customers",
+            "actions": [
+                {
+                    "id": "sync_hubspot",
+                    "label": "Sync HubSpot",
+                    "params": [{"key": "source", "label": "Source", "required": True}],
+                    "code": "result = {'ok': True, 'source': params['source']}",
+                },
+                {
+                    "id": "archive",
+                    "label": "Archive",
+                    "type": "record",
+                    "code": "result = {'ok': True, 'record_id': record['id']}",
+                },
+            ],
+            "page_title": "Clients",
+            "page_content": "# Clients",
+            "permissions": {
+                "delete_record": "deny",
+                "edit_page": "approval",
+                "sync_hubspot": "allow",
+                "archive": "approval",
+            },
+        }
+        created = client.post(
+            "/api/v1/tools/module_manager/execute",
+            json={"input": create_payload},
+            headers=headers,
+        )
+        assert created.status_code == 200
+        result = created.json()["result"]
+        assert result["module"] == "clients"
+        assert result["permissions"]["delete_record"] == "deny"
+        assert result["permissions"]["archive"] == "approval"
+
+        permission_rows = {
+            row.action: row.level
+            for row in fake_db.storage[AraiosPermission]
+            if row.action.startswith("clients.")
+        }
+        assert permission_rows["clients.list_records"] == "allow"
+        assert permission_rows["clients.delete_record"] == "deny"
+        assert permission_rows["clients.edit_page"] == "approval"
+        assert permission_rows["clients.sync_hubspot"] == "allow"
+        assert permission_rows["clients.archive"] == "approval"
+
+        listed = client.get("/api/v1/tools", headers=headers)
+        assert listed.status_code == 200
+        names = {item["name"] for item in listed.json()["items"]}
+        assert "clients" in names
+
+        detail = client.get("/api/v1/tools/clients", headers=headers)
+        assert detail.status_code == 200
+        command_enum = detail.json()["parameters_schema"]["properties"]["command"]["enum"]
+        assert "list_records" in command_enum
+        assert "get_page" in command_enum
+        assert "edit_page" in command_enum
+        assert "sync_hubspot" in command_enum
+        assert "archive" in command_enum
+
+        created_record = client.post(
+            "/api/v1/tools/clients/execute",
+            json={"input": {"command": "create_record", "data": {"name": "Acme"}}},
+            headers=headers,
+        )
+        assert created_record.status_code == 200
+        record_id = created_record.json()["result"]["id"]
+
+        run_custom = client.post(
+            "/api/v1/tools/clients/execute",
+            json={"input": {"command": "sync_hubspot", "source": "crm"}},
+            headers=headers,
+        )
+        assert run_custom.status_code == 200
+        assert run_custom.json()["result"]["source"] == "crm"
+
+        get_page = client.post(
+            "/api/v1/tools/clients/execute",
+            json={"input": {"command": "get_page"}},
+            headers=headers,
+        )
+        assert get_page.status_code == 200
+        assert get_page.json()["result"]["page_content"] == "# Clients"
+
+        denied_delete = client.post(
+            "/api/v1/tools/clients/execute",
+            json={"input": {"command": "delete_record", "record_id": record_id}},
+            headers=headers,
+        )
+        assert denied_delete.status_code == 400
+        denied_payload = denied_delete.json()
+        denied_message = denied_payload.get("detail") or denied_payload.get("error", {}).get("message", "")
+        assert "denied" in str(denied_message).lower()
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_module_manager_rejects_reserved_dynamic_action_names():
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = client.post(
+            "/api/v1/tools/module_manager/execute",
+            json={
+                "input": {
+                    "command": "create_module",
+                    "name": "badmodule",
+                    "label": "Bad Module",
+                    "actions": [{"id": "create_record", "label": "Nope", "code": "result={'ok': True}"}],
+                }
+            },
+            headers=headers,
+        )
+        assert response.status_code == 400
+        payload = response.json()
+        message = payload.get("detail") or payload.get("error", {}).get("message", "")
+        assert "reserved command name" in str(message).lower()
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_registry_skips_invalid_dynamic_module():
+    fake_db = FakeDB()
+    bad = AraiosModule(
+        name="broken_module",
+        label="Broken Module",
+        description="bad schema merge",
+        icon="box",
+        actions=[],
+    )
+    fake_db.add(bad)
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    try:
+        conflict_actions = [
+            {
+                "id": "one",
+                "label": "One",
+                "params": [{"key": "data", "label": "Data", "required": True}],
+                "code": "result = {'ok': True}",
+            },
+            {
+                "id": "two",
+                "label": "Two",
+                "params": [{"key": "data", "label": "Patch Data", "required": True}],
+                "code": "result = {'ok': True}",
+            },
+        ]
+        bad.actions = conflict_actions
+        registry = asyncio.run(build_runtime_registry(session_factory=_FakeSessionFactory(fake_db)))
+        assert registry.get("broken_module") is None
+        assert registry.get("module_manager") is not None
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+
+
+def test_runtime_registry_excludes_system_modules_from_dynamic_loader():
+    fake_db = FakeDB()
+    system_module = AraiosModule(
+        name="system_only_module",
+        label="System Only Module",
+        description="should not compile through dynamic loader",
+        icon="box",
+        actions=[
+            {
+                "id": "ping",
+                "label": "Ping",
+                "code": "result = {'ok': True}",
+            }
+        ],
+        system=True,
+    )
+    fake_db.add(system_module)
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    try:
+        registry = asyncio.run(build_runtime_registry(session_factory=_FakeSessionFactory(fake_db)))
+        assert registry.get("system_only_module") is None
+        assert registry.get("module_manager") is not None
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+
+
+def test_permissions_api_lists_static_system_and_dynamic_actions():
+    fake_db = FakeDB()
+    fake_db.add(
+        AraiosModule(
+            name="clients",
+            label="Clients",
+            description="Track customers",
+            icon="box",
+            actions=[
+                {
+                    "id": "sync_hubspot",
+                    "label": "Sync HubSpot",
+                    "code": "result = {'ok': True}",
+                },
+                {
+                    "id": "archive",
+                    "label": "Archive",
+                    "type": "record",
+                    "code": "result = {'ok': True}",
+                },
+            ],
+            system=False,
+        )
+    )
+    fake_db.add(AraiosPermission(action="clients.archive", level="deny"))
+
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        response = client.get("/api/permissions", headers=headers)
+        assert response.status_code == 200
+        permissions = {item["action"]: item["level"] for item in response.json()["permissions"]}
+
+        assert permissions["modules.create"] == "approval"
+        assert permissions["browser.navigate"] == "allow"
+        assert permissions["clients.list_records"] == "allow"
+        assert permissions["clients.create_record"] == "allow"
+        assert permissions["clients.delete_record"] == "approval"
+        assert permissions["clients.sync_hubspot"] == "allow"
+        assert permissions["clients.archive"] == "deny"
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_permissions_api_updates_known_action_and_rejects_unknown_action():
+    fake_db = FakeDB()
+    fake_db.add(
+        AraiosModule(
+            name="clients",
+            label="Clients",
+            description="Track customers",
+            icon="box",
+            actions=[],
+            system=False,
+        )
+    )
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        update = client.patch("/api/permissions/clients.create_record", json={"level": "approval"}, headers=headers)
+        assert update.status_code == 200
+        assert update.json() == {"action": "clients.create_record", "level": "approval"}
+
+        stored = next(row for row in fake_db.storage[AraiosPermission] if row.action == "clients.create_record")
+        assert stored.level == "approval"
+
+        missing = client.patch("/api/permissions/clients.not_real", json={"level": "deny"}, headers=headers)
+        assert missing.status_code == 404
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_module_manager_grouped_tool_accepts_optional_session_id_for_non_session_commands():
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    try:
+        registry = asyncio.run(build_runtime_registry(session_factory=_FakeSessionFactory(fake_db)))
+        executor = ToolExecutor(registry)
+        result, _duration = asyncio.run(
+            executor.execute(
+                "module_manager",
+                {
+                    "command": "list_modules",
+                    "session_id": "7eeab26f-1f5e-4964-98d8-201bf66c38a1",
+                },
+            )
+        )
+        assert result == {"modules": []}
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)

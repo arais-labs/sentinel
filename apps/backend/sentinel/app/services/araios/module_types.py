@@ -89,6 +89,7 @@ class ActionDefinition:
     handler: Any | None = None    # system modules — the actual async handler function
     streaming: bool = False
     approval: bool = False
+    permission_default: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -274,6 +275,7 @@ class ModuleDefinition:
                     handler=a.get("handler"),
                     streaming=a.get("streaming", False),
                     approval=_normalize_approval_value(a.get("approval")),
+                    permission_default=_normalize_permission_default_value(a.get("permission_default")),
                 )
                 for a in raw_actions
                 if isinstance(a, dict) and "id" in a
@@ -382,7 +384,10 @@ def _resolve_action_approval_check(
     action: ActionDefinition,
     session_factory: "async_sessionmaker[AsyncSession] | None",
 ) -> Any | None:
-    default_level = _default_permission_level(action.approval)
+    default_level = _default_permission_level(
+        approval=action.approval,
+        permission_default=action.permission_default,
+    )
     action_key = f"{module_name}.{action.id}"
     description = (action.description or action.label or action_key).strip()
 
@@ -429,7 +434,10 @@ async def _load_permission_level(
     return default_level
 
 
-def _default_permission_level(approval: bool) -> str:
+def _default_permission_level(*, approval: bool, permission_default: str | None = None) -> str:
+    normalized = _normalize_permission_default_value(permission_default)
+    if normalized is not None:
+        return normalized
     return "approval" if approval else "allow"
 
 
@@ -439,6 +447,15 @@ def _normalize_approval_value(value: Any) -> bool:
     if isinstance(value, dict):
         return value.get("required") is not False
     return False
+
+
+def _normalize_permission_default_value(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"allow", "approval", "deny"}:
+        return normalized
+    return None
 
 
 def _resolve_grouped_action(

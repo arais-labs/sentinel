@@ -32,23 +32,34 @@ def _session_id_prop() -> dict:
     return {"type": "string", "description": "Current session ID."}
 
 
+def _with_optional_session_id(schema: dict) -> dict:
+    properties = dict(schema.get("properties", {}))
+    properties["session_id"] = _session_id_prop()
+    return {
+        **schema,
+        "properties": properties,
+    }
+
+
 def _list_modules_parameters_schema() -> dict:
-    return {"type": "object", "additionalProperties": False, "properties": {}}
+    return _with_optional_session_id(
+        {"type": "object", "additionalProperties": False, "properties": {}}
+    )
 
 
 def _get_module_parameters_schema() -> dict:
-    return {
+    return _with_optional_session_id({
         "type": "object",
         "additionalProperties": False,
         "required": ["name"],
         "properties": {
             "name": _name_prop(),
         },
-    }
+    })
 
 
 def _create_module_parameters_schema() -> dict:
-    return {
+    return _with_optional_session_id({
         "type": "object",
         "additionalProperties": False,
         "required": ["name", "label"],
@@ -60,36 +71,38 @@ def _create_module_parameters_schema() -> dict:
             "fields": {"type": "array"},
             "fields_config": {"type": "object"},
             "actions": {"type": "array"},
+            "permissions": {"type": "object"},
             "secrets": {"type": "array"},
             "page_title": {"type": "string"},
+            "page_content": {"type": "string"},
         },
-    }
+    })
 
 
 def _delete_module_parameters_schema() -> dict:
-    return {
+    return _with_optional_session_id({
         "type": "object",
         "additionalProperties": False,
         "required": ["name"],
         "properties": {
             "name": _name_prop(),
         },
-    }
+    })
 
 
 def _list_records_parameters_schema() -> dict:
-    return {
+    return _with_optional_session_id({
         "type": "object",
         "additionalProperties": False,
         "required": ["module"],
         "properties": {
             "module": _module_prop(),
         },
-    }
+    })
 
 
 def _get_record_parameters_schema() -> dict:
-    return {
+    return _with_optional_session_id({
         "type": "object",
         "additionalProperties": False,
         "required": ["module", "record_id"],
@@ -97,11 +110,11 @@ def _get_record_parameters_schema() -> dict:
             "module": _module_prop(),
             "record_id": _record_id_prop(),
         },
-    }
+    })
 
 
 def _create_record_parameters_schema() -> dict:
-    return {
+    return _with_optional_session_id({
         "type": "object",
         "additionalProperties": False,
         "required": ["module", "data"],
@@ -109,11 +122,11 @@ def _create_record_parameters_schema() -> dict:
             "module": _module_prop(),
             "data": {"type": "object"},
         },
-    }
+    })
 
 
 def _update_record_parameters_schema() -> dict:
-    return {
+    return _with_optional_session_id({
         "type": "object",
         "additionalProperties": False,
         "required": ["module", "record_id", "data"],
@@ -122,11 +135,11 @@ def _update_record_parameters_schema() -> dict:
             "record_id": _record_id_prop(),
             "data": {"type": "object"},
         },
-    }
+    })
 
 
 def _delete_record_parameters_schema() -> dict:
-    return {
+    return _with_optional_session_id({
         "type": "object",
         "additionalProperties": False,
         "required": ["module", "record_id"],
@@ -134,7 +147,7 @@ def _delete_record_parameters_schema() -> dict:
             "module": _module_prop(),
             "record_id": _record_id_prop(),
         },
-    }
+    })
 
 
 def _run_action_parameters_schema() -> dict:
