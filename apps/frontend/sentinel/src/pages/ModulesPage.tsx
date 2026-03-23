@@ -389,7 +389,7 @@ function DynamicDetailPane({ config, record, saving, onPatch, onDelete, onAction
       {/* Fields */}
       <div className="flex-1 overflow-y-auto p-5 space-y-4">
         {fields.map((field: any) => (
-          <DetailFieldView key={field.key} field={field} value={record[field.key]} onBlur={(val: any) => onPatch({ [field.key]: val })} />
+          <DetailFieldView key={`${record.id}-${field.key}`} field={field} value={record[field.key]} onBlur={(val: any) => onPatch({ [field.key]: val })} />
         ))}
 
         {/* Actions */}
@@ -401,20 +401,18 @@ function DynamicDetailPane({ config, record, saving, onPatch, onDelete, onAction
           >
             <Pencil size={11} className="inline mr-1.5 -mt-0.5" />Edit
           </button>
-          {detailActions.map((action: any) => {
-            if (action.type === 'delete') {
-              return (
-                <button key={action.id} className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-rose-600/10 text-rose-500 hover:bg-rose-600 hover:text-white transition-colors" onClick={onDelete} disabled={saving}>
-                  {action.label}
-                </button>
-              );
-            }
-            return (
-              <button key={action.id} className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => onAction(action.id)} disabled={saving}>
-                {action.label}
-              </button>
-            );
-          })}
+          {detailActions.filter((a: any) => a.type !== 'delete').map((action: any) => (
+            <button key={action.id} className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => onAction(action.id)} disabled={saving}>
+              {action.label}
+            </button>
+          ))}
+          <button
+            className="ml-auto h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-rose-600/10 text-rose-500 hover:bg-rose-600 hover:text-white transition-colors flex items-center gap-1.5"
+            onClick={onDelete}
+            disabled={saving}
+          >
+            <Trash2 size={11} />Delete
+          </button>
         </div>
       </div>
     </div>
@@ -580,8 +578,8 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-[720px] mx-auto space-y-4">
           {/* Secret config cards */}
-          {(config.secrets || []).filter((s: any) => !secretsStatus[s.key]).map((s: any) => (
-            <SecretCard key={s.key} moduleName={config.name} secret={s} onSaved={loadSecrets} />
+          {(config.secrets || []).map((s: any) => (
+            <SecretCard key={s.key} moduleName={config.name} secret={s} isSet={!!secretsStatus[s.key]} onSaved={loadSecrets} />
           ))}
           {missingRequired.length > 0 && (config.actions || []).length > 0 && (
             <div className="text-xs text-[color:var(--text-muted)] py-2 border-t border-[color:var(--border-subtle)]">
@@ -601,8 +599,9 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
   );
 }
 
-function SecretCard({ moduleName, secret, onSaved }: { moduleName: string; secret: any; onSaved: () => void }) {
+function SecretCard({ moduleName, secret, isSet, onSaved }: { moduleName: string; secret: any; isSet: boolean; onSaved: () => void }) {
   const [value, setValue] = useState('');
+  const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
@@ -611,6 +610,7 @@ function SecretCard({ moduleName, secret, onSaved }: { moduleName: string; secre
       setSaving(true);
       await araiosApi(`/api/modules/${moduleName}/secrets/${secret.key}`, { method: 'PUT', body: { value } });
       setValue('');
+      setEditing(false);
       toast.success(`${secret.label} saved`);
       onSaved();
     } catch { toast.error('Could not save secret'); }
@@ -619,19 +619,44 @@ function SecretCard({ moduleName, secret, onSaved }: { moduleName: string; secre
 
   const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
 
+  if (isSet && !editing) {
+    return (
+      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+            <span className="text-emerald-400 mr-1">✓</span>
+            {secret.label}
+            {secret.hint && <span className="text-[color:var(--text-muted)] ml-2 font-normal normal-case">{secret.hint}</span>}
+          </p>
+          <p className="text-xs text-[color:var(--text-muted)] mt-0.5">••••••••</p>
+        </div>
+        <button className="h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors shrink-0" onClick={() => setEditing(true)}>
+          Update
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4 flex items-end gap-3">
+    <div className={`rounded-xl border p-4 flex items-end gap-3 ${isSet ? 'border-amber-500/30 bg-amber-500/5' : 'border-rose-500/30 bg-rose-500/5'}`}>
       <div className="flex-1 space-y-1.5">
         <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-          <span className="text-rose-400 mr-1">{'\u2717'}</span>
-          {secret.label}
+          <span className={`mr-1 ${isSet ? 'text-amber-400' : 'text-rose-400'}`}>{isSet ? '↻' : '✗'}</span>
+          {isSet ? `Update ${secret.label}` : secret.label}
           {secret.hint && <span className="text-[color:var(--text-muted)] ml-2 font-normal normal-case">{secret.hint}</span>}
         </label>
-        <input className={inputCls} type="password" placeholder="Paste value..." value={value} onChange={e => setValue(e.target.value)} onKeyDown={e => e.key === 'Enter' && save()} />
+        <input className={inputCls} type="password" placeholder="Paste new value..." value={value} onChange={e => setValue(e.target.value)} onKeyDown={e => e.key === 'Enter' && save()} autoFocus={isSet} />
       </div>
-      <button className="h-9 px-4 rounded-lg text-xs font-bold bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity shrink-0" onClick={save} disabled={saving || !value.trim()}>
-        {saving ? 'Saving...' : 'Save'}
-      </button>
+      <div className="flex items-center gap-2 shrink-0">
+        {isSet && (
+          <button className="h-9 px-3 rounded-lg text-xs font-bold border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => { setEditing(false); setValue(''); }}>
+            Cancel
+          </button>
+        )}
+        <button className="h-9 px-4 rounded-lg text-xs font-bold bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity" onClick={save} disabled={saving || !value.trim()}>
+          {saving ? 'Saving...' : isSet ? 'Update' : 'Save'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -954,6 +979,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
       setSaving(true);
       await araiosApi(`/api/modules/${moduleName}/records/${id}`, { method: 'DELETE' });
       setConfirmDeleteId(null);
+      setSelectedId(null);
       toast.success('Deleted');
       await loadAll(true);
     } catch { toast.error('Delete failed'); }
