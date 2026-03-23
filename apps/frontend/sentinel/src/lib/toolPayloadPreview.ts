@@ -42,53 +42,49 @@ const GENERIC_OUTPUT_PRIORITY = [
 ];
 
 const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: readonly string[] }> = {
-  araios_modules: {
-    input: ['operation', 'name', 'type', 'label'],
-    output: ['ok', 'modules', 'module', 'message', 'error'],
-  },
-  araios_records: {
-    input: ['module', 'operation', 'record_id', 'data'],
-    output: ['ok', 'records', 'count', 'message', 'error'],
-  },
-  araios_action: {
-    input: ['module', 'action_id', 'record_id', 'params'],
-    output: ['ok', 'result', 'error'],
-  },
   topolix_diagram: {
     input: ['title', 'summary', 'dsl'],
     output: ['share_url', 'url', 'error'],
   },
   git_exec: {
-    input: ['command', 'workdir'],
-    output: ['status', 'exit_code', 'stdout', 'stderr'],
+    input: ['operation', 'command', 'cwd', 'host', 'repo_url'],
+    output: ['ok', 'stdout', 'stderr', 'returncode', 'timed_out', 'total', 'accounts'],
+  },
+  coordination: {
+    input: ['command', 'agent', 'message', 'context', 'limit'],
+    output: ['messages', 'id', 'agent', 'message', 'createdAt'],
+  },
+  documents: {
+    input: ['command', 'id', 'slug', 'title', 'tag', 'author'],
+    output: ['documents', 'id', 'slug', 'title', 'version', 'ok', 'message'],
+  },
+  memory: {
+    input: ['command', 'query', 'id', 'parent_id', 'root_id', 'content', 'node_ids', 'target_parent_id'],
+    output: ['items', 'roots', 'total', 'id', 'deleted', 'moved_node_ids', 'expanded_items'],
+  },
+  modules_discovery: {
+    input: ['command', 'module', 'name', 'record_id', 'action_id', 'data', 'params'],
+    output: ['modules', 'records', 'count', 'ok', 'message', 'result'],
+  },
+  sub_agents: {
+    input: ['command', 'session_id', 'task_id', 'objective', 'scope', 'browser_tab_id'],
+    output: ['task_id', 'status', 'objective', 'result', 'items', 'note'],
+  },
+  tasks: {
+    input: ['command', 'id', 'title', 'status', 'priority', 'owner'],
+    output: ['tasks', 'id', 'title', 'status', 'priority', 'ok', 'message'],
   },
   runtime_exec: {
-    input: ['command', 'privilege', 'cwd', 'timeout_seconds', 'detached'],
-    output: ['stdout', 'ok', 'returncode', 'timed_out', 'stderr'],
+    input: ['operation', 'command', 'privilege', 'cwd', 'job_id', 'detached'],
+    output: ['stdout', 'ok', 'returncode', 'timed_out', 'stderr', 'job', 'items'],
   },
-  runtime_job_logs: {
-    input: ['job_id', 'limit', 'offset'],
-    output: ['stdout', 'stderr', 'status', 'returncode'],
+  triggers: {
+    input: ['command', 'session_id', 'trigger_id', 'name', 'type', 'config', 'action_type', 'action_config', 'enabled', 'enabled_only'],
+    output: ['trigger_id', 'triggers', 'total', 'updated', 'deleted', 'name', 'type', 'action_type', 'enabled', 'next_fire_at'],
   },
-  runtime_job_status: {
-    input: ['job_id'],
-    output: ['status', 'returncode', 'started_at', 'finished_at'],
-  },
-  runtime_jobs_list: {
-    input: ['limit', 'offset'],
-    output: ['count', 'items'],
-  },
-  runtime_job_stop: {
-    input: ['job_id'],
-    output: ['ok', 'status', 'message'],
-  },
-  trigger_create: {
-    input: ['name', 'protocol', 'event', 'filter'],
-    output: ['id', 'status', 'error'],
-  },
-  trigger_update: {
-    input: ['trigger_id', 'name', 'protocol', 'event'],
-    output: ['id', 'status', 'error'],
+  telegram: {
+    input: ['command', 'chat_id', 'message', 'session_id', 'bot_token', 'telegram_user_id'],
+    output: ['success', 'chat_id', 'message_sent', 'running', 'bot_username', 'connected_chats', 'main_session_id'],
   },
 };
 

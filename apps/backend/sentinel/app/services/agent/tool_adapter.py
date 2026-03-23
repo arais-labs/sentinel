@@ -68,7 +68,6 @@ class ToolAdapter:
         db: Any,
         *,
         session_id: UUID | str | None = None,
-        allow_high_risk: bool = False,
         agent_mode: AgentMode | str | None = None,
     ) -> list[ToolResultMessage]:
         """Execute all tool calls for a turn and return normalized result messages."""
@@ -76,7 +75,6 @@ class ToolAdapter:
             self._execute_one(
                 call,
                 db,
-                allow_high_risk=allow_high_risk,
                 session_id=session_id,
                 agent_mode=agent_mode,
             )
@@ -114,7 +112,6 @@ class ToolAdapter:
         call: ToolCallContent,
         db: Any,
         *,
-        allow_high_risk: bool,
         session_id: UUID | str | None,
         agent_mode: AgentMode | str | None,
     ) -> ToolResultMessage:
@@ -126,9 +123,9 @@ class ToolAdapter:
 
             if self._session_factory is not None:
                 async with self._session_factory() as estop_db:
-                    await self._estop.enforce_tool(estop_db, call.name, tool.risk_level)
+                    await self._estop.enforce_tool(estop_db, call.name)
             else:
-                await self._estop.enforce_tool(db, call.name, tool.risk_level)
+                await self._estop.enforce_tool(db, call.name)
             arguments = call.arguments if isinstance(call.arguments, dict) else {}
             payload = dict(arguments)
             schema_properties = tool.parameters_schema.get("properties", {}) if tool.parameters_schema else {}
@@ -138,7 +135,6 @@ class ToolAdapter:
             result, _duration_ms = await self._executor.execute(
                 call.name,
                 payload,
-                allow_high_risk=allow_high_risk,
                 agent_mode=agent_mode,
             )
             truncated, metadata = self._prepare_content_and_metadata(call.name, result)

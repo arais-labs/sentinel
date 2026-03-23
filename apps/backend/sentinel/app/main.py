@@ -49,6 +49,7 @@ from app.routers.araios import api_router as araios_api_router, platform_auth_ro
 from app.services.approvals import ApprovalService
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
 from app.services.agent_run_registry import AgentRunRegistry
+from app.services.araios.runtime_services import configure_runtime_services
 from app.services.embeddings import EmbeddingService
 from app.services.llm.factory import build_tier_provider_from_settings
 from app.services.llm.ids import TierName
@@ -57,15 +58,9 @@ from app.services.memory.search import MemorySearchService
 from app.services.session_runtime import run_session_runtime_janitor
 from app.services.session_naming import SessionNamingService
 from app.services.sub_agents import SubAgentOrchestrator
-from app.services.tools import ToolExecutor, build_default_registry
-from app.services.tools.browser_pool import BrowserPool
-from app.services.tools.builtin import (
-    cancel_sub_agent_tool,
-    check_sub_agent_tool,
-    list_sub_agents_tool,
-    python_tool,
-    spawn_sub_agent_tool,
-)
+from app.services.tools import ToolExecutor
+from app.services.tools.registry_builder import build_default_registry
+from app.services.browser.pool import BrowserPool
 from app.services.trigger_scheduler import TriggerScheduler
 from app.services.ws_manager import ConnectionManager
 
@@ -149,6 +144,12 @@ async def lifespan(app: FastAPI):
             )
     memory_search_service = MemorySearchService(embedding_service)
     browser_pool = BrowserPool()
+    configure_runtime_services(
+        embedding_service=embedding_service,
+        memory_search_service=memory_search_service,
+        browser_pool=browser_pool,
+        app_state=app.state,
+    )
 
     # Recover running runtime containers that survived a backend restart/reload
     try:
@@ -161,12 +162,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("Runtime container recovery skipped", exc_info=True)
 
-    registry = build_default_registry(
-        memory_search_service=memory_search_service,
-        embedding_service=embedding_service,
-        session_factory=AsyncSessionLocal,
-        browser_pool=browser_pool,
-    )
+    registry = build_default_registry(session_factory=AsyncSessionLocal)
     executor = ToolExecutor(registry)
 
     available_tools = {tool.name for tool in registry.list_all()}
@@ -233,7 +229,6 @@ async def lifespan(app: FastAPI):
                     on_event=_on_event,
                     model=TierName.NORMAL.value,
                     max_iterations=10,
-                    allow_high_risk=True,
                 )
             )
             registered = await run_registry.register(session_key, run_task)
@@ -347,6 +342,10 @@ async def lifespan(app: FastAPI):
         base_tool_registry=registry,
         on_task_completed=_broadcast_sub_agent_completed,
     )
+    configure_runtime_services(
+        sub_agent_orchestrator=app.state.sub_agent_orchestrator,
+        ws_manager=ws_manager,
+    )
     if provider is not None:
         context_builder = ContextBuilder(
             default_system_prompt=settings.default_system_prompt,
@@ -361,40 +360,7 @@ async def lifespan(app: FastAPI):
             base_tool_registry=registry,
             on_task_completed=_broadcast_sub_agent_completed,
         )
-
-        # Register sub-agent management tools (use app.state for lazy orchestrator resolution)
-        registry.register(
-            spawn_sub_agent_tool(
-                session_factory=AsyncSessionLocal,
-                orchestrator=app.state.sub_agent_orchestrator,
-                ws_manager=ws_manager,
-                browser_pool=browser_pool,
-            )
-        )
-        registry.register(check_sub_agent_tool(session_factory=AsyncSessionLocal))
-        registry.register(list_sub_agents_tool(session_factory=AsyncSessionLocal))
-        registry.register(
-            cancel_sub_agent_tool(
-                session_factory=AsyncSessionLocal,
-                orchestrator=app.state.sub_agent_orchestrator,
-            )
-        )
-        registry.register(python_tool(session_factory=AsyncSessionLocal))
-        available_tools.update(
-            {
-                "spawn_sub_agent",
-                "check_sub_agent",
-                "list_sub_agents",
-                "cancel_sub_agent",
-                "python",
-            }
-        )
-        # Rebuild executor and tool adapter with new tools
-        executor = ToolExecutor(registry)
-        app.state.tool_executor = executor
-        tool_adapter = ToolAdapter(registry, executor, session_factory=AsyncSessionLocal)
-        app.state.agent_loop.tool_adapter = tool_adapter
-        context_builder._available_tools = available_tools
+        configure_runtime_services(sub_agent_orchestrator=app.state.sub_agent_orchestrator)
 
     app.state.trigger_scheduler = TriggerScheduler(
         agent_loop=app.state.agent_loop,
@@ -415,19 +381,6 @@ async def lifespan(app: FastAPI):
         from app.services.telegram_bridge import start_telegram_bridge
 
         await start_telegram_bridge(app.state)
-
-    # Register Telegram tools (always available — return errors when bridge is not running/configured)
-    from app.services.telegram_bridge import (
-        send_telegram_message_tool,
-        telegram_manage_integration_tool,
-    )
-
-    tg_tool = send_telegram_message_tool(app.state)
-    registry.register(tg_tool)
-    available_tools.add("send_telegram_message")
-    tg_manage_tool = telegram_manage_integration_tool(app.state)
-    registry.register(tg_manage_tool)
-    available_tools.add("telegram_manage_integration")
 
     try:
         yield

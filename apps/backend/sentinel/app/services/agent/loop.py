@@ -136,7 +136,6 @@ class AgentLoop:
         temperature: float = 0.7,
         model: str = TierName.NORMAL.value,
         agent_mode: AgentMode | str | None = None,
-        allow_high_risk: bool = False,
         persist_user_message: bool = True,
         stream: bool = True,
         timeout_seconds: float | None = None,
@@ -522,7 +521,6 @@ class AgentLoop:
                     tool_calls,
                     db,
                     session_id=session_id,
-                    allow_high_risk=allow_high_risk,
                     agent_mode=mode_definition.id,
                 )
                 messages.extend(tool_results)

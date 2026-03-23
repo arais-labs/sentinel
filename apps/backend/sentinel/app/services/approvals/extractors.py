@@ -13,6 +13,10 @@ def extract_approval_metadata_from_tool_result(
     if not isinstance(result, dict):
         return None
 
+    araios = _extract_araios_approval(result)
+    if araios is not None:
+        return araios
+
     generic = _extract_generic_approval(result)
     if generic is not None:
         return generic

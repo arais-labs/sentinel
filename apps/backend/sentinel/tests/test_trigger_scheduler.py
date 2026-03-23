@@ -71,8 +71,8 @@ class _ToolExecutorStub:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def execute(self, name: str, payload: dict, *, allow_high_risk: bool):
-        self.calls.append({"name": name, "payload": payload, "allow_high_risk": allow_high_risk})
+    async def execute(self, name: str, payload: dict, **kwargs):
+        self.calls.append({"name": name, "payload": payload})
         return {"ok": True}, 8
 
 
@@ -402,7 +402,6 @@ def test_scheduler_tool_call_action_uses_tool_executor():
 
     assert tools.calls
     assert tools.calls[0]["name"] == "file_read"
-    assert tools.calls[0]["allow_high_risk"] is True
     assert trigger.fire_count == 1
 
 

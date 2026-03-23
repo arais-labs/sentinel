@@ -740,7 +740,6 @@ class SessionService:
             temperature=temperature,
             max_iterations=max_iterations,
             agent_mode=agent_mode or get_default_agent_mode(),
-            allow_high_risk=True,
             stream=False,
         )
         naming = SessionNamingService(provider=getattr(self._agent_loop, "provider", None))

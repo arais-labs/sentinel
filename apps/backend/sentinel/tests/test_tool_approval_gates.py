@@ -33,7 +33,6 @@ def _tool_with_gate(
 
     return ToolDefinition(
         name="gated_tool",
-        risk_level="low",
         description="Test gated tool",
         parameters_schema={"type": "object", "properties": {}, "required": []},
         execute=_execute,
@@ -73,7 +72,7 @@ def test_required_gate_cannot_be_bypassed_by_allow_evaluator():
     tool = _tool_with_gate(approval_gate=gate)
     executor = _executor_for(tool)
 
-    result, _ = _run(executor.execute("gated_tool", {}, allow_high_risk=True))
+    result, _ = _run(executor.execute("gated_tool", {}))
 
     assert waiter_called is True
     assert result["ok"] is True
@@ -93,7 +92,7 @@ def test_conditional_gate_allow_skips_waiter():
     tool = _tool_with_gate(approval_gate=gate)
     executor = _executor_for(tool)
 
-    result, _ = _run(executor.execute("gated_tool", {}, allow_high_risk=True))
+    result, _ = _run(executor.execute("gated_tool", {}))
 
     assert result["ok"] is True
     assert result["gate_seen"] is False
@@ -122,7 +121,7 @@ def test_conditional_gate_rejects_when_waiter_rejects():
     executor = _executor_for(tool)
 
     with pytest.raises(ToolExecutionError, match="Approval rejected"):
-        _run(executor.execute("gated_tool", {}, allow_high_risk=True))
+        _run(executor.execute("gated_tool", {}))
 
 
 def test_full_permission_mode_auto_approves_required_gate_without_waiter_call():
@@ -154,7 +153,6 @@ def test_full_permission_mode_auto_approves_required_gate_without_waiter_call():
         executor.execute(
             "gated_tool",
             {},
-            allow_high_risk=True,
             agent_mode="full_permission",
         )
     )

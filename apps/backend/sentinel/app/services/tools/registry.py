@@ -83,7 +83,6 @@ class ToolApprovalGate:
 class ToolDefinition:
     name: str
     description: str
-    risk_level: str
     parameters_schema: dict[str, Any]
     execute: ToolExecutorFn
     enabled: bool = True

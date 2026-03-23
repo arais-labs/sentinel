@@ -37,7 +37,6 @@ class ToolExecutor:
         name: str,
         payload: dict[str, Any],
         *,
-        allow_high_risk: bool,
         agent_mode: AgentMode | str | None = None,
     ) -> tuple[Any, int]:
         tool = self._registry.get(name)
@@ -45,8 +44,6 @@ class ToolExecutor:
             raise KeyError(name)
         if not self._registry.is_allowed(name):
             raise PermissionError(f"Tool '{name}' is disabled")
-        if tool.risk_level == "high" and not allow_high_risk:
-            raise PermissionError("High-risk tool execution disabled for this run context")
 
         self._validate_payload(tool, payload)
         mode_definition = get_agent_mode_definition(agent_mode)

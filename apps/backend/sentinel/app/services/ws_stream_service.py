@@ -54,7 +54,6 @@ class AgentLoopProtocol(Protocol):
         model: str,
         max_iterations: int,
         agent_mode: AgentMode,
-        allow_high_risk: bool,
         persist_incremental: bool,
         user_metadata: dict[str, Any] | None = None,
     ) -> Any: ...
@@ -219,7 +218,6 @@ async def run_agent_once(
             model=(tier or TierName.NORMAL).value,
             max_iterations=max_iterations,
             agent_mode=agent_mode,
-            allow_high_risk=True,
             persist_incremental=True,
         )
     )

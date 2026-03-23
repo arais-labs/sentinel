@@ -11,7 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from app.services.tools.browser_tool import BrowserManager
+from app.services.browser.manager import BrowserManager
 
 if TYPE_CHECKING:
     from app.services.runtime.docker import DockerRuntimeProvider

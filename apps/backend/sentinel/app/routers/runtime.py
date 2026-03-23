@@ -12,7 +12,7 @@ from app.services.runtime_live_view import (
     build_runtime_view_url,
     is_runtime_available_for_session,
 )
-from app.services.tools.browser_pool import BrowserPool
+from app.services.browser.pool import BrowserPool
 
 router = APIRouter()
 
@@ -48,7 +48,7 @@ async def reset_runtime(
 ) -> RuntimeResetResponse:
     """Restart Chromium in the runtime container and evict the cached BrowserManager."""
     from app.services.runtime import get_runtime
-    from app.services.tools.browser_pool import BrowserPool
+    from app.services.browser.pool import BrowserPool
 
     # Evict cached BrowserManager so next tool call gets a fresh connection
     pool: BrowserPool | None = getattr(request.app.state, "browser_pool", None)

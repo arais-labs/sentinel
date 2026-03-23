@@ -34,7 +34,6 @@ def test_tool_adapter_hides_session_id_from_model_schema():
         ToolDefinition(
             name="scoped_lookup",
             description="Scoped lookup",
-            risk_level="low",
             parameters_schema=original_schema,
             execute=_execute,
         )
@@ -68,7 +67,6 @@ def test_tool_adapter_injects_context_session_id_and_strips_from_result():
         ToolDefinition(
             name="scoped_lookup",
             description="Scoped lookup",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -90,7 +88,6 @@ def test_tool_adapter_injects_context_session_id_and_strips_from_result():
             [ToolCallContent(id="c1", name="scoped_lookup", arguments={"query": "ping"})],
             db,
             session_id=context_session_id,
-            allow_high_risk=True,
         )
     )
 
@@ -114,7 +111,6 @@ def test_tool_adapter_overrides_model_provided_session_id():
         ToolDefinition(
             name="scoped_lookup",
             description="Scoped lookup",
-            risk_level="low",
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
@@ -143,7 +139,6 @@ def test_tool_adapter_overrides_model_provided_session_id():
             ],
             FakeDB(),
             session_id=context_session_id,
-            allow_high_risk=True,
         )
     )
 

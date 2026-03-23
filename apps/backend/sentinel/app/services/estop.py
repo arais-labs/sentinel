@@ -61,8 +61,7 @@ class EstopService:
     async def is_active(self, db: AsyncSession) -> bool:
         return (await self.check_level(db)) != EstopLevel.NONE
 
-    async def enforce_tool(self, db: AsyncSession, tool_name: str, risk_level: str) -> None:
-        _ = risk_level
+    async def enforce_tool(self, db: AsyncSession, tool_name: str) -> None:
         level = await self.check_level(db)
         if level == EstopLevel.NONE:
             return
@@ -71,7 +70,7 @@ class EstopService:
         if level == EstopLevel.TOOL_FREEZE:
             raise PermissionError("Emergency stop TOOL_FREEZE blocks all tool execution")
         if level == EstopLevel.NETWORK_KILL:
-            if tool_name == "http_request" or tool_name.startswith("browser_"):
+            if tool_name in {"http_request", "browser"}:
                 raise PermissionError(f"Emergency stop NETWORK_KILL blocks tool '{tool_name}'")
             raise PermissionError("Emergency stop NETWORK_KILL blocks tool execution")
 

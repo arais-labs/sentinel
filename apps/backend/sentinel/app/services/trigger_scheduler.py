@@ -473,7 +473,6 @@ class TriggerScheduler:
                 message_text,
                 stream=True,
                 on_event=_on_event,
-                allow_high_risk=True,
                 user_metadata=ingress_metadata,
             )
         )
@@ -543,7 +542,7 @@ class TriggerScheduler:
         if not isinstance(payload, dict):
             raise ValueError("tool_call action arguments must be an object")
 
-        result, _ = await self._tool_executor.execute(tool_name.strip(), payload, allow_high_risk=True)
+        result, _ = await self._tool_executor.execute(tool_name.strip(), payload)
         return TriggerActionOutcome(
             output_summary=f"tool_call:{tool_name.strip()}:{_truncate_json(result)}",
         )

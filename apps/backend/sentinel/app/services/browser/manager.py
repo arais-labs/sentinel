@@ -652,7 +652,7 @@ class BrowserManager:
                     results.append(step_result)
                     if not continue_on_error:
                         raise RuntimeError(
-                            f"browser_fill_form failed at step {idx} ({action} on {selector}): {exc}"
+                            f"browser command fill_form failed at step {idx} ({action} on {selector}): {exc}"
                         ) from exc
                     continue
 
@@ -1004,7 +1004,7 @@ class BrowserManager:
     ) -> dict[str, Any]:
         """Intercept network requests matching a URL glob pattern.
 
-        action='log'   — record matching requests (retrieve with browser_network_logs).
+        action='log'   — record matching requests (retrieve with browser command=network_logs).
         action='block' — abort matching requests.
         action='mock'  — return a static response_body instead.
         """
@@ -1545,8 +1545,8 @@ class BrowserManager:
                 "snapshot": "",
                 "error": (
                     "All snapshot methods failed. "
-                    "Use browser_get_text instead to read the page content, "
-                    "or browser_screenshot to see the page visually."
+                    "Use browser with command='get_text' instead to read the page content, "
+                    "or browser with command='screenshot' to see the page visually."
                 ),
                 "methods_tried": methods_tried,
             }

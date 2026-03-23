@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,27 @@ from app.models.araios import (
 from app.services.araios.executor import execute_action
 
 router = APIRouter()
+
+
+def _native_tool_icon(tool_name: str) -> str:
+    lower = tool_name.strip().lower()
+    if "browser" in lower:
+        return "globe"
+    if "memory" in lower:
+        return "brain"
+    if "runtime" in lower or "python" in lower or "git" in lower:
+        return "terminal"
+    if "trigger" in lower:
+        return "clock-3"
+    if "telegram" in lower:
+        return "send"
+    if "document" in lower:
+        return "file-text"
+    if "task" in lower:
+        return "check-square"
+    if "module" in lower:
+        return "boxes"
+    return "box"
 
 
 # ── Auth helpers ──
@@ -179,6 +200,7 @@ _MODULE_MUTABLE_FIELDS = (
     "order",
     "page_title",
     "page_content",
+    "pinned",
 )
 
 
@@ -288,6 +310,9 @@ def _serialize_module(m: AraiosModule) -> dict:
         "actions": m.actions or [],
         "secrets": m.secrets or [],
         "page_title": m.page_title,
+        "page_content": m.page_content,
+        "pinned": m.pinned,
+        "system": m.system,
         "order": m.order,
     }
 
@@ -373,6 +398,7 @@ async def _seed_module_permissions(name: str, db: AsyncSession) -> None:
 
 @router.get("")
 async def list_modules(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(_require_araios_permission("modules.list")),
 ):
@@ -380,7 +406,37 @@ async def list_modules(
         select(AraiosModule).order_by(AraiosModule.order, AraiosModule.name)
     )
     mods = result.scalars().all()
-    return {"modules": [_serialize_module(m) for m in mods]}
+    user_modules = [_serialize_module(m) for m in mods]
+
+    # Inject native tools from the Sentinel tool registry
+    native_modules = []
+    registry = getattr(getattr(request, "app", None), "state", None)
+    if registry is not None:
+        tool_registry = getattr(registry, "tool_registry", None)
+        if tool_registry is not None:
+            user_module_names = {m["name"] for m in user_modules}
+            # Skip araios meta-tools — they're plumbing, not user-facing
+            skip = {"modules_discovery"}
+            for tool in tool_registry.list_all():
+                if tool.name in user_module_names or tool.name in skip:
+                    continue
+                native_modules.append({
+                    "name": tool.name,
+                    "label": tool.name.replace("_", " ").title(),
+                    "description": tool.description or "",
+                    "icon": _native_tool_icon(tool.name),
+                    "fields": [],
+                    "fields_config": {},
+                    "actions": [],
+                    "secrets": [],
+                    "page_title": None,
+                    "page_content": None,
+                    "pinned": True,
+                    "order": 10,
+                    "native": True,
+                })
+
+    return {"modules": native_modules + user_modules}
 
 
 @router.post("", status_code=201)

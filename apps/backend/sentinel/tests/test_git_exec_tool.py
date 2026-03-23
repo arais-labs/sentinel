@@ -5,7 +5,8 @@ import asyncio
 import pytest
 
 from app.models import GitAccount, Session
-from app.services.tools import git_exec as git_exec_module
+from app.services.araios.system_modules.git_exec import handlers as git_exec_module
+from app.services.araios.system_modules.git_exec.module import MODULE as GIT_EXEC_MODULE
 from app.services.tools.executor import ToolExecutor, ToolValidationError
 from app.services.tools.registry import ToolRegistry
 from tests.fake_db import FakeDB
@@ -19,7 +20,7 @@ def _run_via_executor(tool, payload: dict):
     registry = ToolRegistry()
     registry.register(tool)
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("git_exec", payload, allow_high_risk=True))
+    result, _ = _run(executor.execute("git_exec", payload))
     return result
 
 
@@ -40,6 +41,20 @@ class _SessionFactory:
 
     def __call__(self):
         return _SessionCtx(self._db)
+
+
+def _git_exec_tool(*, session_factory=None):
+    if session_factory is not None:
+        git_exec_module.AsyncSessionLocal = session_factory
+    action = (GIT_EXEC_MODULE.actions or [])[0]
+    return action.to_tool_definition(
+        module_name=GIT_EXEC_MODULE.name,
+        module_description=GIT_EXEC_MODULE.description,
+        action_count=1,
+    )
+
+
+git_exec_module.git_exec_tool = _git_exec_tool
 
 
 def test_resolve_origin_url_reports_not_git_repo(monkeypatch, tmp_path):
@@ -781,3 +796,43 @@ def test_git_exec_rejects_explicit_git_account_scope_mismatch():
                 }
             )
         )
+
+
+def test_git_exec_accounts_operation_lists_matching_accounts():
+    fake_db = FakeDB()
+    fake_db.add(
+        GitAccount(
+            name="github-main",
+            host="github.com",
+            scope_pattern="exampleco/*",
+            author_name="Bot",
+            author_email="bot@arais.ai",
+            token_read="ghr_read_token_123",
+            token_write="ghw_write_token_456",
+        )
+    )
+    fake_db.add(
+        GitAccount(
+            name="github-readonly",
+            host="github.com",
+            scope_pattern="exampleco/readonly",
+            author_name="Bot",
+            author_email="bot@arais.ai",
+            token_read="ghr_readonly_123",
+            token_write="",
+        )
+    )
+
+    result = _run_via_executor(
+        git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db)),
+        {
+            "operation": "accounts",
+            "host": "github.com",
+            "repo_url": "https://github.com/exampleco/exampleco-gitops.git",
+            "require_write": True,
+        },
+    )
+
+    assert result["total"] == 1
+    assert result["repo_target"] == "github.com/exampleco/exampleco-gitops"
+    assert result["accounts"][0]["name"] == "github-main"
