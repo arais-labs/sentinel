@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from app.config import Settings
-from app.services.embeddings import EmbeddingService
+from app.services.memory.embeddings import EmbeddingService
 
 
 def _run(coro):

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.services.browser.pool import BrowserPool
-    from app.services.embeddings import EmbeddingService
+    from app.services.memory.embeddings import EmbeddingService
     from app.services.memory.search import MemorySearchService
     from app.services.sub_agents import SubAgentOrchestrator
     from app.services.ws.ws_manager import ConnectionManager

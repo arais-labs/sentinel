@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dependencies import get_db, get_optional_llm_provider
 from app.middleware.auth import TokenPayload, require_auth
 from app.schemas.compaction import CompactionResponse
-from app.services.compaction import CompactionService
+from app.services.sessions.compaction import CompactionService
 from app.services.llm.generic.base import LLMProvider
 
 router = APIRouter()

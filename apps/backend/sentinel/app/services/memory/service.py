@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Memory
-from app.services.embeddings import EmbeddingService
+from app.services.memory.embeddings import EmbeddingService
 from app.services.memory.repository import MemoryRepository
 from app.services.memory.tree import (
     MIN_TIME,
@@ -18,7 +18,7 @@ from app.services.memory.tree import (
     filter_by_root,
     is_descendant,
 )
-from app.services.memory.search import MemorySearchResult, MemorySearchService
+from app.services.memory.search import MemorySearchService
 
 
 class MemoryServiceError(Exception):

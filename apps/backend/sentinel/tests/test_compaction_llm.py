@@ -4,7 +4,7 @@ import asyncio
 
 from app.models import Message, Session, SessionSummary
 from app.services.agent.context_builder import ContextBuilder
-from app.services.compaction import CompactionService
+from app.services.sessions.compaction import CompactionService
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, TokenUsage
 from tests.fake_db import FakeDB

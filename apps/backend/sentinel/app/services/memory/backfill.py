@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Memory
-from app.services.embeddings import EmbeddingService
+from app.services.memory.embeddings import EmbeddingService
 
 logger = logging.getLogger(__name__)
 

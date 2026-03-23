@@ -49,7 +49,7 @@ from app.routers.araios import api_router as araios_api_router, platform_auth_ro
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.araios.runtime_services import configure_runtime_services
-from app.services.embeddings import EmbeddingService
+from app.services.memory.embeddings import EmbeddingService
 from app.services.llm.factory import build_tier_provider_from_settings
 from app.services.llm.ids import TierName
 from app.services.memory.backfill import run_memory_embedding_backfill
@@ -255,7 +255,7 @@ async def lifespan(app: FastAPI):
             finally:
                 await run_registry.clear(session_key, run_task)
                 try:
-                    from app.services.compaction import CompactionService
+                    from app.services.sessions.compaction import CompactionService
 
                     await CompactionService(provider=agent_loop.provider).auto_compact_if_needed(
                         db, session_id=sid
