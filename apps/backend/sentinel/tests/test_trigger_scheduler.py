@@ -5,9 +5,9 @@ from datetime import UTC, datetime, timedelta
 
 from app.models import Session, SessionBinding, Trigger, TriggerLog
 from app.services.agent.loop import AgentLoopResult
-from app.services.agent_run_registry import AgentRunRegistry
+from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.llm.generic.types import TokenUsage
-from app.services.trigger_scheduler import TriggerScheduler, compute_next_fire_at
+from app.services.triggers.trigger_scheduler import TriggerScheduler, compute_next_fire_at
 from tests.fake_db import FakeDB
 
 
@@ -406,7 +406,7 @@ def test_scheduler_tool_call_action_uses_tool_executor():
 
 
 def test_scheduler_http_request_action_executes_outbound_call():
-    from app.services import trigger_scheduler as scheduler_module
+    from app.services.triggers import trigger_scheduler as scheduler_module
 
     db = FakeDB()
     trigger = Trigger(

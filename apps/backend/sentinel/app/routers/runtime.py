@@ -98,7 +98,7 @@ async def restart_container(
     """Destroy and re-provision the runtime container for this session, keeping the session alive."""
     import asyncio
     from app.services.runtime import get_runtime
-    from app.services.ws_manager import ConnectionManager
+    from app.services.ws.ws_manager import ConnectionManager
 
     pool: BrowserPool | None = getattr(request.app.state, "browser_pool", None)
     if pool is not None:

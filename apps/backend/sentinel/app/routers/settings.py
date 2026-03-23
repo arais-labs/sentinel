@@ -12,7 +12,7 @@ from app.dependencies import (
 from app.middleware.auth import TokenPayload, require_auth
 from app.services.llm.ids import ProviderChoice
 from app.services.runtime.runtime_rebuild import RuntimeRebuildService
-from app.services.settings_service import SettingsService
+from app.services.settings.settings_service import SettingsService
 
 router = APIRouter()
 

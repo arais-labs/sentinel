@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.ws_stream_parser import parse_ws_message
+from app.services.ws.ws_stream_parser import parse_ws_message
 
 
 def test_parse_ws_message_defaults_agent_mode_to_normal():

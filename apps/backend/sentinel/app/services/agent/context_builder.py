@@ -17,7 +17,7 @@ from app.config import settings
 from app.models import Memory, Message, SessionSummary
 from app.services.agent.agent_modes import AgentMode, get_agent_mode_definition
 from app.services.agent.policies import build_policy_messages
-from app.services.context_usage import (
+from app.services.sessions.context_usage import (
     estimate_agent_messages_tokens,
     estimate_db_message_tokens,
     estimate_text_tokens,
@@ -332,7 +332,7 @@ class ContextBuilder:
 
     def _estimate_agent_message_tokens(self, message: AgentMessage) -> int:
         # Backward-compat shim for internal tests; canonical implementation lives in services.context_usage.
-        from app.services.context_usage import estimate_agent_message_tokens
+        from app.services.sessions.context_usage import estimate_agent_message_tokens
 
         return estimate_agent_message_tokens(message)
 

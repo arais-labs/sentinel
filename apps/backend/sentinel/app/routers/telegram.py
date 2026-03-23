@@ -12,8 +12,8 @@ from app.database import AsyncSessionLocal
 from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
 from app.models.system import SystemSetting
-from app.services import session_bindings
-from app.services.telegram_bridge import TelegramBridge
+from app.services.sessions import session_bindings
+from app.services.telegram import TelegramBridge
 
 router = APIRouter()
 

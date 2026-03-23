@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Session
-from app.services import session_bindings
+from app.services.sessions import session_bindings
 
 ROUTE_MODE_MAIN = "main"
 ROUTE_MODE_SESSION = "session"

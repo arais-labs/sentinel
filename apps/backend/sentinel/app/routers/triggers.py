@@ -22,7 +22,7 @@ from app.schemas.triggers import (
     TriggerResponse,
     UpdateTriggerRequest,
 )
-from app.services.trigger_scheduler import TriggerScheduler, compute_next_fire_at
+from app.services.triggers.trigger_scheduler import TriggerScheduler, compute_next_fire_at
 from app.services.triggers.routing import resolve_agent_message_route
 
 logger = logging.getLogger(__name__)

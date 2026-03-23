@@ -7,13 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.services.memory import MemoryRepository, MemoryService
 from app.services.memory.system import SYSTEM_MEMORY_SPECS
-from app.services.onboarding_defaults import (
+from app.services.onboarding.onboarding_defaults import (
     DEFAULT_AGENT_IDENTITY_MEMORY,
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_USER_PROFILE_MEMORY,
     build_system_prompt,
 )
-from app.services.system_settings import get_system_setting, upsert_system_setting
+from app.services.settings.system_settings import get_system_setting, upsert_system_setting
 
 ONBOARDING_COMPLETED_KEY_PREFIX = "onboarding_completed:"
 

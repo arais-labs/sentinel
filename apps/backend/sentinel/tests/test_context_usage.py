@@ -1,5 +1,5 @@
 from app.models import Message, Session
-from app.services.context_usage import estimate_db_message_tokens
+from app.services.sessions.context_usage import estimate_db_message_tokens
 
 
 def test_estimate_db_message_tokens_counts_assistant_tool_calls_when_text_empty():
