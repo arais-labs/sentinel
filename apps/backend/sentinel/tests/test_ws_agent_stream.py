@@ -11,7 +11,7 @@ from app.config import settings
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.services.compaction import CompactionResult
+from app.services.sessions.compaction import CompactionResult
 from app.services.llm.generic.types import AgentEvent
 from tests.fake_db import FakeDB
 

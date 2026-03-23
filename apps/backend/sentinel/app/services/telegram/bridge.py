@@ -795,7 +795,7 @@ class TelegramBridge:
     async def _auto_compact_after_run(self, db: Any, *, session_id: UUID) -> None:
         """Run best-effort auto-compaction after each Telegram-triggered run."""
         try:
-            from app.services.compaction import CompactionService
+            from app.services.sessions.compaction import CompactionService
 
             await CompactionService(
                 provider=self._agent_loop.provider

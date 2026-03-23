@@ -11,7 +11,7 @@ from app.dependencies import get_db, get_llm_provider
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import Message, Session, SessionSummary
-from app.services.compaction import CompactionService
+from app.services.sessions.compaction import CompactionService
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent
 from tests.fake_db import FakeDB

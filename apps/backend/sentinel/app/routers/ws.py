@@ -16,7 +16,7 @@ from app.logging_context import reset_log_session, set_log_session
 from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
 from app.models import Message, ToolApproval
 from app.services.sessions.agent_run_registry import AgentRunRegistry
-from app.services.compaction import CompactionService
+from app.services.sessions.compaction import CompactionService
 from app.services.messages import normalize_generation_metadata, with_generation_metadata
 from app.services.sessions.session_naming import SessionNamingService
 from app.services.ws.ws_manager import ConnectionManager

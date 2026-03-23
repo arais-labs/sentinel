@@ -14,7 +14,7 @@ from app.config import settings
 from app.models import Message, Session
 from app.services.agent.agent_modes import AgentMode, normalize_agent_mode_value
 from app.services.sessions.agent_run_registry import AgentRunRegistry
-from app.services.compaction import CompactionService
+from app.services.sessions.compaction import CompactionService
 from app.services.llm.generic.types import AgentEvent, ImageContent, TextContent
 from app.services.llm.ids import TierName
 from app.services.messages import (
