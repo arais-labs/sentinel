@@ -8,7 +8,7 @@ from app.schemas.runtime import (
     RuntimeResetResponse,
     RuntimeLiveViewResponse,
 )
-from app.services.runtime_live_view import (
+from app.services.runtime.runtime_live_view import (
     build_runtime_view_url,
     is_runtime_available_for_session,
 )
@@ -46,16 +46,19 @@ async def reset_runtime(
     session_id: str = Query(..., description="Session UUID"),
     _user: TokenPayload = Depends(require_auth),
 ) -> RuntimeResetResponse:
-    """Restart Chromium in the runtime container and evict the cached BrowserManager."""
-    from app.services.runtime import get_runtime
-    from app.services.browser.pool import BrowserPool
-
-    # Evict cached BrowserManager so next tool call gets a fresh connection
-    pool: BrowserPool | None = getattr(request.app.state, "browser_pool", None)
+    """Reset the session browser and fall back to a hard Chromium restart if needed."""
+    pool = _resolve_browser_pool(request)
     if pool is not None:
-        await pool.remove(session_id)
+        try:
+            manager = await pool.get(session_id)
+            result = await manager.reset()
+            return RuntimeResetResponse(**result)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to reset browser: {exc}") from exc
 
-    # Kill and restart Chromium via SSH
+    from app.services.runtime import get_runtime
+
+    # Fallback: kill and restart Chromium via SSH when no browser pool is available.
     try:
         provider = get_runtime()
         inst = provider._instances.get(str(session_id))

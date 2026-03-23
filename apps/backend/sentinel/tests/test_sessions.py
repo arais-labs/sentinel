@@ -335,7 +335,7 @@ def test_reset_default_session_keeps_previous_main_runtime_workspace():
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_base = Path(tmpdir)
-            with patch("app.services.session_runtime._RUNTIME_BASE_DIR", runtime_base):
+            with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
                 client = TestClient(app)
                 login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
                 assert login.status_code == 200
@@ -584,7 +584,7 @@ def test_runtime_file_explorer_endpoints():
             (workspace / "repo").mkdir(parents=True, exist_ok=True)
             subprocess.run(["git", "-C", str(workspace / "repo"), "init"], check=False)
 
-            with patch("app.services.session_runtime._RUNTIME_BASE_DIR", runtime_base):
+            with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
                 files_root = client.get(f"/api/v1/sessions/{session_id}/runtime/files", headers=headers)
                 assert files_root.status_code == 200
                 root_payload = files_root.json()

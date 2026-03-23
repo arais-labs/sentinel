@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from app.database.database import AsyncSessionLocal
 from app.services.runtime import get_runtime
 from app.services.runtime.ssh_client import SSHExecResult
-from app.services.session_runtime import (
+from app.services.runtime.session_runtime import (
     ensure_runtime_layout,
     finalize_detached_runtime_job,
     get_detached_runtime_job,

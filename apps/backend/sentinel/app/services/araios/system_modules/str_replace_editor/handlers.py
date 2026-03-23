@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app.database.database import AsyncSessionLocal
 from app.models import Session
-from app.services.session_runtime import ensure_runtime_layout, runtime_workspace_dir
+from app.services.runtime.session_runtime import ensure_runtime_layout, runtime_workspace_dir
 from app.services.tools.executor import ToolValidationError
 from app.services.runtime import get_runtime
 

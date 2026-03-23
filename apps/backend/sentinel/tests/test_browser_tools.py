@@ -221,7 +221,7 @@ def _browser_registry(manager=None):
 
 
 def test_browser_manager_lazy_init_and_actions():
-    from app.services.tools import browser_tool as browser_tool_module
+    import app.services.browser.manager as browser_manager_module
 
     state = {"launches": 0, "contexts": 0, "stopped": 0}
 
@@ -233,6 +233,10 @@ def test_browser_manager_lazy_init_and_actions():
         def __init__(self):
             self.url = ""
             self.accessibility = _FakeAccessibility()
+            self._handlers = {}
+
+        def on(self, event: str, handler):
+            self._handlers[event] = handler
 
         async def goto(self, url: str, wait_until: str, timeout: int):
             _ = wait_until, timeout
@@ -307,8 +311,8 @@ def test_browser_manager_lazy_init_and_actions():
         async def start(self):
             return _FakePlaywright()
 
-    old_factory = browser_tool_module.async_playwright
-    browser_tool_module.async_playwright = lambda: _FakeContext()
+    old_factory = browser_manager_module.async_playwright
+    browser_manager_module.async_playwright = lambda: _FakeContext()
     try:
         manager = BrowserManager()
         navigate = _run(manager.navigate("https://example.com"))
@@ -317,7 +321,7 @@ def test_browser_manager_lazy_init_and_actions():
         screenshot = _run(manager.screenshot())
         _run(manager.close())
     finally:
-        browser_tool_module.async_playwright = old_factory
+        browser_manager_module.async_playwright = old_factory
 
     assert navigate["title"] == "Fake Title"
     assert text["text"] == "Body Text"
@@ -332,13 +336,17 @@ def test_browser_manager_lazy_init_and_actions():
 
 
 def test_browser_manager_falls_back_when_profile_is_locked():
-    from app.services.tools import browser_tool as browser_tool_module
+    import app.services.browser.manager as browser_manager_module
 
     state = {"launches": 0}
 
     class _FakePage:
         url = "https://example.com"
         accessibility = None
+        _handlers = {}
+
+        def on(self, event: str, handler):
+            self._handlers[event] = handler
 
         async def goto(self, url: str, wait_until: str, timeout: int):
             _ = url, wait_until, timeout
@@ -387,14 +395,14 @@ def test_browser_manager_falls_back_when_profile_is_locked():
         async def start(self):
             return _FakePlaywright()
 
-    old_factory = browser_tool_module.async_playwright
-    browser_tool_module.async_playwright = lambda: _FakeContext()
+    old_factory = browser_manager_module.async_playwright
+    browser_manager_module.async_playwright = lambda: _FakeContext()
     try:
         manager = BrowserManager(user_data_dir="/tmp/profile")
         result = _run(manager.navigate("https://example.com"))
         _run(manager.close())
     finally:
-        browser_tool_module.async_playwright = old_factory
+        browser_manager_module.async_playwright = old_factory
 
     assert result["title"] == "Fallback Title"
     assert state["launches"] == 1
@@ -439,8 +447,8 @@ def test_browser_click_passes_optional_tab_id_to_manager():
     executor = ToolExecutor(registry)
     result, _ = _run(
         executor.execute(
-            "browser_click",
-            {"session_id": _SID, "selector": "button: Continue", "tab_id": "t7"},
+            "browser",
+            {"command": "click", "session_id": _SID, "selector": "button: Continue", "tab_id": "t7"},
         )
     )
     assert result["clicked"] is True
@@ -453,7 +461,7 @@ def test_browser_snapshot_rejects_unexpected_payload_fields():
     try:
         _run(
             executor.execute(
-                "browser_snapshot", {"session_id": _SID, "unexpected": True}            )
+                "browser", {"command": "snapshot", "session_id": _SID, "unexpected": True}            )
         )
         raised = False
     except ToolValidationError:
@@ -464,7 +472,7 @@ def test_browser_snapshot_rejects_unexpected_payload_fields():
 def test_browser_reset_tool_executes():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser_reset", {"session_id": _SID}))
+    result, _ = _run(executor.execute("browser", {"command": "reset", "session_id": _SID}))
     assert result["reset"] is True
     assert result["url"] == "about:blank"
 
@@ -472,7 +480,7 @@ def test_browser_reset_tool_executes():
 def test_browser_tabs_tool_executes():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser_tabs", {"session_id": _SID}))
+    result, _ = _run(executor.execute("browser", {"command": "tabs", "session_id": _SID}))
     assert result["active_tab_id"] == "t1"
     assert result["tabs"][0]["tab_id"] == "t1"
 
@@ -480,7 +488,7 @@ def test_browser_tabs_tool_executes():
 def test_browser_tab_open_defaults_to_blank():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser_tab_open", {"session_id": _SID}))
+    result, _ = _run(executor.execute("browser", {"command": "tab_open", "session_id": _SID}))
     assert result["opened"] is True
     assert result["url"] == "about:blank"
 
@@ -489,14 +497,14 @@ def test_browser_tab_focus_requires_tab_id():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser_tab_focus", {"session_id": _SID}))
+        _run(executor.execute("browser", {"command": "tab_focus", "session_id": _SID}))
         raised = False
     except ToolValidationError:
         raised = True
     assert raised is True
 
     result, _ = _run(
-        executor.execute("browser_tab_focus", {"session_id": _SID, "tab_id": "t1"})
+        executor.execute("browser", {"command": "tab_focus", "session_id": _SID, "tab_id": "t1"})
     )
     assert result["focused"] is True
     assert result["tab_id"] == "t1"
@@ -506,14 +514,14 @@ def test_browser_tab_close_requires_tab_id():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser_tab_close", {"session_id": _SID}))
+        _run(executor.execute("browser", {"command": "tab_close", "session_id": _SID}))
         raised = False
     except ToolValidationError:
         raised = True
     assert raised is True
 
     result, _ = _run(
-        executor.execute("browser_tab_close", {"session_id": _SID, "tab_id": "t2"})
+        executor.execute("browser", {"command": "tab_close", "session_id": _SID, "tab_id": "t2"})
     )
     assert result["closed"] is True
     assert result["tab_id"] == "t2"
@@ -524,7 +532,7 @@ def test_browser_select_requires_selector_and_choice():
     executor = ToolExecutor(registry)
 
     try:
-        _run(executor.execute("browser_select", {"session_id": _SID}))
+        _run(executor.execute("browser", {"command": "select", "session_id": _SID}))
         raised = False
     except ToolValidationError:
         raised = True
@@ -533,8 +541,8 @@ def test_browser_select_requires_selector_and_choice():
     try:
         _run(
             executor.execute(
-                "browser_select",
-                {"session_id": _SID, "selector": "combobox: Month"},
+                "browser",
+                {"command": "select", "session_id": _SID, "selector": "combobox: Month"},
                 )
         )
         raised = False
@@ -544,8 +552,8 @@ def test_browser_select_requires_selector_and_choice():
 
     result, _ = _run(
         executor.execute(
-            "browser_select",
-            {"session_id": _SID, "selector": "combobox: Month", "value": "1"},
+            "browser",
+            {"command": "select", "session_id": _SID, "selector": "combobox: Month", "value": "1"},
         )
     )
     assert result["selected_values"] == ["1"]
@@ -557,8 +565,8 @@ def test_browser_wait_for_accepts_conditions():
 
     result, _ = _run(
         executor.execute(
-            "browser_wait_for",
-            {"session_id": _SID, "selector": "button: Next", "condition": "enabled", "timeout_ms": 4000},
+            "browser",
+            {"command": "wait_for", "session_id": _SID, "selector": "button: Next", "condition": "enabled", "timeout_ms": 4000},
         )
     )
     assert result["satisfied"] is True
@@ -569,7 +577,7 @@ def test_browser_get_value_requires_selector():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser_get_value", {"session_id": _SID}))
+        _run(executor.execute("browser", {"command": "get_value", "session_id": _SID}))
         raised = False
     except ToolValidationError:
         raised = True
@@ -581,7 +589,7 @@ def test_browser_fill_form_requires_non_empty_steps():
     executor = ToolExecutor(registry)
 
     try:
-        _run(executor.execute("browser_fill_form", {"session_id": _SID}))
+        _run(executor.execute("browser", {"command": "fill_form", "session_id": _SID}))
         raised = False
     except ToolValidationError:
         raised = True
@@ -589,8 +597,9 @@ def test_browser_fill_form_requires_non_empty_steps():
 
     result, _ = _run(
         executor.execute(
-            "browser_fill_form",
+            "browser",
             {
+                "command": "fill_form",
                 "session_id": _SID,
                 "steps": [
                     {"selector": "textbox: Email", "text": "qa@example.com"},
@@ -734,6 +743,10 @@ class _SemanticPage:
         self.last_wait = None
         self.actions = []
         self.url = "https://example.com"
+        self._handlers = {}
+
+    def on(self, event: str, handler):
+        self._handlers[event] = handler
 
     def get_by_role(self, role: str, name: str, exact: bool = False):
         _ = exact
