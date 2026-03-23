@@ -1,14 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import {
-  CheckCircle2,
-  Clock3,
   GitBranch,
   Plus,
   RefreshCw,
-  ShieldAlert,
   Trash2,
-  XCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -19,8 +15,6 @@ import { api } from '../lib/api';
 import { formatCompactDate } from '../lib/format';
 import { useAuthStore } from '../store/auth-store';
 import type {
-  ApprovalListResponse,
-  ApprovalRecord,
   GitAccount,
   GitAccountListResponse,
 } from '../types/api';
@@ -45,27 +39,9 @@ const EMPTY_FORM: GitAccountForm = {
   token_write: '',
 };
 
-type ApprovalStatusFilter = 'pending' | 'approved' | 'rejected' | 'timed_out' | 'all';
-
-function approvalTone(status: string): 'default' | 'good' | 'warn' | 'danger' | 'info' {
-  if (status === 'approved') return 'good';
-  if (status === 'pending') return 'warn';
-  if (status === 'rejected') return 'danger';
-  if (status === 'timed_out') return 'default';
-  return 'info';
-}
-
-function readMetadataString(approval: ApprovalRecord, key: string): string | null {
-  const value = approval.metadata?.[key];
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
 export function GitPage() {
   const role = useAuthStore((state) => state.role);
   const [accounts, setAccounts] = useState<GitAccount[]>([]);
-  const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -73,32 +49,18 @@ export function GitPage() {
   const [savingAccountId, setSavingAccountId] = useState<string | null>(null);
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [editForms, setEditForms] = useState<Record<string, GitAccountForm>>({});
-  const [approvalStatusFilter, setApprovalStatusFilter] = useState<ApprovalStatusFilter>('pending');
-  const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(null);
-
-  const pendingCount = useMemo(
-    () => approvals.filter((item) => item.status === 'pending').length,
-    [approvals],
-  );
 
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const approvalQuery = new URLSearchParams();
-      approvalQuery.set('provider', 'git_exec');
-      if (approvalStatusFilter !== 'all') approvalQuery.set('status', approvalStatusFilter);
-      const [accountsPayload, approvalsPayload] = await Promise.all([
-        api.get<GitAccountListResponse>('/git/accounts'),
-        api.get<ApprovalListResponse>(`/approvals?${approvalQuery.toString()}`),
-      ]);
+      const accountsPayload = await api.get<GitAccountListResponse>('/git/accounts');
       setAccounts(accountsPayload.items || []);
-      setApprovals(approvalsPayload.items || []);
     } catch {
-      toast.error('Failed to load Git controls');
+      toast.error('Failed to load Git accounts');
     } finally {
       setLoading(false);
     }
-  }, [approvalStatusFilter]);
+  }, []);
 
   useEffect(() => {
     void loadAll();
@@ -211,26 +173,10 @@ export function GitPage() {
     }
   }
 
-  async function resolveApproval(approvalId: string, decision: 'approve' | 'reject') {
-    setResolvingApprovalId(approvalId);
-    try {
-      await api.post(`/approvals/git_exec/${approvalId}/${decision}`, {
-        note: decision === 'approve' ? 'User approved action.' : 'User rejected action.',
-      });
-      toast.success(`Push ${decision}d`);
-      await loadAll();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Approval decision failed';
-      toast.error(message);
-    } finally {
-      setResolvingApprovalId(null);
-    }
-  }
-
   return (
     <AppShell
       title="Git Accounts"
-      subtitle="Credential Routing & Push Approval Gate"
+      subtitle="Credential Routing"
       actions={(
         <button
           onClick={() => void refreshAll()}
@@ -240,8 +186,7 @@ export function GitPage() {
           <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />
         </button>
       )}    >
-      <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-[1.2fr_1fr] gap-6 items-start">
-        <div className="space-y-5">
+      <div className="max-w-3xl mx-auto space-y-6">
           <Panel className="p-5 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-bold uppercase tracking-widest flex items-center gap-2">
@@ -459,102 +404,6 @@ export function GitPage() {
               </div>
             )}
           </Panel>
-        </div>
-
-        <Panel className="p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs font-bold uppercase tracking-widest flex items-center gap-2">
-              <ShieldAlert size={14} />
-              Push Approvals
-            </h2>
-            <StatusChip label={`${pendingCount} pending`} tone={pendingCount > 0 ? 'warn' : 'good'} />
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {(['pending', 'approved', 'rejected', 'timed_out', 'all'] as const).map((status) => (
-              <button
-                key={status}
-                className={`btn-secondary h-8 px-3 text-[10px] uppercase tracking-widest ${approvalStatusFilter === status ? 'border-[color:var(--accent-solid)]' : ''}`}
-                onClick={() => setApprovalStatusFilter(status)}
-              >
-                {status}
-              </button>
-            ))}
-          </div>
-
-          {loading ? (
-            <p className="text-xs text-[color:var(--text-muted)]">Loading approvals...</p>
-          ) : approvals.length === 0 ? (
-            <p className="text-xs text-[color:var(--text-muted)]">No approvals for this filter.</p>
-          ) : (
-            <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
-              {approvals.map((approval) => {
-                const decisionBy = readMetadataString(approval, 'decision_by');
-                return (
-                  <Panel key={approval.approval_id} className="p-4 bg-[color:var(--surface-1)] space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <StatusChip label={approval.status} tone={approvalTone(approval.status)} />
-                      <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
-                        {formatCompactDate(approval.created_at || '')}
-                      </span>
-                    </div>
-
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                        Repository
-                      </p>
-                      <p className="text-xs font-mono break-all">{readMetadataString(approval, 'repo_url') ?? '—'}</p>
-                    </div>
-
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                        Command
-                      </p>
-                      <p className="text-xs font-mono break-all">{approval.command ?? readMetadataString(approval, 'command') ?? '—'}</p>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 text-[11px] text-[color:var(--text-secondary)]">
-                      <div className="flex items-center gap-1">
-                        <Clock3 size={12} />
-                        Expires: {formatCompactDate(approval.expires_at || '')}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <GitBranch size={12} />
-                        Remote: {readMetadataString(approval, 'remote_name') ?? '—'}
-                      </div>
-                    </div>
-
-                    {approval.status === 'pending' ? (
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          className="btn-secondary h-8 px-3 text-[10px] uppercase tracking-widest text-rose-500"
-                          onClick={() => void resolveApproval(approval.approval_id, 'reject')}
-                          disabled={resolvingApprovalId === approval.approval_id}
-                        >
-                          <XCircle size={12} className="mr-1" />
-                          Reject
-                        </button>
-                        <button
-                          className="btn-primary h-8 px-3 text-[10px] uppercase tracking-widest"
-                          onClick={() => void resolveApproval(approval.approval_id, 'approve')}
-                          disabled={resolvingApprovalId === approval.approval_id}
-                        >
-                          <CheckCircle2 size={12} className="mr-1" />
-                          Approve
-                        </button>
-                      </div>
-                    ) : (
-                      <p className="text-[11px] text-[color:var(--text-muted)]">
-                        {decisionBy ? `Resolved by ${decisionBy}` : 'Resolved'}
-                        {approval.decision_note ? ` · ${approval.decision_note}` : ''}
-                      </p>
-                    )}
-                  </Panel>
-                );
-              })}
-            </div>
-          )}
-        </Panel>
       </div>
     </AppShell>
   );

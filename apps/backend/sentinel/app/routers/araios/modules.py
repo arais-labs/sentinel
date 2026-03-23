@@ -60,6 +60,17 @@ async def _module_or_404(name: str, db: AsyncSession) -> AraiosModule:
     return mod
 
 
+async def _module_or_404_any(name: str, db: AsyncSession) -> None:
+    """Validates module exists in DB or system modules — for read-only endpoints."""
+    result = await db.execute(select(AraiosModule).where(AraiosModule.name == name))
+    if result.scalars().first():
+        return
+    from app.services.araios.system_modules import get_system_modules
+    if any(m.name == name for m in get_system_modules()):
+        return
+    raise HTTPException(status_code=404, detail=f"Module '{name}' not found")
+
+
 _MODULE_MUTABLE_FIELDS = (
     "label",
     "icon",
@@ -79,6 +90,120 @@ def _normalize_module_name(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip().lower()
+
+
+def _validate_permissions_payload(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="'permissions' must be an object")
+    return value
+
+
+def _normalize_seed_records(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="'records' must be an array")
+    records: list[dict[str, Any]] = []
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Record at index {index} must be an object",
+            )
+        records.append(
+            {
+                key: record_value
+                for key, record_value in entry.items()
+                if key not in ("id", "module_name", "created_at", "updated_at")
+            }
+        )
+    return records
+
+
+def _normalize_module_package(body: Any) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Package body must be an object")
+    schema_version = body.get("schema_version")
+    if schema_version != 1:
+        raise HTTPException(status_code=400, detail="Unsupported schema_version")
+    module_payload = body.get("module")
+    if not isinstance(module_payload, dict):
+        raise HTTPException(status_code=400, detail="'module' is required and must be an object")
+    if module_payload.get("system") is True:
+        raise HTTPException(status_code=400, detail="Imported modules may not set system=true")
+    return (
+        module_payload,
+        _normalize_seed_records(body.get("records")),
+        _validate_permissions_payload(body.get("permissions")),
+    )
+
+
+async def _all_module_names(db: AsyncSession) -> set[str]:
+    from app.services.araios.system_modules import get_system_modules
+
+    names = {m.name for m in get_system_modules()}
+    result = await db.execute(select(AraiosModule).where(AraiosModule.name.is_not(None)))
+    names.update(m.name for m in result.scalars().all())
+    return names
+
+
+async def _ensure_module_name_available(name: str, db: AsyncSession) -> None:
+    if not name:
+        raise HTTPException(status_code=400, detail="Module name is required")
+    if name in await _all_module_names(db):
+        raise HTTPException(status_code=409, detail=f"Module '{name}' already exists")
+
+
+async def _create_dynamic_module(
+    *,
+    body: dict[str, Any],
+    request: Request,
+    db: AsyncSession,
+    seed_records: list[dict[str, Any]] | None = None,
+    permissions: dict[str, Any] | None = None,
+) -> tuple[AraiosModule, dict[str, str], int]:
+    name = _normalize_module_name(body.get("name"))
+    await _ensure_module_name_available(name, db)
+    actions = _validate_action_updates(body.get("actions", []))
+    permissions = _validate_permissions_payload(permissions)
+    records = _normalize_seed_records(seed_records)
+
+    mod = AraiosModule(
+        name=name,
+        label=body.get("label", name.title()),
+        description=body.get("description", ""),
+        icon=body.get("icon", "box"),
+        fields=body.get("fields", []),
+        fields_config=body.get("fields_config", {}),
+        actions=actions,
+        secrets=body.get("secrets", []),
+        page_title=body.get("page_title"),
+        page_content=body.get("page_content"),
+        system=False,
+        order=body.get("order", 100),
+    )
+    db.add(mod)
+    await db.commit()
+    await db.refresh(mod)
+
+    imported_records = 0
+    for record_data in records:
+        db.add(AraiosModuleRecord(id=araios_gen_id(), module_name=name, data=record_data))
+        imported_records += 1
+    if imported_records:
+        await db.commit()
+
+    permission_levels = await sync_dynamic_module_permissions(
+        db,
+        module_name=name,
+        actions=actions,
+        permissions=permissions,
+    )
+    session_factory = getattr(request.app.state, "db_session_factory", AsyncSessionLocal)
+    await rebuild_runtime_registry(app_state=request.app.state, session_factory=session_factory)
+    return mod, permission_levels, imported_records
 
 
 def _extract_module_updates(body: dict[str, Any]) -> dict[str, Any]:
@@ -231,7 +356,6 @@ def _normalize_action_params(body: dict | None) -> dict:
 
 @router.get("")
 async def list_modules(
-    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -240,33 +364,15 @@ async def list_modules(
     mods = result.scalars().all()
     user_modules = [_serialize_module(m) for m in mods]
 
-    # Inject native tools from the Sentinel tool registry
-    native_modules = []
-    registry = getattr(getattr(request, "app", None), "state", None)
-    if registry is not None:
-        tool_registry = getattr(registry, "tool_registry", None)
-        if tool_registry is not None:
-            user_module_names = {m["name"] for m in user_modules}
-            # Skip araios meta-tools — they're plumbing, not user-facing
-            skip = {"module_manager"}
-            for tool in tool_registry.list_all():
-                if tool.name in user_module_names or tool.name in skip:
-                    continue
-                native_modules.append({
-                    "name": tool.name,
-                    "label": tool.name.replace("_", " ").title(),
-                    "description": tool.description or "",
-                    "icon": _native_tool_icon(tool.name),
-                    "fields": [],
-                    "fields_config": {},
-                    "actions": [],
-                    "secrets": [],
-                    "page_title": None,
-                    "page_content": None,
-                    "pinned": True,
-                    "order": 10,
-                    "native": True,
-                })
+    # Inject system modules from their ModuleDefinition (preserves actions, fields, etc.)
+    from app.services.araios.system_modules import get_system_modules
+    skip = {"module_manager"}
+    user_module_names = {m["name"] for m in user_modules}
+    native_modules = [
+        {**mod.to_dict(), "native": True}
+        for mod in get_system_modules()
+        if mod.name not in skip and mod.name not in user_module_names
+    ]
 
     return {"modules": native_modules + user_modules}
 
@@ -277,49 +383,34 @@ async def create_module(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    name = _normalize_module_name(body.get("name"))
-    if not name:
-        raise HTTPException(status_code=400, detail="Module name is required")
-    permissions = body.get("permissions", {})
-    if permissions is not None and not isinstance(permissions, dict):
-        raise HTTPException(status_code=400, detail="'permissions' must be an object")
-    result = await db.execute(
-        select(AraiosModule).where(AraiosModule.name == name)
+    mod, _permission_levels, _imported_records = await _create_dynamic_module(
+        body=body,
+        request=request,
+        db=db,
+        permissions=body.get("permissions"),
     )
-    if result.scalars().first():
-        raise HTTPException(
-            status_code=409, detail=f"Module '{name}' already exists"
-        )
-    registry = getattr(request.app.state, "tool_registry", None)
-    if registry is not None and registry.get(name) is not None:
-        raise HTTPException(status_code=409, detail=f"Module '{name}' conflicts with an existing tool")
-    actions = _validate_action_updates(body.get("actions", []))
-    mod = AraiosModule(
-        name=name,
-        label=body.get("label", name.title()),
-        description=body.get("description", ""),
-        icon=body.get("icon", "box"),
-        fields=body.get("fields", []),
-        fields_config=body.get("fields_config", {}),
-        actions=actions,
-        secrets=body.get("secrets", []),
-        page_title=body.get("page_title"),
-        page_content=body.get("page_content"),
-        system=False,
-        order=body.get("order", 100),
-    )
-    db.add(mod)
-    await db.commit()
-    await db.refresh(mod)
-    await sync_dynamic_module_permissions(
-        db,
-        module_name=name,
-        actions=actions,
+    return _serialize_module(mod)
+
+
+@router.post("/import", status_code=201)
+async def import_module_package(
+    body: dict,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    module_payload, records, permissions = _normalize_module_package(body)
+    mod, permission_levels, imported_records = await _create_dynamic_module(
+        body=module_payload,
+        request=request,
+        db=db,
+        seed_records=records,
         permissions=permissions,
     )
-    session_factory = getattr(request.app.state, "db_session_factory", AsyncSessionLocal)
-    await rebuild_runtime_registry(app_state=request.app.state, session_factory=session_factory)
-    return _serialize_module(mod)
+    return {
+        "module": _serialize_module(mod),
+        "imported_records": imported_records,
+        "permissions": permission_levels,
+    }
 
 
 @router.get("/{name}")
@@ -327,7 +418,15 @@ async def get_module(
     name: str,
     db: AsyncSession = Depends(get_db),
 ):
-    return _serialize_module(await _module_or_404(name, db))
+    result = await db.execute(select(AraiosModule).where(AraiosModule.name == name))
+    mod = result.scalars().first()
+    if mod:
+        return _serialize_module(mod)
+    from app.services.araios.system_modules import get_system_modules
+    for system_mod in get_system_modules():
+        if system_mod.name == name:
+            return {**system_mod.to_dict(), "native": True}
+    raise HTTPException(status_code=404, detail=f"Module '{name}' not found")
 
 
 @router.patch("/{name}")
@@ -385,7 +484,7 @@ async def list_records(
     filter_value: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    await _module_or_404(name, db)
+    await _module_or_404_any(name, db)
     result = await db.execute(
         select(AraiosModuleRecord)
         .where(AraiosModuleRecord.module_name == name)
@@ -466,14 +565,21 @@ async def secrets_status(
     name: str,
     db: AsyncSession = Depends(get_db),
 ):
-    mod = await _module_or_404(name, db)
+    db_result = await db.execute(select(AraiosModule).where(AraiosModule.name == name))
+    mod_row = db_result.scalars().first()
+    if mod_row:
+        secrets_def = mod_row.secrets or []
+    else:
+        from app.services.araios.system_modules import get_system_modules
+        sys_mod = next((m for m in get_system_modules() if m.name == name), None)
+        if sys_mod is None:
+            raise HTTPException(status_code=404, detail=f"Module '{name}' not found")
+        secrets_def = [s.to_dict() for s in (sys_mod.secrets or [])]
     result = await db.execute(
-        select(AraiosModuleSecret).where(
-            AraiosModuleSecret.module_name == name
-        )
+        select(AraiosModuleSecret).where(AraiosModuleSecret.module_name == name)
     )
     stored = {r.key for r in result.scalars().all()}
-    status = {s["key"]: s["key"] in stored for s in (mod.secrets or [])}
+    status = {s["key"]: s["key"] in stored for s in secrets_def}
     return {"secrets": status}
 
 

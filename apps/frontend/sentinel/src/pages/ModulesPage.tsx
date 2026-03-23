@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent, type ReactNode } from 'react';
+import { useLocation } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import {
   Loader2,
@@ -51,7 +51,7 @@ async function araiosApi<T = any>(path: string, opts?: { method?: string; body?:
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || body.error || `Request failed (${res.status})`);
+    throw new Error(body.detail || body.error?.message || body.error || `Request failed (${res.status})`);
   }
   return res.json();
 }
@@ -492,7 +492,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
   });
 
   useEffect(() => {
-    if (!hasRecordActions || !(config.fields || []).length) return;
+    if (!hasRecordActions) return;
     araiosApi<{ records: any[] }>(`/api/modules/${config.name}/records`)
       .then(res => setRecords(res.records || []))
       .catch(() => {});
@@ -636,11 +636,29 @@ function SecretCard({ moduleName, secret, onSaved }: { moduleName: string; secre
   );
 }
 
+function deriveParamsFromSchema(schema: any): any[] {
+  if (!schema?.properties) return [];
+  const required: string[] = schema.required || [];
+  return Object.entries(schema.properties).map(([key, prop]: [string, any]) => {
+    const t = prop.type;
+    let type = 'text';
+    if (t === 'integer' || t === 'number') type = 'number';
+    else if (t === 'object' || t === 'array') type = 'textarea';
+    return {
+      key,
+      label: key.replace(/_/g, ' '),
+      type,
+      required: required.includes(key),
+      placeholder: prop.description || '',
+    };
+  });
+}
+
 function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, records, fieldsConfig }: {
   action: any; moduleName: string; secretsStatus: Record<string, boolean>; requiredSecrets: any[];
   records?: any[]; fieldsConfig?: any;
 }) {
-  const params = action.params || [];
+  const params = (action.params?.length ? action.params : deriveParamsFromSchema(action.parameters_schema)) ?? [];
   const [form, setForm] = useState<Record<string, string>>(() => Object.fromEntries(params.map((p: any) => [p.key, ''])));
   const [selectedRecordId, setSelectedRecordId] = useState('');
   const [running, setRunning] = useState(false);
@@ -717,12 +735,12 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
               {param.type === 'textarea' ? (
                 <textarea className={`${inputCls} min-h-[80px] py-2 resize-y`} rows={3}
                   value={form[param.key]} onChange={e => setForm(prev => ({ ...prev, [param.key]: e.target.value }))}
-                  placeholder={param.placeholder || ''} />
+                  placeholder={param.placeholder || param.description || ''} />
               ) : (
                 <input className={inputCls}
                   type={param.type === 'number' ? 'number' : 'text'}
                   value={form[param.key]} onChange={e => setForm(prev => ({ ...prev, [param.key]: e.target.value }))}
-                  placeholder={param.placeholder || ''} />
+                  placeholder={param.placeholder || param.description || ''} />
               )}
             </div>
           ))}
@@ -801,8 +819,23 @@ function PageModule({ config }: { config: any }) {
               placeholder="Write markdown content..."
             />
           ) : content ? (
-            <div className="prose prose-invert max-w-none text-sm text-[color:var(--text-primary)] leading-relaxed">
-              <ReactMarkdown>{content}</ReactMarkdown>
+            <div className="space-y-2">
+              <ReactMarkdown components={{
+                h1: ({children}) => <h1 className="text-xl font-bold text-[color:var(--text-primary)] mt-6 mb-3">{children}</h1>,
+                h2: ({children}) => <h2 className="text-lg font-bold text-[color:var(--text-primary)] mt-5 mb-2">{children}</h2>,
+                h3: ({children}) => <h3 className="text-base font-semibold text-[color:var(--text-primary)] mt-4 mb-2">{children}</h3>,
+                p: ({children}) => <p className="text-sm text-[color:var(--text-secondary)] leading-relaxed mb-2">{children}</p>,
+                ul: ({children}) => <ul className="list-disc list-inside text-sm text-[color:var(--text-secondary)] mb-2 space-y-1">{children}</ul>,
+                ol: ({children}) => <ol className="list-decimal list-inside text-sm text-[color:var(--text-secondary)] mb-2 space-y-1">{children}</ol>,
+                li: ({children}) => <li className="text-sm text-[color:var(--text-secondary)]">{children}</li>,
+                code: ({children}) => <code className="bg-[color:var(--surface-2)] text-[color:var(--text-primary)] px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>,
+                pre: ({children}) => <pre className="bg-[color:var(--surface-2)] rounded-lg p-4 overflow-x-auto mb-3 text-xs font-mono text-[color:var(--text-primary)]">{children}</pre>,
+                a: ({href, children}) => <a href={href} className="text-[color:var(--accent-solid)] hover:underline" target="_blank" rel="noopener noreferrer">{children}</a>,
+                strong: ({children}) => <strong className="font-semibold text-[color:var(--text-primary)]">{children}</strong>,
+                em: ({children}) => <em className="italic text-[color:var(--text-secondary)]">{children}</em>,
+                blockquote: ({children}) => <blockquote className="border-l-4 border-[color:var(--border-subtle)] pl-4 italic text-[color:var(--text-muted)] mb-3">{children}</blockquote>,
+                hr: () => <hr className="border-[color:var(--border-subtle)] my-4" />,
+              }}>{content}</ReactMarkdown>
             </div>
           ) : (
             <EmptyState icon={FileText} label="No page content yet" />
@@ -817,7 +850,7 @@ function PageModule({ config }: { config: any }) {
    ModulePage — full triage view for a single module
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => void }) {
+function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onBack?: () => void; onDeleted?: () => void }) {
   const [config, setConfig] = useState<any>(null);
   const [records, setRecords] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -828,6 +861,7 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteModule, setConfirmDeleteModule] = useState(false);
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState<'records' | 'actions'>('records');
 
@@ -926,6 +960,14 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
     finally { setSaving(false); }
   };
 
+  const handleDeleteModule = async () => {
+    try {
+      await araiosApi(`/api/modules/${moduleName}`, { method: 'DELETE' });
+      toast.success(`${config?.label || moduleName} deleted`);
+      (onDeleted ?? onBack)?.();
+    } catch { toast.error('Failed to delete module'); }
+  };
+
   const handleAction = async (actionId: string) => {
     if (!selectedId) return;
     try {
@@ -977,9 +1019,11 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
       {/* Header bar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] gap-3">
         <div className="flex items-center gap-3">
-          <button onClick={onBack} className="p-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors">
-            <ArrowLeft size={16} />
-          </button>
+          {onBack && (
+            <button onClick={onBack} className="p-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors">
+              <ArrowLeft size={16} />
+            </button>
+          )}
           <span className="text-sm font-medium text-[color:var(--text-secondary)]">{config.label}</span>
           {tabs.length > 1 && (
             <div className="flex items-center gap-1 ml-2">
@@ -1002,6 +1046,15 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
             <Copy size={12} />
             <span className="text-[10px] font-bold uppercase tracking-widest">{copied ? 'Copied!' : 'Prompt'}</span>
           </button>
+          {!config?.system && (
+            <button
+              className="p-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+              title="Delete module"
+              onClick={() => setConfirmDeleteModule(true)}
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
           {effectiveTab === 'records' && (
             <button className="h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity flex items-center gap-1.5" onClick={() => setCreateOpen(true)}>
               <Plus size={12} />{createAction?.label || `New`}
@@ -1106,6 +1159,15 @@ function ModulePage({ moduleName, onBack }: { moduleName: string; onBack: () => 
           onCancel={() => setConfirmDeleteId(null)}
         />
       )}
+      {confirmDeleteModule && (
+        <ConfirmDialog
+          title="Delete Module"
+          message={`Delete the "${config?.label || moduleName}" module and all its records? This cannot be undone.`}
+          confirmLabel="Delete"
+          onConfirm={handleDeleteModule}
+          onCancel={() => setConfirmDeleteModule(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1118,59 +1180,153 @@ function ModulesSection() {
   const [modules, setModules] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeModule, setActiveModule] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [sidebarSearch, setSidebarSearch] = useState('');
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
-  const load = useCallback(async () => {
+  const filteredModules = useMemo(() => {
+    const q = sidebarSearch.trim().toLowerCase();
+    if (!q) return modules;
+    return modules.filter(m =>
+      m.label?.toLowerCase().includes(q) || m.name?.toLowerCase().includes(q) || m.description?.toLowerCase().includes(q)
+    );
+  }, [modules, sidebarSearch]);
+
+  const load = useCallback(async (keepSelection = false) => {
     try {
-      setLoading(true);
+      setLoading(prev => !keepSelection && prev === true ? true : prev);
       const data = await araiosApi<{ modules: any[] }>('/api/modules');
-      setModules(data.modules || []);
+      const list = data.modules || [];
+      setModules(list);
+      if (!keepSelection) {
+        setActiveModule(prev => prev ?? (list[0]?.name || null));
+      } else {
+        // After deletion: select first module that isn't the deleted one
+        setActiveModule(prev => list.find((m: any) => m.name === prev) ? prev : (list[0]?.name || null));
+      }
     } catch { toast.error('Failed to load modules'); }
     finally { setLoading(false); }
   }, []);
 
+  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      setImporting(true);
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const response = await araiosApi<{ module: any; imported_records: number }>('/api/modules/import', {
+        method: 'POST',
+        body: payload,
+      });
+      await load(true);
+      if (response?.module?.name) setActiveModule(response.module.name);
+      const importedCount = Number(response?.imported_records || 0);
+      toast.success(importedCount > 0 ? `Imported ${response.module.label} with ${importedCount} records` : `Imported ${response.module.label}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Import failed');
+    } finally {
+      setImporting(false);
+    }
+  };
+
   useEffect(() => { load(); }, [load]);
 
-  if (activeModule) {
-    return <ModulePage moduleName={activeModule} onBack={() => setActiveModule(null)} />;
-  }
-
-  if (loading) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
+  if (loading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
 
   return (
-    <div className="space-y-4 p-4 md:p-6 overflow-y-auto h-full">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Registered Modules</h2>
-        <span className="text-[10px] bg-[color:var(--surface-2)] text-[color:var(--text-muted)] px-2 py-0.5 rounded font-bold">{modules.length}</span>
+    <div className="flex h-full">
+      {/* Left sidebar — module list */}
+      <div className="w-60 shrink-0 border-r border-[color:var(--border-subtle)] flex flex-col bg-[color:var(--surface-0)]">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-[color:var(--border-subtle)]">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Modules <span className="ml-1 opacity-60">{modules.length}</span></span>
+          <div className="flex items-center gap-1">
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,.module.json,application/json"
+              className="hidden"
+              onChange={handleImportFile}
+            />
+            <button
+              onClick={() => importInputRef.current?.click()}
+              disabled={importing}
+              className="h-6 px-2 rounded flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors disabled:opacity-50"
+            >
+              <FileCode size={11} />
+              {importing ? 'Importing...' : 'Import'}
+            </button>
+          </div>
+        </div>
+        <div className="px-2 py-2 border-b border-[color:var(--border-subtle)]">
+          <div className="flex items-center gap-1.5 px-2 h-7 rounded-lg bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)]">
+            <Search size={11} className="text-[color:var(--text-muted)] shrink-0" />
+            <input
+              className="flex-1 min-w-0 bg-transparent text-[11px] text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none"
+              placeholder="Search modules..."
+              value={sidebarSearch}
+              onChange={e => setSidebarSearch(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto py-1">
+          {filteredModules.length === 0 ? (
+            <p className="px-3 py-4 text-[11px] text-[color:var(--text-muted)]">No modules found</p>
+          ) : filteredModules.map((mod) => {
+            const Icon = resolveIcon(mod.icon);
+            const isActive = activeModule === mod.name;
+            const hasRecords = (mod.fields || []).length > 0;
+            const hasActions = (mod.actions || []).length > 0;
+            const hasPage = Boolean(mod.page_title);
+            return (
+              <button
+                key={mod.name}
+                onClick={() => setActiveModule(mod.name)}
+                className={`w-full text-left px-3 py-2.5 flex items-start gap-2.5 transition-colors ${
+                  isActive
+                    ? 'bg-[color:var(--surface-2)] border-l-2 border-[color:var(--accent-solid)]'
+                    : 'border-l-2 border-transparent hover:bg-[color:var(--surface-1)]'
+                }`}
+              >
+                <Icon size={14} className={`mt-0.5 shrink-0 ${isActive ? 'text-[color:var(--accent-solid)]' : 'text-[color:var(--text-muted)]'}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-1">
+                    <p className={`text-xs font-semibold truncate ${isActive ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]'}`}>
+                      {mod.label}
+                    </p>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {hasRecords && <span className="text-[8px] font-bold uppercase tracking-widest px-1 py-0.5 rounded bg-blue-500/10 text-blue-400">records</span>}
+                      {hasActions && <span className="text-[8px] font-bold uppercase tracking-widest px-1 py-0.5 rounded bg-amber-500/10 text-amber-400">actions</span>}
+                      {hasPage && <span className="text-[8px] font-bold uppercase tracking-widest px-1 py-0.5 rounded bg-purple-500/10 text-purple-400">page</span>}
+                    </div>
+                  </div>
+                  {mod.description && (
+                    <p className="text-[10px] text-[color:var(--text-muted)] truncate leading-tight mt-0.5">{mod.description}</p>
+                  )}
+                  <p className="text-[10px] text-[color:var(--text-muted)] mt-0.5">
+                    {[
+                      hasRecords && `${(mod.fields || []).length} fields`,
+                      hasActions && `${(mod.actions || []).length} actions`,
+                    ].filter(Boolean).join(' · ') || 'empty'}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {modules.map((mod) => (
-          <button
-            key={mod.name}
-            onClick={() => setActiveModule(mod.name)}
-            className="text-left rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-4 space-y-2 hover:border-[color:var(--border-strong)] transition-colors"
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                {(() => { const Icon = resolveIcon(mod.icon); return <Icon size={16} className="text-[color:var(--text-muted)] shrink-0" />; })()}
-                <span className="text-sm font-bold text-[color:var(--text-primary)]">{mod.label}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                {(mod.fields || []).length > 0 && <span className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">records</span>}
-                {(mod.actions || []).length > 0 && <span className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">actions</span>}
-                {mod.page_title && <span className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">page</span>}
-              </div>
-            </div>
-            <p className="text-[11px] text-[color:var(--text-muted)] leading-relaxed line-clamp-2">{mod.description || 'No description'}</p>
-            <div className="text-[10px] text-[color:var(--text-muted)]">
-              {(mod.fields || []).length > 0 && <>{(mod.fields || []).length} fields</>}
-              {(mod.fields || []).length > 0 && (mod.actions || []).length > 0 && <> · </>}
-              {(mod.actions || []).length > 0 && <>{(mod.actions || []).length} actions</>}
-              {(mod.fields || []).length === 0 && (mod.actions || []).length === 0 && !mod.page_title && <>empty module</>}
-            </div>
-          </button>
-        ))}
-        {modules.length === 0 && (
-          <div className="col-span-full">
+
+      {/* Right panel — module explorer */}
+      <div className="flex-1 min-w-0">
+        {activeModule ? (
+          <ModulePage
+            key={activeModule}
+            moduleName={activeModule}
+            onDeleted={() => load(true)}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full">
             <EmptyState icon={LayoutGrid} label="No modules registered" />
           </div>
         )}
@@ -1192,8 +1348,8 @@ function ApprovalsSection() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await araiosApi<{ approvals: any[] }>('/api/approvals');
-      setApprovals(data.approvals || []);
+      const data = await araiosApi<{ items: any[]; total: number }>('/api/v1/approvals');
+      setApprovals(data.items || []);
     } catch { toast.error('Failed to load approvals'); }
     finally { setLoading(false); }
   }, []);
@@ -1207,7 +1363,10 @@ function ApprovalsSection() {
   const handleResolve = async (id: string, action: 'approve' | 'reject') => {
     try {
       setProcessingId(id);
-      await araiosApi(`/api/approvals/${id}/${action}`, { method: 'POST' });
+      const approval = approvals.find(a => (a.approval_id ?? a.id) === id);
+      const provider = approval?.provider ?? 'tool';
+      const approvalId = approval?.approval_id ?? id;
+      await araiosApi(`/api/v1/approvals/${provider}/${approvalId}/${action}`, { method: 'POST' });
       toast.success(action === 'approve' ? 'Approved' : 'Rejected');
       load();
     } catch { toast.error(`Failed to ${action}`); }
@@ -1241,23 +1400,24 @@ function ApprovalsSection() {
       ) : (
         <div className="max-w-[900px] mx-auto space-y-4">
           {filtered.map(approval => {
+            const id = approval.approval_id ?? approval.id;
             const statusInfo = APPROVAL_STATUS[approval.status] || { label: approval.status, tone: 'neutral' };
-            const isProcessing = processingId === approval.id;
+            const isProcessing = processingId === id;
 
             return (
-              <div key={approval.id} className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-5 space-y-4">
+              <div key={id} className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-5 space-y-4">
                 {/* Header row */}
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 flex-1 min-w-0 flex-wrap">
                     <Badge tone={statusInfo.tone}>{statusInfo.label}</Badge>
                     <span className="text-xs font-mono font-bold text-[color:var(--text-primary)]">{approval.action}</span>
-                    {approval.resource && (
+                    {approval.label && approval.label !== approval.action && (
                       <span className="text-[10px] font-bold text-[color:var(--text-muted)] uppercase tracking-widest bg-[color:var(--surface-2)] px-2 py-0.5 rounded">
-                        {approval.resource}{approval.resourceId ? `/${approval.resourceId}` : ''}
+                        {approval.label}
                       </span>
                     )}
                   </div>
-                  <span className="text-[10px] font-mono text-[color:var(--text-muted)] shrink-0">{fmtDate(approval.createdAt || approval.created_at)}</span>
+                  <span className="text-[10px] font-mono text-[color:var(--text-muted)] shrink-0">{fmtDate(approval.created_at)}</span>
                 </div>
 
                 {/* Description */}
@@ -1280,14 +1440,14 @@ function ApprovalsSection() {
                     <button
                       className="flex-1 h-9 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-emerald-500/10 text-emerald-500 hover:bg-emerald-600 hover:text-white transition-colors disabled:opacity-40"
                       disabled={isProcessing}
-                      onClick={() => handleResolve(approval.id, 'approve')}
+                      onClick={() => handleResolve(id, 'approve')}
                     >
                       {isProcessing ? 'Executing...' : 'Authorize Action'}
                     </button>
                     <button
                       className="flex-1 h-9 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors disabled:opacity-40"
                       disabled={isProcessing}
-                      onClick={() => handleResolve(approval.id, 'reject')}
+                      onClick={() => handleResolve(id, 'reject')}
                     >
                       Decline
                     </button>
@@ -1521,7 +1681,7 @@ function DocumentsSection() {
               </div>
               {/* Doc content — simple markdown render */}
               <div className="flex-1 overflow-y-auto p-8">
-                <article className="prose prose-sm max-w-none text-[color:var(--text-primary)]">
+                <article>
                   <SimpleMarkdown content={activeDoc.content || ''} />
                 </article>
               </div>
@@ -2061,20 +2221,30 @@ const SECTION_LABELS: Record<AraiOSSection, string> = {
   coordination: 'Coordination',
 };
 
-export function AraiOSPage() {
-  const { section } = useParams<{ section?: string }>();
-  const activeSection = (section || 'modules') as AraiOSSection;
+export function ModulesPage() {
+  const location = useLocation();
+  let activeSection: AraiOSSection = 'modules';
+  if (location.pathname.startsWith('/approvals')) activeSection = 'approvals';
+  else if (location.pathname.startsWith('/permissions')) activeSection = 'permissions';
+
+  const isFullHeight = activeSection === 'modules';
 
   return (
-    <AppShell title={SECTION_LABELS[activeSection] || 'araiOS'} subtitle="Module Engine" contentClassName="!p-0 overflow-hidden">
-      <div className="h-full overflow-hidden">
-        {activeSection === 'modules' && <ModulesSection />}
-        {activeSection === 'approvals' && <ApprovalsSection />}
-        {activeSection === 'permissions' && <PermissionsSection />}
-        {activeSection === 'documents' && <DocumentsSection />}
-        {activeSection === 'tasks' && <TasksSection />}
-        {activeSection === 'coordination' && <CoordinationSection />}
-      </div>
+    <AppShell
+      title={SECTION_LABELS[activeSection] || 'Modules'}
+      subtitle="Module Engine"
+      contentClassName={isFullHeight ? '!p-0 overflow-hidden' : ''}
+    >
+      {isFullHeight ? (
+        <div className="h-full overflow-hidden">
+          <ModulesSection />
+        </div>
+      ) : (
+        <div className="max-w-5xl mx-auto">
+          {activeSection === 'approvals' && <ApprovalsSection />}
+          {activeSection === 'permissions' && <PermissionsSection />}
+        </div>
+      )}
     </AppShell>
   );
 }

@@ -13,10 +13,9 @@ import { TelegramPage } from './pages/TelegramPage';
 import { UiShowcasePage } from './pages/UiShowcasePage';
 import { SessionsPage } from './pages/SessionsPage';
 import { SettingsPage } from './pages/SettingsPage';
-import { ToolsPage } from './pages/ToolsPage';
 import { GitPage } from './pages/GitPage';
 import { TriggersPage } from './pages/TriggersPage';
-import { AraiOSPage } from './pages/AraiOSPage';
+import { ModulesPage } from './pages/ModulesPage';
 import { useAuthStore } from './store/auth-store';
 import { useThemeStore } from './store/theme-store';
 import { api } from './lib/api';
@@ -103,14 +102,14 @@ export default function App() {
           <Route path="/memory" element={<MemoryPage />} />
           <Route path="/triggers" element={<TriggersPage />} />
           <Route path="/triggers/:id" element={<Navigate to="/triggers" replace />} />
-          <Route path="/tools" element={<ToolsPage />} />
+          <Route path="/modules" element={<ModulesPage />} />
+          <Route path="/approvals" element={<ModulesPage />} />
+          <Route path="/permissions" element={<ModulesPage />} />
           <Route path="/git" element={<GitPage />} />
           <Route path="/telegram" element={<TelegramPage />} />
           <Route path="/showcase" element={<UiShowcasePage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/settings/admin" element={<AdminPage />} />
-          <Route path="/araios" element={<AraiOSPage />} />
-          <Route path="/araios/:section" element={<AraiOSPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/sessions" replace />} />
