@@ -115,6 +115,39 @@ async def handle_get_module(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+_FIELD_EXAMPLE = '{"key": "email", "label": "Email", "type": "email"}'
+_VALID_FIELD_TYPES = {
+    "text", "textarea", "email", "url", "number", "date",
+    "select", "badge", "tags", "readonly",
+}
+
+
+def _validate_fields(fields: Any) -> list[dict]:
+    if fields is None:
+        return []
+    if not isinstance(fields, list):
+        raise ValueError(f"'fields' must be an array. Example item: {_FIELD_EXAMPLE}")
+    validated = []
+    for i, f in enumerate(fields):
+        if not isinstance(f, dict):
+            raise ValueError(
+                f"Field at index {i} must be an object, got {type(f).__name__!r}. "
+                f"Each field requires 'key' and 'label' strings. Example: {_FIELD_EXAMPLE}"
+            )
+        if not isinstance(f.get("key"), str) or not f["key"].strip():
+            raise ValueError(f"Field at index {i} is missing required 'key' (non-empty string)")
+        if not isinstance(f.get("label"), str) or not f["label"].strip():
+            raise ValueError(f"Field at index {i} (key={f.get('key')!r}) is missing required 'label' (non-empty string)")
+        field_type = f.get("type", "text")
+        if field_type not in _VALID_FIELD_TYPES:
+            raise ValueError(
+                f"Field {f['key']!r} has invalid type {field_type!r}. "
+                f"Valid types: {sorted(_VALID_FIELD_TYPES)}"
+            )
+        validated.append(f)
+    return validated
+
+
 async def handle_create_module(payload: dict[str, Any]) -> dict[str, Any]:
     name = (payload.get("name") or "").strip().lower()
     if not name:
@@ -134,12 +167,13 @@ async def handle_create_module(payload: dict[str, Any]) -> dict[str, Any]:
         )
         if existing.scalars().first():
             raise ValueError(f"Module '{name}' already exists")
+        fields = _validate_fields(payload.get("fields"))
         mod = AraiosModule(
             name=name,
             label=payload.get("label", name.title()),
             description=payload.get("description", ""),
             icon=payload.get("icon", "box"),
-            fields=payload.get("fields", []),
+            fields=fields,
             fields_config=payload.get("fields_config", {}),
             actions=actions,
             secrets=payload.get("secrets", []),

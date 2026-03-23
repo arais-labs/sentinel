@@ -1,110 +1,70 @@
-"""Native module: tasks — task tracking and management."""
+"""Native module: tasks — backed by standard module_records."""
 from __future__ import annotations
 
-import logging
-from datetime import datetime, UTC
 from typing import Any
 
 from sqlalchemy import select
 
 from app.database.database import AsyncSessionLocal
-from app.models.araios import AraiosTask, araios_gen_id
+from app.models.araios import AraiosModuleRecord, araios_gen_id
 
-logger = logging.getLogger(__name__)
-
-
-# ── Field mapping (camelCase schema <-> snake_case model) ──
-
-_FIELD_MAP: dict[str, str] = {
-    "createdBy": "created_by",
-    "updatedBy": "updated_by",
-    "handoffTo": "handoff_to",
-    "prUrl": "pr_url",
-    "workPackage": "work_package",
-    "detectedAt": "detected_at",
-    "readyAt": "ready_at",
-    "handedOffAt": "handed_off_at",
-    "closedAt": "closed_at",
-}
-_REVERSE_MAP: dict[str, str] = {v: k for k, v in _FIELD_MAP.items()}
+_MODULE = "tasks"
 
 
-def _map_input(data: dict[str, Any]) -> dict[str, Any]:
-    """Convert camelCase keys to snake_case for the ORM model."""
-    out: dict[str, Any] = {}
-    for k, v in data.items():
-        out[_FIELD_MAP.get(k, k)] = v
-    return out
-
-
-def _to_dict(task: AraiosTask) -> dict[str, Any]:
-    """Convert ORM model to camelCase dict for the response."""
-    d: dict[str, Any] = {}
-    for col in AraiosTask.__table__.columns:
-        val = getattr(task, col.key)
-        camel = _REVERSE_MAP.get(col.key, col.key)
-        if camel == "updated_at":
-            camel = "updatedAt"
-        if isinstance(val, datetime):
-            val = val.isoformat()
-        d[camel] = val
-    return d
-
-
-# ---------------------------------------------------------------------------
-# Handler functions (module-level)
-# ---------------------------------------------------------------------------
+def _serialize(r: AraiosModuleRecord) -> dict[str, Any]:
+    return {"id": r.id, "module_name": r.module_name, **(r.data or {})}
 
 
 async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
     status = payload.get("status")
     priority = payload.get("priority")
     async with AsyncSessionLocal() as db:
-        stmt = select(AraiosTask)
-        if status:
-            stmt = stmt.where(AraiosTask.status == status)
-        if priority:
-            stmt = stmt.where(AraiosTask.priority == priority)
-        result = await db.execute(stmt)
-        rows = result.scalars().all()
-        return {"tasks": [_to_dict(r) for r in rows]}
+        rows = (await db.execute(
+            select(AraiosModuleRecord)
+            .where(AraiosModuleRecord.module_name == _MODULE)
+            .order_by(AraiosModuleRecord.created_at.desc())
+        )).scalars().all()
+    tasks = [_serialize(r) for r in rows]
+    if status:
+        tasks = [t for t in tasks if t.get("status") == status]
+    if priority:
+        tasks = [t for t in tasks if t.get("priority") == priority]
+    return {"tasks": tasks}
 
 
 async def handle_create(payload: dict[str, Any]) -> dict[str, Any]:
-    title = payload.get("title")
-    if not title:
+    if not payload.get("title"):
         raise ValueError("'title' is required")
-    data = _map_input(
-        {k: v for k, v in payload.items() if k != "session_id" and v is not None}
-    )
-    data.pop("id", None)
-    task = AraiosTask(id=araios_gen_id(), **data)
+    data = {k: v for k, v in payload.items() if k not in ("id", "session_id") and v is not None}
     async with AsyncSessionLocal() as db:
-        db.add(task)
+        record = AraiosModuleRecord(id=araios_gen_id(), module_name=_MODULE, data=data)
+        db.add(record)
         await db.commit()
-        await db.refresh(task)
-        return _to_dict(task)
+        await db.refresh(record)
+    return _serialize(record)
 
 
 async def handle_update(payload: dict[str, Any]) -> dict[str, Any]:
     task_id = payload.get("id")
     if not task_id:
         raise ValueError("'id' is required")
-    changes = _map_input(
-        {k: v for k, v in payload.items() if k not in ("id", "session_id") and v is not None}
-    )
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(AraiosTask).where(AraiosTask.id == task_id)
-        )
-        task = result.scalars().first()
-        if not task:
+        record = (await db.execute(
+            select(AraiosModuleRecord).where(
+                AraiosModuleRecord.module_name == _MODULE,
+                AraiosModuleRecord.id == task_id,
+            )
+        )).scalars().first()
+        if not record:
             raise ValueError(f"Task '{task_id}' not found")
-        for key, val in changes.items():
-            setattr(task, key, val)
+        updated = dict(record.data or {})
+        for k, v in payload.items():
+            if k not in ("id", "session_id") and v is not None:
+                updated[k] = v
+        record.data = updated
         await db.commit()
-        await db.refresh(task)
-        return _to_dict(task)
+        await db.refresh(record)
+    return _serialize(record)
 
 
 async def handle_delete(payload: dict[str, Any]) -> dict[str, Any]:
@@ -112,12 +72,14 @@ async def handle_delete(payload: dict[str, Any]) -> dict[str, Any]:
     if not task_id:
         raise ValueError("'id' is required")
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(AraiosTask).where(AraiosTask.id == task_id)
-        )
-        task = result.scalars().first()
-        if not task:
+        record = (await db.execute(
+            select(AraiosModuleRecord).where(
+                AraiosModuleRecord.module_name == _MODULE,
+                AraiosModuleRecord.id == task_id,
+            )
+        )).scalars().first()
+        if not record:
             raise ValueError(f"Task '{task_id}' not found")
-        await db.delete(task)
+        await db.delete(record)
         await db.commit()
-        return {"ok": True, "message": f"Task '{task_id}' deleted"}
+    return {"ok": True, "message": f"Task '{task_id}' deleted"}

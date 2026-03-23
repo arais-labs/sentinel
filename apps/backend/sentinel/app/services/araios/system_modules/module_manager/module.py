@@ -68,7 +68,20 @@ def _create_module_parameters_schema() -> dict:
             "label": {"type": "string"},
             "description": {"type": "string"},
             "icon": {"type": "string"},
-            "fields": {"type": "array"},
+            "fields": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["key", "label"],
+                    "properties": {
+                        "key": {"type": "string", "description": "snake_case field identifier"},
+                        "label": {"type": "string", "description": "Human-readable field name"},
+                        "type": {"type": "string", "enum": ["text", "textarea", "email", "url", "number", "date", "select", "tags", "readonly"]},
+                        "required": {"type": "boolean"},
+                        "options": {"type": "array", "items": {"type": "string"}, "description": "Only for type=select"},
+                    },
+                },
+            },
             "fields_config": {"type": "object"},
             "actions": {"type": "array"},
             "permissions": {"type": "object"},
@@ -191,7 +204,16 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="create_module",
             label="Create Module",
-            description="Create a new araiOS module.",
+            description=(
+                "Create a new araiOS module. "
+                "IMPORTANT: 'fields' must be an array of field OBJECTS — never plain strings. "
+                "Each field object requires 'key' (snake_case string) and 'label' (human-readable string). "
+                "Optional per-field: 'type' (text|textarea|email|url|number|date|select|tags, default: text), "
+                "'required' (boolean), 'options' (array of strings, only for type=select). "
+                "Example: {\"key\": \"company\", \"label\": \"Company\", \"type\": \"text\", \"required\": true}. "
+                "fields_config controls display: titleField (record title), subtitleField, badgeField (status chip), filterField (sidebar filter). "
+                "All field keys referenced in fields_config must exist in fields."
+            ),
             handler=handle_create_module,
             parameters_schema=_create_module_parameters_schema(),
         ),

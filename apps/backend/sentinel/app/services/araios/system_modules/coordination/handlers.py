@@ -1,34 +1,18 @@
-"""Native module: coordination — inter-agent coordination messaging."""
+"""Native module: coordination — backed by standard module_records."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from sqlalchemy import select
 
 from app.database.database import AsyncSessionLocal
-from app.models.araios import AraiosCoordinationMessage, araios_gen_id
+from app.models.araios import AraiosModuleRecord, araios_gen_id
 
-logger = logging.getLogger(__name__)
-
-
-# ── Helpers ──
+_MODULE = "coordination"
 
 
-def _msg_to_dict(m: AraiosCoordinationMessage) -> dict[str, Any]:
-    """Serialize a coordination message model to a dict."""
-    return {
-        "id": m.id,
-        "agent": m.agent,
-        "message": m.message,
-        "context": m.context,
-        "createdAt": m.created_at.isoformat() if m.created_at else None,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Handler functions (module-level)
-# ---------------------------------------------------------------------------
+def _serialize(r: AraiosModuleRecord) -> dict[str, Any]:
+    return {"id": r.id, "module_name": r.module_name, **(r.data or {})}
 
 
 async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
@@ -39,33 +23,27 @@ async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
     if limit > 500:
         limit = 500
     async with AsyncSessionLocal() as db:
-        stmt = select(AraiosCoordinationMessage).order_by(
-            AraiosCoordinationMessage.seq.asc()
-        )
-        if agent:
-            stmt = stmt.where(AraiosCoordinationMessage.agent == agent)
-        stmt = stmt.limit(limit)
-        result = await db.execute(stmt)
-        rows = result.scalars().all()
-        return {"messages": [_msg_to_dict(r) for r in rows]}
+        rows = (await db.execute(
+            select(AraiosModuleRecord)
+            .where(AraiosModuleRecord.module_name == _MODULE)
+            .order_by(AraiosModuleRecord.created_at.asc())
+            .limit(limit)
+        )).scalars().all()
+    messages = [_serialize(r) for r in rows]
+    if agent:
+        messages = [m for m in messages if m.get("agent") == agent]
+    return {"messages": messages}
 
 
 async def handle_send(payload: dict[str, Any]) -> dict[str, Any]:
-    agent = payload.get("agent")
-    message = payload.get("message")
-    context = payload.get("context")
-    if not agent:
+    if not payload.get("agent"):
         raise ValueError("'agent' is required")
-    if not message:
+    if not payload.get("message"):
         raise ValueError("'message' is required")
+    data = {k: v for k, v in payload.items() if k not in ("id", "session_id") and v is not None}
     async with AsyncSessionLocal() as db:
-        msg = AraiosCoordinationMessage(
-            id=araios_gen_id(),
-            agent=agent,
-            message=message,
-            context=context,
-        )
-        db.add(msg)
+        record = AraiosModuleRecord(id=araios_gen_id(), module_name=_MODULE, data=data)
+        db.add(record)
         await db.commit()
-        await db.refresh(msg)
-        return _msg_to_dict(msg)
+        await db.refresh(record)
+    return _serialize(record)
