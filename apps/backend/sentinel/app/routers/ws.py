@@ -261,6 +261,19 @@ async def _materialize_interrupted_tool_results(
             ),
         }
     )
+    call_ids = [str(call.get("id") or "").strip() for call in unresolved_calls if str(call.get("id") or "").strip()]
+    existing_result = await db.execute(
+        select(Message).where(
+            Message.session_id == session_id,
+            Message.role == "tool_result",
+            Message.tool_call_id.in_(call_ids),
+        )
+    )
+    existing_messages = {
+        str(row.tool_call_id or "").strip(): row
+        for row in existing_result.scalars().all()
+        if str(row.tool_call_id or "").strip()
+    }
     for call in unresolved_calls:
         call_id = str(call.get("id") or "").strip()
         if not call_id:
@@ -277,6 +290,16 @@ async def _materialize_interrupted_tool_results(
             },
             generation=call_generation,
         )
+        existing_message = existing_messages.get(call_id)
+        if existing_message is not None:
+            _apply_terminal_tool_result_update(
+                existing_message,
+                content=payload,
+                metadata=metadata,
+                approval_status="cancelled",
+                decision_note="Cancelled automatically: backend run not active after reconnect",
+            )
+            continue
         db.add(
             Message(
                 session_id=session_id,
@@ -288,3 +311,24 @@ async def _materialize_interrupted_tool_results(
             )
         )
     await db.commit()
+
+
+def _apply_terminal_tool_result_update(
+    message: Message,
+    *,
+    content: str,
+    metadata: dict[str, object],
+    approval_status: str,
+    decision_note: str,
+) -> None:
+    existing_metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+    approval = existing_metadata.get("approval")
+    if isinstance(approval, dict):
+        next_approval = dict(approval)
+        next_approval["status"] = approval_status
+        next_approval["pending"] = False
+        next_approval["can_resolve"] = False
+        next_approval["decision_note"] = decision_note
+        metadata["approval"] = next_approval
+    message.content = content
+    message.metadata_json = metadata

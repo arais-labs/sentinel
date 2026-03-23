@@ -7,16 +7,21 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.database import AsyncSessionLocal
 from app.dependencies import get_db
-from app.middleware.auth import TokenPayload, require_auth
 from app.models.araios import (
     AraiosModule,
     AraiosModuleRecord,
     AraiosModuleSecret,
-    AraiosPermission,
     araios_gen_id,
 )
+from app.services.araios.dynamic_modules import (
+    delete_dynamic_module_permissions,
+    normalize_dynamic_module_actions,
+    sync_dynamic_module_permissions,
+)
 from app.services.araios.executor import execute_action
+from app.services.tools.runtime_registry import rebuild_runtime_registry
 
 router = APIRouter()
 
@@ -98,21 +103,10 @@ def _extract_module_updates(body: dict[str, Any]) -> dict[str, Any]:
 def _validate_action_updates(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         raise HTTPException(status_code=400, detail="'actions' must be a list")
-    validated: list[dict[str, Any]] = []
-    for action in value:
-        if not isinstance(action, dict):
-            raise HTTPException(
-                status_code=400,
-                detail="Each action in 'actions' must be an object",
-            )
-        action_id = action.get("id")
-        if not isinstance(action_id, str) or not action_id.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="Each action in 'actions' requires a non-empty 'id'",
-            )
-        validated.append(action)
-    return validated
+    try:
+        return normalize_dynamic_module_actions(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 def _merge_action_updates(
@@ -232,33 +226,6 @@ def _normalize_action_params(body: dict | None) -> dict:
     return body
 
 
-async def _seed_module_permissions(name: str, db: AsyncSession) -> None:
-    result = await db.execute(
-        select(AraiosModule).where(AraiosModule.name == name)
-    )
-    mod = result.scalars().first()
-    # Always seed CRUD permissions + per-action permissions
-    defaults = [
-        (f"{name}.list", "allow"),
-        (f"{name}.create", "allow"),
-        (f"{name}.update", "allow"),
-        (f"{name}.delete", "approval"),
-    ]
-    if mod:
-        for a in (mod.actions or []):
-            if isinstance(a, dict) and a.get("id"):
-                defaults.append((f"{name}.{a['id']}", "allow"))
-    action_keys = [k for k, _ in defaults]
-    result = await db.execute(
-        select(AraiosPermission).where(AraiosPermission.action.in_(action_keys))
-    )
-    existing = {p.action for p in result.scalars().all()}
-    for action, level in defaults:
-        if action not in existing:
-            db.add(AraiosPermission(action=action, level=level))
-    await db.commit()
-
-
 # ── Module CRUD ──
 
 
@@ -307,11 +274,15 @@ async def list_modules(
 @router.post("", status_code=201)
 async def create_module(
     body: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     name = _normalize_module_name(body.get("name"))
     if not name:
         raise HTTPException(status_code=400, detail="Module name is required")
+    permissions = body.get("permissions", {})
+    if permissions is not None and not isinstance(permissions, dict):
+        raise HTTPException(status_code=400, detail="'permissions' must be an object")
     result = await db.execute(
         select(AraiosModule).where(AraiosModule.name == name)
     )
@@ -319,6 +290,10 @@ async def create_module(
         raise HTTPException(
             status_code=409, detail=f"Module '{name}' already exists"
         )
+    registry = getattr(request.app.state, "tool_registry", None)
+    if registry is not None and registry.get(name) is not None:
+        raise HTTPException(status_code=409, detail=f"Module '{name}' conflicts with an existing tool")
+    actions = _validate_action_updates(body.get("actions", []))
     mod = AraiosModule(
         name=name,
         label=body.get("label", name.title()),
@@ -326,15 +301,24 @@ async def create_module(
         icon=body.get("icon", "box"),
         fields=body.get("fields", []),
         fields_config=body.get("fields_config", {}),
-        actions=body.get("actions", []),
+        actions=actions,
         secrets=body.get("secrets", []),
         page_title=body.get("page_title"),
+        page_content=body.get("page_content"),
+        system=False,
         order=body.get("order", 100),
     )
     db.add(mod)
     await db.commit()
     await db.refresh(mod)
-    await _seed_module_permissions(name, db)
+    await sync_dynamic_module_permissions(
+        db,
+        module_name=name,
+        actions=actions,
+        permissions=permissions,
+    )
+    session_factory = getattr(request.app.state, "db_session_factory", AsyncSessionLocal)
+    await rebuild_runtime_registry(app_state=request.app.state, session_factory=session_factory)
     return _serialize_module(mod)
 
 
@@ -350,19 +334,33 @@ async def get_module(
 async def update_module(
     name: str,
     body: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     mod = await _module_or_404(name, db)
-    updates = _extract_module_updates(body)
-    _apply_module_updates(mod, updates)
+    permissions = body.get("permissions")
+    if permissions is not None and not isinstance(permissions, dict):
+        raise HTTPException(status_code=400, detail="'permissions' must be an object")
+    updates = _extract_module_updates(body) if any(field in body for field in _MODULE_MUTABLE_FIELDS) else {}
+    if updates:
+        _apply_module_updates(mod, updates)
     await db.commit()
     await db.refresh(mod)
+    await sync_dynamic_module_permissions(
+        db,
+        module_name=name,
+        actions=normalize_dynamic_module_actions(list(mod.actions or [])),
+        permissions=permissions,
+    )
+    session_factory = getattr(request.app.state, "db_session_factory", AsyncSessionLocal)
+    await rebuild_runtime_registry(app_state=request.app.state, session_factory=session_factory)
     return _serialize_module(mod)
 
 
 @router.delete("/{name}")
 async def delete_module(
     name: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     mod = await _module_or_404(name, db)
@@ -371,6 +369,9 @@ async def delete_module(
     await db.execute(delete(AraiosModuleSecret).where(AraiosModuleSecret.module_name == name))
     await db.delete(mod)
     await db.commit()
+    await delete_dynamic_module_permissions(db, module_name=name)
+    session_factory = getattr(request.app.state, "db_session_factory", AsyncSessionLocal)
+    await rebuild_runtime_registry(app_state=request.app.state, session_factory=session_factory)
     return {"ok": True}
 
 

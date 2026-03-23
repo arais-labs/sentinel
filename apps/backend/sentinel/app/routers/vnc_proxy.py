@@ -94,6 +94,8 @@ async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
                 while True:
                     data = await websocket.receive_bytes()
                     await upstream_ws.send(data)
+            except asyncio.CancelledError:
+                raise
             except WebSocketDisconnect:
                 logger.warning("VNC WS proxy: client disconnected")
             except Exception as e:
@@ -106,6 +108,8 @@ async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
                         await websocket.send_bytes(message)
                     else:
                         await websocket.send_text(message)
+            except asyncio.CancelledError:
+                raise
             except WebSocketDisconnect:
                 logger.warning("VNC WS proxy: upstream disconnected")
             except Exception as e:
@@ -120,16 +124,20 @@ async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
         )
         for task in pending:
             task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
 
     except Exception:
         logger.error("VNC WS proxy EXCEPTION:\n%s", traceback.format_exc())
     finally:
         if upstream_ws is not None:
             try:
-                await upstream_ws.close()
+                await asyncio.wait_for(upstream_ws.close(), timeout=1)
             except Exception:
                 pass
         try:
-            await websocket.close()
+            await asyncio.wait_for(websocket.close(), timeout=1)
         except Exception:
             pass

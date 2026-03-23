@@ -12,10 +12,16 @@ from app.models.araios import (
     AraiosModule,
     AraiosModuleRecord,
     AraiosModuleSecret,
-    AraiosPermission,
     araios_gen_id,
 )
+from app.services.araios.dynamic_modules import (
+    delete_dynamic_module_permissions,
+    normalize_dynamic_module_actions,
+    sync_dynamic_module_permissions,
+)
 from app.services.araios.executor import execute_action
+from app.services.araios.runtime_services import get_app_state
+from app.services.tools.runtime_registry import rebuild_runtime_registry
 logger = logging.getLogger(__name__)
 
 
@@ -29,34 +35,6 @@ def _serialize_record(r: AraiosModuleRecord) -> dict[str, Any]:
     d["created_at"] = r.created_at.isoformat() if r.created_at else None
     d["updated_at"] = r.updated_at.isoformat() if r.updated_at else None
     return d
-
-
-async def _seed_module_permissions(db: AsyncSession, name: str) -> None:
-    """Create default permission entries for a newly registered module."""
-    result = await db.execute(
-        select(AraiosModule).where(AraiosModule.name == name)
-    )
-    mod = result.scalars().first()
-    defaults = [
-        (f"{name}.list", "allow"),
-        (f"{name}.create", "allow"),
-        (f"{name}.update", "allow"),
-        (f"{name}.delete", "approval"),
-    ]
-    if mod:
-        for a in (mod.actions or []):
-            if isinstance(a, dict) and a.get("id"):
-                defaults.append((f"{name}.{a['id']}", "allow"))
-    existing_result = await db.execute(
-        select(AraiosPermission).where(
-            AraiosPermission.action.in_([k for k, _ in defaults])
-        )
-    )
-    existing = {p.action for p in existing_result.scalars().all()}
-    for action, level in defaults:
-        if action not in existing:
-            db.add(AraiosPermission(action=action, level=level))
-    await db.commit()
 
 
 async def _require_module_exists(
@@ -141,6 +119,15 @@ async def handle_create_module(payload: dict[str, Any]) -> dict[str, Any]:
     name = (payload.get("name") or "").strip().lower()
     if not name:
         raise ValueError("'name' is required for create_module")
+    actions = normalize_dynamic_module_actions(list(payload.get("actions") or []))
+    permissions = payload.get("permissions", {})
+    if permissions is not None and not isinstance(permissions, dict):
+        raise ValueError("'permissions' must be an object")
+    app_state = get_app_state()
+    if app_state is not None:
+        registry = getattr(app_state, "tool_registry", None)
+        if registry is not None and registry.get(name) is not None:
+            raise ValueError(f"Module '{name}' conflicts with an existing tool")
     async with AsyncSessionLocal() as db:
         existing = await db.execute(
             select(AraiosModule).where(AraiosModule.name == name)
@@ -154,15 +141,30 @@ async def handle_create_module(payload: dict[str, Any]) -> dict[str, Any]:
             icon=payload.get("icon", "box"),
             fields=payload.get("fields", []),
             fields_config=payload.get("fields_config", {}),
-            actions=payload.get("actions", []),
+            actions=actions,
             secrets=payload.get("secrets", []),
             page_title=payload.get("page_title"),
+            page_content=payload.get("page_content"),
+            system=False,
             order=payload.get("order", 100),
         )
         db.add(mod)
         await db.commit()
-        await _seed_module_permissions(db, name)
-        return {"ok": True, "module": name, "message": f"Module '{name}' created"}
+        permission_levels = await sync_dynamic_module_permissions(
+            db,
+            module_name=name,
+            actions=actions,
+            permissions=permissions,
+        )
+    if app_state is not None:
+        session_factory = getattr(app_state, "db_session_factory", AsyncSessionLocal)
+        await rebuild_runtime_registry(app_state=app_state, session_factory=session_factory)
+    return {
+        "ok": True,
+        "module": name,
+        "permissions": permission_levels,
+        "message": f"Module '{name}' created",
+    }
 
 
 async def handle_delete_module(payload: dict[str, Any]) -> dict[str, Any]:
@@ -184,7 +186,12 @@ async def handle_delete_module(payload: dict[str, Any]) -> dict[str, Any]:
         )
         await db.delete(mod)
         await db.commit()
-        return {"ok": True, "message": f"Module '{name}' deleted"}
+        await delete_dynamic_module_permissions(db, module_name=name)
+    app_state = get_app_state()
+    if app_state is not None:
+        session_factory = getattr(app_state, "db_session_factory", AsyncSessionLocal)
+        await rebuild_runtime_registry(app_state=app_state, session_factory=session_factory)
+    return {"ok": True, "message": f"Module '{name}' deleted"}
 
 
 # ── Record handlers ──

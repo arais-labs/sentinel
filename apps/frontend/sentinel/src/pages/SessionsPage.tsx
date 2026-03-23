@@ -2333,6 +2333,42 @@ export function SessionsPage() {
     });
   }, []);
 
+  const updatePersistedMessageApproval = useCallback((
+    approval: ApprovalRef,
+    updates: { pending?: boolean; approval_status?: string; decision_note?: string },
+  ) => {
+    const targetKey = approvalKey(approval);
+    setMessages((current) =>
+      current.map((message) => {
+        if (message.role !== 'tool_result') return message;
+        const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+        const messageApproval = approvalRefFromMetadata(metadata);
+        if (!messageApproval || approvalKey(messageApproval) !== targetKey) return message;
+        const nextPending = updates.pending ?? messageApproval.pending;
+        const nextStatus = updates.approval_status ?? messageApproval.status;
+        const currentApproval = isObjectRecord(metadata.approval) ? metadata.approval : {};
+        return {
+          ...message,
+          metadata: {
+            ...metadata,
+            pending: nextPending,
+            approval_status: nextStatus,
+            ...updates,
+            approval: {
+              ...currentApproval,
+              provider: approval.provider,
+              approval_id: approval.approvalId,
+              pending: nextPending,
+              status: nextStatus,
+              can_resolve: nextPending,
+              decision_note: updates.decision_note ?? currentApproval.decision_note,
+            },
+          },
+        };
+      }),
+    );
+  }, []);
+
   const resolveApprovalInline = useCallback(async (approval: ApprovalRef, decision: 'approve' | 'reject') => {
     const targetKey = approvalKey(approval);
     setResolvingApprovalKey(targetKey);
@@ -2349,6 +2385,10 @@ export function SessionsPage() {
         pending: false,
         approval_status: decision === 'approve' ? 'approved' : 'rejected',
       });
+      updatePersistedMessageApproval(approval, {
+        pending: false,
+        approval_status: decision === 'approve' ? 'approved' : 'rejected',
+      });
       toast.success(decision === 'approve' ? 'Approval approved' : 'Approval rejected');
       approvalDebugLog('ui.approval.resolve.success', {
         provider: approval.provider,
@@ -2356,17 +2396,30 @@ export function SessionsPage() {
         decision,
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const resolvedMatch = message.match(/already resolved with status '([^']+)'/i);
+      if (resolvedMatch) {
+        const resolvedStatus = resolvedMatch[1].trim().toLowerCase();
+        updateStreamingCallApproval(approval, {
+          pending: false,
+          approval_status: resolvedStatus,
+        });
+        updatePersistedMessageApproval(approval, {
+          pending: false,
+          approval_status: resolvedStatus,
+        });
+      }
       approvalDebugLog('ui.approval.resolve.error', {
         provider: approval.provider,
         approval_id: approval.approvalId,
         decision,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
-      toast.error(error instanceof Error ? error.message : 'Failed to resolve approval');
+      toast.error(message || 'Failed to resolve approval');
     } finally {
       setResolvingApprovalKey(null);
     }
-  }, [updateStreamingCallApproval]);
+  }, [updatePersistedMessageApproval, updateStreamingCallApproval]);
 
   // WebSocket Logic
   function disconnectWs() {
