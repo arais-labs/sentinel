@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "package_version": "0.1.0",
+  "module": {
+    "name": "lead_manager",
+    "label": "Lead Manager",
+    "description": "Track, qualify, prioritize, and prepare outbound outreach for sales leads.",
+    "icon": "Users",
+    "order": 20,
+    "fields": [
+      {
+        "key": "full_name",
+        "label": "Full Name",
+        "type": "text",
+        "required": true
+      },
+      {
+        "key": "role",
+        "label": "Role",
+        "type": "text"
+      },
+      {
+        "key": "company",
+        "label": "Company",
+        "type": "text",
+        "required": true
+      },
+      {
+        "key": "work_email",
+        "label": "Work Email",
+        "type": "email"
+      },
+      {
+        "key": "linkedin_url",
+        "label": "LinkedIn URL",
+        "type": "url"
+      },
+      {
+        "key": "source",
+        "label": "Source",
+        "type": "select",
+        "options": [
+          "inbound",
+          "manual_research",
+          "referral",
+          "event",
+          "linkedin",
+          "website",
+          "partner"
+        ]
+      },
+      {
+        "key": "stage",
+        "label": "Stage",
+        "type": "select",
+        "required": true,
+        "options": [
+          "new",
+          "researching",
+          "qualified",
+          "contact_ready",
+          "contacted",
+          "replied",
+          "meeting_scheduled",
+          "proposal",
+          "won",
+          "lost",
+          "archived"
+        ]
+      },
+      {
+        "key": "priority",
+        "label": "Priority",
+        "type": "select",
+        "options": [
+          "low",
+          "medium",
+          "high",
+          "urgent"
+        ]
+      },
+      {
+        "key": "fit_score",
+        "label": "Fit Score",
+        "type": "number"
+      },
+      {
+        "key": "intent_score",
+        "label": "Intent Score",
+        "type": "number"
+      },
+      {
+        "key": "owner",
+        "label": "Owner",
+        "type": "text"
+      },
+      {
+        "key": "region",
+        "label": "Region",
+        "type": "text"
+      },
+      {
+        "key": "last_contact_at",
+        "label": "Last Contact",
+        "type": "date"
+      },
+      {
+        "key": "next_follow_up_at",
+        "label": "Next Follow-Up",
+        "type": "date"
+      },
+      {
+        "key": "pain_points",
+        "label": "Pain Points",
+        "type": "textarea"
+      },
+      {
+        "key": "outreach_angle",
+        "label": "Outreach Angle",
+        "type": "textarea"
+      },
+      {
+        "key": "message_draft",
+        "label": "Message Draft",
+        "type": "textarea"
+      },
+      {
+        "key": "notes",
+        "label": "Notes",
+        "type": "textarea"
+      }
+    ],
+    "fields_config": {
+      "titleField": "full_name",
+      "subtitleField": "company",
+      "badgeField": "stage",
+      "filterField": "stage",
+      "metaField": "next_follow_up_at",
+      "order": [
+        "full_name",
+        "role",
+        "company",
+        "work_email",
+        "linkedin_url",
+        "source",
+        "stage",
+        "priority",
+        "fit_score",
+        "intent_score",
+        "owner",
+        "region",
+        "last_contact_at",
+        "next_follow_up_at",
+        "pain_points",
+        "outreach_angle",
+        "message_draft",
+        "notes"
+      ],
+      "required": [
+        "full_name",
+        "company",
+        "stage"
+      ],
+      "types": {
+        "full_name": "string",
+        "role": "string",
+        "company": "string",
+        "work_email": "string",
+        "linkedin_url": "string",
+        "source": "string",
+        "stage": "string",
+        "priority": "string",
+        "fit_score": "number",
+        "intent_score": "number",
+        "owner": "string",
+        "region": "string",
+        "last_contact_at": "string",
+        "next_follow_up_at": "string",
+        "pain_points": "string",
+        "outreach_angle": "string",
+        "message_draft": "string",
+        "notes": "string"
+      }
+    },
+    "actions": [
+      {
+        "id": "create_lead",
+        "label": "New Lead",
+        "type": "create"
+      },
+      {
+        "id": "delete_lead",
+        "label": "Delete",
+        "type": "delete"
+      },
+      {
+        "id": "qualify_lead",
+        "label": "Qualify Lead",
+        "description": "Evaluate record completeness, buying fit, and recommended next stage.",
+        "type": "record",
+        "permission_default": "allow",
+        "code": "required_fields = ['full_name', 'company', 'role']\nmissing = [field for field in required_fields if not record.get(field)]\nfit_score = int(record.get('fit_score') or 0)\nintent_score = int(record.get('intent_score') or 0)\nreadiness = fit_score + intent_score\nif missing:\n    recommended_stage = 'researching'\nelif readiness >= 15:\n    recommended_stage = 'contact_ready'\nelif readiness >= 10:\n    recommended_stage = 'qualified'\nelse:\n    recommended_stage = 'researching'\nresult = {\n    'ok': True,\n    'record_id': record['id'],\n    'missing_fields': missing,\n    'fit_score': fit_score,\n    'intent_score': intent_score,\n    'readiness_score': readiness,\n    'current_stage': record.get('stage'),\n    'recommended_stage': recommended_stage,\n    'summary': f\"{record.get('full_name', 'Lead')} at {record.get('company', 'Unknown company')} is best treated as {recommended_stage}.\"\n}"
+      },
+      {
+        "id": "draft_outreach",
+        "label": "Draft Outreach",
+        "description": "Generate a concise outbound draft using the lead context on the record.",
+        "type": "record",
+        "params": [
+          {
+            "key": "tone",
+            "label": "Tone",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "call_to_action",
+            "label": "Call To Action",
+            "type": "text",
+            "required": false
+          }
+        ],
+        "permission_default": "allow",
+        "code": "tone = params.get('tone') or 'direct'\ncta = params.get('call_to_action') or 'a short discovery call next week'\nname = record.get('full_name') or 'there'\ncompany = record.get('company') or 'your team'\nrole = record.get('role') or 'your role'\npain = record.get('pain_points') or 'the priorities you are working through'\nangle = record.get('outreach_angle') or 'a practical way to reduce friction in the workflow'\nsubject = f\"Idea for {company}\"\nemail_body = f\"Hi {name},\\n\\nI noticed you are leading {role} work at {company}. Based on the context we have, it looks like {pain}. We think there may be a fit around {angle}.\\n\\nIf useful, I can send a tighter recommendation or we can discuss {cta}.\\n\\nBest,\\n{{your_name}}\"\nlinkedin_dm = f\"Hi {name} — I have a quick idea for {company} around {angle}. If relevant, happy to share a short note or discuss {cta}.\"\nresult = {\n    'ok': True,\n    'record_id': record['id'],\n    'tone': tone,\n    'subject': subject,\n    'email_body': email_body,\n    'linkedin_dm': linkedin_dm\n}"
+      },
+      {
+        "id": "next_step_plan",
+        "label": "Next Step Plan",
+        "description": "Suggest a next-step plan based on the record stage and contact recency.",
+        "type": "record",
+        "permission_default": "allow",
+        "code": "stage = (record.get('stage') or 'new').lower()\npriority = (record.get('priority') or 'medium').lower()\nlast_contact = record.get('last_contact_at') or 'not contacted yet'\nif stage in ('new', 'researching'):\n    steps = ['fill missing firmographic details', 'set fit and intent scores', 'define outreach angle', 'move to qualified or archive']\nelif stage in ('qualified', 'contact_ready'):\n    steps = ['review decision-maker fit', 'prepare outreach draft', 'set next follow-up date', 'send first touch']\nelif stage in ('contacted', 'replied'):\n    steps = ['log latest response', 'prepare tailored follow-up', 'propose a clear CTA', 'schedule next touch']\nelif stage == 'meeting_scheduled':\n    steps = ['prepare discovery brief', 'capture pain points', 'assign owner for post-call follow-up']\nelif stage == 'proposal':\n    steps = ['track objections', 'set close plan', 'confirm decision process']\nelse:\n    steps = ['review record status and decide whether to reopen or archive permanently']\nresult = {\n    'ok': True,\n    'record_id': record['id'],\n    'stage': stage,\n    'priority': priority,\n    'last_contact_at': last_contact,\n    'steps': steps\n}"
+      },
+      {
+        "id": "discovery_brief",
+        "label": "Discovery Brief",
+        "description": "Summarize the lead into a concise brief for a handoff or intro call.",
+        "type": "record",
+        "permission_default": "allow",
+        "code": "name = record.get('full_name') or 'Unknown lead'\ncompany = record.get('company') or 'Unknown company'\nrole = record.get('role') or 'Unknown role'\nstage = record.get('stage') or 'new'\npriority = record.get('priority') or 'medium'\npain = record.get('pain_points') or 'No explicit pain points recorded yet.'\nangle = record.get('outreach_angle') or 'No outreach angle recorded yet.'\nbrief = f\"{name} is a {role} at {company}. Current stage: {stage}. Priority: {priority}. Pain points: {pain} Outreach angle: {angle}\"\nresult = {\n    'ok': True,\n    'record_id': record['id'],\n    'brief': brief\n}"
+      }
+    ],
+    "secrets": [],
+    "page_title": "Lead Manager Guide",
+    "page_content": "# Lead Manager\n\nLead Manager is a stronger replacement for a simple leads list. It is designed to help with qualification, prioritization, and outbound preparation.\n\n## Recommended workflow\n\n1. Create a lead with at least name, company, and stage.\n2. Add firmographic context, pain points, and an outreach angle.\n3. Score the lead with `fit_score` and `intent_score`.\n4. Run `qualify_lead` to check readiness.\n5. Run `draft_outreach` to prepare the first message.\n6. Run `next_step_plan` after each stage transition.\n7. Use `discovery_brief` before a handoff or call.\n\n## Stage guidance\n\n- `new`: raw lead, not yet researched\n- `researching`: basic context collection in progress\n- `qualified`: target looks relevant but not yet ready to contact\n- `contact_ready`: enough context to send the first message\n- `contacted`: first touch sent\n- `replied`: lead replied\n- `meeting_scheduled`: meeting booked\n- `proposal`: commercial follow-up in progress\n- `won`: converted successfully\n- `lost`: closed lost\n- `archived`: no current follow-up planned\n"
+  },
+  "records": [
+    {
+      "full_name": "Dana Brooks",
+      "role": "VP Operations",
+      "company": "Northstar Logistics",
+      "work_email": "dana.brooks@northstar.example",
+      "linkedin_url": "https://linkedin.com/in/dana-brooks",
+      "source": "manual_research",
+      "stage": "qualified",
+      "priority": "high",
+      "fit_score": 8,
+      "intent_score": 5,
+      "owner": "alex",
+      "region": "US",
+      "last_contact_at": "2026-03-10",
+      "next_follow_up_at": "2026-03-25",
+      "pain_points": "Operations handoffs are fragmented across tools and reporting is manual.",
+      "outreach_angle": "Unify execution visibility and reduce time spent stitching updates together.",
+      "message_draft": "",
+      "notes": "Strong fit based on operating complexity and current team size."
+    },
+    {
+      "full_name": "Luis Ortega",
+      "role": "Head of Revenue Operations",
+      "company": "Veritas Growth",
+      "work_email": "luis.ortega@veritas.example",
+      "linkedin_url": "https://linkedin.com/in/luis-ortega",
+      "source": "referral",
+      "stage": "contact_ready",
+      "priority": "urgent",
+      "fit_score": 9,
+      "intent_score": 7,
+      "owner": "alex",
+      "region": "LATAM",
+      "last_contact_at": "",
+      "next_follow_up_at": "2026-03-24",
+      "pain_points": "Lead routing and follow-up ownership are inconsistent between sales and revops.",
+      "outreach_angle": "Tighter operating cadence and clearer ownership between teams.",
+      "message_draft": "",
+      "notes": "Referral from existing operator contact. High urgency."
+    }
+  ],
+  "permissions": {
+    "list_records": "allow",
+    "get_record": "allow",
+    "create_record": "allow",
+    "update_record": "allow",
+    "delete_record": "approval",
+    "get_page": "allow",
+    "edit_page": "approval",
+    "qualify_lead": "allow",
+    "draft_outreach": "allow",
+    "next_step_plan": "allow",
+    "discovery_brief": "allow"
+  }
+}

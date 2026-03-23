@@ -26,7 +26,7 @@ from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import GitAccount
-from app.models.araios import AraiosModule, AraiosPermission
+from app.models.araios import AraiosModule, AraiosModuleRecord, AraiosPermission
 from app.models.system import SystemSetting
 from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
 from app.services.araios.system_modules.git_exec import handlers as git_exec_module
@@ -1154,6 +1154,124 @@ def test_permissions_api_updates_known_action_and_rejects_unknown_action():
 
         missing = client.patch("/api/permissions/clients.not_real", json={"level": "deny"}, headers=headers)
         assert missing.status_code == 404
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_modules_import_package_creates_module_records_and_permissions():
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        package = {
+            "schema_version": 1,
+            "package_version": "0.1.0",
+            "module": {
+                "name": "lead_manager",
+                "label": "Lead Manager",
+                "description": "Track leads",
+                "icon": "Users",
+                "fields": [
+                    {"key": "full_name", "label": "Full Name", "type": "text", "required": True},
+                    {"key": "company", "label": "Company", "type": "text", "required": True},
+                ],
+                "fields_config": {"titleField": "full_name", "subtitleField": "company"},
+                "actions": [
+                    {
+                        "id": "qualify_lead",
+                        "label": "Qualify Lead",
+                        "type": "record",
+                        "code": "result = {'ok': True, 'record_id': record['id']}",
+                    }
+                ],
+                "page_title": "Lead Manager Guide",
+                "page_content": "# Lead Manager",
+            },
+            "records": [
+                {"full_name": "Dana Brooks", "company": "Northstar"},
+                {"full_name": "Luis Ortega", "company": "Veritas"},
+            ],
+            "permissions": {
+                "delete_record": "approval",
+                "qualify_lead": "allow",
+            },
+        }
+
+        response = client.post("/api/modules/import", json=package, headers=headers)
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["module"]["name"] == "lead_manager"
+        assert payload["imported_records"] == 2
+        assert payload["permissions"]["qualify_lead"] == "allow"
+
+        stored_module = next(row for row in fake_db.storage[AraiosModule] if row.name == "lead_manager")
+        assert stored_module.label == "Lead Manager"
+        assert len([row for row in fake_db.storage[AraiosPermission] if row.action.startswith("lead_manager.")]) >= 1
+        records = [row for row in fake_db.storage[AraiosModuleRecord] if row.module_name == "lead_manager"]
+        assert len(records) == 2
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_modules_import_package_rejects_system_true():
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        response = client.post(
+            "/api/modules/import",
+            json={
+                "schema_version": 1,
+                "module": {
+                    "name": "bad_system_import",
+                    "label": "Bad System Import",
+                    "system": True,
+                },
+            },
+            headers=headers,
+        )
+        assert response.status_code == 400
+        payload = response.json()
+        message = payload.get("detail") or payload.get("error", {}).get("message", "")
+        assert "system=true" in str(message)
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()

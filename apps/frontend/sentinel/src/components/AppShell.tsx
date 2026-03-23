@@ -4,7 +4,6 @@ import {
   LayoutDashboard,
   Database,
   Zap,
-  Wrench,
   Send,
   MonitorPlay,
   Settings,
@@ -17,8 +16,6 @@ import {
   LayoutGrid,
   CheckCircle,
   Lock,
-  FileCode,
-  MessageCircle,
 } from 'lucide-react';
 
 import { APP_VERSION } from '../lib/env';
@@ -40,35 +37,22 @@ interface NavItem {
   icon: typeof LayoutDashboard;
 }
 
-const sentinelNavItems: NavItem[] = [
+const navItems: NavItem[] = [
   { label: 'Sessions', path: '/sessions', icon: LayoutDashboard },
   { label: 'Session Logs', path: '/logs', icon: Activity },
   { label: 'Memory', path: '/memory', icon: Database },
   { label: 'Triggers', path: '/triggers', icon: Zap },
-  { label: 'Tools', path: '/tools', icon: Wrench },
+  { label: 'Modules', path: '/modules', icon: LayoutGrid },
+  { label: 'Approvals', path: '/approvals', icon: CheckCircle },
+  { label: 'Permissions', path: '/permissions', icon: Lock },
   { label: 'Git', path: '/git', icon: GitBranch },
   { label: 'Telegram', path: '/telegram', icon: Send },
   { label: 'Showcase', path: '/showcase', icon: MonitorPlay },
   { label: 'Settings', path: '/settings', icon: Settings },
 ];
 
-const araiosNavItems: NavItem[] = [
-  { label: 'Modules', path: '/araios/modules', icon: LayoutGrid },
-  { label: 'Approvals', path: '/araios/approvals', icon: CheckCircle },
-  { label: 'Permissions', path: '/araios/permissions', icon: Lock },
-  { label: 'Documents', path: '/araios/documents', icon: FileCode },
-  { label: 'Tasks', path: '/araios/tasks', icon: GitBranch },
-  { label: 'Coordination', path: '/araios/coordination', icon: MessageCircle },
-];
-
 function isActive(pathname: string, candidate: string) {
   return pathname === candidate || pathname.startsWith(candidate + '/');
-}
-
-type AppMode = 'sentinel' | 'araios';
-
-function detectMode(pathname: string): AppMode {
-  return pathname.startsWith('/araios') ? 'araios' : 'sentinel';
 }
 
 export function AppShell({
@@ -86,40 +70,6 @@ export function AppShell({
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-
-  const currentMode = detectMode(location.pathname);
-  const navItems = currentMode === 'araios' ? araiosNavItems : sentinelNavItems;
-
-  const switchTo = (mode: AppMode) => {
-    if (mode === currentMode) return;
-    if (mode === 'araios') navigate('/araios/modules');
-    else navigate('/sessions');
-  };
-
-  const renderSwitcher = () => (
-    <div className="relative inline-grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] p-0.5 overflow-hidden">
-      <div
-        className={`absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
-          currentMode === 'sentinel' ? 'left-0.5' : 'left-[calc(50%)]'
-        }`}
-      />
-      {(['sentinel', 'araios'] as const).map((mode) => {
-        const active = mode === currentMode;
-        return (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => switchTo(mode)}
-            className={`relative z-10 inline-flex h-7 items-center justify-center rounded-full px-3 text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 ${
-              active ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-            }`}
-          >
-            {mode === 'sentinel' ? 'Sentinel' : 'araiOS'}
-          </button>
-        );
-      })}
-    </div>
-  );
 
   const renderNav = (items: NavItem[], onNavigate?: () => void) => (
     <nav className="flex-1 overflow-y-auto overflow-x-hidden py-4 px-2 space-y-1">
@@ -191,7 +141,7 @@ export function AppShell({
       <div className="flex flex-1 flex-col min-w-0">
         {/* Header */}
         {!hideHeader ? (
-        <header className="grid h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-4 md:px-6 gap-2">
+        <header className="flex h-16 shrink-0 items-center justify-between border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-4 md:px-6 gap-2">
           <div className="flex items-center gap-4 min-w-0">
             <button
               onClick={() => setIsMobileMenuOpen(true)}
@@ -202,13 +152,9 @@ export function AppShell({
             <div className="min-w-0">
               <h1 className="text-sm font-semibold truncate">{title}</h1>
               {subtitle && (
-                <p className="text-[11px] text-[color:var(--text-muted)] font-medium truncate uppercase tracking-wider">{subtitle}</p>
+                <p className="text-[11px] text-[color:var(--text-muted)] font-mono">{subtitle}</p>
               )}
             </div>
-          </div>
-
-          <div className="hidden md:flex items-center justify-center">
-            {renderSwitcher()}
           </div>
 
           <div className="flex items-center justify-end gap-2">
@@ -238,9 +184,6 @@ export function AppShell({
               <button onClick={() => setIsMobileMenuOpen(false)} className="p-1 text-[color:var(--text-muted)]">
                 <X size={20} />
               </button>
-            </div>
-            <div className="p-3 border-b border-[color:var(--border-subtle)]">
-              {renderSwitcher()}
             </div>
             {renderNav(navItems, () => setIsMobileMenuOpen(false))}
             <div className="p-4 border-t border-[color:var(--border-subtle)]">

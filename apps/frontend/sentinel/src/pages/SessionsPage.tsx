@@ -3068,7 +3068,7 @@ export function SessionsPage() {
   return (
       <AppShell
           title={activeSession?.title || 'Untitled Session'}
-          subtitle={activeSession ? `ID: ${activeSession.id.slice(0, 8)}` : 'Operator Workspace'}
+          subtitle={activeSession ? `ID: ${activeSession.id}` : 'Operator Workspace'}
           contentClassName="h-full !p-0 overflow-hidden"
           hideSidebar={mode === 'solo'}
           hideHeader={mode === 'solo'}

@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "package_version": "0.1.0",
+  "module": {
+    "name": "slack",
+    "label": "Slack",
+    "description": "Send messages and read channel history via Slack Bot API",
+    "icon": "MessageSquare",
+    "order": 80,
+    "fields": [],
+    "fields_config": {},
+    "actions": [
+      {
+        "id": "send_message",
+        "label": "Send Message",
+        "description": "Post a message to a Slack channel or DM",
+        "type": "standalone",
+        "params": [
+          {
+            "key": "channel",
+            "label": "Channel ID",
+            "type": "text",
+            "required": true
+          },
+          {
+            "key": "text",
+            "label": "Message",
+            "type": "textarea",
+            "required": true
+          },
+          {
+            "key": "thread_ts",
+            "label": "Thread TS",
+            "type": "text",
+            "required": false
+          }
+        ],
+        "code": "import httpx\ntoken = secrets['token']\ncookie = secrets.get('cookie', '')\nheaders = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}\nif cookie: headers['Cookie'] = 'd=' + cookie\npayload = {'channel': params['channel'], 'text': params['text']}\nif params.get('thread_ts'): payload['thread_ts'] = params['thread_ts']\nr = httpx.post('https://slack.com/api/chat.postMessage', headers=headers, json=payload, timeout=15).json()\nif not r.get('ok'): result = {'ok': False, 'error': r.get('error', 'unknown')}\nelse: result = {'ok': True, 'ts': r.get('ts'), 'channel': r.get('channel')}"
+      },
+      {
+        "id": "list_channels",
+        "label": "List Channels",
+        "description": "Fetch Slack channels the bot is a member of",
+        "type": "standalone",
+        "params": [
+          {
+            "key": "limit",
+            "label": "Limit",
+            "type": "number",
+            "required": false
+          },
+          {
+            "key": "types",
+            "label": "Types",
+            "type": "text",
+            "required": false
+          }
+        ],
+        "code": "import httpx\ntoken = secrets['token']\ncookie = secrets.get('cookie', '')\nheaders = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}\nif cookie: headers['Cookie'] = 'd=' + cookie\ntypes = params.get('types') or 'public_channel,private_channel'\nr = httpx.get('https://slack.com/api/conversations.list', headers=headers, params={'limit': int(params.get('limit') or 100), 'types': types, 'exclude_archived': 'true'}, timeout=15).json()\nif not r.get('ok'): result = {'ok': False, 'error': r.get('error', 'unknown')}\nelse:\n    next_cursor = (r.get('response_metadata') or {}).get('next_cursor') or None\n    channels = []\n    for c in r.get('channels', []):\n        entry = {'id': c['id'], 'name': c.get('name'), 'is_im': c.get('is_im', False), 'is_private': c.get('is_private', False), 'num_members': c.get('num_members')}\n        if c.get('is_im') and c.get('user'):\n            u = httpx.get('https://slack.com/api/users.info', headers=headers, params={'user': c['user']}, timeout=15).json()\n            entry['name'] = u.get('user', {}).get('real_name') or u.get('user', {}).get('name') or c['user']\n        channels.append(entry)\n    result = {'ok': True, 'channels': channels, 'next_cursor': next_cursor}"
+      },
+      {
+        "id": "history",
+        "label": "Channel History",
+        "description": "Read recent messages from a channel or DM",
+        "type": "standalone",
+        "params": [
+          {
+            "key": "channel",
+            "label": "Channel ID",
+            "type": "text",
+            "required": true
+          },
+          {
+            "key": "limit",
+            "label": "Limit",
+            "type": "number",
+            "required": false
+          },
+          {
+            "key": "cursor",
+            "label": "Cursor",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "oldest",
+            "label": "Oldest",
+            "type": "text",
+            "required": false
+          },
+          {
+            "key": "latest",
+            "label": "Latest",
+            "type": "text",
+            "required": false
+          }
+        ],
+        "code": "import httpx\ntoken = secrets['token']\ncookie = secrets.get('cookie', '')\nheaders = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}\nif cookie: headers['Cookie'] = 'd=' + cookie\nchannel = params.get('channel') or ''\np = {'channel': channel, 'limit': int(params.get('limit') or 20)}\nif params.get('cursor'): p['cursor'] = params['cursor']\nif params.get('oldest'): p['oldest'] = params['oldest']\nif params.get('latest'): p['latest'] = params['latest']\nr = httpx.get('https://slack.com/api/conversations.history', headers=headers, params=p, timeout=15).json()\nif not r.get('ok'): result = {'ok': False, 'error': r.get('error', 'unknown')}\nelse:\n    user_cache = {}\n    def resolve_user(uid):\n        if not uid: return None\n        if uid not in user_cache:\n            u = httpx.get('https://slack.com/api/users.info', headers=headers, params={'user': uid}, timeout=15).json()\n            user_cache[uid] = u.get('user', {}).get('real_name') or u.get('user', {}).get('name') or uid\n        return user_cache[uid]\n    next_cursor = (r.get('response_metadata') or {}).get('next_cursor') or None\n    result = {'ok': True, 'messages': [{'user_id': m.get('user'), 'user': resolve_user(m.get('user')), 'text': m.get('text'), 'ts': m.get('ts'), 'thread_ts': m.get('thread_ts'), 'reply_count': m.get('reply_count')} for m in r.get('messages', [])], 'has_more': r.get('has_more', False), 'next_cursor': next_cursor}"
+      },
+      {
+        "id": "read_thread",
+        "label": "Read Thread",
+        "description": "Read all replies in a message thread",
+        "type": "standalone",
+        "params": [
+          {
+            "key": "channel",
+            "label": "Channel ID",
+            "type": "text",
+            "required": true
+          },
+          {
+            "key": "thread_ts",
+            "label": "Thread Timestamp",
+            "type": "text",
+            "required": true
+          },
+          {
+            "key": "limit",
+            "label": "Limit",
+            "type": "number",
+            "required": false
+          }
+        ],
+        "code": "import httpx\ntoken = secrets['token']\ncookie = secrets.get('cookie', '')\nheaders = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}\nif cookie: headers['Cookie'] = 'd=' + cookie\np = {'channel': params.get('channel', ''), 'ts': params.get('thread_ts', ''), 'limit': int(params.get('limit') or 50)}\nr = httpx.get('https://slack.com/api/conversations.replies', headers=headers, params=p, timeout=15).json()\nif not r.get('ok'): result = {'ok': False, 'error': r.get('error', 'unknown')}\nelse:\n    user_cache = {}\n    def resolve_user(uid):\n        if not uid: return None\n        if uid not in user_cache:\n            u = httpx.get('https://slack.com/api/users.info', headers=headers, params={'user': uid}, timeout=15).json()\n            user_cache[uid] = u.get('user', {}).get('real_name') or u.get('user', {}).get('name') or uid\n        return user_cache[uid]\n    next_cursor = (r.get('response_metadata') or {}).get('next_cursor') or None\n    result = {'ok': True, 'messages': [{'user_id': m.get('user'), 'user': resolve_user(m.get('user')), 'text': m.get('text'), 'ts': m.get('ts')} for m in r.get('messages', [])], 'has_more': r.get('has_more', False), 'next_cursor': next_cursor}"
+      },
+      {
+        "id": "list_users",
+        "label": "List Users",
+        "description": "Search workspace members by name or list all users",
+        "type": "standalone",
+        "params": [
+          {
+            "key": "search",
+            "label": "Search",
+            "type": "text",
+            "required": false
+          }
+        ],
+        "code": "import httpx\ntoken = secrets['token']\ncookie = secrets.get('cookie', '')\nheaders = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}\nif cookie: headers['Cookie'] = 'd=' + cookie\nr = httpx.get('https://slack.com/api/users.list', headers=headers, params={'limit': 200}, timeout=15).json()\nif not r.get('ok'): result = {'ok': False, 'error': r.get('error', 'unknown')}\nelse:\n    search = (params.get('search') or '').lower()\n    users = []\n    for u in r.get('members', []):\n        if u.get('deleted') or u.get('is_bot'): continue\n        name = u.get('real_name') or u.get('name') or ''\n        display = u.get('profile', {}).get('display_name') or ''\n        if not search or search in name.lower() or search in display.lower():\n            users.append({'id': u['id'], 'name': u.get('real_name') or u.get('name'), 'display_name': display, 'email': u.get('profile', {}).get('email')})\n    result = {'ok': True, 'users': users}"
+      },
+      {
+        "id": "open_dm",
+        "label": "Open DM",
+        "description": "Open or find a DM conversation with a Slack user and return the channel ID",
+        "type": "standalone",
+        "params": [
+          {
+            "key": "user_id",
+            "label": "User ID",
+            "type": "text",
+            "required": true
+          }
+        ],
+        "code": "import httpx\ntoken = secrets['token']\ncookie = secrets.get('cookie', '')\nheaders = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}\nif cookie: headers['Cookie'] = 'd=' + cookie\nr = httpx.post('https://slack.com/api/conversations.open', headers=headers, json={'users': params.get('user_id', '')}, timeout=15).json()\nif not r.get('ok'): result = {'ok': False, 'error': r.get('error', 'unknown')}\nelse: result = {'ok': True, 'channel_id': r.get('channel', {}).get('id')}"
+      },
+      {
+        "id": "channel_info",
+        "label": "Channel Info",
+        "description": "Get details about a channel including unread count",
+        "type": "standalone",
+        "params": [
+          {
+            "key": "channel",
+            "label": "Channel ID",
+            "type": "text",
+            "required": true
+          }
+        ],
+        "code": "import httpx\ntoken = secrets['token']\ncookie = secrets.get('cookie', '')\nheaders = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}\nif cookie: headers['Cookie'] = 'd=' + cookie\nr = httpx.get('https://slack.com/api/conversations.info', headers=headers, params={'channel': params.get('channel', '')}, timeout=15).json()\nif not r.get('ok'): result = {'ok': False, 'error': r.get('error', 'unknown')}\nelse:\n    ch = r.get('channel', {})\n    latest = ch.get('latest')\n    name = ch.get('name')\n    if ch.get('is_im') and ch.get('user'):\n        u = httpx.get('https://slack.com/api/users.info', headers=headers, params={'user': ch['user']}, timeout=15).json()\n        name = u.get('user', {}).get('real_name') or u.get('user', {}).get('name') or name\n    result = {'ok': True, 'id': ch.get('id'), 'name': name, 'unread_count': ch.get('unread_count'), 'unread_count_display': ch.get('unread_count_display'), 'last_read': ch.get('last_read'), 'latest_ts': latest.get('ts') if isinstance(latest, dict) else None}"
+      },
+      {
+        "id": "mark_read",
+        "label": "Mark as Read",
+        "description": "Mark a channel or DM as read up to a given message timestamp",
+        "type": "standalone",
+        "params": [
+          {
+            "key": "channel",
+            "label": "Channel ID",
+            "type": "text",
+            "required": true
+          },
+          {
+            "key": "ts",
+            "label": "Message Timestamp",
+            "type": "text",
+            "required": true
+          }
+        ],
+        "code": "import httpx\ntoken = secrets['token']\ncookie = secrets.get('cookie', '')\nheaders = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}\nif cookie: headers['Cookie'] = 'd=' + cookie\nr = httpx.post('https://slack.com/api/conversations.mark', headers=headers, json={'channel': params.get('channel', ''), 'ts': params.get('ts', '')}, timeout=15).json()\nresult = {'ok': r.get('ok', False), 'error': r.get('error') if not r.get('ok') else None}"
+      },
+      {
+        "id": "unread",
+        "label": "Unread Counts",
+        "description": "List all channels and DMs with unread messages",
+        "type": "standalone",
+        "params": [],
+        "code": "import httpx\ntoken = secrets['token']\ncookie = secrets.get('cookie', '')\nheaders = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}\nif cookie: headers['Cookie'] = 'd=' + cookie\nr = httpx.post('https://slack.com/api/client.counts', headers=headers, json={}, timeout=15).json()\nif not r.get('ok'): result = {'ok': False, 'error': r.get('error', 'unknown')}\nelse:\n    unread = []\n    for ch in r.get('channels', []):\n        if ch.get('has_unreads'): unread.append({'id': ch['id'], 'type': 'channel', 'mention_count': ch.get('mention_count', 0), 'latest': ch.get('latest')})\n    for im in r.get('ims', []):\n        if im.get('has_unreads'): unread.append({'id': im['id'], 'type': 'dm', 'mention_count': im.get('dm_count', 0), 'latest': im.get('latest')})\n    for mpim in r.get('mpims', []):\n        if mpim.get('has_unreads'): unread.append({'id': mpim['id'], 'type': 'mpim', 'mention_count': mpim.get('dm_count', 0), 'latest': mpim.get('latest')})\n    for item in unread:\n        info = httpx.get('https://slack.com/api/conversations.info', headers=headers, params={'channel': item['id']}, timeout=15).json()\n        ch = info.get('channel', {})\n        if ch.get('is_im') and ch.get('user'):\n            u = httpx.get('https://slack.com/api/users.info', headers=headers, params={'user': ch['user']}, timeout=15).json()\n            item['name'] = u.get('user', {}).get('real_name') or u.get('user', {}).get('name') or item['id']\n        else:\n            item['name'] = ch.get('name') or item['id']\n    result = {'ok': True, 'unread': unread}"
+      }
+    ],
+    "secrets": [
+      {
+        "key": "token",
+        "label": "Slack Token",
+        "required": true,
+        "description": "xoxc user token from a Slack session."
+      },
+      {
+        "key": "cookie",
+        "label": "Cookie (d=)",
+        "required": true,
+        "description": "Value of the Slack browser d cookie (commonly xoxd...)."
+      }
+    ],
+    "page_title": "Slack Module Guide",
+    "page_content": "# Slack\n\nThis module sends messages and reads Slack conversations through the Slack Web API.\n\n## What it supports\n\n- send messages to channels or DMs\n- list channels\n- read channel history\n- read threads\n- list users\n- open direct messages\n- inspect channel info\n- mark channels as read\n- list unread conversations\n\n## Required secrets\n\n- `token`: Slack user token\n- `cookie`: Slack browser `d` cookie value\n\n## Notes\n\n- This module uses direct Slack Web API calls with `httpx`.\n- Several actions resolve user names by calling `users.info`.\n- The `unread` action relies on `client.counts`, which is tied to Slack session-style credentials.\n"
+  }
+}
