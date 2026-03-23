@@ -1,14 +1,11 @@
-"""Browser command handlers and single-tool dispatcher."""
+"""Browser action handlers."""
 from __future__ import annotations
 
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 from app.services.tools.executor import ToolValidationError
 
 from .shared import optional_browser_tab_id, resolve_browser_manager
-
-BrowserHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
-
 
 async def handle_navigate(payload: dict[str, Any]) -> dict[str, Any]:
     manager = await resolve_browser_manager(payload)
@@ -315,35 +312,6 @@ async def handle_clear_network_intercepts(payload: dict[str, Any]) -> dict[str, 
     tab_id = optional_browser_tab_id(payload)
     return await manager.clear_network_intercepts(tab_id=tab_id)
 
-
-BROWSER_COMMAND_HANDLERS: dict[str, BrowserHandler] = {
-    "navigate": handle_navigate,
-    "screenshot": handle_screenshot,
-    "click": handle_click,
-    "type": handle_type,
-    "select": handle_select,
-    "wait_for": handle_wait_for,
-    "get_value": handle_get_value,
-    "fill_form": handle_fill_form,
-    "press_key": handle_press_key,
-    "scroll": handle_scroll,
-    "get_text": handle_get_text,
-    "snapshot": handle_snapshot,
-    "reset": handle_reset,
-    "tabs": handle_tabs,
-    "tab_open": handle_tab_open,
-    "tab_focus": handle_tab_focus,
-    "tab_close": handle_tab_close,
-    "evaluate": handle_evaluate,
-    "get_html": handle_get_html,
-    "get_cookies": handle_get_cookies,
-    "set_cookies": handle_set_cookies,
-    "console_logs": handle_console_logs,
-    "network_intercept": handle_network_intercept,
-    "network_logs": handle_network_logs,
-    "clear_network_intercepts": handle_clear_network_intercepts,
-}
-
 BROWSER_TAB_MANAGEMENT_COMMANDS = frozenset(
     {"tabs", "tab_open", "tab_focus", "tab_close", "reset"}
 )
@@ -371,17 +339,3 @@ BROWSER_TAB_TARGETABLE_COMMANDS = frozenset(
         "clear_network_intercepts",
     }
 )
-
-
-async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
-    command = payload.get("command")
-    if not isinstance(command, str) or not command.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
-    normalized = command.strip().lower()
-    handler = BROWSER_COMMAND_HANDLERS.get(normalized)
-    if handler is None:
-        raise ToolValidationError(
-            "Field 'command' must be one of: "
-            + ", ".join(sorted(BROWSER_COMMAND_HANDLERS.keys()))
-        )
-    return await handler(payload)

@@ -8,10 +8,8 @@ from sqlalchemy import select
 
 from app.database.database import AsyncSessionLocal
 from app.models.araios import AraiosDocument, araios_gen_id
-from app.services.tools.executor import ToolValidationError
 
 logger = logging.getLogger(__name__)
-ALLOWED_DOCUMENT_COMMANDS = ("list", "get", "create", "update", "delete")
 
 
 # ── Helpers ──
@@ -156,32 +154,3 @@ async def handle_delete(payload: dict[str, Any]) -> dict[str, Any]:
         await db.delete(doc)
         await db.commit()
         return {"ok": True, "message": f"Document '{doc_id}' deleted"}
-
-
-# ---------------------------------------------------------------------------
-# Unified tool dispatch
-# ---------------------------------------------------------------------------
-
-def _document_command(payload: dict[str, Any]) -> str:
-    raw = payload.get("command")
-    if not isinstance(raw, str) or not raw.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
-    normalized = raw.strip().lower()
-    if normalized not in ALLOWED_DOCUMENT_COMMANDS:
-        raise ToolValidationError(
-            "Field 'command' must be one of: " + ", ".join(ALLOWED_DOCUMENT_COMMANDS)
-        )
-    return normalized
-
-
-async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
-    command = _document_command(payload)
-    if command == "list":
-        return await handle_list(payload)
-    if command == "get":
-        return await handle_get(payload)
-    if command == "create":
-        return await handle_create(payload)
-    if command == "update":
-        return await handle_update(payload)
-    return await handle_delete(payload)

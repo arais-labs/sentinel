@@ -464,7 +464,7 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
                         {
                             "id": "toolu_pending_runtime",
                             "name": "runtime_exec",
-                            "arguments": {"command": "sleep 20"},
+                            "arguments": {"command": "run", "shell_command": "sleep 20"},
                         }
                     ]
                 },

@@ -8,10 +8,8 @@ from sqlalchemy import select
 
 from app.database.database import AsyncSessionLocal
 from app.models.araios import AraiosCoordinationMessage, araios_gen_id
-from app.services.tools.executor import ToolValidationError
 
 logger = logging.getLogger(__name__)
-ALLOWED_COORDINATION_COMMANDS = ("list", "send")
 
 
 # ── Helpers ──
@@ -71,26 +69,3 @@ async def handle_send(payload: dict[str, Any]) -> dict[str, Any]:
         await db.commit()
         await db.refresh(msg)
         return _msg_to_dict(msg)
-
-
-# ---------------------------------------------------------------------------
-# Unified tool dispatch
-# ---------------------------------------------------------------------------
-
-def _coordination_command(payload: dict[str, Any]) -> str:
-    raw = payload.get("command")
-    if not isinstance(raw, str) or not raw.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
-    normalized = raw.strip().lower()
-    if normalized not in ALLOWED_COORDINATION_COMMANDS:
-        raise ToolValidationError(
-            "Field 'command' must be one of: " + ", ".join(ALLOWED_COORDINATION_COMMANDS)
-        )
-    return normalized
-
-
-async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
-    command = _coordination_command(payload)
-    if command == "list":
-        return await handle_list(payload)
-    return await handle_send(payload)

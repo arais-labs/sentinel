@@ -5,7 +5,20 @@ Used by both system modules (code-defined) and user modules (DB-defined).
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from typing import Any
+
+from app.services.tools.executor import ToolValidationError
+from app.services.tools.registry import (
+    ToolApprovalDecision,
+    ToolApprovalEvaluation,
+    ToolApprovalGate,
+    ToolApprovalMode,
+    ToolApprovalRequirement,
+    ToolDefinition,
+)
+
+_GROUPED_ACTION_FIELD = "command"
 
 
 @dataclass
@@ -158,11 +171,9 @@ class ActionDefinition:
         module_name: str,
         module_description: str,
         action_count: int,
-        approval_gate: Any = None,
-    ) -> Any:
+        approval_gate: ToolApprovalGate | None = None,
+    ) -> ToolDefinition:
         """Convert this action into a ToolDefinition for the agent loop."""
-        from app.services.tools.registry import ToolDefinition
-
         if not self.handler:
             raise ValueError(f"Action {module_name}.{self.id} has no handler")
 
@@ -241,6 +252,7 @@ class ModuleDefinition:
     pinned: bool = False
     system: bool = False
     order: int = 100
+    grouped_tool: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to the same format as DB modules / API responses."""
@@ -258,6 +270,7 @@ class ModuleDefinition:
             "pinned": self.pinned,
             "system": self.system,
             "order": self.order,
+            "grouped_tool": self.grouped_tool,
         }
 
     @staticmethod
@@ -346,4 +359,274 @@ class ModuleDefinition:
             pinned=data.get("pinned", False),
             system=data.get("system", False),
             order=data.get("order", 100),
+            grouped_tool=data.get("grouped_tool", False),
+        )
+
+    def to_tool_definitions(
+        self,
+        *,
+        action_gates: dict[str, ToolApprovalGate | None] | None = None,
+    ) -> list[ToolDefinition]:
+        actions = [action for action in (self.actions or []) if action.handler]
+        if not actions:
+            return []
+
+        gates = action_gates or {}
+        if self.grouped_tool:
+            return [self._to_grouped_tool_definition(actions=actions, action_gates=gates)]
+
+        return [
+            action.to_tool_definition(
+                module_name=self.name,
+                module_description=self.description,
+                action_count=len(actions),
+                approval_gate=gates.get(action.id),
+            )
+            for action in actions
+        ]
+
+    def _to_grouped_tool_definition(
+        self,
+        *,
+        actions: list[ActionDefinition],
+        action_gates: dict[str, ToolApprovalGate | None],
+    ) -> ToolDefinition:
+        action_map = {action.id: action for action in actions}
+        schema = _build_grouped_parameters_schema(
+            actions=actions,
+        )
+
+        async def _execute(payload: dict[str, Any]) -> Any:
+            action = _resolve_grouped_action(
+                payload=payload,
+                action_map=action_map,
+            )
+            forwarded = dict(payload)
+            forwarded.pop(_GROUPED_ACTION_FIELD, None)
+            _validate_payload_against_schema(forwarded, action.get_parameters_schema() or {})
+            return await action.handler(forwarded)
+
+        approval_gate = _build_grouped_approval_gate(
+            module_name=self.name,
+            action_map=action_map,
+            action_gates=action_gates,
+        )
+
+        return ToolDefinition(
+            name=self.name,
+            description=self.description or self.label,
+            parameters_schema=schema,
+            execute=_execute,
+            approval_gate=approval_gate,
+        )
+
+
+def _resolve_grouped_action(
+    *,
+    payload: dict[str, Any],
+    action_map: dict[str, ActionDefinition],
+) -> ActionDefinition:
+    raw = payload.get(_GROUPED_ACTION_FIELD)
+    if not isinstance(raw, str) or not raw.strip():
+        raise ToolValidationError(f"Field '{_GROUPED_ACTION_FIELD}' must be a non-empty string")
+    normalized = raw.strip().lower()
+    action = action_map.get(normalized)
+    if action is None:
+        raise ToolValidationError(
+            f"Field '{_GROUPED_ACTION_FIELD}' must be one of: " + ", ".join(sorted(action_map.keys()))
+        )
+    return action
+
+
+def _build_grouped_parameters_schema(
+    *,
+    actions: list[ActionDefinition],
+) -> dict[str, Any]:
+    merged_properties: dict[str, Any] = {}
+    shared_required: set[str] | None = None
+    action_required: dict[str, set[str]] = {}
+
+    for action in actions:
+        schema = action.get_parameters_schema() or {}
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+        if _GROUPED_ACTION_FIELD in properties or _GROUPED_ACTION_FIELD in required:
+            raise ValueError(
+                f"Grouped action '{action.id}' may not define reserved field '{_GROUPED_ACTION_FIELD}'"
+            )
+        for key, value in properties.items():
+            existing = merged_properties.get(key)
+            if existing is not None and existing != value:
+                raise ValueError(
+                    f"Grouped module property conflict for '{key}' across action '{action.id}'"
+                )
+            merged_properties[key] = value
+        shared_required = required if shared_required is None else shared_required & required
+        action_required[action.id] = required
+
+    shared_required_set = shared_required or set()
+    command_requirements: list[str] = []
+    for action in actions:
+        extra_required = sorted(action_required[action.id] - shared_required_set)
+        required_text = ", ".join(extra_required) if extra_required else "no extra required fields"
+        command_requirements.append(f"{action.id}: {required_text}")
+    required_fields = sorted(shared_required_set | {_GROUPED_ACTION_FIELD})
+    properties = {
+        _GROUPED_ACTION_FIELD: {
+            "type": "string",
+            "enum": sorted(action.id for action in actions),
+            "description": (
+                "Select which internal action to execute. Options: "
+                + ", ".join(sorted(action.id for action in actions))
+                + ". Per-command required fields: "
+                + "; ".join(command_requirements)
+            ),
+        },
+        **merged_properties,
+    }
+
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": required_fields,
+        "properties": properties,
+    }
+
+
+def _build_grouped_approval_gate(
+    *,
+    module_name: str,
+    action_map: dict[str, ActionDefinition],
+    action_gates: dict[str, ToolApprovalGate | None],
+) -> ToolApprovalGate | None:
+    if not any(action_gates.get(action_id) for action_id in action_map):
+        return None
+
+    async def _evaluate(payload: dict[str, Any]) -> ToolApprovalEvaluation:
+        action = _resolve_grouped_action(
+            payload=payload,
+            action_map=action_map,
+        )
+        gate = action_gates.get(action.id)
+        if gate is None or gate.mode == ToolApprovalMode.NONE:
+            return ToolApprovalEvaluation.allow()
+
+        forwarded = dict(payload)
+        forwarded.pop(_GROUPED_ACTION_FIELD, None)
+
+        if gate.mode == ToolApprovalMode.REQUIRED:
+            evaluated = await _run_gate_evaluator(gate=gate, payload=forwarded)
+            if evaluated is not None:
+                if evaluated.decision == ToolApprovalDecision.DENY:
+                    return evaluated
+                if (
+                    evaluated.decision == ToolApprovalDecision.REQUIRE
+                    and evaluated.requirement is not None
+                ):
+                    return evaluated
+            return ToolApprovalEvaluation.require(
+                gate.required
+                if gate.required is not None
+                else ToolApprovalRequirement(
+                    action=f"{module_name}.{action.id}",
+                    description=f"{module_name}.{action.id} requires approval.",
+                )
+            )
+
+        if gate.mode == ToolApprovalMode.CONDITIONAL:
+            if gate.evaluator is None:
+                raise RuntimeError(
+                    f"Grouped action '{module_name}.{action.id}' uses conditional approval without evaluator."
+                )
+            evaluated = await _run_gate_evaluator(gate=gate, payload=forwarded)
+            if evaluated is None:
+                raise RuntimeError(
+                    f"Grouped action '{module_name}.{action.id}' approval evaluator returned invalid response type."
+                )
+            return evaluated
+
+        return ToolApprovalEvaluation.allow()
+
+    async def _waiter(
+        tool_name: str,
+        payload: dict[str, Any],
+        requirement: ToolApprovalRequirement,
+    ) -> Any:
+        action = _resolve_grouped_action(
+            payload=payload,
+            action_map=action_map,
+        )
+        gate = action_gates.get(action.id)
+        if gate is None or gate.waiter is None:
+            raise RuntimeError(
+                f"Grouped action '{module_name}.{action.id}' requires approval but has no waiter."
+            )
+        forwarded = dict(payload)
+        forwarded.pop(_GROUPED_ACTION_FIELD, None)
+        return await gate.waiter(tool_name, forwarded, requirement)
+
+    return ToolApprovalGate(
+        mode=ToolApprovalMode.CONDITIONAL,
+        evaluator=_evaluate,
+        waiter=_waiter,
+    )
+
+
+async def _run_gate_evaluator(
+    *,
+    gate: ToolApprovalGate,
+    payload: dict[str, Any],
+) -> ToolApprovalEvaluation | None:
+    if gate.evaluator is None:
+        return None
+    evaluated = gate.evaluator(payload)
+    if inspect.isawaitable(evaluated):
+        evaluated = await evaluated
+    if not isinstance(evaluated, ToolApprovalEvaluation):
+        raise RuntimeError("Approval evaluator returned invalid response type.")
+    return evaluated
+
+
+def _validate_payload_against_schema(
+    payload: dict[str, Any],
+    schema: dict[str, Any],
+) -> None:
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+    additional_properties = schema.get("additionalProperties", True)
+    user_payload = {k: v for k, v in payload.items() if not str(k).startswith("__")}
+
+    missing = [field for field in required if field not in user_payload]
+    if missing:
+        raise ToolValidationError(f"Missing required field(s): {', '.join(missing)}")
+
+    if not additional_properties:
+        unknown = [field for field in user_payload.keys() if field not in properties]
+        if unknown:
+            raise ToolValidationError(f"Unknown field(s): {', '.join(unknown)}")
+
+    for field_name, field_schema in properties.items():
+        if field_name not in user_payload:
+            continue
+        _validate_field(field_name, user_payload[field_name], field_schema)
+
+
+def _validate_field(field_name: str, value: Any, field_schema: dict[str, Any]) -> None:
+    expected_type = field_schema.get("type")
+    if expected_type:
+        if expected_type == "string" and not isinstance(value, str):
+            raise ToolValidationError(f"Field '{field_name}' must be a string")
+        if expected_type == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
+            raise ToolValidationError(f"Field '{field_name}' must be an integer")
+        if expected_type == "boolean" and not isinstance(value, bool):
+            raise ToolValidationError(f"Field '{field_name}' must be a boolean")
+        if expected_type == "object" and not isinstance(value, dict):
+            raise ToolValidationError(f"Field '{field_name}' must be an object")
+        if expected_type == "array" and not isinstance(value, list):
+            raise ToolValidationError(f"Field '{field_name}' must be an array")
+
+    enum = field_schema.get("enum")
+    if enum and value not in enum:
+        raise ToolValidationError(
+            f"Field '{field_name}' must be one of: {', '.join(map(str, enum))}"
         )

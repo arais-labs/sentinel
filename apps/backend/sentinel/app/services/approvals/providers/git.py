@@ -90,10 +90,10 @@ class GitApprovalProvider:
     def pending_match_from_tool_call(self, *, tool_name: str, arguments: dict[str, object]) -> PendingApprovalMatch | None:
         if tool_name != "git_exec":
             return None
-        command = arguments.get("command")
-        if not isinstance(command, str) or not command.strip():
+        cli_command = arguments.get("cli_command")
+        if not isinstance(cli_command, str) or not cli_command.strip():
             return None
-        return PendingApprovalMatch(provider=self.name, match_key=normalize_git_command(command))
+        return PendingApprovalMatch(provider=self.name, match_key=normalize_git_command(cli_command))
 
     def _to_record(self, row: ToolApproval) -> ApprovalRecord:
         payload = dict(row.payload_json or {})

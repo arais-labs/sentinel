@@ -107,7 +107,7 @@ def _enable_runtime_root_auto_approval_for_tests() -> None:
 
 
 def _runtime_exec_input(*, command: str, session_id: str, **extra: object) -> dict[str, object]:
-    payload: dict[str, object] = {"command": command, "session_id": session_id}
+    payload: dict[str, object] = {"command": "run", "shell_command": command, "session_id": session_id}
     payload.update(extra)
     return payload
 
@@ -173,7 +173,7 @@ def test_tools_registry_and_execution():
         )
         accounts_run = client.post(
             "/api/v1/tools/git_exec/execute",
-            json={"input": {"operation": "accounts", "repo_url": "https://github.com/arais-labs/sentinel.git"}},
+            json={"input": {"command": "accounts", "repo_url": "https://github.com/arais-labs/sentinel.git"}},
             headers=headers,
         )
         assert accounts_run.status_code == 200
@@ -194,7 +194,7 @@ def test_tools_registry_and_execution():
         assert estop.status_code == 200
         blocked = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "echo blocked", "session_id": session_id}},
+            json={"input": {"command": "run", "shell_command": "echo blocked", "session_id": session_id}},
             headers=headers,
         )
         assert blocked.status_code == 200
@@ -346,7 +346,7 @@ def test_runtime_exec_detached_job_lifecycle():
 
         listed = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"operation": "jobs_list", "session_id": session_id}},
+            json={"input": {"command": "jobs_list", "session_id": session_id}},
             headers=headers,
         )
         assert listed.status_code == 200
@@ -361,7 +361,7 @@ def test_runtime_exec_detached_job_lifecycle():
 
         status = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"operation": "job_status", "session_id": session_id, "job_id": job_id}},
+            json={"input": {"command": "job_status", "session_id": session_id, "job_id": job_id}},
             headers=headers,
         )
         assert status.status_code == 200
@@ -375,7 +375,7 @@ def test_runtime_exec_detached_job_lifecycle():
 
         logs = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"operation": "job_logs", "session_id": session_id, "job_id": job_id}},
+            json={"input": {"command": "job_logs", "session_id": session_id, "job_id": job_id}},
             headers=headers,
         )
         assert logs.status_code == 200
@@ -390,7 +390,7 @@ def test_runtime_exec_detached_job_lifecycle():
 
         stopped = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"operation": "job_stop", "session_id": session_id, "job_id": job_id}},
+            json={"input": {"command": "job_stop", "session_id": session_id, "job_id": job_id}},
             headers=headers,
         )
         assert stopped.status_code == 200
@@ -432,7 +432,7 @@ def test_runtime_exec_rejects_background_without_detached():
 
         run = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "sleep 1 &", "session_id": session_id}},
+            json={"input": {"command": "run", "shell_command": "sleep 1 &", "session_id": session_id}},
             headers=headers,
         )
         assert run.status_code == 422
@@ -548,7 +548,8 @@ def test_runtime_exec_root_privilege_requires_approval():
             "/api/v1/tools/runtime_exec/execute",
             json={
                 "input": {
-                    "command": "echo root-approved",
+                    "command": "run",
+                    "shell_command": "echo root-approved",
                     "session_id": session_id,
                     "privilege": "root",
                 }

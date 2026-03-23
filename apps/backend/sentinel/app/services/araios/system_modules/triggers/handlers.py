@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any, Awaitable, Callable
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -15,9 +15,6 @@ from app.services.triggers.routing import (
     resolve_agent_message_route,
 )
 
-TriggerHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
-
-ALLOWED_TRIGGER_COMMANDS = ("create", "list", "update", "delete")
 _ALLOWED_TYPES = {"cron", "heartbeat"}
 _ALLOWED_ACTION_TYPES = {"agent_message", "tool_call", "http_request"}
 
@@ -270,23 +267,3 @@ async def handle_delete(payload: dict[str, Any]) -> dict[str, Any]:
         await db.commit()
     return {"deleted": True, "trigger_id": str(trigger_id), "name": name}
 
-
-TRIGGER_COMMAND_HANDLERS: dict[str, TriggerHandler] = {
-    "create": handle_create,
-    "list": handle_list,
-    "update": handle_update,
-    "delete": handle_delete,
-}
-
-
-async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
-    command = payload.get("command")
-    if not isinstance(command, str) or not command.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
-    normalized = command.strip().lower()
-    handler = TRIGGER_COMMAND_HANDLERS.get(normalized)
-    if handler is None:
-        raise ToolValidationError(
-            "Field 'command' must be one of: " + ", ".join(ALLOWED_TRIGGER_COMMANDS)
-        )
-    return await handler(payload)

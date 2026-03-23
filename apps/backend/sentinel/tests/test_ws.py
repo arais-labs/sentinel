@@ -223,7 +223,7 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
                         {
                             "id": "toolu_pending_1",
                             "name": "git_exec",
-                            "arguments": {"command": "git push origin main"},
+                            "arguments": {"command": "run", "cli_command": "git push origin main"},
                         }
                     ]
                 },
@@ -262,7 +262,7 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             replay_pending = ws.receive_json()
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_1"
-            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "git push origin main"}
+            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "run", "cli_command": "git push origin main"}
             assert replay_pending["tool_result"]["metadata"]["pending"] is True
             assert "approval_id" not in replay_pending["tool_result"]["metadata"]
             approval = replay_pending["tool_result"]["metadata"].get("approval")
@@ -423,7 +423,7 @@ def test_ws_connected_rehydrates_unresolved_runtime_root_call_with_hint():
                             "name": "runtime_exec",
                             "arguments": {
                                 "_truncated": True,
-                                "preview": "{\"command\":\"echo root-check\",\"privilege\":\"root\"}",
+                                "preview": "{\"operation\":\"run\",\"command\":\"echo root-check\",\"privilege\":\"root\"}",
                                 "original_chars": 256,
                             },
                             "approval_hint": {
@@ -592,8 +592,8 @@ def test_ws_rehydrate_matches_duplicate_git_approvals_in_call_order():
                 content="",
                 metadata_json={
                     "tool_calls": [
-                        {"id": "toolu_pending_a", "name": "git_exec", "arguments": {"command": command}},
-                        {"id": "toolu_pending_b", "name": "git_exec", "arguments": {"command": command}},
+                        {"id": "toolu_pending_a", "name": "git_exec", "arguments": {"command": "run", "cli_command": command}},
+                        {"id": "toolu_pending_b", "name": "git_exec", "arguments": {"command": "run", "cli_command": command}},
                     ]
                 },
             )
@@ -700,7 +700,7 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
                         {
                             "id": "toolu_pending_runtime",
                             "name": "runtime_exec",
-                            "arguments": {"command": "sleep 10"},
+                            "arguments": {"command": "run", "shell_command": "sleep 10"},
                         }
                     ]
                 },
@@ -720,7 +720,7 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
             replay_pending = ws.receive_json()
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_runtime"
-            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "sleep 10"}
+            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "run", "shell_command": "sleep 10"}
             assert replay_pending["tool_result"]["content"]["status"] == "running"
             assert "pending" not in replay_pending["tool_result"]["metadata"]
             assert "approval_id" not in replay_pending["tool_result"]["metadata"]
@@ -777,7 +777,7 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
                         {
                             "id": "toolu_stale_1",
                             "name": "git_exec",
-                            "arguments": {"command": "git push origin main"},
+                            "arguments": {"command": "run", "cli_command": "git push origin main"},
                         }
                     ]
                 },

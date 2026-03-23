@@ -3,62 +3,68 @@ from __future__ import annotations
 from app.services.araios.module_types import ActionDefinition, ApprovalDefinition, ModuleDefinition
 
 from .handlers import (
-    ALLOWED_GIT_EXEC_OPERATIONS,
     _git_exec_approval_waiter,
-    _git_exec_tool_approval_evaluator,
-    handle_operation,
+    _git_exec_write_approval_evaluator,
+    handle_accounts,
+    handle_run,
 )
 
 
-def _git_exec_parameters_schema() -> dict:
+def _session_id_prop() -> dict:
+    return {"type": "string", "description": "Current session ID."}
+
+
+def _run_parameters_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["session_id", "cli_command"],
+        "properties": {
+            "session_id": _session_id_prop(),
+            "cli_command": {
+                "type": "string",
+                "description": "Git or supported GitHub CLI command to execute.",
+            },
+            "cwd": {
+                "type": "string",
+                "description": "Optional working directory relative to the session workspace.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "description": "Execution timeout in seconds (default 600, max 3600).",
+            },
+            "approval_timeout_seconds": {
+                "type": "integer",
+                "description": "Write approval wait timeout in seconds (default 600, max 3600).",
+            },
+            "git_account_name": {
+                "type": "string",
+                "description": "Optional explicit git account name to use.",
+            },
+            "git_account_id": {
+                "type": "string",
+                "description": "Optional explicit git account UUID to use.",
+            },
+        },
+    }
+
+
+def _accounts_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "operation": {
-                "type": "string",
-                "enum": list(ALLOWED_GIT_EXEC_OPERATIONS),
-                "description": "Optional selector. Use 'run' (default) to execute git/gh commands or 'accounts' to list configured git accounts.",
-            },
-            "session_id": {
-                "type": "string",
-                "description": "Current session ID (required for operation=run, auto-injected by the agent loop).",
-            },
-            "command": {
-                "type": "string",
-                "description": "Git/GitHub CLI command for operation=run. Examples: 'git status', 'git fetch origin', 'git request-pull origin/main https://github.com/org/repo.git feature', 'gh repo list <org>', 'gh pr view 37 --json state,mergeStateStatus', 'gh pr create --repo <org>/<repo> ...', 'gh pr merge 37 --repo <org>/<repo> --merge', 'gh api -X PUT /repos/<org>/<repo>/pulls/<num>/merge'.",
-            },
-            "cwd": {
-                "type": "string",
-                "description": "Optional working directory relative to session workspace for operation=run.",
-            },
-            "timeout_seconds": {
-                "type": "integer",
-                "description": "Execution timeout in seconds for operation=run (default 600, max 3600).",
-            },
-            "approval_timeout_seconds": {
-                "type": "integer",
-                "description": "Push approval wait timeout in seconds for operation=run (default 600, max 3600).",
-            },
-            "git_account_name": {
-                "type": "string",
-                "description": "Optional explicit git account name to use for operation=run.",
-            },
-            "git_account_id": {
-                "type": "string",
-                "description": "Optional explicit git account UUID to use for operation=run.",
-            },
             "host": {
                 "type": "string",
-                "description": "Optional host filter for operation=accounts (for example: github.com).",
+                "description": "Optional host filter (for example: github.com).",
             },
             "repo_url": {
                 "type": "string",
-                "description": "Optional repository URL filter for operation=accounts.",
+                "description": "Optional repository URL filter.",
             },
             "require_write": {
                 "type": "boolean",
-                "description": "If true, operation=accounts only returns accounts with a write token.",
+                "description": "If true, only accounts with a write token are returned.",
             },
         },
     }
@@ -78,20 +84,26 @@ MODULE = ModuleDefinition(
     icon="git-branch",
     pinned=True,
     system=True,
+    grouped_tool=True,
     actions=[
         ActionDefinition(
             id="run",
-            label="Git Exec",
-            description=(
-                "Unified git tool entry point. Default operation runs git/gh commands; operation=accounts lists configured git accounts."
-            ),
-            handler=handle_operation,
+            label="Run Git Command",
+            description="Execute a git or supported gh command inside the session workspace.",
+            handler=handle_run,
             approval=ApprovalDefinition(
                 mode="conditional",
-                evaluator=_git_exec_tool_approval_evaluator,
+                evaluator=_git_exec_write_approval_evaluator,
                 waiter=_git_exec_approval_waiter,
             ),
-            parameters_schema=_git_exec_parameters_schema(),
-        )
+            parameters_schema=_run_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="accounts",
+            label="List Git Accounts",
+            description="List configured git accounts available to the agent.",
+            handler=handle_accounts,
+            parameters_schema=_accounts_parameters_schema(),
+        ),
     ],
 )

@@ -16,22 +16,9 @@ from app.models.araios import (
     araios_gen_id,
 )
 from app.services.araios.executor import execute_action
-from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolApprovalEvaluation, ToolApprovalRequirement
 
 logger = logging.getLogger(__name__)
-ALLOWED_MODULE_DISCOVERY_COMMANDS = (
-    "list_modules",
-    "get_module",
-    "create_module",
-    "delete_module",
-    "list_records",
-    "get_record",
-    "create_record",
-    "update_record",
-    "delete_record",
-    "run_action",
-)
 
 
 # ── Helpers ──
@@ -403,45 +390,3 @@ def _run_action_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEvalu
             description=description + ".",
         )
     )
-def _modules_discovery_command(payload: dict[str, Any]) -> str:
-    raw = payload.get("command")
-    if not isinstance(raw, str) or not raw.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
-    normalized = raw.strip().lower()
-    if normalized not in ALLOWED_MODULE_DISCOVERY_COMMANDS:
-        raise ToolValidationError(
-            "Field 'command' must be one of: " + ", ".join(ALLOWED_MODULE_DISCOVERY_COMMANDS)
-        )
-    return normalized
-
-
-def _modules_discovery_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEvaluation:
-    command = _modules_discovery_command(payload)
-    if command == "delete_module":
-        return _delete_module_approval_evaluator(payload)
-    if command == "run_action":
-        return _run_action_approval_evaluator(payload)
-    return ToolApprovalEvaluation.allow()
-
-
-async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
-    command = _modules_discovery_command(payload)
-    if command == "list_modules":
-        return await handle_list_modules(payload)
-    if command == "get_module":
-        return await handle_get_module(payload)
-    if command == "create_module":
-        return await handle_create_module(payload)
-    if command == "delete_module":
-        return await handle_delete_module(payload)
-    if command == "list_records":
-        return await handle_list_records(payload)
-    if command == "get_record":
-        return await handle_get_record(payload)
-    if command == "create_record":
-        return await handle_create_record(payload)
-    if command == "update_record":
-        return await handle_update_record(payload)
-    if command == "delete_record":
-        return await handle_delete_record(payload)
-    return await handle_run_action(payload)

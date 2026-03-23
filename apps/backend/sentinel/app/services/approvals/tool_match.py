@@ -26,15 +26,23 @@ def build_tool_match_key(
     if isinstance(explicit, str) and explicit.strip():
         return explicit.strip()
 
-    command = payload.get("command")
-    if isinstance(command, str) and command.strip():
-        if tool_name == "runtime_exec":
+    if tool_name == "runtime_exec":
+        shell_command = payload.get("shell_command")
+        if isinstance(shell_command, str) and shell_command.strip():
             privilege_raw = payload.get("privilege")
             privilege = privilege_raw if isinstance(privilege_raw, str) else None
             return build_runtime_exec_match_key(
-                command=command,
+                command=shell_command,
                 privilege=privilege,
             )
+
+    if tool_name == "git_exec":
+        cli_command = payload.get("cli_command")
+        if isinstance(cli_command, str) and cli_command.strip():
+            return f"{tool_name}:{normalize_command(cli_command)}"
+
+    command = payload.get("command")
+    if isinstance(command, str) and command.strip():
         return f"{tool_name}:{normalize_command(command)}"
 
     canonical = _canonical_payload(payload)

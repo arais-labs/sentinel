@@ -1348,18 +1348,21 @@ class AgentLoop:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> dict[str, str] | None:
-        command = arguments.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return None
         if tool_name == "git_exec":
-            return {"provider": "git", "match_key": normalize_git_command(command)}
+            cli_command = arguments.get("cli_command")
+            if isinstance(cli_command, str) and cli_command.strip():
+                return {"provider": "git", "match_key": normalize_git_command(cli_command)}
+            return None
         if tool_name == "runtime_exec":
+            shell_command = arguments.get("shell_command")
+            if not isinstance(shell_command, str) or not shell_command.strip():
+                return None
             privilege = str(arguments.get("privilege") or "user").strip().lower()
             if privilege == "root":
                 return {
                     "provider": "tool",
                     "match_key": build_runtime_exec_match_key(
-                        command=command,
+                        command=shell_command,
                         privilege="root",
                     ),
                 }

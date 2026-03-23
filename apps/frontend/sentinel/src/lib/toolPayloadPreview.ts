@@ -47,7 +47,7 @@ const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: r
     output: ['share_url', 'url', 'error'],
   },
   git_exec: {
-    input: ['operation', 'command', 'cwd', 'host', 'repo_url'],
+    input: ['command', 'cli_command', 'cwd', 'host', 'repo_url'],
     output: ['ok', 'stdout', 'stderr', 'returncode', 'timed_out', 'total', 'accounts'],
   },
   coordination: {
@@ -75,7 +75,7 @@ const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: r
     output: ['tasks', 'id', 'title', 'status', 'priority', 'ok', 'message'],
   },
   runtime_exec: {
-    input: ['operation', 'command', 'privilege', 'cwd', 'job_id', 'detached'],
+    input: ['command', 'shell_command', 'privilege', 'cwd', 'job_id', 'detached'],
     output: ['stdout', 'ok', 'returncode', 'timed_out', 'stderr', 'job', 'items'],
   },
   triggers: {

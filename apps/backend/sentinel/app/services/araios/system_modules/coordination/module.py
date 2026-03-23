@@ -7,22 +7,34 @@ from app.services.araios.module_types import (
     ModuleDefinition,
 )
 
-from .handlers import ALLOWED_COORDINATION_COMMANDS, handle_run
+from .handlers import handle_list, handle_send
 
 
-def _coordination_parameters_schema() -> dict:
+def _agent_prop() -> dict:
+    return {
+        "type": "string",
+        "description": "Optional agent filter for list, or sender agent identifier for send.",
+    }
+
+
+def _list_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["command"],
         "properties": {
-            "command": {
-                "type": "string",
-                "enum": list(ALLOWED_COORDINATION_COMMANDS),
-                "description": "Coordination command: list or send.",
-            },
-            "agent": {"type": "string", "description": "Optional agent filter for list, or sender agent identifier for send."},
+            "agent": _agent_prop(),
             "limit": {"type": "integer", "description": "Max number of messages to return for list."},
+        },
+    }
+
+
+def _send_parameters_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["agent", "message"],
+        "properties": {
+            "agent": _agent_prop(),
             "message": {"type": "string", "description": "Coordination message text for send."},
             "context": {"type": "object", "description": "Optional context metadata for send."},
         },
@@ -45,13 +57,21 @@ MODULE = ModuleDefinition(
         titleField="agent",
         subtitleField="message",
     ),
+    grouped_tool=True,
     actions=[
         ActionDefinition(
-            id="run",
-            label="Coordination",
-            description="Unified coordination entry point. Use command=list to read messages or command=send to append one.",
-            handler=handle_run,
-            parameters_schema=_coordination_parameters_schema(),
-        )
+            id="list",
+            label="List Coordination Messages",
+            description="Read coordination messages, optionally filtered by agent.",
+            handler=handle_list,
+            parameters_schema=_list_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="send",
+            label="Send Coordination Message",
+            description="Append one coordination message for an agent.",
+            handler=handle_send,
+            parameters_schema=_send_parameters_schema(),
+        ),
     ],
 )
