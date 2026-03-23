@@ -3,38 +3,91 @@ from __future__ import annotations
 from app.services.araios.module_types import ActionDefinition, ApprovalDefinition, ModuleDefinition
 
 from .handlers import (
-    ALLOWED_RUNTIME_EXEC_OPERATIONS,
-    _runtime_exec_tool_approval_evaluator,
-    handle_operation,
+    _runtime_exec_approval_evaluator,
+    handle_job_logs,
+    handle_job_status,
+    handle_job_stop,
+    handle_jobs_list,
+    handle_run,
 )
 
 
-def _runtime_exec_parameters_schema() -> dict:
+def _session_id_prop() -> dict:
+    return {"type": "string", "description": "Current session ID."}
+
+
+def _job_id_prop() -> dict:
+    return {"type": "string", "description": "Detached job ID."}
+
+
+def _run_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
+        "required": ["session_id", "shell_command"],
         "properties": {
-            "operation": {
-                "type": "string",
-                "enum": list(ALLOWED_RUNTIME_EXEC_OPERATIONS),
-                "description": "Optional selector. Use 'run' (default) for shell execution or one of the job operations for detached jobs.",
-            },
-            "session_id": {"type": "string", "description": "Current session ID (auto-injected for run)."},
-            "command": {"type": "string", "description": "Shell command for operation=run."},
+            "session_id": _session_id_prop(),
+            "shell_command": {"type": "string", "description": "Shell command to execute."},
             "privilege": {
                 "type": "string",
                 "enum": ["user", "root"],
-                "description": "Execution privilege mode for operation=run (default user). root requires approval.",
+                "description": "Execution privilege mode (default user). root requires approval.",
             },
-            "cwd": {"type": "string", "description": "Working directory inside the session workspace for operation=run."},
-            "env": {"type": "object", "description": "Environment variable overrides for operation=run."},
-            "timeout_seconds": {"type": "integer", "description": "Execution timeout for operation=run (default 300, max 1800)."},
-            "approval_timeout_seconds": {"type": "integer", "description": "Root approval wait timeout for operation=run (default 600, max 3600)."},
-            "detached": {"type": "boolean", "description": "Run in background as a tracked job for operation=run."},
-            "include_completed": {"type": "boolean", "description": "Include completed jobs for operation=jobs_list."},
-            "job_id": {"type": "string", "description": "Detached job id for job_status, job_logs, or job_stop."},
-            "tail_bytes": {"type": "integer", "description": "Tail bytes to read for operation=job_logs."},
-            "force": {"type": "boolean", "description": "Force stop for operation=job_stop."},
+            "cwd": {"type": "string", "description": "Working directory inside the session workspace."},
+            "env": {"type": "object", "description": "Environment variable overrides."},
+            "timeout_seconds": {"type": "integer", "description": "Execution timeout in seconds (default 300, max 1800)."},
+            "approval_timeout_seconds": {"type": "integer", "description": "Root approval wait timeout in seconds (default 600, max 3600)."},
+            "detached": {"type": "boolean", "description": "Run in the background as a tracked job."},
+        },
+    }
+
+
+def _jobs_list_parameters_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["session_id"],
+        "properties": {
+            "session_id": _session_id_prop(),
+            "include_completed": {"type": "boolean", "description": "Include completed jobs."},
+        },
+    }
+
+
+def _job_status_parameters_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["session_id", "job_id"],
+        "properties": {
+            "session_id": _session_id_prop(),
+            "job_id": _job_id_prop(),
+        },
+    }
+
+
+def _job_logs_parameters_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["session_id", "job_id"],
+        "properties": {
+            "session_id": _session_id_prop(),
+            "job_id": _job_id_prop(),
+            "tail_bytes": {"type": "integer", "description": "Tail bytes to read from the job logs."},
+        },
+    }
+
+
+def _job_stop_parameters_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["session_id", "job_id"],
+        "properties": {
+            "session_id": _session_id_prop(),
+            "job_id": _job_id_prop(),
+            "force": {"type": "boolean", "description": "Force stop the job."},
         },
     }
 
@@ -50,18 +103,47 @@ MODULE = ModuleDefinition(
     icon="terminal",
     pinned=True,
     system=True,
+    grouped_tool=True,
     actions=[
         ActionDefinition(
             id="run",
-            label="Runtime Exec",
-            description="Unified runtime execution entry point. Default operation runs a shell command; other operations inspect or manage detached jobs.",
+            label="Run Command",
+            description="Run a shell command inside the session runtime workspace.",
             streaming=True,
-            handler=handle_operation,
+            handler=handle_run,
             approval=ApprovalDefinition(
                 mode="conditional",
-                evaluator=_runtime_exec_tool_approval_evaluator,
+                evaluator=_runtime_exec_approval_evaluator,
             ),
-            parameters_schema=_runtime_exec_parameters_schema(),
-        )
+            parameters_schema=_run_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="jobs_list",
+            label="List Jobs",
+            description="List detached runtime jobs for a session.",
+            handler=handle_jobs_list,
+            parameters_schema=_jobs_list_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="job_status",
+            label="Job Status",
+            description="Read status for one detached runtime job.",
+            handler=handle_job_status,
+            parameters_schema=_job_status_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="job_logs",
+            label="Job Logs",
+            description="Read logs for one detached runtime job.",
+            handler=handle_job_logs,
+            parameters_schema=_job_logs_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="job_stop",
+            label="Stop Job",
+            description="Stop one detached runtime job.",
+            handler=handle_job_stop,
+            parameters_schema=_job_stop_parameters_schema(),
+        ),
     ],
 )

@@ -1,8 +1,4 @@
-"""Builds the ToolRegistry from system modules.
-
-Reads SYSTEM_MODULES, converts each action to a ToolDefinition using
-the handler function directly attached to the action.
-"""
+"""Builds the ToolRegistry from system modules."""
 from __future__ import annotations
 
 from typing import Any
@@ -10,7 +6,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.services.araios.module_types import ApprovalDefinition
-from app.services.araios.system_modules import SYSTEM_MODULES
+from app.services.araios.system_modules import get_system_modules
 from app.services.tools.approval_waiters import build_tool_db_approval_waiter
 from app.services.tools.registry import (
     ToolApprovalGate,
@@ -30,24 +26,21 @@ def build_default_registry(
         else None
     )
 
-    for module in SYSTEM_MODULES:
-        actions = module.actions or []
-        for action in actions:
-            if not action.handler:
-                continue
+    for module in get_system_modules():
+        actions = [action for action in (module.actions or []) if action.handler]
+        if not actions:
+            continue
 
-            gate = _resolve_gate(
+        action_gates = {
+            action.id: _resolve_gate(
                 action.approval,
                 handler_key=f"{module.name}.{action.id}",
                 waiter=waiter,
             )
+            for action in actions
+        }
 
-            tool_def = action.to_tool_definition(
-                module_name=module.name,
-                module_description=module.description,
-                action_count=len(actions),
-                approval_gate=gate,
-            )
+        for tool_def in module.to_tool_definitions(action_gates=action_gates):
             registry.register(tool_def)
 
     return registry

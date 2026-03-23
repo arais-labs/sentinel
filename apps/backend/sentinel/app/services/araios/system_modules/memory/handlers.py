@@ -621,38 +621,3 @@ async def handle_search(payload: dict[str, Any]) -> dict[str, Any]:
         "expanded_items": [_memory_as_dict(item) for item in expanded],
         "total": result.total,
     }
-
-
-def _memory_command(payload: dict[str, Any]) -> str:
-    raw = payload.get("command")
-    if not isinstance(raw, str) or not raw.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
-    normalized = raw.strip().lower()
-    if normalized not in ALLOWED_MEMORY_COMMANDS:
-        raise ToolValidationError(
-            "Field 'command' must be one of: " + ", ".join(ALLOWED_MEMORY_COMMANDS)
-        )
-    return normalized
-
-
-async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
-    command = _memory_command(payload)
-    if command == "store":
-        return await handle_store(payload)
-    if command == "roots":
-        return await handle_roots(payload)
-    if command == "tree":
-        return await handle_tree(payload)
-    if command == "get_node":
-        return await handle_get_node(payload)
-    if command == "list_children":
-        return await handle_list_children(payload)
-    if command == "update":
-        return await handle_update(payload)
-    if command == "touch":
-        return await handle_touch(payload)
-    if command == "move":
-        return await handle_move(payload)
-    if command == "delete":
-        return await handle_delete(payload)
-    return await handle_search(payload)

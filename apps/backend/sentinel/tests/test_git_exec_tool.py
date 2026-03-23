@@ -8,6 +8,7 @@ from app.models import GitAccount, Session
 from app.services.araios.system_modules.git_exec import handlers as git_exec_module
 from app.services.araios.system_modules.git_exec.module import MODULE as GIT_EXEC_MODULE
 from app.services.tools.executor import ToolExecutor, ToolValidationError
+from app.services.tools.registry_builder import _resolve_gate
 from app.services.tools.registry import ToolRegistry
 from tests.fake_db import FakeDB
 
@@ -46,12 +47,16 @@ class _SessionFactory:
 def _git_exec_tool(*, session_factory=None):
     if session_factory is not None:
         git_exec_module.AsyncSessionLocal = session_factory
-    action = (GIT_EXEC_MODULE.actions or [])[0]
-    return action.to_tool_definition(
-        module_name=GIT_EXEC_MODULE.name,
-        module_description=GIT_EXEC_MODULE.description,
-        action_count=1,
-    )
+    action_gates = {
+        action.id: _resolve_gate(
+            action.approval,
+            handler_key=f"{GIT_EXEC_MODULE.name}.{action.id}",
+            waiter=None,
+        )
+        for action in (GIT_EXEC_MODULE.actions or [])
+        if action.handler
+    }
+    return GIT_EXEC_MODULE.to_tool_definitions(action_gates=action_gates)[0]
 
 
 git_exec_module.git_exec_tool = _git_exec_tool
@@ -192,8 +197,9 @@ def test_git_exec_supports_gh_repo_list_with_account_token(monkeypatch):
     result = _run(
         tool.execute(
             {
+                "command": "run",
                 "session_id": str(session.id),
-                "command": "gh repo list arais-labs --limit 5",
+                "cli_command": "gh repo list arais-labs --limit 5",
             }
         )
     )
@@ -254,8 +260,9 @@ def test_git_exec_supports_gh_pr_view_with_read_token(monkeypatch):
     result = _run(
         tool.execute(
             {
+                "command": "run",
                 "session_id": str(session.id),
-                "command": "gh pr view 37 --json state,mergeStateStatus,isDraft",
+                "cli_command": "gh pr view 37 --json state,mergeStateStatus,isDraft",
             }
         )
     )
@@ -281,8 +288,9 @@ def test_git_exec_rejects_unsupported_gh_write_command():
         _run(
             tool.execute(
                 {
+                    "command": "run",
                     "session_id": str(session.id),
-                    "command": "gh repo create arais-labs/new-repo --private",
+                    "cli_command": "gh repo create arais-labs/new-repo --private",
                 }
             )
         )
@@ -298,8 +306,9 @@ def test_git_exec_rejects_gh_auth_with_clear_guidance():
         _run(
             tool.execute(
                 {
+                    "command": "run",
                     "session_id": str(session.id),
-                    "command": "gh auth status",
+                    "cli_command": "gh auth status",
                 }
             )
         )
@@ -315,8 +324,9 @@ def test_git_exec_rejects_gh_api_unsupported_method():
         _run(
             tool.execute(
                 {
+                    "command": "run",
                     "session_id": str(session.id),
-                    "command": "gh api -X DELETE /orgs/arais-labs/repos",
+                    "cli_command": "gh api -X DELETE /orgs/arais-labs/repos",
                 }
             )
         )
@@ -381,8 +391,9 @@ def test_git_exec_supports_gh_api_post_with_approval(monkeypatch):
     result = _run_via_executor(
         tool,
         {
+            "command": "run",
             "session_id": str(session.id),
-            "command": "gh api -X POST /repos/exampleco/exampleco-gitops/pulls -f title='Test PR'",
+            "cli_command": "gh api -X POST /repos/exampleco/exampleco-gitops/pulls -f title='Test PR'",
         },
     )
 
@@ -455,8 +466,9 @@ def test_git_exec_supports_gh_api_put_with_approval(monkeypatch):
     result = _run_via_executor(
         tool,
         {
+            "command": "run",
             "session_id": str(session.id),
-            "command": "gh api -X PUT /repos/exampleco/exampleco-gitops/pulls/35/merge -f merge_method=merge",
+            "cli_command": "gh api -X PUT /repos/exampleco/exampleco-gitops/pulls/35/merge -f merge_method=merge",
         },
     )
 
@@ -530,8 +542,9 @@ def test_git_exec_supports_gh_pr_create_with_approval(monkeypatch):
     result = _run_via_executor(
         tool,
         {
+            "command": "run",
             "session_id": str(session.id),
-            "command": (
+            "cli_command": (
                 "gh pr create --repo exampleco/exampleco-gitops "
                 "--base main --head feat/test --title 'Test' --body 'Body'"
             ),
@@ -608,8 +621,9 @@ def test_git_exec_supports_gh_pr_merge_with_approval(monkeypatch):
     result = _run_via_executor(
         tool,
         {
+            "command": "run",
             "session_id": str(session.id),
-            "command": (
+            "cli_command": (
                 "gh pr merge 35 --repo exampleco/exampleco-gitops "
                 "--merge --delete-branch"
             ),
@@ -668,10 +682,11 @@ def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
     with pytest.raises(git_exec_module.ToolExecutionError, match="User rejected action"):
         _run_via_executor(
             tool,
-            {
-                "session_id": str(session.id),
-                "command": "gh api -X POST /repos/exampleco/exampleco-gitops/pulls",
-            },
+        {
+            "command": "run",
+            "session_id": str(session.id),
+            "cli_command": "gh api -X POST /repos/exampleco/exampleco-gitops/pulls",
+        },
         )
 
 
@@ -728,8 +743,9 @@ def test_git_exec_uses_explicit_git_account_name_for_clone(monkeypatch):
     result = _run(
         tool.execute(
             {
+                "command": "run",
                 "session_id": str(session.id),
-                "command": "git clone https://github.com/arais-labs/sentinel.git",
+                "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
                 "git_account_name": "arailex",
             }
         )
@@ -761,8 +777,9 @@ def test_git_exec_rejects_unknown_explicit_git_account_name():
         _run(
             tool.execute(
                 {
+                    "command": "run",
                     "session_id": str(session.id),
-                    "command": "git clone https://github.com/arais-labs/sentinel.git",
+                    "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
                     "git_account_name": "arailex",
                 }
             )
@@ -790,8 +807,9 @@ def test_git_exec_rejects_explicit_git_account_scope_mismatch():
         _run(
             tool.execute(
                 {
+                    "command": "run",
                     "session_id": str(session.id),
-                    "command": "git clone https://github.com/arais-labs/sentinel.git",
+                    "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
                     "git_account_name": "secondary",
                 }
             )
@@ -826,7 +844,7 @@ def test_git_exec_accounts_operation_lists_matching_accounts():
     result = _run_via_executor(
         git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db)),
         {
-            "operation": "accounts",
+            "command": "accounts",
             "host": "github.com",
             "repo_url": "https://github.com/exampleco/exampleco-gitops.git",
             "require_write": True,

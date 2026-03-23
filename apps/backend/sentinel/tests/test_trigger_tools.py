@@ -37,14 +37,7 @@ class _SessionFactory:
 def _executor_for(db: FakeDB) -> ToolExecutor:
     registry = ToolRegistry()
     trigger_handlers_module.AsyncSessionLocal = _SessionFactory(db)
-    action = (triggers_module.MODULE.actions or [])[0]
-    registry.register(
-        action.to_tool_definition(
-            module_name=triggers_module.MODULE.name,
-            module_description=triggers_module.MODULE.description,
-            action_count=1,
-        )
-    )
+    registry.register(triggers_module.MODULE.to_tool_definitions()[0])
     return ToolExecutor(registry)
 
 

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from .handlers import ALLOWED_TRIGGER_COMMANDS, TRIGGER_COMMAND_HANDLERS, handle_run
+from .handlers import handle_create, handle_delete, handle_list, handle_update
 from .module import MODULE
 
 __all__ = [
-    "ALLOWED_TRIGGER_COMMANDS",
     "MODULE",
-    "TRIGGER_COMMAND_HANDLERS",
-    "handle_run",
+    "handle_create",
+    "handle_delete",
+    "handle_list",
+    "handle_update",
 ]

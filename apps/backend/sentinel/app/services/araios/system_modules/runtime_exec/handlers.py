@@ -311,8 +311,8 @@ def _runtime_exec_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEva
     if privilege != "root":
         return ToolApprovalEvaluation.allow()
 
-    command = payload.get("command")
-    if not isinstance(command, str) or not command.strip():
+    shell_command = payload.get("shell_command")
+    if not isinstance(shell_command, str) or not shell_command.strip():
         return ToolApprovalEvaluation.allow()
 
     session_id = payload.get("session_id")
@@ -324,16 +324,16 @@ def _runtime_exec_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEva
     return ToolApprovalEvaluation.require(
         ToolApprovalRequirement(
             action="runtime_exec.root",
-            description=f"Allow root runtime command: {command.strip()}",
+            description=f"Allow root runtime command: {shell_command.strip()}",
             timeout_seconds=_runtime_exec_approval_timeout_from_payload(payload),
             match_key=build_runtime_exec_match_key(
-                command=command,
+                command=shell_command,
                 privilege="root",
             ),
             metadata={
                 "tool_name": "runtime_exec",
                 "privilege": "root",
-                "command": command.strip(),
+                "command": shell_command.strip(),
                 "cwd": payload.get("cwd"),
                 "detached": bool(payload.get("detached", False)),
             },
@@ -356,10 +356,10 @@ async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
 
-    command = payload.get("command")
-    if not isinstance(command, str) or not command.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
-    command_text = command.strip()
+    shell_command = payload.get("shell_command")
+    if not isinstance(shell_command, str) or not shell_command.strip():
+        raise ToolValidationError("Field 'shell_command' must be a non-empty string")
+    command_text = shell_command.strip()
 
     privilege_raw = payload.get("privilege", "user")
     if not isinstance(privilege_raw, str) or not privilege_raw.strip():
@@ -498,39 +498,8 @@ async def handle_job_stop(payload: dict[str, Any]) -> dict[str, Any]:
         session_id,
         job_id=job_id.strip(),
         force=force,
-        reason="Stopped by runtime_exec operation=job_stop",
+        reason="Stopped by runtime_exec command=job_stop",
     )
     if job is None:
         raise ToolValidationError("Detached runtime job not found")
     return {"session_id": str(session_id), "job": job}
-
-
-def _runtime_exec_operation(payload: dict[str, Any]) -> str:
-    raw = payload.get("operation", "run")
-    if not isinstance(raw, str) or not raw.strip():
-        raise ToolValidationError("Field 'operation' must be a non-empty string when provided")
-    normalized = raw.strip().lower()
-    if normalized not in ALLOWED_RUNTIME_EXEC_OPERATIONS:
-        raise ToolValidationError(
-            "Field 'operation' must be one of: " + ", ".join(ALLOWED_RUNTIME_EXEC_OPERATIONS)
-        )
-    return normalized
-
-
-def _runtime_exec_tool_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEvaluation:
-    if _runtime_exec_operation(payload) != "run":
-        return ToolApprovalEvaluation.allow()
-    return _runtime_exec_approval_evaluator(payload)
-
-
-async def handle_operation(payload: dict[str, Any]) -> dict[str, Any]:
-    operation = _runtime_exec_operation(payload)
-    if operation == "jobs_list":
-        return await handle_jobs_list(payload)
-    if operation == "job_status":
-        return await handle_job_status(payload)
-    if operation == "job_logs":
-        return await handle_job_logs(payload)
-    if operation == "job_stop":
-        return await handle_job_stop(payload)
-    return await handle_run(payload)

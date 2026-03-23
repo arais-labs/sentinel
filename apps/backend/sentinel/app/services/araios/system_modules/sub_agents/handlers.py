@@ -18,8 +18,6 @@ from app.models import SubAgentTask
 from app.services.browser.manager import BrowserManager
 from app.services.tools.executor import ToolValidationError
 
-ALLOWED_SUB_AGENT_COMMANDS = ("spawn", "check", "list", "cancel")
-
 
 # ── Helpers ──
 
@@ -352,26 +350,3 @@ async def handle_cancel(payload: dict[str, Any]) -> dict[str, Any]:
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "result": task.result if isinstance(task.result, dict) else None,
     }
-
-
-def _sub_agent_command(payload: dict[str, Any]) -> str:
-    raw = payload.get("command")
-    if not isinstance(raw, str) or not raw.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
-    normalized = raw.strip().lower()
-    if normalized not in ALLOWED_SUB_AGENT_COMMANDS:
-        raise ToolValidationError(
-            "Field 'command' must be one of: " + ", ".join(ALLOWED_SUB_AGENT_COMMANDS)
-        )
-    return normalized
-
-
-async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
-    command = _sub_agent_command(payload)
-    if command == "spawn":
-        return await handle_spawn(payload)
-    if command == "check":
-        return await handle_check(payload)
-    if command == "list":
-        return await handle_list(payload)
-    return await handle_cancel(payload)

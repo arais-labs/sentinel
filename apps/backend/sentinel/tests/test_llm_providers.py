@@ -1661,8 +1661,8 @@ def test_codex_stream_emits_tool_arguments_from_function_call_done():
     stream_lines = [
         'data: {"type":"response.created"}',
         'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime_exec","arguments":""}}',
-        'data: {"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_1","arguments":"{\\"command\\":\\"echo hello\\"}"}',
-        'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime_exec","arguments":"{\\"command\\":\\"echo hello\\"}"}}',
+        'data: {"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_1","arguments":"{\\"command\\":\\"run\\",\\"shell_command\\":\\"echo hello\\"}"}',
+        'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime_exec","arguments":"{\\"command\\":\\"run\\",\\"shell_command\\":\\"echo hello\\"}"}}',
         'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
@@ -1680,7 +1680,7 @@ def test_codex_stream_emits_tool_arguments_from_function_call_done():
 
     events = _run(_collect())
     deltas = [event.delta for event in events if event.type == "toolcall_delta"]
-    assert deltas == ['{"command":"echo hello"}']
+    assert deltas == ['{"command":"run","shell_command":"echo hello"}']
     assert events[-1].type == "done"
     assert events[-1].stop_reason == "tool_use"
 
@@ -1690,7 +1690,7 @@ def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta()
         'data: {"type":"response.created"}',
         'data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime_exec","arguments":""}}',
         'data: {"type":"response.function_call_arguments.done","output_index":2,"item_id":"fc_2"}',
-        'data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime_exec","arguments":"{\\"command\\":\\"pwd\\"}"}}',
+        'data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime_exec","arguments":"{\\"command\\":\\"run\\",\\"shell_command\\":\\"pwd\\"}"}}',
         'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
@@ -1708,7 +1708,7 @@ def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta()
 
     events = _run(_collect())
     deltas = [event.delta for event in events if event.type == "toolcall_delta"]
-    assert deltas == ['{"command":"pwd"}']
+    assert deltas == ['{"command":"run","shell_command":"pwd"}']
     assert events[-1].type == "done"
     assert events[-1].stop_reason == "tool_use"
 
@@ -1716,8 +1716,8 @@ def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta()
 def test_codex_stream_emits_tool_arguments_when_present_on_output_item_added():
     stream_lines = [
         'data: {"type":"response.created"}',
-        'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime_exec","arguments":"{\\"command\\":\\"ls\\"}"}}',
-        'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime_exec","arguments":"{\\"command\\":\\"ls\\"}"}}',
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime_exec","arguments":"{\\"command\\":\\"run\\",\\"shell_command\\":\\"ls\\"}"}}',
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime_exec","arguments":"{\\"command\\":\\"run\\",\\"shell_command\\":\\"ls\\"}"}}',
         'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
@@ -1735,7 +1735,7 @@ def test_codex_stream_emits_tool_arguments_when_present_on_output_item_added():
 
     events = _run(_collect())
     deltas = [event.delta for event in events if event.type == "toolcall_delta"]
-    assert deltas == ['{"command":"ls"}']
+    assert deltas == ['{"command":"run","shell_command":"ls"}']
     assert events[-1].type == "done"
     assert events[-1].stop_reason == "tool_use"
 

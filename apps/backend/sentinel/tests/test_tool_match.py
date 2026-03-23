@@ -15,5 +15,5 @@ def test_runtime_exec_match_key_defaults_user_scope() -> None:
 def test_build_tool_match_key_uses_runtime_exec_scope() -> None:
     assert build_tool_match_key(
         tool_name="runtime_exec",
-        payload={"command": "echo hi", "privilege": "root"},
+        payload={"command": "run", "shell_command": "echo hi", "privilege": "root"},
     ) == "runtime_exec:root:echo hi"

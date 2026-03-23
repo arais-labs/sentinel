@@ -28,13 +28,7 @@ def _run(coro):
 def _telegram_tool(app_state):
     reset_runtime_services()
     configure_runtime_services(app_state=app_state)
-    action = TELEGRAM_MODULE.actions[0]
-    assert action is not None
-    return action.to_tool_definition(
-        module_name=TELEGRAM_MODULE.name,
-        module_description=TELEGRAM_MODULE.description,
-        action_count=1,
-    )
+    return TELEGRAM_MODULE.to_tool_definitions()[0]
 
 
 def _build_bridge(*, db: FakeDB, user_id: str) -> TelegramBridge:

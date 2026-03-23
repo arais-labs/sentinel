@@ -13,16 +13,6 @@ from app.services import session_bindings
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
 
 logger = logging.getLogger(__name__)
-ALLOWED_TELEGRAM_COMMANDS = (
-    "send",
-    "status",
-    "configure",
-    "start",
-    "stop",
-    "delete_config",
-    "bind_owner",
-    "clear_owner",
-)
 
 # ---------------------------------------------------------------------------
 # Helpers (imported lazily from telegram_bridge to avoid circular deps)
@@ -192,9 +182,7 @@ async def _resolve_actor_user_id(
     return resolved
 
 
-async def handle_manage(payload: dict[str, Any]) -> dict[str, Any]:
-    action_raw = payload.get("action", "status")
-    action = str(action_raw).strip().lower()
+async def _handle_manage_action(payload: dict[str, Any], *, action: str) -> dict[str, Any]:
     mutating_actions = {
         "configure",
         "start",
@@ -362,22 +350,29 @@ async def handle_manage(payload: dict[str, Any]) -> dict[str, Any]:
     raise ToolValidationError(f"Unsupported action: {action}")
 
 
-def _telegram_command(payload: dict[str, Any]) -> str:
-    raw = payload.get("command")
-    if not isinstance(raw, str) or not raw.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
-    normalized = raw.strip().lower()
-    if normalized not in ALLOWED_TELEGRAM_COMMANDS:
-        raise ToolValidationError(
-            "Field 'command' must be one of: " + ", ".join(ALLOWED_TELEGRAM_COMMANDS)
-        )
-    return normalized
+async def handle_status(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _handle_manage_action(payload, action="status")
 
 
-async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
-    command = _telegram_command(payload)
-    if command == "send":
-        return await handle_send(payload)
-    manage_payload = dict(payload)
-    manage_payload["action"] = command
-    return await handle_manage(manage_payload)
+async def handle_configure(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _handle_manage_action(payload, action="configure")
+
+
+async def handle_start(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _handle_manage_action(payload, action="start")
+
+
+async def handle_stop(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _handle_manage_action(payload, action="stop")
+
+
+async def handle_delete_config(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _handle_manage_action(payload, action="delete_config")
+
+
+async def handle_bind_owner(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _handle_manage_action(payload, action="bind_owner")
+
+
+async def handle_clear_owner(payload: dict[str, Any]) -> dict[str, Any]:
+    return await _handle_manage_action(payload, action="clear_owner")

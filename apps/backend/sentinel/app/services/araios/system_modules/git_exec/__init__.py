@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from .handlers import (
-    ALLOWED_GIT_EXEC_OPERATIONS,
     ToolExecutionError,
     ToolValidationError,
     _configure_author_identity_after_clone,
@@ -13,13 +12,11 @@ from .handlers import (
     _run_git_subprocess,
     _wait_for_push_approval,
     handle_accounts,
-    handle_operation,
     handle_run,
 )
 from .module import MODULE
 
 __all__ = [
-    "ALLOWED_GIT_EXEC_OPERATIONS",
     "MODULE",
     "ToolExecutionError",
     "ToolValidationError",
@@ -32,6 +29,5 @@ __all__ = [
     "_run_git_subprocess",
     "_wait_for_push_approval",
     "handle_accounts",
-    "handle_operation",
     "handle_run",
 ]

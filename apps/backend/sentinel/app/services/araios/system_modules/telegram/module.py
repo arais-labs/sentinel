@@ -2,26 +2,81 @@ from __future__ import annotations
 
 from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
-from .handlers import ALLOWED_TELEGRAM_COMMANDS, handle_run
+from .handlers import (
+    handle_bind_owner,
+    handle_clear_owner,
+    handle_configure,
+    handle_delete_config,
+    handle_send,
+    handle_start,
+    handle_status,
+    handle_stop,
+)
 
 
-def _telegram_parameters_schema() -> dict:
+def _session_id_prop() -> dict:
+    return {"type": "string", "description": "Sentinel session ID used to resolve the acting user."}
+
+
+def _chat_id_prop() -> dict:
+    return {"type": "integer", "description": "Telegram chat ID."}
+
+
+def _send_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["command"],
+        "required": ["message"],
         "properties": {
-            "command": {
-                "type": "string",
-                "enum": list(ALLOWED_TELEGRAM_COMMANDS),
-                "description": "Telegram command to run.",
-            },
-            "chat_id": {"type": "integer"},
-            "message": {"type": "string"},
-            "allow_owner_chat": {"type": "boolean"},
-            "bot_token": {"type": "string"},
-            "telegram_user_id": {"type": "string"},
-            "session_id": {"type": "string"},
+            "chat_id": _chat_id_prop(),
+            "message": {"type": "string", "description": "Message text to send."},
+            "allow_owner_chat": {"type": "boolean", "description": "Allow sending to the owner DM chat."},
+        },
+    }
+
+
+def _status_parameters_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "session_id": _session_id_prop(),
+        },
+    }
+
+
+def _configure_parameters_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["session_id", "bot_token"],
+        "properties": {
+            "session_id": _session_id_prop(),
+            "bot_token": {"type": "string", "description": "Telegram bot token."},
+        },
+    }
+
+
+def _session_manage_parameters_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["session_id"],
+        "properties": {
+            "session_id": _session_id_prop(),
+        },
+    }
+
+
+def _bind_owner_parameters_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["session_id", "chat_id"],
+        "properties": {
+            "session_id": _session_id_prop(),
+            "chat_id": _chat_id_prop(),
+            "telegram_user_id": {"type": "string", "description": "Optional Telegram user ID override."},
         },
     }
 
@@ -36,13 +91,63 @@ MODULE = ModuleDefinition(
     icon="send",
     pinned=False,
     system=True,
+    grouped_tool=True,
     actions=[
         ActionDefinition(
-            id="run",
-            label="Telegram",
-            description="Unified Telegram entry point.",
-            handler=handle_run,
-            parameters_schema=_telegram_parameters_schema(),
-        )
+            id="send",
+            label="Send Telegram Message",
+            description="Send a message to a connected Telegram chat.",
+            handler=handle_send,
+            parameters_schema=_send_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="status",
+            label="Telegram Status",
+            description="Read Telegram bridge status and owner binding state.",
+            handler=handle_status,
+            parameters_schema=_status_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="configure",
+            label="Configure Telegram",
+            description="Configure the bot token and start the Telegram bridge.",
+            handler=handle_configure,
+            parameters_schema=_configure_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="start",
+            label="Start Telegram",
+            description="Start the Telegram bridge for the acting user.",
+            handler=handle_start,
+            parameters_schema=_session_manage_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="stop",
+            label="Stop Telegram",
+            description="Stop the Telegram bridge.",
+            handler=handle_stop,
+            parameters_schema=_session_manage_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="delete_config",
+            label="Delete Telegram Config",
+            description="Delete Telegram bot configuration and owner binding.",
+            handler=handle_delete_config,
+            parameters_schema=_session_manage_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="bind_owner",
+            label="Bind Telegram Owner",
+            description="Bind the owner to a connected private Telegram chat.",
+            handler=handle_bind_owner,
+            parameters_schema=_bind_owner_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="clear_owner",
+            label="Clear Telegram Owner",
+            description="Clear the current Telegram owner chat binding.",
+            handler=handle_clear_owner,
+            parameters_schema=_session_manage_parameters_schema(),
+        ),
     ],
 )

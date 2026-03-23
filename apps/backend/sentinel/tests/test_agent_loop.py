@@ -208,7 +208,7 @@ def test_runtime_context_snapshot_includes_conversation_history_layer():
         AssistantMessage(
             content=[
                 TextContent(text="I will check the repository."),
-                ToolCallContent(id="call_1", name="git_exec", arguments={"command": "git status"}),
+                ToolCallContent(id="call_1", name="git_exec", arguments={"command": "run", "cli_command": "git status"}),
             ]
         ),
         ToolResultMessage(

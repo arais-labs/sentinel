@@ -55,9 +55,6 @@ _DEFAULT_GIT_TIMEOUT_SECONDS = 600
 _MAX_GIT_TIMEOUT_SECONDS = 3600
 _DEFAULT_PUSH_APPROVAL_TIMEOUT_SECONDS = 600
 _MAX_PUSH_APPROVAL_TIMEOUT_SECONDS = 3600
-ALLOWED_GIT_EXEC_OPERATIONS = ("run", "accounts")
-
-
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -1204,9 +1201,9 @@ async def _resolve_git_write_approval_request(
     except ValueError as exc:
         raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
 
-    command = payload.get("command")
-    if not isinstance(command, str) or not command.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
+    cli_command = payload.get("cli_command")
+    if not isinstance(cli_command, str) or not cli_command.strip():
+        raise ToolValidationError("Field 'cli_command' must be a non-empty string")
 
     cwd_raw = payload.get("cwd")
     if cwd_raw is not None and (not isinstance(cwd_raw, str) or not cwd_raw.strip()):
@@ -1217,7 +1214,7 @@ async def _resolve_git_write_approval_request(
     await ensure_runtime_layout(session_id)
     workspace_dir = runtime_workspace_dir(session_id)
     run_dir = _resolve_run_dir(workspace_dir, cwd_raw)
-    tokens = _parse_cli_command(command.strip())
+    tokens = _parse_cli_command(cli_command.strip())
 
     if tokens[0] == "gh":
         mode = _gh_network_mode(tokens)
@@ -1241,11 +1238,11 @@ async def _resolve_git_write_approval_request(
             raise ToolValidationError(
                 f"No matching git account is configured for '{host}/{owner}' (write access)."
             )
-        return session_id, command.strip(), _build_git_approval_payload(
+        return session_id, cli_command.strip(), _build_git_approval_payload(
             account_id=account.account.id,
             repo_url=repo_url,
             remote_name="gh",
-            command=command.strip(),
+            command=cli_command.strip(),
         )
 
     subcommand, subcommand_index = _extract_git_subcommand(tokens)
@@ -1267,19 +1264,19 @@ async def _resolve_git_write_approval_request(
             "No matching git account is configured for "
             f"'{repo_target}' (write access)."
         )
-    return session_id, command.strip(), _build_git_approval_payload(
+    return session_id, cli_command.strip(), _build_git_approval_payload(
         account_id=account.account.id,
         repo_url=repo_url,
         remote_name=remote_name,
-        command=command.strip(),
+        command=cli_command.strip(),
     )
 
 
 def _git_exec_write_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEvaluation:
-    command = payload.get("command")
-    if not isinstance(command, str) or not command.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
-    tokens = _parse_cli_command(command.strip())
+    cli_command = payload.get("cli_command")
+    if not isinstance(cli_command, str) or not cli_command.strip():
+        raise ToolValidationError("Field 'cli_command' must be a non-empty string")
+    tokens = _parse_cli_command(cli_command.strip())
     action = _approval_action_for_tokens(tokens)
     if not action:
         return ToolApprovalEvaluation.allow()
@@ -1291,10 +1288,10 @@ def _git_exec_write_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalE
     return ToolApprovalEvaluation.require(
         ToolApprovalRequirement(
             action=action,
-            description=f"Allow write operation: {command.strip()}",
+            description=f"Allow write operation: {cli_command.strip()}",
             timeout_seconds=_approval_timeout_from_payload(payload),
-            match_key=_normalize_command(command),
-            metadata={"command": command.strip()},
+            match_key=_normalize_command(cli_command),
+            metadata={"command": cli_command.strip()},
             requested_by=requested_by,
         )
     )
@@ -1417,9 +1414,9 @@ async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
 
-    command = payload.get("command")
-    if not isinstance(command, str) or not command.strip():
-        raise ToolValidationError("Field 'command' must be a non-empty string")
+    cli_command = payload.get("cli_command")
+    if not isinstance(cli_command, str) or not cli_command.strip():
+        raise ToolValidationError("Field 'cli_command' must be a non-empty string")
 
     timeout_seconds = payload.get("timeout_seconds", _DEFAULT_GIT_TIMEOUT_SECONDS)
     if (
@@ -1440,7 +1437,7 @@ async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
     workspace_dir = runtime_workspace_dir(session_id)
     run_dir = _resolve_run_dir(workspace_dir, cwd_raw)
 
-    tokens = _parse_cli_command(command.strip())
+    tokens = _parse_cli_command(cli_command.strip())
     if tokens[0] == "gh":
         return await _execute_gh_command(
             session_id=session_id,
@@ -1611,28 +1608,3 @@ async def handle_accounts(payload: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Unified tool dispatch
 # ---------------------------------------------------------------------------
-
-def _git_exec_operation(payload: dict[str, Any]) -> str:
-    raw = payload.get("operation", "run")
-    if not isinstance(raw, str) or not raw.strip():
-        raise ToolValidationError("Field 'operation' must be a non-empty string when provided")
-    normalized = raw.strip().lower()
-    if normalized not in ALLOWED_GIT_EXEC_OPERATIONS:
-        raise ToolValidationError(
-            "Field 'operation' must be one of: " + ", ".join(ALLOWED_GIT_EXEC_OPERATIONS)
-        )
-    return normalized
-
-
-def _git_exec_tool_approval_evaluator(payload: dict[str, Any]) -> ToolApprovalEvaluation:
-    operation = _git_exec_operation(payload)
-    if operation == "accounts":
-        return ToolApprovalEvaluation.allow()
-    return _git_exec_write_approval_evaluator(payload)
-
-
-async def handle_operation(payload: dict[str, Any]) -> dict[str, Any]:
-    operation = _git_exec_operation(payload)
-    if operation == "accounts":
-        return await handle_accounts(payload)
-    return await handle_run(payload)
