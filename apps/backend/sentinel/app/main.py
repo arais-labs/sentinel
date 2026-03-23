@@ -47,7 +47,7 @@ from app.routers import (
 )
 from app.routers.araios import api_router as araios_api_router, platform_auth_router as araios_platform_auth_router
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
-from app.services.agent_run_registry import AgentRunRegistry
+from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.araios.runtime_services import configure_runtime_services
 from app.services.embeddings import EmbeddingService
 from app.services.llm.factory import build_tier_provider_from_settings
@@ -55,7 +55,7 @@ from app.services.llm.ids import TierName
 from app.services.memory.backfill import run_memory_embedding_backfill
 from app.services.memory.search import MemorySearchService
 from app.services.runtime.session_runtime import run_session_runtime_janitor
-from app.services.session_naming import SessionNamingService
+from app.services.sessions.session_naming import SessionNamingService
 from app.services.sub_agents import SubAgentOrchestrator
 from app.services.tools import ToolExecutor
 from app.services.tools.approval import ApprovalService
@@ -65,8 +65,8 @@ from app.services.tools.approval.approval_waiters import (
 )
 from app.services.tools.runtime_registry import build_runtime_registry
 from app.services.browser.pool import BrowserPool
-from app.services.trigger_scheduler import TriggerScheduler
-from app.services.ws_manager import ConnectionManager
+from app.services.triggers.trigger_scheduler import TriggerScheduler
+from app.services.ws.ws_manager import ConnectionManager
 
 
 @asynccontextmanager
@@ -387,7 +387,7 @@ async def lifespan(app: FastAPI):
     app.state.telegram_task = None
 
     if settings.telegram_bot_token:
-        from app.services.telegram_bridge import start_telegram_bridge
+        from app.services.telegram import start_telegram_bridge
 
         await start_telegram_bridge(app.state)
 
@@ -401,7 +401,7 @@ async def lifespan(app: FastAPI):
             await embedding_backfill_task
         if scheduler_task is not None:
             await scheduler_task
-        from app.services.telegram_bridge import stop_telegram_bridge
+        from app.services.telegram import stop_telegram_bridge
 
         await stop_telegram_bridge(app.state)
         await browser_pool.close_all()

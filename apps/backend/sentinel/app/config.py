@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal
 
 from app.services.llm.ids import ProviderChoice
-from app.services.onboarding_defaults import DEFAULT_SYSTEM_PROMPT
+from app.services.onboarding.onboarding_defaults import DEFAULT_SYSTEM_PROMPT
 
 
 class Settings(BaseSettings):

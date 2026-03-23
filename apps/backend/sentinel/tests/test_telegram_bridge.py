@@ -10,10 +10,9 @@ import pytest
 from app.config import settings
 from app.models import Session, SessionBinding
 from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
-from app.services.araios.system_modules.telegram import handlers as telegram_handlers_module
 from app.services.araios.system_modules.telegram.module import MODULE as TELEGRAM_MODULE
-from app.services import session_bindings
-from app.services.telegram_bridge import (
+from app.services.sessions import session_bindings
+from app.services.telegram import (
     TelegramBridge,
     start_telegram_bridge,
 )
@@ -133,15 +132,15 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
     try:
         with (
             patch(
-                "app.services.telegram_bridge.resolve_owner_user_id_from_session",
+                "app.services.telegram.resolve_owner_user_id_from_session",
                 new=AsyncMock(return_value="admin"),
             ),
             patch(
-                "app.services.telegram_bridge.persist_telegram_settings",
+                "app.services.telegram.persist_telegram_settings",
                 new=AsyncMock(return_value=None),
             ) as persist_mock,
             patch(
-                "app.services.telegram_bridge.start_telegram_bridge",
+                "app.services.telegram.start_telegram_bridge",
                 new=AsyncMock(return_value=True),
             ) as start_mock,
             patch(
@@ -153,7 +152,7 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
                 new=AsyncMock(return_value=Session(user_id="admin", title="Main")),
             ),
             patch(
-                "app.services.telegram_bridge.resolve_latest_active_root_session_id_for_user",
+                "app.services.telegram.resolve_latest_active_root_session_id_for_user",
                 new=AsyncMock(return_value="main-session-id"),
             ),
         ):
@@ -195,7 +194,7 @@ def test_telegram_manage_tool_bind_owner_requires_connected_chat():
     tool = _telegram_tool(app_state)
 
     with patch(
-        "app.services.telegram_bridge.resolve_owner_user_id_from_session",
+        "app.services.telegram.resolve_owner_user_id_from_session",
         new=AsyncMock(return_value="admin"),
     ):
         with pytest.raises(ToolExecutionError, match="Chat not connected"):
@@ -236,7 +235,7 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
     try:
         with (
             patch(
-                "app.services.telegram_bridge.resolve_owner_user_id_from_session",
+                "app.services.telegram.resolve_owner_user_id_from_session",
                 new=AsyncMock(return_value="new-admin"),
             ),
             patch(
@@ -248,7 +247,7 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
                 new=AsyncMock(return_value=None),
             ) as delete_mock,
             patch(
-                "app.services.telegram_bridge.start_telegram_bridge",
+                "app.services.telegram.start_telegram_bridge",
                 new=AsyncMock(return_value=True),
             ) as start_mock,
             patch(
@@ -260,7 +259,7 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
                 new=AsyncMock(return_value=Session(user_id="new-admin", title="Main")),
             ),
             patch(
-                "app.services.telegram_bridge.resolve_latest_active_root_session_id_for_user",
+                "app.services.telegram.resolve_latest_active_root_session_id_for_user",
                 new=AsyncMock(return_value="main-session-id"),
             ),
         ):
@@ -334,7 +333,7 @@ def test_start_telegram_bridge_uses_dev_owner_when_owner_unset():
     settings.dev_user_id = "dev-admin"
     try:
         with patch(
-            "app.services.telegram_bridge.TelegramBridge.start",
+            "app.services.telegram.TelegramBridge.start",
             new=AsyncMock(return_value=None),
         ):
             started = _run(start_telegram_bridge(app_state))

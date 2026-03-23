@@ -9,13 +9,13 @@ from uuid import UUID
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.services.araios.runtime_services import get_app_state
-from app.services import session_bindings
+from app.services.sessions import session_bindings
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Helpers (imported lazily from telegram_bridge to avoid circular deps)
+# Helpers (imported lazily from telegram package to avoid circular deps)
 # ---------------------------------------------------------------------------
 
 def _get_bridge():
@@ -28,43 +28,43 @@ def _get_bridge():
 
 async def _resolve_owner_user_id_from_session(session_id: str | None) -> str | None:
     """Resolve owner user_id from an explicit Sentinel session id."""
-    from app.services.telegram_bridge import resolve_owner_user_id_from_session
+    from app.services.telegram import resolve_owner_user_id_from_session
     return await resolve_owner_user_id_from_session(session_id)
 
 
 async def _resolve_latest_active_root_session_id_for_user(user_id: str) -> str | None:
-    from app.services.telegram_bridge import resolve_latest_active_root_session_id_for_user
+    from app.services.telegram import resolve_latest_active_root_session_id_for_user
     return await resolve_latest_active_root_session_id_for_user(user_id)
 
 
 async def _stop_telegram_bridge() -> None:
-    from app.services.telegram_bridge import stop_telegram_bridge
+    from app.services.telegram import stop_telegram_bridge
     await stop_telegram_bridge(get_app_state())
 
 
 async def _start_telegram_bridge() -> bool:
-    from app.services.telegram_bridge import start_telegram_bridge
+    from app.services.telegram import start_telegram_bridge
     return await start_telegram_bridge(get_app_state())
 
 
 async def _persist_telegram_settings(**kwargs: Any) -> None:
-    from app.services.telegram_bridge import persist_telegram_settings
+    from app.services.telegram import persist_telegram_settings
     await persist_telegram_settings(**kwargs)
 
 
 def _mask_telegram_token(value: str | None) -> str | None:
-    from app.services.telegram_bridge import mask_telegram_token
+    from app.services.telegram import mask_telegram_token
     return mask_telegram_token(value)
 
 
 async def _upsert_setting(key: str, value: str) -> None:
-    from app.services.system_settings import upsert_system_setting
+    from app.services.settings.system_settings import upsert_system_setting
     async with AsyncSessionLocal() as db:
         await upsert_system_setting(db, key=key, value=value)
 
 
 async def _delete_setting(key: str) -> None:
-    from app.services.system_settings import delete_system_setting
+    from app.services.settings.system_settings import delete_system_setting
     async with AsyncSessionLocal() as db:
         await delete_system_setting(db, key=key)
 

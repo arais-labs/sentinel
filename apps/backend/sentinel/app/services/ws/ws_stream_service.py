@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import Message, Session
 from app.services.agent.agent_modes import AgentMode, normalize_agent_mode_value
-from app.services.agent_run_registry import AgentRunRegistry
+from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
 from app.services.llm.generic.types import AgentEvent, ImageContent, TextContent
 from app.services.llm.ids import TierName
@@ -23,12 +23,12 @@ from app.services.messages import (
     web_ingress_metadata,
     with_generation_metadata,
 )
-from app.services.session_naming import (
+from app.services.sessions.session_naming import (
     apply_conversation_message_delta,
     conversation_delta_for_role,
 )
-from app.services.ws_manager import ConnectionManager
-from app.services.ws_stream_parser import ParsedWsMessage
+from app.services.ws.ws_manager import ConnectionManager
+from app.services.ws.ws_stream_parser import ParsedWsMessage
 
 logger = logging.getLogger(__name__)
 

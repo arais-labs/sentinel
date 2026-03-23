@@ -7,9 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, settings
 from app.database.database import get_db_session
 from app.services.llm.generic.base import LLMProvider
-from app.services.onboarding_service import OnboardingService
+from app.services.onboarding.onboarding_service import OnboardingService
 from app.services.runtime.runtime_rebuild import RuntimeRebuildService
-from app.services.settings_service import SettingsService
+from app.services.settings.settings_service import SettingsService
 
 
 def get_settings() -> Settings:

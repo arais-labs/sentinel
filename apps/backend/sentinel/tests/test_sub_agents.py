@@ -11,7 +11,7 @@ from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import SubAgentTask
 from app.services.sub_agents import SubAgentOrchestrator
-from app.services.ws_manager import ConnectionManager
+from app.services.ws.ws_manager import ConnectionManager
 from tests.fake_db import FakeDB
 
 

@@ -6,7 +6,7 @@ import secrets
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.services.system_settings import get_system_setting, upsert_system_setting
+from app.services.settings.system_settings import get_system_setting, upsert_system_setting
 
 _USERNAME_KEY = "sentinel.auth.username"
 _PASSWORD_HASH_KEY = "sentinel.auth.password_hash"

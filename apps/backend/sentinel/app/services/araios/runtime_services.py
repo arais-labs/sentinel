@@ -7,7 +7,7 @@ if TYPE_CHECKING:
     from app.services.embeddings import EmbeddingService
     from app.services.memory.search import MemorySearchService
     from app.services.sub_agents import SubAgentOrchestrator
-    from app.services.ws_manager import ConnectionManager
+    from app.services.ws.ws_manager import ConnectionManager
 
 
 _embedding_service: EmbeddingService | None = None

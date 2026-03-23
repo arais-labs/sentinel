@@ -13,8 +13,8 @@ from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import Message, ToolApproval
-from app.services.agent_run_registry import AgentRunRegistry
-from app.services.ws_stream_service import unresolved_tool_calls_from_history
+from app.services.sessions.agent_run_registry import AgentRunRegistry
+from app.services.ws.ws_stream_service import unresolved_tool_calls_from_history
 from tests.fake_db import FakeDB
 
 

@@ -15,13 +15,13 @@ from app.dependencies import get_db
 from app.logging_context import reset_log_session, set_log_session
 from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
 from app.models import Message, ToolApproval
-from app.services.agent_run_registry import AgentRunRegistry
+from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.compaction import CompactionService
 from app.services.messages import normalize_generation_metadata, with_generation_metadata
-from app.services.session_naming import SessionNamingService
-from app.services.ws_manager import ConnectionManager
-from app.services.ws_stream_parser import parse_ws_message
-from app.services.ws_stream_service import (
+from app.services.sessions.session_naming import SessionNamingService
+from app.services.ws.ws_manager import ConnectionManager
+from app.services.ws.ws_stream_parser import parse_ws_message
+from app.services.ws.ws_stream_service import (
     build_user_payload,
     get_owned_session,
     load_history,

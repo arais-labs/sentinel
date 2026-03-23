@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Message, Session, SessionSummary
-from app.services.context_usage import (
+from app.services.sessions.context_usage import (
     estimate_db_message_tokens,
     estimate_db_messages_tokens,
     estimate_text_tokens,

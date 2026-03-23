@@ -12,7 +12,7 @@ from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import Session
 from app.models.system import SystemSetting
 from app.services.agent import ContextBuilder
-from app.services.onboarding_defaults import DEFAULT_SYSTEM_PROMPT, build_system_prompt
+from app.services.onboarding.onboarding_defaults import DEFAULT_SYSTEM_PROMPT, build_system_prompt
 from tests.fake_db import FakeDB
 
 

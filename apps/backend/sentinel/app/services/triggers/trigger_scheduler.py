@@ -16,14 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Session, Trigger, TriggerLog
 from app.services.agent import AgentLoop
-from app.services.agent_run_registry import AgentRunRegistry
+from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.messages import trigger_ingress_metadata
 from app.services.triggers.routing import (
     extract_agent_message_target_session_id,
     resolve_agent_message_route,
 )
 from app.services.tools import ToolExecutor
-from app.services.ws_manager import ConnectionManager
+from app.services.ws.ws_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
 

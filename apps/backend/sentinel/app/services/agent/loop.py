@@ -20,7 +20,7 @@ from app.config import settings
 from app.logging_context import reset_log_session, set_log_session
 from app.models import Message, Session
 from app.services.agent.agent_modes import AgentMode, get_agent_mode_definition
-from app.services.context_usage import (
+from app.services.sessions.context_usage import (
     build_context_usage_metrics,
     estimate_agent_messages_tokens,
 )
@@ -35,7 +35,7 @@ from app.services.messages import (
     build_generation_metadata,
     with_generation_metadata,
 )
-from app.services.session_naming import (
+from app.services.sessions.session_naming import (
     apply_conversation_message_delta,
     conversation_delta_for_role,
 )

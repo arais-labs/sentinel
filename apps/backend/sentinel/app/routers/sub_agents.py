@@ -12,7 +12,7 @@ from app.middleware.auth import TokenPayload, require_auth
 from app.models import Session, SubAgentTask
 from app.schemas.sub_agents import CreateSubAgentTaskRequest, InterjectRequest, SubAgentTaskListResponse, SubAgentTaskResponse
 from app.services.sub_agents import SubAgentOrchestrator
-from app.services.ws_manager import ConnectionManager
+from app.services.ws.ws_manager import ConnectionManager
 
 router = APIRouter()
 _orchestrator = SubAgentOrchestrator()

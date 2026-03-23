@@ -14,16 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import Memory, Message, Session, ToolApproval
-from app.services.context_usage import (
+from app.services.sessions.context_usage import (
     build_context_usage_metrics,
     estimate_agent_messages_tokens,
     estimate_db_messages_tokens,
     extract_runtime_context_metrics,
     normalize_context_budget,
 )
-from app.services import session_bindings
+from app.services.sessions import session_bindings
 from app.services.agent.agent_modes import AgentMode, get_default_agent_mode
-from app.services.agent_run_registry import AgentRunRegistry
+from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
 from app.services.llm.ids import TierName
 from app.services.memory import MemoryRepository, MemoryService
@@ -38,7 +38,7 @@ from app.services.runtime.session_runtime import (
     read_runtime_workspace_file_preview,
     stop_all_detached_runtime_jobs,
 )
-from app.services.session_naming import (
+from app.services.sessions.session_naming import (
     SessionNamingService,
     apply_conversation_message_delta,
     conversation_delta_for_role,

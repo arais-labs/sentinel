@@ -30,7 +30,7 @@ from app.schemas.sessions import (
     SessionRuntimeResponse,
     SessionResponse,
 )
-from app.services.agent_run_registry import AgentRunRegistry
+from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions import (
     AgentLoopUnavailableError,
     ChatPayloadRequiredError,

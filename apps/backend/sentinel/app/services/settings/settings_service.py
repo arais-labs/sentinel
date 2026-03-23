@@ -8,9 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.services.llm.ids import ProviderChoice, parse_provider_choice
-from app.services.system_settings import (
+from app.services.settings.system_settings import (
     delete_system_setting,
-    get_system_setting,
     upsert_system_setting,
 )
 

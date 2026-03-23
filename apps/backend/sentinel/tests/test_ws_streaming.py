@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 
 from app.services.llm.generic.types import AgentEvent, ToolCallContent, ToolResultContent
-from app.services.ws_manager import ConnectionManager
+from app.services.ws.ws_manager import ConnectionManager
 
 
 def _run(coro):
