@@ -23,6 +23,7 @@ from app.sentral import (
     Runtime,
     TextBlock,
     TokenUsage,
+    ToolResultBlock,
     TurnResult,
 )
 from app.config import settings
@@ -135,6 +136,9 @@ class SentinelLoopRuntimeAdapter(Runtime):
         last_stop_reason: str | None = None
         pending_approval = None
         deferred_done: RuntimeAgentEvent | None = None
+        # Track most-recent tool_call_id per tool name so the pending callback
+        # can emit a pending tool_result event with the correct call ID.
+        tool_call_ids_by_name: dict[str, str] = {}
 
         async def _emit_runtime_event(runtime_event: RuntimeAgentEvent) -> None:
             nonlocal last_stop_reason, pending_approval, deferred_done
@@ -142,12 +146,42 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 last_stop_reason = runtime_event.stop_reason
             if runtime_event.approval_request is not None:
                 pending_approval = runtime_event.approval_request
+            if runtime_event.type == "toolcall_start" and runtime_event.tool_call:
+                tool_call_ids_by_name[runtime_event.tool_call.name] = runtime_event.tool_call.id
             if config.stream and runtime_event.type == "done" and runtime_event.stop_reason != "tool_use":
                 deferred_done = runtime_event
                 return
             events.append(runtime_event)
             if sink is not None:
                 await sink(runtime_event)
+
+        async def _on_pending_tool_result(
+            tool_name: str,
+            tool_args: dict,
+            approval_payload: dict,
+        ) -> None:
+            """Emit a pending tool_result WS event immediately when approval is requested.
+
+            This makes the streaming card turn rose (pending state) in real-time
+            instead of waiting until the approval is resolved.
+            """
+            import json as _json
+            tool_call_id = tool_call_ids_by_name.get(tool_name, "")
+            pending_metadata: dict = {"approval": approval_payload, "pending": True}
+            content = _json.dumps({
+                "status": "pending",
+                "message": approval_payload.get("description") or "Waiting for approval.",
+                "approval": approval_payload,
+            })
+            pending_block = ToolResultBlock(
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                content=content,
+                is_error=False,
+                metadata=pending_metadata,
+                tool_arguments=tool_args,
+            )
+            await _emit_runtime_event(RuntimeAgentEvent(type="tool_result", tool_result=pending_block))
 
         mode_definition = get_agent_mode_definition(config.provider_metadata.get("agent_mode"))
         user_metadata = (
@@ -220,6 +254,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 self._loop.tool_adapter.executor,
                 agent_mode=mode_definition.id,
                 session_id=self._session_id,
+                on_pending_tool_result=_on_pending_tool_result,
             ),
             compactor=self._compactor,
         )

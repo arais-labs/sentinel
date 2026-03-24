@@ -479,14 +479,31 @@ class AgentRuntimeEngine(Runtime):
     ) -> ToolResultBlock:
         metadata = dict(result.metadata)
         if result.approval_request is not None:
-            metadata["approval"] = asdict(result.approval_request)
-            metadata["pending"] = result.status == "pending_approval"
+            req = result.approval_request
+            is_pending = result.status == "pending_approval"
+            # Use field names the frontend expects: provider / approval_id (not tool_name / id)
+            approval_dict: dict[str, Any] = {
+                "provider": req.tool_name,
+                "approval_id": req.id,
+                "pending": is_pending,
+                "status": "pending" if is_pending else "resolved",
+                "can_resolve": is_pending,
+                "action": req.action,
+                "description": req.description,
+            }
+            # Carry through any extra metadata fields from the original approval payload
+            for k, v in req.metadata.items():
+                if k not in approval_dict:
+                    approval_dict[k] = v
+            metadata["approval"] = approval_dict
+            metadata["pending"] = is_pending
         if result.status == "pending_approval":
+            req = result.approval_request
             content = json.dumps(
                 {
                     "status": "pending",
-                    "message": result.approval_request.description if result.approval_request is not None else "Action requires approval.",
-                    "approval": asdict(result.approval_request) if result.approval_request is not None else None,
+                    "message": req.description if req is not None else "Action requires approval.",
+                    "approval": metadata.get("approval"),
                 },
                 default=str,
             )
@@ -520,6 +537,12 @@ class AgentRuntimeEngine(Runtime):
     def _approval_from_tool_result(self, result: ToolResultBlock) -> ApprovalRequest | None:
         approval = result.metadata.get("approval")
         if not isinstance(approval, dict):
+            return None
+        # Only trigger the approval-required flow when the approval is actually still pending.
+        # Resolved approvals (approved/rejected/timed_out) must not stop the loop.
+        pending = approval.get("pending")
+        status = str(approval.get("status") or "").lower()
+        if pending is not True and status not in ("pending", ""):
             return None
         return ApprovalRequest(
             id=str(approval.get("id") or approval.get("approval_id") or "").strip(),

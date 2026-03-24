@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
 
@@ -28,11 +29,13 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
         *,
         agent_mode: AgentMode | str | None = None,
         session_id: UUID | str | None = None,
+        on_pending_tool_result: Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._registry = registry
         self._executor = executor
         self._agent_mode = agent_mode
         self._session_id = str(session_id) if session_id is not None else None
+        self._on_pending_tool_result = on_pending_tool_result
 
     def list_tools(self) -> list[RuntimeToolDefinition]:
         tools: list[RuntimeToolDefinition] = []
@@ -56,6 +59,8 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
             async def _on_pending_approval(approval_payload: dict[str, Any]) -> None:
                 nonlocal pending_approval_payload
                 pending_approval_payload = dict(approval_payload)
+                if self._on_pending_tool_result is not None:
+                    await self._on_pending_tool_result(tool.name, execution_payload, approval_payload)
 
             try:
                 result, _duration_ms = await self._executor.execute(
