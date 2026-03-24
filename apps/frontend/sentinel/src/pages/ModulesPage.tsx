@@ -540,7 +540,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
       {!hideHeader && (
         <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-sm font-medium text-[color:var(--text-secondary)]">{config.label}</span>
+            <span className="text-sm font-semibold text-[color:var(--text-secondary)]">{config.label}</span>
             {(config.secrets || []).map((s: any) =>
               secretsStatus[s.key] ? (
                 <span key={s.key} className="flex items-center gap-1">
@@ -1038,19 +1038,19 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
   // Default to first available tab, but respect user's choice if valid
   const effectiveTab = tabs.includes(activeTab) ? activeTab : tabs[0];
 
-  const inputCls = 'h-8 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+  const inputCls = 'h-7 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
 
   return (
     <div className="flex flex-col h-full">
       {/* Header bar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] gap-3">
+      <div className="flex items-center justify-between px-4 h-10 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] gap-3">
         <div className="flex items-center gap-3">
           {onBack && (
             <button onClick={onBack} className="p-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors">
               <ArrowLeft size={16} />
             </button>
           )}
-          <span className="text-sm font-medium text-[color:var(--text-secondary)]">{config.label}</span>
+          <span className="text-sm font-semibold text-[color:var(--text-secondary)]">{config.label}</span>
           {tabs.length > 1 && (
             <div className="flex items-center gap-1 ml-2">
               {tabs.map(tab => (
@@ -1082,7 +1082,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
             </button>
           )}
           {effectiveTab === 'records' && (
-            <button className="h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity flex items-center gap-1.5" onClick={() => setCreateOpen(true)}>
+            <button className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity flex items-center gap-1.5" onClick={() => setCreateOpen(true)}>
               <Plus size={12} />{createAction?.label || `New`}
             </button>
           )}
@@ -1265,8 +1265,8 @@ function ModulesSection() {
     <div className="flex h-full">
       {/* Left sidebar — module list */}
       <div className="w-60 shrink-0 border-r border-[color:var(--border-subtle)] flex flex-col bg-[color:var(--surface-0)]">
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-[color:var(--border-subtle)]">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Modules <span className="ml-1 opacity-60">{modules.length}</span></span>
+        <div className="flex items-center justify-between px-3 h-10 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+          <span className="text-sm font-semibold text-[color:var(--text-secondary)]">Modules <span className="ml-1 text-xs font-normal text-[color:var(--text-muted)]">{modules.length}</span></span>
           <div className="flex items-center gap-1">
             <input
               ref={importInputRef}
@@ -1278,10 +1278,10 @@ function ModulesSection() {
             <button
               onClick={() => importInputRef.current?.click()}
               disabled={importing}
-              className="h-6 px-2 rounded flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors disabled:opacity-50"
             >
-              <FileCode size={11} />
-              {importing ? 'Importing...' : 'Import'}
+              <FileCode size={12} />
+              <span className="text-[10px] font-bold uppercase tracking-widest">{importing ? 'Importing...' : 'Import'}</span>
             </button>
           </div>
         </div>
@@ -1544,7 +1544,7 @@ function PermissionsSection() {
 
   if (loading) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
 
-  const inputCls = 'h-8 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+  const inputCls = 'h-7 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
 
   return (
     <div className="space-y-4">

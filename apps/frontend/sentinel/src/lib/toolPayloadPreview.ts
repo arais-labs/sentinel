@@ -3,6 +3,7 @@ export type ToolPayloadKind = 'input' | 'output';
 export interface ToolFieldPreview {
   key: string;
   text: string;
+  fullText?: string;
   truncated: boolean;
   redacted: boolean;
 }
@@ -157,12 +158,24 @@ function valueLooksSensitive(value: unknown): boolean {
   return SENSITIVE_VALUE_PATTERN.test(value);
 }
 
-function redactField(key: string, value: unknown): { text: string; truncated: boolean; redacted: boolean } {
+function redactField(key: string, value: unknown): { text: string; fullText?: string; truncated: boolean; redacted: boolean } {
   if (SENSITIVE_KEY_PATTERN.test(key) || valueLooksSensitive(value)) {
     return { text: '[redacted]', truncated: false, redacted: true };
   }
   const preview = previewPayloadValue(value);
-  return { text: preview.text, truncated: preview.truncated, redacted: false };
+  let fullText: string | undefined;
+  if (preview.truncated) {
+    if (typeof value === 'string') {
+      fullText = value;
+    } else {
+      try {
+        fullText = JSON.stringify(value, null, 2);
+      } catch {
+        fullText = String(value);
+      }
+    }
+  }
+  return { text: preview.text, fullText, truncated: preview.truncated, redacted: false };
 }
 
 export function topLevelPayloadFieldCount(raw: string): number {
@@ -200,23 +213,25 @@ export function extractCriticalToolFields({
     );
     return ordered.map((key) => {
       const value = parsed[key];
-      const preview = redactField(key, value);
+      const res = redactField(key, value);
       return {
         key,
-        text: preview.text,
-        truncated: preview.truncated,
-        redacted: preview.redacted,
+        text: res.text,
+        fullText: res.fullText,
+        truncated: res.truncated,
+        redacted: res.redacted,
       };
     });
   }
 
   if (parsed !== null) {
-    const preview = redactField(kind === 'input' ? 'input' : 'output', parsed);
+    const res = redactField(kind === 'input' ? 'input' : 'output', parsed);
     return [{
       key: kind === 'input' ? 'input' : 'output',
-      text: preview.text,
-      truncated: preview.truncated,
-      redacted: preview.redacted,
+      text: res.text,
+      fullText: res.fullText,
+      truncated: res.truncated,
+      redacted: res.redacted,
     }];
   }
 
