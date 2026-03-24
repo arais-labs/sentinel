@@ -1,54 +1,91 @@
 #!/usr/bin/env python3
-"""Standalone Sentinel agent CLI (no backend session/websocket/UI).
+"""Minimal standalone agent CLI built on sentral.
 
-This runs provider + tool loop directly in-process so agentic behavior can be
-verified in isolation.
+This CLI does not use Sentinel sessions, websockets, or routers. It runs the
+shared sentral runtime directly with a tiny local workspace toolset:
+
+- cd
+- read_file
+- write_file
+- run_command
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
+import io
 import os
-import shlex
-import socket
+import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, Callable, Mapping
+from uuid import uuid4
 
-# Make this script runnable directly without requiring PYTHONPATH exports.
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
+from app.sentral import (  # noqa: E402
+    AssistantTurn,
+    AgentEvent,
+    AgentRuntimeEngine,
+    ConversationItem,
+    GenerationConfig,
+    ImageBlock,
+    RunTurnRequest,
+    TextBlock,
+    ThinkingBlock,
+    ToolDefinition,
+    ToolExecutionResult,
+    ToolSchema as RuntimeToolSchema,
+    ToolRegistry,
+    TokenUsage as RuntimeTokenUsage,
+    ToolCallBlock,
+)
+from app.services.onboarding.onboarding_defaults import (  # noqa: E402
+    DEFAULT_SYSTEM_PROMPT as SENTINEL_DEFAULT_SYSTEM_PROMPT,
+)
+from app.services.llm.generic.base import LLMProvider  # noqa: E402
+from app.services.llm.generic.errors import error_tag, is_retryable  # noqa: E402
 from app.services.llm.generic.types import (  # noqa: E402
-    AgentMessage,
+    AgentEvent as SentinelAgentEvent,
     AssistantMessage,
+    ImageContent,
     ReasoningConfig,
     SystemMessage,
     TextContent,
     ThinkingContent,
+    TokenUsage,
     ToolCallContent,
     ToolResultMessage,
     ToolSchema,
-    TokenUsage,
     UserMessage,
 )
-from app.services.tools.browser_tool import BrowserManager  # noqa: E402
-from app.services.tools.executor import ToolExecutor, ToolValidationError  # noqa: E402
-from app.services.tools.registry import ToolDefinition, ToolRegistry  # noqa: E402
+from app.services.llm.ids import parse_tier_name  # noqa: E402
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are Sentinel, an autonomous operator. Be direct, execute tasks end-to-end, "
-    "and use tools when needed."
+CLI_EXECUTION_POLICY = (
+    "## Execution Policy\n"
+    "When the user asks you to execute a multi-step task, keep acting until the task is complete or a true blocker appears.\n"
+    "Do not end a turn with text like 'I'll do X next' or ask for confirmation to continue when no new user permission is actually required.\n"
+    "If a tool fails, immediately try a different valid approach before asking the user for help.\n"
+    "Only ask the user for input when required by external verification, permissions, or unavailable credentials."
 )
-
-_MAX_TOOL_RESULT_BYTES = 50_000
-_MAX_HTTP_RESPONSE_BYTES = 1_048_576
+CLI_FILE_POLICY = (
+    "## File And Command Policy\n"
+    "You are running locally with the user's filesystem permissions.\n"
+    "The CLI start directory only sets your initial cwd; it is not a sandbox boundary.\n"
+    "Use read_file/write_file for direct file operations and cd to change cwd when helpful.\n"
+    "If you claim a file was created or modified, first perform the write and then verify it with read_file or run_command.\n"
+    "Do not say a file was written, generated, or updated unless a tool result confirmed it."
+)
+DEFAULT_SYSTEM_PROMPT = (
+    f"{SENTINEL_DEFAULT_SYSTEM_PROMPT}\n\n{CLI_EXECUTION_POLICY}\n\n{CLI_FILE_POLICY}"
+)
+DEFAULT_TIMEOUT_SECONDS = 300
+MAX_FILE_BYTES = 128_000
+MAX_COMMAND_OUTPUT_CHARS = 64_000
 
 
 @dataclass(slots=True)
@@ -56,74 +93,66 @@ class CliConfig:
     model: str
     max_iterations: int
     temperature: float
+    stream: bool
     show_thinking: bool
-    verbose_tools: bool
-    tools_enabled: bool
     system_prompt: str
+    timeout_seconds: int
 
 
-class CliToolAdapter:
-    """Minimal tool adapter for standalone CLI mode (no DB/estop dependency)."""
+@dataclass(frozen=True, slots=True)
+class ProviderCredentialOption:
+    key: str
+    label: str
+    env_keys: tuple[str, ...]
+    primary_provider: str
 
-    def __init__(self, registry: ToolRegistry) -> None:
-        self._registry = registry
-        self._executor = ToolExecutor(registry)
 
-    def get_tool_schemas(self) -> list[ToolSchema]:
-        schemas: list[ToolSchema] = []
-        for tool in self._registry.list_all():
-            if not tool.enabled:
-                continue
-            schemas.append(
-                ToolSchema(
-                    name=tool.name,
-                    description=tool.description,
-                    parameters=tool.parameters_schema,
-                )
-            )
-        return schemas
+_PROVIDER_CREDENTIAL_OPTIONS = (
+    ProviderCredentialOption(
+        key="anthropic_oauth",
+        label="Anthropic OAuth token",
+        env_keys=("ANTHROPIC_OAUTH_TOKEN",),
+        primary_provider="anthropic",
+    ),
+    ProviderCredentialOption(
+        key="anthropic_api",
+        label="Anthropic API key",
+        env_keys=("ANTHROPIC_API_KEY",),
+        primary_provider="anthropic",
+    ),
+    ProviderCredentialOption(
+        key="openai_oauth",
+        label="OpenAI Codex OAuth token",
+        env_keys=("OPENAI_OAUTH_TOKEN",),
+        primary_provider="openai",
+    ),
+    ProviderCredentialOption(
+        key="openai_api",
+        label="OpenAI API key",
+        env_keys=("OPENAI_API_KEY",),
+        primary_provider="openai",
+    ),
+    ProviderCredentialOption(
+        key="gemini_api",
+        label="Gemini API key",
+        env_keys=("GEMINI_API_KEY",),
+        primary_provider="gemini",
+    ),
+)
 
-    async def execute_tool_calls(self, calls: list[ToolCallContent]) -> list[ToolResultMessage]:
-        tasks = [self._execute_one(call) for call in calls]
-        return await asyncio.gather(*tasks)
 
-    async def _execute_one(self, call: ToolCallContent) -> ToolResultMessage:
-        try:
-            payload = call.arguments if isinstance(call.arguments, dict) else {}
-            result, _duration_ms = await self._executor.execute(
-                call.name,
-                dict(payload),
-            )
-            content = self._truncate_content(json.dumps(result, default=str))
-            return ToolResultMessage(
-                tool_call_id=call.id,
-                tool_name=call.name,
-                content=content,
-                is_error=False,
-            )
-        except KeyError:
-            return ToolResultMessage(
-                tool_call_id=call.id,
-                tool_name=call.name,
-                content=self._truncate_content(f"Tool '{call.name}' is not registered"),
-                is_error=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return ToolResultMessage(
-                tool_call_id=call.id,
-                tool_name=call.name,
-                content=self._truncate_content(str(exc)),
-                is_error=True,
-            )
+@dataclass(frozen=True, slots=True)
+class _CliTierModelConfig:
+    provider: LLMProvider
+    model: str
+    reasoning_config: ReasoningConfig
+    temperature: float
 
-    @staticmethod
-    def _truncate_content(content: str) -> str:
-        encoded = content.encode("utf-8", errors="replace")
-        total_bytes = len(encoded)
-        if total_bytes <= _MAX_TOOL_RESULT_BYTES:
-            return content
-        head = encoded[:_MAX_TOOL_RESULT_BYTES].decode("utf-8", errors="replace")
-        return f"{head}\n...[TRUNCATED - {total_bytes} bytes total]"
+
+@dataclass(frozen=True, slots=True)
+class _CliTierConfig:
+    primary: _CliTierModelConfig
+    fallbacks: tuple[_CliTierModelConfig, ...]
 
 
 def _env_str(key: str, default: str = "") -> str:
@@ -154,10 +183,211 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
-def _build_cli_provider() -> Any:
-    """Build tiered provider routing from env vars only."""
+def _env_lookup(key: str, env: Mapping[str, str] | None = None) -> str:
+    raw = (env or os.environ).get(key)
+    if raw is None:
+        return ""
+    trimmed = str(raw).strip()
+    return trimmed if trimmed else ""
+
+
+def _has_any_provider_credentials(env: Mapping[str, str] | None = None) -> bool:
+    return any(
+        _env_lookup(key, env)
+        for option in _PROVIDER_CREDENTIAL_OPTIONS
+        for key in option.env_keys
+    )
+
+
+def _prompt_choice(
+    *,
+    prompt: str,
+    options: list[str],
+    input_fn: Callable[[str], str],
+) -> int:
+    while True:
+        print(prompt)
+        for index, option in enumerate(options, start=1):
+            print(f"  {index}. {option}")
+        raw = _normalize_cli_input(input_fn("> ")).strip()
+        if raw.isdigit():
+            selected = int(raw)
+            if 1 <= selected <= len(options):
+                return selected - 1
+        print("Invalid selection.\n")
+
+
+def _normalize_cli_input(raw: str) -> str:
+    return raw.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("\r", "")
+
+
+def _read_prompt_line(
+    prompt: str,
+    *,
+    stdin: io.TextIOBase | None = None,
+    stdout: io.TextIOBase | None = None,
+) -> str:
+    in_stream = stdin or sys.stdin
+    out_stream = stdout or sys.stdout
+    out_stream.write(prompt)
+    out_stream.flush()
+    raw = in_stream.readline()
+    if raw == "":
+        raise EOFError
+    return _normalize_cli_input(raw).rstrip("\n")
+
+
+def _boot_tui_select(prompt: str, options: list[tuple[str, str]]) -> str | None:
+    from prompt_toolkit.shortcuts import radiolist_dialog
+
+    return radiolist_dialog(
+        title="Sentral CLI Setup",
+        text=prompt,
+        values=options,
+        ok_text="Continue",
+        cancel_text="Cancel",
+    ).run()
+
+
+def _boot_tui_input(prompt: str, *, default: str = "") -> str | None:
+    from prompt_toolkit.shortcuts import input_dialog
+
+    return input_dialog(
+        title="Sentral CLI Setup",
+        text=prompt,
+        default=default,
+        ok_text="Continue",
+        cancel_text="Cancel",
+    ).run()
+
+
+def _collect_boot_provider_overrides_tui(
+    *,
+    env: Mapping[str, str] | None = None,
+    select_fn: Callable[[str, list[tuple[str, str]]], str | None] = _boot_tui_select,
+    input_value_fn: Callable[[str], str | None] | None = None,
+    input_with_default_fn: Callable[[str, str], str | None] | None = None,
+) -> dict[str, str]:
+    if _has_any_provider_credentials(env):
+        return {}
+
+    input_value = input_value_fn or (lambda prompt: _boot_tui_input(prompt))
+    input_with_default = input_with_default_fn or (
+        lambda prompt, default: _boot_tui_input(prompt, default=default)
+    )
+    env_map = env or os.environ
+
+    provider_key = select_fn(
+        "Select a provider credential for this CLI run:",
+        [(option.key, option.label) for option in _PROVIDER_CREDENTIAL_OPTIONS],
+    )
+    if provider_key is None:
+        raise RuntimeError("Credential setup cancelled.")
+
+    selected = next(
+        option for option in _PROVIDER_CREDENTIAL_OPTIONS if option.key == provider_key
+    )
+    source = select_fn(
+        f"How do you want to provide {selected.label}?",
+        [
+            ("paste", "Paste token now"),
+            ("env", "Load from an environment variable name"),
+        ],
+    )
+    if source is None:
+        raise RuntimeError("Credential setup cancelled.")
+
+    overrides: dict[str, str] = {"PRIMARY_PROVIDER": selected.primary_provider}
+    if source == "paste":
+        while True:
+            secret = _normalize_cli_input(
+                input_value(f"Paste {selected.label}:") or ""
+            ).strip()
+            if secret:
+                overrides[selected.env_keys[0]] = secret
+                print(f"Using {selected.label} for this run.\n")
+                return overrides
+            print("Secret cannot be empty.\n")
+
+    while True:
+        default_hint = selected.env_keys[0]
+        var_name = _normalize_cli_input(
+            input_with_default(
+                f"Environment variable name for {selected.label}:",
+                default_hint,
+            )
+            or ""
+        ).strip() or default_hint
+        value = _env_lookup(var_name, env_map)
+        if value:
+            overrides[selected.env_keys[0]] = value
+            print(f"Using {selected.label} from {var_name}.\n")
+            return overrides
+        print(f"Environment variable '{var_name}' is not set.\n")
+
+
+def _collect_boot_provider_overrides(
+    *,
+    env: Mapping[str, str] | None = None,
+    input_fn: Callable[[str], str] | None = None,
+    interactive: bool | None = None,
+) -> dict[str, str]:
+    if _has_any_provider_credentials(env):
+        return {}
+    is_interactive = interactive if interactive is not None else sys.stdin.isatty()
+    if not is_interactive:
+        return {}
+    if input_fn is None:
+        try:
+            return _collect_boot_provider_overrides_tui(env=env)
+        except ModuleNotFoundError:
+            pass
+    prompt_input = input_fn or _read_prompt_line
+
+    print("No AI provider credentials found.")
+    provider_idx = _prompt_choice(
+        prompt="Select a provider credential for this CLI run:",
+        options=[option.label for option in _PROVIDER_CREDENTIAL_OPTIONS],
+        input_fn=prompt_input,
+    )
+    selected = _PROVIDER_CREDENTIAL_OPTIONS[provider_idx]
+
+    source_idx = _prompt_choice(
+        prompt=f"How do you want to provide {selected.label}?",
+        options=[
+            "Paste token now (visible)",
+            "Load from an environment variable name",
+        ],
+        input_fn=prompt_input,
+    )
+
+    overrides: dict[str, str] = {"PRIMARY_PROVIDER": selected.primary_provider}
+    env_map = env or os.environ
+
+    if source_idx == 0:
+        while True:
+            secret = _normalize_cli_input(prompt_input(f"{selected.label}: ")).strip()
+            if secret:
+                overrides[selected.env_keys[0]] = secret
+                print(f"Using {selected.label} for this run.\n")
+                return overrides
+            print("Secret cannot be empty.\n")
+
+    while True:
+        default_hint = selected.env_keys[0]
+        var_name = _normalize_cli_input(
+            prompt_input(f"Environment variable name [{default_hint}]: ")
+        ).strip() or default_hint
+        value = _env_lookup(var_name, env_map)
+        if value:
+            overrides[selected.env_keys[0]] = value
+            print(f"Using {selected.label} from {var_name}.\n")
+            return overrides
+        print(f"Environment variable '{var_name}' is not set.\n")
+
+
+def _build_provider() -> LLMProvider:
     try:
-        from app.services.llm.generic.tier import TierConfig, TierModelConfig, TierProvider
         from app.services.llm.providers.anthropic import AnthropicProvider
         from app.services.llm.providers.codex import CodexProvider
         from app.services.llm.providers.gemini import GeminiProvider
@@ -168,74 +398,79 @@ def _build_cli_provider() -> Any:
             f"Missing Python dependency '{missing}'. Install backend dependencies in the active venv."
         ) from exc
 
+    boot_overrides = _collect_boot_provider_overrides()
+    env = {**os.environ, **boot_overrides}
+
     anthropic = None
     openai = None
     gemini = None
     openai_is_codex = False
 
-    anthropic_token = _env_str("ANTHROPIC_OAUTH_TOKEN") or _env_str("ANTHROPIC_API_KEY")
+    anthropic_token = _env_lookup("ANTHROPIC_OAUTH_TOKEN", env) or _env_lookup("ANTHROPIC_API_KEY", env)
     if anthropic_token:
         anthropic = AnthropicProvider(anthropic_token)
 
-    openai_oauth = _env_str("OPENAI_OAUTH_TOKEN")
-    openai_api_key = _env_str("OPENAI_API_KEY")
-    openai_base_url = _env_str("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    openai_oauth = _env_lookup("OPENAI_OAUTH_TOKEN", env)
+    openai_api_key = _env_lookup("OPENAI_API_KEY", env)
+    openai_base_url = _env_lookup("OPENAI_BASE_URL", env) or "https://api.openai.com/v1"
     if openai_oauth:
         openai = CodexProvider(openai_oauth)
         openai_is_codex = True
     elif openai_api_key:
         openai = OpenAIProvider(openai_api_key, base_url=openai_base_url)
 
-    gemini_key = _env_str("GEMINI_API_KEY")
+    gemini_key = _env_lookup("GEMINI_API_KEY", env)
     if gemini_key:
         gemini = GeminiProvider(gemini_key)
 
     if not anthropic and not openai and not gemini:
-        return None
+        raise RuntimeError(
+            "No provider credentials found. Set one of ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_API_KEY, "
+            "OPENAI_OAUTH_TOKEN, OPENAI_API_KEY, or GEMINI_API_KEY."
+        )
 
-    primary_provider = _env_str("PRIMARY_PROVIDER", "anthropic")
-    llm_max_retries = _env_int("LLM_MAX_RETRIES", 3)
-
+    primary_provider = _env_lookup("PRIMARY_PROVIDER", env) or "anthropic"
+    llm_max_retries = int(_env_lookup("LLM_MAX_RETRIES", env) or 3)
     tier_defs = [
         (
             "fast",
-            _env_str("TIER_FAST_ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
-            _env_str("TIER_FAST_OPENAI_MODEL", "gpt-4o-mini"),
-            _env_str("TIER_FAST_CODEX_MODEL", "gpt-5.3-codex-spark"),
-            _env_str("TIER_FAST_GEMINI_MODEL", "gemini-3-flash-preview"),
-            _env_int("TIER_FAST_MAX_TOKENS", 4096),
-            _env_float("TIER_FAST_TEMPERATURE", 0.3),
-            _env_int("TIER_FAST_ANTHROPIC_THINKING_BUDGET", 0),
-            _env_str("TIER_FAST_OPENAI_REASONING_EFFORT", ""),
-            _env_int("TIER_FAST_GEMINI_THINKING_BUDGET", 0),
+            _env_lookup("TIER_FAST_ANTHROPIC_MODEL", env) or "claude-haiku-4-5-20251001",
+            _env_lookup("TIER_FAST_OPENAI_MODEL", env) or "gpt-4o-mini",
+            _env_lookup("TIER_FAST_CODEX_MODEL", env) or "gpt-5.3-codex-spark",
+            _env_lookup("TIER_FAST_GEMINI_MODEL", env) or "gemini-3-flash-preview",
+            int(_env_lookup("TIER_FAST_MAX_TOKENS", env) or 4096),
+            float(_env_lookup("TIER_FAST_TEMPERATURE", env) or 0.3),
+            int(_env_lookup("TIER_FAST_ANTHROPIC_THINKING_BUDGET", env) or 0),
+            _env_lookup("TIER_FAST_OPENAI_REASONING_EFFORT", env),
+            int(_env_lookup("TIER_FAST_GEMINI_THINKING_BUDGET", env) or 0),
         ),
         (
             "normal",
-            _env_str("TIER_NORMAL_ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-            _env_str("TIER_NORMAL_OPENAI_MODEL", "gpt-4o"),
-            _env_str("TIER_NORMAL_CODEX_MODEL", "gpt-5.3-codex"),
-            _env_str("TIER_NORMAL_GEMINI_MODEL", "gemini-3-flash-preview"),
-            _env_int("TIER_NORMAL_MAX_TOKENS", 8192),
-            _env_float("TIER_NORMAL_TEMPERATURE", 0.7),
-            _env_int("TIER_NORMAL_ANTHROPIC_THINKING_BUDGET", 5000),
-            _env_str("TIER_NORMAL_OPENAI_REASONING_EFFORT", ""),
-            _env_int("TIER_NORMAL_GEMINI_THINKING_BUDGET", 0),
+            _env_lookup("TIER_NORMAL_ANTHROPIC_MODEL", env) or "claude-sonnet-4-6",
+            _env_lookup("TIER_NORMAL_OPENAI_MODEL", env) or "gpt-4o",
+            _env_lookup("TIER_NORMAL_CODEX_MODEL", env) or "gpt-5.3-codex",
+            _env_lookup("TIER_NORMAL_GEMINI_MODEL", env) or "gemini-3-flash-preview",
+            int(_env_lookup("TIER_NORMAL_MAX_TOKENS", env) or 8192),
+            float(_env_lookup("TIER_NORMAL_TEMPERATURE", env) or 0.7),
+            int(_env_lookup("TIER_NORMAL_ANTHROPIC_THINKING_BUDGET", env) or 5000),
+            _env_lookup("TIER_NORMAL_OPENAI_REASONING_EFFORT", env),
+            int(_env_lookup("TIER_NORMAL_GEMINI_THINKING_BUDGET", env) or 0),
         ),
         (
             "hard",
-            _env_str("TIER_HARD_ANTHROPIC_MODEL", "claude-opus-4-6"),
-            _env_str("TIER_HARD_OPENAI_MODEL", "o3"),
-            _env_str("TIER_HARD_CODEX_MODEL", "gpt-5.3-codex"),
-            _env_str("TIER_HARD_GEMINI_MODEL", "gemini-3.1-pro-preview"),
-            _env_int("TIER_HARD_MAX_TOKENS", 40000),
-            _env_float("TIER_HARD_TEMPERATURE", 0.7),
-            _env_int("TIER_HARD_ANTHROPIC_THINKING_BUDGET", 32000),
-            _env_str("TIER_HARD_OPENAI_REASONING_EFFORT", "high"),
-            _env_int("TIER_HARD_GEMINI_THINKING_BUDGET", 32000),
+            _env_lookup("TIER_HARD_ANTHROPIC_MODEL", env) or "claude-opus-4-6",
+            _env_lookup("TIER_HARD_OPENAI_MODEL", env) or "o3",
+            _env_lookup("TIER_HARD_CODEX_MODEL", env) or "gpt-5.3-codex",
+            _env_lookup("TIER_HARD_GEMINI_MODEL", env) or "gemini-3.1-pro-preview",
+            int(_env_lookup("TIER_HARD_MAX_TOKENS", env) or 40000),
+            float(_env_lookup("TIER_HARD_TEMPERATURE", env) or 0.7),
+            int(_env_lookup("TIER_HARD_ANTHROPIC_THINKING_BUDGET", env) or 32000),
+            _env_lookup("TIER_HARD_OPENAI_REASONING_EFFORT", env) or "high",
+            int(_env_lookup("TIER_HARD_GEMINI_THINKING_BUDGET", env) or 32000),
         ),
     ]
 
-    tiers: dict[str, TierConfig] = {}
+    tiers: dict[str, _CliTierConfig] = {}
     for (
         tier_name,
         anth_model,
@@ -248,9 +483,9 @@ def _build_cli_provider() -> Any:
         oai_effort,
         gem_budget,
     ) in tier_defs:
-        all_cfgs: dict[str, TierModelConfig] = {}
+        all_cfgs: dict[str, _CliTierModelConfig] = {}
         if anthropic:
-            all_cfgs["anthropic"] = TierModelConfig(
+            all_cfgs["anthropic"] = _CliTierModelConfig(
                 provider=anthropic,
                 model=anth_model,
                 reasoning_config=ReasoningConfig(
@@ -260,7 +495,7 @@ def _build_cli_provider() -> Any:
                 temperature=temp,
             )
         if openai:
-            all_cfgs["openai"] = TierModelConfig(
+            all_cfgs["openai"] = _CliTierModelConfig(
                 provider=openai,
                 model=(codex_model if openai_is_codex else oai_model),
                 reasoning_config=ReasoningConfig(
@@ -270,7 +505,7 @@ def _build_cli_provider() -> Any:
                 temperature=temp,
             )
         if gemini:
-            all_cfgs["gemini"] = TierModelConfig(
+            all_cfgs["gemini"] = _CliTierModelConfig(
                 provider=gemini,
                 model=gem_model,
                 reasoning_config=ReasoningConfig(
@@ -279,772 +514,797 @@ def _build_cli_provider() -> Any:
                 ),
                 temperature=temp,
             )
-
         if not all_cfgs:
             continue
         if primary_provider in all_cfgs:
             primary = all_cfgs[primary_provider]
-            fallbacks = [cfg for name, cfg in all_cfgs.items() if name != primary_provider]
+            fallbacks = tuple(cfg for name, cfg in all_cfgs.items() if name != primary_provider)
         else:
             ordered = list(all_cfgs.values())
             primary = ordered[0]
-            fallbacks = ordered[1:]
-        tiers[tier_name] = TierConfig(primary=primary, fallbacks=fallbacks)
+            fallbacks = tuple(ordered[1:])
+        tiers[tier_name] = _CliTierConfig(primary=primary, fallbacks=fallbacks)
 
     if not tiers:
-        return None
-    return TierProvider(tiers=tiers, default_tier="normal", max_retries=llm_max_retries)
+        raise RuntimeError("No provider tiers could be built from current environment.")
+    return _CliTierProvider(tiers=tiers, default_tier="normal", max_retries=llm_max_retries)
 
 
-def _resolve_file_read_base() -> Path:
-    raw = _env_str("TOOL_FILE_READ_BASE_DIR", str(Path.cwd()))
-    return Path(raw).expanduser().resolve()
-
-
-async def _validate_hostname(hostname: str) -> None:
-    try:
-        infos = await asyncio.get_running_loop().getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise ToolValidationError(f"Unable to resolve host: {hostname}") from exc
-    if not infos:
-        raise ToolValidationError(f"Unable to resolve host: {hostname}")
-
-
-async def _file_read(payload: dict[str, Any]) -> dict[str, Any]:
-    path_raw = payload.get("path")
-    if not isinstance(path_raw, str) or not path_raw.strip():
-        raise ToolValidationError("Field 'path' must be a non-empty string")
-    max_bytes = payload.get("max_bytes", 4096)
-    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
-        raise ToolValidationError("Field 'max_bytes' must be a positive integer")
-
-    allowed_base = _resolve_file_read_base()
-    path = Path(path_raw).expanduser().resolve()
-    if path != allowed_base and allowed_base not in path.parents:
-        raise ToolValidationError(f"Path outside allowed directory: {allowed_base}")
-    if not path.exists() or not path.is_file():
-        raise ToolValidationError("File not found")
-
-    data = path.read_bytes()
-    chunk = data[:max_bytes]
-    return {
-        "path": str(path),
-        "content": chunk.decode("utf-8", errors="replace"),
-        "bytes_read": len(chunk),
-        "truncated": len(data) > max_bytes,
-    }
-
-
-async def _http_request(payload: dict[str, Any]) -> dict[str, Any]:
-    import httpx
-
-    url = payload.get("url")
-    if not isinstance(url, str) or not url.strip():
-        raise ToolValidationError("Field 'url' must be a non-empty string")
-
-    parsed = urlparse(url.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ToolValidationError("Field 'url' must be a valid http/https URL")
-    await _validate_hostname(parsed.hostname)
-
-    method = payload.get("method", "GET")
-    if not isinstance(method, str):
-        raise ToolValidationError("Field 'method' must be a string")
-    method = method.upper()
-    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
-        raise ToolValidationError("Unsupported HTTP method")
-
-    timeout_seconds = payload.get("timeout_seconds", 20)
-    if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
-        raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
-
-    headers_payload = payload.get("headers", {})
-    if headers_payload is None:
-        headers_payload = {}
-    if not isinstance(headers_payload, dict):
-        raise ToolValidationError("Field 'headers' must be an object")
-    headers = {str(k): str(v) for k, v in headers_payload.items()}
-
-    request_kwargs: dict[str, Any] = {"headers": headers}
-    if "body" in payload:
-        body = payload["body"]
-        if isinstance(body, (dict, list)):
-            request_kwargs["json"] = body
-        else:
-            request_kwargs["content"] = str(body)
-
-    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-        response = await client.request(method, url, **request_kwargs)
-
-    content_type = response.headers.get("content-type", "")
-    response_bytes = response.content
-    truncated = len(response_bytes) > _MAX_HTTP_RESPONSE_BYTES
-    visible_bytes = response_bytes[:_MAX_HTTP_RESPONSE_BYTES]
-
-    if "application/json" in content_type and not truncated:
-        try:
-            parsed_body: Any = response.json()
-        except ValueError:
-            parsed_body = response.text
-    else:
-        parsed_body = visible_bytes.decode("utf-8", errors="replace")
-        if truncated:
-            parsed_body += "\n... [truncated - response exceeded 1 MB]"
-
-    return {
-        "status_code": response.status_code,
-        "headers": dict(response.headers),
-        "body": parsed_body,
-        "truncated": truncated,
-    }
-
-
-def _build_registry(*, browser_manager: BrowserManager, no_tools: bool) -> ToolRegistry:
-    registry = ToolRegistry()
-    if no_tools:
-        return registry
-
-    registry.register(
-        ToolDefinition(
-            name="file_read",
-            description="Read text content from a local file path with byte limit.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["path"],
-                "properties": {
-                    "path": {"type": "string"},
-                    "max_bytes": {"type": "integer"},
-                },
-            },
-            execute=_file_read,
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="http_request",
-            description="Make outbound HTTP requests.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["url"],
-                "properties": {
-                    "url": {"type": "string"},
-                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
-                    "headers": {"type": "object"},
-                    "body": {"type": "object"},
-                    "timeout_seconds": {"type": "integer"},
-                },
-            },
-            execute=_http_request,
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_navigate",
-            description="Navigate browser to a URL.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["url"],
-                "properties": {
-                    "url": {"type": "string"},
-                    "timeout_ms": {"type": "integer"},
-                },
-            },
-            execute=lambda payload: browser_manager.navigate(
-                str(payload["url"]),
-                timeout_ms=(int(payload["timeout_ms"]) if payload.get("timeout_ms") is not None else None),
-            ),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_screenshot",
-            description="Take a browser screenshot.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {"full_page": {"type": "boolean"}},
-            },
-            execute=lambda payload: browser_manager.screenshot(full_page=bool(payload.get("full_page", True))),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_click",
-            description="Click an element by selector.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["selector"],
-                "properties": {
-                    "selector": {"type": "string"},
-                    "timeout_ms": {"type": "integer"},
-                },
-            },
-            execute=lambda payload: browser_manager.click(
-                str(payload["selector"]),
-                timeout_ms=(int(payload["timeout_ms"]) if payload.get("timeout_ms") is not None else None),
-            ),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_type",
-            description="Type text into an element by selector.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["selector", "text"],
-                "properties": {
-                    "selector": {"type": "string"},
-                    "text": {"type": "string"},
-                    "timeout_ms": {"type": "integer"},
-                },
-            },
-            execute=lambda payload: browser_manager.type_text(
-                str(payload["selector"]),
-                str(payload["text"]),
-                timeout_ms=(int(payload["timeout_ms"]) if payload.get("timeout_ms") is not None else None),
-            ),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_select",
-            description="Select an option in a <select> field.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["selector"],
-                "properties": {
-                    "selector": {"type": "string"},
-                    "value": {"type": "string"},
-                    "label": {"type": "string"},
-                    "index": {"type": "integer"},
-                    "timeout_ms": {"type": "integer"},
-                },
-            },
-            execute=lambda payload: browser_manager.select_option(
-                str(payload["selector"]),
-                value=(str(payload["value"]) if payload.get("value") is not None else None),
-                label=(str(payload["label"]) if payload.get("label") is not None else None),
-                index=(int(payload["index"]) if payload.get("index") is not None else None),
-                timeout_ms=(int(payload["timeout_ms"]) if payload.get("timeout_ms") is not None else None),
-            ),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_wait_for",
-            description="Wait for an element state.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["selector"],
-                "properties": {
-                    "selector": {"type": "string"},
-                    "condition": {
-                        "type": "string",
-                        "enum": ["visible", "hidden", "attached", "detached", "enabled", "disabled"],
-                    },
-                    "timeout_ms": {"type": "integer"},
-                },
-            },
-            execute=lambda payload: browser_manager.wait_for(
-                str(payload["selector"]),
-                condition=str(payload.get("condition", "visible")),
-                timeout_ms=(int(payload["timeout_ms"]) if payload.get("timeout_ms") is not None else None),
-            ),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_get_value",
-            description="Get current value/state for an element.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["selector"],
-                "properties": {"selector": {"type": "string"}},
-            },
-            execute=lambda payload: browser_manager.get_value(str(payload["selector"])),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_fill_form",
-            description="Execute a sequence of form steps.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["steps"],
-                "properties": {
-                    "steps": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "selector": {"type": "string"},
-                                "action": {"type": "string"},
-                                "text": {"type": "string"},
-                                "value": {"type": "string"},
-                                "label": {"type": "string"},
-                                "index": {"type": "integer"},
-                                "condition": {"type": "string"},
-                                "timeout_ms": {"type": "integer"},
-                                "click": {"type": "boolean"},
-                            },
-                        },
-                    },
-                    "continue_on_error": {"type": "boolean"},
-                    "verify": {"type": "boolean"},
-                },
-            },
-            execute=lambda payload: browser_manager.fill_form(
-                payload["steps"],
-                continue_on_error=bool(payload.get("continue_on_error", False)),
-                verify=bool(payload.get("verify", False)),
-            ),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_press_key",
-            description="Press a keyboard key in the current page.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["key"],
-                "properties": {"key": {"type": "string"}},
-            },
-            execute=lambda payload: browser_manager.press_key(str(payload["key"])),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_get_text",
-            description="Extract visible text from page or selector.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {"selector": {"type": "string"}},
-            },
-            execute=lambda payload: browser_manager.get_text(
-                str(payload["selector"]) if payload.get("selector") is not None else None
-            ),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_snapshot",
-            description="Get accessibility snapshot for page understanding.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "interactive_only": {"type": "boolean"},
-                    "max_depth": {"type": "integer"},
-                },
-            },
-            execute=lambda payload: browser_manager.get_snapshot(
-                interactive_only=bool(payload.get("interactive_only", False)),
-                max_depth=(int(payload["max_depth"]) if payload.get("max_depth") is not None else None),
-            ),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_reset",
-            description="Close and relaunch browser context.",
-            parameters_schema={"type": "object", "additionalProperties": False, "properties": {}},
-            execute=lambda payload: browser_manager.reset(),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_tabs",
-            description="List current browser tabs.",
-            parameters_schema={"type": "object", "additionalProperties": False, "properties": {}},
-            execute=lambda payload: browser_manager.list_tabs(),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_tab_open",
-            description="Open a new browser tab.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {"url": {"type": "string"}},
-            },
-            execute=lambda payload: browser_manager.open_tab(str(payload.get("url") or "about:blank")),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_tab_focus",
-            description="Focus an existing browser tab.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["tab_id"],
-                "properties": {"tab_id": {"type": "string"}},
-            },
-            execute=lambda payload: browser_manager.focus_tab(str(payload["tab_id"])),
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="browser_tab_close",
-            description="Close an existing browser tab.",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["tab_id"],
-                "properties": {"tab_id": {"type": "string"}},
-            },
-            execute=lambda payload: browser_manager.close_tab(str(payload["tab_id"])),
-        )
-    )
-
-    return registry
-
-
-class StandaloneAgentCli:
-    """Minimal in-memory think/act loop for provider + tool behavior."""
+class _CliTierProvider(LLMProvider):
+    """Minimal CLI-only tier router without backend schema/config dependencies."""
 
     def __init__(
         self,
         *,
-        provider: Any,
-        tool_registry: ToolRegistry,
-        config: CliConfig,
+        tiers: dict[str, _CliTierConfig],
+        default_tier: str,
+        max_retries: int,
+        base_backoff_ms: int = 500,
     ) -> None:
-        self._provider = provider
-        self._config = config
-        self._tool_adapter = CliToolAdapter(tool_registry)
-        self._messages: list[AgentMessage] = [
-            SystemMessage(
-                content=(
-                    f"{config.system_prompt.strip()}\n\n"
-                    "Runtime mode: standalone CLI (no persisted backend session).\n"
-                    f"Current UTC time: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}."
-                ),
-            )
-        ]
+        self._tiers = tiers
+        self._default_tier = default_tier
+        self._max_retries = max_retries
+        self._base_backoff_ms = base_backoff_ms
 
     @property
-    def tools(self) -> list[str]:
-        return [schema.name for schema in self._tool_adapter.get_tool_schemas()]
+    def name(self) -> str:
+        return "cli-tier"
 
-    def reset(self) -> None:
-        self._messages = [self._messages[0]]
+    async def chat(
+        self,
+        messages,
+        model: str,
+        tools=None,
+        temperature: float = 0.7,
+        reasoning_config=None,
+        tool_choice: str | None = None,
+    ) -> AssistantMessage:
+        config = self._resolve_model_config(model)
+        return await self._call_chat_with_fallback(
+            configs=self._ordered_configs(config, model),
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
 
-    async def ask(self, prompt: str) -> str:
-        self._messages.append(UserMessage(content=prompt))
-        final_text = ""
+    async def stream(
+        self,
+        messages,
+        model: str,
+        tools=None,
+        temperature: float = 0.7,
+        reasoning_config=None,
+        tool_choice: str | None = None,
+    ):
+        configs = self._ordered_configs(self._resolve_model_config(model), model)
+        diagnostics: list[str] = []
+        for config in configs:
+            for attempt in range(1, self._max_retries + 1):
+                try:
+                    async for event in config.provider.stream(
+                        messages,
+                        model=config.model,
+                        tools=tools,
+                        temperature=config.temperature,
+                        reasoning_config=config.reasoning_config,
+                        tool_choice=tool_choice,
+                    ):
+                        yield event
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    diagnostics.append(
+                        f"provider={config.provider.name} model={config.model} attempt {attempt}/{self._max_retries}: {error_tag(exc)}"
+                    )
+                    if is_retryable(exc) and attempt < self._max_retries:
+                        await asyncio.sleep((self._base_backoff_ms * (2 ** (attempt - 1))) / 1000)
+                        continue
+                    break
+        raise RuntimeError("All providers failed. " + " | ".join(diagnostics))
 
-        for iteration in range(1, self._config.max_iterations + 1):
-            print(f"\n[iter {iteration}/{self._config.max_iterations}]")
-            assistant = await self._stream_and_assemble()
-            self._messages.append(assistant)
-            final_text = self._assistant_text(assistant)
+    def _resolve_model_config(self, requested_model: str) -> _CliTierConfig:
+        tier_name = parse_tier_name(requested_model)
+        if tier_name is not None:
+            resolved = self._tiers.get(tier_name.value)
+            if resolved is not None:
+                return resolved
+        default_tier = self._tiers.get(self._default_tier)
+        if default_tier is None:
+            raise RuntimeError(f"Default tier '{self._default_tier}' is not configured.")
+        return _CliTierConfig(
+            primary=_CliTierModelConfig(
+                provider=default_tier.primary.provider,
+                model=requested_model,
+                reasoning_config=default_tier.primary.reasoning_config,
+                temperature=default_tier.primary.temperature,
+            ),
+            fallbacks=(),
+        )
 
-            tool_calls = [
-                block for block in assistant.content if isinstance(block, ToolCallContent)
-            ]
-            if assistant.stop_reason != "tool_use" or not tool_calls:
-                break
+    def _ordered_configs(
+        self,
+        tier: _CliTierConfig,
+        requested_model: str,
+    ) -> tuple[_CliTierModelConfig, ...]:
+        tier_name = parse_tier_name(requested_model)
+        if tier_name is None:
+            return (tier.primary,)
+        return (tier.primary, *tier.fallbacks)
 
-            tool_results = await self._tool_adapter.execute_tool_calls(tool_calls)
-            for result in tool_results:
-                self._print_tool_result(result)
-                self._messages.append(result)
-        else:
-            print(
-                "\n[warn] max iterations reached before terminal response. "
-                "Increase --max-iterations if needed.")
+    async def _call_chat_with_fallback(
+        self,
+        *,
+        configs: tuple[_CliTierModelConfig, ...],
+        messages,
+        tools,
+        tool_choice: str | None,
+    ) -> AssistantMessage:
+        diagnostics: list[str] = []
+        for config in configs:
+            for attempt in range(1, self._max_retries + 1):
+                try:
+                    return await config.provider.chat(
+                        messages,
+                        model=config.model,
+                        tools=tools,
+                        temperature=config.temperature,
+                        reasoning_config=config.reasoning_config,
+                        tool_choice=tool_choice,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    diagnostics.append(
+                        f"provider={config.provider.name} model={config.model} attempt {attempt}/{self._max_retries}: {error_tag(exc)}"
+                    )
+                    if is_retryable(exc) and attempt < self._max_retries:
+                        await asyncio.sleep((self._base_backoff_ms * (2 ** (attempt - 1))) / 1000)
+                        continue
+                    break
+        raise RuntimeError("All providers failed. " + " | ".join(diagnostics))
 
-        return final_text
 
-    async def _stream_and_assemble(self) -> AssistantMessage:
-        text_blocks: dict[int, list[str]] = {}
-        thinking_blocks: dict[int, list[str]] = {}
-        tool_blocks: dict[int, dict[str, Any]] = {}
-        block_sequence: list[tuple[str, int]] = []
-        seen_blocks: set[tuple[str, int]] = set()
-        stop_reason = "stop"
-        printed_any_text = False
+def _runtime_item_to_sentinel_message(item: ConversationItem) -> Any:
+    if item.role == "system":
+        return SystemMessage(
+            content="\n".join(
+                block.text for block in item.content if isinstance(block, TextBlock) and block.text
+            ),
+            metadata=dict(item.metadata),
+            timestamp=item.timestamp,
+        )
 
-        def remember(kind: str, idx: int) -> None:
-            key = (kind, idx)
-            if key in seen_blocks:
-                return
-            seen_blocks.add(key)
-            block_sequence.append(key)
+    if item.role == "user":
+        blocks: list[TextContent | ImageContent] = []
+        for block in item.content:
+            if isinstance(block, TextBlock):
+                blocks.append(TextContent(text=block.text))
+            elif isinstance(block, ImageBlock):
+                blocks.append(ImageContent(media_type=block.media_type, data=block.data))
+        if len(blocks) == 1 and isinstance(blocks[0], TextContent):
+            return UserMessage(content=blocks[0].text, metadata=dict(item.metadata), timestamp=item.timestamp)
+        return UserMessage(content=blocks, metadata=dict(item.metadata), timestamp=item.timestamp)
 
-        async for event in self._provider.stream(
-            self._messages,
-            model=self._config.model,
-            tools=self._tool_adapter.get_tool_schemas() if self._config.tools_enabled else [],
-            temperature=self._config.temperature,
-            reasoning_config=None,
-            tool_choice=None,
-        ):
-            if event.type == "text_start":
-                idx = event.content_index or 0
-                remember("text", idx)
-                text_blocks.setdefault(idx, [])
-            elif event.type == "text_delta":
-                idx = event.content_index or 0
-                remember("text", idx)
-                delta = event.delta or ""
-                text_blocks.setdefault(idx, []).append(delta)
-                if delta:
-                    print(delta, end="", flush=True)
-                    printed_any_text = True
-            elif event.type == "thinking_delta":
-                idx = event.content_index or 0
-                remember("thinking", idx)
-                delta = event.delta or ""
-                thinking_blocks.setdefault(idx, []).append(delta)
-                if self._config.show_thinking and delta:
-                    print(delta, end="", flush=True)
-            elif event.type == "toolcall_start":
-                idx = event.content_index or 0
-                remember("tool_call", idx)
-                call = event.tool_call
-                tool_blocks[idx] = {
-                    "id": (call.id if call else ""),
-                    "name": (call.name if call else ""),
-                    "args_chunks": [],
-                    "thought_signature": (call.thought_signature if call else None),
-                }
-                print(
-                    f"\n[tool_call] {tool_blocks[idx]['name']} id={tool_blocks[idx]['id']}",
-                    flush=True,
-                )
-            elif event.type == "toolcall_delta":
-                idx = event.content_index or 0
-                remember("tool_call", idx)
-                if idx in tool_blocks and event.delta:
-                    tool_blocks[idx]["args_chunks"].append(event.delta)
-            elif event.type == "done":
-                stop_reason = event.stop_reason or "stop"
-            elif event.type == "error":
-                raise RuntimeError(event.error or "Provider stream failed")
-
-        if printed_any_text:
-            print("")
-
+    if item.role == "assistant":
         content: list[TextContent | ThinkingContent | ToolCallContent] = []
-        for kind, idx in block_sequence:
-            if kind == "text":
-                text = "".join(text_blocks.get(idx, [])).strip()
-                if text:
-                    content.append(TextContent(text=text))
-            elif kind == "thinking":
-                thinking = "".join(thinking_blocks.get(idx, [])).strip()
-                if thinking:
-                    content.append(ThinkingContent(thinking=thinking))
-            elif kind == "tool_call":
-                tb = tool_blocks.get(idx, {})
-                raw = "".join(tb.get("args_chunks", []))
-                parsed_args: dict[str, Any]
-                if raw:
-                    try:
-                        loaded = json.loads(raw)
-                        parsed_args = loaded if isinstance(loaded, dict) else {"value": loaded}
-                    except json.JSONDecodeError:
-                        parsed_args = {"raw": raw}
-                else:
-                    parsed_args = {}
+        for block in item.content:
+            if isinstance(block, TextBlock):
+                content.append(TextContent(text=block.text))
+            elif isinstance(block, ThinkingBlock):
+                content.append(ThinkingContent(thinking=block.thinking, signature=block.signature))
+            elif isinstance(block, ToolCallBlock):
                 content.append(
                     ToolCallContent(
-                        id=str(tb.get("id") or ""),
-                        name=str(tb.get("name") or ""),
-                        arguments=parsed_args,
-                        thought_signature=(
-                            str(tb.get("thought_signature")).strip()
-                            if isinstance(tb.get("thought_signature"), str)
-                            and str(tb.get("thought_signature")).strip()
-                            else None
-                        ),
+                        id=block.id,
+                        name=block.name,
+                        arguments=dict(block.arguments),
+                        thought_signature=block.thought_signature,
                     )
                 )
-
+        metadata = dict(item.metadata)
+        usage_payload = metadata.get("usage") if isinstance(metadata.get("usage"), dict) else {}
         return AssistantMessage(
             content=content,
-            model=self._config.model,
-            provider=getattr(self._provider, "name", "unknown"),
-            usage=TokenUsage(),
-            stop_reason=stop_reason,  # type: ignore[arg-type]
-        )
-
-    @staticmethod
-    def _assistant_text(message: AssistantMessage) -> str:
-        return "\n".join(
-            block.text for block in message.content if isinstance(block, TextContent) and block.text
-        ).strip()
-
-    def _print_tool_result(self, result: ToolResultMessage) -> None:
-        status = "error" if result.is_error else "ok"
-        print(f"[tool_result:{status}] {result.tool_name}")
-        if self._config.verbose_tools:
-            try:
-                parsed = json.loads(result.content)
-                print(json.dumps(parsed, indent=2, ensure_ascii=False))
-            except json.JSONDecodeError:
-                preview = result.content
-                if len(preview) > 1500:
-                    preview = preview[:1500] + "\n...[truncated]"
-                print(preview)
-
-
-def _resolve_system_prompt(args: argparse.Namespace) -> str:
-    if args.system_prompt:
-        return str(args.system_prompt)
-    if args.system_prompt_file:
-        return Path(args.system_prompt_file).read_text(encoding="utf-8")
-    return _env_str("DEFAULT_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Standalone Sentinel agent CLI (no UI/session APIs).",
-    )
-    parser.add_argument("--model", default="hint:normal", help="Model id or tier hint.")
-    parser.add_argument("--max-iterations", type=int, default=25)
-    parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--show-thinking", action="store_true")
-    parser.add_argument("--verbose-tools", action="store_true")
-    parser.add_argument("--no-tools", action="store_true", help="Disable all tool usage.")
-    parser.add_argument("--list-tools", action="store_true", help="List tool names and exit.")
-    parser.add_argument("--prompt", help="Run one-shot prompt and exit.")
-    parser.add_argument("--system-prompt", help="Override system prompt text.")
-    parser.add_argument("--system-prompt-file", help="Read system prompt from file.")
-    return parser.parse_args()
-
-
-def _print_help_commands() -> None:
-    print(
-        "\nCommands:\n"
-        "  /help                 Show CLI command help\n"
-        "  /reset                Clear conversation history\n"
-        "  /model <id>           Change model for next turns\n"
-        "  /max <n>              Change max iterations\n"
-        "  /tools                List available tools\n"
-        "  /quit                 Exit\n"
-    )
-
-
-async def _run() -> int:
-    args = _parse_args()
-
-    browser_manager = BrowserManager()
-    try:
-        registry = _build_registry(browser_manager=browser_manager, no_tools=bool(args.no_tools))
-
-        if args.list_tools:
-            for tool in registry.list_all():
-                print(tool.name)
-            return 0
-
-        try:
-            provider = _build_cli_provider()
-        except RuntimeError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        if provider is None:
-            print(
-                "No LLM provider configured. Set at least one provider credential in env "
-                "(ANTHROPIC_API_KEY/ANTHROPIC_OAUTH_TOKEN, OPENAI_API_KEY/OPENAI_OAUTH_TOKEN, GEMINI_API_KEY).",
-                file=sys.stderr,
-            )
-            return 1
-
-        cli = StandaloneAgentCli(
-            provider=provider,
-            tool_registry=registry,
-            config=CliConfig(
-                model=str(args.model),
-                max_iterations=max(1, int(args.max_iterations)),
-                temperature=float(args.temperature),
-                show_thinking=bool(args.show_thinking),
-                verbose_tools=bool(args.verbose_tools),
-                tools_enabled=not bool(args.no_tools),
-                system_prompt=_resolve_system_prompt(args),
+            model=str(metadata.get("model") or ""),
+            provider=str(metadata.get("provider") or ""),
+            usage=TokenUsage(
+                input_tokens=int(usage_payload.get("input_tokens") or 0),
+                output_tokens=int(usage_payload.get("output_tokens") or 0),
             ),
+            stop_reason=str(metadata.get("stop_reason") or "stop"),
         )
 
-        if args.prompt:
-            await cli.ask(str(args.prompt))
-            return 0
+    tool_block = next(
+        (block for block in item.content if block.type == "tool_result"),
+        None,
+    )
+    if tool_block is None:
+        return UserMessage(
+            content="\n".join(block.text for block in item.content if isinstance(block, TextBlock)),
+            metadata=dict(item.metadata),
+            timestamp=item.timestamp,
+        )
+    return ToolResultMessage(
+        tool_call_id=tool_block.tool_call_id,
+        tool_name=tool_block.tool_name,
+        content=tool_block.content,
+        is_error=tool_block.is_error,
+        metadata=dict(tool_block.metadata),
+    )
 
-        print("Sentinel standalone agent CLI")
-        print(f"Model: {cli._config.model}")
-        print(f"Tools: {len(cli.tools)} loaded")
-        _print_help_commands()
 
-        while True:
-            try:
-                line = input("\nYou> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\nExiting.")
-                break
-            if not line:
-                continue
-            if line.startswith("/"):
-                parts = shlex.split(line)
-                command = parts[0].lower()
-                if command in {"/quit", "/exit"}:
-                    break
-                if command == "/help":
-                    _print_help_commands()
-                    continue
-                if command == "/reset":
-                    cli.reset()
-                    print("Conversation reset.")
-                    continue
-                if command == "/tools":
-                    for name in cli.tools:
-                        print(name)
-                    continue
-                if command == "/model":
-                    if len(parts) < 2:
-                        print("Usage: /model <model-id>")
-                        continue
-                    cli._config.model = parts[1]
-                    print(f"Model set to: {cli._config.model}")
-                    continue
-                if command == "/max":
-                    if len(parts) < 2:
-                        print("Usage: /max <iterations>")
-                        continue
-                    try:
-                        cli._config.max_iterations = max(1, int(parts[1]))
-                    except ValueError:
-                        print("Invalid integer.")
-                        continue
-                    print(f"Max iterations set to: {cli._config.max_iterations}")
-                    continue
-                print("Unknown command. Use /help.")
-                continue
+def _sentinel_assistant_turn_to_runtime(message: AssistantMessage, *, item_id: str) -> AssistantTurn:
+    metadata = {
+        "model": message.model,
+        "provider": message.provider,
+        "stop_reason": message.stop_reason,
+        "usage": {
+            "input_tokens": message.usage.input_tokens,
+            "output_tokens": message.usage.output_tokens,
+        },
+    }
+    content = []
+    for block in message.content:
+        if isinstance(block, TextContent):
+            content.append(TextBlock(text=block.text))
+        elif isinstance(block, ThinkingContent):
+            content.append(ThinkingBlock(thinking=block.thinking, signature=block.signature))
+        elif isinstance(block, ToolCallContent):
+            content.append(
+                ToolCallBlock(
+                    id=block.id,
+                    name=block.name,
+                    arguments=dict(block.arguments),
+                    thought_signature=block.thought_signature,
+                )
+            )
+    return AssistantTurn(
+        item=ConversationItem(id=item_id, role="assistant", content=content, metadata=metadata),
+        stop_reason=message.stop_reason,
+        usage=RuntimeTokenUsage(
+            input_tokens=message.usage.input_tokens,
+            output_tokens=message.usage.output_tokens,
+        ),
+    )
 
-            try:
-                await cli.ask(line)
-            except Exception as exc:  # noqa: BLE001
-                print(f"[error] {exc}", file=sys.stderr)
+
+def _sentinel_event_to_runtime_event(event: SentinelAgentEvent) -> AgentEvent:
+    metadata: dict[str, Any] = {}
+    if event.signature is not None:
+        metadata["signature"] = event.signature
+    if event.content_index is not None:
+        metadata["content_index"] = event.content_index
+    runtime_event = AgentEvent(
+        type=event.type,
+        delta=event.delta,
+        stop_reason=event.stop_reason,
+        error=event.error,
+        iteration=event.iteration,
+        max_iterations=event.max_iterations,
+        metadata=metadata,
+    )
+    if event.tool_call is not None:
+        runtime_event.tool_call = ToolCallBlock(
+            id=event.tool_call.id,
+            name=event.tool_call.name,
+            arguments=dict(event.tool_call.arguments),
+            thought_signature=event.tool_call.thought_signature,
+        )
+    return runtime_event
+
+
+class CliProviderAdapter:
+    """Tiny local bridge from Sentinel LLMProvider to sentral Provider."""
+
+    def __init__(self, provider: LLMProvider) -> None:
+        self._provider = provider
+
+    @property
+    def name(self) -> str:
+        return self._provider.name
+
+    async def chat(
+        self,
+        *,
+        messages: list[ConversationItem],
+        tools: list[RuntimeToolSchema],
+        config: GenerationConfig,
+    ) -> AssistantTurn:
+        response = await self._provider.chat(
+            [_runtime_item_to_sentinel_message(message) for message in messages],
+            model=config.model,
+            tools=[
+                ToolSchema(
+                    name=tool.name,
+                    description=tool.description,
+                    parameters=dict(tool.parameters),
+                )
+                for tool in tools
+            ],
+            temperature=config.temperature,
+            tool_choice=config.tool_choice,
+        )
+        return _sentinel_assistant_turn_to_runtime(response, item_id="assistant")
+
+    async def stream(
+        self,
+        *,
+        messages: list[ConversationItem],
+        tools: list[RuntimeToolSchema],
+        config: GenerationConfig,
+    ):
+        async for event in self._provider.stream(
+            [_runtime_item_to_sentinel_message(message) for message in messages],
+            model=config.model,
+            tools=[
+                ToolSchema(
+                    name=tool.name,
+                    description=tool.description,
+                    parameters=dict(tool.parameters),
+                )
+                for tool in tools
+            ],
+            temperature=config.temperature,
+            tool_choice=config.tool_choice,
+        ):
+            yield _sentinel_event_to_runtime_event(event)
+
+
+class LocalWorkspaceToolRegistry(ToolRegistry):
+    """Minimal sentral-native tools over one local filesystem context."""
+
+    def __init__(self, *, root: Path) -> None:
+        self._root = root.expanduser().resolve()
+        self._cwd = self._root
+        self._tools = {
+            "cd": ToolDefinition(
+                name="cd",
+                description="Change the current working directory.",
+                parameters_schema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["path"],
+                    "properties": {"path": {"type": "string"}},
+                },
+                execute=self._cd,
+            ),
+            "read_file": ToolDefinition(
+                name="read_file",
+                description="Read a text file relative to the current working directory or by absolute path.",
+                parameters_schema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["path"],
+                    "properties": {
+                        "path": {"type": "string"},
+                        "max_bytes": {"type": "integer"},
+                    },
+                },
+                execute=self._read_file,
+            ),
+            "write_file": ToolDefinition(
+                name="write_file",
+                description="Write text to a file relative to the current working directory or by absolute path.",
+                parameters_schema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["path", "content"],
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "append": {"type": "boolean"},
+                        "make_parents": {"type": "boolean"},
+                    },
+                },
+                execute=self._write_file,
+            ),
+            "run_command": ToolDefinition(
+                name="run_command",
+                description="Run a shell command in the current working directory.",
+                parameters_schema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["command"],
+                    "properties": {
+                        "command": {"type": "string"},
+                        "timeout_seconds": {"type": "integer"},
+                    },
+                },
+                execute=self._run_command,
+            ),
+        }
+
+    @property
+    def cwd(self) -> Path:
+        return self._cwd
+
+    @property
+    def root(self) -> Path:
+        return self._root
+
+    def list_tools(self) -> list[ToolDefinition]:
+        return list(self._tools.values())
+
+    def get_tool(self, name: str) -> ToolDefinition | None:
+        return self._tools.get(name)
+
+    def _resolve_path(self, raw: Any) -> Path:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError("Field 'path' must be a non-empty string")
+        candidate = Path(raw.strip()).expanduser()
+        if not candidate.is_absolute():
+            candidate = (self._cwd / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        return candidate
+
+    async def _cd(self, payload: dict[str, Any]) -> ToolExecutionResult:
+        try:
+            target = self._resolve_path(payload.get("path"))
+        except ValueError as exc:
+            return ToolExecutionResult(status="error", error=str(exc))
+        if not target.exists():
+            return ToolExecutionResult(status="error", error=f"Directory not found: {target}")
+        if not target.is_dir():
+            return ToolExecutionResult(status="error", error=f"Not a directory: {target}")
+        self._cwd = target
+        return ToolExecutionResult(
+            status="ok",
+            content={"cwd": str(self._cwd)},
+        )
+
+    async def _read_file(self, payload: dict[str, Any]) -> ToolExecutionResult:
+        try:
+            path = self._resolve_path(payload.get("path"))
+        except ValueError as exc:
+            return ToolExecutionResult(status="error", error=str(exc))
+        max_bytes = payload.get("max_bytes", MAX_FILE_BYTES)
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
+            return ToolExecutionResult(status="error", error="Field 'max_bytes' must be a positive integer")
+        if not path.exists() or not path.is_file():
+            return ToolExecutionResult(status="error", error=f"File not found: {path}")
+        data = path.read_bytes()
+        visible = data[:max_bytes]
+        return ToolExecutionResult(
+            status="ok",
+            content={
+                "path": str(path),
+                "cwd": str(self._cwd),
+                "content": visible.decode("utf-8", errors="replace"),
+                "bytes_read": len(visible),
+                "truncated": len(data) > max_bytes,
+            },
+        )
+
+    async def _write_file(self, payload: dict[str, Any]) -> ToolExecutionResult:
+        try:
+            path = self._resolve_path(payload.get("path"))
+        except ValueError as exc:
+            return ToolExecutionResult(status="error", error=str(exc))
+        content = payload.get("content")
+        append = bool(payload.get("append", False))
+        make_parents = bool(payload.get("make_parents", True))
+        if not isinstance(content, str):
+            return ToolExecutionResult(status="error", error="Field 'content' must be a string")
+        if make_parents:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a" if append else "w"
+        with path.open(mode, encoding="utf-8") as handle:
+            handle.write(content)
+        return ToolExecutionResult(
+            status="ok",
+            content={
+                "path": str(path),
+                "cwd": str(self._cwd),
+                "bytes_written": len(content.encode("utf-8")),
+                "append": append,
+            },
+        )
+
+    async def _run_command(self, payload: dict[str, Any]) -> ToolExecutionResult:
+        command = payload.get("command")
+        timeout_seconds = payload.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+        if not isinstance(command, str) or not command.strip():
+            return ToolExecutionResult(status="error", error="Field 'command' must be a non-empty string")
+        if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+            return ToolExecutionResult(status="error", error="Field 'timeout_seconds' must be a positive integer")
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(self._cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=float(timeout_seconds))
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return ToolExecutionResult(
+                status="error",
+                error=f"Command timed out after {timeout_seconds}s",
+            )
+        return ToolExecutionResult(
+            status="ok",
+            content={
+                "command": command,
+                "cwd": str(self._cwd),
+                "exit_code": proc.returncode,
+                "stdout": _truncate_text(stdout.decode("utf-8", errors="replace")),
+                "stderr": _truncate_text(stderr.decode("utf-8", errors="replace")),
+            },
+        )
+
+
+def _truncate_text(value: str) -> str:
+    if len(value) <= MAX_COMMAND_OUTPUT_CHARS:
+        return value
+    return value[:MAX_COMMAND_OUTPUT_CHARS] + "\n...[TRUNCATED]"
+
+
+def _format_tool_arguments(arguments: dict[str, Any] | None) -> str:
+    if not arguments:
+        return ""
+    parts: list[str] = []
+    for key, value in arguments.items():
+        rendered = str(value).replace("\n", "\\n")
+        if len(rendered) > 120:
+            rendered = rendered[:120] + "..."
+        parts.append(f"{key}={rendered}")
+    return " ".join(parts)
+
+
+def _preview_tool_result_content(content: Any) -> str:
+    if not isinstance(content, dict):
+        return ""
+    if isinstance(content.get("stdout"), str) and content["stdout"].strip():
+        return _truncate_text(content["stdout"].strip()).splitlines()[0]
+    if isinstance(content.get("content"), str) and content["content"].strip():
+        return _truncate_text(content["content"].strip()).splitlines()[0]
+    if "cwd" in content:
+        return f"cwd={content['cwd']}"
+    if "path" in content:
+        return f"path={content['path']}"
+    return ""
+
+
+def _format_runtime_trace(event: AgentEvent) -> str | None:
+    if event.type == "agent_progress" and event.iteration is not None and event.max_iterations is not None:
+        return f"[iter {event.iteration}/{event.max_iterations}]"
+    if event.type == "done":
+        reason = event.stop_reason or "stop"
+        if reason == "tool_use":
+            return "[turn-stop] tool_use -> continuing"
+        if reason == "stop":
+            return "[turn-stop] stop -> ending"
+        return f"[turn-stop] {reason}"
+    return None
+
+
+def _build_config(args: argparse.Namespace) -> CliConfig:
+    return CliConfig(
+        model=args.model,
+        max_iterations=args.max_iterations,
+        temperature=args.temperature,
+        stream=not args.no_stream,
+        show_thinking=args.show_thinking,
+        system_prompt=args.system_prompt,
+        timeout_seconds=args.timeout_seconds,
+    )
+
+
+def _compose_turn_system_prompt(
+    *,
+    base_prompt: str,
+    workspace_root: Path,
+    cwd: Path,
+) -> str:
+    normalized = base_prompt.strip()
+    if CLI_EXECUTION_POLICY not in normalized:
+        normalized = f"{normalized}\n\n{CLI_EXECUTION_POLICY}" if normalized else CLI_EXECUTION_POLICY
+    if CLI_FILE_POLICY not in normalized:
+        normalized = f"{normalized}\n\n{CLI_FILE_POLICY}" if normalized else CLI_FILE_POLICY
+    return (
+        f"{normalized}\n\n"
+        "## Local Workspace Context\n"
+        f"Initial CLI directory: {workspace_root}\n"
+        f"Current working directory: {cwd}\n"
+        "Use absolute or cwd-relative paths consistently. Prefer completing the task over asking for confirmation."
+    )
+
+
+def _make_runtime_system_item(
+    *,
+    system_prompt: str,
+) -> ConversationItem:
+    return ConversationItem(
+        id=f"system-{uuid4().hex}",
+        role="system",
+        content=[TextBlock(text=system_prompt)],
+    )
+
+
+def _strip_runtime_system_items(history: list[ConversationItem]) -> list[ConversationItem]:
+    return [item for item in history if item.role != "system"]
+
+
+async def _run_turn(
+    *,
+    engine: AgentRuntimeEngine,
+    workspace_tools: LocalWorkspaceToolRegistry,
+    history: list[ConversationItem],
+    prompt: str,
+    config: CliConfig,
+) -> list[ConversationItem]:
+    printed_text = False
+    last_progress: tuple[int, int] | None = None
+    turn_system_prompt = _compose_turn_system_prompt(
+        base_prompt=config.system_prompt,
+        workspace_root=workspace_tools.root,
+        cwd=workspace_tools.cwd,
+    )
+
+    async def _sink(event: AgentEvent) -> None:
+        nonlocal printed_text, last_progress
+        trace = _format_runtime_trace(event)
+        if trace is not None:
+            if event.type == "agent_progress":
+                progress_key = (int(event.iteration or 0), int(event.max_iterations or 0))
+                if progress_key != last_progress:
+                    print(f"\n{trace}")
+                    last_progress = progress_key
+            else:
+                print(f"\n{trace}")
+            return
+        if event.type == "text_delta" and event.delta:
+            print(event.delta, end="", flush=True)
+            printed_text = True
+            return
+        if event.type == "thinking_delta" and event.delta and config.show_thinking:
+            print(f"\n[thinking] {event.delta}", end="", flush=True)
+            return
+        if event.type == "toolcall_start" and event.tool_call is not None:
+            print(f"\n[tool] {event.tool_call.name}")
+            return
+        if event.type == "tool_result" and event.tool_result is not None:
+            status = "error" if event.tool_result.is_error else "ok"
+            args_preview = _format_tool_arguments(event.tool_result.tool_arguments)
+            result_preview = _preview_tool_result_content(event.tool_result.content)
+            details = " ".join(part for part in (args_preview, result_preview) if part)
+            suffix = f" {details}" if details else ""
+            print(f"[tool-result:{status}] {event.tool_result.tool_name}{suffix}")
+            return
+        if event.type == "error" and event.error:
+            print(f"\n[error] {event.error}")
+
+    result = await engine.run_turn(
+        RunTurnRequest(
+            history=[
+                _make_runtime_system_item(system_prompt=turn_system_prompt),
+                *history,
+            ],
+            new_items=[
+                ConversationItem(
+                    id=f"user-{uuid4().hex}",
+                    role="user",
+                    content=[TextBlock(text=prompt)],
+                )
+            ],
+            config=GenerationConfig(
+                model=config.model,
+                temperature=config.temperature,
+                max_iterations=config.max_iterations,
+                stream=config.stream,
+                system_prompt=turn_system_prompt,
+                provider_metadata={"timeout_seconds": config.timeout_seconds},
+            ),
+        ),
+        sink=_sink,
+    )
+    if printed_text:
+        print()
+    final_text = ""
+    if result.final_item is not None:
+        final_text = "\n".join(
+            block.text for block in result.final_item.content if isinstance(block, TextBlock) and block.text
+        ).strip()
+    if not printed_text and final_text:
+        print(final_text)
+    if result.status != "completed":
+        print(f"[status] {result.status}")
+        if result.error:
+            print(f"[error] {result.error}")
+    print(f"[cwd] {workspace_tools.cwd}")
+    return _strip_runtime_system_items(result.history)
+
+
+async def _interactive_loop(
+    *,
+    engine: AgentRuntimeEngine,
+    workspace_tools: LocalWorkspaceToolRegistry,
+    config: CliConfig,
+) -> None:
+    history: list[ConversationItem] = []
+    print("Sentral CLI")
+    print("Commands: /exit, /tools, /cwd")
+    while True:
+        try:
+            prompt = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not prompt:
+            continue
+        if prompt in {"/exit", "/quit"}:
+            break
+        if prompt == "/tools":
+            tool_names = [tool.name for tool in workspace_tools.list_tools()]
+            print(", ".join(tool_names))
+            continue
+        if prompt == "/cwd":
+            print(workspace_tools.cwd)
+            continue
+        history = await _run_turn(
+            engine=engine,
+            workspace_tools=workspace_tools,
+            history=history,
+            prompt=prompt,
+            config=config,
+        )
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Minimal standalone sentral CLI.")
+    parser.add_argument("prompt", nargs="*", help="One-shot prompt. Omit for interactive mode.")
+    parser.add_argument("--model", default=_env_str("AGENT_MODEL", "normal"))
+    parser.add_argument("--workspace", default=str(Path.cwd()))
+    parser.add_argument("--max-iterations", type=int, default=_env_int("AGENT_MAX_ITERATIONS", 50))
+    parser.add_argument("--temperature", type=float, default=_env_float("AGENT_TEMPERATURE", 0.7))
+    parser.add_argument("--timeout-seconds", type=int, default=_env_int("AGENT_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
+    parser.add_argument("--system-prompt", default=_env_str("AGENT_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT))
+    parser.add_argument("--no-stream", action="store_true")
+    parser.add_argument("--show-thinking", action="store_true")
+    return parser.parse_args(argv)
+
+
+async def _main(argv: list[str]) -> int:
+    args = _parse_args(argv)
+    provider = _build_provider()
+    workspace_tools = LocalWorkspaceToolRegistry(root=Path(args.workspace))
+    engine = AgentRuntimeEngine(
+        provider=CliProviderAdapter(provider),
+        tool_registry=workspace_tools,
+    )
+    config = _build_config(args)
+    history: list[ConversationItem] = []
+
+    prompt = " ".join(args.prompt).strip()
+    if prompt:
+        await _run_turn(
+            engine=engine,
+            workspace_tools=workspace_tools,
+            history=history,
+            prompt=prompt,
+            config=config,
+        )
         return 0
-    finally:
-        await browser_manager.close()
+
+    await _interactive_loop(
+        engine=engine,
+        workspace_tools=workspace_tools,
+        config=config,
+    )
+    return 0
 
 
-def main() -> None:
-    raise SystemExit(asyncio.run(_run()))
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return asyncio.run(_main(list(argv if argv is not None else sys.argv[1:])))
+    except KeyboardInterrupt:
+        return 130
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except subprocess.SubprocessError as exc:
+        print(f"subprocess error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

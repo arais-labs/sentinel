@@ -11,25 +11,96 @@ from app.config import settings
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.services.agent import ToolAdapter
+from app.services.agent.sentinel_runner import PreparedRuntimeTurnContext
 from app.services.sessions.compaction import CompactionResult
+from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent
+from app.services.tools.executor import ToolExecutor
+from app.services.tools.registry import ToolRegistry
 from tests.fake_db import FakeDB
 
 
-class _FakeLoop:
+class _FakeProvider(LLMProvider):
     def __init__(self, deltas_by_run: list[list[str]] | None = None) -> None:
         self._deltas_by_run = deltas_by_run or [["agent ", "says hi"]]
         self.calls = 0
 
-    async def run(self, db, session_id, user_message, **kwargs):
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
+        raise AssertionError("WS runtime tests expect the streaming provider path")
+
+    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         run_idx = min(self.calls, len(self._deltas_by_run) - 1)
         self.calls += 1
-        callback = kwargs.get("on_event")
-        if callback:
-            for delta in self._deltas_by_run[run_idx]:
-                await callback(AgentEvent(type="text_delta", delta=delta))
-            await callback(AgentEvent(type="done", stop_reason="stop"))
-        return SimpleNamespace(error=None)
+        for delta in self._deltas_by_run[run_idx]:
+            yield AgentEvent(type="text_delta", delta=delta)
+        yield AgentEvent(type="done", stop_reason="stop")
+
+
+class _FakeLoop:
+    def __init__(self, deltas_by_run: list[list[str]] | None = None) -> None:
+        self._estop = SimpleNamespace(check_level=self._check_level)
+        self.context_builder = SimpleNamespace(build=self._build_context)
+        registry = ToolRegistry()
+        self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
+        self.provider = _FakeProvider(deltas_by_run)
+
+    async def estop_level(self, db):
+        return await self._estop.check_level(db)
+
+    async def prepare_runtime_turn_context(
+        self,
+        db,
+        session_id,
+        *,
+        system_prompt,
+        pending_user_message,
+        agent_mode,
+        model,
+        temperature,
+        max_iterations,
+        stream,
+    ):
+        messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
+        return PreparedRuntimeTurnContext(
+            messages=messages,
+            tools=self.tool_adapter.get_tool_schemas(),
+            effective_system_prompt=system_prompt,
+            runtime_context_snapshot=None,
+        )
+
+    async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+        await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
+
+    async def _check_level(self, _db):
+        return None
+
+    async def _build_context(self, _db, _session_id, system_prompt, pending_user_message, agent_mode):
+        _ = (system_prompt, pending_user_message, agent_mode)
+        return []
+
+    async def _persist_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+        _ = (db, session_id, created, assistant_iterations, kwargs)
+
+    def _extract_final_text(self, _messages) -> str:
+        deltas = self.provider._deltas_by_run[min(self.provider.calls - 1, len(self.provider._deltas_by_run) - 1)]
+        return "".join(deltas)
+
+    @staticmethod
+    def _collect_attachments(_messages) -> list[dict]:
+        return []
+
+    def extract_final_text(self, messages) -> str:
+        return self._extract_final_text(messages)
+
+    def collect_attachments(self, messages) -> list[dict]:
+        return self._collect_attachments(messages)
 
 
 def test_ws_streams_agent_loop_events_when_provider_available():
@@ -61,28 +132,36 @@ def test_ws_streams_agent_loop_events_when_provider_available():
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={token}") as ws:
-            connected = ws.receive_json()
-            assert connected["type"] == "connected"
+        with patch(
+            "app.routers.ws.SessionNamingService.maybe_auto_rename",
+            new=AsyncMock(return_value=None),
+        ):
+            with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={token}") as ws:
+                connected = ws.receive_json()
+                assert connected["type"] == "connected"
 
-            ws.send_json({"type": "message", "content": "hello"})
-            ack = ws.receive_json()
-            assert ack["type"] == "message_ack"
+                ws.send_json({"type": "message", "content": "hello"})
+                ack = ws.receive_json()
+                assert ack["type"] == "message_ack"
 
-            thinking = ws.receive_json()
-            assert thinking["type"] == "agent_thinking"
+                thinking = ws.receive_json()
+                assert thinking["type"] == "agent_thinking"
 
-            text_delta_1 = ws.receive_json()
-            assert text_delta_1["type"] == "text_delta"
-            assert text_delta_1["delta"] == "agent "
+                progress = ws.receive_json()
+                assert progress["type"] == "agent_progress"
+                assert progress["iteration"] == 1
 
-            text_delta_2 = ws.receive_json()
-            assert text_delta_2["type"] == "text_delta"
-            assert text_delta_2["delta"] == "says hi"
+                text_delta_1 = ws.receive_json()
+                assert text_delta_1["type"] == "text_delta"
+                assert text_delta_1["delta"] == "agent "
 
-            done = ws.receive_json()
-            assert done["type"] == "done"
-            assert done["stop_reason"] == "stop"
+                text_delta_2 = ws.receive_json()
+                assert text_delta_2["type"] == "text_delta"
+                assert text_delta_2["delta"] == "says hi"
+
+                done = ws.receive_json()
+                assert done["type"] == "done"
+                assert done["stop_reason"] == "stop"
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
@@ -139,27 +218,37 @@ def test_ws_auto_resumes_after_compaction():
                 ),
             ) as auto_compact_mock,
         ):
-            with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={token}") as ws:
-                connected = ws.receive_json()
-                assert connected["type"] == "connected"
+            with patch(
+                "app.routers.ws.SessionNamingService.maybe_auto_rename",
+                new=AsyncMock(return_value=None),
+            ):
+                with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={token}") as ws:
+                    connected = ws.receive_json()
+                    assert connected["type"] == "connected"
 
-                ws.send_json({"type": "message", "content": "hello"})
-                assert ws.receive_json()["type"] == "message_ack"
-                assert ws.receive_json()["type"] == "agent_thinking"
-                assert ws.receive_json()["type"] == "text_delta"
-                assert ws.receive_json()["type"] == "done"
-                assert ws.receive_json()["type"] == "compaction_started"
-                assert ws.receive_json()["type"] == "compaction_completed"
-                assert ws.receive_json()["type"] == "compaction_resuming"
-                assert ws.receive_json()["type"] == "agent_thinking"
-                resumed_text = ws.receive_json()
-                assert resumed_text["type"] == "text_delta"
-                assert resumed_text["delta"] == "resumed run"
-                resumed_done = ws.receive_json()
-                assert resumed_done["type"] == "done"
-                assert resumed_done["stop_reason"] == "stop"
+                    ws.send_json({"type": "message", "content": "hello"})
+                    assert ws.receive_json()["type"] == "message_ack"
+                    assert ws.receive_json()["type"] == "agent_thinking"
+                    progress = ws.receive_json()
+                    assert progress["type"] == "agent_progress"
+                    assert progress["iteration"] == 1
+                    assert ws.receive_json()["type"] == "text_delta"
+                    assert ws.receive_json()["type"] == "done"
+                    assert ws.receive_json()["type"] == "compaction_started"
+                    assert ws.receive_json()["type"] == "compaction_completed"
+                    assert ws.receive_json()["type"] == "compaction_resuming"
+                    assert ws.receive_json()["type"] == "agent_thinking"
+                    resumed_progress = ws.receive_json()
+                    assert resumed_progress["type"] == "agent_progress"
+                    assert resumed_progress["iteration"] == 1
+                    resumed_text = ws.receive_json()
+                    assert resumed_text["type"] == "text_delta"
+                    assert resumed_text["delta"] == "resumed run"
+                    resumed_done = ws.receive_json()
+                    assert resumed_done["type"] == "done"
+                    assert resumed_done["stop_reason"] == "stop"
 
-        assert fake_loop.calls == 2
+        assert fake_loop.provider.calls == 2
         should_compact_mock.assert_awaited_once()
         auto_compact_mock.assert_awaited_once()
     finally:

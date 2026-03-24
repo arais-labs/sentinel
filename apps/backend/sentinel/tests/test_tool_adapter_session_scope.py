@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from app.models import Message, Session
 from app.services.agent import ToolAdapter
-from app.services.agent.loop import AgentLoop
+from app.services.agent.sentinel_runner import AgentLoop
 from app.services.llm.generic.types import ToolCallContent
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import (

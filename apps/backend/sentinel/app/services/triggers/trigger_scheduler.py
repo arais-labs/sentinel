@@ -14,8 +14,13 @@ from croniter import croniter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
 from app.models import Session, Trigger, TriggerLog
 from app.services.agent import AgentLoop
+from app.services.agent_runtime_adapters import (
+    SentinelLoopRuntimeAdapter,
+    runtime_event_to_sentinel_event,
+)
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.messages import trigger_ingress_metadata
 from app.services.triggers.routing import (
@@ -454,7 +459,10 @@ class TriggerScheduler:
 
         async def _on_event(event: Any) -> None:
             if self._ws_manager:
-                await self._ws_manager.broadcast_agent_event(session_key, event)
+                await self._ws_manager.broadcast_agent_event(
+                    session_key,
+                    runtime_event_to_sentinel_event(event),
+                )
 
         if self._ws_manager:
             await self._ws_manager.broadcast_message_ack(
@@ -466,14 +474,32 @@ class TriggerScheduler:
             )
             await self._ws_manager.broadcast_agent_thinking(session_key)
 
+        runtime = SentinelLoopRuntimeAdapter(
+            loop=self._agent_loop,
+            db=db,
+            session_id=session_id,
+        )
         run_task = asyncio.create_task(
-            self._agent_loop.run(
-                db,
-                session_id,
-                message_text,
-                stream=True,
-                on_event=_on_event,
-                user_metadata=ingress_metadata,
+            runtime.run_turn(
+                RunTurnRequest(
+                    conversation_id=session_key,
+                    new_items=[
+                        ConversationItem(
+                            id=f"trigger-{trigger.id}",
+                            role="user",
+                            content=[TextBlock(text=message_text)],
+                            metadata=dict(ingress_metadata),
+                        )
+                    ],
+                    config=GenerationConfig(
+                        model="normal",
+                        stream=True,
+                        provider_metadata={
+                            "user_metadata": ingress_metadata,
+                        },
+                    ),
+                ),
+                sink=_on_event,
             )
         )
         registered = False
@@ -489,10 +515,17 @@ class TriggerScheduler:
         finally:
             if self._run_registry is not None and registered:
                 await self._run_registry.clear(session_key, run_task)
+        final_text = ""
+        if result.final_item is not None:
+            final_text = "\n".join(
+                block.text
+                for block in result.final_item.content
+                if isinstance(block, TextBlock) and block.text
+            ).strip()
         route_mode = route.normalized_action_config.get("route_mode")
         normalized_route_mode = str(route_mode) if isinstance(route_mode, str) and route_mode else None
         return TriggerActionOutcome(
-            output_summary=f"agent_message:{result.final_text[:500]}",
+            output_summary=f"agent_message:{final_text[:500]}",
             resolved_session_id=session_id,
             route_mode=normalized_route_mode,
             used_fallback=route.used_fallback,

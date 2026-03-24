@@ -15,6 +15,7 @@ logging.getLogger("app.services.agent").setLevel(logging.DEBUG)
 logging.getLogger("app.services.llm").setLevel(logging.DEBUG)
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
 from app.config import settings
 from app.database import AsyncSessionLocal, init_db
 from app.middleware import (
@@ -47,6 +48,7 @@ from app.routers import (
 )
 from app.routers.araios import api_router as araios_api_router, platform_auth_router as araios_platform_auth_router
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter, runtime_event_to_sentinel_event
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.araios.runtime_services import configure_runtime_services
 from app.services.memory.embeddings import EmbeddingService
@@ -204,7 +206,6 @@ async def lifespan(app: FastAPI):
         from sqlalchemy import select as _select
 
         from app.models import Session as SessionModel
-        from app.services.llm.generic.types import AgentEvent as _AgentEvent
 
         agent_loop = app.state.agent_loop
         if agent_loop is None:
@@ -224,20 +225,40 @@ async def lifespan(app: FastAPI):
 
             await ws_manager.broadcast_agent_thinking(session_key)
 
-            async def _on_event(event: _AgentEvent) -> None:
-                await ws_manager.broadcast_agent_event(session_key, event)
+            async def _on_event(event) -> None:
+                await ws_manager.broadcast_agent_event(
+                    session_key,
+                    runtime_event_to_sentinel_event(event),
+                )
 
+            runtime = SentinelLoopRuntimeAdapter(loop=agent_loop, db=db, session_id=sid)
             run_task = asyncio.create_task(
-                agent_loop.run(
-                    db,
-                    sid,
-                    "A delegated sub-agent just finished. "
-                    "Review the latest [Sub-Agent Report] system message(s), integrate useful findings, "
-                    "and continue helping the user immediately.",
-                    persist_user_message=False,
-                    on_event=_on_event,
-                    model=TierName.NORMAL.value,
-                    max_iterations=10,
+                runtime.run_turn(
+                    RunTurnRequest(
+                        conversation_id=session_key,
+                        new_items=[
+                            ConversationItem(
+                                id="sub-agent-completion",
+                                role="user",
+                                content=[
+                                    TextBlock(
+                                        text=(
+                                            "A delegated sub-agent just finished. "
+                                            "Review the latest [Sub-Agent Report] system message(s), integrate useful findings, "
+                                            "and continue helping the user immediately."
+                                        )
+                                    )
+                                ],
+                            )
+                        ],
+                        config=GenerationConfig(
+                            model=TierName.NORMAL.value,
+                            max_iterations=10,
+                            stream=True,
+                            provider_metadata={"persist_user_message": False},
+                        ),
+                    ),
+                    sink=_on_event,
                 )
             )
             registered = await run_registry.register(session_key, run_task)

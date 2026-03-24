@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from app.models import Session, SessionBinding, Trigger, TriggerLog
-from app.services.agent.loop import AgentLoopResult
+from app.services.agent import ToolAdapter
+from app.services.agent.sentinel_runner import PreparedRuntimeTurnContext
+from app.services.llm.generic.base import LLMProvider
+from app.services.llm.generic.types import AgentEvent, TextContent
 from app.services.sessions.agent_run_registry import AgentRunRegistry
-from app.services.llm.generic.types import TokenUsage
+from app.services.tools.executor import ToolExecutor
+from app.services.tools.registry import ToolRegistry
 from app.services.triggers.trigger_scheduler import TriggerScheduler, compute_next_fire_at
 from tests.fake_db import FakeDB
 
@@ -37,34 +42,183 @@ class _SessionFactory:
 class _AgentLoopStub:
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self._estop = SimpleNamespace(check_level=self._check_level)
+        self.context_builder = SimpleNamespace(build=self._build_context)
+        registry = ToolRegistry()
+        self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
+        self.provider = _StreamingProvider()
 
-    async def run(self, db, session_id, user_message, **kwargs):
+    async def estop_level(self, db):
+        return await self._estop.check_level(db)
+
+    async def prepare_runtime_turn_context(
+        self,
+        db,
+        session_id,
+        *,
+        system_prompt,
+        pending_user_message,
+        agent_mode,
+        model,
+        temperature,
+        max_iterations,
+        stream,
+    ):
+        messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
+        return PreparedRuntimeTurnContext(
+            messages=messages,
+            tools=self.tool_adapter.get_tool_schemas(),
+            effective_system_prompt=system_prompt,
+            runtime_context_snapshot=None,
+        )
+
+    async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+        await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
+
+    async def _check_level(self, _db):
+        return None
+
+    async def _build_context(self, db, session_id, system_prompt, pending_user_message, agent_mode):
         self.calls.append(
             {
                 "db": db,
                 "session_id": session_id,
-                "user_message": user_message,
-                "kwargs": kwargs,
+                "user_message": pending_user_message,
+                "kwargs": {
+                    "system_prompt": system_prompt,
+                    "agent_mode": agent_mode,
+                },
             }
         )
-        return AgentLoopResult(
-            final_text="ok",
-            messages_created=1,
-            usage=TokenUsage(input_tokens=3, output_tokens=4),
-            iterations=1,
-        )
+        return []
+
+    async def _persist_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+        _ = (db, session_id, created, assistant_iterations, kwargs)
+
+    @staticmethod
+    def _extract_final_text(_messages) -> str:
+        return "ok"
+
+    @staticmethod
+    def _collect_attachments(_messages) -> list[dict]:
+        return []
+
+    def extract_final_text(self, messages) -> str:
+        return self._extract_final_text(messages)
+
+    def collect_attachments(self, messages) -> list[dict]:
+        return self._collect_attachments(messages)
 
 
 class _BlockingAgentLoopStub:
-    async def run(self, db, session_id, user_message, **kwargs):
-        _ = (db, session_id, user_message, kwargs)
-        await asyncio.sleep(3600)
-        return AgentLoopResult(
-            final_text="never",
-            messages_created=0,
-            usage=TokenUsage(input_tokens=0, output_tokens=0),
-            iterations=0,
+    def __init__(self) -> None:
+        self._estop = SimpleNamespace(check_level=self._check_level)
+        self.context_builder = SimpleNamespace(build=self._build_context)
+        registry = ToolRegistry()
+        self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
+        self.provider = _BlockingProvider()
+
+    async def estop_level(self, db):
+        return await self._estop.check_level(db)
+
+    async def prepare_runtime_turn_context(
+        self,
+        db,
+        session_id,
+        *,
+        system_prompt,
+        pending_user_message,
+        agent_mode,
+        model,
+        temperature,
+        max_iterations,
+        stream,
+    ):
+        messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
+        return PreparedRuntimeTurnContext(
+            messages=messages,
+            tools=self.tool_adapter.get_tool_schemas(),
+            effective_system_prompt=system_prompt,
+            runtime_context_snapshot=None,
         )
+
+    async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+        await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
+
+    async def _check_level(self, _db):
+        return None
+
+    async def _build_context(self, _db, _session_id, system_prompt, pending_user_message, agent_mode):
+        _ = (system_prompt, pending_user_message, agent_mode)
+        return []
+
+    async def _persist_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+        _ = (db, session_id, created, assistant_iterations, kwargs)
+
+    @staticmethod
+    def _extract_final_text(_messages) -> str:
+        return ""
+
+    @staticmethod
+    def _collect_attachments(_messages) -> list[dict]:
+        return []
+
+    def extract_final_text(self, messages) -> str:
+        return self._extract_final_text(messages)
+
+    def collect_attachments(self, messages) -> list[dict]:
+        return self._collect_attachments(messages)
+
+
+class _StreamingProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "model": model,
+                "tools": list(tools or []),
+                "temperature": temperature,
+                "stream": False,
+            }
+        )
+        raise AssertionError("Trigger runtime tests expect the streaming provider path")
+
+    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "model": model,
+                "tools": list(tools or []),
+                "temperature": temperature,
+                "stream": True,
+            }
+        )
+        yield AgentEvent(type="text_delta", delta="ok")
+        yield AgentEvent(type="done", stop_reason="stop")
+
+
+class _BlockingProvider(LLMProvider):
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
+        await asyncio.sleep(3600)
+        if False:
+            yield
 
 
 class _ToolExecutorStub:
@@ -133,7 +287,9 @@ def test_scheduler_agent_message_action_calls_agent_loop():
     _run(scheduler._fire_trigger(trigger.id))
 
     assert agent.calls and agent.calls[0]["user_message"] == "ping"
-    user_metadata = agent.calls[0]["kwargs"].get("user_metadata")
+    assert agent.provider.calls
+    provider_messages = agent.provider.calls[0]["messages"]
+    user_metadata = provider_messages[-1].metadata
     assert isinstance(user_metadata, dict)
     assert user_metadata.get("source") == "trigger"
     assert user_metadata.get("trigger_name") == "agent-job"
@@ -204,6 +360,7 @@ def test_scheduler_agent_loop_can_be_updated_after_init():
     _run(scheduler._fire_trigger(trigger.id))
 
     assert agent.calls and agent.calls[0]["user_message"] == "ping"
+    assert agent.provider.calls
     assert trigger.fire_count == 1
     assert trigger.last_error is None
 

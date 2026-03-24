@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy import func as sa_func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.sentral import ConversationItem, GenerationConfig, ImageBlock, RunTurnRequest, TextBlock
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import Memory, Message, Session, ToolApproval
@@ -761,42 +762,59 @@ class SessionService:
             raise ChatPayloadRequiredError("content or attachments required")
 
         if attachments:
-            user_blocks: list[TextContent | ImageContent] = []
+            user_blocks: list[TextBlock | ImageBlock] = []
             if text:
-                user_blocks.append(TextContent(text=text))
+                user_blocks.append(TextBlock(text=text))
             for item in attachments:
                 base64_data = item.base64.strip()
                 if ";base64," in base64_data:
                     _, _, base64_data = base64_data.partition(";base64,")
                 user_blocks.append(
-                    ImageContent(
+                    ImageBlock(
                         media_type=item.mime_type,
                         data=base64_data,
                     )
                 )
-            user_payload: str | list[TextContent | ImageContent] = user_blocks
+            user_blocks_payload = user_blocks
         else:
-            user_payload = text
+            user_blocks_payload = [TextBlock(text=text)]
 
-        result = await self._agent_loop.run(
-            db,
-            session.id,
-            user_payload,
-            system_prompt=system_prompt,
-            model=(tier or TierName.NORMAL).value,
-            temperature=temperature,
-            max_iterations=max_iterations,
-            agent_mode=agent_mode or get_default_agent_mode(),
-            stream=False,
+        mode = agent_mode or get_default_agent_mode()
+        from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
+
+        runtime = SentinelLoopRuntimeAdapter(
+            loop=self._agent_loop,
+            db=db,
+            session_id=session.id,
+        )
+        result = await runtime.run_turn(
+            RunTurnRequest(
+                conversation_id=str(session.id),
+                new_items=[
+                    ConversationItem(
+                        id="chat-user-input",
+                        role="user",
+                        content=user_blocks_payload,
+                    )
+                ],
+                config=GenerationConfig(
+                    model=(tier or TierName.NORMAL).value,
+                    temperature=temperature,
+                    max_iterations=max_iterations,
+                    stream=False,
+                    system_prompt=system_prompt,
+                    provider_metadata={"agent_mode": mode},
+                ),
+            )
         )
         naming = SessionNamingService(provider=getattr(self._agent_loop, "provider", None))
         await naming.maybe_auto_rename(session_id=session.id)
         return ChatRunResult(
-            final_text=result.final_text,
+            final_text=str(result.metadata.get("final_text") or ""),
             iterations=result.iterations,
             input_tokens=result.usage.input_tokens,
             output_tokens=result.usage.output_tokens,
-            error=getattr(result, "error", None),
+            error=result.error,
         )
 
     async def is_session_running(self, session_id: UUID) -> bool:
