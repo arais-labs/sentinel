@@ -33,23 +33,23 @@ import {
   Pencil,
   GitBranch,
   Boxes,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
-import { SessionMessageCard, buildToolArgumentsByCallId } from '../components/session/SessionMessageCard';
+import { SessionMessageCard, buildToolArgumentsByCallId, ToolPayloadView, ToolPayloadCompactSummary } from '../components/session/SessionMessageCard';
 import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
 import { DesktopPreview } from '../components/session/DesktopPreview';
 import { SubAgentTaskModal } from '../components/SubAgentTaskModal';
 import { SpawnSubAgentModal } from '../components/SpawnSubAgentModal';
-import { JsonBlock } from '../components/ui/JsonBlock';
 import { Markdown } from '../components/ui/Markdown';
 import { StatusChip } from '../components/ui/StatusChip';
 import { WS_BASE_URL } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
-import { extractCriticalToolFields, parsePayloadJson, previewPayloadValue, topLevelPayloadFieldCount, type ToolPayloadKind } from '../lib/toolPayloadPreview';
 import { buildRuntimeCommandRows } from '../lib/runtimeCommands';
 import {
   approvalKey,
@@ -355,221 +355,6 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function ToolFieldPreviewList({
-  items,
-  extraCount = 0,
-}: {
-  items: Array<{ key: string; text: string; truncated: boolean; redacted?: boolean }>;
-  extraCount?: number;
-}) {
-  return (
-    <div className="space-y-2">
-      {items.map((item) => (
-        <div key={item.key} className="rounded-lg border border-sky-500/10 bg-sky-500/5 p-2">
-          <p className="text-[9px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">{item.key}</p>
-          <p className="mt-1 font-mono text-[12px] break-words text-[color:var(--text-primary)]">{item.text || '""'}</p>
-          {item.redacted ? (
-            <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Sensitive value hidden</p>
-          ) : null}
-          {item.truncated ? (
-            <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Truncated in preview</p>
-          ) : null}
-        </div>
-      ))}
-      {extraCount > 0 ? (
-        <p className="text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">+{extraCount} more field{extraCount === 1 ? '' : 's'}</p>
-      ) : null}
-    </div>
-  );
-}
-
-function ToolPayloadView({
-  raw,
-  emptyLabel,
-  showRawJson = true,
-  toolName,
-  payloadKind,
-  criticalOnly = false,
-  maxCriticalFields = 3,
-}: {
-  raw: string;
-  emptyLabel: string;
-  showRawJson?: boolean;
-  toolName?: string;
-  payloadKind?: ToolPayloadKind;
-  criticalOnly?: boolean;
-  maxCriticalFields?: number;
-}) {
-  const parsed = useMemo(() => parsePayloadJson(raw), [raw]);
-  const criticalFields = useMemo(() => {
-    if (!toolName || !payloadKind) return [];
-    return extractCriticalToolFields({
-      toolName,
-      raw,
-      kind: payloadKind,
-      maxFields: maxCriticalFields,
-    });
-  }, [toolName, raw, payloadKind, maxCriticalFields]);
-
-  if (!raw.trim()) {
-    return <p className="text-sky-500/60 italic">{emptyLabel}</p>;
-  }
-
-  if (criticalOnly) {
-    if (criticalFields.length > 0) {
-      const extraCount = Math.max(0, topLevelPayloadFieldCount(raw) - criticalFields.length);
-      return <ToolFieldPreviewList items={criticalFields} extraCount={extraCount} />;
-    }
-    const preview = previewPayloadValue(parsed ?? raw, 220);
-    return (
-      <ToolFieldPreviewList
-        items={[
-          {
-            key: payloadKind ?? 'payload',
-            text: preview.text || '""',
-            truncated: preview.truncated,
-          },
-        ]}
-      />
-    );
-  }
-
-  if (isObjectRecord(parsed)) {
-    const entries = Object.entries(parsed).map(([key, value]) => {
-      const preview = previewPayloadValue(value);
-      return { key, text: preview.text, truncated: preview.truncated };
-    });
-    return (
-      <div className="space-y-2">
-        <ToolFieldPreviewList items={entries} />
-        {showRawJson ? (
-          <details className="group">
-            <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-sky-600/80 dark:text-sky-400/80">
-              <ChevronDown size={12} className="group-open:rotate-180 transition-transform" />
-              Raw JSON
-            </summary>
-            <JsonBlock value={JSON.stringify(parsed, null, 2)} className="mt-2 bg-transparent border-sky-500/10 p-2 max-h-[220px]" />
-          </details>
-        ) : null}
-      </div>
-    );
-  }
-
-  if (parsed !== null) {
-    const preview = previewPayloadValue(parsed, 260);
-    return (
-      <div className="space-y-2">
-        <ToolFieldPreviewList
-          items={[
-            {
-              key: payloadKind ?? 'value',
-              text: preview.text || '""',
-              truncated: preview.truncated,
-            },
-          ]}
-        />
-        {showRawJson ? (
-          <details className="group">
-            <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-sky-600/80 dark:text-sky-400/80">
-              <ChevronDown size={12} className="group-open:rotate-180 transition-transform" />
-              Raw JSON
-            </summary>
-            <JsonBlock value={JSON.stringify(parsed, null, 2)} className="mt-2 bg-transparent border-sky-500/10 p-2 max-h-[220px]" />
-          </details>
-        ) : null}
-      </div>
-    );
-  }
-
-  return (
-    <details className="group">
-      <summary className="cursor-pointer list-none flex items-center gap-2 text-sky-600 dark:text-sky-400">
-        <ChevronDown size={14} className="group-open:rotate-180 transition-transform" />
-        <span className="font-bold uppercase tracking-widest text-[10px]">Execution Telemetry</span>
-      </summary>
-      <div className="mt-3 overflow-auto">
-        <Markdown content={raw} />
-      </div>
-    </details>
-  );
-}
-
-function ToolPayloadCompactSummary({
-  toolName,
-  inputRaw,
-  outputRaw,
-  outputEmptyLabel,
-  outputError = false,
-  hideInput = false,
-}: {
-  toolName: string;
-  inputRaw: string;
-  outputRaw: string;
-  outputEmptyLabel: string;
-  outputError?: boolean;
-  hideInput?: boolean;
-}) {
-  const inputFields = useMemo(
-    () => extractCriticalToolFields({ toolName, raw: inputRaw, kind: 'input', maxFields: 2 }),
-    [toolName, inputRaw],
-  );
-  const outputFields = useMemo(
-    () => extractCriticalToolFields({ toolName, raw: outputRaw, kind: 'output', maxFields: 2 }),
-    [toolName, outputRaw],
-  );
-
-  const compactValue = (value: string): string => {
-    const trimmed = value.replace(/\s+/g, ' ').trim();
-    if (trimmed.length <= 56) return trimmed;
-    return `${trimmed.slice(0, 56)}…`;
-  };
-
-  const renderFieldChips = (items: Array<{ key: string; text: string; redacted?: boolean }>) => {
-    if (!items.length) {
-      return <span className="text-[10px] text-[color:var(--text-muted)] italic">none</span>;
-    }
-    return (
-      <div className="flex flex-wrap items-center gap-1.5">
-        {items.map((item) => (
-          <span
-            key={item.key}
-            className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/20 bg-sky-500/8 px-1.5 py-0.5"
-          >
-            <span className="text-[9px] font-bold uppercase tracking-wide text-sky-600 dark:text-sky-400">
-              {item.key}
-            </span>
-            <span className="font-mono text-[10px] text-[color:var(--text-primary)] break-all">
-              {item.redacted ? '[redacted]' : compactValue(item.text || '""')}
-            </span>
-          </span>
-        ))}
-      </div>
-    );
-  };
-
-  return (
-    <div className="mt-2 border-t border-sky-500/10 pt-2 space-y-1.5 animate-in fade-in duration-200 max-w-[620px]">
-      {!hideInput ? (
-        <div className="min-w-0 flex items-start gap-2">
-          <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] pt-0.5 shrink-0">Input</p>
-          <div className="min-w-0 flex-1">{renderFieldChips(inputFields)}</div>
-        </div>
-      ) : null}
-      <div className="min-w-0 flex items-start gap-2">
-        <div className="flex items-center gap-1.5 pt-0.5 shrink-0">
-          <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Output</p>
-          {outputError ? <span className="h-1.5 w-1.5 rounded-full bg-rose-400" title="Error output" /> : null}
-        </div>
-        <div className="min-w-0 flex-1">
-          {outputRaw.trim() ? renderFieldChips(outputFields) : (
-            <span className="text-[10px] text-[color:var(--text-muted)] italic">{outputEmptyLabel}</span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // --- Memoized Components ---
 
 // --- Types ---
@@ -667,61 +452,89 @@ function StreamToolCard({
   const approvalActionBusy = approvalRef ? resolvingApprovalKey === approvalKey(approvalRef) : false;
 
   useEffect(() => {
-    if (pendingApproval) {
-      setExpanded(true);
-    }
+    if (pendingApproval) setExpanded(true);
   }, [pendingApproval]);
 
   return (
-      <div className="flex flex-col gap-1.5 animate-in items-start w-full">
-        <div className="flex items-center gap-2 px-1">
-        <span className={`text-[9px] font-bold uppercase tracking-[0.2em] ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
-          {pendingApproval ? 'tool_call • waiting approval' : `tool_call • ${active ? 'running' : 'complete'}`}
+    <div className="flex w-full flex-col gap-1 animate-in items-start">
+      <div className="flex items-center gap-2 px-1">
+        <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)]">
+          tool_call
         </span>
-        </div>
-        <div className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]'} inline-flex flex-col rounded-2xl rounded-tl-none border ${pendingApproval ? 'border-rose-500/35 bg-rose-500/10' : 'border-sky-500/20 bg-sky-500/5'} px-4 py-1.5 text-[12px] shadow-sm`}>
-          <button
-            type="button"
-            onClick={() => setExpanded((prev) => !prev)}
-            className={`${expanded ? 'w-full' : 'w-auto'} flex items-center justify-between gap-3 text-left`}
-          >
-            <div className={`flex items-center gap-2 font-mono font-bold min-w-0 ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
-              <Wrench size={14} className="shrink-0" />
-              <span className="truncate">{call.name}</span>
-              {pendingApproval ? (
-                <span className="inline-flex items-center rounded-full border border-rose-500/35 bg-rose-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-300">
-                  Pending
+        {pendingApproval ? (
+          <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-rose-400">• waiting approval</span>
+        ) : active ? (
+          <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-sky-500/70">• running</span>
+        ) : null}
+      </div>
+      <div
+        onMouseEnter={() => !pendingApproval && setExpanded(true)}
+        onMouseLeave={() => !pendingApproval && setExpanded(false)}
+        className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]'} inline-flex flex-col rounded-2xl rounded-tl-none px-4 py-2 text-xs shadow-sm border transition-all duration-300 ease-in-out ${
+          pendingApproval
+            ? 'bg-rose-500/8 border-rose-500/30 shadow-md ring-1 ring-rose-500/20'
+            : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)]'
+        }`}
+      >
+        <div className={`${expanded ? 'w-full mb-4' : 'w-auto'} flex items-center justify-between gap-4 py-0.5 cursor-default`}>
+          <div className="flex items-center gap-3 min-w-0">
+            <div className={`flex items-center justify-center w-6 h-6 rounded-lg ${pendingApproval ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' : 'bg-sky-500/10 text-sky-400 border border-sky-500/20'} shrink-0`}>
+              <Wrench size={12} strokeWidth={2.5} />
+            </div>
+            <div className="flex flex-col min-w-0">
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] font-black uppercase tracking-[0.12em] truncate ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-300'}`}>
+                  {call.name}
                 </span>
-              ) : null}
+                {pendingApproval && (
+                  <span className="inline-flex items-center rounded-full border border-rose-500/35 bg-rose-500/15 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-rose-300 animate-pulse">
+                    Action Required
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              {active && <Loader2 size={12} className={`animate-spin ${pendingApproval ? 'text-rose-300' : 'text-sky-500'}`} />}
-              <ChevronDown size={14} className={`${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'} transition-transform ${expanded ? 'rotate-180' : ''}`} />
-            </div>
-          </button>
-          {expanded ? (
-            <div className={`mt-3 border-t border-sky-500/10 pt-3 grid ${isScreenshotCall ? 'grid-cols-1' : 'grid-cols-2'} gap-3 animate-in fade-in duration-200`}>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {active && <Loader2 size={12} className={`animate-spin ${pendingApproval ? 'text-rose-300' : 'text-sky-500'}`} />}
+            <ChevronDown size={14} strokeWidth={3} className={`${pendingApproval ? 'text-rose-300' : 'text-sky-400'} transition-transform duration-500 ${expanded ? 'rotate-180 opacity-40' : 'opacity-100'}`} />
+          </div>
+        </div>
+
+        {expanded ? (
+          <div className="relative mt-3 border-t border-sky-500/20 pt-4 animate-in fade-in slide-in-from-top-1 duration-200">
+            <div className="absolute left-[14px] top-4 bottom-0 w-[1px] border-l border-dashed border-sky-500/30" />
+            <div className="space-y-6">
               {!isScreenshotCall ? (
-                <div className="min-w-0">
-                  <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Input</p>
+                <div className="relative pl-10">
+                  <div className="absolute left-0 top-0 z-10 flex items-center justify-center w-7 h-7 rounded-full bg-[color:var(--surface-1)] border border-sky-500/30 text-sky-500/60 shadow-sm">
+                    <Terminal size={14} />
+                  </div>
+                  <div className="mb-2.5 flex items-center gap-2">
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-600 dark:text-sky-300">Arguments</p>
+                    <div className="h-px flex-1 bg-gradient-to-r from-sky-500/30 to-transparent" />
+                  </div>
                   <ToolPayloadView
                     raw={call.argumentsJson}
-                    emptyLabel="No input payload."
+                    emptyLabel="No input."
                     toolName={call.name}
                     payloadKind="input"
                   />
                 </div>
               ) : null}
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Output</p>
+              <div className="relative pl-10 pb-2">
+                <div className={`absolute left-0 top-0 z-10 flex items-center justify-center w-7 h-7 rounded-full border ${call.isError ? 'bg-rose-500/10 border-rose-500/20 text-rose-500/60' : 'bg-[color:var(--surface-1)] border-emerald-500/20 text-emerald-500/60'} shadow-sm`}>
+                  {active ? <Loader2 size={14} className="animate-spin" /> : call.isError ? <X size={14} strokeWidth={3} /> : <Check size={14} strokeWidth={3} />}
+                </div>
+                <div className="mb-2.5 flex items-center gap-2">
+                  <p className={`text-[10px] font-black uppercase tracking-[0.2em] ${call.isError ? 'text-rose-500/60' : 'text-emerald-500/60'}`}>Result</p>
+                  <div className={`h-px flex-1 bg-gradient-to-r ${call.isError ? 'from-rose-500/20' : 'from-emerald-500/20'} to-transparent`} />
                   {call.isError && (
-                    <span className="inline-flex items-center rounded-full border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-500">
+                    <span className="inline-flex items-center rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[7px] font-black uppercase tracking-widest text-rose-500">
                       Error
                     </span>
                   )}
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-4">
                   <ToolPayloadView
                     raw={call.outputJson}
                     emptyLabel={active ? 'Running tool...' : 'No output payload.'}
@@ -730,47 +543,51 @@ function StreamToolCard({
                     payloadKind="output"
                   />
                   {canResolveApproval && approvalRef ? (
-                    <div className="flex items-center gap-2 pt-1">
+                    <div className="flex items-center gap-3 pt-1">
                       <button
                         type="button"
                         onClick={() => onResolveApproval(approvalRef, 'reject')}
                         disabled={approvalActionBusy}
-                        className="inline-flex items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-500/20 disabled:opacity-60"
+                        className="inline-flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-rose-400 hover:bg-rose-500/15 transition-all"
                       >
-                        {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
-                        Reject
+                        {approvalActionBusy ? <Loader2 size={10} className="animate-spin" /> : <X size={10} strokeWidth={3} />}
+                        Deny
                       </button>
                       <button
                         type="button"
                         onClick={() => onResolveApproval(approvalRef, 'approve')}
                         disabled={approvalActionBusy}
-                        className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-60"
+                        className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/5 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-500/15 transition-all"
                       >
-                        {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
-                        Approve
+                        {approvalActionBusy ? <Loader2 size={10} className="animate-spin" /> : <CheckCircle2 size={10} strokeWidth={3} />}
+                        Confirm
                       </button>
                     </div>
                   ) : null}
                   {approvalLinkMissing ? (
-                    <p className="text-[10px] leading-relaxed text-amber-300">
-                      Pending approval detected but controls are unavailable. Refresh and stop/retry this run if it remains stuck.
-                    </p>
+                    <div className="flex items-start gap-2 p-2 rounded-lg bg-amber-500/5 border border-amber-500/20">
+                      <AlertCircle size={12} className="text-amber-500 shrink-0 mt-0.5" />
+                      <p className="text-[9px] leading-relaxed text-amber-400/80 font-medium">
+                        Action required but controls are detached.
+                      </p>
+                    </div>
                   ) : null}
                 </div>
               </div>
             </div>
-          ) : (
-            <ToolPayloadCompactSummary
-              toolName={call.name}
-              inputRaw={call.argumentsJson}
-              outputRaw={call.outputJson}
-              outputEmptyLabel={active ? 'Running tool...' : 'No output payload.'}
-              outputError={call.isError}
-              hideInput={isScreenshotCall}
-            />
-          )}
-        </div>
+          </div>
+        ) : (
+          <ToolPayloadCompactSummary
+            toolName={call.name}
+            inputRaw={call.argumentsJson}
+            outputRaw={call.outputJson}
+            outputEmptyLabel={active ? 'Running tool...' : 'No output payload.'}
+            outputError={call.isError}
+            hideInput={isScreenshotCall}
+          />
+        )}
       </div>
+    </div>
   );
 }
 

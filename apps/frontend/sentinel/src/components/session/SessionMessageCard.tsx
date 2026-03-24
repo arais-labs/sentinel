@@ -1,5 +1,5 @@
-import { ChevronDown, Clock3, Globe, Loader2, Send, Users, Wrench, X } from 'lucide-react';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, ArrowRight, Check, CheckCircle2, ChevronDown, Clock3, Globe, Hash, Loader2, Send, Terminal, Users, Wrench, X } from 'lucide-react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { JsonBlock } from '../ui/JsonBlock';
@@ -155,35 +155,284 @@ function extractImageAttachments(metadata: Record<string, unknown> | null | unde
   return out;
 }
 
+// --- Syntax highlighting ---
+
+type Lang = 'json' | 'shell' | 'plain';
+
+// ---- language detection ----
+
+const SHELL_KEYWORDS = /\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|source|echo|printf|cd|ls|grep|awk|sed|cat|rm|cp|mv|mkdir|chmod|chown|sudo|apt|brew|pip|npm|yarn|git|docker|kubectl|python|python3|node|bash|sh)\b/;
+
+function detectLang(content: string): Lang {
+  // JSON: must start with { [ " or a JSON primitive
+  const trimmed = content.trimStart();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try { JSON.parse(content); return 'json'; } catch { /* fall through */ }
+  }
+  // Shell: shebang, or at least one shell keyword / operator pattern
+  if (
+    trimmed.startsWith('#!') ||
+    trimmed.startsWith('$ ') ||
+    SHELL_KEYWORDS.test(content) ||
+    /\|\s*\w|\bsudo\b|&&|\|\||\bexport\b/.test(content)
+  ) return 'shell';
+  return 'plain';
+}
+
+// ---- JSON tokenizer ----
+
+type JsonTok = 'key' | 'string' | 'number' | 'boolean' | 'null' | 'punct' | 'ws' | 'other';
+const JSON_RE =
+  /("(?:[^"\\]|\\.)*"(?=\s*:))|("(?:[^"\\]|\\.)*")|(-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)|(true|false)|(null)|([{}\[\],:])|(\s+)|(.)/g;
+
+function tokenizeJson(src: string) {
+  JSON_RE.lastIndex = 0;
+  const out: Array<{ text: string; type: JsonTok }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = JSON_RE.exec(src)) !== null) {
+    if      (m[1]) out.push({ text: m[1], type: 'key' });
+    else if (m[2]) out.push({ text: m[2], type: 'string' });
+    else if (m[3]) out.push({ text: m[3], type: 'number' });
+    else if (m[4]) out.push({ text: m[4], type: 'boolean' });
+    else if (m[5]) out.push({ text: m[5], type: 'null' });
+    else if (m[6]) out.push({ text: m[6], type: 'punct' });
+    else if (m[7]) out.push({ text: m[7], type: 'ws' });
+    else           out.push({ text: m[8] ?? '', type: 'other' });
+  }
+  return out;
+}
+
+const JSON_CLASS: Record<JsonTok, string> = {
+  key:     'text-sky-400 dark:text-sky-300',
+  string:  'text-emerald-600 dark:text-emerald-300',
+  number:  'text-violet-500 dark:text-violet-400',
+  boolean: 'text-orange-500 dark:text-orange-400',
+  null:    'text-rose-500 dark:text-rose-400',
+  punct:   'text-[color:var(--text-muted)]',
+  ws:      '',
+  other:   'text-[color:var(--text-secondary)]',
+};
+
+// ---- Shell tokenizer ----
+// processes line-by-line: comment > string > variable > flag > keyword > plain
+
+type ShellTok = 'comment' | 'string' | 'variable' | 'flag' | 'keyword' | 'operator' | 'plain';
+
+const SHELL_LINE_RE =
+  /(#.*$)|("(?:[^"\\]|\\.)*"|'[^']*')|(\\$\{[^}]+\}|\$[\w@*#?$!0-9]+)|(--?[\w-][\w-]*)|(if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|echo|printf|cd|sudo|git|docker|kubectl|python3?|node|bash|sh|pip|npm|yarn|grep|awk|sed|cat|rm|cp|mv|mkdir|chmod|chown|apt|brew)\b|([|&;><]+)|([\s\S]+?(?=\#|"|'|\$|--|(?:if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|echo|printf|cd|sudo|git|docker|kubectl|python3?|node|bash|sh|pip|npm|yarn|grep|awk|sed|cat|rm|cp|mv|mkdir|chmod|chown|apt|brew)\b|[|&;><]|$))/gm;
+
+function tokenizeShell(src: string) {
+  SHELL_LINE_RE.lastIndex = 0;
+  const out: Array<{ text: string; type: ShellTok }> = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SHELL_LINE_RE.exec(src)) !== null) {
+    if (m.index > last) out.push({ text: src.slice(last, m.index), type: 'plain' });
+    if      (m[1]) out.push({ text: m[1], type: 'comment' });
+    else if (m[2]) out.push({ text: m[2], type: 'string' });
+    else if (m[3]) out.push({ text: m[3], type: 'variable' });
+    else if (m[4]) out.push({ text: m[4], type: 'flag' });
+    else if (m[5]) out.push({ text: m[5], type: 'keyword' });
+    else if (m[6]) out.push({ text: m[6], type: 'operator' });
+    else           out.push({ text: m[7] ?? m[0], type: 'plain' });
+    last = m.index + m[0].length;
+  }
+  if (last < src.length) out.push({ text: src.slice(last), type: 'plain' });
+  return out;
+}
+
+const SHELL_CLASS: Record<ShellTok, string> = {
+  comment:  'text-[color:var(--text-muted)] italic',
+  string:   'text-amber-600 dark:text-amber-300',
+  variable: 'text-violet-500 dark:text-violet-400',
+  flag:     'text-sky-500 dark:text-sky-400',
+  keyword:  'text-rose-500 dark:text-rose-400',
+  operator: 'text-[color:var(--text-muted)]',
+  plain:    'text-[color:var(--text-primary)]',
+};
+
+// ---- PopupContent ----
+
+function PopupContent({ content }: { content: string }) {
+  const { lang, tokens } = useMemo(() => {
+    const lang = detectLang(content);
+    if (lang === 'json') {
+      const pretty = JSON.stringify(JSON.parse(content), null, 2);
+      return { lang, tokens: tokenizeJson(pretty) };
+    }
+    if (lang === 'shell') {
+      return { lang, tokens: tokenizeShell(content) };
+    }
+    return { lang, tokens: null };
+  }, [content]);
+
+  if (!tokens) {
+    return (
+      <pre className="font-mono text-[12px] whitespace-pre-wrap break-words text-[color:var(--text-primary)] leading-relaxed">
+        {content}
+      </pre>
+    );
+  }
+
+  if (lang === 'json') {
+    const jsonTokens = tokens as ReturnType<typeof tokenizeJson>;
+    return (
+      <pre className="font-mono text-[12px] whitespace-pre-wrap break-words leading-relaxed">
+        {jsonTokens.map((tok, i) =>
+          tok.type === 'ws' ? tok.text : (
+            <span key={i} className={JSON_CLASS[tok.type]}>{tok.text}</span>
+          ),
+        )}
+      </pre>
+    );
+  }
+
+  const shellTokens = tokens as ReturnType<typeof tokenizeShell>;
+  return (
+    <pre className="font-mono text-[12px] whitespace-pre-wrap break-words leading-relaxed">
+      {shellTokens.map((tok, i) => (
+        <span key={i} className={SHELL_CLASS[tok.type]}>{tok.text}</span>
+      ))}
+    </pre>
+  );
+}
+
+function ToolFieldPopup({
+  title,
+  content,
+  anchorRect,
+  onClose,
+}: {
+  title: string;
+  content: string;
+  anchorRect: DOMRect;
+  onClose: () => void;
+}) {
+  const [position, setPosition] = useState<{ top: number; left: number; visible: boolean }>({ top: 0, left: 0, visible: false });
+  const popupRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!popupRef.current) return;
+    const padding = 12;
+    const { width, height } = popupRef.current.getBoundingClientRect();
+    if (!width && !height) return; // not laid out yet
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    let top = anchorRect.bottom + 8;
+    let left = anchorRect.left;
+
+    // flip above if going off the bottom
+    if (top + height > vh - padding) {
+      top = anchorRect.top - height - 8;
+    }
+    // clamp vertical (handles both "flipped above" going off top, and anchor near top)
+    top = Math.max(padding, Math.min(top, vh - height - padding));
+
+    // clamp horizontal
+    left = Math.max(padding, Math.min(left, vw - width - padding));
+
+    setPosition({ top, left, visible: true });
+  }, [anchorRect]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[300]"
+      onClick={onClose}
+    >
+      <div
+        ref={popupRef}
+        style={{ top: position.top, left: position.left, visibility: position.visible ? 'visible' : 'hidden' }}
+        className="absolute w-fit max-w-[500px] min-w-[280px] rounded-xl border border-sky-500/30 bg-[color:var(--surface-0)] shadow-2xl animate-in fade-in zoom-in-95 duration-150 p-0 overflow-hidden backdrop-blur-md"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-3 py-2 border-b border-sky-500/10 bg-sky-500/5">
+           <span className="text-[10px] font-black uppercase tracking-widest text-sky-500">{title}</span>
+           <button onClick={onClose} className="p-1 hover:bg-sky-500/10 rounded-full transition-colors text-sky-500/50 hover:text-sky-500">
+              <X size={12} strokeWidth={3} />
+           </button>
+        </div>
+        <div className="p-4 overflow-auto max-h-[400px] selection:bg-sky-500/20">
+          <PopupContent content={content} />
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 function ToolFieldPreviewList({
   items,
   extraCount = 0,
+  variant = 'input',
 }: {
-  items: Array<{ key: string; text: string; truncated: boolean; redacted?: boolean }>;
+  items: Array<{ key: string; text: string; fullText?: string; truncated: boolean; redacted?: boolean }>;
   extraCount?: number;
+  variant?: 'input' | 'output';
 }) {
+  const [hoveredField, setHoveredField] = useState<{ item: any; rect: DOMRect } | null>(null);
+  const c = variant === 'output'
+    ? { border: 'border-emerald-500/15', hover: 'hover:bg-emerald-500/5', bar: 'group-hover/field:bg-emerald-500/40', key: 'text-emerald-500/50', hint: 'text-emerald-500/40 group-hover/field:text-emerald-500', extra: 'text-emerald-500/30 bg-emerald-500/10' }
+    : { border: 'border-sky-500/10',     hover: 'hover:bg-sky-500/5',     bar: 'group-hover/field:bg-sky-500/40',     key: 'text-sky-500/40',     hint: 'text-sky-500/40 group-hover/field:text-sky-500',     extra: 'text-sky-500/30 bg-sky-500/10' };
+
   return (
-    <div className="space-y-2">
+    <div className={`flex flex-col gap-0 border-l ${c.border} ml-2`}>
       {items.map((item) => (
-        <div key={item.key} className="rounded-lg border border-sky-500/10 bg-sky-500/5 p-2">
-          <p className="text-[9px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">{item.key}</p>
-          <p className="mt-1 font-mono text-[12px] break-words text-[color:var(--text-primary)]">{item.text || '""'}</p>
-          {item.redacted ? (
-            <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Sensitive value hidden</p>
-          ) : null}
-          {item.truncated ? (
-            <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Truncated in preview</p>
-          ) : null}
+        <div
+          key={item.key}
+          onClick={(e) => {
+            if (item.truncated && item.fullText) {
+              setHoveredField({ item, rect: e.currentTarget.getBoundingClientRect() });
+            }
+          }}
+          className={`group/field relative flex gap-3 px-2.5 py-1.5 transition-all ${c.hover} hover:rounded-r-lg ${item.truncated ? 'cursor-pointer' : ''}`}
+        >
+          <div className={`absolute left-[-1px] top-0.5 bottom-0.5 w-0.5 bg-transparent ${c.bar} transition-colors`} />
+          <div className="w-[85px] shrink-0 pt-0.5">
+            <span className={`text-[9px] font-black uppercase tracking-widest ${c.key} font-mono`}>
+              {item.key}
+            </span>
+          </div>
+          <div className="flex-1 min-w-0">
+            {item.redacted ? (
+              <span className="text-[9px] font-black uppercase tracking-widest text-rose-400/60 bg-rose-500/5 px-1.5 py-0.5 rounded border border-rose-500/10 italic">
+                Secret Masked
+              </span>
+            ) : (
+              <div className="flex flex-col">
+                <p className="font-mono text-[12px] break-words text-[color:var(--text-primary)] leading-normal whitespace-pre-wrap">
+                  {item.text || <span className="italic opacity-30">null</span>}
+                </p>
+                {item.truncated && (
+                  <span className={`text-[7px] font-black uppercase tracking-widest mt-0.5 transition-colors ${c.hint}`}>Click to expand</span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       ))}
       {extraCount > 0 ? (
-        <p className="text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">+{extraCount} more field{extraCount === 1 ? '' : 's'}</p>
+        <div className="flex items-center gap-3 pl-2.5 pt-1.5 cursor-default">
+           <div className={`w-[85px] shrink-0 h-px ${c.extra}`} />
+           <span className={`text-[8px] font-black uppercase tracking-[0.2em] ${c.key}`}>
+              +{extraCount} more
+           </span>
+        </div>
       ) : null}
+
+      {hoveredField && (
+        <ToolFieldPopup
+          title={hoveredField.item.key}
+          content={hoveredField.item.fullText}
+          anchorRect={hoveredField.rect}
+          onClose={() => setHoveredField(null)}
+        />
+      )}
     </div>
   );
 }
 
-function ToolPayloadView({
+export function ToolPayloadView({
   raw,
   emptyLabel,
   showRawJson = true,
@@ -215,21 +464,18 @@ function ToolPayloadView({
     return <p className="text-sky-500/60 italic">{emptyLabel}</p>;
   }
 
+  const fieldVariant = payloadKind === 'output' ? 'output' : 'input';
+
   if (criticalOnly) {
     if (criticalFields.length > 0) {
       const extraCount = Math.max(0, topLevelPayloadFieldCount(raw) - criticalFields.length);
-      return <ToolFieldPreviewList items={criticalFields} extraCount={extraCount} />;
+      return <ToolFieldPreviewList items={criticalFields} extraCount={extraCount} variant={fieldVariant} />;
     }
     const preview = previewPayloadValue(parsed ?? raw, 220);
     return (
       <ToolFieldPreviewList
-        items={[
-          {
-            key: payloadKind ?? 'payload',
-            text: preview.text || '""',
-            truncated: preview.truncated,
-          },
-        ]}
+        variant={fieldVariant}
+        items={[{ key: payloadKind ?? 'payload', text: preview.text || '""', truncated: preview.truncated, redacted: false }]}
       />
     );
   }
@@ -237,18 +483,19 @@ function ToolPayloadView({
   if (isObjectRecord(parsed)) {
     const entries = Object.entries(parsed).map(([key, value]) => {
       const preview = previewPayloadValue(value);
-      return { key, text: preview.text, truncated: preview.truncated };
+      const fullText = preview.truncated ? (typeof value === 'string' ? value : JSON.stringify(value, null, 2)) : undefined;
+      return { key, text: preview.text, fullText, truncated: preview.truncated, redacted: false };
     });
     return (
       <div className="space-y-2">
-        <ToolFieldPreviewList items={entries} />
+        <ToolFieldPreviewList items={entries} variant={fieldVariant} />
         {showRawJson ? (
           <details className="group">
-            <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-sky-600/80 dark:text-sky-400/80">
-              <ChevronDown size={12} className="group-open:rotate-180 transition-transform" />
+            <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em] text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)] transition-colors">
+              <ChevronDown size={12} strokeWidth={3} className="group-open:rotate-180 transition-transform" />
               Raw JSON
             </summary>
-            <JsonBlock value={JSON.stringify(parsed, null, 2)} className="mt-2 bg-transparent border-sky-500/10 p-2 max-h-[220px]" />
+            <JsonBlock value={JSON.stringify(parsed, null, 2)} className="mt-2 bg-transparent border-[color:var(--border-subtle)] p-2 max-h-[220px]" />
           </details>
         ) : null}
       </div>
@@ -257,24 +504,20 @@ function ToolPayloadView({
 
   if (parsed !== null) {
     const preview = previewPayloadValue(parsed, 260);
+    const fullText = preview.truncated ? (typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2)) : undefined;
     return (
       <div className="space-y-2">
         <ToolFieldPreviewList
-          items={[
-            {
-              key: payloadKind ?? 'value',
-              text: preview.text || '""',
-              truncated: preview.truncated,
-            },
-          ]}
+          variant={fieldVariant}
+          items={[{ key: payloadKind ?? 'value', text: preview.text || '""', fullText, truncated: preview.truncated, redacted: false }]}
         />
         {showRawJson ? (
           <details className="group">
-            <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-sky-600/80 dark:text-sky-400/80">
-              <ChevronDown size={12} className="group-open:rotate-180 transition-transform" />
+            <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em] text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)] transition-colors">
+              <ChevronDown size={12} strokeWidth={3} className="group-open:rotate-180 transition-transform" />
               Raw JSON
             </summary>
-            <JsonBlock value={JSON.stringify(parsed, null, 2)} className="mt-2 bg-transparent border-sky-500/10 p-2 max-h-[220px]" />
+            <JsonBlock value={JSON.stringify(parsed, null, 2)} className="mt-2 bg-transparent border-[color:var(--border-subtle)] p-2 max-h-[220px]" />
           </details>
         ) : null}
       </div>
@@ -283,9 +526,9 @@ function ToolPayloadView({
 
   return (
     <details className="group">
-      <summary className="cursor-pointer list-none flex items-center gap-2 text-sky-600 dark:text-sky-400">
-        <ChevronDown size={14} className="group-open:rotate-180 transition-transform" />
-        <span className="font-bold uppercase tracking-widest text-[10px]">Execution Telemetry</span>
+      <summary className="cursor-pointer list-none flex items-center gap-2 text-sky-600/80 dark:text-sky-400/80 hover:text-sky-500 transition-colors">
+        <ChevronDown size={14} strokeWidth={3} className="group-open:rotate-180 transition-transform" />
+        <span className="font-black uppercase tracking-[0.1em] text-[10px]">Execution Telemetry</span>
       </summary>
       <div className="mt-3 overflow-auto">
         <Markdown content={raw} />
@@ -294,7 +537,7 @@ function ToolPayloadView({
   );
 }
 
-function ToolPayloadCompactSummary({
+export function ToolPayloadCompactSummary({
   toolName,
   inputRaw,
   outputRaw,
@@ -320,49 +563,43 @@ function ToolPayloadCompactSummary({
 
   const compactValue = (value: string): string => {
     const trimmed = value.replace(/\s+/g, ' ').trim();
-    if (trimmed.length <= 56) return trimmed;
-    return `${trimmed.slice(0, 56)}…`;
-  };
-
-  const renderFieldChips = (items: Array<{ key: string; text: string; redacted?: boolean }>) => {
-    if (!items.length) {
-      return <span className="text-[10px] text-[color:var(--text-muted)] italic">none</span>;
-    }
-    return (
-      <div className="flex flex-wrap items-center gap-1.5">
-        {items.map((item) => (
-          <span
-            key={item.key}
-            className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/20 bg-sky-500/8 px-1.5 py-0.5"
-          >
-            <span className="text-[9px] font-bold uppercase tracking-wide text-sky-600 dark:text-sky-400">
-              {item.key}
-            </span>
-            <span className="font-mono text-[10px] text-[color:var(--text-primary)] break-all">
-              {item.redacted ? '[redacted]' : compactValue(item.text || '""')}
-            </span>
-          </span>
-        ))}
-      </div>
-    );
+    if (trimmed.length <= 48) return trimmed;
+    return `${trimmed.slice(0, 48)}…`;
   };
 
   return (
-    <div className="mt-2 border-t border-sky-500/10 pt-2 space-y-1.5 animate-in fade-in duration-200 max-w-[620px]">
-      {!hideInput ? (
-        <div className="min-w-0 flex items-start gap-2">
-          <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] pt-0.5 shrink-0">Input</p>
-          <div className="min-w-0 flex-1">{renderFieldChips(inputFields)}</div>
+    <div className="mt-2.5 flex flex-col gap-1">
+      {!hideInput && inputFields.length > 0 && (
+        <div className="flex items-center gap-2 overflow-hidden px-1">
+          <ArrowRight size={10} className="text-sky-500/60 shrink-0" />
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 overflow-hidden">
+            {inputFields.map(item => (
+              <div key={item.key} className="flex items-center gap-1.5 shrink-0">
+                <span className="text-[8px] font-black uppercase tracking-widest text-sky-500/60">{item.key}</span>
+                <span className="text-[10px] font-mono text-[color:var(--text-primary)] truncate max-w-[180px]">
+                   {item.redacted ? '****' : compactValue(item.text)}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
-      ) : null}
-      <div className="min-w-0 flex items-start gap-2">
-        <div className="flex items-center gap-1.5 pt-0.5 shrink-0">
-          <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Output</p>
-          {outputError ? <span className="h-1.5 w-1.5 rounded-full bg-rose-400" title="Error output" /> : null}
-        </div>
-        <div className="min-w-0 flex-1">
-          {outputRaw.trim() ? renderFieldChips(outputFields) : (
-            <span className="text-[10px] text-[color:var(--text-muted)] italic">{outputEmptyLabel}</span>
+      )}
+      <div className="flex items-center gap-2 overflow-hidden px-1">
+        {outputError ? (
+          <AlertCircle size={10} className="text-rose-500/70 shrink-0" />
+        ) : (
+          <CheckCircle2 size={10} className="text-emerald-500/70 shrink-0" />
+        )}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 overflow-hidden">
+          {outputFields.length > 0 ? outputFields.map(item => (
+            <div key={item.key} className="flex items-center gap-1.5 shrink-0">
+              <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500/60">{item.key}</span>
+              <span className="text-[10px] font-mono text-[color:var(--text-primary)] truncate max-w-[180px]">
+                 {item.redacted ? '****' : compactValue(item.text)}
+              </span>
+            </div>
+          )) : (
+            <span className="text-[9px] text-[color:var(--text-muted)] italic">{outputEmptyLabel}</span>
           )}
         </div>
       </div>
@@ -505,13 +742,15 @@ export const SessionMessageCard = memo(({
       </div>
 
       <div
-        className={`${isToolResult ? `${cardWidthClass} inline-flex flex-col` : cardWidthClass} rounded-2xl px-4 py-1.5 text-xs shadow-sm border ${
+        onMouseEnter={() => !pendingApproval && setToolExpanded(true)}
+        onMouseLeave={() => !pendingApproval && !isScreenshotTool && setToolExpanded(false)}
+        className={`${isToolResult ? `${cardWidthClass} inline-flex flex-col` : cardWidthClass} rounded-2xl px-4 py-2 text-xs shadow-sm border transition-all duration-300 ease-in-out ${
           isUser
             ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent rounded-tr-none font-medium'
             : isToolResult
               ? pendingApproval
-                ? 'bg-rose-500/10 border-rose-500/35 font-mono text-[12px] rounded-tl-none'
-                : 'bg-sky-500/5 border-sky-500/20 font-mono text-[12px] rounded-tl-none'
+                ? 'bg-rose-500/8 border-rose-500/30 rounded-tl-none shadow-md ring-1 ring-rose-500/20'
+                : `bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] shadow-sm rounded-tl-none`
               : isTelegramGroupResponse
                 ? 'bg-emerald-500/8 border-emerald-500/25 rounded-tl-none font-medium'
                 : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] rounded-tl-none font-medium'
@@ -519,137 +758,125 @@ export const SessionMessageCard = memo(({
       >
         {isToolResult ? (
           <>
-            <button
-              type="button"
-              onClick={() => setToolExpanded((prev) => !prev)}
-              className={`${toolExpanded ? 'w-full' : 'w-auto'} flex items-center justify-between gap-3 text-left`}
+            <div
+              className={`${toolExpanded ? 'w-full mb-4' : 'w-auto'} flex items-center justify-between gap-4 text-left group/tool-btn py-0.5 cursor-default`}
             >
-              <div className="flex items-center gap-2 min-w-0">
-                <Wrench size={12} className={`${pendingApproval ? 'text-rose-400' : 'text-sky-600 dark:text-sky-400'} shrink-0`} />
-                <span className={`font-bold uppercase tracking-wide truncate ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
-                  {message.tool_name || 'tool_result'}
-                </span>
-                {pendingApproval ? (
-                  <span className="inline-flex items-center rounded-full border border-rose-500/35 bg-rose-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-300">
-                    Waiting Approval
-                  </span>
-                ) : null}
-              </div>
-              <ChevronDown size={14} className={`${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'} shrink-0 transition-transform ${toolExpanded ? 'rotate-180' : ''}`} />
-            </button>
-            {toolExpanded ? (
-              <div className={`mt-3 border-t border-sky-500/10 pt-3 grid ${isScreenshotTool ? 'grid-cols-1' : 'grid-cols-2'} gap-3 animate-in fade-in duration-200`}>
-                {!isScreenshotTool ? (
-                  <div className="min-w-0">
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Input</p>
-                    <ToolPayloadView
-                      raw={toolInputRaw}
-                      emptyLabel="No input payload."
-                      toolName={message.tool_name || 'tool_result'}
-                      payloadKind="input"
-                    />
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`flex items-center justify-center w-6 h-6 rounded-lg ${pendingApproval ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' : 'bg-sky-500/10 text-sky-400 border border-sky-500/20'} shrink-0`}>
+                  <Wrench size={12} strokeWidth={2.5} />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[10px] font-black uppercase tracking-[0.12em] truncate ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-300'}`}>
+                      {message.tool_name || 'tool_result'}
+                    </span>
                   </div>
-                ) : null}
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Output</p>
-                    {toolFailed && (
-                      <span className="inline-flex items-center rounded-full border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-500">
-                        Error
-                      </span>
+                  {pendingApproval && (
+                    <span className="text-[8px] font-bold uppercase tracking-widest text-rose-400 animate-pulse mt-0.5">
+                      Action Required
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className={`p-1 rounded-full ${pendingApproval ? 'text-rose-300' : 'text-sky-400'} transition-colors shrink-0`}>
+                <ChevronDown size={14} strokeWidth={3} className={`transition-transform duration-500 ${toolExpanded ? 'rotate-180 opacity-40' : 'opacity-100'}`} />
+              </div>
+            </div>
+            {toolExpanded ? (
+              <div className="relative mt-3 border-t border-sky-500/20 pt-4 animate-in fade-in slide-in-from-top-1 duration-200">
+                {/* Vertical trace line */}
+                <div className="absolute left-[14px] top-4 bottom-0 w-[1px] border-l border-dashed border-sky-500/30" />
+
+                <div className="space-y-6">
+                  {!isScreenshotTool ? (
+                    <div className="relative pl-10">
+                      <div className="absolute left-0 top-0 z-10 flex items-center justify-center w-7 h-7 rounded-full bg-[color:var(--surface-1)] border border-sky-500/30 text-sky-500/60 shadow-sm">
+                         <Terminal size={14} />
+                      </div>
+                      <div className="mb-2.5 flex items-center gap-2">
+                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-600 dark:text-sky-300">Arguments</p>
+                        <div className="h-px flex-1 bg-gradient-to-r from-sky-500/30 to-transparent" />
+                      </div>
+                      <ToolPayloadView
+                        raw={toolInputRaw}
+                        emptyLabel="No input."
+                        toolName={message.tool_name || 'tool_result'}
+                        payloadKind="input"
+                      />
+                    </div>
+                  ) : null}
+
+                  <div className="relative pl-10 pb-2">
+                    <div className={`absolute left-0 top-0 z-10 flex items-center justify-center w-7 h-7 rounded-full border ${toolFailed ? 'bg-rose-500/10 border-rose-500/20 text-rose-500/60' : 'bg-[color:var(--surface-1)] border-emerald-500/20 text-emerald-500/60'} shadow-sm`}>
+                       {toolFailed ? <X size={14} strokeWidth={3} /> : <Check size={14} strokeWidth={3} />}
+                    </div>
+                    <div className="mb-2.5 flex items-center gap-2">
+                      <p className={`text-[10px] font-black uppercase tracking-[0.2em] ${toolFailed ? 'text-rose-500/60' : 'text-emerald-500/60'}`}>Result</p>
+                      <div className={`h-px flex-1 bg-gradient-to-r ${toolFailed ? 'from-rose-500/20' : 'from-emerald-500/20'} to-transparent`} />
+                      {toolFailed && (
+                        <span className="inline-flex items-center rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[7px] font-black uppercase tracking-widest text-rose-500">
+                          Error
+                        </span>
+                      )}
+                    </div>
+                    {screenshotBase64 ? (
+                      <div className="space-y-3">
+                        <div className="relative group/screenshot">
+                          <img
+                            src={`data:image/png;base64,${screenshotBase64}`}
+                            alt="Browser screenshot"
+                            onClick={openLightbox}
+                            className="rounded-xl max-w-full border border-sky-500/20 mt-0.5 cursor-zoom-in group-hover/screenshot:border-sky-500/40 transition-all shadow-md"
+                            style={{ maxHeight: '400px', objectFit: 'contain' }}
+                          />
+                        </div>
+                        <div className="flex items-center gap-2 text-[9px] text-[color:var(--text-muted)] italic px-1 opacity-60">
+                           <Hash size={9} className="opacity-40" />
+                           Frame captured
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <ToolPayloadView
+                          raw={message.content}
+                          emptyLabel="No output."
+                          showRawJson={!isScreenshotTool}
+                          toolName={message.tool_name || 'tool_result'}
+                          payloadKind="output"
+                        />
+                        {canResolveApproval && approvalRef && onResolveApproval ? (
+                          <div className="flex items-center gap-3 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => onResolveApproval(approvalRef, 'reject')}
+                              disabled={approvalActionBusy}
+                              className="inline-flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-rose-400 hover:bg-rose-500/15 transition-all"
+                            >
+                              {approvalActionBusy ? <Loader2 size={10} className="animate-spin" /> : <X size={10} strokeWidth={3} />}
+                              Deny
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onResolveApproval(approvalRef, 'approve')}
+                              disabled={approvalActionBusy}
+                              className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/5 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-500/15 transition-all"
+                            >
+                              {approvalActionBusy ? <Loader2 size={10} className="animate-spin" /> : <CheckCircle2 size={10} strokeWidth={3} />}
+                              Confirm
+                            </button>
+                          </div>
+                        ) : null}
+                        {approvalLinkMissing ? (
+                          <div className="flex items-start gap-2 p-2 rounded-lg bg-amber-500/5 border border-amber-500/20">
+                             <AlertCircle size={12} className="text-amber-500 shrink-0 mt-0.5" />
+                             <p className="text-[9px] leading-relaxed text-amber-400/80 font-medium">
+                               Action required but controls are detached.
+                             </p>
+                          </div>
+                        ) : null}
+                      </div>
                     )}
                   </div>
-                  {screenshotBase64 ? (
-                    <>
-                      <img
-                        src={`data:image/png;base64,${screenshotBase64}`}
-                        alt="Browser screenshot"
-                        onClick={openLightbox}
-                        className="rounded-lg max-w-full border border-sky-500/20 mt-1 cursor-zoom-in hover:opacity-90 transition-opacity"
-                        style={{ maxHeight: '400px', objectFit: 'contain' }}
-                      />
-                      {lightboxOpen && typeof document !== 'undefined'
-                        ? createPortal(
-                            <div
-                              className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
-                              onClick={() => setLightboxOpen(false)}
-                              onMouseMove={onMouseMove}
-                              onMouseUp={onMouseUp}
-                            >
-                              <div
-                                className="relative overflow-hidden"
-                                style={{ width: '90vw', height: '90vh' }}
-                                onClick={(e) => e.stopPropagation()}
-                                onWheel={onWheel}
-                                onMouseDown={onMouseDown}
-                              >
-                                <img
-                                  src={`data:image/png;base64,${screenshotBase64}`}
-                                  alt="Browser screenshot"
-                                  className="absolute rounded-xl shadow-2xl border border-white/10 select-none"
-                                  style={{
-                                    maxWidth: 'none',
-                                    transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom})`,
-                                    top: '50%',
-                                    left: '50%',
-                                    cursor: zoom > 1 ? 'grab' : 'zoom-in',
-                                    transformOrigin: 'center',
-                                  }}
-                                  draggable={false}
-                                />
-                                <button
-                                  onClick={() => setLightboxOpen(false)}
-                                  className="absolute top-3 right-3 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors z-10"
-                                >
-                                  <X size={16} />
-                                </button>
-                                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/50 text-white text-[10px] font-mono">
-                                  {Math.round(zoom * 100)}% · scroll to zoom · drag to pan
-                                </div>
-                              </div>
-                            </div>,
-                            document.body,
-                          )
-                        : null}
-                    </>
-                  ) : (
-                    <div className="space-y-2">
-                      <ToolPayloadView
-                        raw={message.content}
-                        emptyLabel="No output payload."
-                        showRawJson={!isScreenshotTool}
-                        toolName={message.tool_name || 'tool_result'}
-                        payloadKind="output"
-                      />
-                      {canResolveApproval && approvalRef && onResolveApproval ? (
-                        <div className="flex items-center gap-2 pt-1">
-                          <button
-                            type="button"
-                            onClick={() => onResolveApproval(approvalRef, 'reject')}
-                            disabled={approvalActionBusy}
-                            className="inline-flex items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-500/20 disabled:opacity-60"
-                          >
-                            {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
-                            Reject
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onResolveApproval(approvalRef, 'approve')}
-                            disabled={approvalActionBusy}
-                            className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-60"
-                          >
-                            {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
-                            Approve
-                          </button>
-                        </div>
-                      ) : null}
-                      {approvalLinkMissing ? (
-                        <p className="text-[10px] leading-relaxed text-amber-300">
-                          Pending approval detected but controls are unavailable. Refresh and stop/retry this run if it remains stuck.
-                        </p>
-                      ) : null}
-                    </div>
-                  )}
                 </div>
               </div>
             ) : (
