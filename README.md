@@ -14,6 +14,7 @@
   <a href="https://github.com/arais-labs/sentinel/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/arais-labs/sentinel"></a>
   <a href="https://github.com/arais-labs/sentinel/pulls"><img alt="Open pull requests" src="https://img.shields.io/github/issues-pr/arais-labs/sentinel?label=open%20PRs"></a>
   <img alt="Top language" src="https://img.shields.io/github/languages/top/arais-labs/sentinel">
+  <a href="https://sentinel.arais.us"><img alt="Docs" src="https://img.shields.io/badge/docs-sentinel.arais.us-informational"></a>
 </p>
 
 Sentinel is a self hosted AI operator that turns intent into execution.
@@ -29,6 +30,7 @@ Built by [ARAIS](https://arais.us).
 - [Documentation](#documentation)
 - [Security model](#security-model)
 - [Contributing](#contributing)
+- [Live docs](https://sentinel.arais.us)
 
 ## What Sentinel can do
 
@@ -131,6 +133,7 @@ docker compose -f docker-compose.dev.yml up --build
 
 ## Documentation
 
+- Live docs: [sentinel.arais.us](https://sentinel.arais.us)
 - Docs site source: [`docs-site/`](docs-site)
 - Intro: [`docs-site/docs/introduction.md`](docs-site/docs/introduction.md)
 - Quickstart: [`docs-site/docs/quickstart.md`](docs-site/docs/quickstart.md)
