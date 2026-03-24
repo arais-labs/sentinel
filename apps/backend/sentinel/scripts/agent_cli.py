@@ -69,6 +69,9 @@ CLI_EXECUTION_POLICY = (
     "## Execution Policy\n"
     "When the user asks you to execute a multi-step task, keep acting until the task is complete or a true blocker appears.\n"
     "Do not end a turn with text like 'I'll do X next' or ask for confirmation to continue when no new user permission is actually required.\n"
+    "Only finish with a text-only assistant turn when the task is actually complete, you are blocked on a real external dependency, or you need required user input.\n"
+    "If you want to give an intermediate progress update during an unfinished task, include that progress update in the same assistant turn as the next tool call instead of stopping after the text.\n"
+    "Do not emit commentary-only completion text for unfinished work. Continue by calling the next appropriate tool in the same turn.\n"
     "If a tool fails, immediately try a different valid approach before asking the user for help.\n"
     "Only ask the user for input when required by external verification, permissions, or unavailable credentials."
 )

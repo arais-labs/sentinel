@@ -72,9 +72,7 @@ MODULE = ModuleDefinition(
         "Execute git commands and selected GitHub CLI commands inside the session workspace with managed credentials. "
         "Allowed gh commands: `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT). "
         "Allowed network git reads include `git clone/fetch/pull/ls-remote/submodule/request-pull`; "
-        "`git request-pull` only generates a pull-request summary and does not open a GitHub PR. "
-        "To open or merge a PR on GitHub, use `gh pr create` or `gh pr merge` (approval-gated). "
-        "Write operations (`git push`, `gh pr create`, `gh pr merge`, `gh api -X POST`, `gh api -X PUT`) require explicit approval before execution."
+        "`git request-pull` only generates a pull-request summary and does not open a GitHub PR."
     ),
     icon="git-branch",
     pinned=True,
@@ -84,14 +82,14 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="run_read",
             label="Run Standard Git Command",
-            description="Execute a non-approval-gated git or supported gh command inside the session workspace.",
+            description="Execute a git or supported gh read-oriented command inside the session workspace.",
             handler=handle_run_read,
             parameters_schema=_run_parameters_schema(),
         ),
         ActionDefinition(
             id="run_write",
             label="Run Write Git Command",
-            description="Execute an approval-gated git or supported gh write command inside the session workspace.",
+            description="Execute a git or supported gh write-oriented command inside the session workspace.",
             handler=handle_run_write,
             approval=True,
             parameters_schema=_run_parameters_schema(),

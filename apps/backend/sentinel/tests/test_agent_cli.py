@@ -199,6 +199,8 @@ def test_compose_turn_system_prompt_includes_execution_and_workspace_context(tmp
     )
 
     assert "Do not end a turn with text like 'I'll do X next'" in prompt
+    assert "Only finish with a text-only assistant turn when the task is actually complete" in prompt
+    assert "include that progress update in the same assistant turn as the next tool call" in prompt
     assert "Do not say a file was written, generated, or updated unless a tool result confirmed it." in prompt
     assert f"Initial CLI directory: {tmp_path}" in prompt
     assert f"Current working directory: {tmp_path / 'src'}" in prompt

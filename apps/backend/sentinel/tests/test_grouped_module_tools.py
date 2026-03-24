@@ -111,18 +111,20 @@ def test_grouped_tool_validates_selected_action_payload():
     registry.register(browser)
     executor = ToolExecutor(registry)
 
-    with pytest.raises(ToolValidationError, match="Unknown field\\(s\\): url"):
-        _run(
-            executor.execute(
-                "browser",
-                {
-                    "session_id": "00000000-0000-0000-0000-000000000001",
-                    "command": "click",
-                    "selector": "#submit",
-                    "url": "https://example.com",
-                },
-            )
+    result, _ = _run(
+        executor.execute(
+            "browser",
+            {
+                "session_id": "00000000-0000-0000-0000-000000000001",
+                "command": "click",
+                "selector": "#submit",
+                "url": "https://example.com",
+            },
         )
+    )
+
+    assert result["clicked"] is True
+    assert result["selector"] == "#submit"
 
 
 def test_grouped_tool_allows_shared_field_schema_across_actions():
@@ -212,3 +214,55 @@ def test_grouped_tool_requires_explicit_selector_field():
     assert "command" in tool.parameters_schema["required"]
     with pytest.raises(ToolValidationError, match="Field 'command' must be a non-empty string"):
         _run(tool.execute({"session_id": "s1", "cli_command": "git status"}))
+
+
+def test_grouped_tool_ignores_fields_not_used_by_selected_action():
+    calls: list[dict[str, object]] = []
+
+    async def _handle_run(payload: dict[str, object]) -> dict[str, object]:
+        calls.append(payload)
+        return payload
+
+    async def _handle_accounts(payload: dict[str, object]) -> dict[str, object]:
+        calls.append(payload)
+        return payload
+
+    module = ModuleDefinition(
+        name="git_exec",
+        label="Git Exec",
+        grouped_tool=True,
+        actions=[
+            ActionDefinition(
+                id="run_read",
+                label="Run Read",
+                handler=_handle_run,
+                parameters_schema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["session_id", "cli_command"],
+                    "properties": {
+                        "session_id": {"type": "string"},
+                        "cli_command": {"type": "string"},
+                    },
+                },
+            ),
+            ActionDefinition(
+                id="accounts",
+                label="Accounts",
+                handler=_handle_accounts,
+                parameters_schema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "host": {"type": "string"},
+                    },
+                },
+            ),
+        ],
+    )
+
+    tool = module.to_tool_definitions()[0]
+    result = _run(tool.execute({"command": "accounts", "host": "github.com", "session_id": "s1"}))
+
+    assert result == {"host": "github.com"}
+    assert calls == [{"host": "github.com"}]

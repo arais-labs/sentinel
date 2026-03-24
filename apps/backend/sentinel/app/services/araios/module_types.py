@@ -358,8 +358,10 @@ class ModuleDefinition:
                 payload=payload,
                 action_map=action_map,
             )
-            forwarded = dict(payload)
-            forwarded.pop(_GROUPED_ACTION_FIELD, None)
+            forwarded = _filtered_grouped_action_payload(
+                payload=payload,
+                schema=action.get_parameters_schema() or {},
+            )
             _validate_payload_against_schema(forwarded, action.get_parameters_schema() or {})
             return await action.handler(forwarded)
 
@@ -549,7 +551,10 @@ def _build_grouped_approval_check(
             return ToolApprovalEvaluation.allow()
 
         forwarded = dict(payload)
-        forwarded.pop(_GROUPED_ACTION_FIELD, None)
+        forwarded = _filtered_grouped_action_payload(
+            payload=payload,
+            schema=action.get_parameters_schema() or {},
+        )
         return await _invoke_approval_check(
             approval_check=approval_check,
             payload=forwarded,
@@ -607,6 +612,22 @@ def _validate_payload_against_schema(
         if field_name not in user_payload:
             continue
         _validate_field(field_name, user_payload[field_name], field_schema)
+
+
+def _filtered_grouped_action_payload(
+    *,
+    payload: dict[str, Any],
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    allowed_fields = set(properties.keys()) if isinstance(properties, dict) else set()
+    filtered: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key == _GROUPED_ACTION_FIELD:
+            continue
+        if str(key).startswith("__") or key in allowed_fields:
+            filtered[key] = value
+    return filtered
 
 
 def _validate_field(field_name: str, value: Any, field_schema: dict[str, Any]) -> None:

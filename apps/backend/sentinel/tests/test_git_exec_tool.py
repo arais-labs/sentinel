@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 
 import pytest
 
@@ -795,4 +796,31 @@ def test_git_exec_accounts_operation_lists_matching_accounts():
 
     assert result["total"] == 1
     assert result["repo_target"] == "github.com/exampleco/exampleco-gitops"
+    assert result["accounts"][0]["name"] == "github-main"
+
+
+def test_git_exec_accounts_ignores_injected_session_id():
+    fake_db = FakeDB()
+    fake_db.add(
+        GitAccount(
+            name="github-main",
+            host="github.com",
+            scope_pattern="exampleco/*",
+            author_name="Bot",
+            author_email="bot@arais.ai",
+            token_read="ghr_read_token_123",
+            token_write="ghw_write_token_456",
+        )
+    )
+
+    result = _run_via_executor(
+        git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db)),
+        {
+            "command": "accounts",
+            "session_id": str(uuid4()),
+            "host": "github.com",
+        },
+    )
+
+    assert result["total"] == 1
     assert result["accounts"][0]["name"] == "github-main"
