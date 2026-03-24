@@ -759,7 +759,7 @@ export const SessionMessageCard = memo(({
         {isToolResult ? (
           <>
             <div
-              className={`${toolExpanded ? 'w-full mb-4' : 'w-auto'} flex items-center justify-between gap-4 text-left group/tool-btn py-0.5 cursor-default`}
+              className={`${toolExpanded ? 'w-full mb-0.5' : 'w-auto'} flex items-center justify-between gap-4 text-left group/tool-btn py-0.5 cursor-default`}
             >
               <div className="flex items-center gap-3 min-w-0">
                 <div className={`flex items-center justify-center w-6 h-6 rounded-lg ${pendingApproval ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' : 'bg-sky-500/10 text-sky-400 border border-sky-500/20'} shrink-0`}>
@@ -783,34 +783,33 @@ export const SessionMessageCard = memo(({
               </div>
             </div>
             {toolExpanded ? (
-              <div className="relative mt-3 border-t border-sky-500/20 pt-4 animate-in fade-in slide-in-from-top-1 duration-200">
-                {/* Vertical trace line */}
-                <div className="absolute left-[14px] top-4 bottom-0 w-[1px] border-l border-dashed border-sky-500/30" />
-
+              <div className="mt-0 pt-3 animate-in fade-in slide-in-from-top-1 duration-200">
                 <div className="space-y-6">
                   {!isScreenshotTool ? (
-                    <div className="relative pl-10">
-                      <div className="absolute left-0 top-0 z-10 flex items-center justify-center w-7 h-7 rounded-full bg-[color:var(--surface-1)] border border-sky-500/30 text-sky-500/60 shadow-sm">
-                         <Terminal size={14} />
-                      </div>
+                    <div>
                       <div className="mb-2.5 flex items-center gap-2">
+                        <div className="flex items-center justify-center w-7 h-7 rounded-full bg-[color:var(--surface-1)] border border-sky-500/30 text-sky-500/60 shadow-sm shrink-0">
+                          <Terminal size={14} />
+                        </div>
                         <p className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-600 dark:text-sky-300">Arguments</p>
                         <div className="h-px flex-1 bg-gradient-to-r from-sky-500/30 to-transparent" />
                       </div>
-                      <ToolPayloadView
-                        raw={toolInputRaw}
-                        emptyLabel="No input."
-                        toolName={message.tool_name || 'tool_result'}
-                        payloadKind="input"
-                      />
+                      <div className="pl-9">
+                        <ToolPayloadView
+                          raw={toolInputRaw}
+                          emptyLabel="No input."
+                          toolName={message.tool_name || 'tool_result'}
+                          payloadKind="input"
+                        />
+                      </div>
                     </div>
                   ) : null}
 
-                  <div className="relative pl-10 pb-2">
-                    <div className={`absolute left-0 top-0 z-10 flex items-center justify-center w-7 h-7 rounded-full border ${toolFailed ? 'bg-rose-500/10 border-rose-500/20 text-rose-500/60' : 'bg-[color:var(--surface-1)] border-emerald-500/20 text-emerald-500/60'} shadow-sm`}>
-                       {toolFailed ? <X size={14} strokeWidth={3} /> : <Check size={14} strokeWidth={3} />}
-                    </div>
+                  <div className="pb-2">
                     <div className="mb-2.5 flex items-center gap-2">
+                      <div className={`flex items-center justify-center w-7 h-7 rounded-full border shrink-0 ${toolFailed ? 'bg-rose-500/10 border-rose-500/20 text-rose-500/60' : 'bg-[color:var(--surface-1)] border-emerald-500/20 text-emerald-500/60'} shadow-sm`}>
+                        {toolFailed ? <X size={14} strokeWidth={3} /> : <Check size={14} strokeWidth={3} />}
+                      </div>
                       <p className={`text-[10px] font-black uppercase tracking-[0.2em] ${toolFailed ? 'text-rose-500/60' : 'text-emerald-500/60'}`}>Result</p>
                       <div className={`h-px flex-1 bg-gradient-to-r ${toolFailed ? 'from-rose-500/20' : 'from-emerald-500/20'} to-transparent`} />
                       {toolFailed && (
@@ -819,6 +818,7 @@ export const SessionMessageCard = memo(({
                         </span>
                       )}
                     </div>
+                    <div className="pl-9">
                     {screenshotBase64 ? (
                       <div className="space-y-3">
                         <div className="relative group/screenshot">
@@ -876,6 +876,7 @@ export const SessionMessageCard = memo(({
                         ) : null}
                       </div>
                     )}
+                    </div>
                   </div>
                 </div>
               </div>
