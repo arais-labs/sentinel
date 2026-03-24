@@ -28,6 +28,17 @@ from app.services.llm.generic.types import (
 
 logger = logging.getLogger(__name__)
 
+_OAUTH_BASE_BETAS = [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "prompt-caching-scope-2026-01-05",
+    "context-management-2025-06-27",
+]
+_EFFORT_MODELS = ("opus-4-6", "sonnet-4-6")
+_CLAUDE_CODE_VERSION = "2.1.81"
+_CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+
 
 class AnthropicProvider(LLMProvider):
     """Anthropic Messages API adapter with streaming event translation."""
@@ -97,6 +108,8 @@ class AnthropicProvider(LLMProvider):
         if use_thinking:
             payload["thinking"] = {"type": "enabled", "budget_tokens": rc.thinking_budget}
         system_prompt = self._extract_system_prompt(messages)
+        if self._is_oauth:
+            system_prompt = self._ensure_claude_code_system_prompt(system_prompt)
         if system_prompt:
             payload["system"] = system_prompt
         if tools:
@@ -106,7 +119,7 @@ class AnthropicProvider(LLMProvider):
             response = await client.post(
                 f"{self._base_url}/v1/messages",
                 json=payload,
-                headers=self._headers(thinking=use_thinking),
+                headers=self._headers(thinking=use_thinking, model=model),
             )
         response.raise_for_status()
 
@@ -161,6 +174,8 @@ class AnthropicProvider(LLMProvider):
         if use_thinking:
             payload["thinking"] = {"type": "enabled", "budget_tokens": rc.thinking_budget}
         system_prompt = self._extract_system_prompt(messages)
+        if self._is_oauth:
+            system_prompt = self._ensure_claude_code_system_prompt(system_prompt)
         if system_prompt:
             payload["system"] = system_prompt
         if tools:
@@ -171,7 +186,7 @@ class AnthropicProvider(LLMProvider):
                 "POST",
                 f"{self._base_url}/v1/messages",
                 json=payload,
-                headers=self._headers(thinking=use_thinking),
+                headers=self._headers(thinking=use_thinking, model=model),
             ) as response:
                 if response.is_error:
                     body = await response.aread()
@@ -197,22 +212,35 @@ class AnthropicProvider(LLMProvider):
                             raise RuntimeError(f"Anthropic stream sse_error: {detail}")
                         yield parsed
 
-    def _headers(self, *, thinking: bool = False) -> dict[str, str]:
+    def _headers(self, *, thinking: bool = False, model: str = "") -> dict[str, str]:
         headers: dict[str, str] = {
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
-        betas: list[str] = []
         if self._is_oauth:
             headers["authorization"] = f"Bearer {self._api_key}"
-            betas.append("oauth-2025-04-20")
+            headers["x-app"] = "cli"
+            headers["user-agent"] = f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)"
+            headers["x-anthropic-billing-header"] = (
+                f"cc_version={_CLAUDE_CODE_VERSION}.{model}; cc_entrypoint=cli; cch=00000;"
+            )
+            betas = list(_OAUTH_BASE_BETAS)
+            if any(m in model.lower() for m in _EFFORT_MODELS):
+                betas.append("effort-2025-11-24")
+            headers["anthropic-beta"] = ",".join(betas)
         else:
             headers["x-api-key"] = self._api_key
-        if thinking:
-            betas.append("interleaved-thinking-2025-05-14")
-        if betas:
-            headers["anthropic-beta"] = ",".join(betas)
+            betas: list[str] = []
+            if thinking:
+                betas.append("interleaved-thinking-2025-05-14")
+            if betas:
+                headers["anthropic-beta"] = ",".join(betas)
         return headers
+
+    def _ensure_claude_code_system_prompt(self, system_prompt: str | None) -> str:
+        # OAuth enforces the system prompt must be exactly the Claude Code identity string.
+        # Any extra content causes a 400. Drop it.
+        return _CLAUDE_CODE_SYSTEM_PREFIX
 
     def _extract_system_prompt(self, messages: Sequence[AgentMessage | dict]) -> str | None:
         parts: list[str] = []
