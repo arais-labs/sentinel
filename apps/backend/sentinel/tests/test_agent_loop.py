@@ -4,7 +4,7 @@ import asyncio
 
 from app.models import Message, Session
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
-from app.services.agent.loop import _humanize_error
+from app.services.agent.sentinel_runner import _humanize_error
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import (
     AgentEvent,

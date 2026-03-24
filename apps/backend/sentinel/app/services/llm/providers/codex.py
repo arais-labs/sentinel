@@ -560,18 +560,25 @@ class CodexProvider(LLMProvider):
                     if tool_calls:
                         for tc in tool_calls:
                             fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                            call_id = str(tc.get("id") or "").strip()
+                            call_name = str(fn.get("name") or "").strip()
+                            if not call_id or not call_name:
+                                continue
                             input_items.append({
                                 "type": "function_call",
-                                "call_id": tc.get("id", ""),
-                                "name": fn.get("name", ""),
+                                "call_id": call_id,
+                                "name": call_name,
                                 "arguments": fn.get("arguments", "{}"),
                             })
                     if content:
                         input_items.append({"role": "assistant", "content": content})
                 elif role == "tool":
+                    call_id = str(message.get("tool_call_id") or "").strip()
+                    if not call_id:
+                        continue
                     input_items.append({
                         "type": "function_call_output",
-                        "call_id": message.get("tool_call_id", ""),
+                        "call_id": call_id,
                         "output": content if isinstance(content, str) else json.dumps(content),
                     })
                 else:
@@ -580,9 +587,12 @@ class CodexProvider(LLMProvider):
 
             # ToolResultMessage
             if isinstance(message, ToolResultMessage):
+                call_id = str(message.tool_call_id or "").strip()
+                if not call_id:
+                    continue
                 input_items.append({
                     "type": "function_call_output",
-                    "call_id": message.tool_call_id,
+                    "call_id": call_id,
                     "output": message.content if isinstance(message.content, str) else json.dumps(message.content),
                 })
                 continue
@@ -601,10 +611,14 @@ class CodexProvider(LLMProvider):
                 text_parts = [item.text for item in content if isinstance(item, TextContent)]
                 for item in content:
                     if isinstance(item, ToolCallContent):
+                        call_id = str(item.id or "").strip()
+                        call_name = str(item.name or "").strip()
+                        if not call_id or not call_name:
+                            continue
                         input_items.append({
                             "type": "function_call",
-                            "call_id": item.id,
-                            "name": item.name,
+                            "call_id": call_id,
+                            "name": call_name,
                             "arguments": json.dumps(item.arguments),
                         })
                 if text_parts:

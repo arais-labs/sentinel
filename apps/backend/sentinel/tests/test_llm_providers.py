@@ -1605,6 +1605,35 @@ def test_codex_formats_user_image_blocks():
     assert content[1]["image_url"] == "data:image/png;base64,GGGHHH"
 
 
+def test_codex_input_skips_empty_tool_call_ids() -> None:
+    provider = CodexProvider(oauth_token="test-token")
+    _, input_items = provider._to_codex_input(  # type: ignore[attr-defined]
+        [
+            AssistantMessage(
+                content=[
+                    TextContent(text="Working on it"),
+                    ToolCallContent(id="", name="runtime_exec", arguments={"command": "pwd"}),
+                    ToolCallContent(id="call_1", name="runtime_exec", arguments={"command": "pwd"}),
+                ],
+                model="gpt-5.3-codex",
+                provider="openai-codex",
+                usage=TokenUsage(),
+                stop_reason="tool_use",
+            ),
+            ToolResultMessage(tool_call_id="", tool_name="runtime_exec", content="bad"),
+            ToolResultMessage(tool_call_id="call_1", tool_name="runtime_exec", content="ok"),
+        ]
+    )
+
+    function_calls = [item for item in input_items if item.get("type") == "function_call"]
+    function_outputs = [item for item in input_items if item.get("type") == "function_call_output"]
+
+    assert len(function_calls) == 1
+    assert function_calls[0]["call_id"] == "call_1"
+    assert len(function_outputs) == 1
+    assert function_outputs[0]["call_id"] == "call_1"
+
+
 def test_codex_stream_emits_text_from_output_item_done_when_no_delta():
     stream_lines = [
         'data: {"type":"response.created"}',

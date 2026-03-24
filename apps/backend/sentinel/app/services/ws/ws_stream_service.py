@@ -11,8 +11,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.sentral import ConversationItem, GenerationConfig, ImageBlock, RunTurnRequest, TextBlock
 from app.models import Message, Session
 from app.services.agent.agent_modes import AgentMode, normalize_agent_mode_value
+from app.services.agent_runtime_adapters import (
+    SentinelLoopRuntimeAdapter,
+    runtime_event_to_sentinel_event,
+)
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.compaction import CompactionService
 from app.services.llm.generic.types import AgentEvent, ImageContent, TextContent
@@ -203,20 +208,39 @@ async def run_agent_once(
     agent_mode: AgentMode,
     persist_user_message: bool,
 ) -> AgentRunOutcome:
-    async def _broadcast_event(event: AgentEvent) -> None:
-        await manager.broadcast_agent_event(session_key, event)
+    runtime = SentinelLoopRuntimeAdapter(
+        loop=agent_loop,
+        db=db,
+        session_id=session_id,
+    )
+
+    async def _broadcast_event(event: Any) -> None:
+        sentinel_event = runtime_event_to_sentinel_event(event)
+        await manager.broadcast_agent_event(session_key, sentinel_event)
 
     run_task = asyncio.create_task(
-        agent_loop.run(
-            db,
-            session_id,
-            payload,
-            persist_user_message=persist_user_message,
-            on_event=_broadcast_event,
-            model=(tier or TierName.NORMAL).value,
-            max_iterations=max_iterations,
-            agent_mode=agent_mode,
-            persist_incremental=True,
+        runtime.run_turn(
+            RunTurnRequest(
+                conversation_id=session_key,
+                new_items=[
+                    ConversationItem(
+                        id="user-input",
+                        role="user",
+                        content=_payload_to_runtime_blocks(payload),
+                    )
+                ],
+                config=GenerationConfig(
+                    model=(tier or TierName.NORMAL).value,
+                    max_iterations=max_iterations,
+                    stream=True,
+                    provider_metadata={
+                        "agent_mode": agent_mode,
+                        "persist_incremental": True,
+                        "persist_user_message": persist_user_message,
+                    },
+                ),
+            ),
+            sink=_broadcast_event,
         )
     )
     registered = await run_registry.register(session_key, run_task)
@@ -238,7 +262,7 @@ async def run_agent_once(
     try:
         run_result = await run_task
         run_error = getattr(run_result, "error", None)
-        cancelled = run_error == "Generation stopped by user"
+        cancelled = getattr(run_result, "status", None) == "aborted" or run_error == "Generation stopped by user"
     except asyncio.CancelledError:
         cancelled = True
     except Exception as exc:  # noqa: BLE001
@@ -325,3 +349,17 @@ def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
+
+
+def _payload_to_runtime_blocks(
+    payload: str | list[TextContent | ImageContent],
+) -> list[TextBlock | ImageBlock]:
+    if isinstance(payload, str):
+        return [TextBlock(text=payload)]
+    blocks: list[TextBlock | ImageBlock] = []
+    for item in payload:
+        if isinstance(item, TextContent):
+            blocks.append(TextBlock(text=item.text))
+        elif isinstance(item, ImageContent):
+            blocks.append(ImageBlock(media_type=item.media_type, data=item.data))
+    return blocks

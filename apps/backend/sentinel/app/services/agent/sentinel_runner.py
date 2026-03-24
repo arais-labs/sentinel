@@ -1,7 +1,12 @@
-"""Core iterative agent execution loop.
+"""Sentinel application wrapper around runtime execution.
 
-Coordinates context building, provider calls, tool execution, reinjection, and
-message persistence for one agent run.
+This module owns Sentinel-specific concerns around one run:
+- context loading from session state
+- persistence of created messages
+- runtime context snapshotting
+- estop enforcement
+
+The reusable execution engine lives outside this wrapper.
 """
 
 from __future__ import annotations
@@ -25,9 +30,9 @@ from app.services.sessions.context_usage import (
     estimate_agent_messages_tokens,
 )
 from app.services.agent.context_builder import ContextBuilder
+from app.services.agent.execution_core import AgentExecutionCore
 from app.services.agent.tool_image_reinjection import (
     ToolImageReinjectionPolicy,
-    build_tool_image_reinjection_messages,
 )
 from app.services.agent.tool_adapter import ToolAdapter
 from app.services.estop import EstopLevel, EstopService
@@ -108,8 +113,18 @@ class AgentLoopResult:
     attachments: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class PreparedRuntimeTurnContext:
+    """Sentinel-prepared context needed to execute one runtime turn."""
+
+    messages: list[AgentMessage]
+    tools: list[ToolSchema]
+    effective_system_prompt: str | None
+    runtime_context_snapshot: dict[str, Any] | None
+
+
 class AgentLoop:
-    """Runs iterative think-act-observe cycles until completion or hard stop."""
+    """Sentinel-facing runner that prepares and persists one agent turn."""
 
     def __init__(
         self,
@@ -122,6 +137,117 @@ class AgentLoop:
         self.context_builder = context_builder
         self.tool_adapter = tool_adapter
         self._estop = estop_service or EstopService()
+        self._execution_core = AgentExecutionCore(
+            provider=provider,
+            tool_adapter=tool_adapter,
+            stream_response=self._stream_response,
+            grace_analysis=self._grace_analysis,
+            stream_safe_tool_metadata=self._stream_safe_tool_metadata,
+            summarize_response_blocks=self._summarize_response_blocks,
+            make_error_message=_make_error_message,
+            humanize_error=_humanize_error,
+        )
+
+    async def estop_level(self, db: AsyncSession) -> EstopLevel:
+        """Return the current Sentinel emergency-stop level."""
+        return await self._estop.check_level(db)
+
+    async def prepare_runtime_turn_context(
+        self,
+        db: AsyncSession,
+        session_id: UUID,
+        *,
+        system_prompt: str | None,
+        pending_user_message: str,
+        agent_mode: AgentMode | str,
+        model: str,
+        temperature: float,
+        max_iterations: int,
+        stream: bool,
+    ) -> PreparedRuntimeTurnContext:
+        """Build the Sentinel-owned history/tool snapshot for one runtime turn."""
+        messages = await self.context_builder.build(
+            db,
+            session_id,
+            system_prompt,
+            pending_user_message=pending_user_message,
+            agent_mode=agent_mode,
+        )
+        tools = self.tool_adapter.get_tool_schemas()
+        return PreparedRuntimeTurnContext(
+            messages=messages,
+            tools=tools,
+            effective_system_prompt=self.extract_runtime_system_prompt(messages),
+            runtime_context_snapshot=self.build_runtime_context_snapshot(
+                messages,
+                tools,
+                model=model,
+                temperature=temperature,
+                max_iterations=max_iterations,
+                stream=stream,
+                agent_mode=agent_mode,
+            ),
+        )
+
+    async def persist_created_messages(
+        self,
+        db: AsyncSession,
+        session_id: UUID,
+        created: list[AgentMessage],
+        assistant_iterations: dict[int, int],
+        *,
+        requested_tier: TierName | str | None,
+        temperature: float,
+        max_iterations: int,
+        effective_system_prompt: str | None = None,
+        runtime_context_snapshot: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist run-created messages using Sentinel's storage model."""
+        await self._persist_messages(
+            db,
+            session_id,
+            created,
+            assistant_iterations,
+            requested_tier=requested_tier,
+            temperature=temperature,
+            max_iterations=max_iterations,
+            effective_system_prompt=effective_system_prompt,
+            runtime_context_snapshot=runtime_context_snapshot,
+        )
+
+    def extract_runtime_system_prompt(self, messages: list[AgentMessage]) -> str | None:
+        """Public wrapper for the persisted runtime system prompt view."""
+        return self._extract_runtime_system_prompt(messages)
+
+    def build_runtime_context_snapshot(
+        self,
+        messages: list[AgentMessage],
+        tools: list[ToolSchema],
+        *,
+        model: str,
+        temperature: float,
+        max_iterations: int,
+        stream: bool,
+        agent_mode: AgentMode | str,
+    ) -> dict[str, Any]:
+        """Public wrapper for Sentinel's runtime snapshot payload."""
+        return self._build_runtime_context_snapshot(
+            messages,
+            tools,
+            model=model,
+            temperature=temperature,
+            max_iterations=max_iterations,
+            stream=stream,
+            agent_mode=agent_mode,
+        )
+
+    def extract_final_text(self, messages: list[AgentMessage]) -> str:
+        """Return the final assistant text from a created message batch."""
+        return self._extract_final_text(messages)
+
+    def collect_attachments(self, messages: list[AgentMessage]) -> list[dict[str, Any]]:
+        """Return tool-produced attachments from a created message batch."""
+        return self._collect_attachments(messages)
 
     async def run(
         self,
@@ -151,522 +277,81 @@ class AgentLoop:
             if isinstance(user_metadata, dict)
             else {}
         )
-        mode_definition = get_agent_mode_definition(agent_mode)
-        normalized_user_metadata["agent_mode"] = mode_definition.id.value
-        user = UserMessage(content=user_message, metadata=normalized_user_metadata)
-        created: list[AgentMessage] = []
-        assistant_iterations: dict[int, int] = {}
-        if persist_user_message:
-            created.append(user)
-
-        if await self._estop.check_level(db) == EstopLevel.KILL_ALL:
-            if on_event is not None:
-                await on_event(AgentEvent(type="error", error="Emergency stop KILL_ALL is active"))
-                await on_event(AgentEvent(type="done", stop_reason="aborted"))
-            await self._persist_messages(
-                db,
-                session_id,
-                created,
-                assistant_iterations,
-                requested_tier=model,
-                temperature=temperature,
-                max_iterations=max_iterations,
-            )
-            reset_log_session(session_log_token)
-            return AgentLoopResult(
-                final_text="",
-                messages_created=len(created),
-                usage=TokenUsage(),
-                iterations=0,
-                attachments=[],
-            )
-
-        messages = await self.context_builder.build(
-            db,
-            session_id,
-            system_prompt,
-            pending_user_message=self._user_text(user_message),
-            agent_mode=mode_definition.id,
-        )
-        tools = self.tool_adapter.get_tool_schemas()
-        runtime_system_prompt = self._extract_runtime_system_prompt(messages)
-        runtime_context_snapshot = self._build_runtime_context_snapshot(
-            messages,
-            tools,
-            model=model,
-            temperature=temperature,
-            max_iterations=max_iterations,
-            stream=stream,
-            agent_mode=mode_definition.id,
-        )
-        context_snapshot_pending = True
-        messages.append(user)
-
-        logger.info(
-            "AgentLoop.run: session_id=%s model=%s stream=%s tools=%s",
-            session_id, model, stream, [t.name for t in tools],
-        )
-        total_usage = TokenUsage()
-        iterations = 0
-        done_emitted = False
-        last_error: str | None = None
-        persisted_count = 0
-        reinjected_hashes: set[str] = set()
-        reinjection_policy = ToolImageReinjectionPolicy(
-            enabled=settings.tool_image_reinjection_enabled,
-            max_images_per_turn=max(0, int(settings.tool_image_reinjection_max_images)),
-            max_bytes_per_image=max(1, int(settings.tool_image_reinjection_max_bytes_per_image)),
-            max_total_bytes_per_turn=max(1, int(settings.tool_image_reinjection_max_total_bytes)),
-        )
-
-        # Defer the final "done" event until AFTER _persist_messages commits, so the
-        # frontend's loadMessages() HTTP call sees the persisted messages in the DB.
-        # Intermediate "done" events (stop_reason="tool_use") pass through immediately.
-        _caller_on_event = on_event
-        deferred_done: AgentEvent | None = None
-        if on_event is not None and stream:
-            async def _intercepted_on_event(event: AgentEvent) -> None:
-                nonlocal deferred_done
-                if event.type == "done" and event.stop_reason != "tool_use":
-                    deferred_done = event
-                else:
-                    await _caller_on_event(event)  # type: ignore[misc]
-            on_event = _intercepted_on_event
-
-        async def _persist_new_messages() -> None:
-            nonlocal persisted_count, context_snapshot_pending
-            if not persist_incremental:
-                return
-            if persisted_count >= len(created):
-                return
-            batch = created[persisted_count:]
-            snapshot = runtime_context_snapshot if context_snapshot_pending else None
-            await self._persist_messages(
-                db,
-                session_id,
-                batch,
-                assistant_iterations,
-                requested_tier=model,
-                temperature=temperature,
-                max_iterations=max_iterations,
-                effective_system_prompt=runtime_system_prompt,
-                runtime_context_snapshot=snapshot,
-            )
-            if snapshot is not None:
-                context_snapshot_pending = False
-            persisted_count = len(created)
-
-        async def _run_finalization_round(progress_max: int) -> bool:
-            """
-            Force one final no-tools response when iteration budget is exhausted so
-            the assistant can provide a coherent handoff/summary instead of ending mid-thought.
-            """
-            nonlocal iterations, done_emitted, last_error
-            iterations += 1
-            if on_event is not None:
-                await on_event(
-                    AgentEvent(
-                        type="agent_progress",
-                        iteration=iterations,
-                        max_iterations=max(progress_max + 1, iterations),
-                    )
-                )
-
-            final_instruction = (
-                "You've reached the step limit, and this is the final reply for this run. "
-                "Do not call any tools. "
-                "Write a natural, user-facing update (not robotic or templated). "
-                "If the task is unfinished, briefly cover: what was completed, what is blocked/uncertain, "
-                "and the single best next step to continue."
-            )
-            final_messages = [*messages, UserMessage(content=final_instruction)]
-
-            try:
-                if stream:
-                    final_response = await self._stream_response(
-                        final_messages,
-                        model=model,
-                        tools=[],
-                        temperature=temperature,
-                        on_event=on_event,
-                    )
-                else:
-                    final_response = await self.provider.chat(
-                        final_messages,
-                        model=model,
-                        tools=[],
-                        temperature=temperature,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                last_error = str(exc)
-                logger.error(
-                    "Finalization round failed: session_id=%s iteration=%d error=%s",
-                    session_id,
-                    iterations,
-                    last_error,
-                )
-                if on_event is not None:
-                    await on_event(AgentEvent(type="error", error=last_error))
-                    await on_event(AgentEvent(type="done", stop_reason="length"))
-                done_emitted = True
-                return False
-
-            if final_response.stop_reason == "tool_use":
-                text_blocks = [
-                    block
-                    for block in final_response.content
-                    if isinstance(block, TextContent)
-                ]
-                if not text_blocks:
-                    text_blocks = [
-                        TextContent(
-                            text=(
-                                "Reached the iteration limit. I could not complete all steps in time. "
-                                "I can continue from the current state on your next message."
-                            )
-                        )
-                    ]
-                final_response = AssistantMessage(
-                    content=text_blocks,
-                    model=final_response.model,
-                    provider=final_response.provider,
-                    usage=final_response.usage,
-                    stop_reason="stop",
-                )
-
-            if not stream and on_event is not None:
-                for block in final_response.content:
-                    if isinstance(block, TextContent) and block.text:
-                        await on_event(AgentEvent(type="text_delta", delta=block.text))
-                await on_event(
-                    AgentEvent(
-                        type="done",
-                        stop_reason=final_response.stop_reason,
-                        message=final_response,
-                    )
-                )
-
-            total_usage.input_tokens += final_response.usage.input_tokens
-            total_usage.output_tokens += final_response.usage.output_tokens
-            messages.append(final_response)
-            created.append(final_response)
-            assistant_iterations[id(final_response)] = iterations
-            await _persist_new_messages()
-            done_emitted = True
-            return True
-
-        async def _run_iterations() -> None:
-            nonlocal iterations, done_emitted, last_error
-            grace_check_done = False
-            effective_max = max(1, max_iterations)
-            # Grace extension: 25% of original budget, min 10 extra iterations
-            grace_extension = max(10, effective_max // 4)
-            total_limit = effective_max + grace_extension
-
-            for index in range(total_limit):
-                # At the hard boundary: run grace analysis once
-                if index == effective_max and not grace_check_done:
-                    grace_check_done = True
-                    grace_granted = await self._grace_analysis(messages, session_id, effective_max, grace_extension)
-                    if not grace_granted:
-                        await _run_finalization_round(effective_max)
-                        break
-                    logger.info(
-                        "Grace extension granted (+%d iterations): session_id=%s",
-                        grace_extension,
-                        session_id,
-                    )
-                    # Fall through — continue running up to total_limit
-
-                iterations = index + 1
-                if on_event is not None:
-                    # During grace period, report against total_limit so the bar shows continued progress
-                    progress_max = total_limit if grace_check_done else effective_max
-                    await on_event(AgentEvent(type="agent_progress", iteration=min(iterations, progress_max), max_iterations=progress_max))
-                # Drain injected messages from external callers
-                if inject_queue is not None:
-                    while not inject_queue.empty():
-                        try:
-                            injected_text = inject_queue.get_nowait()
-                            injected = UserMessage(content=f"[Operator interjection]: {injected_text}")
-                            messages.append(injected)
-                            created.append(injected)
-                        except asyncio.QueueEmpty:
-                            break
-                try:
-                    streamed_tool_call_ids: set[str] = set()
-                    if stream:
-                        partial_out: list[AssistantMessage] = []
-                        event_sink = on_event
-                        if on_event is not None:
-                            async def _stream_event_sink(event: AgentEvent) -> None:
-                                tool_call = event.tool_call
-                                if (
-                                    event.type == "toolcall_start"
-                                    and tool_call is not None
-                                    and isinstance(tool_call.id, str)
-                                    and tool_call.id
-                                ):
-                                    streamed_tool_call_ids.add(tool_call.id)
-                                await on_event(event)
-
-                            event_sink = _stream_event_sink
-                        try:
-                            response = await self._stream_response(
-                                messages,
-                                model=model,
-                                tools=tools,
-                                temperature=temperature,
-                                on_event=event_sink,
-                                partial_out=partial_out,
-                            )
-                        except asyncio.CancelledError:
-                            # Save partial content before propagating
-                            if partial_out:
-                                created.append(partial_out[0])
-                                assistant_iterations[id(partial_out[0])] = iterations
-                            raise
-                    else:
-                        response = await self.provider.chat(
-                            messages,
-                            model=model,
-                            tools=tools,
-                            temperature=temperature,
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    last_error = str(exc)
-                    logger.error("LLM call failed: session_id=%s iteration=%d error=%s", session_id, iterations, last_error)
-                    # Persist a visible error message in the chat
-                    error_msg = _make_error_message(_humanize_error(last_error))
-                    created.append(error_msg)
-                    assistant_iterations[id(error_msg)] = iterations
-                    if on_event is not None:
-                        await on_event(AgentEvent(type="error", error=last_error))
-                        await on_event(AgentEvent(type="done", stop_reason="error"))
-                    done_emitted = True
-                    break
-
-                total_usage.input_tokens += response.usage.input_tokens
-                total_usage.output_tokens += response.usage.output_tokens
-
-                messages.append(response)
-                created.append(response)
-                assistant_iterations[id(response)] = iterations
-
-                # --- DEBUG: log assembled response ---
-                block_summary = self._summarize_response_blocks(response)
-                logger.info(
-                    "Loop iter=%d stop_reason=%r blocks=[%s] session_id=%s",
-                    iterations, response.stop_reason, ", ".join(block_summary), session_id,
-                )
-                # --- END DEBUG ---
-
-                if not stream:
-                    for block in response.content:
-                        if isinstance(block, TextContent) and block.text and on_event is not None:
-                            await on_event(AgentEvent(type="text_delta", delta=block.text))
-
-                if response.stop_reason != "tool_use":
-                    logger.info(
-                        "Loop ending: stop_reason=%r != 'tool_use', session_id=%s",
-                        response.stop_reason, session_id,
-                    )
-                    await _persist_new_messages()
-                    if on_event is not None and not stream:
-                        await on_event(AgentEvent(type="done", stop_reason=response.stop_reason, message=response))
-                    done_emitted = True
-                    break
-
-                tool_calls = [item for item in response.content if isinstance(item, ToolCallContent)]
-                if not tool_calls:
-                    logger.warning(
-                        "Loop: stop_reason='tool_use' but NO ToolCallContent found! session_id=%s",
-                        session_id,
-                    )
-                    if on_event is not None and not stream:
-                        await on_event(AgentEvent(type="done", stop_reason="stop", message=response))
-                    done_emitted = True
-                    break
-
-                logger.info(
-                    "Loop executing %d tool(s): %s session_id=%s",
-                    len(tool_calls),
-                    [tc.name for tc in tool_calls],
-                    session_id,
-                )
-                tool_arguments_by_call_id = {
-                    call.id: call.arguments
-                    for call in tool_calls
-                    if isinstance(call.id, str) and call.id
-                }
-
-                # Persist assistant tool-call rows immediately so reconnect/load can
-                # reconstruct in-flight tool executions while they are still running.
-                await _persist_new_messages()
-
-                for tool_call in tool_calls:
-                    should_emit_start = (
-                        not stream
-                        or not tool_call.id
-                        or tool_call.id not in streamed_tool_call_ids
-                    )
-                    if on_event is not None and should_emit_start:
-                        await on_event(AgentEvent(type="toolcall_start", tool_call=tool_call))
-
-                async def _emit_pending_tool_result(tool_result: ToolResultMessage) -> None:
-                    if on_event is None:
-                        return
-                    await on_event(
-                        AgentEvent(
-                            type="tool_result",
-                            tool_result=ToolResultContent(
-                                tool_call_id=tool_result.tool_call_id,
-                                tool_name=tool_result.tool_name,
-                                content=tool_result.content,
-                                is_error=tool_result.is_error,
-                                metadata=self._stream_safe_tool_metadata(tool_result.metadata),
-                                tool_arguments=(
-                                    tool_arguments_by_call_id.get(tool_result.tool_call_id)
-                                    if isinstance(
-                                        tool_arguments_by_call_id.get(tool_result.tool_call_id),
-                                        dict,
-                                    )
-                                    else None
-                                ),
-                            ),
-                        )
-                    )
-
-                tool_results = await self.tool_adapter.execute_tool_calls(
-                    tool_calls,
-                    db,
-                    session_id=session_id,
-                    agent_mode=mode_definition.id,
-                    on_pending_tool_result=_emit_pending_tool_result,
-                )
-                messages.extend(tool_results)
-                created.extend(tool_results)
-
-                reinjection = build_tool_image_reinjection_messages(
-                    tool_results,
-                    policy=reinjection_policy,
-                    seen_hashes=reinjected_hashes,
-                )
-                if reinjection.messages:
-                    messages.extend(reinjection.messages)
-                    logger.debug(
-                        "Reinjected %d tool image(s) (skipped=%d) session_id=%s",
-                        reinjection.selected_count,
-                        reinjection.skipped_count,
-                        session_id,
-                    )
-
-                for tool_result in tool_results:
-                    if on_event is not None and not stream:
-                        await on_event(
-                            AgentEvent(
-                                type="toolcall_end",
-                                tool_call=ToolCallContent(
-                                    id=tool_result.tool_call_id,
-                                    name=tool_result.tool_name,
-                                    arguments={},
-                                ),
-                            )
-                        )
-                    if on_event is not None:
-                        await on_event(
-                            AgentEvent(
-                                type="tool_result",
-                                tool_result=ToolResultContent(
-                                    tool_call_id=tool_result.tool_call_id,
-                                    tool_name=tool_result.tool_name,
-                                    content=tool_result.content,
-                                    is_error=tool_result.is_error,
-                                    metadata=self._stream_safe_tool_metadata(tool_result.metadata),
-                                    tool_arguments=(
-                                        tool_arguments_by_call_id.get(tool_result.tool_call_id)
-                                        if isinstance(
-                                            tool_arguments_by_call_id.get(tool_result.tool_call_id),
-                                            dict,
-                                        )
-                                        else None
-                                    ),
-                                ),
-                            )
-                        )
-                await _persist_new_messages()
-                # Cooldown between iterations to avoid hammering the LLM provider
-                if settings.agent_loop_cooldown > 0:
-                    await asyncio.sleep(settings.agent_loop_cooldown)
-            else:
-                # Exhausted all iterations (including grace extension) — hard stop
-                await _run_finalization_round(total_limit)
-
-        persisted = False
         try:
-            await asyncio.wait_for(_run_iterations(), timeout=max(0.1, float(timeout_seconds)))
-        except asyncio.TimeoutError:
-            last_error = f"Agent loop timed out after {timeout_seconds}s"
-            logger.error("Agent loop timeout: session_id=%s timeout=%s", session_id, timeout_seconds)
-            error_msg = _make_error_message(f"Agent timed out after {int(timeout_seconds)}s. You can retry your request.")
-            created.append(error_msg)
-            assistant_iterations[id(error_msg)] = iterations
-            snapshot = runtime_context_snapshot if context_snapshot_pending else None
-            await self._persist_messages(
-                db,
-                session_id,
-                created,
-                assistant_iterations,
-                requested_tier=model,
-                temperature=temperature,
-                max_iterations=max_iterations,
-                effective_system_prompt=runtime_system_prompt,
-                runtime_context_snapshot=snapshot,
-            )
-            if snapshot is not None:
-                context_snapshot_pending = False
-            persisted = True
-            if on_event is not None:
-                await on_event(AgentEvent(type="done", stop_reason="timeout"))
-            done_emitted = True
-        except asyncio.CancelledError:
-            last_error = "Generation stopped by user"
-            logger.info("Agent loop cancelled: session_id=%s", session_id)
-            error_msg = _make_error_message("Generation stopped by user.")
-            created.append(error_msg)
-            assistant_iterations[id(error_msg)] = iterations
-            snapshot = runtime_context_snapshot if context_snapshot_pending else None
-            await self._persist_messages(
-                db,
-                session_id,
-                created,
-                assistant_iterations,
-                requested_tier=model,
-                temperature=temperature,
-                max_iterations=max_iterations,
-                effective_system_prompt=runtime_system_prompt,
-                runtime_context_snapshot=snapshot,
-            )
-            if snapshot is not None:
-                context_snapshot_pending = False
-            persisted = True
-            if on_event is not None:
-                await on_event(AgentEvent(type="error", error=last_error))
-                await on_event(AgentEvent(type="done", stop_reason="aborted"))
-            done_emitted = True
+            mode_definition = get_agent_mode_definition(agent_mode)
+            normalized_user_metadata["agent_mode"] = mode_definition.id.value
+            user = UserMessage(content=user_message, metadata=normalized_user_metadata)
+            created_seed: list[AgentMessage] = [user] if persist_user_message else []
 
-        # Persist before emitting the final done so loadMessages() sees committed data.
-        if not persisted:
-            if persist_incremental:
-                await _persist_new_messages()
-            else:
-                snapshot = runtime_context_snapshot if context_snapshot_pending else None
-                await self._persist_messages(
+            if await self.estop_level(db) == EstopLevel.KILL_ALL:
+                if on_event is not None:
+                    await on_event(AgentEvent(type="error", error="Emergency stop KILL_ALL is active"))
+                    await on_event(AgentEvent(type="done", stop_reason="aborted"))
+                await self.persist_created_messages(
                     db,
                     session_id,
-                    created,
+                    created_seed,
+                    {},
+                    requested_tier=model,
+                    temperature=temperature,
+                    max_iterations=max_iterations,
+                )
+                return AgentLoopResult(
+                    final_text="",
+                    messages_created=len(created_seed),
+                    usage=TokenUsage(),
+                    iterations=0,
+                    attachments=[],
+                )
+
+            prepared = await self.prepare_runtime_turn_context(
+                db,
+                session_id,
+                system_prompt=system_prompt,
+                pending_user_message=self._user_text(user_message),
+                agent_mode=mode_definition.id,
+                model=model,
+                temperature=temperature,
+                max_iterations=max_iterations,
+                stream=stream,
+            )
+            messages = [*prepared.messages]
+            tools = prepared.tools
+            runtime_system_prompt = prepared.effective_system_prompt
+            runtime_context_snapshot = prepared.runtime_context_snapshot
+            context_snapshot_pending = True
+            messages.append(user)
+
+            logger.info(
+                "AgentLoop.run: session_id=%s model=%s stream=%s tools=%s",
+                session_id, model, stream, [t.name for t in tools],
+            )
+
+            _caller_on_event = on_event
+            deferred_done: AgentEvent | None = None
+            if on_event is not None and stream:
+                async def _intercepted_on_event(event: AgentEvent) -> None:
+                    nonlocal deferred_done
+                    if event.type == "done" and event.stop_reason != "tool_use":
+                        deferred_done = event
+                    else:
+                        await _caller_on_event(event)  # type: ignore[misc]
+                on_event = _intercepted_on_event
+
+            persisted_count = 0
+
+            async def _persist_checkpoint(
+                batch: list[AgentMessage],
+                assistant_iterations: dict[int, int],
+            ) -> None:
+                nonlocal persisted_count, context_snapshot_pending
+                if not persist_incremental or not batch:
+                    return
+                snapshot = runtime_context_snapshot if context_snapshot_pending else None
+                await self.persist_created_messages(
+                    db,
+                    session_id,
+                    batch,
                     assistant_iterations,
                     requested_tier=model,
                     temperature=temperature,
@@ -676,22 +361,63 @@ class AgentLoop:
                 )
                 if snapshot is not None:
                     context_snapshot_pending = False
+                persisted_count += len(batch)
 
-        if deferred_done is not None and _caller_on_event is not None:
-            await _caller_on_event(deferred_done)
-        elif not done_emitted and _caller_on_event is not None:
-            await _caller_on_event(AgentEvent(type="done", stop_reason="stop"))
+            artifacts = await self._execution_core.execute(
+                db=db,
+                session_id=session_id,
+                messages=messages,
+                created_seed=created_seed,
+                tools=tools,
+                model=model,
+                temperature=temperature,
+                max_iterations=max_iterations,
+                stream=stream,
+                timeout_seconds=timeout_seconds,
+                agent_mode=mode_definition.id,
+                reinjection_policy=ToolImageReinjectionPolicy(
+                    enabled=settings.tool_image_reinjection_enabled,
+                    max_images_per_turn=max(0, int(settings.tool_image_reinjection_max_images)),
+                    max_bytes_per_image=max(1, int(settings.tool_image_reinjection_max_bytes_per_image)),
+                    max_total_bytes_per_turn=max(1, int(settings.tool_image_reinjection_max_total_bytes)),
+                ),
+                cooldown_seconds=max(0.0, float(settings.agent_loop_cooldown)),
+                on_event=on_event,
+                inject_queue=inject_queue,
+                on_checkpoint=_persist_checkpoint if persist_incremental else None,
+            )
 
-        result = AgentLoopResult(
-            final_text=self._extract_final_text(created),
-            messages_created=len(created),
-            usage=total_usage,
-            iterations=iterations,
-            error=last_error,
-            attachments=self._collect_attachments(created),
-        )
-        reset_log_session(session_log_token)
-        return result
+            remaining = artifacts.created[persisted_count:]
+            snapshot = runtime_context_snapshot if context_snapshot_pending else None
+            await self.persist_created_messages(
+                db,
+                session_id,
+                remaining,
+                artifacts.assistant_iterations,
+                requested_tier=model,
+                temperature=temperature,
+                max_iterations=max_iterations,
+                effective_system_prompt=runtime_system_prompt,
+                runtime_context_snapshot=snapshot,
+            )
+            if snapshot is not None:
+                context_snapshot_pending = False
+
+            if deferred_done is not None and _caller_on_event is not None:
+                await _caller_on_event(deferred_done)
+            elif not artifacts.done_emitted and _caller_on_event is not None:
+                await _caller_on_event(AgentEvent(type="done", stop_reason="stop"))
+
+            return AgentLoopResult(
+                final_text=self.extract_final_text(artifacts.created),
+                messages_created=len(artifacts.created),
+                usage=artifacts.usage,
+                iterations=artifacts.iterations,
+                error=artifacts.error,
+                attachments=self.collect_attachments(artifacts.created),
+            )
+        finally:
+            reset_log_session(session_log_token)
 
     async def _stream_response(
         self,

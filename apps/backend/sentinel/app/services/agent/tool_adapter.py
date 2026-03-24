@@ -49,6 +49,14 @@ class ToolAdapter:
         self._estop = estop_service or EstopService()
         self._session_factory = session_factory
 
+    @property
+    def registry(self) -> ToolRegistry:
+        return self._registry
+
+    @property
+    def executor(self) -> ToolExecutor:
+        return self._executor
+
     def get_tool_schemas(self) -> list[ToolSchema]:
         schemas: list[ToolSchema] = []
         for tool in self._registry.list_all():

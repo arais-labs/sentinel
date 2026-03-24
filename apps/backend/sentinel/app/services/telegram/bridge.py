@@ -20,7 +20,12 @@ from telegram.ext import (
 )
 
 from app.config import settings
+from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
 from app.models import Message as MessageModel, Session as SessionModel
+from app.services.agent_runtime_adapters import (
+    SentinelLoopRuntimeAdapter,
+    runtime_event_to_sentinel_event,
+)
 from app.services.sessions import session_bindings
 from app.services.llm.ids import TierName
 from app.services.messages import (
@@ -887,17 +892,16 @@ class TelegramBridge:
 
             await self._ws_manager.broadcast_agent_thinking(route.session_key)
 
-            from app.services.llm.generic.types import AgentEvent
-
             delivery_state = _ToolDeliveryState(expected_chat_id=route.chat_id)
 
-            async def _on_event(event: AgentEvent) -> None:
-                await self._ws_manager.broadcast_agent_event(route.session_key, event)
+            async def _on_event(event: Any) -> None:
+                sentinel_event = runtime_event_to_sentinel_event(event)
+                await self._ws_manager.broadcast_agent_event(route.session_key, sentinel_event)
                 if route.inline_reply_mode:
                     return
-                if event.type != "tool_result" or event.tool_result is None:
+                if sentinel_event.type != "tool_result" or sentinel_event.tool_result is None:
                     return
-                tool_result = event.tool_result
+                tool_result = sentinel_event.tool_result
                 if tool_result.tool_name != "telegram" or tool_result.is_error:
                     return
                 payload = self._parse_json_dict(tool_result.content)
@@ -914,15 +918,35 @@ class TelegramBridge:
                 delivery_state.delivered = True
                 delivery_state.delivered_chat_id = outbound_chat_id
 
+            runtime = SentinelLoopRuntimeAdapter(
+                loop=self._agent_loop,
+                db=db,
+                session_id=route.session_id,
+            )
+
             run_task = asyncio.create_task(
-                self._agent_loop.run(
-                    db,
-                    route.session_id,
-                    content,
-                    persist_user_message=False,
-                    on_event=_on_event,
-                    model=TierName.NORMAL.value,
-                    max_iterations=25,
+                runtime.run_turn(
+                    RunTurnRequest(
+                        conversation_id=route.session_key,
+                        new_items=[
+                            ConversationItem(
+                                id="telegram-user-input",
+                                role="user",
+                                content=[TextBlock(text=content)],
+                                metadata=dict(metadata),
+                            )
+                        ],
+                        config=GenerationConfig(
+                            model=TierName.NORMAL.value,
+                            max_iterations=25,
+                            stream=True,
+                            provider_metadata={
+                                "persist_user_message": False,
+                                "persist_incremental": False,
+                            },
+                        ),
+                    ),
+                    sink=_on_event,
                 )
             )
 
@@ -935,14 +959,20 @@ class TelegramBridge:
             run_completed_successfully = False
             try:
                 result = await run_task
-                final_text = result.final_text if result else ""
+                final_text = ""
+                if result and result.final_item is not None:
+                    final_text = "\n".join(
+                        block.text
+                        for block in result.final_item.content
+                        if isinstance(block, TextBlock) and block.text
+                    ).strip()
 
                 if route.inline_reply_mode:
                     await self._deliver_inline_owner_reply(
                         update,
                         chat_id=route.chat_id,
                         final_text=final_text,
-                        attachments=result.attachments if result else [],
+                        attachments=[],
                     )
                 else:
                     await self._deliver_non_inline_reply(
