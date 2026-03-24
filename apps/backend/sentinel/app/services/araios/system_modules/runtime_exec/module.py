@@ -92,7 +92,7 @@ MODULE = ModuleDefinition(
     description=(
         "Execute arbitrary shell commands in a per-session runtime workspace. "
         "User commands run in a confined sandbox limited to workspace writes. "
-        "Root commands run unconfined and can be approval-gated."
+        "Root commands run unconfined."
     ),
     icon="terminal",
     pinned=True,
