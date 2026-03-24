@@ -50,7 +50,7 @@ import { Markdown } from '../components/ui/Markdown';
 import { StatusChip } from '../components/ui/StatusChip';
 import { WS_BASE_URL } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
-import { buildRuntimeCommandRows } from '../lib/runtimeCommands';
+import { buildRuntimeCommandRows, type RuntimeCommandRow } from '../lib/runtimeCommands';
 import {
   approvalKey,
   approvalRefFromMetadata,
@@ -476,7 +476,7 @@ function StreamToolCard({
             : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)]'
         }`}
       >
-        <div className={`${expanded ? 'w-full mb-4' : 'w-auto'} flex items-center justify-between gap-4 py-0.5 cursor-default`}>
+        <div className={`${expanded ? 'w-full mb-0.5' : 'w-auto'} flex items-center justify-between gap-4 py-0.5 cursor-default`}>
           <div className="flex items-center gap-3 min-w-0">
             <div className={`flex items-center justify-center w-6 h-6 rounded-lg ${pendingApproval ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' : 'bg-sky-500/10 text-sky-400 border border-sky-500/20'} shrink-0`}>
               <Wrench size={12} strokeWidth={2.5} />
@@ -501,31 +501,32 @@ function StreamToolCard({
         </div>
 
         {expanded ? (
-          <div className="relative mt-3 border-t border-sky-500/20 pt-4 animate-in fade-in slide-in-from-top-1 duration-200">
-            <div className="absolute left-[14px] top-4 bottom-0 w-[1px] border-l border-dashed border-sky-500/30" />
+          <div className="mt-0 pt-3 animate-in fade-in slide-in-from-top-1 duration-200">
             <div className="space-y-6">
               {!isScreenshotCall ? (
-                <div className="relative pl-10">
-                  <div className="absolute left-0 top-0 z-10 flex items-center justify-center w-7 h-7 rounded-full bg-[color:var(--surface-1)] border border-sky-500/30 text-sky-500/60 shadow-sm">
-                    <Terminal size={14} />
-                  </div>
+                <div>
                   <div className="mb-2.5 flex items-center gap-2">
+                    <div className="flex items-center justify-center w-7 h-7 rounded-full bg-[color:var(--surface-1)] border border-sky-500/30 text-sky-500/60 shadow-sm shrink-0">
+                      <Terminal size={14} />
+                    </div>
                     <p className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-600 dark:text-sky-300">Arguments</p>
                     <div className="h-px flex-1 bg-gradient-to-r from-sky-500/30 to-transparent" />
                   </div>
-                  <ToolPayloadView
-                    raw={call.argumentsJson}
-                    emptyLabel="No input."
-                    toolName={call.name}
-                    payloadKind="input"
-                  />
+                  <div className="pl-9">
+                    <ToolPayloadView
+                      raw={call.argumentsJson}
+                      emptyLabel="No input."
+                      toolName={call.name}
+                      payloadKind="input"
+                    />
+                  </div>
                 </div>
               ) : null}
-              <div className="relative pl-10 pb-2">
-                <div className={`absolute left-0 top-0 z-10 flex items-center justify-center w-7 h-7 rounded-full border ${call.isError ? 'bg-rose-500/10 border-rose-500/20 text-rose-500/60' : 'bg-[color:var(--surface-1)] border-emerald-500/20 text-emerald-500/60'} shadow-sm`}>
-                  {active ? <Loader2 size={14} className="animate-spin" /> : call.isError ? <X size={14} strokeWidth={3} /> : <Check size={14} strokeWidth={3} />}
-                </div>
+              <div className="pb-2">
                 <div className="mb-2.5 flex items-center gap-2">
+                  <div className={`flex items-center justify-center w-7 h-7 rounded-full border shrink-0 ${call.isError ? 'bg-rose-500/10 border-rose-500/20 text-rose-500/60' : 'bg-[color:var(--surface-1)] border-emerald-500/20 text-emerald-500/60'} shadow-sm`}>
+                    {active ? <Loader2 size={14} className="animate-spin" /> : call.isError ? <X size={14} strokeWidth={3} /> : <Check size={14} strokeWidth={3} />}
+                  </div>
                   <p className={`text-[10px] font-black uppercase tracking-[0.2em] ${call.isError ? 'text-rose-500/60' : 'text-emerald-500/60'}`}>Result</p>
                   <div className={`h-px flex-1 bg-gradient-to-r ${call.isError ? 'from-rose-500/20' : 'from-emerald-500/20'} to-transparent`} />
                   {call.isError && (
@@ -534,7 +535,7 @@ function StreamToolCard({
                     </span>
                   )}
                 </div>
-                <div className="space-y-4">
+                <div className="pl-9 space-y-4">
                   <ToolPayloadView
                     raw={call.outputJson}
                     emptyLabel={active ? 'Running tool...' : 'No output payload.'}
@@ -660,12 +661,18 @@ function ModuleActionEntryRow({ entry }: { entry: ModuleLogEntry }) {
   );
 }
 
-function ModuleActionLog({ completedToolCalls, activeToolCalls, messages }: {
+function ModuleActionLog({ completedToolCalls, activeToolCalls, messages, commandActions, onStop, isStopping }: {
   completedToolCalls: StreamingToolCall[];
   activeToolCalls: StreamingToolCall[];
   messages: Message[];
+  commandActions: RuntimeCommandRow[];
+  onStop?: () => void;
+  isStopping?: boolean;
 }) {
   const [moduleNames, setModuleNames] = useState<Set<string>>(new Set(['module_manager']));
+  const [commandOutputCollapsed, setCommandOutputCollapsed] = useState<Record<string, boolean>>({});
+  const toggleCommandOutput = (id: string) =>
+    setCommandOutputCollapsed((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }));
 
   useEffect(() => {
     let mounted = true;
@@ -726,7 +733,7 @@ function ModuleActionLog({ completedToolCalls, activeToolCalls, messages }: {
     return result;
   }, [completedToolCalls, activeToolCalls, messages, moduleNames]);
 
-  if (entries.length === 0) {
+  if (entries.length === 0 && commandActions.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-2 p-8">
         <Boxes size={24} strokeWidth={1} />
@@ -738,6 +745,115 @@ function ModuleActionLog({ completedToolCalls, activeToolCalls, messages }: {
   return (
     <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-3 space-y-1.5">
       {entries.map(entry => <ModuleActionEntryRow key={entry.id} entry={entry} />)}
+
+      {commandActions.length > 0 && (
+        <div className={entries.length > 0 ? 'pt-2 mt-2 border-t border-[color:var(--border-subtle)]' : ''}>
+          <div className="px-1 pb-2 flex items-center gap-2">
+            <Terminal size={10} className="text-[color:var(--text-muted)]" />
+            <span className="text-[9px] font-black uppercase tracking-widest text-[color:var(--text-muted)]">Shell</span>
+          </div>
+          <div className="space-y-2">
+            {commandActions.map((entry) => {
+              const isRunning = entry.state === 'running';
+              const hasOutput = Boolean(entry.output && (
+                entry.output.stdout.trim().length > 0 ||
+                entry.output.stderr.trim().length > 0 ||
+                entry.output.timedOut ||
+                entry.output.returncode !== null ||
+                entry.output.ok !== null
+              ));
+              const isOutputCollapsed = commandOutputCollapsed[entry.id] ?? true;
+              return (
+                <div
+                  key={entry.id}
+                  className={`rounded-xl border transition-all ${
+                    isRunning
+                      ? 'border-emerald-500/30 bg-emerald-500/[0.02]'
+                      : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 hover:bg-[color:var(--surface-1)]'
+                  }`}
+                >
+                  <div className="p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <div className={`h-1.5 w-1.5 rounded-full ${
+                          isRunning ? 'bg-emerald-500 animate-pulse' :
+                          entry.state === 'failed' || entry.state === 'cancelled' ? 'bg-rose-500' :
+                          'bg-[color:var(--text-muted)] opacity-40'
+                        }`} />
+                        <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                          {entry.source === 'detached_job' ? 'Detached' : 'Shell'}
+                        </span>
+                        <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
+                        <span className={`text-[8px] font-bold uppercase tracking-wider ${
+                          isRunning ? 'text-emerald-500' :
+                          entry.state === 'failed' || entry.state === 'cancelled' ? 'text-rose-500' :
+                          'text-[color:var(--text-muted)]'
+                        }`}>{entry.state}</span>
+                      </div>
+                      <span className="text-[9px] font-mono text-[color:var(--text-muted)] opacity-60">
+                        {formatCompactDate(entry.endedAt || entry.startedAt)}
+                      </span>
+                    </div>
+                    <div className="rounded-lg bg-black/5 dark:bg-black/40 p-2 border border-black/5">
+                      <Markdown content={toMarkdownCodeFence(entry.command || '[empty command]', 'bash')} className="!text-[10px] markdown-command-inline" />
+                    </div>
+                    {hasOutput && (
+                      <div className="mt-2.5">
+                        <button
+                          type="button"
+                          onClick={() => toggleCommandOutput(entry.id)}
+                          className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-80 transition-opacity"
+                        >
+                          {isOutputCollapsed ? 'Show Output' : 'Hide Output'}
+                          <ChevronDown size={10} className={`transition-transform ${isOutputCollapsed ? '' : 'rotate-180'}`} />
+                        </button>
+                        {!isOutputCollapsed && entry.output && (
+                          <div className="mt-2 space-y-2 animate-in slide-in-from-top-1 duration-200">
+                            <div className="flex gap-2">
+                              {entry.output.returncode !== null && (
+                                <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-[color:var(--surface-2)] text-[color:var(--text-muted)]">
+                                  EXIT: {entry.output.returncode}
+                                </span>
+                              )}
+                              {entry.output.timedOut && (
+                                <span className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500 uppercase tracking-widest">Timed Out</span>
+                              )}
+                            </div>
+                            {entry.output.stdout.trim() && (
+                              <div className="space-y-1">
+                                <div className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">stdout</div>
+                                <pre className="p-2 rounded-lg bg-black/5 dark:bg-black/60 font-mono text-[10px] text-[color:var(--text-secondary)] overflow-auto max-h-48 whitespace-pre-wrap">{entry.output.stdout}</pre>
+                              </div>
+                            )}
+                            {entry.output.stderr.trim() && (
+                              <div className="space-y-1">
+                                <div className="text-[8px] font-bold uppercase tracking-widest text-rose-500/80 px-1">stderr</div>
+                                <pre className="p-2 rounded-lg bg-rose-500/5 dark:bg-rose-500/10 font-mono text-[10px] text-rose-600 dark:text-rose-300 overflow-auto max-h-48 whitespace-pre-wrap">{entry.output.stderr}</pre>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {isRunning && onStop && (
+                      <div className="mt-3 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={onStop}
+                          disabled={isStopping}
+                          className="inline-flex items-center gap-1.5 h-7 px-3 rounded-full border border-rose-500/20 bg-rose-500/5 text-rose-500 text-[9px] font-bold uppercase tracking-wider hover:bg-rose-500 hover:text-white transition-all active:scale-95"
+                        >
+                          {isStopping ? 'Stopping...' : 'Stop Execution'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -795,11 +911,10 @@ export function SessionsPage() {
   const [runtimeStatus, setRuntimeStatus] = useState<SessionRuntimeStatus | null>(null);
   const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
   const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
-  const [runtimeInspectorTab, setRuntimeInspectorTab] = useState<'files' | 'commands'>('files');
+
   const [runtimePath, setRuntimePath] = useState('');
   const [runtimeChangedFiles, setRuntimeChangedFiles] = useState<SessionRuntimeGitChangedFilesResponse | null>(null);
   const [runtimeChangedFilesLoading, setRuntimeChangedFilesLoading] = useState(false);
-  const [runtimeCommandOutputCollapsed, setRuntimeCommandOutputCollapsed] = useState<Record<string, boolean>>({});
   const [workbenchTabs, setWorkbenchTabs] = useState<WorkbenchTab[]>([]);
   const [activeWorkbenchPath, setActiveWorkbenchPath] = useState<string | null>(null);
   const [workbenchLoadingPath, setWorkbenchLoadingPath] = useState<string | null>(null);
@@ -951,12 +1066,6 @@ export function SessionsPage() {
     return buildRuntimeCommandRows(runtimeStatus, { newestFirst: true, limit: 50 });
   }, [runtimeStatus]);
 
-  const toggleRuntimeCommandOutput = useCallback((rowId: string) => {
-    setRuntimeCommandOutputCollapsed((current) => ({
-      ...current,
-      [rowId]: !(current[rowId] ?? true),
-    }));
-  }, []);
 
   const workbenchVisible = workbenchTabs.length > 0;
   const activeWorkbenchTab = useMemo(() => {
@@ -1296,14 +1405,16 @@ export function SessionsPage() {
   }, [activeSessionId, hasActiveSubAgentTasks]);
 
   useEffect(() => {
-    if (!activeSessionId || rightRailTab !== 'runtime') return;
+    if (!activeSessionId || (rightRailTab !== 'runtime' && rightRailTab !== 'modules')) return;
     if (streaming.connection !== 'connected') return;
     const timer = window.setInterval(() => {
       void fetchRuntimeStatus(activeSessionId, 120);
-      void fetchRuntimeFiles(activeSessionId, runtimePath, {
-        refreshGit: true,
-        silent: true,
-      });
+      if (rightRailTab === 'runtime') {
+        void fetchRuntimeFiles(activeSessionId, runtimePath, {
+          refreshGit: true,
+          silent: true,
+        });
+      }
     }, 3000);
     return () => {
       window.clearInterval(timer);
@@ -3677,7 +3788,7 @@ export function SessionsPage() {
                       : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
                   }`}
                 >
-                  Runtime
+                  Files
                 </button>
                 <button
                   type="button"
@@ -3699,7 +3810,7 @@ export function SessionsPage() {
                       : rightRailTab === 'sub_agents'
                         ? 'Sub-Agent Tasks'
                         : rightRailTab === 'runtime'
-                          ? 'Workspace Runtime'
+                          ? 'Workspace Files'
                           : 'Module Action Log'}
                   </div>
                 </div>
@@ -3919,44 +4030,8 @@ export function SessionsPage() {
             {rightRailTab === 'runtime' ? (
               <div className="flex-1 min-h-0 flex flex-col">
                 <div className="flex-1 min-h-0 flex flex-col">
-                  <div className="border-b border-[color:var(--border-subtle)] px-4 py-2">
-                    <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
-                      {/* Sliding Indicator */}
-                      <div
-                        className={`absolute top-0.5 bottom-0.5 w-[calc(50%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
-                          runtimeInspectorTab === 'files'
-                            ? 'left-0.5'
-                            : 'left-[calc(50%)]'
-                        }`}
-                      />
-
-                      <button
-                        type="button"
-                        onClick={() => setRuntimeInspectorTab('files')}
-                        className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                          runtimeInspectorTab === 'files'
-                            ? 'text-[color:var(--text-primary)]'
-                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                        }`}
-                      >
-                        Files
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setRuntimeInspectorTab('commands')}
-                        className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                          runtimeInspectorTab === 'commands'
-                            ? 'text-[color:var(--text-primary)]'
-                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                        }`}
-                      >
-                        Commands
-                      </button>
-                    </div>
-                  </div>
-
                   <div className="flex-1 min-h-0 overflow-y-auto p-4">
-                    {runtimeInspectorTab === 'files' ? (
+                    {(
                       <div className="space-y-2">
                         <div className="mb-1 flex items-center gap-2">
                           <button
@@ -4116,139 +4191,7 @@ export function SessionsPage() {
                           </div>
                         )}
                       </div>
-                    ) : null}
-
-                    {runtimeInspectorTab === 'commands' ? (
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between px-1">
-                          <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Recent Commands</div>
-                          <span className="text-[9px] font-mono text-[color:var(--text-muted)] opacity-60">Last 25</span>
-                        </div>
-                        {runtimeCommandActions.length > 0 ? (
-                          <div className="space-y-2.5">
-                            {runtimeCommandActions.slice(0, 25).map((entry) => {
-                              const isRunning = entry.state === 'running';
-                              const hasOutput = Boolean(
-                                entry.output &&
-                                  (entry.output.stdout.trim().length > 0 ||
-                                    entry.output.stderr.trim().length > 0 ||
-                                    entry.output.timedOut ||
-                                    entry.output.returncode !== null ||
-                                    entry.output.ok !== null),
-                              );
-                              const isOutputCollapsed = runtimeCommandOutputCollapsed[entry.id] ?? true;
-
-                              return (
-                                <div
-                                  key={entry.id}
-                                  className={`group relative overflow-hidden rounded-xl border transition-all ${
-                                    isRunning
-                                      ? 'border-emerald-500/30 bg-emerald-500/[0.02] shadow-[0_4px_12px_rgba(16,185,129,0.05)]'
-                                      : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)]'
-                                  }`}
-                                >
-                                  <div className="p-3">
-                                    <div className="flex items-center justify-between mb-2">
-                                      <div className="flex items-center gap-2">
-                                        <div className={`h-1.5 w-1.5 rounded-full ${
-                                          entry.state === 'running' ? 'bg-emerald-500 animate-pulse' :
-                                          entry.state === 'failed' || entry.state === 'cancelled' ? 'bg-rose-500' :
-                                          'bg-[color:var(--text-muted)] opacity-40'
-                                        }`} />
-                                        <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                                          {entry.source === 'detached_job' ? 'DETACHED JOB' : 'SHELL'}
-                                        </span>
-                                        <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
-                                        <span className={`text-[8px] font-bold uppercase tracking-wider ${
-                                          entry.state === 'running' ? 'text-emerald-500' :
-                                          entry.state === 'failed' || entry.state === 'cancelled' ? 'text-rose-500' :
-                                          'text-[color:var(--text-muted)]'
-                                        }`}>
-                                          {entry.state}
-                                        </span>
-                                      </div>
-                                      <span className="text-[9px] font-mono text-[color:var(--text-muted)] opacity-60">
-                                        {formatCompactDate(entry.endedAt || entry.startedAt)}
-                                      </span>
-                                    </div>
-
-                                    <div className="rounded-lg bg-black/5 dark:bg-black/40 p-2 border border-black/5">
-                                      <Markdown
-                                        content={toMarkdownCodeFence(entry.command || '[empty command]', 'bash')}
-                                        className="!text-[10px] markdown-command-inline"
-                                      />
-                                    </div>
-
-                                    {hasOutput && (
-                                      <div className="mt-2.5">
-                                        <button
-                                          type="button"
-                                          onClick={() => toggleRuntimeCommandOutput(entry.id)}
-                                          className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-80 transition-opacity"
-                                        >
-                                          {isOutputCollapsed ? 'Show Output' : 'Hide Output'}
-                                          <ChevronDown size={10} className={`transition-transform ${isOutputCollapsed ? '' : 'rotate-180'}`} />
-                                        </button>
-
-                                        {!isOutputCollapsed && entry.output && (
-                                          <div className="mt-2 space-y-2 animate-in slide-in-from-top-1 duration-200">
-                                            <div className="flex gap-2">
-                                              {entry.output.returncode !== null && (
-                                                <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-[color:var(--surface-2)] text-[color:var(--text-muted)]">
-                                                  EXIT: {entry.output.returncode}
-                                                </span>
-                                              )}
-                                              {entry.output.timedOut && (
-                                                <span className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500 uppercase tracking-widest">
-                                                  Timed Out
-                                                </span>
-                                              )}
-                                            </div>
-
-                                            {entry.output.stdout.trim() && (
-                                              <div className="space-y-1">
-                                                <div className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">stdout</div>
-                                                <pre className="p-2 rounded-lg bg-black/5 dark:bg-black/60 font-mono text-[10px] text-[color:var(--text-secondary)] overflow-auto max-h-48 whitespace-pre-wrap">{entry.output.stdout}</pre>
-                                              </div>
-                                            )}
-                                            {entry.output.stderr.trim() && (
-                                              <div className="space-y-1">
-                                                <div className="text-[8px] font-bold uppercase tracking-widest text-rose-500/80 px-1">stderr</div>
-                                                <pre className="p-2 rounded-lg bg-rose-500/5 dark:bg-rose-500/10 font-mono text-[10px] text-rose-600 dark:text-rose-300 overflow-auto max-h-48 whitespace-pre-wrap">{entry.output.stderr}</pre>
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-
-                                    {isRunning && (
-                                      <div className="mt-3 flex justify-end">
-                                        <button
-                                          type="button"
-                                          onClick={() => void stopCurrent()}
-                                          disabled={isStopping}
-                                          className="inline-flex items-center gap-1.5 h-7 px-3 rounded-full border border-rose-500/20 bg-rose-500/5 text-rose-500 text-[9px] font-bold uppercase tracking-wider hover:bg-rose-500 hover:text-white transition-all active:scale-95"
-                                        >
-                                          {isStopping ? 'Stopping...' : 'Stop Execution'}
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="py-12 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-3">
-                            <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
-                              <Terminal size={20} strokeWidth={1.5} />
-                            </div>
-                            <p className="text-[10px] font-bold uppercase tracking-[0.1em]">No shell history</p>
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
+                    )}
                   </div>
                 </div>
 
@@ -4274,6 +4217,9 @@ export function SessionsPage() {
                 completedToolCalls={streaming.completedToolCalls}
                 activeToolCalls={streaming.activeToolCalls}
                 messages={messages}
+                commandActions={runtimeCommandActions}
+                onStop={stopCurrent}
+                isStopping={isStopping}
               />
             ) : null}
           </aside>
