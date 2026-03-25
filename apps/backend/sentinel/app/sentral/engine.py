@@ -205,7 +205,12 @@ class AgentRuntimeEngine(Runtime):
                     await _emit(AgentEvent(type="done", stop_reason="stop"))
                     return
 
-                tool_results = await self._execute_tool_calls(tool_calls)
+                tool_execution_cancelled = False
+                try:
+                    tool_results = await self._execute_tool_calls(tool_calls)
+                except _ToolExecutionCancelled as exc:
+                    tool_results = exc.tool_results
+                    tool_execution_cancelled = True
                 for result in tool_results:
                     tool_item = ConversationItem(
                         id=_new_item_id("tool"),
@@ -216,6 +221,8 @@ class AgentRuntimeEngine(Runtime):
                     working_history.append(tool_item)
                     created_items.append(tool_item)
                     await _emit(AgentEvent(type="tool_result", tool_result=result))
+                    if tool_execution_cancelled:
+                        continue
                     approval_request = self._approval_from_tool_result(result)
                     if approval_request is not None:
                         await _emit(
@@ -231,6 +238,9 @@ class AgentRuntimeEngine(Runtime):
                             )
                         )
                         return
+                if tool_execution_cancelled:
+                    await _emit(AgentEvent(type="done", stop_reason="aborted"))
+                    return
 
             await self._run_finalization_round(
                 working_history=working_history,
@@ -255,8 +265,31 @@ class AgentRuntimeEngine(Runtime):
                     error=f"Agent loop timed out after {timeout_seconds}s",
                     pending_approval=pending_approval,
                 ), events
+            except asyncio.CancelledError:
+                await _emit(AgentEvent(type="done", stop_reason="aborted"))
+                return self._build_result(
+                    history=working_history,
+                    created_items=created_items,
+                    usage=usage,
+                    iterations=iterations,
+                    stop_reason="aborted",
+                    error="Generation stopped by user",
+                    pending_approval=pending_approval,
+                ), events
         else:
-            await _run_iterations()
+            try:
+                await _run_iterations()
+            except asyncio.CancelledError:
+                await _emit(AgentEvent(type="done", stop_reason="aborted"))
+                return self._build_result(
+                    history=working_history,
+                    created_items=created_items,
+                    usage=usage,
+                    iterations=iterations,
+                    stop_reason="aborted",
+                    error="Generation stopped by user",
+                    pending_approval=pending_approval,
+                ), events
 
         return self._build_result(
             history=working_history,
@@ -456,8 +489,15 @@ class AgentRuntimeEngine(Runtime):
         return AssistantTurn(item=item, stop_reason=stop_reason, usage=usage)
 
     async def _execute_tool_calls(self, tool_calls: list[ToolCallBlock]) -> list[ToolResultBlock]:
-        tasks = [self._execute_one_tool(call) for call in tool_calls]
-        return await asyncio.gather(*tasks)
+        tasks = [asyncio.create_task(self._execute_one_tool(call)) for call in tool_calls]
+        try:
+            return await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            raise _ToolExecutionCancelled(self._normalize_tool_execution_results(tool_calls, results)) from None
 
     async def _execute_one_tool(self, tool_call: ToolCallBlock) -> ToolResultBlock:
         tool = self._tool_registry.get_tool(tool_call.name)
@@ -555,6 +595,48 @@ class AgentRuntimeEngine(Runtime):
                 for key, value in approval.items()
                 if key not in {"id", "approval_id", "tool_name", "provider", "action", "description"}
             },
+        )
+
+    def _normalize_tool_execution_results(
+        self,
+        tool_calls: list[ToolCallBlock],
+        results: list[ToolResultBlock | BaseException],
+    ) -> list[ToolResultBlock]:
+        output: list[ToolResultBlock] = []
+        for tool_call, item in zip(tool_calls, results, strict=False):
+            if isinstance(item, ToolResultBlock):
+                output.append(item)
+                continue
+            if isinstance(item, asyncio.CancelledError):
+                output.append(self._cancelled_tool_result(tool_call))
+                continue
+            if isinstance(item, BaseException):
+                output.append(
+                    ToolResultBlock(
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        content=str(item),
+                        is_error=True,
+                        tool_arguments=dict(tool_call.arguments),
+                    )
+                )
+                continue
+            output.append(self._cancelled_tool_result(tool_call))
+        return output
+
+    def _cancelled_tool_result(self, tool_call: ToolCallBlock) -> ToolResultBlock:
+        return ToolResultBlock(
+            tool_call_id=tool_call.id,
+            tool_name=tool_call.name,
+            content=json.dumps(
+                {
+                    "status": "cancelled",
+                    "message": "Tool call cancelled by user via stop.",
+                }
+            ),
+            is_error=True,
+            metadata={"cancelled_by_stop": True},
+            tool_arguments=dict(tool_call.arguments),
         )
 
     async def _run_finalization_round(
@@ -725,5 +807,7 @@ class AgentRuntimeEngine(Runtime):
 def _new_item_id(prefix: str) -> str:
     return f"{prefix}-{uuid4()}"
 
-
-import contextlib
+class _ToolExecutionCancelled(RuntimeError):
+    def __init__(self, tool_results: list[ToolResultBlock]) -> None:
+        RuntimeError.__init__(self, "Tool execution cancelled")
+        self.tool_results = tool_results

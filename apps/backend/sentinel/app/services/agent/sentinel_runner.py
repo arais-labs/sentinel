@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -661,8 +662,24 @@ class AgentLoop:
         runtime_context_snapshot: dict[str, Any] | None = None,
     ) -> None:
         """Persist run-created messages in chronological order with metadata."""
-        base_time = datetime.now(UTC)
         session_record = await db.get(Session, session_id)
+        existing_result = await db.execute(
+            select(Message).where(Message.session_id == session_id)
+        )
+        existing_messages = existing_result.scalars().all()
+        latest_existing_created_at = max(
+            (
+                item.created_at
+                for item in existing_messages
+                if isinstance(item.created_at, datetime)
+            ),
+            default=None,
+        )
+        base_time = datetime.now(UTC)
+        if latest_existing_created_at is not None:
+            min_base_time = latest_existing_created_at + timedelta(milliseconds=1)
+            if base_time < min_base_time:
+                base_time = min_base_time
         requested_generation = build_generation_metadata(
             requested_tier=requested_tier,
             resolved_model=None,

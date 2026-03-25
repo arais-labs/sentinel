@@ -12,6 +12,7 @@ from app.sentral import (
 )
 from app.services.agent.agent_modes import AgentMode
 from app.services.agent_runtime_adapters.conversions import approval_payload_to_request
+from app.services.secrets.resolver import resolve_secrets_in_payload
 from app.services.tools.approval.extractors import extract_approval_metadata_from_tool_result
 from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
 from app.services.tools.registry import ToolDefinition, ToolRegistry, ToolRuntimeContext
@@ -52,7 +53,7 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
     def _wrap_tool(self, tool: ToolDefinition) -> RuntimeToolDefinition:
         async def _execute(payload: dict[str, Any]) -> ToolExecutionResult:
             pending_approval_payload: dict[str, Any] | None = None
-            execution_payload = dict(payload)
+            execution_payload = await resolve_secrets_in_payload(dict(payload))
             runtime = ToolRuntimeContext(
                 session_id=UUID(self._session_id) if self._session_id is not None else None
             )

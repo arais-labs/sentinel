@@ -35,8 +35,26 @@ class AgentRunRegistry:
         task.cancel("cancelled by user")
         return True
 
+    async def cancel_and_wait(self, session_id: str, *, timeout_seconds: float = 2.0) -> bool:
+        async with self._lock:
+            task = self._tasks.get(session_id)
+        if task is None:
+            return False
+        if task.done():
+            await self.clear(session_id, task)
+            return False
+
+        task.cancel("cancelled by user")
+        try:
+            await asyncio.wait_for(task, timeout=max(0.05, float(timeout_seconds)))
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        finally:
+            if task.done():
+                await self.clear(session_id, task)
+        return True
+
     async def is_running(self, session_id: str) -> bool:
         async with self._lock:
             task = self._tasks.get(session_id)
             return task is not None and not task.done()
-

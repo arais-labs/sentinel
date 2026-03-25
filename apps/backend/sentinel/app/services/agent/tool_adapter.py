@@ -32,6 +32,14 @@ _MODEL_RESULT_STRIP_ROOT_FIELDS = frozenset({"session_id"})
 logger = logging.getLogger(__name__)
 
 
+class ToolExecutionCancelled(RuntimeError):
+    """Raised when outer run cancellation happens during tool execution."""
+
+    def __init__(self, results: list[ToolResultMessage]) -> None:
+        super().__init__("Tool execution cancelled")
+        self.results = results
+
+
 class ToolAdapter:
     """Translate model tool calls into executor invocations and safe tool results."""
 
@@ -80,17 +88,37 @@ class ToolAdapter:
     ) -> list[ToolResultMessage]:
         """Execute all tool calls for a turn and return normalized result messages."""
         tasks = [
-            self._execute_one(
+            asyncio.create_task(
+                self._execute_one(
                 call,
                 db,
                 session_id=session_id,
                 agent_mode=agent_mode,
                 on_pending_tool_result=on_pending_tool_result,
             )
+            )
             for call in calls
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        cancelled_during_wait = False
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            cancelled_during_wait = True
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
+        output = self._normalize_execution_results(calls, results)
+        if cancelled_during_wait:
+            raise ToolExecutionCancelled(output)
+        return output
+
+    def _normalize_execution_results(
+        self,
+        calls: list[ToolCallContent],
+        results: list[Any],
+    ) -> list[ToolResultMessage]:
         output: list[ToolResultMessage] = []
         for call, item in zip(calls, results, strict=False):
             if isinstance(item, ToolResultMessage):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import assert_type
 
 import pytest
@@ -15,6 +17,7 @@ from app.sentral import (
     RunTurnRequest,
     TextBlock,
     ToolCallBlock,
+    ToolDefinition,
     ToolExecutionResult,
     TurnResult,
 )
@@ -133,6 +136,82 @@ def test_engine_assemble_turn_ignores_tool_calls_without_ids() -> None:
     assert turn.stop_reason == "stop"
 
 
+@pytest.mark.asyncio
+async def test_engine_cancellation_during_tool_execution_preserves_completed_results() -> None:
+    fast_done = asyncio.Event()
+    slow_started = asyncio.Event()
+
+    async def _fast_tool(_payload: dict[str, object]) -> ToolExecutionResult:
+        fast_done.set()
+        return ToolExecutionResult(status="ok", content={"tool": "fast"})
+
+    async def _slow_tool(_payload: dict[str, object]) -> ToolExecutionResult:
+        slow_started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            raise
+        raise AssertionError("slow tool should have been cancelled")
+
+    engine = AgentRuntimeEngine(
+        provider=_SingleToolUseProvider(),
+        tool_registry=_StaticToolRegistry(
+            [
+                ToolDefinition(
+                    name="fast_tool",
+                    description="fast",
+                    parameters_schema={"type": "object"},
+                    execute=_fast_tool,
+                ),
+                ToolDefinition(
+                    name="slow_tool",
+                    description="slow",
+                    parameters_schema={"type": "object"},
+                    execute=_slow_tool,
+                ),
+            ]
+        ),
+    )
+
+    async def _scenario() -> TurnResult:
+        task = asyncio.create_task(
+            engine.run_turn(
+                RunTurnRequest(
+                    conversation_id="conv-1",
+                    new_items=[
+                        ConversationItem(
+                            id="user-1",
+                            role="user",
+                            content=[TextBlock(text="run tools")],
+                        )
+                    ],
+                    config=GenerationConfig(model="normal", stream=True, max_iterations=4),
+                )
+            )
+        )
+        await asyncio.wait_for(fast_done.wait(), timeout=1.0)
+        await asyncio.wait_for(slow_started.wait(), timeout=1.0)
+        task.cancel()
+        return await asyncio.wait_for(task, timeout=1.0)
+
+    result = await _scenario()
+
+    assert result.status == "aborted"
+    assert result.stop_reason == "aborted"
+    created_items = result.metadata["created_items"]
+    tool_items = [item for item in created_items if item.role == "tool"]
+    assert [item.role for item in created_items] == ["user", "assistant", "tool", "tool"]
+    assert len(tool_items) == 2
+
+    fast_result = next(item.content[0] for item in tool_items if item.content[0].tool_call_id == "call_fast")
+    slow_result = next(item.content[0] for item in tool_items if item.content[0].tool_call_id == "call_slow")
+
+    assert json.loads(fast_result.content)["tool"] == "fast"
+    slow_payload = json.loads(slow_result.content)
+    assert slow_payload["status"] == "cancelled"
+    assert slow_result.metadata["cancelled_by_stop"] is True
+
+
 class _NoopProvider:
     @property
     def name(self) -> str:
@@ -145,3 +224,35 @@ class _EmptyToolRegistry:
 
     def get_tool(self, _name: str) -> None:
         return None
+
+
+class _StaticToolRegistry:
+    def __init__(self, tools: list[ToolDefinition]) -> None:
+        self._tools = {tool.name: tool for tool in tools}
+
+    def list_tools(self) -> list[ToolDefinition]:
+        return list(self._tools.values())
+
+    def get_tool(self, name: str) -> ToolDefinition | None:
+        return self._tools.get(name)
+
+
+class _SingleToolUseProvider:
+    @property
+    def name(self) -> str:
+        return "tool-use-provider"
+
+    async def chat(self, messages, tools, config):
+        raise AssertionError("chat() should not be called in this test")
+
+    async def stream(self, messages, tools, config):
+        del messages, tools, config
+        yield AgentEvent(
+            type="toolcall_start",
+            tool_call=ToolCallBlock(id="call_fast", name="fast_tool", arguments={"label": "fast"}),
+        )
+        yield AgentEvent(
+            type="toolcall_start",
+            tool_call=ToolCallBlock(id="call_slow", name="slow_tool", arguments={"label": "slow"}),
+        )
+        yield AgentEvent(type="done", stop_reason="tool_use")

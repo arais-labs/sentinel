@@ -533,7 +533,7 @@ class SessionService:
         user_id: str,
     ) -> bool:
         _ = await self.get_session(db, session_id=session_id, user_id=user_id)
-        cancelled = await self._run_registry.cancel(str(session_id))
+        cancelled = await self._run_registry.cancel_and_wait(str(session_id))
         now = datetime.now(UTC)
         has_mutations = False
         tool_pending_result = await db.execute(

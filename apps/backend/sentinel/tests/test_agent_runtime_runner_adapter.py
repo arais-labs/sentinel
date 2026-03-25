@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -10,9 +12,9 @@ from app.services.agent import ToolAdapter
 from app.services.agent.sentinel_runner import PreparedRuntimeTurnContext
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, TokenUsage
+from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, TokenUsage, ToolCallContent
 from app.services.tools.executor import ToolExecutor
-from app.services.tools.registry import ToolRegistry
+from app.services.tools.registry import ToolDefinition, ToolRegistry, ToolRuntimeContext
 
 
 @dataclass
@@ -259,5 +261,113 @@ async def test_runtime_adapter_rejects_direct_history_for_now() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_runtime_adapter_cancellation_persists_partial_tool_results() -> None:
+    session_id = uuid4()
+    loop = _FakeLoop()
+    fast_done = asyncio.Event()
+    slow_started = asyncio.Event()
+
+    async def _fast_tool(_payload: dict, runtime: ToolRuntimeContext):
+        assert runtime.session_id == session_id
+        fast_done.set()
+        return {"tool": "fast"}
+
+    async def _slow_tool(_payload: dict, runtime: ToolRuntimeContext):
+        assert runtime.session_id == session_id
+        slow_started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            raise
+        raise AssertionError("slow tool should have been cancelled")
+
+    loop.tool_adapter.registry.register(
+        ToolDefinition(
+            name="fast_tool",
+            description="fast",
+            parameters_schema={"type": "object"},
+            execute=_fast_tool,
+        )
+    )
+    loop.tool_adapter.registry.register(
+        ToolDefinition(
+            name="slow_tool",
+            description="slow",
+            parameters_schema={"type": "object"},
+            execute=_slow_tool,
+        )
+    )
+    loop.provider = _ToolUseProvider()
+
+    adapter = SentinelLoopRuntimeAdapter(
+        loop=loop,
+        db=object(),
+        session_id=session_id,
+        history_loader=_empty_history_loader,
+    )
+
+    async def _scenario():
+        task = asyncio.create_task(
+            adapter.run_turn(
+                RunTurnRequest(
+                    conversation_id=str(session_id),
+                    new_items=[
+                        ConversationItem(
+                            id="user-1",
+                            role="user",
+                            content=[TextBlock(text="run tools")],
+                        )
+                    ],
+                    config=GenerationConfig(model="normal", stream=True, max_iterations=4),
+                )
+            )
+        )
+        await asyncio.wait_for(fast_done.wait(), timeout=1.0)
+        await asyncio.wait_for(slow_started.wait(), timeout=1.0)
+        task.cancel()
+        return await asyncio.wait_for(task, timeout=1.0)
+
+    result = await _scenario()
+
+    assert result.status == "aborted"
+    assert result.stop_reason == "aborted"
+
+    persisted = loop.persist_calls[-1]["created"]
+    assert [message.role for message in persisted] == ["user", "assistant", "tool_result", "tool_result"]
+    fast_result = next(message for message in persisted if message.role == "tool_result" and message.tool_call_id == "call_fast")
+    slow_result = next(message for message in persisted if message.role == "tool_result" and message.tool_call_id == "call_slow")
+
+    assert json.loads(fast_result.content)["tool"] == "fast"
+    slow_payload = json.loads(slow_result.content)
+    assert slow_payload["status"] == "cancelled"
+    assert slow_result.metadata["cancelled_by_stop"] is True
+
+
 async def _empty_history_loader(_db, _session_id):
     return []
+
+
+class _ToolUseProvider(_FakeProvider):
+    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        raise AssertionError("chat() should not be called in this test")
+
+    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "tools": list(tools or []),
+                "model": model,
+                "temperature": temperature,
+                "stream": True,
+            }
+        )
+        yield AgentEvent(
+            type="toolcall_start",
+            tool_call=ToolCallContent(id="call_fast", name="fast_tool", arguments={"label": "fast"}),
+        )
+        yield AgentEvent(
+            type="toolcall_start",
+            tool_call=ToolCallContent(id="call_slow", name="slow_tool", arguments={"label": "slow"}),
+        )
+        yield AgentEvent(type="done", stop_reason="tool_use")
