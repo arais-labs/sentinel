@@ -149,6 +149,23 @@ class SubAgentOrchestrator:
             self._inject_queues[key] = queue
             last_reported_turn = int(task.turns_used or 0)
 
+            def _drain_interjections() -> list[ConversationItem]:
+                items: list[ConversationItem] = []
+                while True:
+                    try:
+                        text = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    items.append(ConversationItem(
+                        id=f"interjection-{len(items)}",
+                        role="user",
+                        content=[TextBlock(text=f"[Operator interjection]: {text}")],
+                        metadata={"source": "operator_interjection"},
+                    ))
+                return items
+
             async def _on_sub_agent_event(event: AgentEvent) -> None:
                 nonlocal last_reported_turn
                 if event.type != "agent_progress":
@@ -168,6 +185,7 @@ class SubAgentOrchestrator:
                     loop=scoped_runtime_support,
                     db=db,
                     session_id=child_session.id,
+                    persist_incremental=True,
                 )
                 runtime_task = asyncio.create_task(
                     runtime.run_turn(
@@ -185,11 +203,8 @@ class SubAgentOrchestrator:
                                 max_iterations=max(1, task.max_turns),
                                 stream=False,
                                 system_prompt=prompt,
-                                provider_metadata={
-                                    "persist_incremental": True,
-                                    "inject_queue": queue,
-                                },
                             ),
+                            interjection_source=_drain_interjections,
                         ),
                         sink=_on_sub_agent_event,
                     )

@@ -183,6 +183,7 @@ class AssistantTurn:
 ProviderEvent: TypeAlias = AgentEvent
 EventSink: TypeAlias = Callable[[AgentEvent], Awaitable[None]]
 CheckpointSink: TypeAlias = Callable[[list[ConversationItem]], Awaitable[None]]
+InterjectionSource: TypeAlias = Callable[[], list[ConversationItem]]
 ProviderStream: TypeAlias = AsyncIterator[ProviderEvent]
 
 
@@ -192,6 +193,8 @@ class RunTurnRequest:
     new_items: list[ConversationItem] = field(default_factory=list)
     history: list[ConversationItem] | None = None
     config: GenerationConfig | None = None
+    timeout_seconds: float | None = None
+    interjection_source: InterjectionSource | None = None
 
 
 @dataclass(slots=True)

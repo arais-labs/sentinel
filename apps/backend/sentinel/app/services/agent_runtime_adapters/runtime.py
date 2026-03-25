@@ -51,7 +51,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
     - conversation history is backed by Sentinel messages
     - persistence remains in Sentinel
     - transports are outside
-    - execution runs through the extracted pure execution core
+    - execution runs through the sentral AgentRuntimeEngine
     """
 
     def __init__(
@@ -62,12 +62,14 @@ class SentinelLoopRuntimeAdapter(Runtime):
         session_id: UUID,
         compactor: Compactor | None = None,
         history_loader: HistoryLoader | None = None,
+        persist_incremental: bool = False,
     ) -> None:
         self._loop = loop
         self._db = db
         self._session_id = session_id
         self._compactor = compactor
         self._history_loader = history_loader or self._load_runtime_history
+        self._persist_incremental = persist_incremental
 
     async def run_turn(
         self,
@@ -242,7 +244,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
         runtime_system_prompt = prepared.effective_system_prompt
         runtime_context_snapshot = prepared.runtime_context_snapshot
         context_snapshot_pending = True
-        persist_incremental = bool(config.provider_metadata.get("persist_incremental", False))
+        timeout = request.timeout_seconds or settings.agent_loop_timeout
         persisted_count = 0
         history = [
             sentinel_message_to_runtime_item(message, item_id=f"history-{index}")
@@ -299,14 +301,13 @@ class SentinelLoopRuntimeAdapter(Runtime):
                     system_prompt=config.system_prompt,
                     max_output_tokens=config.max_output_tokens,
                     tool_choice=config.tool_choice,
-                    provider_metadata={
-                        **dict(config.provider_metadata),
-                        "timeout_seconds": float(config.provider_metadata.get("timeout_seconds") or settings.agent_loop_timeout),
-                    },
+                    provider_metadata=dict(config.provider_metadata),
                 ),
+                timeout_seconds=timeout,
+                interjection_source=request.interjection_source,
             ),
             sink=_emit_runtime_event,
-            checkpoint=_persist_runtime_batch if persist_incremental else None,
+            checkpoint=_persist_runtime_batch if self._persist_incremental else None,
         )
         created_runtime_items = runtime_result.metadata.get("created_items")
         created_items = created_runtime_items if isinstance(created_runtime_items, list) else []
