@@ -16,6 +16,7 @@ from app.services.tools.registry import (
     ToolApprovalRequirement,
     ToolDefinition,
     ToolRegistry,
+    ToolRuntimeContext,
 )
 from tests.fake_db import FakeDB
 
@@ -27,15 +28,15 @@ def _run(coro):
 def test_tool_adapter_hides_session_id_from_model_schema():
     registry = ToolRegistry()
 
-    async def _execute(payload):
+    async def _execute(payload, runtime):
+        _ = runtime
         return payload
 
     original_schema = {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "query"],
+        "required": ["query"],
         "properties": {
-            "session_id": {"type": "string"},
             "query": {"type": "string"},
         },
     }
@@ -52,24 +53,20 @@ def test_tool_adapter_hides_session_id_from_model_schema():
     [schema] = adapter.get_tool_schemas()
     params = schema.parameters
 
-    assert "session_id" not in params["properties"]
     assert params["required"] == ["query"]
-
-    # Keep the registry schema intact for non-agent/manual entry points.
-    assert "session_id" in original_schema["properties"]
-    assert original_schema["required"] == ["session_id", "query"]
+    assert "session_id" not in params["properties"]
 
 
 def test_tool_adapter_injects_context_session_id_and_strips_from_result():
     registry = ToolRegistry()
     seen_payloads: list[dict] = []
 
-    async def _execute(payload):
+    async def _execute(payload, runtime: ToolRuntimeContext):
         seen_payloads.append(dict(payload))
         return {
             "ok": True,
             "query": payload.get("query"),
-            "session_id": payload.get("session_id"),
+            "session_id": str(runtime.session_id) if runtime.session_id is not None else None,
         }
 
     registry.register(
@@ -79,9 +76,8 @@ def test_tool_adapter_injects_context_session_id_and_strips_from_result():
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["session_id", "query"],
+                "required": ["query"],
                 "properties": {
-                    "session_id": {"type": "string"},
                     "query": {"type": "string"},
                 },
             },
@@ -101,19 +97,24 @@ def test_tool_adapter_injects_context_session_id_and_strips_from_result():
     )
 
     assert result.is_error is False
-    assert seen_payloads[0]["session_id"] == str(context_session_id)
+    assert seen_payloads[0] == {"query": "ping"}
     parsed = json.loads(result.content)
     assert parsed["ok"] is True
     assert parsed["query"] == "ping"
     assert "session_id" not in parsed
 
 
-def test_tool_adapter_overrides_model_provided_session_id():
+def test_tool_adapter_rejects_model_provided_session_id():
     registry = ToolRegistry()
     seen_payloads: list[dict] = []
 
-    async def _execute(payload):
-        seen_payloads.append(dict(payload))
+    async def _execute(payload, runtime: ToolRuntimeContext):
+        seen_payloads.append(
+            {
+                "payload": dict(payload),
+                "session_id": str(runtime.session_id) if runtime.session_id is not None else None,
+            }
+        )
         return {"ok": True}
 
     registry.register(
@@ -123,9 +124,8 @@ def test_tool_adapter_overrides_model_provided_session_id():
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["session_id", "query"],
+                "required": ["query"],
                 "properties": {
-                    "session_id": {"type": "string"},
                     "query": {"type": "string"},
                 },
             },
@@ -137,7 +137,7 @@ def test_tool_adapter_overrides_model_provided_session_id():
     context_session_id = uuid4()
     fake_session_from_model = str(uuid4())
 
-    _run(
+    [result] = _run(
         adapter.execute_tool_calls(
             [
                 ToolCallContent(
@@ -151,7 +151,9 @@ def test_tool_adapter_overrides_model_provided_session_id():
         )
     )
 
-    assert seen_payloads[0]["session_id"] == str(context_session_id)
+    assert seen_payloads == []
+    assert result.is_error is True
+    assert "Unknown field(s): session_id" in result.content
 
 
 class _FakeSessionFactory:
@@ -176,11 +178,17 @@ def test_tool_adapter_persists_pending_tool_result_for_approval():
     registry = ToolRegistry()
     seen_payloads: list[dict] = []
 
-    async def _execute(payload):
-        seen_payloads.append(dict(payload))
+    async def _execute(payload, runtime: ToolRuntimeContext):
+        seen_payloads.append(
+            {
+                "payload": dict(payload),
+                "session_id": str(runtime.session_id) if runtime.session_id is not None else None,
+            }
+        )
         return {"ok": True}
 
-    async def _waiter(tool_name, payload, requirement, pending_callback):
+    async def _waiter(tool_name, payload, runtime, requirement, pending_callback):
+        _ = runtime
         approval_payload = {
             "provider": "approval_tool",
             "approval_id": "approval-1",
@@ -211,9 +219,8 @@ def test_tool_adapter_persists_pending_tool_result_for_approval():
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["session_id", "query"],
+                "required": ["query"],
                 "properties": {
-                    "session_id": {"type": "string"},
                     "query": {"type": "string"},
                 },
             },
@@ -249,6 +256,7 @@ def test_tool_adapter_persists_pending_tool_result_for_approval():
     )
 
     assert result.is_error is False
+    assert seen_payloads[0]["payload"] == {"query": "ping"}
     assert seen_payloads[0]["session_id"] == str(session_id)
     assert len(streamed_pending) == 1
     pending_rows = fake_db.storage[Message]
@@ -264,10 +272,12 @@ def test_tool_adapter_persists_pending_tool_result_for_approval():
 def test_tool_adapter_cancellation_reconciles_pending_tool_result_row():
     registry = ToolRegistry()
 
-    async def _execute(_payload):
+    async def _execute(_payload, runtime):
+        _ = runtime
         raise AssertionError("tool execute should not run after approval wait is cancelled")
 
-    async def _waiter(tool_name, payload, requirement, pending_callback):
+    async def _waiter(tool_name, payload, runtime, requirement, pending_callback):
+        _ = runtime
         approval_payload = {
             "provider": "approval_tool",
             "approval_id": "approval-cancelled",
@@ -289,9 +299,8 @@ def test_tool_adapter_cancellation_reconciles_pending_tool_result_row():
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["session_id", "query"],
+                "required": ["query"],
                 "properties": {
-                    "session_id": {"type": "string"},
                     "query": {"type": "string"},
                 },
             },

@@ -24,12 +24,12 @@ MODULE = ModuleDefinition(
                 "Runs through the same user sandbox runtime path as runtime_exec and requires a unique exact match."
             ),
             handler=handle_edit,
+            requires_runtime_context=True,
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
                 "required": ["path", "old_str", "new_str"],
                 "properties": {
-                    "session_id": {"type": "string", "description": "Current session ID (auto-injected in agent loop)"},
                     "path": {"type": "string", "description": "Path to the file relative to workspace"},
                     "old_str": {"type": "string", "description": "The exact string to find in the file (must be unique)"},
                     "new_str": {"type": "string", "description": "The replacement string"},

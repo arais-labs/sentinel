@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from app.models import GitAccount, Session
 from app.services.araios.system_modules.git_exec import handlers as git_exec_module
 from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
-from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus, ToolRegistry
+from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus, ToolRegistry, ToolRuntimeContext
 from app.services.tools.registry_builder import build_default_registry
 from tests.fake_db import FakeDB
 
@@ -18,11 +18,25 @@ def _run(coro):
 
 
 def _run_via_executor(tool, payload: dict, *, approval_waiter=None):
+    payload = dict(payload)
     registry = ToolRegistry()
     registry.register(tool)
     executor = ToolExecutor(registry, approval_waiter=approval_waiter)
-    result, _ = _run(executor.execute("git_exec", payload))
+    runtime = ToolRuntimeContext()
+    session_id = payload.pop("session_id", None)
+    if session_id is not None:
+        runtime = ToolRuntimeContext(session_id=UUID(str(session_id)))
+    result, _ = _run(executor.execute("git_exec", payload, runtime=runtime))
     return result
+
+
+def _run_tool(tool, payload: dict):
+    payload = dict(payload)
+    runtime = ToolRuntimeContext()
+    session_id = payload.pop("session_id", None)
+    if session_id is not None:
+        runtime = ToolRuntimeContext(session_id=UUID(str(session_id)))
+    return _run(tool.execute(payload, runtime))
 
 
 class _SessionCtx:
@@ -188,14 +202,13 @@ def test_git_exec_supports_gh_repo_list_with_account_token(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    result = _run(
-        tool.execute(
-            {
-                "command": "run_read",
-                "session_id": str(session.id),
-                "cli_command": "gh repo list arais-labs --limit 5",
-            }
-        )
+    result = _run_tool(
+        tool,
+        {
+            "command": "run_read",
+            "session_id": str(session.id),
+            "cli_command": "gh repo list arais-labs --limit 5",
+        },
     )
 
     assert result["ok"] is True
@@ -251,14 +264,13 @@ def test_git_exec_supports_gh_pr_view_with_read_token(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    result = _run(
-        tool.execute(
-            {
-                "command": "run_read",
-                "session_id": str(session.id),
-                "cli_command": "gh pr view 37 --json state,mergeStateStatus,isDraft",
-            }
-        )
+    result = _run_tool(
+        tool,
+        {
+            "command": "run_read",
+            "session_id": str(session.id),
+            "cli_command": "gh pr view 37 --json state,mergeStateStatus,isDraft",
+        },
     )
 
     assert result["ok"] is True
@@ -279,14 +291,13 @@ def test_git_exec_rejects_unsupported_gh_write_command():
     tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="Unsupported gh command"):
-        _run(
-            tool.execute(
-                {
-                    "command": "run_read",
-                    "session_id": str(session.id),
-                    "cli_command": "gh repo create arais-labs/new-repo --private",
-                }
-            )
+        _run_tool(
+            tool,
+            {
+                "command": "run_read",
+                "session_id": str(session.id),
+                "cli_command": "gh repo create arais-labs/new-repo --private",
+            },
         )
 
 
@@ -297,14 +308,13 @@ def test_git_exec_rejects_gh_auth_with_clear_guidance():
     tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="Authentication is managed automatically"):
-        _run(
-            tool.execute(
-                {
-                    "command": "run_read",
-                    "session_id": str(session.id),
-                    "cli_command": "gh auth status",
-                }
-            )
+        _run_tool(
+            tool,
+            {
+                "command": "run_read",
+                "session_id": str(session.id),
+                "cli_command": "gh auth status",
+            },
         )
 
 
@@ -315,14 +325,13 @@ def test_git_exec_rejects_gh_api_unsupported_method():
     tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="GET, POST, and PUT"):
-        _run(
-            tool.execute(
-                {
-                    "command": "run_read",
-                    "session_id": str(session.id),
-                    "cli_command": "gh api -X DELETE /orgs/arais-labs/repos",
-                }
-            )
+        _run_tool(
+            tool,
+            {
+                "command": "run_read",
+                "session_id": str(session.id),
+                "cli_command": "gh api -X DELETE /orgs/arais-labs/repos",
+            },
         )
 
 
@@ -363,8 +372,8 @@ def test_git_exec_supports_gh_api_post_with_approval(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    async def _fake_waiter(tool_name, payload, requirement, pending_callback=None):
-        _ = tool_name, payload, requirement, pending_callback
+    async def _fake_waiter(tool_name, payload, runtime, requirement, pending_callback=None):
+        _ = tool_name, payload, runtime, requirement, pending_callback
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
             approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
@@ -428,8 +437,8 @@ def test_git_exec_supports_gh_api_put_with_approval(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    async def _fake_waiter(tool_name, payload, requirement, pending_callback=None):
-        _ = tool_name, payload, requirement, pending_callback
+    async def _fake_waiter(tool_name, payload, runtime, requirement, pending_callback=None):
+        _ = tool_name, payload, runtime, requirement, pending_callback
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
             approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
@@ -494,8 +503,8 @@ def test_git_exec_supports_gh_pr_create_with_approval(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    async def _fake_waiter(tool_name, payload, requirement, pending_callback=None):
-        _ = tool_name, payload, requirement, pending_callback
+    async def _fake_waiter(tool_name, payload, runtime, requirement, pending_callback=None):
+        _ = tool_name, payload, runtime, requirement, pending_callback
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
             approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
@@ -563,8 +572,8 @@ def test_git_exec_supports_gh_pr_merge_with_approval(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    async def _fake_waiter(tool_name, payload, requirement, pending_callback=None):
-        _ = tool_name, payload, requirement, pending_callback
+    async def _fake_waiter(tool_name, payload, runtime, requirement, pending_callback=None):
+        _ = tool_name, payload, runtime, requirement, pending_callback
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
             approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
@@ -613,8 +622,8 @@ def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
     session_factory = _SessionFactory(fake_db)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    async def _fake_waiter(tool_name, payload, requirement, pending_callback=None):
-        _ = tool_name, payload, requirement, pending_callback
+    async def _fake_waiter(tool_name, payload, runtime, requirement, pending_callback=None):
+        _ = tool_name, payload, runtime, requirement, pending_callback
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.REJECTED,
             approval={"provider": "git_exec", "approval_id": str(session.id), "status": "rejected", "pending": False, "can_resolve": False},
@@ -683,15 +692,14 @@ def test_git_exec_uses_explicit_git_account_name_for_clone(monkeypatch):
     monkeypatch.setattr(git_exec_module, "_configure_author_identity_after_clone", _noop_configure_clone_author)
 
     tool = git_exec_module.git_exec_tool(session_factory=session_factory)
-    result = _run(
-        tool.execute(
-            {
-                "command": "run_read",
-                "session_id": str(session.id),
-                "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
-                "git_account_name": "arailex",
-            }
-        )
+    result = _run_tool(
+        tool,
+        {
+            "command": "run_read",
+            "session_id": str(session.id),
+            "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
+            "git_account_name": "arailex",
+        },
     )
 
     assert result["ok"] is True
@@ -717,15 +725,14 @@ def test_git_exec_rejects_unknown_explicit_git_account_name():
     tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="Requested git account 'arailex' was not found"):
-        _run(
-            tool.execute(
-                {
-                    "command": "run_read",
-                    "session_id": str(session.id),
-                    "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
-                    "git_account_name": "arailex",
-                }
-            )
+        _run_tool(
+            tool,
+            {
+                "command": "run_read",
+                "session_id": str(session.id),
+                "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
+                "git_account_name": "arailex",
+            },
         )
 
 
@@ -747,15 +754,14 @@ def test_git_exec_rejects_explicit_git_account_scope_mismatch():
     tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="scope does not match repository"):
-        _run(
-            tool.execute(
-                {
-                    "command": "run_read",
-                    "session_id": str(session.id),
-                    "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
-                    "git_account_name": "secondary",
-                }
-            )
+        _run_tool(
+            tool,
+            {
+                "command": "run_read",
+                "session_id": str(session.id),
+                "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
+                "git_account_name": "secondary",
+            },
         )
 
 

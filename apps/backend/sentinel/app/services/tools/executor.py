@@ -15,6 +15,7 @@ from app.services.tools.registry import (
     ToolApprovalWaiterFn,
     ToolDefinition,
     ToolRegistry,
+    ToolRuntimeContext,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class ToolExecutor:
         name: str,
         payload: dict[str, Any],
         *,
+        runtime: ToolRuntimeContext | None = None,
         agent_mode: AgentMode | str | None = None,
         on_pending_approval: Any = None,
     ) -> tuple[Any, int]:
@@ -53,18 +55,20 @@ class ToolExecutor:
         if not self._registry.is_allowed(name):
             raise PermissionError(f"Tool '{name}' is disabled")
 
+        runtime_context = runtime or ToolRuntimeContext()
         self._validate_payload(tool, payload)
         mode_definition = get_agent_mode_definition(agent_mode)
         approved_metadata = await self._resolve_tool_approval(
             tool,
             payload,
+            runtime_context,
             auto_approve_required=mode_definition.auto_approve_tool_gates,
             on_pending_approval=on_pending_approval,
         )
 
         started = time.perf_counter()
         try:
-            result = await tool.execute(payload)
+            result = await tool.execute(payload, runtime_context)
         except ToolValidationError:
             raise
         except Exception as exc:  # pragma: no cover - defensive wrapper
@@ -96,6 +100,7 @@ class ToolExecutor:
         self,
         tool: ToolDefinition,
         payload: dict[str, Any],
+        runtime: ToolRuntimeContext,
         *,
         auto_approve_required: bool,
         on_pending_approval: Any = None,
@@ -104,14 +109,14 @@ class ToolExecutor:
         if approval_check is None:
             return None
 
-        evaluation = await self._run_approval_check(tool.name, approval_check, payload)
+        evaluation = await self._run_approval_check(tool.name, approval_check, payload, runtime)
         requirement = evaluation.requirement
         logger.info(
             "tool_approval_eval tool=%s decision=%s action=%s session_id=%s",
             tool.name,
             evaluation.decision.value,
             requirement.action if requirement is not None else None,
-            payload.get("session_id"),
+            str(runtime.session_id) if runtime.session_id is not None else None,
         )
         if evaluation.decision == ToolApprovalDecision.ALLOW:
             return None
@@ -154,7 +159,13 @@ class ToolExecutor:
             requirement.timeout_seconds,
             requirement.requested_by,
         )
-        outcome = await self._approval_waiter(tool.name, payload, requirement, on_pending_approval)
+        outcome = await self._approval_waiter(
+            tool.name,
+            payload,
+            runtime,
+            requirement,
+            on_pending_approval,
+        )
         approval_payload = dict(outcome.approval)
         if not isinstance(approval_payload.get("provider"), str):
             approval_payload["provider"] = tool.name
@@ -183,6 +194,7 @@ class ToolExecutor:
         tool_name: str,
         approval_check: Any,
         payload: dict[str, Any],
+        runtime: ToolRuntimeContext,
     ) -> ToolApprovalEvaluation:
         evaluator_signature = inspect.signature(approval_check)
         positional_params = [
@@ -193,7 +205,9 @@ class ToolExecutor:
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
             }
         ]
-        if positional_params:
+        if len(positional_params) >= 2:
+            evaluated = approval_check(payload, runtime)
+        elif positional_params:
             evaluated = approval_check(payload)
         else:
             evaluated = approval_check()

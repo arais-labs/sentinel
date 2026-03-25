@@ -7,7 +7,7 @@ from app.models import Session, Trigger
 from app.services.araios.system_modules import triggers as triggers_module
 from app.services.araios.system_modules.triggers import handlers as trigger_handlers_module
 from app.services.tools.executor import ToolExecutor, ToolValidationError
-from app.services.tools.registry import ToolRegistry
+from app.services.tools.registry import ToolRegistry, ToolRuntimeContext
 from tests.fake_db import FakeDB
 
 
@@ -57,8 +57,8 @@ def test_trigger_create_binds_owner_from_context_session():
                 "config": {"interval_seconds": 60},
                 "action_type": "tool_call",
                 "action_config": {"name": "memory", "arguments": {"command": "roots"}},
-                "session_id": str(session.id),
             },
+            runtime=ToolRuntimeContext(session_id=session.id),
         )
     )
 
@@ -90,8 +90,8 @@ def test_trigger_create_invalid_specific_target_falls_back_to_main():
                     "route_mode": "session",
                     "target_session_id": "0fb4e3d8-4238-4fae-a5df-7bf1a615b38b",
                 },
-                "session_id": str(session.id),
             },
+            runtime=ToolRuntimeContext(session_id=session.id),
         )
     )
 
@@ -108,17 +108,18 @@ def test_trigger_create_rejects_missing_owner_context():
 
     try:
         _run(
-            executor.execute(
-                "triggers",
-                {
-                    "command": "create",
+        executor.execute(
+            "triggers",
+            {
+                "command": "create",
                     "name": "daily",
                     "type": "heartbeat",
-                    "config": {"interval_seconds": 60},
-                    "action_type": "tool_call",
-                    "action_config": {"name": "memory", "arguments": {"command": "roots"}},
-                },
-                )
+                "config": {"interval_seconds": 60},
+                "action_type": "tool_call",
+                "action_config": {"name": "memory", "arguments": {"command": "roots"}},
+            },
+                runtime=ToolRuntimeContext(),
+            )
         )
         raised = False
     except ToolValidationError as exc:
@@ -162,13 +163,15 @@ def test_trigger_list_is_owner_scoped_by_session():
     user_a_list, _ = _run(
         executor.execute(
             "triggers",
-            {"command": "list", "session_id": str(user_a_session.id)},
+            {"command": "list"},
+            runtime=ToolRuntimeContext(session_id=user_a_session.id),
         )
     )
     user_b_list, _ = _run(
         executor.execute(
             "triggers",
-            {"command": "list", "session_id": str(user_b_session.id)},
+            {"command": "list"},
+            runtime=ToolRuntimeContext(session_id=user_b_session.id),
         )
     )
 

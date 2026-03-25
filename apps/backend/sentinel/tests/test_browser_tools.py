@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from uuid import UUID
 
 from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
 from app.services.browser.manager import BrowserManager
 from app.services.tools.executor import ToolExecutor, ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.registry_builder import build_default_registry
 
 
@@ -14,6 +16,7 @@ def _run(coro):
 
 
 _SID = "00000000-0000-0000-0000-000000000001"
+_RUNTIME = ToolRuntimeContext(session_id=UUID(_SID))
 
 
 class _StubBrowserManager:
@@ -448,7 +451,8 @@ def test_browser_click_passes_optional_tab_id_to_manager():
     result, _ = _run(
         executor.execute(
             "browser",
-            {"command": "click", "session_id": _SID, "selector": "button: Continue", "tab_id": "t7"},
+            {"command": "click", "selector": "button: Continue", "tab_id": "t7"},
+            runtime=_RUNTIME,
         )
     )
     assert result["clicked"] is True
@@ -461,7 +465,8 @@ def test_browser_snapshot_rejects_unexpected_payload_fields():
     try:
         _run(
             executor.execute(
-                "browser", {"command": "snapshot", "session_id": _SID, "unexpected": True}            )
+                "browser", {"command": "snapshot", "unexpected": True}, runtime=_RUNTIME
+            )
         )
         raised = False
     except ToolValidationError:
@@ -472,7 +477,7 @@ def test_browser_snapshot_rejects_unexpected_payload_fields():
 def test_browser_reset_tool_executes():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser", {"command": "reset", "session_id": _SID}))
+    result, _ = _run(executor.execute("browser", {"command": "reset"}, runtime=_RUNTIME))
     assert result["reset"] is True
     assert result["url"] == "about:blank"
 
@@ -480,7 +485,7 @@ def test_browser_reset_tool_executes():
 def test_browser_tabs_tool_executes():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser", {"command": "tabs", "session_id": _SID}))
+    result, _ = _run(executor.execute("browser", {"command": "tabs"}, runtime=_RUNTIME))
     assert result["active_tab_id"] == "t1"
     assert result["tabs"][0]["tab_id"] == "t1"
 
@@ -488,7 +493,7 @@ def test_browser_tabs_tool_executes():
 def test_browser_tab_open_defaults_to_blank():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser", {"command": "tab_open", "session_id": _SID}))
+    result, _ = _run(executor.execute("browser", {"command": "tab_open"}, runtime=_RUNTIME))
     assert result["opened"] is True
     assert result["url"] == "about:blank"
 
@@ -497,14 +502,14 @@ def test_browser_tab_focus_requires_tab_id():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser", {"command": "tab_focus", "session_id": _SID}))
+        _run(executor.execute("browser", {"command": "tab_focus"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
     assert raised is True
 
     result, _ = _run(
-        executor.execute("browser", {"command": "tab_focus", "session_id": _SID, "tab_id": "t1"})
+        executor.execute("browser", {"command": "tab_focus", "tab_id": "t1"}, runtime=_RUNTIME)
     )
     assert result["focused"] is True
     assert result["tab_id"] == "t1"
@@ -514,14 +519,14 @@ def test_browser_tab_close_requires_tab_id():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser", {"command": "tab_close", "session_id": _SID}))
+        _run(executor.execute("browser", {"command": "tab_close"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
     assert raised is True
 
     result, _ = _run(
-        executor.execute("browser", {"command": "tab_close", "session_id": _SID, "tab_id": "t2"})
+        executor.execute("browser", {"command": "tab_close", "tab_id": "t2"}, runtime=_RUNTIME)
     )
     assert result["closed"] is True
     assert result["tab_id"] == "t2"
@@ -532,7 +537,7 @@ def test_browser_select_requires_selector_and_choice():
     executor = ToolExecutor(registry)
 
     try:
-        _run(executor.execute("browser", {"command": "select", "session_id": _SID}))
+        _run(executor.execute("browser", {"command": "select"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
@@ -542,8 +547,9 @@ def test_browser_select_requires_selector_and_choice():
         _run(
             executor.execute(
                 "browser",
-                {"command": "select", "session_id": _SID, "selector": "combobox: Month"},
-                )
+                {"command": "select", "selector": "combobox: Month"},
+                runtime=_RUNTIME,
+            )
         )
         raised = False
     except ToolValidationError:
@@ -553,7 +559,8 @@ def test_browser_select_requires_selector_and_choice():
     result, _ = _run(
         executor.execute(
             "browser",
-            {"command": "select", "session_id": _SID, "selector": "combobox: Month", "value": "1"},
+            {"command": "select", "selector": "combobox: Month", "value": "1"},
+            runtime=_RUNTIME,
         )
     )
     assert result["selected_values"] == ["1"]
@@ -566,7 +573,8 @@ def test_browser_wait_for_accepts_conditions():
     result, _ = _run(
         executor.execute(
             "browser",
-            {"command": "wait_for", "session_id": _SID, "selector": "button: Next", "condition": "enabled", "timeout_ms": 4000},
+            {"command": "wait_for", "selector": "button: Next", "condition": "enabled", "timeout_ms": 4000},
+            runtime=_RUNTIME,
         )
     )
     assert result["satisfied"] is True
@@ -577,7 +585,7 @@ def test_browser_get_value_requires_selector():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser", {"command": "get_value", "session_id": _SID}))
+        _run(executor.execute("browser", {"command": "get_value"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
@@ -589,7 +597,7 @@ def test_browser_fill_form_requires_non_empty_steps():
     executor = ToolExecutor(registry)
 
     try:
-        _run(executor.execute("browser", {"command": "fill_form", "session_id": _SID}))
+        _run(executor.execute("browser", {"command": "fill_form"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
@@ -600,13 +608,13 @@ def test_browser_fill_form_requires_non_empty_steps():
             "browser",
             {
                 "command": "fill_form",
-                "session_id": _SID,
                 "steps": [
                     {"selector": "textbox: Email", "text": "qa@example.com"},
                     {"selector": "button: Continue", "click": True},
                 ],
                 "verify": True,
             },
+            runtime=_RUNTIME,
         )
     )
     assert result["ok"] is True

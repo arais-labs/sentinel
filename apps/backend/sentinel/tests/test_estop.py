@@ -16,7 +16,7 @@ from app.services.estop import EstopLevel, EstopService
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent
 from app.services.tools.executor import ToolExecutor
-from app.services.tools.registry import ToolDefinition, ToolRegistry
+from app.services.tools.registry import ToolDefinition, ToolRegistry, ToolRuntimeContext
 from tests.fake_db import FakeDB
 
 
@@ -141,7 +141,8 @@ def test_tool_adapter_checks_estop_before_execution():
 
     registry = ToolRegistry()
 
-    async def _echo(payload):
+    async def _echo(payload, runtime: ToolRuntimeContext):
+        del runtime
         return payload
 
     registry.register(
@@ -178,7 +179,8 @@ def test_tool_adapter_enforces_estop_per_call_not_once_per_batch():
     db = FakeDB()
     registry = ToolRegistry()
 
-    async def _echo(payload):
+    async def _echo(payload, runtime: ToolRuntimeContext):
+        del runtime
         return payload
 
     registry.register(

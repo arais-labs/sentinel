@@ -30,7 +30,9 @@ from app.services.tools.registry import (
     ToolApprovalRequirement,
     ToolDefinition,
     ToolRegistry,
+    ToolRuntimeContext,
 )
+from uuid import UUID
 
 
 class _FakeProvider(LLMProvider):
@@ -289,10 +291,10 @@ async def test_tool_registry_adapter_maps_pending_approval() -> None:
 @pytest.mark.asyncio
 async def test_tool_registry_adapter_hides_and_injects_session_id_for_grouped_tools() -> None:
     session_id = "00000000-0000-0000-0000-000000000123"
-    seen_payloads: list[dict[str, Any]] = []
+    seen_payloads: list[tuple[dict[str, Any], ToolRuntimeContext]] = []
 
-    async def _handle_run_user(payload: dict[str, Any]) -> dict[str, Any]:
-        seen_payloads.append(dict(payload))
+    async def _handle_run_user(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+        seen_payloads.append((dict(payload), runtime))
         return {"ok": True, "payload": dict(payload)}
 
     module = ModuleDefinition(
@@ -307,12 +309,12 @@ async def test_tool_registry_adapter_hides_and_injects_session_id_for_grouped_to
                 parameters_schema={
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["session_id", "shell_command"],
+                    "required": ["shell_command"],
                     "properties": {
-                        "session_id": {"type": "string"},
                         "shell_command": {"type": "string"},
                     },
                 },
+                requires_runtime_context=True,
             ),
         ],
     )
@@ -326,30 +328,29 @@ async def test_tool_registry_adapter_hides_and_injects_session_id_for_grouped_to
 
     tool = adapter.get_tool("runtime_exec")
     assert tool is not None
-    assert "session_id" not in tool.parameters_schema["properties"]
     assert "command" in tool.parameters_schema["required"]
 
     result = await tool.execute({"command": "run_user", "shell_command": "pwd"})
 
     assert result.status == "ok"
     assert seen_payloads == [
-        {
-            "shell_command": "pwd",
-            "session_id": session_id,
-        }
+        ({"shell_command": "pwd"}, ToolRuntimeContext(session_id=UUID(session_id)))
     ]
 
 
-async def _ok_tool(payload: dict[str, Any]) -> dict[str, Any]:
+async def _ok_tool(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    _ = runtime
     return {"ok": True, **payload}
 
 
 async def _fake_pending_approval_waiter(
     tool_name: str,
     payload: dict[str, Any],
+    runtime: ToolRuntimeContext,
     requirement: ToolApprovalRequirement,
     on_pending_approval: Any = None,
 ) -> ToolApprovalOutcome:
+    _ = runtime
     pending_payload = {
         "provider": tool_name,
         "approval_id": "approval-1",

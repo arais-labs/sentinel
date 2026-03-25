@@ -1,8 +1,6 @@
 """Adapters from Sentinel tool infrastructure to standalone runtime contracts."""
 
 from __future__ import annotations
-
-import copy
 from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
@@ -16,7 +14,7 @@ from app.services.agent.agent_modes import AgentMode
 from app.services.agent_runtime_adapters.conversions import approval_payload_to_request
 from app.services.tools.approval.extractors import extract_approval_metadata_from_tool_result
 from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
-from app.services.tools.registry import ToolDefinition, ToolRegistry
+from app.services.tools.registry import ToolDefinition, ToolRegistry, ToolRuntimeContext
 
 
 class SentinelToolRegistryAdapter(RuntimeToolRegistry):
@@ -54,7 +52,10 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
     def _wrap_tool(self, tool: ToolDefinition) -> RuntimeToolDefinition:
         async def _execute(payload: dict[str, Any]) -> ToolExecutionResult:
             pending_approval_payload: dict[str, Any] | None = None
-            execution_payload = self._execution_payload(tool, payload)
+            execution_payload = dict(payload)
+            runtime = ToolRuntimeContext(
+                session_id=UUID(self._session_id) if self._session_id is not None else None
+            )
 
             async def _on_pending_approval(approval_payload: dict[str, Any]) -> None:
                 nonlocal pending_approval_payload
@@ -66,6 +67,7 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
                 result, _duration_ms = await self._executor.execute(
                     tool.name,
                     execution_payload,
+                    runtime=runtime,
                     agent_mode=self._agent_mode,
                     on_pending_approval=_on_pending_approval,
                 )
@@ -100,35 +102,7 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
         return RuntimeToolDefinition(
             name=tool.name,
             description=tool.description,
-            parameters_schema=self._schema_for_model(tool.parameters_schema),
+            parameters_schema=tool.parameters_schema,
             enabled=tool.enabled,
             execute=_execute,
         )
-
-    def _execution_payload(self, tool: ToolDefinition, payload: dict[str, Any]) -> dict[str, Any]:
-        execution_payload = dict(payload)
-        properties = tool.parameters_schema.get("properties", {}) if isinstance(tool.parameters_schema, dict) else {}
-        if (
-            isinstance(properties, dict)
-            and "session_id" in properties
-            and self._session_id is not None
-            and "session_id" not in execution_payload
-        ):
-            execution_payload["session_id"] = self._session_id
-        return execution_payload
-
-    def _schema_for_model(self, raw_schema: Any) -> dict[str, Any]:
-        if not isinstance(raw_schema, dict):
-            return {}
-        schema = copy.deepcopy(raw_schema)
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            properties.pop("session_id", None)
-        required = schema.get("required")
-        if isinstance(required, list):
-            filtered = [item for item in required if item != "session_id"]
-            if filtered:
-                schema["required"] = filtered
-            else:
-                schema.pop("required", None)
-        return schema

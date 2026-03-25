@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -17,6 +18,7 @@ from app.services.telegram import (
     start_telegram_bridge,
 )
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
 from tests.fake_db import FakeDB
 
 
@@ -161,8 +163,8 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
                     {
                         "command": "configure",
                         "bot_token": "12345:abcde",
-                        "session_id": "317dc122-62fd-481e-ba03-907ec45a7c5a",
-                    }
+                    },
+                    ToolRuntimeContext(session_id=uuid4()),
                 )
             )
 
@@ -183,8 +185,8 @@ def test_telegram_manage_tool_requires_session_for_mutations():
     )()
     tool = _telegram_tool(app_state)
 
-    with pytest.raises(ToolValidationError, match="session_id"):
-        _run(tool.execute({"command": "start"}))
+    with pytest.raises(ToolValidationError, match="session"):
+        _run(tool.execute({"command": "start"}, ToolRuntimeContext()))
 
 
 def test_telegram_manage_tool_bind_owner_requires_connected_chat():
@@ -202,9 +204,9 @@ def test_telegram_manage_tool_bind_owner_requires_connected_chat():
                 tool.execute(
                     {
                         "command": "bind_owner",
-                        "session_id": "317dc122-62fd-481e-ba03-907ec45a7c5a",
                         "chat_id": 12345,
-                    }
+                    },
+                    ToolRuntimeContext(session_id=uuid4()),
                 )
             )
 
@@ -267,8 +269,8 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
                 tool.execute(
                     {
                         "command": "start",
-                        "session_id": "317dc122-62fd-481e-ba03-907ec45a7c5a",
-                    }
+                    },
+                    ToolRuntimeContext(session_id=uuid4()),
                 )
             )
         assert result["success"] is True
@@ -305,7 +307,7 @@ def test_send_telegram_message_tool_refuses_owner_chat_by_default():
     settings.telegram_owner_chat_id = "12345"
     try:
         with pytest.raises(ToolExecutionError, match="owner Telegram DM"):
-            _run(tool.execute({"command": "send", "chat_id": 12345, "message": "hello"}))
+            _run(tool.execute({"command": "send", "chat_id": 12345, "message": "hello"}, ToolRuntimeContext()))
     finally:
         settings.telegram_owner_chat_id = old_owner_chat
 

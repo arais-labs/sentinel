@@ -16,6 +16,7 @@ from app.services.tools.registry import (
     ToolApprovalEvaluation,
     ToolApprovalRequirement,
     ToolDefinition,
+    ToolRuntimeContext,
 )
 
 if TYPE_CHECKING:
@@ -90,6 +91,7 @@ class ActionDefinition:
     streaming: bool = False
     approval: bool = False
     permission_default: str | None = None
+    requires_runtime_context: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -133,11 +135,18 @@ class ActionDefinition:
             name = f"{module_name}_{self.id}"
             description = self.description or self.label
 
+        async def _execute(payload: dict[str, Any], runtime: ToolRuntimeContext) -> Any:
+            return await _invoke_action_handler(
+                handler=self.handler,
+                payload=payload,
+                runtime=runtime if self.requires_runtime_context else None,
+            )
+
         return ToolDefinition(
             name=name,
             description=description,
             parameters_schema=self.get_parameters_schema() or {},
-            execute=self.handler,
+            execute=_execute,
             approval_check=approval_check,
         )
 
@@ -166,7 +175,6 @@ class ActionDefinition:
         if required:
             schema["required"] = required
         return schema
-
 
 @dataclass
 class SecretDefinition:
@@ -353,17 +361,19 @@ class ModuleDefinition:
             actions=actions,
         )
 
-        async def _execute(payload: dict[str, Any]) -> Any:
+        async def _execute(payload: dict[str, Any], runtime: ToolRuntimeContext) -> Any:
             action = _resolve_grouped_action(
                 payload=payload,
                 action_map=action_map,
             )
-            forwarded = _filtered_grouped_action_payload(
-                payload=payload,
-                schema=action.get_parameters_schema() or {},
-            )
+            forwarded = dict(payload)
+            forwarded.pop(_GROUPED_ACTION_FIELD, None)
             _validate_payload_against_schema(forwarded, action.get_parameters_schema() or {})
-            return await action.handler(forwarded)
+            return await _invoke_action_handler(
+                handler=action.handler,
+                payload=forwarded,
+                runtime=runtime if action.requires_runtime_context else None,
+            )
 
         approval_check = _build_grouped_approval_check(
             module_name=self.name,
@@ -541,7 +551,10 @@ def _build_grouped_approval_check(
     if not any(action_checks.get(action_id) for action_id in action_map):
         return None
 
-    async def _evaluate(payload: dict[str, Any]) -> ToolApprovalEvaluation:
+    async def _evaluate(
+        payload: dict[str, Any],
+        runtime: ToolRuntimeContext,
+    ) -> ToolApprovalEvaluation:
         action = _resolve_grouped_action(
             payload=payload,
             action_map=action_map,
@@ -551,13 +564,11 @@ def _build_grouped_approval_check(
             return ToolApprovalEvaluation.allow()
 
         forwarded = dict(payload)
-        forwarded = _filtered_grouped_action_payload(
-            payload=payload,
-            schema=action.get_parameters_schema() or {},
-        )
+        forwarded.pop(_GROUPED_ACTION_FIELD, None)
         return await _invoke_approval_check(
             approval_check=approval_check,
             payload=forwarded,
+            runtime=runtime,
             error_context=f"Grouped action '{module_name}.{action.id}' approval check",
         )
 
@@ -568,6 +579,7 @@ async def _invoke_approval_check(
     *,
     approval_check: Any,
     payload: dict[str, Any],
+    runtime: ToolRuntimeContext,
     error_context: str,
 ) -> ToolApprovalEvaluation:
     evaluator_signature = inspect.signature(approval_check)
@@ -579,7 +591,9 @@ async def _invoke_approval_check(
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
         }
     ]
-    if positional_params:
+    if len(positional_params) >= 2:
+        evaluated = approval_check(payload, runtime)
+    elif positional_params:
         evaluated = approval_check(payload)
     else:
         evaluated = approval_check()
@@ -614,21 +628,30 @@ def _validate_payload_against_schema(
         _validate_field(field_name, user_payload[field_name], field_schema)
 
 
-def _filtered_grouped_action_payload(
+async def _invoke_action_handler(
     *,
+    handler: Any,
     payload: dict[str, Any],
-    schema: dict[str, Any],
-) -> dict[str, Any]:
-    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
-    allowed_fields = set(properties.keys()) if isinstance(properties, dict) else set()
-    filtered: dict[str, Any] = {}
-    for key, value in payload.items():
-        if key == _GROUPED_ACTION_FIELD:
-            continue
-        if str(key).startswith("__") or key in allowed_fields:
-            filtered[key] = value
-    return filtered
-
+    runtime: ToolRuntimeContext | None,
+) -> Any:
+    handler_signature = inspect.signature(handler)
+    positional_params = [
+        parameter
+        for parameter in handler_signature.parameters.values()
+        if parameter.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+    ]
+    if "runtime" in handler_signature.parameters:
+        result = handler(payload, runtime=runtime or ToolRuntimeContext())
+    elif len(positional_params) >= 2:
+        result = handler(payload, runtime or ToolRuntimeContext())
+    else:
+        result = handler(payload)
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 def _validate_field(field_name: str, value: Any, field_schema: dict[str, Any]) -> None:
     expected_type = field_schema.get("type")

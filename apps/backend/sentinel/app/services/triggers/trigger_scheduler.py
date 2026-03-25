@@ -28,6 +28,7 @@ from app.services.triggers.routing import (
     resolve_agent_message_route,
 )
 from app.services.tools import ToolExecutor
+from app.services.tools.registry import ToolRuntimeContext
 from app.services.ws.ws_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
@@ -575,7 +576,14 @@ class TriggerScheduler:
         if not isinstance(payload, dict):
             raise ValueError("tool_call action arguments must be an object")
 
-        result, _ = await self._tool_executor.execute(tool_name.strip(), payload)
+        runtime_context_payload = action.get("runtime_context", {})
+        runtime = ToolRuntimeContext()
+        if isinstance(runtime_context_payload, dict):
+            session_id_raw = runtime_context_payload.get("session_id")
+            if isinstance(session_id_raw, str) and session_id_raw.strip():
+                runtime = ToolRuntimeContext(session_id=UUID(session_id_raw.strip()))
+
+        result, _ = await self._tool_executor.execute(tool_name.strip(), payload, runtime=runtime)
         return TriggerActionOutcome(
             output_summary=f"tool_call:{tool_name.strip()}:{_truncate_json(result)}",
         )

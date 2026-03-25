@@ -24,15 +24,12 @@ MODULE = ModuleDefinition(
                 "Assign to `result` to return a value. Use venv_name to manage separate named envs."
             ),
             handler=handle_run,
+            requires_runtime_context=True,
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
                 "required": ["code"],
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "Current session ID (auto-injected in agent loop)",
-                    },
                     "code": {
                         "type": "string",
                         "description": "Python code to execute. Assign to `result` to return a value.",

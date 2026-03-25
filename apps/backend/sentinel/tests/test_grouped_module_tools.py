@@ -6,18 +6,20 @@ import pytest
 
 from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 from app.services.tools.executor import ToolExecutor, ToolValidationError
-from app.services.tools.registry import ToolRegistry
+from app.services.tools.registry import ToolRegistry, ToolRuntimeContext
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-async def _handle_click(payload: dict[str, object]) -> dict[str, object]:
+async def _handle_click(payload: dict[str, object], runtime: ToolRuntimeContext) -> dict[str, object]:
+    _ = runtime
     return {"clicked": True, "selector": payload["selector"]}
 
 
-async def _handle_navigate(payload: dict[str, object]) -> dict[str, object]:
+async def _handle_navigate(payload: dict[str, object], runtime: ToolRuntimeContext) -> dict[str, object]:
+    _ = runtime
     return {"navigated": True, "url": payload["url"]}
 
 
@@ -35,12 +37,12 @@ def _grouped_tool():
                 parameters_schema={
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["session_id", "selector"],
+                    "required": ["selector"],
                     "properties": {
-                        "session_id": {"type": "string"},
                         "selector": {"type": "string"},
                     },
                 },
+                requires_runtime_context=True,
             ),
             ActionDefinition(
                 id="navigate",
@@ -49,12 +51,12 @@ def _grouped_tool():
                 parameters_schema={
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["session_id", "url"],
+                    "required": ["url"],
                     "properties": {
-                        "session_id": {"type": "string"},
                         "url": {"type": "string"},
                     },
                 },
+                requires_runtime_context=True,
             ),
         ],
     )
@@ -71,7 +73,6 @@ def test_grouped_tool_schema_uses_command_discriminator():
 
     schema = browser.parameters_schema
     assert "command" in schema["properties"]
-    assert "session_id" in schema["required"]
     assert "command" in schema["required"]
     assert "click" in schema["properties"]["command"]["enum"]
     assert "navigate" in schema["properties"]["command"]["enum"]
@@ -93,10 +94,10 @@ def test_grouped_tool_dispatches_to_internal_action_handler():
         executor.execute(
             "browser",
             {
-                "session_id": "00000000-0000-0000-0000-000000000001",
                 "command": "click",
                 "selector": "#submit",
             },
+            runtime=ToolRuntimeContext(),
         )
     )
 
@@ -111,20 +112,18 @@ def test_grouped_tool_validates_selected_action_payload():
     registry.register(browser)
     executor = ToolExecutor(registry)
 
-    result, _ = _run(
-        executor.execute(
-            "browser",
-            {
-                "session_id": "00000000-0000-0000-0000-000000000001",
-                "command": "click",
-                "selector": "#submit",
-                "url": "https://example.com",
-            },
+    with pytest.raises(ToolValidationError, match="Unknown field\\(s\\): url"):
+        _run(
+            executor.execute(
+                "browser",
+                {
+                    "command": "click",
+                    "selector": "#submit",
+                    "url": "https://example.com",
+                },
+                runtime=ToolRuntimeContext(),
+            )
         )
-    )
-
-    assert result["clicked"] is True
-    assert result["selector"] == "#submit"
 
 
 def test_grouped_tool_allows_shared_field_schema_across_actions():
@@ -141,12 +140,12 @@ def test_grouped_tool_allows_shared_field_schema_across_actions():
                 parameters_schema={
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["session_id", "tab_id"],
+                    "required": ["tab_id"],
                     "properties": {
-                        "session_id": {"type": "string"},
                         "tab_id": shared_tab_id,
                     },
                 },
+                requires_runtime_context=True,
             ),
             ActionDefinition(
                 id="tab_close",
@@ -155,12 +154,12 @@ def test_grouped_tool_allows_shared_field_schema_across_actions():
                 parameters_schema={
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["session_id", "tab_id"],
+                    "required": ["tab_id"],
                     "properties": {
-                        "session_id": {"type": "string"},
                         "tab_id": shared_tab_id,
                     },
                 },
+                requires_runtime_context=True,
             ),
         ],
     )
@@ -188,12 +187,12 @@ def test_grouped_tool_requires_explicit_selector_field():
                 parameters_schema={
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["session_id", "cli_command"],
+                    "required": ["cli_command"],
                     "properties": {
-                        "session_id": {"type": "string"},
                         "cli_command": {"type": "string"},
                     },
                 },
+                requires_runtime_context=True,
             ),
             ActionDefinition(
                 id="accounts",
@@ -213,17 +212,19 @@ def test_grouped_tool_requires_explicit_selector_field():
     tool = module.to_tool_definitions()[0]
     assert "command" in tool.parameters_schema["required"]
     with pytest.raises(ToolValidationError, match="Field 'command' must be a non-empty string"):
-        _run(tool.execute({"session_id": "s1", "cli_command": "git status"}))
+        _run(tool.execute({"cli_command": "git status"}, ToolRuntimeContext()))
 
 
 def test_grouped_tool_ignores_fields_not_used_by_selected_action():
     calls: list[dict[str, object]] = []
 
-    async def _handle_run(payload: dict[str, object]) -> dict[str, object]:
+    async def _handle_run(payload: dict[str, object], runtime: ToolRuntimeContext) -> dict[str, object]:
+        _ = runtime
         calls.append(payload)
         return payload
 
-    async def _handle_accounts(payload: dict[str, object]) -> dict[str, object]:
+    async def _handle_accounts(payload: dict[str, object], runtime: ToolRuntimeContext) -> dict[str, object]:
+        _ = runtime
         calls.append(payload)
         return payload
 
@@ -239,12 +240,12 @@ def test_grouped_tool_ignores_fields_not_used_by_selected_action():
                 parameters_schema={
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["session_id", "cli_command"],
+                    "required": ["cli_command"],
                     "properties": {
-                        "session_id": {"type": "string"},
                         "cli_command": {"type": "string"},
                     },
                 },
+                requires_runtime_context=True,
             ),
             ActionDefinition(
                 id="accounts",
@@ -262,7 +263,7 @@ def test_grouped_tool_ignores_fields_not_used_by_selected_action():
     )
 
     tool = module.to_tool_definitions()[0]
-    result = _run(tool.execute({"command": "accounts", "host": "github.com", "session_id": "s1"}))
+    result = _run(tool.execute({"command": "accounts", "host": "github.com"}, ToolRuntimeContext()))
 
     assert result == {"host": "github.com"}
     assert calls == [{"host": "github.com"}]

@@ -18,7 +18,7 @@ from app.services.llm.generic.types import (
     UserMessage,
 )
 from app.services.tools.executor import ToolExecutor
-from app.services.tools.registry import ToolDefinition, ToolRegistry
+from app.services.tools.registry import ToolDefinition, ToolRegistry, ToolRuntimeContext
 from tests.fake_db import FakeDB
 
 
@@ -312,7 +312,8 @@ def test_agent_loop_tool_use_path_runs_tool_and_finishes_second_iteration():
 
     registry = ToolRegistry()
 
-    async def _tool_exec(payload):
+    async def _tool_exec(payload, runtime: ToolRuntimeContext):
+        del runtime
         return {
             "value": payload.get("query"),
             "token": "sk-proj-abc123def456ghi789jkl",
@@ -440,7 +441,8 @@ def test_agent_loop_stream_keeps_tool_call_when_empty_text_starts_same_index():
 
     registry = ToolRegistry()
 
-    async def _tool_exec(payload):
+    async def _tool_exec(payload, runtime: ToolRuntimeContext):
+        del runtime
         return {"value": payload.get("query")}
 
     registry.register(
@@ -493,7 +495,8 @@ def test_agent_loop_reinjects_tool_screenshot_as_image_content():
     registry = ToolRegistry()
     png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s8bVgAAAABJRU5ErkJggg=="
 
-    async def _screenshot_tool(_payload):
+    async def _screenshot_tool(_payload, runtime: ToolRuntimeContext):
+        del runtime
         return {"image_base64": png_b64}
 
     registry.register(
@@ -546,29 +549,23 @@ def test_agent_loop_reinjects_tool_screenshot_as_image_content():
     assert image_blocks[0].data == png_b64
 
 
-def test_agent_loop_auto_injects_session_id_for_tools_that_declare_it():
+def test_agent_loop_passes_runtime_session_context_to_tools():
     db = FakeDB()
     session = _new_session(db)
 
     captured: dict[str, str] = {}
     registry = ToolRegistry()
 
-    async def _echo_session(payload):
-        captured["session_id"] = str(payload.get("session_id"))
-        return {"session_id": payload.get("session_id")}
+    async def _echo_session(payload, runtime: ToolRuntimeContext):
+        del payload
+        captured["session_id"] = str(runtime.session_id)
+        return {"session_id": str(runtime.session_id)}
 
     registry.register(
         ToolDefinition(
             name="session_echo",
-            description="Echo current session id",
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["session_id"],
-                "properties": {
-                    "session_id": {"type": "string"},
-                },
-            },
+            description="Echo current session id from runtime",
+            parameters_schema={"type": "object", "additionalProperties": False, "properties": {}},
             execute=_echo_session,
         )
     )
@@ -640,7 +637,8 @@ def test_agent_loop_tool_errors_do_not_crash_and_are_persisted_as_error():
 
     registry = ToolRegistry()
 
-    async def _broken(_payload):
+    async def _broken(_payload, runtime: ToolRuntimeContext):
+        del runtime
         raise RuntimeError("ghp_123456789012345678901234567890123456 failed")
 
     registry.register(
@@ -721,7 +719,8 @@ def test_agent_loop_streaming_tool_use_assembles_arguments_for_execution():
 
     registry = ToolRegistry()
 
-    async def _tool_exec(payload):
+    async def _tool_exec(payload, runtime: ToolRuntimeContext):
+        del runtime
         captured.update(payload)
         return {"ok": True}
 
@@ -836,7 +835,8 @@ def test_tool_result_content_is_truncated_before_persist():
 
     registry = ToolRegistry()
 
-    async def _big_tool(_payload):
+    async def _big_tool(_payload, runtime: ToolRuntimeContext):
+        del runtime
         return {"blob": "x" * 60_000}
 
     registry.register(
@@ -886,7 +886,8 @@ def test_assistant_tool_call_arguments_are_sanitized_when_oversized():
 
     registry = ToolRegistry()
 
-    async def _noop(_payload):
+    async def _noop(_payload, runtime: ToolRuntimeContext):
+        del runtime
         return {"ok": True}
 
     registry.register(

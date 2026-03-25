@@ -10,12 +10,6 @@ from .handlers import (
     handle_run_root,
     handle_run_user,
 )
-
-
-def _session_id_prop() -> dict:
-    return {"type": "string", "description": "Current session ID."}
-
-
 def _job_id_prop() -> dict:
     return {"type": "string", "description": "Detached job ID."}
 
@@ -24,9 +18,8 @@ def _run_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "shell_command"],
+        "required": ["shell_command"],
         "properties": {
-            "session_id": _session_id_prop(),
             "shell_command": {"type": "string", "description": "Shell command to execute."},
             "cwd": {"type": "string", "description": "Working directory inside the session workspace."},
             "env": {"type": "object", "description": "Environment variable overrides."},
@@ -40,9 +33,8 @@ def _jobs_list_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id"],
+        "required": [],
         "properties": {
-            "session_id": _session_id_prop(),
             "include_completed": {"type": "boolean", "description": "Include completed jobs."},
         },
     }
@@ -52,9 +44,8 @@ def _job_status_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "job_id"],
+        "required": ["job_id"],
         "properties": {
-            "session_id": _session_id_prop(),
             "job_id": _job_id_prop(),
         },
     }
@@ -64,9 +55,8 @@ def _job_logs_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "job_id"],
+        "required": ["job_id"],
         "properties": {
-            "session_id": _session_id_prop(),
             "job_id": _job_id_prop(),
             "tail_bytes": {"type": "integer", "description": "Tail bytes to read from the job logs."},
         },
@@ -77,9 +67,8 @@ def _job_stop_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "job_id"],
+        "required": ["job_id"],
         "properties": {
-            "session_id": _session_id_prop(),
             "job_id": _job_id_prop(),
             "force": {"type": "boolean", "description": "Force stop the job."},
         },
@@ -105,6 +94,7 @@ MODULE = ModuleDefinition(
             description="Run a user-privileged shell command inside the session runtime workspace.",
             streaming=True,
             handler=handle_run_user,
+            requires_runtime_context=True,
             parameters_schema=_run_parameters_schema(),
         ),
         ActionDefinition(
@@ -114,6 +104,7 @@ MODULE = ModuleDefinition(
             streaming=True,
             handler=handle_run_root,
             approval=True,
+            requires_runtime_context=True,
             parameters_schema=_run_parameters_schema(),
         ),
         ActionDefinition(
@@ -121,6 +112,7 @@ MODULE = ModuleDefinition(
             label="List Jobs",
             description="List detached runtime jobs for a session.",
             handler=handle_jobs_list,
+            requires_runtime_context=True,
             parameters_schema=_jobs_list_parameters_schema(),
         ),
         ActionDefinition(
@@ -128,6 +120,7 @@ MODULE = ModuleDefinition(
             label="Job Status",
             description="Read status for one detached runtime job.",
             handler=handle_job_status,
+            requires_runtime_context=True,
             parameters_schema=_job_status_parameters_schema(),
         ),
         ActionDefinition(
@@ -135,6 +128,7 @@ MODULE = ModuleDefinition(
             label="Job Logs",
             description="Read logs for one detached runtime job.",
             handler=handle_job_logs,
+            requires_runtime_context=True,
             parameters_schema=_job_logs_parameters_schema(),
         ),
         ActionDefinition(
@@ -142,6 +136,7 @@ MODULE = ModuleDefinition(
             label="Stop Job",
             description="Stop one detached runtime job.",
             handler=handle_job_stop,
+            requires_runtime_context=True,
             parameters_schema=_job_stop_parameters_schema(),
         ),
     ],

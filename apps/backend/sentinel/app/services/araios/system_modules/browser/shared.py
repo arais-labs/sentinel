@@ -4,11 +4,10 @@ from typing import Any
 
 from app.services.araios.runtime_services import get_browser_pool
 from app.services.tools.executor import ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.runtime_context import require_session_id
 
-
-BROWSER_SESSION_PROP = {
-    "session_id": {"type": "string", "description": "The agent session UUID"},
-}
+BROWSER_SESSION_PROP: dict[str, dict[str, str]] = {}
 
 def optional_browser_tab_id(payload: dict[str, Any]) -> str | None:
     tab_id = payload.get("tab_id")
@@ -19,11 +18,12 @@ def optional_browser_tab_id(payload: dict[str, Any]) -> str | None:
     return tab_id.strip()
 
 
-async def resolve_browser_manager(payload: dict[str, Any]):
-    session_id = payload.get("session_id")
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
-    return await get_browser_pool().get(session_id.strip())
+async def resolve_browser_manager(
+    payload: dict[str, Any],
+    runtime: ToolRuntimeContext,
+):
+    del payload
+    return await get_browser_pool().get(str(require_session_id(runtime)))
 
 
 def extract_browser_tab_constraint(constraints: Any) -> str | None:

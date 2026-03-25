@@ -12,6 +12,8 @@ from app.database.database import AsyncSessionLocal
 from app.services.runtime import get_runtime
 from app.services.runtime.session_runtime import ensure_runtime_layout
 from app.services.tools.executor import ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.runtime_context import require_session_id
 
 # ---------------------------------------------------------------------------
 # Constants (moved from builtin.py)
@@ -224,14 +226,8 @@ async def _ensure_session_exists(session_id: UUID) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def handle_run(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id_raw = payload.get("session_id")
-    if not isinstance(session_id_raw, str) or not session_id_raw.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
-    try:
-        session_id = UUID(session_id_raw.strip())
-    except ValueError as exc:
-        raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+async def handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    session_id = require_session_id(runtime)
 
     code = payload.get("code")
     if not isinstance(code, str) or not code.strip():
