@@ -21,8 +21,8 @@ class MainSessionTargetInvalidError(SessionServiceError):
     """Requested main session target is invalid."""
 
 
-class AgentLoopUnavailableError(SessionServiceError):
-    """Agent loop/provider is not configured."""
+class AgentRuntimeUnavailableError(SessionServiceError):
+    """Agent runtime support/provider is not configured."""
 
 
 class ChatPayloadRequiredError(SessionServiceError):

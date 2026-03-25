@@ -43,7 +43,7 @@ def _build_bridge(*, db: FakeDB, user_id: str) -> TelegramBridge:
     return TelegramBridge(
         bot_token="dummy",
         user_id=user_id,
-        agent_loop=None,
+        agent_runtime_support=None,
         run_registry=object(),
         ws_manager=object(),
         db_factory=lambda: _DBFactory(),
@@ -319,7 +319,7 @@ def test_start_telegram_bridge_uses_dev_owner_when_owner_unset():
         {
             "ws_manager": object(),
             "agent_run_registry": object(),
-            "agent_loop": object(),
+            "agent_runtime_support": object(),
             "telegram_bridge": None,
             "telegram_stop_event": None,
             "telegram_task": None,

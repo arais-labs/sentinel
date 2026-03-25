@@ -5,8 +5,7 @@ import json
 from uuid import uuid4
 
 from app.models import Message, Session
-from app.services.agent import ToolAdapter
-from app.services.agent.sentinel_runner import AgentLoop
+from app.services.agent import SentinelRuntimeSupport, ToolAdapter
 from app.services.llm.generic.types import ToolCallContent
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import (
@@ -341,9 +340,9 @@ def test_tool_adapter_cancellation_reconciles_pending_tool_result_row():
     assert parsed_result["status"] == "cancelled"
     assert result.metadata["__persisted_message_id"] == str(pending_row_id)
 
-    loop = AgentLoop(provider=None, context_builder=None, tool_adapter=adapter)
+    support = SentinelRuntimeSupport(provider=None, context_builder=None, tool_adapter=adapter)
     _run(
-        loop._persist_messages(
+        support._persist_messages(
             fake_db,
             session_id,
             [result],

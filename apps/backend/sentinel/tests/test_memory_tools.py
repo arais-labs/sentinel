@@ -7,7 +7,9 @@ import pytest
 from app.models import Memory, Message, Session
 from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
 from app.services.araios.system_modules.memory import handlers as memory_module
-from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
+from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent, TokenUsage
 from app.services.memory.search import MemorySearchResult, MemorySearchService
@@ -93,12 +95,14 @@ class _SequenceProvider(LLMProvider):
     def name(self) -> str:
         return "seq"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None):
+    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
         idx = min(self.calls, len(self._responses) - 1)
+        _ = tool_choice
         self.calls += 1
         return self._responses[idx]
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None):
+    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        _ = tool_choice
         if False:
             yield AgentEvent(type="done", stop_reason="stop")
         return
@@ -128,7 +132,7 @@ def test_memory_store_and_search_tools_execute():
     assert searched["items"][0]["content"] == "Store this memory"
 
 
-def test_agent_loop_can_call_memory_search_tool():
+def test_runtime_support_can_call_memory_search_tool():
     memory_db = FakeDB()
     memory_db.add(Memory(content="Remember alpha", category="project", metadata_json={}))
 
@@ -156,10 +160,32 @@ def test_agent_loop_can_call_memory_search_tool():
     session = Session(user_id="dev-admin", status="active", title="loop")
     loop_db.add(session)
 
-    loop = AgentLoop(provider, ContextBuilder(default_system_prompt="sys"), ToolAdapter(registry, ToolExecutor(registry)))
-    result = _run(loop.run(loop_db, session.id, "find alpha", stream=False))
+    runtime = SentinelLoopRuntimeAdapter(
+        loop=SentinelRuntimeSupport(
+            provider,
+            ContextBuilder(default_system_prompt="sys"),
+            ToolAdapter(registry, ToolExecutor(registry)),
+        ),
+        db=loop_db,
+        session_id=session.id,
+    )
+    result = _run(
+        runtime.run_turn(
+            RunTurnRequest(
+                conversation_id=str(session.id),
+                new_items=[
+                    ConversationItem(
+                        id="user-1",
+                        role="user",
+                        content=[TextBlock(text="find alpha")],
+                    )
+                ],
+                config=GenerationConfig(model="normal", stream=False),
+            )
+        )
+    )
 
-    assert result.final_text == "Used memory"
+    assert result.metadata["final_text"] == "Used memory"
     rows = [m for m in loop_db.storage[Message] if m.session_id == session.id]
     tool_row = next(row for row in rows if row.role == "tool_result")
     assert tool_row.tool_name == "memory"

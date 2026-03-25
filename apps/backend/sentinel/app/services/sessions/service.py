@@ -45,7 +45,7 @@ from app.services.sessions.session_naming import (
     conversation_delta_for_role,
 )
 from app.services.sessions.errors import (
-    AgentLoopUnavailableError,
+    AgentRuntimeUnavailableError,
     ChatPayloadRequiredError,
     MainSessionDeletionError,
     MainSessionTargetInvalidError,
@@ -85,11 +85,11 @@ class SessionService:
         self,
         *,
         run_registry: AgentRunRegistry,
-        agent_loop: Any | None = None,
+        agent_runtime_support: Any | None = None,
         db_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._run_registry = run_registry
-        self._agent_loop = agent_loop
+        self._agent_runtime_support = agent_runtime_support
         self._db_factory = db_factory or AsyncSessionLocal
 
     async def list_sessions(
@@ -476,7 +476,7 @@ class SessionService:
         context_budget: int,
     ):
         """Estimate context using the same builder path used before actual runs."""
-        context_builder = getattr(self._agent_loop, "context_builder", None)
+        context_builder = getattr(self._agent_runtime_support, "context_builder", None)
         if context_builder is None or not hasattr(context_builder, "build"):
             return None
         try:
@@ -706,7 +706,7 @@ class SessionService:
         await db.commit()
         await db.refresh(message)
         if role == "user":
-            naming = SessionNamingService(provider=getattr(self._agent_loop, "provider", None))
+            naming = SessionNamingService(provider=getattr(self._agent_runtime_support, "provider", None))
             await naming.maybe_auto_rename(session_id=session.id)
         return message
 
@@ -754,8 +754,8 @@ class SessionService:
         max_iterations: int,
     ) -> ChatRunResult:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        if self._agent_loop is None:
-            raise AgentLoopUnavailableError("No LLM provider configured")
+        if self._agent_runtime_support is None:
+            raise AgentRuntimeUnavailableError("No LLM provider configured")
 
         text = content.strip()
         if not text and not attachments:
@@ -783,7 +783,7 @@ class SessionService:
         from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 
         runtime = SentinelLoopRuntimeAdapter(
-            loop=self._agent_loop,
+            loop=self._agent_runtime_support,
             db=db,
             session_id=session.id,
         )
@@ -807,7 +807,7 @@ class SessionService:
                 ),
             )
         )
-        naming = SessionNamingService(provider=getattr(self._agent_loop, "provider", None))
+        naming = SessionNamingService(provider=getattr(self._agent_runtime_support, "provider", None))
         await naming.maybe_auto_rename(session_id=session.id)
         return ChatRunResult(
             final_text=str(result.metadata.get("final_text") or ""),
@@ -871,7 +871,7 @@ class SessionService:
 
     async def extract_session_memories(self, session_ids: list[UUID], user_id: str) -> None:
         """Summarize prior sessions into memory nodes (fire-and-forget)."""
-        if self._agent_loop is None:
+        if self._agent_runtime_support is None:
             return
         try:
             memory_service = MemoryService(MemoryRepository())
@@ -890,7 +890,7 @@ class SessionService:
                         "and what matters. Focus on facts, not chat pleasantries.\n\n"
                         f"TRANSCRIPT:\n{transcript}"
                     )
-                    result = await self._agent_loop.provider.chat(
+                    result = await self._agent_runtime_support.provider.chat(
                         [UserMessage(content=prompt)],
                         model=TierName.FAST.value,
                         tools=[],

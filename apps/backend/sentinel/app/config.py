@@ -69,7 +69,6 @@ class Settings(BaseSettings):
     tier_hard_gemini_thinking_budget: int = 32000
     default_system_prompt: str = DEFAULT_SYSTEM_PROMPT
     agent_loop_timeout: float = 1080.0
-    agent_loop_cooldown: float = 1.5  # seconds between each agent loop iteration
     tool_image_reinjection_enabled: bool = True
     tool_image_reinjection_max_images: int = 2
     tool_image_reinjection_max_bytes_per_image: int = 2_000_000

@@ -1,7 +1,7 @@
 """Builds model context from session state, memory, and runtime policies.
 
 This module is the canonical place for system prompt composition and message
-selection before each agent loop turn.
+selection before each runtime turn.
 """
 
 from __future__ import annotations

@@ -12,10 +12,10 @@ class _FakeRegistry:
 
 class _FakeScheduler:
     def __init__(self) -> None:
-        self.agent_loop = object()
+        self.agent_runtime_support = object()
 
-    def set_agent_loop(self, agent_loop):
-        self.agent_loop = agent_loop
+    def set_agent_runtime_support(self, agent_runtime_support):
+        self.agent_runtime_support = agent_runtime_support
 
 
 class _FakeContextBuilder:
@@ -32,14 +32,14 @@ class _FakeToolAdapter:
         self.session_factory = session_factory
 
 
-class _FakeAgentLoop:
+class _FakeRuntimeSupport:
     def __init__(self, provider, context_builder, tool_adapter):
         self.provider = provider
         self.context_builder = context_builder
         self.tool_adapter = tool_adapter
 
 
-def test_rebuild_agent_loop_syncs_scheduler_loop(monkeypatch):
+def test_rebuild_agent_runtime_support_syncs_scheduler(monkeypatch):
     import app.services.runtime.runtime_rebuild as runtime_rebuild_module
 
     monkeypatch.setattr(
@@ -49,12 +49,12 @@ def test_rebuild_agent_loop_syncs_scheduler_loop(monkeypatch):
     )
     monkeypatch.setattr(runtime_rebuild_module, "ContextBuilder", _FakeContextBuilder)
     monkeypatch.setattr(runtime_rebuild_module, "ToolAdapter", _FakeToolAdapter)
-    monkeypatch.setattr(runtime_rebuild_module, "AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr(runtime_rebuild_module, "SentinelRuntimeSupport", _FakeRuntimeSupport)
 
     scheduler = _FakeScheduler()
     app_state = SimpleNamespace(
         llm_provider=None,
-        agent_loop=None,
+        agent_runtime_support=None,
         tool_registry=_FakeRegistry(),
         tool_executor=object(),
         memory_search_service=None,
@@ -62,13 +62,13 @@ def test_rebuild_agent_loop_syncs_scheduler_loop(monkeypatch):
         telegram_bridge=None,
     )
 
-    RuntimeRebuildService().rebuild_agent_loop(app_state)
+    RuntimeRebuildService().rebuild_agent_runtime_support(app_state)
 
-    assert app_state.agent_loop is not None
-    assert scheduler.agent_loop is app_state.agent_loop
+    assert app_state.agent_runtime_support is not None
+    assert scheduler.agent_runtime_support is app_state.agent_runtime_support
 
 
-def test_rebuild_agent_loop_with_no_provider_clears_scheduler_loop(monkeypatch):
+def test_rebuild_agent_runtime_support_with_no_provider_clears_scheduler(monkeypatch):
     import app.services.runtime.runtime_rebuild as runtime_rebuild_module
 
     monkeypatch.setattr(
@@ -80,11 +80,11 @@ def test_rebuild_agent_loop_with_no_provider_clears_scheduler_loop(monkeypatch):
     scheduler = _FakeScheduler()
     app_state = SimpleNamespace(
         llm_provider=object(),
-        agent_loop=object(),
+        agent_runtime_support=object(),
         trigger_scheduler=scheduler,
     )
 
-    RuntimeRebuildService().rebuild_agent_loop(app_state)
+    RuntimeRebuildService().rebuild_agent_runtime_support(app_state)
 
-    assert app_state.agent_loop is None
-    assert scheduler.agent_loop is None
+    assert app_state.agent_runtime_support is None
+    assert scheduler.agent_runtime_support is None

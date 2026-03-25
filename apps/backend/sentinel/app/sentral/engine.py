@@ -15,6 +15,7 @@ from app.sentral.types import (
     AgentEvent,
     ApprovalRequest,
     AssistantTurn,
+    CheckpointSink,
     CompactionConfig,
     CompactionResult,
     ConversationItem,
@@ -53,15 +54,18 @@ class AgentRuntimeEngine(Runtime):
         request,
         *,
         sink: EventSink | None = None,
+        checkpoint: CheckpointSink | None = None,
     ) -> TurnResult:
         history = await self._load_history(request)
-        result, _events = await self._execute(request, history=history, sink=sink)
+        result, _events = await self._execute(request, history=history, sink=sink, checkpoint=checkpoint)
         await self._persist_history(request, result)
         return result
 
     async def stream_turn(
         self,
         request,
+        *,
+        checkpoint: CheckpointSink | None = None,
     ) -> AsyncIterator[AgentEvent]:
         history = await self._load_history(request)
         queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
@@ -74,7 +78,7 @@ class AgentRuntimeEngine(Runtime):
         async def _run() -> None:
             nonlocal terminal_error, result
             try:
-                result, _events = await self._execute(request, history=history, sink=_sink)
+                result, _events = await self._execute(request, history=history, sink=_sink, checkpoint=checkpoint)
                 await self._persist_history(request, result)
             except Exception as exc:  # noqa: BLE001
                 terminal_error = exc
@@ -124,6 +128,7 @@ class AgentRuntimeEngine(Runtime):
         *,
         history: list[ConversationItem],
         sink: EventSink | None = None,
+        checkpoint: CheckpointSink | None = None,
     ) -> tuple[TurnResult, list[AgentEvent]]:
         config = request.config
         if config is None:
@@ -140,6 +145,7 @@ class AgentRuntimeEngine(Runtime):
         pending_approval: ApprovalRequest | None = None
         last_stop_reason: str | None = None
         timeout_seconds = config.provider_metadata.get("timeout_seconds")
+        inject_queue = config.provider_metadata.get("inject_queue")
 
         async def _emit(event: AgentEvent) -> None:
             nonlocal last_stop_reason, pending_approval
@@ -151,6 +157,33 @@ class AgentRuntimeEngine(Runtime):
             if sink is not None:
                 await sink(event)
 
+        async def _checkpoint(items: list[ConversationItem]) -> None:
+            if checkpoint is None or not items:
+                return
+            await checkpoint(items)
+
+        async def _drain_injected_messages() -> None:
+            if inject_queue is None:
+                return
+            while True:
+                try:
+                    injected_text = inject_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if not isinstance(injected_text, str) or not injected_text.strip():
+                    continue
+                injected_item = ConversationItem(
+                    id=_new_item_id("user"),
+                    role="user",
+                    content=[TextBlock(text=f"[Operator interjection]: {injected_text}")],
+                    metadata={"source": "operator_interjection"},
+                )
+                working_history.append(injected_item)
+                created_items.append(injected_item)
+                await _checkpoint([injected_item])
+
+        await _checkpoint(list(request.new_items))
+
         async def _run_iterations() -> None:
             nonlocal iterations
             effective_max = max(1, config.max_iterations)
@@ -159,6 +192,7 @@ class AgentRuntimeEngine(Runtime):
             grace_check_done = False
 
             for index in range(total_limit):
+                await _drain_injected_messages()
                 if index == effective_max and not grace_check_done:
                     grace_check_done = True
                     if not await self._grace_analysis(working_history, effective_max, grace_extension):
@@ -169,6 +203,7 @@ class AgentRuntimeEngine(Runtime):
                             config=config,
                             progress_max=effective_max,
                             emit=_emit,
+                            checkpoint=_checkpoint,
                         )
                         return
 
@@ -196,6 +231,7 @@ class AgentRuntimeEngine(Runtime):
                 }
                 working_history.append(assistant_item)
                 created_items.append(assistant_item)
+                await _checkpoint([assistant_item])
 
                 if turn.stop_reason != "tool_use":
                     return
@@ -220,6 +256,7 @@ class AgentRuntimeEngine(Runtime):
                     )
                     working_history.append(tool_item)
                     created_items.append(tool_item)
+                    await _checkpoint([tool_item])
                     await _emit(AgentEvent(type="tool_result", tool_result=result))
                     if tool_execution_cancelled:
                         continue
@@ -249,6 +286,7 @@ class AgentRuntimeEngine(Runtime):
                 config=config,
                 progress_max=effective_max + grace_extension,
                 emit=_emit,
+                checkpoint=_checkpoint,
             )
 
         if isinstance(timeout_seconds, (int, float)) and float(timeout_seconds) > 0:
@@ -262,7 +300,7 @@ class AgentRuntimeEngine(Runtime):
                     usage=usage,
                     iterations=iterations,
                     stop_reason="timeout",
-                    error=f"Agent loop timed out after {timeout_seconds}s",
+                    error=f"Agent runtime timed out after {timeout_seconds}s",
                     pending_approval=pending_approval,
                 ), events
             except asyncio.CancelledError:
@@ -648,6 +686,7 @@ class AgentRuntimeEngine(Runtime):
         config: GenerationConfig,
         progress_max: int,
         emit: EventSink,
+        checkpoint: CheckpointSink | None = None,
     ) -> None:
         await emit(
             AgentEvent(
@@ -689,6 +728,8 @@ class AgentRuntimeEngine(Runtime):
         usage.output_tokens += final_turn.usage.output_tokens
         created_items.append(final_turn.item)
         working_history.append(final_turn.item)
+        if checkpoint is not None:
+            await checkpoint([final_turn.item])
         for block in final_turn.item.content:
             if isinstance(block, TextBlock) and block.text:
                 await emit(AgentEvent(type="text_delta", delta=block.text))

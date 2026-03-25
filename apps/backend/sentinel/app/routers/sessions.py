@@ -32,7 +32,7 @@ from app.schemas.sessions import (
 )
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions import (
-    AgentLoopUnavailableError,
+    AgentRuntimeUnavailableError,
     ChatPayloadRequiredError,
     MainSessionDeletionError,
     MainSessionTargetInvalidError,
@@ -69,7 +69,7 @@ def _resolve_session_service(request: Request) -> SessionService:
         request.app.state.agent_run_registry = run_registry
     return SessionService(
         run_registry=run_registry,
-        agent_loop=getattr(request.app.state, "agent_loop", None),
+        agent_runtime_support=getattr(request.app.state, "agent_runtime_support", None),
         db_factory=getattr(request.app.state, "db_factory", AsyncSessionLocal),
     )
 
@@ -98,7 +98,7 @@ def _raise_http_for_session_error(exc: Exception) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc) or "Session cannot be renamed",
         ) from exc
-    if isinstance(exc, AgentLoopUnavailableError):
+    if isinstance(exc, AgentRuntimeUnavailableError):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No LLM provider configured",

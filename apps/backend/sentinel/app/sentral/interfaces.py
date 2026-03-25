@@ -12,6 +12,7 @@ from typing import Protocol
 from app.sentral.types import (
     AgentEvent,
     AssistantTurn,
+    CheckpointSink,
     CompactionConfig,
     CompactionResult,
     ConversationItem,
@@ -92,12 +93,15 @@ class Runtime(Protocol):
         request: RunTurnRequest,
         *,
         sink: EventSink | None = None,
+        checkpoint: CheckpointSink | None = None,
     ) -> TurnResult:
         """Execute one agent turn against the supplied history/input."""
 
     async def stream_turn(
         self,
         request: RunTurnRequest,
+        *,
+        checkpoint: CheckpointSink | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Stream the event surface for one agent turn."""
 

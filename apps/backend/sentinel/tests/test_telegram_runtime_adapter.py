@@ -7,8 +7,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from app.sentral import TextBlock
-from app.services.agent import ToolAdapter
-from app.services.agent.sentinel_runner import PreparedRuntimeTurnContext
+from app.services.agent import PreparedRuntimeTurnContext, ToolAdapter
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import (
     AgentEvent,
@@ -108,7 +107,7 @@ class _FakeProvider(LLMProvider):
         yield AgentEvent(type="done", stop_reason="stop")
 
 
-class _AgentLoopStub:
+class _RuntimeSupportStub:
     def __init__(self) -> None:
         self.provider = _FakeProvider()
         self._estop = SimpleNamespace(check_level=AsyncMock(return_value=None))
@@ -173,7 +172,7 @@ def _build_bridge(db: FakeDB) -> TelegramBridge:
     return TelegramBridge(
         bot_token="dummy",
         user_id="user-1",
-        agent_loop=_AgentLoopStub(),
+        agent_runtime_support=_RuntimeSupportStub(),
         run_registry=_RunRegistry(),
         ws_manager=_WSManager(),
         db_factory=lambda: _DBFactory(db),
@@ -220,7 +219,7 @@ def test_telegram_process_message_uses_runtime_adapter_and_preserves_ws_events()
         "done",
     ]
     deliver_mock.assert_awaited_once()
-    agent_loop = bridge._agent_loop  # noqa: SLF001
-    assert agent_loop.provider.calls
-    first_messages = agent_loop.provider.calls[0]["messages"]
+    agent_runtime_support = bridge._agent_runtime_support  # noqa: SLF001
+    assert agent_runtime_support.provider.calls
+    first_messages = agent_runtime_support.provider.calls[0]["messages"]
     assert first_messages[-1].content == "hello"

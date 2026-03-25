@@ -44,7 +44,7 @@ from .shared import (
     TELEGRAM_BUSY_POLL_ATTEMPTS,
     TELEGRAM_BUSY_POLL_INTERVAL_SECONDS,
     TELEGRAM_MAX_MSG_LEN,
-    _AgentLoopProtocol,
+    _RuntimeSupportProtocol,
     _PersistedInboundMessage,
     _RouteContext,
     _RunRegistryProtocol,
@@ -63,14 +63,14 @@ class TelegramBridge:
         *,
         bot_token: str,
         user_id: str,
-        agent_loop: _AgentLoopProtocol | None,
+        agent_runtime_support: _RuntimeSupportProtocol | None,
         run_registry: _RunRegistryProtocol,
         ws_manager: _WSManagerProtocol,
         db_factory: Any,
     ) -> None:
         self._bot_token = bot_token
         self._user_id = user_id
-        self._agent_loop = agent_loop
+        self._agent_runtime_support = agent_runtime_support
         self._run_registry = run_registry
         self._ws_manager = ws_manager
         self._db_factory = db_factory
@@ -101,8 +101,8 @@ class TelegramBridge:
     def can_read_all_group_messages(self) -> bool | None:
         return self._can_read_all_group_messages
 
-    def update_agent_loop(self, agent_loop: _AgentLoopProtocol) -> None:
-        self._agent_loop = agent_loop
+    def update_agent_runtime_support(self, agent_runtime_support: _RuntimeSupportProtocol) -> None:
+        self._agent_runtime_support = agent_runtime_support
 
     def _owner_chat_id(self) -> int | None:
         raw = settings.telegram_owner_chat_id
@@ -505,7 +505,7 @@ class TelegramBridge:
         )
 
     async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        agent_available = self._agent_loop is not None
+        agent_available = self._agent_runtime_support is not None
         status = "online" if agent_available else "no provider configured"
         group_mode = (
             "all-group-messages"
@@ -803,7 +803,7 @@ class TelegramBridge:
             from app.services.sessions.compaction import CompactionService
 
             await CompactionService(
-                provider=self._agent_loop.provider
+                provider=self._agent_runtime_support.provider
             ).auto_compact_if_needed(db, session_id=session_id)
         except Exception:
             return
@@ -830,8 +830,8 @@ class TelegramBridge:
                     pass
 
     async def _process_message(self, update: Update, metadata: dict) -> None:
-        """Persist inbound message, run agent loop, and deliver Telegram/web outputs."""
-        if self._agent_loop is None:
+        """Persist inbound message, run agent runtime support, and deliver Telegram/web outputs."""
+        if self._agent_runtime_support is None:
             await update.message.reply_text(
                 "No AI provider configured. Please set up a provider in Sentinel settings."
             )
@@ -863,7 +863,7 @@ class TelegramBridge:
 
         async with self._db_factory() as db:
             naming_service = SessionNamingService(
-                provider=getattr(self._agent_loop, "provider", None),
+                provider=getattr(self._agent_runtime_support, "provider", None),
                 ws_manager=self._ws_manager,
                 db_factory=self._db_factory,
             )
@@ -919,7 +919,7 @@ class TelegramBridge:
                 delivery_state.delivered_chat_id = outbound_chat_id
 
             runtime = SentinelLoopRuntimeAdapter(
-                loop=self._agent_loop,
+                loop=self._agent_runtime_support,
                 db=db,
                 session_id=route.session_id,
             )
@@ -942,7 +942,6 @@ class TelegramBridge:
                             stream=True,
                             provider_metadata={
                                 "persist_user_message": False,
-                                "persist_incremental": False,
                             },
                         ),
                     ),

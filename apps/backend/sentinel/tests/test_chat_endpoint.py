@@ -9,8 +9,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.services.agent import ToolAdapter
-from app.services.agent.sentinel_runner import PreparedRuntimeTurnContext
+from app.services.agent import PreparedRuntimeTurnContext, ToolAdapter
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AssistantMessage, TextContent, TokenUsage
 from app.services.tools.executor import ToolExecutor
@@ -104,7 +103,7 @@ class _FakeLoop:
         return []
 
 
-def test_chat_endpoint_calls_agent_loop_and_returns_response():
+def test_chat_endpoint_calls_runtime_support_and_returns_response():
     fake_db = FakeDB()
 
     async def _override_get_db():
@@ -123,8 +122,8 @@ def test_chat_endpoint_calls_agent_loop_and_returns_response():
 
     try:
         client = TestClient(app)
-        old_agent_loop = getattr(app.state, "agent_loop", None)
-        app.state.agent_loop = fake_loop
+        old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
+        app.state.agent_runtime_support = fake_loop
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
@@ -153,8 +152,8 @@ def test_chat_endpoint_calls_agent_loop_and_returns_response():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
-        if "old_agent_loop" in locals():
-            app.state.agent_loop = old_agent_loop
+        if "old_agent_runtime_support" in locals():
+            app.state.agent_runtime_support = old_agent_runtime_support
 
 
 def test_chat_endpoint_returns_503_when_no_provider_configured():
@@ -175,8 +174,8 @@ def test_chat_endpoint_returns_503_when_no_provider_configured():
 
     try:
         client = TestClient(app)
-        old_agent_loop = getattr(app.state, "agent_loop", None)
-        app.state.agent_loop = None
+        old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
+        app.state.agent_runtime_support = None
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -195,5 +194,5 @@ def test_chat_endpoint_returns_503_when_no_provider_configured():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
-        if "old_agent_loop" in locals():
-            app.state.agent_loop = old_agent_loop
+        if "old_agent_runtime_support" in locals():
+            app.state.agent_runtime_support = old_agent_runtime_support

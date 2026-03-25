@@ -165,7 +165,7 @@ async def start_telegram_bridge(app_state: object) -> bool:
 
     ws_manager = getattr(app_state, "ws_manager", None)
     run_registry = getattr(app_state, "agent_run_registry", None)
-    agent_loop = getattr(app_state, "agent_loop", None)
+    agent_runtime_support = getattr(app_state, "agent_runtime_support", None)
     owner_user_id = settings.telegram_owner_user_id
     if not owner_user_id:
         owner_user_id = settings.dev_user_id
@@ -173,7 +173,7 @@ async def start_telegram_bridge(app_state: object) -> bool:
     bridge = TelegramBridge(
         bot_token=token,
         user_id=owner_user_id,
-        agent_loop=agent_loop,
+        agent_runtime_support=agent_runtime_support,
         run_registry=run_registry,
         ws_manager=ws_manager,
         db_factory=AsyncSessionLocal,

@@ -47,5 +47,5 @@ async def complete_onboarding(
         agent_role=payload.agent_role,
         agent_personality=payload.agent_personality,
     )
-    runtime_rebuild_service.rebuild_agent_loop(request.app.state)
+    runtime_rebuild_service.rebuild_agent_runtime_support(request.app.state)
     return {"completed": True}

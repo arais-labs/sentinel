@@ -47,7 +47,7 @@ from app.routers import (
     webhooks,
 )
 from app.routers.araios import api_router as araios_api_router, platform_auth_router as araios_platform_auth_router
-from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter, runtime_event_to_sentinel_event
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.araios.runtime_services import configure_runtime_services
@@ -193,7 +193,7 @@ async def lifespan(app: FastAPI):
     app.state.ws_manager = ws_manager
     app.state.agent_run_registry = run_registry
     app.state.llm_provider = provider
-    app.state.agent_loop = None
+    app.state.agent_runtime_support = None
 
     async def _wakeup_main_agent(session_id: object) -> bool:
         """Server-initiated agent turn triggered by sub-agent completion.
@@ -207,8 +207,8 @@ async def lifespan(app: FastAPI):
 
         from app.models import Session as SessionModel
 
-        agent_loop = app.state.agent_loop
-        if agent_loop is None:
+        agent_runtime_support = app.state.agent_runtime_support
+        if agent_runtime_support is None:
             return True
 
         session_key = str(session_id)
@@ -231,7 +231,7 @@ async def lifespan(app: FastAPI):
                     runtime_event_to_sentinel_event(event),
                 )
 
-            runtime = SentinelLoopRuntimeAdapter(loop=agent_loop, db=db, session_id=sid)
+            runtime = SentinelLoopRuntimeAdapter(loop=agent_runtime_support, db=db, session_id=sid)
             run_task = asyncio.create_task(
                 runtime.run_turn(
                     RunTurnRequest(
@@ -278,14 +278,14 @@ async def lifespan(app: FastAPI):
                 try:
                     from app.services.sessions.compaction import CompactionService
 
-                    await CompactionService(provider=agent_loop.provider).auto_compact_if_needed(
+                    await CompactionService(provider=agent_runtime_support.provider).auto_compact_if_needed(
                         db, session_id=sid
                     )
                 except Exception:  # noqa: BLE001
                     pass
                 try:
                     await SessionNamingService(
-                        provider=agent_loop.provider,
+                        provider=agent_runtime_support.provider,
                         ws_manager=ws_manager,
                     ).maybe_auto_rename(session_id=sid)
                 except Exception:  # noqa: BLE001
@@ -367,7 +367,7 @@ async def lifespan(app: FastAPI):
         await _enqueue_main_agent_wakeup(task.session_id)
 
     app.state.sub_agent_orchestrator = SubAgentOrchestrator(
-        agent_loop=None,
+        agent_runtime_support=None,
         db_factory=AsyncSessionLocal,
         base_tool_registry=registry,
         on_task_completed=_broadcast_sub_agent_completed,
@@ -383,9 +383,9 @@ async def lifespan(app: FastAPI):
             memory_search_service=memory_search_service,
         )
         tool_adapter = ToolAdapter(registry, executor, session_factory=AsyncSessionLocal)
-        app.state.agent_loop = AgentLoop(provider, context_builder, tool_adapter)
+        app.state.agent_runtime_support = SentinelRuntimeSupport(provider, context_builder, tool_adapter)
         app.state.sub_agent_orchestrator = SubAgentOrchestrator(
-            agent_loop=app.state.agent_loop,
+            agent_runtime_support=app.state.agent_runtime_support,
             db_factory=AsyncSessionLocal,
             base_tool_registry=registry,
             on_task_completed=_broadcast_sub_agent_completed,
@@ -393,7 +393,7 @@ async def lifespan(app: FastAPI):
         configure_runtime_services(sub_agent_orchestrator=app.state.sub_agent_orchestrator)
 
     app.state.trigger_scheduler = TriggerScheduler(
-        agent_loop=app.state.agent_loop,
+        agent_runtime_support=app.state.agent_runtime_support,
         tool_executor=executor,
         ws_manager=ws_manager,
         run_registry=app.state.agent_run_registry,

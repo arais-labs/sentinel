@@ -170,7 +170,7 @@ async def fire_trigger(
     scheduler: TriggerScheduler | None = getattr(request.app.state, "trigger_scheduler", None)
     if scheduler is None:
         scheduler = TriggerScheduler(
-            agent_loop=getattr(request.app.state, "agent_loop", None),
+            agent_runtime_support=getattr(request.app.state, "agent_runtime_support", None),
             tool_executor=getattr(request.app.state, "tool_executor", None),
             ws_manager=getattr(request.app.state, "ws_manager", None),
             run_registry=getattr(request.app.state, "agent_run_registry", None),

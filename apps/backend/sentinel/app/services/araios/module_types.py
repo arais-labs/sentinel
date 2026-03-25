@@ -124,7 +124,7 @@ class ActionDefinition:
         action_count: int,
         approval_check: Any | None = None,
     ) -> ToolDefinition:
-        """Convert this action into a ToolDefinition for the agent loop."""
+        """Convert this action into a ToolDefinition for the runtime executor."""
         if not self.handler:
             raise ValueError(f"Action {module_name}.{self.id} has no handler")
 
