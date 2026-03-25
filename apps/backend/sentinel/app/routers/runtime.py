@@ -71,6 +71,11 @@ async def reset_runtime(
             "/home/sentinel/.config/chromium/SingletonSocket "
             "/home/sentinel/.config/chromium/SingletonCookie 2>/dev/null || true"
         )
+        await inst.runtime.ssh.run(
+            "pgrep -f 'socat TCP-LISTEN:9223' >/dev/null || "
+            "nohup socat TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222 "
+            ">/tmp/chromium-socat.log 2>&1 &"
+        )
         await inst.runtime.ssh.run_detached(
             "bash -c 'DISPLAY=:99 chromium"
             " --no-sandbox --disable-gpu --disable-dev-shm-usage"

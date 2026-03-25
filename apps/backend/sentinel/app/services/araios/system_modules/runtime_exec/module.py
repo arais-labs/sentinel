@@ -84,7 +84,6 @@ MODULE = ModuleDefinition(
         "Root commands run unconfined."
     ),
     icon="terminal",
-    pinned=True,
     system=True,
     grouped_tool=True,
     actions=[

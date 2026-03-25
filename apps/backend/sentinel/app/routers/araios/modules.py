@@ -82,7 +82,6 @@ _MODULE_MUTABLE_FIELDS = (
     "order",
     "page_title",
     "page_content",
-    "pinned",
 )
 
 
@@ -335,7 +334,6 @@ def _serialize_module(m: AraiosModule) -> dict:
         "secrets": m.secrets or [],
         "page_title": m.page_title,
         "page_content": m.page_content,
-        "pinned": m.pinned,
         "system": m.system,
         "order": m.order,
     }

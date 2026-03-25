@@ -79,7 +79,6 @@ MODULE = ModuleDefinition(
         "from one unified entry point."
     ),
     icon="send",
-    pinned=False,
     system=True,
     grouped_tool=True,
     actions=[

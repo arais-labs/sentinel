@@ -13,7 +13,6 @@ MODULE = ModuleDefinition(
         "Assign to `result` to return a value. Use venv_name to manage separate named envs."
     ),
     icon="code",
-    pinned=True,
     system=True,
     actions=[
         ActionDefinition(

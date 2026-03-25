@@ -165,7 +165,6 @@ MODULE = ModuleDefinition(
     label="Module Manager",
     description="Unified araiOS module engine for module CRUD, record CRUD, and action execution.",
     icon="boxes",
-    pinned=False,
     system=True,
     grouped_tool=True,
     actions=[

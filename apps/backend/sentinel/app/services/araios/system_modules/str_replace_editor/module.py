@@ -13,7 +13,6 @@ MODULE = ModuleDefinition(
         "Runs through the same user sandbox runtime path as runtime_exec and requires a unique exact match."
     ),
     icon="file-edit",
-    pinned=True,
     system=True,
     actions=[
         ActionDefinition(

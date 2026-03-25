@@ -46,7 +46,6 @@ MODULE = ModuleDefinition(
     label="Coordination",
     description="Inter-agent coordination log for sending and listing coordination messages between agents.",
     icon="message-circle",
-    pinned=False,
     system=True,
     fields=[
         FieldDefinition(key="agent", label="Agent", type="text", required=True),

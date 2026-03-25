@@ -74,7 +74,6 @@ async def handle_list_modules(payload: dict[str, Any]) -> dict[str, Any]:
                     "fields_config": m.fields_config or {},
                     "actions": m.actions or [],
                     "page_title": m.page_title,
-                    "pinned": m.pinned,
                     "system": m.system,
                 }
                 for m in mods
@@ -110,7 +109,6 @@ async def handle_get_module(payload: dict[str, Any]) -> dict[str, Any]:
                 for s in (mod.secrets or [])
             ],
             "page_title": mod.page_title,
-            "pinned": mod.pinned,
             "system": mod.system,
         }
 

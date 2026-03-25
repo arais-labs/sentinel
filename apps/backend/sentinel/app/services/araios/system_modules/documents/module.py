@@ -101,7 +101,6 @@ MODULE = ModuleDefinition(
     label="Documents",
     description="Create, read, update, and delete versioned markdown documents with tags and authorship.",
     icon="file-text",
-    pinned=False,
     system=True,
     fields=[
         FieldDefinition(key="title", label="Title", type="text", required=True),

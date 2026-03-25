@@ -82,7 +82,6 @@ MODULE = ModuleDefinition(
         "list active tasks, and cancel running sub-agents."
     ),
     icon="users",
-    pinned=False,
     system=True,
     grouped_tool=True,
     actions=[

@@ -35,6 +35,7 @@ _FORBIDDEN_GIT_GLOBAL_FLAGS = {"-c", "-C", "--git-dir", "--work-tree"}
 _NETWORK_READ_SUBCOMMANDS = {"clone", "fetch", "pull", "ls-remote", "submodule", "request-pull"}
 _NETWORK_WRITE_SUBCOMMANDS = {"push"}
 _GH_NETWORK_READ_SUBCOMMANDS = {
+    ("repo", "clone"),
     ("repo", "list"),
     ("repo", "view"),
     ("pr", "view"),
@@ -125,7 +126,7 @@ def _parse_cli_command(command: str) -> list[str]:
     if tokens[0] not in {"git", "gh"}:
         raise ToolValidationError(
             "Only git or selected gh commands are allowed. "
-            "Supported gh commands in git_exec: `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT)."
+            "Supported gh commands in git_exec: `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT)."
         )
     return tokens
 
@@ -239,6 +240,14 @@ def _extract_gh_owner(tokens: list[str], *, run_dir: Path) -> str | None:
     if primary == "repo" and secondary == "list":
         owner = _first_positional_argument(tokens[3:])
         return _normalize_owner(owner)
+    if primary == "repo" and secondary == "clone":
+        slug = _first_positional_argument(tokens[3:])
+        if slug and "/" in slug:
+            return _normalize_owner(slug.split("/", 1)[0])
+        explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
+        if explicit_repo and "/" in explicit_repo:
+            return _normalize_owner(explicit_repo.split("/", 1)[0])
+        return None
     if primary == "repo" and secondary == "view":
         slug = _first_positional_argument(tokens[3:])
         if slug and "/" in slug:
@@ -297,6 +306,43 @@ def _extract_option_value(args: list[str], option_names: set[str]) -> str | None
                 return value or None
         idx += 1
     return None
+
+
+def _validate_gh_clone_destination(*, run_dir: Path, tokens: list[str]) -> None:
+    primary, secondary = _gh_subcommand(tokens)
+    if (primary, secondary) != ("repo", "clone"):
+        return
+
+    positional: list[str] = []
+    idx = 3
+    while idx < len(tokens):
+        part = tokens[idx]
+        if part == "--":
+            positional.extend(tokens[idx + 1 :])
+            break
+        if part in {"-R", "--repo"}:
+            idx += 2
+            continue
+        if part.startswith("--repo="):
+            idx += 1
+            continue
+        if part.startswith("-"):
+            idx += 1
+            continue
+        positional.append(part)
+        idx += 1
+
+    if len(positional) < 2:
+        return
+
+    destination = positional[1]
+    candidate = (
+        (run_dir / destination).resolve()
+        if not Path(destination).is_absolute()
+        else Path(destination).expanduser().resolve()
+    )
+    if candidate != run_dir and run_dir not in candidate.parents:
+        raise ToolValidationError("gh repo clone destination must stay inside session workspace")
 
 
 def _normalize_owner(value: str | None) -> str | None:
@@ -604,6 +650,59 @@ async def _resolve_git_account(
     return _ResolvedAccount(account=best[1], repo=repo)
 
 
+async def _resolve_selected_git_account_for_host(
+    db: AsyncSession,
+    *,
+    host: str,
+    require_write: bool,
+    selector: _AccountSelector,
+) -> GitAccount:
+    result = await db.execute(select(GitAccount))
+    accounts = result.scalars().all()
+
+    requested_account: GitAccount | None = None
+    if selector.account_id is not None:
+        requested_account = next(
+            (item for item in accounts if item.id == selector.account_id),
+            None,
+        )
+        if requested_account is None:
+            raise ToolValidationError(
+                f"Requested git account id '{selector.account_id}' was not found"
+            )
+    elif selector.account_name is not None:
+        selected_name = selector.account_name.casefold()
+        requested_account = next(
+            (
+                item
+                for item in accounts
+                if (item.name or "").strip().casefold() == selected_name
+            ),
+            None,
+        )
+        if requested_account is None:
+            raise ToolValidationError(
+                f"Requested git account '{selector.account_name}' was not found"
+            )
+    else:
+        raise ToolValidationError("Explicit git account selection is required")
+
+    normalized_host = host.strip().lower()
+    account_host = (requested_account.host or "").strip().lower()
+    if account_host != normalized_host:
+        raise ToolValidationError(
+            "Requested git account does not match GitHub host "
+            f"'{normalized_host}' (account host: '{account_host or '<empty>'}')"
+        )
+    token = requested_account.token_write if require_write else requested_account.token_read
+    if not token.strip():
+        missing_kind = "write token" if require_write else "read token"
+        raise ToolValidationError(
+            f"Requested git account is missing required {missing_kind}"
+        )
+    return requested_account
+
+
 # ---------------------------------------------------------------------------
 # Subprocess execution
 # ---------------------------------------------------------------------------
@@ -875,41 +974,59 @@ async def _execute_gh_command(
                 "Unsupported gh auth command in git_exec. "
                 "Authentication is managed automatically via configured Git account tokens, "
                 "so interactive auth commands like `gh auth status/login` are not needed. "
-                "Use supported commands: `gh repo list <org>`, `gh repo view <org>/<repo>`, "
+                "Use supported commands: `gh repo clone <org>/<repo>`, `gh repo list <org>`, `gh repo view <org>/<repo>`, "
                 "`gh pr view`, `gh pr create`, `gh pr merge`, `gh api <endpoint>` (GET/POST/PUT)."
             )
         raise ToolValidationError(
             "Unsupported gh command in git_exec. "
-            "Supported: `gh repo list <org>`, `gh repo view <org>/<repo>`, "
+            "Supported: `gh repo clone <org>/<repo>`, `gh repo list <org>`, `gh repo view <org>/<repo>`, "
             "`gh pr view`, `gh pr create`, `gh pr merge`, `gh api <endpoint>` (GET/POST/PUT)."
         )
 
+    _validate_gh_clone_destination(run_dir=run_dir, tokens=tokens)
+
     owner = _extract_gh_owner(tokens, run_dir=run_dir)
-    if not owner:
+    selected_account: GitAccount | None = None
+    if not owner and account_selector is not None:
+        async with AsyncSessionLocal() as db:
+            selected_account = await _resolve_selected_git_account_for_host(
+                db,
+                host=host,
+                require_write=mode == "write",
+                selector=account_selector,
+            )
+    elif not owner:
         raise ToolValidationError(
             "Unable to infer GitHub owner for gh command. "
             "Provide explicit owner (for example: `gh repo list <org>`, `gh repo view <org>/<repo>`, "
-            "or `gh api /orgs/<org>/repos`)."
+            "or `gh api /orgs/<org>/repos`). "
+            "If the command is ownerless, provide an explicit git account selection."
         )
 
-    scope_repo_url = f"https://{host}/{owner}/_gh_scope"
-    async with AsyncSessionLocal() as db:
-        account = await _resolve_git_account(
-            db,
-            repo_url=scope_repo_url,
-            require_write=mode == "write",
-            selector=account_selector,
-        )
-    if account is None:
-        required_token = "write token" if mode == "write" else "read token"
-        raise ToolValidationError(
-            "No matching git account is configured for "
-            f"'{host}/{owner}' ({mode} access). "
-            f"Add/update a Git account with matching host/scope and a {required_token}."
-        )
+    account: GitAccount
+    if selected_account is not None:
+        account = selected_account
+    else:
+        assert owner is not None
+        scope_repo_url = f"https://{host}/{owner}/_gh_scope"
+        async with AsyncSessionLocal() as db:
+            resolved = await _resolve_git_account(
+                db,
+                repo_url=scope_repo_url,
+                require_write=mode == "write",
+                selector=account_selector,
+            )
+        if resolved is None:
+            required_token = "write token" if mode == "write" else "read token"
+            raise ToolValidationError(
+                "No matching git account is configured for "
+                f"'{host}/{owner}' ({mode} access). "
+                f"Add/update a Git account with matching host/scope and a {required_token}."
+            )
+        account = resolved.account
 
     token = (
-        (account.account.token_write if mode == "write" else account.account.token_read)
+        (account.token_write if mode == "write" else account.token_read)
         or ""
     ).strip()
     if not token:
@@ -933,10 +1050,10 @@ async def _execute_gh_command(
     )
     result["network_mode"] = mode
     result["account"] = {
-        "id": str(account.account.id),
-        "name": account.account.name,
-        "host": account.account.host,
-        "scope_pattern": account.account.scope_pattern,
+        "id": str(account.id),
+        "name": account.name,
+        "host": account.host,
+        "scope_pattern": account.scope_pattern,
     }
     return result
 

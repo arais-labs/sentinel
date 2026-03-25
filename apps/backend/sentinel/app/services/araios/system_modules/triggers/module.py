@@ -102,7 +102,6 @@ MODULE = ModuleDefinition(
         "or tool calls on a cron schedule or heartbeat interval."
     ),
     icon="zap",
-    pinned=True,
     system=True,
     grouped_tool=True,
     actions=[

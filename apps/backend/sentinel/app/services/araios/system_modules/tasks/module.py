@@ -104,7 +104,6 @@ MODULE = ModuleDefinition(
     label="Tasks",
     description="Track and manage tasks with status, priority, ownership, and notes.",
     icon="check-square",
-    pinned=False,
     system=True,
     fields=[
         FieldDefinition(key="title", label="Title", type="text", required=True),

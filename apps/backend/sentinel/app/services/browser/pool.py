@@ -7,6 +7,7 @@ via Chrome DevTools Protocol (CDP).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -19,6 +20,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_CHROMIUM_RESTART_CMD = (
+    "pkill -f '/usr/lib/chromium/chromium' || true; "
+    "rm -f /home/sentinel/.config/chromium/SingletonLock "
+    "/home/sentinel/.config/chromium/SingletonSocket "
+    "/home/sentinel/.config/chromium/SingletonCookie 2>/dev/null || true; "
+    "if ! pgrep -f 'socat TCP-LISTEN:9223' >/dev/null; then "
+    "nohup socat TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222 "
+    ">/tmp/chromium-socat.log 2>&1 & "
+    "fi; "
+    "nohup su - sentinel -c "
+    "\"DISPLAY=:99 chromium "
+    "--no-sandbox "
+    "--disable-gpu "
+    "--disable-dev-shm-usage "
+    "--remote-debugging-address=0.0.0.0 "
+    "--remote-debugging-port=9222 "
+    "--disable-blink-features=AutomationControlled "
+    "--no-first-run "
+    "--no-default-browser-check "
+    "--window-size=1920,1080 "
+    "about:blank\" "
+    ">/tmp/chromium-reset.log 2>&1 &"
+)
 _CDP_PORT = 9223
 
 
@@ -35,13 +59,20 @@ class BrowserPool:
         to the runtime container's CDP endpoint.
         """
         key = str(session_id)
-        if key in self._managers:
-            return self._managers[key]
 
         from app.services.runtime import get_runtime
 
         provider = get_runtime()
         runtime = await provider.ensure(session_id)
+
+        manager = self._managers.get(key)
+        if manager is not None:
+            try:
+                await manager.ensure_connected()
+                return manager
+            except Exception:
+                logger.warning("BrowserManager for session %s became unhealthy; recreating it", key, exc_info=True)
+                await self.remove(session_id)
 
         # Get container IP for CDP connection
         ip: str | None = None
@@ -53,6 +84,31 @@ class BrowserPool:
 
         cdp_endpoint = f"http://{ip}:{_CDP_PORT}"
         manager = BrowserManager(cdp_endpoint=cdp_endpoint)
+        try:
+            await manager.ensure_connected()
+        except Exception:
+            logger.warning(
+                "BrowserManager could not attach to session %s at %s; restarting Chromium with CDP",
+                key,
+                cdp_endpoint,
+                exc_info=True,
+            )
+            await manager.close()
+            await runtime.ssh.run(_CHROMIUM_RESTART_CMD, timeout=15)
+            last_error: Exception | None = None
+            for _ in range(10):
+                try:
+                    manager = BrowserManager(cdp_endpoint=cdp_endpoint)
+                    await manager.ensure_connected()
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+                    await manager.close()
+                    await asyncio.sleep(0.5)
+            else:
+                raise RuntimeError(
+                    f"Browser CDP did not become ready for session {key}"
+                ) from last_error
         self._managers[key] = manager
         logger.info("Created BrowserManager for session %s at %s", key, cdp_endpoint)
         return manager

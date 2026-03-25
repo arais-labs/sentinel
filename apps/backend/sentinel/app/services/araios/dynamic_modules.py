@@ -185,7 +185,6 @@ def build_dynamic_module_definition(
         actions=actions,
         page_title=module.page_title,
         page_content=module.page_content,
-        pinned=bool(module.pinned),
         system=bool(module.system),
         order=int(module.order or 100),
         grouped_tool=True,

@@ -222,6 +222,288 @@ def test_git_exec_supports_gh_repo_list_with_account_token(monkeypatch):
     assert "ghr_read_token_123" in captured["redactions"]
 
 
+def test_git_exec_supports_ownerless_gh_repo_list_with_explicit_account(monkeypatch):
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="gh-ownerless")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="selected-account",
+            host="github.com",
+            scope_pattern="*",
+            author_name="Test User",
+            author_email="test-user@example.com",
+            token_read="ghr_ownerless_token",
+            token_write="ghw_ownerless_token",
+        )
+    )
+    session_factory = _SessionFactory(fake_db)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_subprocess(*, args, run_dir, env, timeout_seconds, redactions=None):
+        captured["args"] = args
+        captured["env"] = env
+        captured["timeout_seconds"] = timeout_seconds
+        captured["redactions"] = redactions or []
+        return {
+            "ok": True,
+            "returncode": 0,
+            "timed_out": False,
+            "stdout": "repo-one\nrepo-two\n",
+            "stderr": "",
+            "cwd": str(run_dir),
+            "command": " ".join(args),
+        }
+
+    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+
+    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    result = _run_tool(
+        tool,
+        {
+            "command": "run_read",
+            "session_id": str(session.id),
+            "cli_command": "gh repo list --limit 5",
+            "git_account_name": "selected-account",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["network_mode"] == "read"
+    assert result["account"]["name"] == "selected-account"
+    assert captured["args"] == ["gh", "repo", "list", "--limit", "5"]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["GH_TOKEN"] == "ghr_ownerless_token"
+    assert env["GITHUB_TOKEN"] == "ghr_ownerless_token"
+
+
+def test_git_exec_supports_gh_repo_clone_with_explicit_account(monkeypatch):
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="gh-repo-clone")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="selected-account",
+            host="github.com",
+            scope_pattern="*",
+            author_name="Test User",
+            author_email="test-user@example.com",
+            token_read="ghr_clone_token",
+            token_write="ghw_clone_token",
+        )
+    )
+    session_factory = _SessionFactory(fake_db)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_subprocess(*, args, run_dir, env, timeout_seconds, redactions=None):
+        captured["args"] = args
+        captured["run_dir"] = run_dir
+        captured["env"] = env
+        captured["timeout_seconds"] = timeout_seconds
+        captured["redactions"] = redactions or []
+        return {
+            "ok": True,
+            "returncode": 0,
+            "timed_out": False,
+            "stdout": "cloned\n",
+            "stderr": "",
+            "cwd": str(run_dir),
+            "command": " ".join(args),
+        }
+
+    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+
+    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    result = _run_tool(
+        tool,
+        {
+            "command": "run_read",
+            "session_id": str(session.id),
+            "cli_command": "gh repo clone example-org/example-repo",
+            "git_account_name": "selected-account",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["network_mode"] == "read"
+    assert result["account"]["name"] == "selected-account"
+    assert captured["args"] == ["gh", "repo", "clone", "example-org/example-repo"]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["GH_TOKEN"] == "ghr_clone_token"
+    assert env["GITHUB_TOKEN"] == "ghr_clone_token"
+
+
+def test_git_exec_rejects_ownerless_gh_repo_list_without_explicit_account():
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="gh-ownerless-missing-account")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="selected-account",
+            host="github.com",
+            scope_pattern="*",
+            author_name="Test User",
+            author_email="test-user@example.com",
+            token_read="ghr_ownerless_token",
+            token_write="ghw_ownerless_token",
+        )
+    )
+    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+
+    with pytest.raises(ToolValidationError, match="provide an explicit git account selection"):
+        _run_tool(
+            tool,
+            {
+                "command": "run_read",
+                "session_id": str(session.id),
+                "cli_command": "gh repo list --limit 5",
+            },
+        )
+
+
+def test_git_exec_rejects_gh_repo_clone_destination_outside_workspace():
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="gh-repo-clone-outside")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="selected-account",
+            host="github.com",
+            scope_pattern="*",
+            author_name="Test User",
+            author_email="test-user@example.com",
+            token_read="ghr_clone_token",
+            token_write="ghw_clone_token",
+        )
+    )
+    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+
+    with pytest.raises(ToolValidationError, match="gh repo clone destination must stay inside session workspace"):
+        _run_tool(
+            tool,
+            {
+                "command": "run_read",
+                "session_id": str(session.id),
+                "cli_command": "gh repo clone example-org/example-repo ../escape",
+                "git_account_name": "selected-account",
+            },
+        )
+
+
+def test_git_exec_supports_session_example_ownerless_gh_api_user_repos_with_explicit_account(monkeypatch):
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="gh-api-user-repos")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="selected-account",
+            host="github.com",
+            scope_pattern="*",
+            author_name="Test User",
+            author_email="test-user@example.com",
+            token_read="ghr_user_repos_token",
+            token_write="ghw_user_repos_token",
+        )
+    )
+    session_factory = _SessionFactory(fake_db)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_subprocess(*, args, run_dir, env, timeout_seconds, redactions=None):
+        captured["args"] = args
+        captured["env"] = env
+        captured["timeout_seconds"] = timeout_seconds
+        captured["redactions"] = redactions or []
+        return {
+            "ok": True,
+            "returncode": 0,
+            "timed_out": False,
+            "stdout": "[]",
+            "stderr": "",
+            "cwd": str(run_dir),
+            "command": " ".join(args),
+        }
+
+    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+
+    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    result = _run_tool(
+        tool,
+        {
+            "command": "run_read",
+            "session_id": str(session.id),
+            "cli_command": "gh api /user/repos?per_page=200",
+            "git_account_name": "selected-account",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["network_mode"] == "read"
+    assert result["account"]["name"] == "selected-account"
+    assert captured["args"] == ["gh", "api", "/user/repos?per_page=200"]
+
+
+def test_git_exec_supports_generic_ownerless_gh_api_with_explicit_account(monkeypatch):
+    fake_db = FakeDB()
+    session = Session(user_id="dev-admin", status="active", title="gh-api-user")
+    fake_db.add(session)
+    fake_db.add(
+        GitAccount(
+            name="selected-account",
+            host="github.com",
+            scope_pattern="*",
+            author_name="Test User",
+            author_email="test-user@example.com",
+            token_read="ghr_user_token",
+            token_write="ghw_user_token",
+        )
+    )
+    session_factory = _SessionFactory(fake_db)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_subprocess(*, args, run_dir, env, timeout_seconds, redactions=None):
+        captured["args"] = args
+        captured["env"] = env
+        captured["timeout_seconds"] = timeout_seconds
+        captured["redactions"] = redactions or []
+        return {
+            "ok": True,
+            "returncode": 0,
+            "timed_out": False,
+            "stdout": "{}",
+            "stderr": "",
+            "cwd": str(run_dir),
+            "command": " ".join(args),
+        }
+
+    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+
+    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    result = _run_tool(
+        tool,
+        {
+            "command": "run_read",
+            "session_id": str(session.id),
+            "cli_command": "gh api /user",
+            "git_account_name": "selected-account",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["network_mode"] == "read"
+    assert result["account"]["name"] == "selected-account"
+    assert captured["args"] == ["gh", "api", "/user"]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["GH_TOKEN"] == "ghr_user_token"
+    assert env["GITHUB_TOKEN"] == "ghr_user_token"
+
+
 def test_git_exec_supports_gh_pr_view_with_read_token(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-pr-view")
@@ -658,11 +940,11 @@ def test_git_exec_uses_explicit_git_account_name_for_clone(monkeypatch):
         )
     )
     preferred = GitAccount(
-        name="arailex",
+        name="selected-account",
         host="github.com",
         scope_pattern="*",
-        author_name="Arailex",
-        author_email="alex@example.com",
+        author_name="Preferred Account",
+        author_email="preferred-account@example.com",
         token_read="alex-read",
         token_write="alex-write",
     )
@@ -698,12 +980,12 @@ def test_git_exec_uses_explicit_git_account_name_for_clone(monkeypatch):
             "command": "run_read",
             "session_id": str(session.id),
             "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
-            "git_account_name": "arailex",
+            "git_account_name": "selected-account",
         },
     )
 
     assert result["ok"] is True
-    assert result["account"]["name"] == "arailex"
+    assert result["account"]["name"] == "selected-account"
     assert captured["args"][0:4] == ["git", "-c", "credential.helper=", "clone"]
 
 
@@ -724,14 +1006,14 @@ def test_git_exec_rejects_unknown_explicit_git_account_name():
     )
     tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
 
-    with pytest.raises(ToolValidationError, match="Requested git account 'arailex' was not found"):
+    with pytest.raises(ToolValidationError, match="Requested git account 'selected-account' was not found"):
         _run_tool(
             tool,
             {
                 "command": "run_read",
                 "session_id": str(session.id),
                 "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
-                "git_account_name": "arailex",
+                "git_account_name": "selected-account",
             },
         )
 
