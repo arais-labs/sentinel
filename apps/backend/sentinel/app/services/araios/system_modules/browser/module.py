@@ -410,7 +410,6 @@ MODULE = ModuleDefinition(
         "session browser context across calls."
     ),
     icon="chrome",
-    pinned=True,
     system=True,
     grouped_tool=True,
     actions=_browser_actions(),

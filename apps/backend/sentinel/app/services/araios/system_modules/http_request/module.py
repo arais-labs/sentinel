@@ -10,7 +10,6 @@ MODULE = ModuleDefinition(
     label="HTTP Request",
     description="Make outbound HTTP requests to external endpoints.",
     icon="globe",
-    pinned=False,
     system=True,
     actions=[
         ActionDefinition(

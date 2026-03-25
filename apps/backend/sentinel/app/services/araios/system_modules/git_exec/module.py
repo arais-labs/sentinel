@@ -63,12 +63,11 @@ MODULE = ModuleDefinition(
     label="Git Exec",
     description=(
         "Execute git commands and selected GitHub CLI commands inside the session workspace with managed credentials. "
-        "Allowed gh commands: `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT). "
+        "Allowed gh commands: `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT). "
         "Allowed network git reads include `git clone/fetch/pull/ls-remote/submodule/request-pull`; "
         "`git request-pull` only generates a pull-request summary and does not open a GitHub PR."
     ),
     icon="git-branch",
-    pinned=True,
     system=True,
     grouped_tool=True,
     actions=[

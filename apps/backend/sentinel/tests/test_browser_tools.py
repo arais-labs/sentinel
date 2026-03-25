@@ -4,6 +4,8 @@ import asyncio
 import base64
 from uuid import UUID
 
+import app.services.browser.pool as browser_pool_module
+import app.services.runtime as runtime_module
 from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
 from app.services.browser.manager import BrowserManager
 from app.services.tools.executor import ToolExecutor, ToolValidationError
@@ -336,6 +338,99 @@ def test_browser_manager_lazy_init_and_actions():
     assert state["launches"] in {0, 1}
     assert state["contexts"] == 1
     assert state["stopped"] == 1
+
+
+def test_browser_pool_restarts_remote_browser_when_cdp_is_unavailable():
+    state = {"created": 0}
+    ssh_runs: list[str] = []
+
+    class _FakeSSH:
+        async def run(self, command: str, *, timeout: int = 300, cwd=None, env=None):
+            _ = timeout, cwd, env
+            ssh_runs.append(command)
+            return None
+
+    class _FakeRuntimeProvider:
+        async def ensure(self, session_id):
+            _ = session_id
+            return type("Runtime", (), {"ssh": _FakeSSH()})()
+
+        def get_container_ip(self, session_id):
+            _ = session_id
+            return "127.0.0.1"
+
+    class _FakeBrowserManager:
+        def __init__(self, *, cdp_endpoint: str | None = None):
+            self.cdp_endpoint = cdp_endpoint
+            self.instance_number = state["created"]
+            state["created"] += 1
+            self.closed = False
+
+        async def ensure_connected(self):
+            if self.instance_number == 0:
+                raise RuntimeError("cdp unavailable")
+
+        async def close(self):
+            self.closed = True
+
+    old_get_runtime = runtime_module.get_runtime
+    old_manager_cls = browser_pool_module.BrowserManager
+    browser_pool_module.BrowserManager = _FakeBrowserManager
+    runtime_module.get_runtime = lambda: _FakeRuntimeProvider()
+    try:
+        pool = browser_pool_module.BrowserPool()
+        manager = _run(pool.get(_SID))
+    finally:
+        browser_pool_module.BrowserManager = old_manager_cls
+        runtime_module.get_runtime = old_get_runtime
+
+    assert isinstance(manager, _FakeBrowserManager)
+    assert manager.instance_number == 1
+    assert any("--remote-debugging-port=9222" in command for command in ssh_runs)
+
+
+def test_browser_pool_recreates_unhealthy_cached_manager():
+    class _FakeRuntimeProvider:
+        async def ensure(self, session_id):
+            _ = session_id
+            return type("Runtime", (), {"ssh": None})()
+
+        def get_container_ip(self, session_id):
+            _ = session_id
+            return "127.0.0.1"
+
+    class _FakeBrowserManager:
+        instances: list["_FakeBrowserManager"] = []
+
+        def __init__(self, *, cdp_endpoint: str | None = None):
+            self.cdp_endpoint = cdp_endpoint
+            self.fail = False
+            self.closed = False
+            _FakeBrowserManager.instances.append(self)
+
+        async def ensure_connected(self):
+            if self.fail:
+                raise RuntimeError("stale connection")
+
+        async def close(self):
+            self.closed = True
+
+    old_get_runtime = runtime_module.get_runtime
+    old_manager_cls = browser_pool_module.BrowserManager
+    browser_pool_module.BrowserManager = _FakeBrowserManager
+    runtime_module.get_runtime = lambda: _FakeRuntimeProvider()
+    try:
+        pool = browser_pool_module.BrowserPool()
+        first = _run(pool.get(_SID))
+        first.fail = True
+        second = _run(pool.get(_SID))
+    finally:
+        browser_pool_module.BrowserManager = old_manager_cls
+        runtime_module.get_runtime = old_get_runtime
+
+    assert first is not second
+    assert first.closed is True
+    assert len(_FakeBrowserManager.instances) == 2
 
 
 def test_browser_manager_falls_back_when_profile_is_locked():

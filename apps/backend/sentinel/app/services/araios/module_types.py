@@ -206,7 +206,6 @@ class ModuleDefinition:
     secrets: list[SecretDefinition] | None = None
     page_title: str | None = None
     page_content: str | None = None
-    pinned: bool = False
     system: bool = False
     order: int = 100
     grouped_tool: bool = False
@@ -224,7 +223,6 @@ class ModuleDefinition:
             "secrets": [s.to_dict() for s in self.secrets] if self.secrets else [],
             "page_title": self.page_title,
             "page_content": self.page_content,
-            "pinned": self.pinned,
             "system": self.system,
             "order": self.order,
             "grouped_tool": self.grouped_tool,
@@ -314,7 +312,6 @@ class ModuleDefinition:
             secrets=secrets,
             page_title=data.get("page_title"),
             page_content=data.get("page_content"),
-            pinned=data.get("pinned", False),
             system=data.get("system", False),
             order=data.get("order", 100),
             grouped_tool=data.get("grouped_tool", False),

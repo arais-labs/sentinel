@@ -1569,6 +1569,15 @@ class BrowserManager:
             "stale_lock_cleared": stale_lock_cleared,
         }
 
+    async def ensure_connected(self) -> None:
+        page = await self._ensure_page()
+        try:
+            await page.title()
+        except Exception:
+            await self.close()
+            page = await self._ensure_page()
+            await page.title()
+
     async def close(self) -> None:
         page = self._page
         context = self._context

@@ -227,7 +227,6 @@ MODULE = ModuleDefinition(
     label="Memory",
     description="Hierarchical memory tree operations from one unified entry point.",
     icon="brain",
-    pinned=True,
     system=True,
     grouped_tool=True,
     actions=[
