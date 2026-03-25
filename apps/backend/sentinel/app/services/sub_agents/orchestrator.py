@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
-from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
+from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock, TurnResult
 from app.models import Session, SubAgentTask
 from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
@@ -180,6 +180,7 @@ class SubAgentOrchestrator:
                 except Exception:
                     await db.rollback()
 
+            runtime_task: asyncio.Task[TurnResult] | None = None
             try:
                 runtime = SentinelLoopRuntimeAdapter(
                     loop=scoped_runtime_support,
@@ -224,7 +225,6 @@ class SubAgentOrchestrator:
                 await self._mark_failed(db, task, "Sub-agent timed out")
                 return
             except asyncio.CancelledError:
-                runtime_task = locals().get("runtime_task")
                 if runtime_task is not None:
                     runtime_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

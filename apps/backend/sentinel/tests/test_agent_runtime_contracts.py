@@ -212,6 +212,72 @@ async def test_engine_cancellation_during_tool_execution_preserves_completed_res
     assert slow_result.metadata["cancelled_by_stop"] is True
 
 
+@pytest.mark.asyncio
+async def test_engine_interjection_source_appends_items_between_iterations() -> None:
+    provider = _InterjectionAwareProvider()
+
+    async def _noop_tool(_payload: dict[str, object]) -> ToolExecutionResult:
+        return ToolExecutionResult(status="ok", content={"ok": True})
+
+    engine = AgentRuntimeEngine(
+        provider=provider,
+        tool_registry=_StaticToolRegistry(
+            [
+                ToolDefinition(
+                    name="noop_tool",
+                    description="noop",
+                    parameters_schema={"type": "object"},
+                    execute=_noop_tool,
+                )
+            ]
+        ),
+    )
+
+    injected_once = False
+
+    def _interjections() -> list[ConversationItem]:
+        nonlocal injected_once
+        if injected_once:
+            return []
+        injected_once = True
+        return [
+            ConversationItem(
+                id="operator-1",
+                role="user",
+                content=[TextBlock(text="[Operator interjection]: continue with the new constraint")],
+                metadata={"source": "operator_interjection"},
+            )
+        ]
+
+    result = await engine.run_turn(
+        RunTurnRequest(
+            conversation_id="conv-1",
+            new_items=[
+                ConversationItem(
+                    id="user-1",
+                    role="user",
+                    content=[TextBlock(text="run tools")],
+                )
+            ],
+            config=GenerationConfig(model="normal", max_iterations=4),
+            interjection_source=_interjections,
+        )
+    )
+
+    assert result.status == "completed"
+    assert provider.calls == 2
+    second_call = provider.seen_messages[1]
+    assert any(
+        item.role == "user"
+        and any(
+            isinstance(block, TextBlock)
+            and block.text == "[Operator interjection]: continue with the new constraint"
+            for block in item.content
+        )
+        for item in second_call
+    )
+
+
 class _NoopProvider:
     @property
     def name(self) -> str:
@@ -256,3 +322,30 @@ class _SingleToolUseProvider:
             tool_call=ToolCallBlock(id="call_slow", name="slow_tool", arguments={"label": "slow"}),
         )
         yield AgentEvent(type="done", stop_reason="tool_use")
+
+
+class _InterjectionAwareProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_messages: list[list[ConversationItem]] = []
+
+    @property
+    def name(self) -> str:
+        return "interjection-aware-provider"
+
+    async def chat(self, messages, tools, config):
+        raise AssertionError("chat() should not be called in this test")
+
+    async def stream(self, messages, tools, config):
+        del tools, config
+        snapshot = list(messages)
+        self.seen_messages.append(snapshot)
+        self.calls += 1
+        if self.calls == 1:
+            yield AgentEvent(
+                type="toolcall_start",
+                tool_call=ToolCallBlock(id="call_noop", name="noop_tool", arguments={}),
+            )
+            yield AgentEvent(type="done", stop_reason="tool_use")
+            return
+        yield AgentEvent(type="done", stop_reason="stop")

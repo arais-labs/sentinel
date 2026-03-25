@@ -102,7 +102,7 @@ class _FakeLoop:
         return self._collect_attachments(messages)
 
 
-def test_ws_streams_agent_loop_events_when_provider_available():
+def test_ws_streams_runtime_events_when_provider_available():
     fake_db = FakeDB()
 
     async def _override_get_db():

@@ -334,7 +334,7 @@ def test_scheduler_agent_message_ack_uses_plain_content_and_trigger_metadata():
     assert ack["metadata"].get("trigger_name") == "heartbeat-job"
 
 
-def test_scheduler_agent_loop_can_be_updated_after_init():
+def test_scheduler_runtime_support_can_be_updated_after_init():
     db = FakeDB()
     trigger = Trigger(
         name="agent-job",
