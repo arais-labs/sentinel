@@ -1825,6 +1825,9 @@ export function SessionsPage() {
               ...prev,
               isThinking: false,
               isStreaming: false,
+              isCompactingContext: false,
+              agentIteration: 0,
+              agentMaxIterations: 0,
             };
           }
           return {
@@ -1836,6 +1839,9 @@ export function SessionsPage() {
             completedToolCalls: [],
             isThinking: false,
             isStreaming: false,
+            isCompactingContext: false,
+            agentIteration: 0,
+            agentMaxIterations: 0,
           };
         });
       }
@@ -2886,18 +2892,17 @@ export function SessionsPage() {
 
   async function stopCurrent() {
     if (!activeSessionId) return;
+    const sessionId = activeSessionId;
     setIsStopping(true);
     try {
-      await api.post(`/sessions/${activeSessionId}/stop`, {});
-      toast.success('Stopping response');
-      setStreaming((current) => ({
-        ...current,
-        isThinking: false,
-        isStreaming: false,
-        isCompactingContext: false,
-      }));
-      void loadMessages(activeSessionId);
-      void fetchContextUsage(activeSessionId);
+      await api.post(`/sessions/${sessionId}/stop`, {});
+      await loadMessages(sessionId);
+      await Promise.allSettled([
+        fetchContextUsage(sessionId),
+        fetchSessions({ autoSelectIfEmpty: false }),
+        fetchRuntimeStatus(sessionId, 120),
+      ]);
+      toast.success('Response stopped');
     } catch {
       toast.error('Failed to stop');
     }

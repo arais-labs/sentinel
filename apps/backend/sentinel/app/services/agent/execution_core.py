@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.agent.agent_modes import AgentMode
 from app.services.agent.tool_adapter import ToolAdapter
+from app.services.agent.tool_adapter import ToolExecutionCancelled
 from app.services.agent.tool_image_reinjection import (
     ToolImageReinjectionPolicy,
     build_tool_image_reinjection_messages,
@@ -421,13 +422,18 @@ class AgentExecutionCore:
                         )
                     )
 
-                tool_results = await self._tool_adapter.execute_tool_calls(
-                    tool_calls,
-                    db,
-                    session_id=session_id,
-                    agent_mode=agent_mode,
-                    on_pending_tool_result=_emit_pending_tool_result,
-                )
+                tool_execution_cancelled = False
+                try:
+                    tool_results = await self._tool_adapter.execute_tool_calls(
+                        tool_calls,
+                        db,
+                        session_id=session_id,
+                        agent_mode=agent_mode,
+                        on_pending_tool_result=_emit_pending_tool_result,
+                    )
+                except ToolExecutionCancelled as exc:
+                    tool_results = exc.results
+                    tool_execution_cancelled = True
                 working_messages.extend(tool_results)
                 created.extend(tool_results)
 
@@ -480,6 +486,8 @@ class AgentExecutionCore:
                         )
 
                 await _checkpoint_new_messages()
+                if tool_execution_cancelled:
+                    raise asyncio.CancelledError
                 if cooldown_seconds > 0:
                     await asyncio.sleep(cooldown_seconds)
             else:

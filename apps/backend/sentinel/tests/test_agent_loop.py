@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from app.models import Message, Session
 from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
@@ -628,6 +629,95 @@ def test_agent_loop_runs_finalization_round_after_max_iterations():
         if batch
     )
     assert any(event.type == "done" and event.stop_reason == "stop" for event in events)
+
+
+def test_agent_loop_stop_keeps_completed_tool_results_before_cancellation():
+    db = FakeDB()
+    session = _new_session(db)
+    registry = ToolRegistry()
+    fast_completed = asyncio.Event()
+    release_slow = asyncio.Event()
+
+    async def _fast_tool(_payload, runtime: ToolRuntimeContext):
+        del runtime
+        fast_completed.set()
+        return {"status": "ok", "tool": "fast"}
+
+    async def _slow_tool(_payload, runtime: ToolRuntimeContext):
+        del runtime
+        await release_slow.wait()
+        return {"status": "ok", "tool": "slow"}
+
+    registry.register(
+        ToolDefinition(
+            name="fast_tool",
+            description="Fast tool",
+            parameters_schema={"type": "object", "additionalProperties": False, "properties": {}},
+            execute=_fast_tool,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="slow_tool",
+            description="Slow tool",
+            parameters_schema={"type": "object", "additionalProperties": False, "properties": {}},
+            execute=_slow_tool,
+        )
+    )
+
+    provider = _SequenceProvider(
+        [
+            AssistantMessage(
+                content=[
+                    ToolCallContent(id="call_fast", name="fast_tool", arguments={}),
+                    ToolCallContent(id="call_slow", name="slow_tool", arguments={}),
+                ],
+                model="m1",
+                provider="p1",
+                usage=TokenUsage(input_tokens=2, output_tokens=1),
+                stop_reason="tool_use",
+            )
+        ]
+    )
+    loop = _build_loop(provider, registry)
+
+    async def _scenario():
+        task = asyncio.create_task(
+            loop.run(
+                db,
+                session.id,
+                "run both tools",
+                stream=False,
+                persist_incremental=True,
+            )
+        )
+        await asyncio.wait_for(fast_completed.wait(), timeout=1.0)
+        task.cancel()
+        return await asyncio.wait_for(task, timeout=1.0)
+
+    result = _run(_scenario())
+
+    assert result.error == "Generation stopped by user"
+
+    saved = [m for m in db.storage[Message] if m.session_id == session.id]
+    saved_non_system = [m for m in saved if m.role != "system"]
+    assert [m.role for m in saved_non_system] == ["user", "assistant", "tool_result", "tool_result", "assistant"]
+
+    fast_row = next(m for m in saved_non_system if m.role == "tool_result" and m.tool_call_id == "call_fast")
+    slow_row = next(m for m in saved_non_system if m.role == "tool_result" and m.tool_call_id == "call_slow")
+
+    assert json.loads(fast_row.content)["tool"] == "fast"
+    slow_payload = json.loads(slow_row.content)
+    assert slow_payload["status"] == "cancelled"
+    assert "cancelled" in slow_payload["message"].lower()
+
+    rebuilt = _run(ContextBuilder(default_system_prompt="System prompt").build(db, session.id))
+    rebuilt_tool_result_ids = [
+        getattr(item, "tool_call_id", "")
+        for item in rebuilt
+        if getattr(item, "role", "") == "tool_result"
+    ]
+    assert rebuilt_tool_result_ids == ["call_fast", "call_slow"]
     assert result.final_text
 
 
