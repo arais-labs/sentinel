@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import contextlib
 from datetime import UTC, datetime
 from typing import Awaitable, Callable
 from uuid import UUID
@@ -10,8 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
+from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
 from app.models import Session, SubAgentTask
-from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
+from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 from app.services.araios.system_modules.browser import (
     BROWSER_TAB_MANAGEMENT_COMMANDS,
     BROWSER_TAB_TARGETABLE_COMMANDS,
@@ -30,12 +33,12 @@ class SubAgentOrchestrator:
 
     def __init__(
         self,
-        agent_loop: AgentLoop | None = None,
+        agent_runtime_support: SentinelRuntimeSupport | None = None,
         db_factory: async_sessionmaker[AsyncSession] | None = None,
         base_tool_registry: ToolRegistry | None = None,
         on_task_completed: Callable[[SubAgentTask], Awaitable[None] | None] | None = None,
     ) -> None:
-        self._agent_loop = agent_loop
+        self._agent_runtime_support = agent_runtime_support
         self._db_factory = db_factory
         self._base_tool_registry = base_tool_registry
         self._on_task_completed = on_task_completed
@@ -110,8 +113,8 @@ class SubAgentOrchestrator:
             task.started_at = datetime.now(UTC)
             await db.commit()
 
-            if self._agent_loop is None:
-                await self._mark_failed(db, task, "Agent loop unavailable")
+            if self._agent_runtime_support is None:
+                await self._mark_failed(db, task, "Agent runtime support unavailable")
                 return
 
             parent_session = await self._load_parent_session(db, task.session_id)
@@ -138,7 +141,7 @@ class SubAgentOrchestrator:
             task.result = {"child_session_id": str(child_session.id)}
             await db.commit()
 
-            scoped_loop = self._scoped_agent_loop(task)
+            scoped_runtime_support = self._scoped_runtime_support(task)
             prompt = self._sub_agent_system_prompt(task)
 
             key = str(task.id)
@@ -161,25 +164,56 @@ class SubAgentOrchestrator:
                     await db.rollback()
 
             try:
-                result = await asyncio.wait_for(
-                    scoped_loop.run(
-                        db,
-                        child_session.id,
-                        task.objective,
-                        system_prompt=prompt,
-                        model=self._SUB_AGENT_TIER,
-                        max_iterations=max(1, task.max_turns),
-                        stream=False,
-                        inject_queue=queue,
-                        persist_incremental=True,
-                        on_event=_on_sub_agent_event,
-                    ),
+                runtime = SentinelLoopRuntimeAdapter(
+                    loop=scoped_runtime_support,
+                    db=db,
+                    session_id=child_session.id,
+                )
+                runtime_task = asyncio.create_task(
+                    runtime.run_turn(
+                        RunTurnRequest(
+                            conversation_id=str(child_session.id),
+                            new_items=[
+                                ConversationItem(
+                                    id="sub-agent-user-input",
+                                    role="user",
+                                    content=[TextBlock(text=task.objective)],
+                                )
+                            ],
+                            config=GenerationConfig(
+                                model=self._SUB_AGENT_TIER,
+                                max_iterations=max(1, task.max_turns),
+                                stream=False,
+                                system_prompt=prompt,
+                                provider_metadata={
+                                    "persist_incremental": True,
+                                    "inject_queue": queue,
+                                },
+                            ),
+                        ),
+                        sink=_on_sub_agent_event,
+                    )
+                )
+                done, _pending = await asyncio.wait(
+                    {runtime_task},
                     timeout=max(1, task.timeout_seconds),
                 )
+                if runtime_task not in done:
+                    runtime_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await runtime_task
+                    await self._mark_failed(db, task, "Sub-agent timed out")
+                    return
+                result = await runtime_task
             except asyncio.TimeoutError:
                 await self._mark_failed(db, task, "Sub-agent timed out")
                 return
             except asyncio.CancelledError:
+                runtime_task = locals().get("runtime_task")
+                if runtime_task is not None:
+                    runtime_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await runtime_task
                 task.status = "cancelled"
                 task.completed_at = datetime.now(UTC)
                 await db.commit()
@@ -191,12 +225,23 @@ class SubAgentOrchestrator:
             finally:
                 self._inject_queues.pop(key, None)
 
+            if result.status == "aborted":
+                task.status = "cancelled"
+                task.completed_at = datetime.now(UTC)
+                task.result = {
+                    "error": result.error or "Sub-agent run aborted",
+                    "child_session_id": str(child_session.id),
+                }
+                await db.commit()
+                await self._notify_task_completed(task)
+                return
+
             task.turns_used = int(result.iterations)
             task.tokens_used = int(result.usage.input_tokens + result.usage.output_tokens)
             task.status = "completed"
             task.completed_at = datetime.now(UTC)
             task.result = {
-                "final_text": result.final_text,
+                "final_text": str(result.metadata.get("final_text") or ""),
                 "iterations": result.iterations,
                 "usage": {
                     "input_tokens": result.usage.input_tokens,
@@ -234,17 +279,17 @@ class SubAgentOrchestrator:
             except Exception:
                 return
 
-    def _scoped_agent_loop(self, task: SubAgentTask) -> AgentLoop:
-        """Build an AgentLoop restricted to task allowlist and optional browser tab scope."""
+    def _scoped_runtime_support(self, task: SubAgentTask) -> SentinelRuntimeSupport:
+        """Build a runtime support object restricted to the task allowlist/tab scope."""
         if self._base_tool_registry is None:
-            return self._agent_loop
+            return self._agent_runtime_support
 
         allowed_tools = (
             task.allowed_tools if isinstance(task.allowed_tools, list) else []
         )
         pinned_tab_id = self._pinned_browser_tab_id(task)
         if not allowed_tools and pinned_tab_id is None:
-            return self._agent_loop
+            return self._agent_runtime_support
 
         if allowed_tools:
             allowed = {str(item) for item in allowed_tools if isinstance(item, str)}
@@ -261,7 +306,7 @@ class SubAgentOrchestrator:
 
         available_tools = {tool.name for tool in scoped_registry.list_all()}
 
-        base_context = self._agent_loop.context_builder
+        base_context = self._agent_runtime_support.context_builder
         context_builder = ContextBuilder(
             default_system_prompt=getattr(base_context, "_default_system_prompt", settings.default_system_prompt),
             token_budget=getattr(base_context, "_token_budget", settings.context_token_budget),
@@ -273,7 +318,11 @@ class SubAgentOrchestrator:
             ToolExecutor(scoped_registry),
             session_factory=self._db_factory,
         )
-        return AgentLoop(self._agent_loop.provider, context_builder, tool_adapter)
+        return SentinelRuntimeSupport(
+            self._agent_runtime_support.provider,
+            context_builder,
+            tool_adapter,
+        )
 
     def _tool_with_optional_tab_scope(
         self,

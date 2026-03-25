@@ -524,8 +524,8 @@ def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
 
     try:
         client = TestClient(app)
-        old_agent_loop = getattr(app.state, "agent_loop", None)
-        app.state.agent_loop = _FakeLoop()
+        old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
+        app.state.agent_runtime_support = _FakeLoop()
 
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
@@ -544,8 +544,8 @@ def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
-        if "old_agent_loop" in locals():
-            app.state.agent_loop = old_agent_loop
+        if "old_agent_runtime_support" in locals():
+            app.state.agent_runtime_support = old_agent_runtime_support
 
 
 def test_runtime_file_explorer_endpoints():

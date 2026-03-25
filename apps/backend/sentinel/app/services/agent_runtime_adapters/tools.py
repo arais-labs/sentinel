@@ -12,10 +12,15 @@ from app.sentral import (
 )
 from app.services.agent.agent_modes import AgentMode
 from app.services.agent_runtime_adapters.conversions import approval_payload_to_request
-from app.services.secrets.resolver import resolve_secrets_in_payload
 from app.services.tools.approval.extractors import extract_approval_metadata_from_tool_result
 from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
 from app.services.tools.registry import ToolDefinition, ToolRegistry, ToolRuntimeContext
+
+try:
+    from app.services.secrets.resolver import resolve_secrets_in_payload
+except ModuleNotFoundError:  # pragma: no cover - optional until secrets module lands
+    async def resolve_secrets_in_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        return payload
 
 
 class SentinelToolRegistryAdapter(RuntimeToolRegistry):

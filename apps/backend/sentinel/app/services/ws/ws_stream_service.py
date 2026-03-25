@@ -45,23 +45,20 @@ class AgentRunOutcome:
     run_error: str | None
 
 
-class AgentLoopProtocol(Protocol):
+class RuntimeSupportProtocol(Protocol):
     provider: Any
+    context_builder: Any
+    tool_adapter: Any
 
-    async def run(
-        self,
-        db: AsyncSession,
-        session_id: UUID,
-        user_message: str | list[TextContent | ImageContent],
-        *,
-        persist_user_message: bool,
-        on_event: Any,
-        model: str,
-        max_iterations: int,
-        agent_mode: AgentMode,
-        persist_incremental: bool,
-        user_metadata: dict[str, Any] | None = None,
-    ) -> Any: ...
+    async def estop_level(self, db: AsyncSession) -> Any: ...
+
+    async def prepare_runtime_turn_context(self, db: AsyncSession, session_id: UUID, **kwargs) -> Any: ...
+
+    async def persist_created_messages(self, db: AsyncSession, session_id: UUID, created: list[Any], assistant_iterations: dict[int, int], **kwargs) -> None: ...
+
+    def extract_final_text(self, messages: list[Any]) -> str: ...
+
+    def collect_attachments(self, messages: list[Any]) -> list[dict[str, Any]]: ...
 
 
 async def get_owned_session(db: AsyncSession, session_id: UUID, user_id: str) -> Session | None:
@@ -201,7 +198,7 @@ async def run_agent_once(
     session_key: str,
     manager: ConnectionManager,
     run_registry: AgentRunRegistry,
-    agent_loop: AgentLoopProtocol,
+    agent_runtime_support: RuntimeSupportProtocol,
     payload: str | list[TextContent | ImageContent],
     tier: TierName | None,
     max_iterations: int,
@@ -209,7 +206,7 @@ async def run_agent_once(
     persist_user_message: bool,
 ) -> AgentRunOutcome:
     runtime = SentinelLoopRuntimeAdapter(
-        loop=agent_loop,
+        loop=agent_runtime_support,
         db=db,
         session_id=session_id,
     )
@@ -282,7 +279,7 @@ async def maybe_auto_compact_and_resume(
     session_key: str,
     manager: ConnectionManager,
     run_registry: AgentRunRegistry,
-    agent_loop: AgentLoopProtocol,
+    agent_runtime_support: RuntimeSupportProtocol,
     tier: TierName | None,
     max_iterations: int,
     agent_mode: AgentMode,
@@ -290,7 +287,7 @@ async def maybe_auto_compact_and_resume(
     compaction_service_cls: type[CompactionService] = CompactionService,
 ) -> None:
     try:
-        compaction_svc = compaction_service_cls(provider=getattr(agent_loop, "provider", None))
+        compaction_svc = compaction_service_cls(provider=getattr(agent_runtime_support, "provider", None))
         should_compact = await compaction_svc.should_auto_compact(db, session_id=session_id)
         if not should_compact:
             return
@@ -327,7 +324,7 @@ async def maybe_auto_compact_and_resume(
             session_key=session_key,
             manager=manager,
             run_registry=run_registry,
-            agent_loop=agent_loop,
+            agent_runtime_support=agent_runtime_support,
             payload=auto_resume_prompt,
             tier=tier,
             max_iterations=max_iterations,

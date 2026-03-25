@@ -11,8 +11,7 @@ from app.config import settings
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.services.agent import ToolAdapter
-from app.services.agent.sentinel_runner import PreparedRuntimeTurnContext
+from app.services.agent import PreparedRuntimeTurnContext, ToolAdapter
 from app.services.sessions.compaction import CompactionResult
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent
@@ -121,8 +120,8 @@ def test_ws_streams_agent_loop_events_when_provider_available():
 
     try:
         client = TestClient(app)
-        old_agent_loop = getattr(app.state, "agent_loop", None)
-        app.state.agent_loop = _FakeLoop()
+        old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
+        app.state.agent_runtime_support = _FakeLoop()
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
@@ -165,8 +164,8 @@ def test_ws_streams_agent_loop_events_when_provider_available():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
-        if "old_agent_loop" in locals():
-            app.state.agent_loop = old_agent_loop
+        if "old_agent_runtime_support" in locals():
+            app.state.agent_runtime_support = old_agent_runtime_support
 
 
 def test_ws_auto_resumes_after_compaction():
@@ -189,9 +188,9 @@ def test_ws_auto_resumes_after_compaction():
 
     try:
         client = TestClient(app)
-        old_agent_loop = getattr(app.state, "agent_loop", None)
+        old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
         fake_loop = _FakeLoop(deltas_by_run=[["first run"], ["resumed run"]])
-        app.state.agent_loop = fake_loop
+        app.state.agent_runtime_support = fake_loop
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
@@ -255,5 +254,5 @@ def test_ws_auto_resumes_after_compaction():
         settings.compaction_auto_resume_enabled = old_auto_resume
         app.dependency_overrides.clear()
         app_main.init_db = old_init
-        if "old_agent_loop" in locals():
-            app.state.agent_loop = old_agent_loop
+        if "old_agent_runtime_support" in locals():
+            app.state.agent_runtime_support = old_agent_runtime_support

@@ -11,7 +11,9 @@ from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import Session, SystemSetting
-from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
+from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 from app.services.estop import EstopLevel, EstopService
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent
@@ -33,13 +35,13 @@ class _SequenceProvider(LLMProvider):
     def name(self) -> str:
         return "sequence"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None):
-        _ = messages, model, tools, temperature
+    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        _ = messages, model, tools, temperature, tool_choice
         self.calls += 1
         return self._response
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None):
-        _ = messages, model, tools, temperature
+    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        _ = messages, model, tools, temperature, tool_choice
         if False:
             yield AgentEvent(type="done", stop_reason="stop")
         return
@@ -210,7 +212,7 @@ def test_tool_adapter_enforces_estop_per_call_not_once_per_batch():
     assert estop.calls == 2
 
 
-def test_agent_loop_aborts_when_kill_all_active():
+def test_runtime_support_aborts_when_kill_all_active():
     db = FakeDB()
     service = EstopService()
     _run(service.set_level(db, EstopLevel.KILL_ALL))
@@ -226,17 +228,36 @@ def test_agent_loop_aborts_when_kill_all_active():
             stop_reason="stop",
         )
     )
-    loop = AgentLoop(
-        provider,
-        ContextBuilder(default_system_prompt="system"),
-        ToolAdapter(ToolRegistry(), ToolExecutor(ToolRegistry())),
+    runtime = SentinelLoopRuntimeAdapter(
+        loop=SentinelRuntimeSupport(
+            provider,
+            ContextBuilder(default_system_prompt="system"),
+            ToolAdapter(ToolRegistry(), ToolExecutor(ToolRegistry())),
+        ),
+        db=db,
+        session_id=session.id,
     )
     events: list[AgentEvent] = []
 
     async def _capture(event: AgentEvent) -> None:
         events.append(event)
 
-    result = _run(loop.run(db, session.id, "hello", stream=False, on_event=_capture))
+    result = _run(
+        runtime.run_turn(
+            RunTurnRequest(
+                conversation_id=str(session.id),
+                new_items=[
+                    ConversationItem(
+                        id="user-1",
+                        role="user",
+                        content=[TextBlock(text="hello")],
+                    )
+                ],
+                config=GenerationConfig(model="normal", stream=False),
+            ),
+            sink=_capture,
+        )
+    )
     assert result.iterations == 0
     assert provider.calls == 0
     assert any(event.type == "done" and event.stop_reason == "aborted" for event in events)

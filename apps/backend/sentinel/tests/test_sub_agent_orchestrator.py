@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from app.models import Message, Session, SubAgentTask
-from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent, TokenUsage
 from app.services.sub_agents import SubAgentOrchestrator
@@ -43,28 +43,47 @@ class _SequenceProvider(LLMProvider):
     def name(self) -> str:
         return "sequence"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None):
+    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
         idx = min(self.calls, len(self._responses) - 1)
+        _ = tool_choice
         self.calls += 1
         return self._responses[idx]
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None):
+    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        _ = tool_choice
         if False:
             yield AgentEvent(type="done", stop_reason="stop")
         return
 
 
-class _SlowLoop:
-    async def run(self, db, session_id, user_message, **kwargs):
+class _SlowProvider(LLMProvider):
+    @property
+    def name(self) -> str:
+        return "slow"
+
+    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         await asyncio.sleep(2)
+        raise AssertionError("unreachable")
 
-class _NoopLoop:
-    async def run(self, db, session_id, user_message, **kwargs):
-        return None
+    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
+        await asyncio.sleep(2)
+        if False:
+            yield AgentEvent(type="done", stop_reason="stop")
+        return
 
-def _build_base_loop(provider: LLMProvider, registry: ToolRegistry | None = None) -> AgentLoop:
+
+def _build_base_runtime_support(
+    provider: LLMProvider,
+    registry: ToolRegistry | None = None,
+) -> SentinelRuntimeSupport:
     tool_registry = registry or ToolRegistry()
-    return AgentLoop(provider, ContextBuilder(default_system_prompt="base"), ToolAdapter(tool_registry, ToolExecutor(tool_registry)))
+    return SentinelRuntimeSupport(
+        provider,
+        ContextBuilder(default_system_prompt="base"),
+        ToolAdapter(tool_registry, ToolExecutor(tool_registry)),
+    )
 
 
 def _add_task(db: FakeDB, session: Session, **kwargs) -> SubAgentTask:
@@ -99,8 +118,8 @@ def test_orchestrator_completes_and_creates_child_session_with_usage():
             )
         ]
     )
-    loop = _build_base_loop(provider)
-    orchestrator = SubAgentOrchestrator(loop, _SessionFactory(db), ToolRegistry())
+    runtime_support = _build_base_runtime_support(provider)
+    orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), ToolRegistry())
 
     _run(orchestrator.run_task(task.id))
 
@@ -161,8 +180,8 @@ def test_orchestrator_scopes_allowed_tools():
             ),
         ]
     )
-    loop = _build_base_loop(provider, registry)
-    orchestrator = SubAgentOrchestrator(loop, _SessionFactory(db), registry)
+    runtime_support = _build_base_runtime_support(provider, registry)
+    orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), registry)
 
     _run(orchestrator.run_task(task.id))
 
@@ -209,8 +228,8 @@ def test_orchestrator_reports_actual_iterations_with_grace():
             ),
         ]
     )
-    loop = _build_base_loop(provider)
-    orchestrator = SubAgentOrchestrator(loop, _SessionFactory(db), ToolRegistry())
+    runtime_support = _build_base_runtime_support(provider)
+    orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), ToolRegistry())
 
     _run(orchestrator.run_task(task.id))
     assert task.status == "completed"
@@ -225,7 +244,7 @@ def test_orchestrator_timeout_marks_task_failed():
     db.add(parent)
     task = _add_task(db, parent, timeout_seconds=1)
 
-    orchestrator = SubAgentOrchestrator(_SlowLoop(), _SessionFactory(db), ToolRegistry())
+    orchestrator = SubAgentOrchestrator(_build_base_runtime_support(_SlowProvider()), _SessionFactory(db), ToolRegistry())
     _run(orchestrator.run_task(task.id))
 
     assert task.status == "failed"
@@ -249,8 +268,8 @@ def test_orchestrator_start_task_returns_true_and_runs():
             )
         ]
     )
-    loop = _build_base_loop(provider)
-    orchestrator = SubAgentOrchestrator(loop, _SessionFactory(db), ToolRegistry())
+    runtime_support = _build_base_runtime_support(provider)
+    orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), ToolRegistry())
 
     async def _scenario():
         started = orchestrator.start_task(task.id)
@@ -267,7 +286,7 @@ def test_orchestrator_complete_task_fallback_sets_completed_result():
     db.add(parent)
     task = _add_task(db, parent, max_turns=3)
 
-    orchestrator = SubAgentOrchestrator(_NoopLoop(), _SessionFactory(db), ToolRegistry())
+    orchestrator = SubAgentOrchestrator(None, _SessionFactory(db), ToolRegistry())
     _run(orchestrator.complete_task(db, task))
 
     assert task.status == "completed"
@@ -281,7 +300,7 @@ def test_orchestrator_cancel_task_marks_cancelled():
     db.add(parent)
     task = _add_task(db, parent, timeout_seconds=5)
 
-    orchestrator = SubAgentOrchestrator(_SlowLoop(), _SessionFactory(db), ToolRegistry())
+    orchestrator = SubAgentOrchestrator(_build_base_runtime_support(_SlowProvider()), _SessionFactory(db), ToolRegistry())
 
     async def _scenario():
         started = orchestrator.start_task(task.id)
@@ -312,13 +331,18 @@ def test_orchestrator_invokes_completion_callback():
             )
         ]
     )
-    loop = _build_base_loop(provider)
+    runtime_support = _build_base_runtime_support(provider)
     seen: list[tuple[str, str]] = []
 
     async def _on_completed(item: SubAgentTask):
         seen.append((str(item.id), item.status))
 
-    orchestrator = SubAgentOrchestrator(loop, _SessionFactory(db), ToolRegistry(), on_task_completed=_on_completed)
+    orchestrator = SubAgentOrchestrator(
+        runtime_support,
+        _SessionFactory(db),
+        ToolRegistry(),
+        on_task_completed=_on_completed,
+    )
     _run(orchestrator.run_task(task.id))
 
     assert task.status == "completed"

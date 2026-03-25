@@ -52,7 +52,7 @@ def test_ws_connect_send_ack_and_rejections():
     from app import main as app_main
 
     old_init = app_main.init_db
-    old_agent_loop = getattr(app.state, "agent_loop", None)
+    old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
     from app.routers import sessions as sessions_router
 
     async def _noop_provision_runtime(session_id, ws_manager=None):  # noqa: ARG001
@@ -62,7 +62,7 @@ def test_ws_connect_send_ack_and_rejections():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
-    app.state.agent_loop = None
+    app.state.agent_runtime_support = None
     sessions_router._provision_runtime = _noop_provision_runtime
 
     try:
@@ -153,7 +153,7 @@ def test_ws_connect_send_ack_and_rejections():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
-        app.state.agent_loop = old_agent_loop
+        app.state.agent_runtime_support = old_agent_runtime_support
         sessions_router._provision_runtime = old_provision_runtime
 
 

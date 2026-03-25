@@ -1,5 +1,5 @@
 from app.services.sessions.errors import (
-    AgentLoopUnavailableError,
+    AgentRuntimeUnavailableError,
     ChatPayloadRequiredError,
     MainSessionDeletionError,
     MainSessionTargetInvalidError,
@@ -13,7 +13,7 @@ from app.services.sessions.errors import (
 from app.services.sessions.service import ChatRunResult, MessagePage, SessionPage, SessionService
 
 __all__ = [
-    "AgentLoopUnavailableError",
+    "AgentRuntimeUnavailableError",
     "ChatPayloadRequiredError",
     "ChatRunResult",
     "MainSessionDeletionError",

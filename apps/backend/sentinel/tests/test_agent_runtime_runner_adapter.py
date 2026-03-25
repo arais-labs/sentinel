@@ -8,8 +8,7 @@ from uuid import uuid4
 import pytest
 
 from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
-from app.services.agent import ToolAdapter
-from app.services.agent.sentinel_runner import PreparedRuntimeTurnContext
+from app.services.agent import PreparedRuntimeTurnContext, ToolAdapter
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, TokenUsage, ToolCallContent

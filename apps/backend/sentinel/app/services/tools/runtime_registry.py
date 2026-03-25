@@ -36,5 +36,5 @@ async def rebuild_runtime_registry(
         approval_waiter=build_tool_db_approval_waiter(session_factory=session_factory),
         approval_result_recorder=build_tool_db_approval_result_recorder(session_factory=session_factory),
     )
-    RuntimeRebuildService().rebuild_agent_loop(app_state)
+    RuntimeRebuildService().rebuild_agent_runtime_support(app_state)
     return registry

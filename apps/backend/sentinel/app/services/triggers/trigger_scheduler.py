@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
 from app.models import Session, Trigger, TriggerLog
-from app.services.agent import AgentLoop
+from app.services.agent import SentinelRuntimeSupport
 from app.services.agent_runtime_adapters import (
     SentinelLoopRuntimeAdapter,
     runtime_event_to_sentinel_event,
@@ -84,14 +84,14 @@ class TriggerScheduler:
     def __init__(
         self,
         *,
-        agent_loop: AgentLoop | None,
+        agent_runtime_support: SentinelRuntimeSupport | None,
         tool_executor: ToolExecutor | None,
         ws_manager: ConnectionManager | None = None,
         run_registry: AgentRunRegistry | None = None,
         db_factory: async_sessionmaker[AsyncSession] | None,
         poll_interval_seconds: float = 5.0,
     ) -> None:
-        self._agent_loop = agent_loop
+        self._agent_runtime_support = agent_runtime_support
         self._tool_executor = tool_executor
         self._ws_manager = ws_manager
         self._run_registry = run_registry
@@ -99,9 +99,9 @@ class TriggerScheduler:
         self._poll_interval_seconds = max(0.1, float(poll_interval_seconds))
         self._in_flight: set[str] = set()
 
-    def set_agent_loop(self, agent_loop: AgentLoop | None) -> None:
-        """Hot-swap the agent loop used for agent_message actions."""
-        self._agent_loop = agent_loop
+    def set_agent_runtime_support(self, agent_runtime_support: SentinelRuntimeSupport | None) -> None:
+        """Hot-swap the runtime support used for agent_message actions."""
+        self._agent_runtime_support = agent_runtime_support
 
     async def fire_now(
         self,
@@ -429,8 +429,8 @@ class TriggerScheduler:
         raise ValueError(f"Unsupported action_type: {trigger.action_type}")
 
     async def _execute_agent_message(self, db: AsyncSession, trigger: Trigger) -> TriggerActionOutcome:
-        if self._agent_loop is None:
-            raise RuntimeError("Agent loop unavailable")
+        if self._agent_runtime_support is None:
+            raise RuntimeError("Agent runtime support unavailable")
         action = trigger.action_config if isinstance(trigger.action_config, dict) else {}
         message = action.get("message")
         if not isinstance(message, str) or not message.strip():
@@ -476,7 +476,7 @@ class TriggerScheduler:
             await self._ws_manager.broadcast_agent_thinking(session_key)
 
         runtime = SentinelLoopRuntimeAdapter(
-            loop=self._agent_loop,
+            loop=self._agent_runtime_support,
             db=db,
             session_id=session_id,
         )
@@ -516,6 +516,8 @@ class TriggerScheduler:
         finally:
             if self._run_registry is not None and registered:
                 await self._run_registry.clear(session_key, run_task)
+        if result.status == "aborted":
+            raise asyncio.CancelledError(result.error or "Cancelled while running trigger action")
         final_text = ""
         if result.final_item is not None:
             final_text = "\n".join(

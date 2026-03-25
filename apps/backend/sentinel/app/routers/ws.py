@@ -72,7 +72,7 @@ async def stream_session(
     session_log_token = set_log_session(session_key)
     await manager.connect(session_key, websocket)
     naming_service = SessionNamingService(
-        provider=getattr(getattr(websocket.app.state, "agent_loop", None), "provider", None),
+        provider=getattr(getattr(websocket.app.state, "agent_runtime_support", None), "provider", None),
         ws_manager=manager,
     )
 
@@ -164,8 +164,8 @@ async def stream_session(
                 metadata=message.metadata_json or {},
             )
 
-            agent_loop = getattr(websocket.app.state, "agent_loop", None)
-            if agent_loop is None:
+            agent_runtime_support = getattr(websocket.app.state, "agent_runtime_support", None)
+            if agent_runtime_support is None:
                 await manager.broadcast_agent_error(
                     session_key, "No provider connected for agent reply."
                 )
@@ -188,7 +188,7 @@ async def stream_session(
                 session_key=session_key,
                 manager=manager,
                 run_registry=run_registry,
-                agent_loop=agent_loop,
+                agent_runtime_support=agent_runtime_support,
                 payload=build_user_payload(parsed),
                 tier=parsed.tier,
                 max_iterations=parsed.max_iterations,
@@ -206,7 +206,7 @@ async def stream_session(
                     session_key=session_key,
                     manager=manager,
                     run_registry=run_registry,
-                    agent_loop=agent_loop,
+                    agent_runtime_support=agent_runtime_support,
                     tier=parsed.tier,
                     max_iterations=parsed.max_iterations,
                     agent_mode=parsed.agent_mode,

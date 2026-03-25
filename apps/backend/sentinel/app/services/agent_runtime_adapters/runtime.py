@@ -29,7 +29,7 @@ from app.sentral import (
 from app.config import settings
 from app.models import Message
 from app.services.agent.agent_modes import get_agent_mode_definition
-from app.services.agent.sentinel_runner import AgentLoop
+from app.services.agent.runtime_support import SentinelRuntimeSupport
 from app.services.estop import EstopLevel
 from app.services.agent_runtime_adapters.conversions import (
     db_messages_to_runtime_items,
@@ -57,7 +57,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
     def __init__(
         self,
         *,
-        loop: AgentLoop,
+        loop: SentinelRuntimeSupport,
         db: AsyncSession,
         session_id: UUID,
         compactor: Compactor | None = None,
@@ -231,7 +231,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
             self._db,
             self._session_id,
             system_prompt=config.system_prompt,
-            pending_user_message=AgentLoop._user_text(user_payload),
+            pending_user_message=SentinelRuntimeSupport.user_text(user_payload),
             agent_mode=mode_definition.id,
             model=config.model,
             temperature=config.temperature,
@@ -242,10 +242,38 @@ class SentinelLoopRuntimeAdapter(Runtime):
         runtime_system_prompt = prepared.effective_system_prompt
         runtime_context_snapshot = prepared.runtime_context_snapshot
         context_snapshot_pending = True
+        persist_incremental = bool(config.provider_metadata.get("persist_incremental", False))
+        persisted_count = 0
         history = [
             sentinel_message_to_runtime_item(message, item_id=f"history-{index}")
             for index, message in enumerate(messages)
         ]
+
+        async def _persist_runtime_batch(batch: list[ConversationItem]) -> None:
+            nonlocal context_snapshot_pending, persisted_count
+            if not batch:
+                return
+            sentinel_batch = [runtime_item_to_sentinel_message(item) for item in batch]
+            assistant_iterations_batch = {
+                id(message): int(item.metadata.get("iteration") or 0)
+                for item, message in zip(batch, sentinel_batch, strict=False)
+                if getattr(item, "role", None) == "assistant"
+            }
+            snapshot = runtime_context_snapshot if context_snapshot_pending else None
+            await self._loop.persist_created_messages(
+                self._db,
+                self._session_id,
+                sentinel_batch,
+                assistant_iterations_batch,
+                requested_tier=config.model,
+                temperature=config.temperature,
+                max_iterations=config.max_iterations,
+                effective_system_prompt=runtime_system_prompt,
+                runtime_context_snapshot=snapshot,
+            )
+            if snapshot is not None:
+                context_snapshot_pending = False
+            persisted_count += len(batch)
 
         runtime = AgentRuntimeEngine(
             provider=SentinelProviderAdapter(self._loop.provider),
@@ -278,33 +306,33 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 ),
             ),
             sink=_emit_runtime_event,
+            checkpoint=_persist_runtime_batch if persist_incremental else None,
         )
         created_runtime_items = runtime_result.metadata.get("created_items")
         created_items = created_runtime_items if isinstance(created_runtime_items, list) else []
-        sentinel_created = [
-            runtime_item_to_sentinel_message(item)
-            for item in created_items
-        ]
+        all_sentinel_created = [runtime_item_to_sentinel_message(item) for item in created_items]
+        remaining_created = created_items[persisted_count:]
+        sentinel_created = [runtime_item_to_sentinel_message(item) for item in remaining_created]
         assistant_iterations = {
             id(message): int(item.metadata.get("iteration") or 0)
-            for item, message in zip(created_items, sentinel_created, strict=False)
+            for item, message in zip(remaining_created, sentinel_created, strict=False)
             if getattr(item, "role", None) == "assistant"
         }
-
-        snapshot = runtime_context_snapshot if context_snapshot_pending else None
-        await self._loop.persist_created_messages(
-            self._db,
-            self._session_id,
-            sentinel_created,
-            assistant_iterations,
-            requested_tier=config.model,
-            temperature=config.temperature,
-            max_iterations=config.max_iterations,
-            effective_system_prompt=runtime_system_prompt,
-            runtime_context_snapshot=snapshot,
-        )
-        if snapshot is not None:
-            context_snapshot_pending = False
+        if sentinel_created:
+            snapshot = runtime_context_snapshot if context_snapshot_pending else None
+            await self._loop.persist_created_messages(
+                self._db,
+                self._session_id,
+                sentinel_created,
+                assistant_iterations,
+                requested_tier=config.model,
+                temperature=config.temperature,
+                max_iterations=config.max_iterations,
+                effective_system_prompt=runtime_system_prompt,
+                runtime_context_snapshot=snapshot,
+            )
+            if snapshot is not None:
+                context_snapshot_pending = False
 
         if deferred_done is not None:
             events.append(deferred_done)
@@ -330,9 +358,9 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 pending_approval=pending_approval,
                 error=runtime_result.error,
                 metadata={
-                    "messages_created": len(sentinel_created),
-                    "final_text": self._loop.extract_final_text(sentinel_created),
-                    "attachments": self._loop.collect_attachments(sentinel_created),
+                    "messages_created": len(created_items),
+                    "final_text": self._loop.extract_final_text(all_sentinel_created),
+                    "attachments": self._loop.collect_attachments(all_sentinel_created),
                 },
             ),
             events,

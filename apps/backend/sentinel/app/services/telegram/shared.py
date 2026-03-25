@@ -41,27 +41,20 @@ class _WSManagerProtocol(Protocol):
     async def broadcast(self, session_id: str, data: dict) -> None: ...
 
 
-class _AgentLoopProtocol(Protocol):
+class _RuntimeSupportProtocol(Protocol):
     provider: Any
+    context_builder: Any
+    tool_adapter: Any
 
-    async def run(
-        self,
-        db: Any,
-        session_id: UUID,
-        user_message: str | list[Any],
-        *,
-        system_prompt: str | None = None,
-        max_iterations: int = 50,
-        temperature: float = 0.7,
-        model: str,
-        persist_user_message: bool = True,
-        stream: bool = True,
-        timeout_seconds: float | None = None,
-        on_event: Any = None,
-        inject_queue: asyncio.Queue[str] | None = None,
-        persist_incremental: bool = False,
-        user_metadata: dict[str, Any] | None = None,
-    ) -> Any: ...
+    async def estop_level(self, db: Any) -> Any: ...
+
+    async def prepare_runtime_turn_context(self, db: Any, session_id: UUID, **kwargs) -> Any: ...
+
+    async def persist_created_messages(self, db: Any, session_id: UUID, created: list[Any], assistant_iterations: dict[int, int], **kwargs) -> None: ...
+
+    def extract_final_text(self, messages: list[Any]) -> str: ...
+
+    def collect_attachments(self, messages: list[Any]) -> list[dict[str, Any]]: ...
 
 
 @dataclass(slots=True)
@@ -99,7 +92,7 @@ __all__ = [
     "TELEGRAM_BUSY_POLL_INTERVAL_SECONDS",
     "TELEGRAM_MAX_MSG_LEN",
     "TELEGRAM_OWNER_PAIRING_TTL_SECONDS",
-    "_AgentLoopProtocol",
+    "_RuntimeSupportProtocol",
     "_PersistedInboundMessage",
     "_RouteContext",
     "_RunRegistryProtocol",

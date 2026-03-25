@@ -182,6 +182,7 @@ class AssistantTurn:
 
 ProviderEvent: TypeAlias = AgentEvent
 EventSink: TypeAlias = Callable[[AgentEvent], Awaitable[None]]
+CheckpointSink: TypeAlias = Callable[[list[ConversationItem]], Awaitable[None]]
 ProviderStream: TypeAlias = AsyncIterator[ProviderEvent]
 
 
