@@ -21,6 +21,7 @@ class ToolListResponse(BaseModel):
 
 class ToolExecuteRequest(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
+    runtime_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolExecuteResponse(BaseModel):

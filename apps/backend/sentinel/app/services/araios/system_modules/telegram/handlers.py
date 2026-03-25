@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from typing import Any
 from uuid import UUID
 
 from app.config import settings
@@ -11,6 +12,8 @@ from app.database import AsyncSessionLocal
 from app.services.araios.runtime_services import get_app_state
 from app.services.sessions import session_bindings
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.runtime_context import optional_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -165,24 +168,27 @@ async def _ensure_owner_main_session(owner_user_id: str) -> str | None:
 
 
 async def _resolve_actor_user_id(
-    payload: dict[str, Any], *, required: bool
+    runtime: ToolRuntimeContext, *, required: bool
 ) -> str | None:
-    session_id = payload.get("session_id")
+    session_id = optional_session_id(runtime)
     if session_id is None:
         if required:
             raise ToolValidationError(
-                "Field 'session_id' is required for this action and must reference an active session"
+                "This action requires an active session context"
             )
         return None
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
-    resolved = await _resolve_owner_user_id_from_session(session_id.strip())
+    resolved = await _resolve_owner_user_id_from_session(str(session_id))
     if not resolved:
         raise ToolValidationError(f"session_id references unknown session: {session_id}")
     return resolved
 
 
-async def _handle_manage_action(payload: dict[str, Any], *, action: str) -> dict[str, Any]:
+async def _handle_manage_action(
+    payload: dict[str, Any],
+    runtime: ToolRuntimeContext,
+    *,
+    action: str,
+) -> dict[str, Any]:
     mutating_actions = {
         "configure",
         "start",
@@ -192,7 +198,7 @@ async def _handle_manage_action(payload: dict[str, Any], *, action: str) -> dict
         "clear_owner",
     }
     actor_user_id = await _resolve_actor_user_id(
-        payload,
+        runtime,
         required=action in mutating_actions,
     )
 
@@ -350,29 +356,29 @@ async def _handle_manage_action(payload: dict[str, Any], *, action: str) -> dict
     raise ToolValidationError(f"Unsupported action: {action}")
 
 
-async def handle_status(payload: dict[str, Any]) -> dict[str, Any]:
-    return await _handle_manage_action(payload, action="status")
+async def handle_status(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    return await _handle_manage_action(payload, runtime, action="status")
 
 
-async def handle_configure(payload: dict[str, Any]) -> dict[str, Any]:
-    return await _handle_manage_action(payload, action="configure")
+async def handle_configure(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    return await _handle_manage_action(payload, runtime, action="configure")
 
 
-async def handle_start(payload: dict[str, Any]) -> dict[str, Any]:
-    return await _handle_manage_action(payload, action="start")
+async def handle_start(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    return await _handle_manage_action(payload, runtime, action="start")
 
 
-async def handle_stop(payload: dict[str, Any]) -> dict[str, Any]:
-    return await _handle_manage_action(payload, action="stop")
+async def handle_stop(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    return await _handle_manage_action(payload, runtime, action="stop")
 
 
-async def handle_delete_config(payload: dict[str, Any]) -> dict[str, Any]:
-    return await _handle_manage_action(payload, action="delete_config")
+async def handle_delete_config(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    return await _handle_manage_action(payload, runtime, action="delete_config")
 
 
-async def handle_bind_owner(payload: dict[str, Any]) -> dict[str, Any]:
-    return await _handle_manage_action(payload, action="bind_owner")
+async def handle_bind_owner(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    return await _handle_manage_action(payload, runtime, action="bind_owner")
 
 
-async def handle_clear_owner(payload: dict[str, Any]) -> dict[str, Any]:
-    return await _handle_manage_action(payload, action="clear_owner")
+async def handle_clear_owner(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    return await _handle_manage_action(payload, runtime, action="clear_owner")

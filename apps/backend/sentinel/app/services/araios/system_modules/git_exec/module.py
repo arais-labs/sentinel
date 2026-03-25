@@ -7,19 +7,12 @@ from .handlers import (
     handle_run_read,
     handle_run_write,
 )
-
-
-def _session_id_prop() -> dict:
-    return {"type": "string", "description": "Current session ID."}
-
-
 def _run_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "cli_command"],
+        "required": ["cli_command"],
         "properties": {
-            "session_id": _session_id_prop(),
             "cli_command": {
                 "type": "string",
                 "description": "Git or supported GitHub CLI command to execute.",
@@ -84,6 +77,7 @@ MODULE = ModuleDefinition(
             label="Run Standard Git Command",
             description="Execute a git or supported gh read-oriented command inside the session workspace.",
             handler=handle_run_read,
+            requires_runtime_context=True,
             parameters_schema=_run_parameters_schema(),
         ),
         ActionDefinition(
@@ -92,6 +86,7 @@ MODULE = ModuleDefinition(
             description="Execute a git or supported gh write-oriented command inside the session workspace.",
             handler=handle_run_write,
             approval=True,
+            requires_runtime_context=True,
             parameters_schema=_run_parameters_schema(),
         ),
         ActionDefinition(

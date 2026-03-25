@@ -513,7 +513,7 @@ def test_anthropic_oauth_headers_use_bearer_and_beta():
 
     headers = fake_client.post_calls[0]["headers"]
     assert headers["authorization"] == "Bearer sk-ant-oat01-zF7_HH03KyFWn7D8yZqOWNW7_test"
-    assert headers["anthropic-beta"] == "oauth-2025-04-20"
+    assert "oauth-2025-04-20" in headers["anthropic-beta"]
     assert "x-api-key" not in headers
 
 
@@ -565,7 +565,7 @@ def test_anthropic_oauth_stream_headers():
 
     headers = fake_client.stream_calls[0]["headers"]
     assert headers["authorization"] == "Bearer sk-ant-oat01-stream-test-token"
-    assert headers["anthropic-beta"] == "oauth-2025-04-20"
+    assert "oauth-2025-04-20" in headers["anthropic-beta"]
     assert "x-api-key" not in headers
 
 

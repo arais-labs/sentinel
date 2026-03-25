@@ -14,6 +14,7 @@ from app.services.tools.registry import (
     ToolApprovalOutcomeStatus,
     ToolApprovalRequirement,
     ToolApprovalResultRecorderFn,
+    ToolRuntimeContext,
     ToolApprovalWaiterFn,
 )
 
@@ -27,10 +28,11 @@ def build_tool_db_approval_waiter(
     async def _waiter(
         tool_name: str,
         payload: dict[str, Any],
+        runtime: ToolRuntimeContext,
         requirement: ToolApprovalRequirement,
         pending_callback: Any = None,
     ) -> ToolApprovalOutcome:
-        session_id = _extract_session_id(payload)
+        session_id = runtime.session_id
         timeout_seconds = max(1, int(requirement.timeout_seconds))
         now = datetime.now(UTC)
         expires_at = now + timedelta(seconds=timeout_seconds)
@@ -114,18 +116,6 @@ def build_tool_db_approval_result_recorder(
             await db.commit()
 
     return _record
-
-
-def _extract_session_id(payload: dict[str, Any]) -> UUID | None:
-    raw = payload.get("session_id")
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    try:
-        return UUID(raw.strip())
-    except ValueError:
-        return None
-
-
 async def _wait_for_resolution(
     *,
     session_factory: async_sessionmaker[AsyncSession],

@@ -3,12 +3,6 @@ from __future__ import annotations
 from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import handle_cancel, handle_check, handle_list, handle_spawn
-
-
-def _session_id_prop() -> dict:
-    return {"type": "string", "description": "Current session ID."}
-
-
 def _task_id_prop() -> dict:
     return {"type": "string", "description": "Sub-agent task ID."}
 
@@ -17,9 +11,8 @@ def _spawn_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "objective"],
+        "required": ["objective"],
         "properties": {
-            "session_id": _session_id_prop(),
             "objective": {
                 "type": "string",
                 "description": "Concrete one-off outcome the sub-agent should produce.",
@@ -64,9 +57,8 @@ def _list_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id"],
+        "required": [],
         "properties": {
-            "session_id": _session_id_prop(),
         },
     }
 
@@ -75,9 +67,8 @@ def _cancel_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "task_id"],
+        "required": ["task_id"],
         "properties": {
-            "session_id": _session_id_prop(),
             "task_id": _task_id_prop(),
         },
     }
@@ -100,6 +91,7 @@ MODULE = ModuleDefinition(
             label="Spawn Sub-Agent",
             description="Spawn one bounded sub-agent task.",
             handler=handle_spawn,
+            requires_runtime_context=True,
             parameters_schema=_spawn_parameters_schema(),
         ),
         ActionDefinition(
@@ -114,6 +106,7 @@ MODULE = ModuleDefinition(
             label="List Sub-Agents",
             description="List sub-agent tasks for the current session.",
             handler=handle_list,
+            requires_runtime_context=True,
             parameters_schema=_list_parameters_schema(),
         ),
         ActionDefinition(
@@ -121,6 +114,7 @@ MODULE = ModuleDefinition(
             label="Cancel Sub-Agent",
             description="Cancel a running sub-agent task for the current session.",
             handler=handle_cancel,
+            requires_runtime_context=True,
             parameters_schema=_cancel_parameters_schema(),
         ),
     ],

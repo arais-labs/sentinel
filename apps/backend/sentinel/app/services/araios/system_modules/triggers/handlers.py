@@ -10,6 +10,8 @@ from sqlalchemy import select
 from app.database.database import AsyncSessionLocal
 from app.models import Session, Trigger
 from app.services.tools.executor import ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.runtime_context import optional_session_id, require_session_id
 from app.services.triggers.routing import (
     extract_agent_message_target_session_id,
     resolve_agent_message_route,
@@ -81,10 +83,8 @@ async def _resolve_owner_user_id(
     return owner
 
 
-async def _resolve_context_user_id(db, payload: dict[str, Any]) -> str:
-    context_session_id = _parse_optional_uuid(payload.get("session_id"), field_name="session_id")
-    if context_session_id is None:
-        raise ToolValidationError("Field 'session_id' is required for scoped trigger access")
+async def _resolve_context_user_id(db, runtime: ToolRuntimeContext) -> str:
+    context_session_id = require_session_id(runtime)
     result = await db.execute(select(Session).where(Session.id == context_session_id))
     session = result.scalars().first()
     if session is None:
@@ -92,7 +92,7 @@ async def _resolve_context_user_id(db, payload: dict[str, Any]) -> str:
     return session.user_id
 
 
-async def handle_create(payload: dict[str, Any]) -> dict[str, Any]:
+async def handle_create(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     name = payload.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ToolValidationError("Field 'name' must be a non-empty string")
@@ -108,7 +108,7 @@ async def handle_create(payload: dict[str, Any]) -> dict[str, Any]:
     action_config = payload.get("action_config", {})
     if not isinstance(action_config, dict):
         raise ToolValidationError("Field 'action_config' must be an object")
-    context_session_id = _parse_optional_uuid(payload.get("session_id"), field_name="session_id")
+    context_session_id = optional_session_id(runtime)
     if action_type == "agent_message":
         msg = action_config.get("message")
         if not isinstance(msg, str) or not msg.strip():
@@ -149,12 +149,12 @@ async def handle_create(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
+async def handle_list(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     enabled_only = payload.get("enabled_only", False)
     if not isinstance(enabled_only, bool):
         raise ToolValidationError("Field 'enabled_only' must be a boolean")
     async with AsyncSessionLocal() as db:
-        owner_user_id = await _resolve_context_user_id(db, payload)
+        owner_user_id = await _resolve_context_user_id(db, runtime)
         query = select(Trigger).where(Trigger.user_id == owner_user_id)
         if enabled_only:
             query = query.where(Trigger.enabled.is_(True))
@@ -186,7 +186,7 @@ async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-async def handle_update(payload: dict[str, Any]) -> dict[str, Any]:
+async def handle_update(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     trigger_id_raw = payload.get("trigger_id")
     if not isinstance(trigger_id_raw, str) or not trigger_id_raw.strip():
         raise ToolValidationError("Field 'trigger_id' must be a non-empty string UUID")
@@ -195,7 +195,7 @@ async def handle_update(payload: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         raise ToolValidationError(f"Invalid trigger_id UUID: {trigger_id_raw}") from exc
     async with AsyncSessionLocal() as db:
-        owner_user_id = await _resolve_context_user_id(db, payload)
+        owner_user_id = await _resolve_context_user_id(db, runtime)
         result = await db.execute(
             select(Trigger).where(Trigger.id == trigger_id, Trigger.user_id == owner_user_id)
         )
@@ -246,7 +246,7 @@ async def handle_update(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-async def handle_delete(payload: dict[str, Any]) -> dict[str, Any]:
+async def handle_delete(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     trigger_id_raw = payload.get("trigger_id")
     if not isinstance(trigger_id_raw, str) or not trigger_id_raw.strip():
         raise ToolValidationError("Field 'trigger_id' must be a non-empty string UUID")
@@ -255,7 +255,7 @@ async def handle_delete(payload: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         raise ToolValidationError(f"Invalid trigger_id UUID: {trigger_id_raw}") from exc
     async with AsyncSessionLocal() as db:
-        owner_user_id = await _resolve_context_user_id(db, payload)
+        owner_user_id = await _resolve_context_user_id(db, runtime)
         result = await db.execute(
             select(Trigger).where(Trigger.id == trigger_id, Trigger.user_id == owner_user_id)
         )
@@ -266,4 +266,3 @@ async def handle_delete(payload: dict[str, Any]) -> dict[str, Any]:
         await db.delete(trigger)
         await db.commit()
     return {"deleted": True, "trigger_id": str(trigger_id), "name": name}
-

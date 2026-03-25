@@ -12,12 +12,6 @@ from .handlers import (
     handle_status,
     handle_stop,
 )
-
-
-def _session_id_prop() -> dict:
-    return {"type": "string", "description": "Sentinel session ID used to resolve the acting user."}
-
-
 def _chat_id_prop() -> dict:
     return {"type": "integer", "description": "Telegram chat ID."}
 
@@ -40,7 +34,6 @@ def _status_parameters_schema() -> dict:
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "session_id": _session_id_prop(),
         },
     }
 
@@ -49,9 +42,8 @@ def _configure_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "bot_token"],
+        "required": ["bot_token"],
         "properties": {
-            "session_id": _session_id_prop(),
             "bot_token": {"type": "string", "description": "Telegram bot token."},
         },
     }
@@ -61,9 +53,8 @@ def _session_manage_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id"],
+        "required": [],
         "properties": {
-            "session_id": _session_id_prop(),
         },
     }
 
@@ -72,9 +63,8 @@ def _bind_owner_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "chat_id"],
+        "required": ["chat_id"],
         "properties": {
-            "session_id": _session_id_prop(),
             "chat_id": _chat_id_prop(),
             "telegram_user_id": {"type": "string", "description": "Optional Telegram user ID override."},
         },
@@ -105,6 +95,7 @@ MODULE = ModuleDefinition(
             label="Telegram Status",
             description="Read Telegram bridge status and owner binding state.",
             handler=handle_status,
+            requires_runtime_context=True,
             parameters_schema=_status_parameters_schema(),
         ),
         ActionDefinition(
@@ -112,6 +103,7 @@ MODULE = ModuleDefinition(
             label="Configure Telegram",
             description="Configure the bot token and start the Telegram bridge.",
             handler=handle_configure,
+            requires_runtime_context=True,
             parameters_schema=_configure_parameters_schema(),
         ),
         ActionDefinition(
@@ -119,6 +111,7 @@ MODULE = ModuleDefinition(
             label="Start Telegram",
             description="Start the Telegram bridge for the acting user.",
             handler=handle_start,
+            requires_runtime_context=True,
             parameters_schema=_session_manage_parameters_schema(),
         ),
         ActionDefinition(
@@ -126,6 +119,7 @@ MODULE = ModuleDefinition(
             label="Stop Telegram",
             description="Stop the Telegram bridge.",
             handler=handle_stop,
+            requires_runtime_context=True,
             parameters_schema=_session_manage_parameters_schema(),
         ),
         ActionDefinition(
@@ -133,6 +127,7 @@ MODULE = ModuleDefinition(
             label="Delete Telegram Config",
             description="Delete Telegram bot configuration and owner binding.",
             handler=handle_delete_config,
+            requires_runtime_context=True,
             parameters_schema=_session_manage_parameters_schema(),
         ),
         ActionDefinition(
@@ -140,6 +135,7 @@ MODULE = ModuleDefinition(
             label="Bind Telegram Owner",
             description="Bind the owner to a connected private Telegram chat.",
             handler=handle_bind_owner,
+            requires_runtime_context=True,
             parameters_schema=_bind_owner_parameters_schema(),
         ),
         ActionDefinition(
@@ -147,6 +143,7 @@ MODULE = ModuleDefinition(
             label="Clear Telegram Owner",
             description="Clear the current Telegram owner chat binding.",
             handler=handle_clear_owner,
+            requires_runtime_context=True,
             parameters_schema=_session_manage_parameters_schema(),
         ),
     ],

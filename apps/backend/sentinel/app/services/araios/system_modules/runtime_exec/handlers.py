@@ -24,6 +24,8 @@ from app.services.runtime.session_runtime import (
     stop_detached_runtime_job,
 )
 from app.services.tools.executor import ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.runtime_context import require_session_id
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -285,15 +287,10 @@ async def _execute_via_ssh(
 async def _handle_run_with_privilege(
     payload: dict[str, Any],
     *,
+    runtime: ToolRuntimeContext,
     privilege: str,
 ) -> dict[str, Any]:
-    session_id_raw = payload.get("session_id")
-    if not isinstance(session_id_raw, str) or not session_id_raw.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
-    try:
-        session_id = UUID(session_id_raw.strip())
-    except ValueError as exc:
-        raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+    session_id = require_session_id(runtime)
 
     shell_command = payload.get("shell_command")
     if not isinstance(shell_command, str) or not shell_command.strip():
@@ -344,22 +341,16 @@ async def _handle_run_with_privilege(
     )
 
 
-async def handle_run_user(payload: dict[str, Any]) -> dict[str, Any]:
-    return await _handle_run_with_privilege(payload, privilege="user")
+async def handle_run_user(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    return await _handle_run_with_privilege(payload, runtime=runtime, privilege="user")
 
 
-async def handle_run_root(payload: dict[str, Any]) -> dict[str, Any]:
-    return await _handle_run_with_privilege(payload, privilege="root")
+async def handle_run_root(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    return await _handle_run_with_privilege(payload, runtime=runtime, privilege="root")
 
 
-async def handle_jobs_list(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id_raw = payload.get("session_id")
-    if not isinstance(session_id_raw, str) or not session_id_raw.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
-    try:
-        session_id = UUID(session_id_raw.strip())
-    except ValueError as exc:
-        raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+async def handle_jobs_list(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    session_id = require_session_id(runtime)
     include_completed = payload.get("include_completed", True)
     if not isinstance(include_completed, bool):
         raise ToolValidationError("Field 'include_completed' must be a boolean")
@@ -372,17 +363,11 @@ async def handle_jobs_list(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def handle_job_status(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id_raw = payload.get("session_id")
+async def handle_job_status(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     job_id = payload.get("job_id")
-    if not isinstance(session_id_raw, str) or not session_id_raw.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
     if not isinstance(job_id, str) or not job_id.strip():
         raise ToolValidationError("Field 'job_id' must be a non-empty string")
-    try:
-        session_id = UUID(session_id_raw.strip())
-    except ValueError as exc:
-        raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+    session_id = require_session_id(runtime)
     await _ensure_session_exists(session_id)
     job = await get_detached_runtime_job(session_id, job_id=job_id.strip())
     if job is None:
@@ -390,17 +375,11 @@ async def handle_job_status(payload: dict[str, Any]) -> dict[str, Any]:
     return {"session_id": str(session_id), "job": job}
 
 
-async def handle_job_logs(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id_raw = payload.get("session_id")
+async def handle_job_logs(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     job_id = payload.get("job_id")
-    if not isinstance(session_id_raw, str) or not session_id_raw.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
     if not isinstance(job_id, str) or not job_id.strip():
         raise ToolValidationError("Field 'job_id' must be a non-empty string")
-    try:
-        session_id = UUID(session_id_raw.strip())
-    except ValueError as exc:
-        raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+    session_id = require_session_id(runtime)
     tail_bytes = payload.get("tail_bytes", 8000)
     if (
         not isinstance(tail_bytes, int)
@@ -419,17 +398,11 @@ async def handle_job_logs(payload: dict[str, Any]) -> dict[str, Any]:
     return {"session_id": str(session_id), **data}
 
 
-async def handle_job_stop(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id_raw = payload.get("session_id")
+async def handle_job_stop(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     job_id = payload.get("job_id")
-    if not isinstance(session_id_raw, str) or not session_id_raw.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
     if not isinstance(job_id, str) or not job_id.strip():
         raise ToolValidationError("Field 'job_id' must be a non-empty string")
-    try:
-        session_id = UUID(session_id_raw.strip())
-    except ValueError as exc:
-        raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+    session_id = require_session_id(runtime)
     force = payload.get("force", False)
     if not isinstance(force, bool):
         raise ToolValidationError("Field 'force' must be a boolean")

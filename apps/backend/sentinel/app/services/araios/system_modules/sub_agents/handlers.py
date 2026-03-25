@@ -17,6 +17,8 @@ from app.database.database import AsyncSessionLocal
 from app.models import SubAgentTask
 from app.services.browser.manager import BrowserManager
 from app.services.tools.executor import ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.runtime_context import require_session_id
 
 
 # ── Helpers ──
@@ -96,10 +98,8 @@ async def _select_sub_agent_browser_tab_id(
 # ---------------------------------------------------------------------------
 
 
-async def handle_spawn(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = payload.get("session_id")
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
+async def handle_spawn(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    sid = require_session_id(runtime)
     objective = payload.get("objective")
     if not isinstance(objective, str) or not objective.strip():
         raise ToolValidationError("Field 'objective' must be a non-empty string")
@@ -137,7 +137,6 @@ async def handle_spawn(payload: dict[str, Any]) -> dict[str, Any]:
         raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
     timeout_seconds = min(timeout_seconds, 3600)
 
-    sid = UUID(session_id.strip())
     auto_assigned_browser_tab = False
 
     async with AsyncSessionLocal() as db:
@@ -261,12 +260,8 @@ async def handle_check(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = payload.get("session_id")
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
-
-    sid = UUID(session_id.strip())
+async def handle_list(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    sid = require_session_id(runtime)
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(SubAgentTask).where(SubAgentTask.session_id == sid))
         tasks = result.scalars().all()
@@ -289,16 +284,12 @@ async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-async def handle_cancel(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = payload.get("session_id")
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
-
+async def handle_cancel(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     task_id = payload.get("task_id")
     if not isinstance(task_id, str) or not task_id.strip():
         raise ToolValidationError("Field 'task_id' must be a non-empty string")
 
-    sid = UUID(session_id.strip())
+    sid = require_session_id(runtime)
     tid = UUID(task_id.strip())
 
     async with AsyncSessionLocal() as db:

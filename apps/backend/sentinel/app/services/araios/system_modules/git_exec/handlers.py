@@ -25,6 +25,8 @@ from app.database.database import AsyncSessionLocal
 from app.models import GitAccount, Session
 from app.services.runtime.session_runtime import ensure_runtime_layout, runtime_workspace_dir
 from app.services.tools.executor import ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.runtime_context import require_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -1027,14 +1029,8 @@ def _validate_run_command_kind(
         raise ToolValidationError("Field 'command' must be 'run_write' for write git or gh commands")
 
 
-async def _handle_run(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id_raw = payload.get("session_id")
-    if not isinstance(session_id_raw, str) or not session_id_raw.strip():
-        raise ToolValidationError("Field 'session_id' must be a non-empty string")
-    try:
-        session_id = UUID(session_id_raw.strip())
-    except ValueError as exc:
-        raise ToolValidationError("Field 'session_id' must be a valid UUID string") from exc
+async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    session_id = require_session_id(runtime)
 
     cli_command = payload.get("cli_command")
     if not isinstance(cli_command, str) or not cli_command.strip():
@@ -1153,20 +1149,20 @@ async def _handle_run(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-async def handle_run_read(payload: dict[str, Any]) -> dict[str, Any]:
+async def handle_run_read(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     cli_command = payload.get("cli_command")
     if not isinstance(cli_command, str) or not cli_command.strip():
         raise ToolValidationError("Field 'cli_command' must be a non-empty string")
     _validate_run_command_kind(cli_command=cli_command, expect_write=False)
-    return await _handle_run(payload)
+    return await _handle_run(payload, runtime)
 
 
-async def handle_run_write(payload: dict[str, Any]) -> dict[str, Any]:
+async def handle_run_write(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     cli_command = payload.get("cli_command")
     if not isinstance(cli_command, str) or not cli_command.strip():
         raise ToolValidationError("Field 'cli_command' must be a non-empty string")
     _validate_run_command_kind(cli_command=cli_command, expect_write=True)
-    return await _handle_run(payload)
+    return await _handle_run(payload, runtime)
 
 
 async def handle_accounts(payload: dict[str, Any]) -> dict[str, Any]:

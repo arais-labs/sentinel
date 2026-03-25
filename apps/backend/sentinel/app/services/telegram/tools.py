@@ -6,7 +6,8 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.services.sessions import session_bindings
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
-from app.services.tools.registry import ToolDefinition
+from app.services.tools.registry import ToolDefinition, ToolRuntimeContext
+from app.services.tools.runtime_context import optional_session_id
 
 from .bridge import TelegramBridge
 from .lifecycle import (
@@ -24,7 +25,8 @@ from .lifecycle import (
 def send_telegram_message_tool(app_state_ref: object) -> ToolDefinition:
     """Factory for the send_telegram_message tool. Uses lazy app_state reference."""
 
-    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+    async def _execute(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+        del runtime
         bridge: TelegramBridge | None = getattr(app_state_ref, "telegram_bridge", None)
         if bridge is None or not bridge.is_running:
             raise ToolExecutionError("Telegram bridge is not running")
@@ -145,23 +147,21 @@ def telegram_manage_integration_tool(app_state_ref: object) -> ToolDefinition:
             return str(session.id)
 
     async def _resolve_actor_user_id(
-        payload: dict[str, Any], *, required: bool
+        runtime: ToolRuntimeContext, *, required: bool
     ) -> str | None:
-        session_id = payload.get("session_id")
+        session_id = optional_session_id(runtime)
         if session_id is None:
             if required:
                 raise ToolValidationError(
-                    "Field 'session_id' is required for this action and must reference an active session"
+                    "This action requires an active session context"
                 )
             return None
-        if not isinstance(session_id, str) or not session_id.strip():
-            raise ToolValidationError("Field 'session_id' must be a non-empty string")
-        resolved = await resolve_owner_user_id_from_session(session_id.strip())
+        resolved = await resolve_owner_user_id_from_session(str(session_id))
         if not resolved:
             raise ToolValidationError(f"session_id references unknown session: {session_id}")
         return resolved
 
-    async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+    async def _execute(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
         action_raw = payload.get("action", "status")
         action = str(action_raw).strip().lower()
         mutating_actions = {
@@ -174,7 +174,7 @@ def telegram_manage_integration_tool(app_state_ref: object) -> ToolDefinition:
             "clear_owner",
         }
         actor_user_id = await _resolve_actor_user_id(
-            payload,
+            runtime,
             required=action in mutating_actions,
         )
 
@@ -368,13 +368,6 @@ def telegram_manage_integration_tool(app_state_ref: object) -> ToolDefinition:
                 "telegram_user_id": {
                     "type": "string",
                     "description": "Optional Telegram user id override for action=bind_owner.",
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": (
-                        "Sentinel session_id used to resolve acting authenticated user. "
-                        "Required for all mutating actions."
-                    ),
                 },
             },
         },

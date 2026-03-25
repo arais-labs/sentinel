@@ -12,6 +12,7 @@ from app.services.tools.registry import (
     ToolApprovalRequirement,
     ToolDefinition,
     ToolRegistry,
+    ToolRuntimeContext,
 )
 
 
@@ -20,7 +21,8 @@ def _run(coro):
 
 
 def _tool_with_check(*, approval_check=None) -> ToolDefinition:
-    async def _execute(payload: dict[str, object]) -> dict[str, object]:
+    async def _execute(payload: dict[str, object], runtime: ToolRuntimeContext) -> dict[str, object]:
+        del runtime
         return {
             "ok": True,
             "payload": dict(payload),
@@ -53,7 +55,7 @@ def _executor_for(
 def test_allow_check_skips_waiter():
     waiter_called = False
 
-    async def _waiter(_tool_name, _payload, _requirement, _pending_callback=None):
+    async def _waiter(_tool_name, _payload, _runtime, _requirement, _pending_callback=None):
         nonlocal waiter_called
         waiter_called = True
         raise AssertionError("waiter should not be called for allow decision")
@@ -73,7 +75,7 @@ def test_allow_check_skips_waiter():
 def test_require_check_calls_generic_waiter():
     waiter_called = False
 
-    async def _waiter(_tool_name, _payload, _requirement, _pending_callback=None):
+    async def _waiter(_tool_name, _payload, _runtime, _requirement, _pending_callback=None):
         nonlocal waiter_called
         waiter_called = True
         return ToolApprovalOutcome(
@@ -106,7 +108,7 @@ def test_require_check_calls_generic_waiter():
 
 
 def test_require_check_rejects_when_waiter_rejects():
-    async def _waiter(_tool_name, _payload, _requirement, _pending_callback=None):
+    async def _waiter(_tool_name, _payload, _runtime, _requirement, _pending_callback=None):
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.REJECTED,
             approval={"provider": "gated_tool", "approval_id": "apr_reject"},
@@ -130,7 +132,7 @@ def test_require_check_rejects_when_waiter_rejects():
 def test_full_permission_mode_auto_approves_required_check_without_waiter_call():
     waiter_called = False
 
-    async def _waiter(_tool_name, _payload, _requirement):
+    async def _waiter(_tool_name, _payload, _runtime, _requirement):
         nonlocal waiter_called
         waiter_called = True
         raise AssertionError("waiter should not be called in full_permission mode")
@@ -164,7 +166,7 @@ def test_full_permission_mode_auto_approves_required_check_without_waiter_call()
 def test_executor_records_approved_result_with_generic_recorder():
     recorded: list[tuple[str, object]] = []
 
-    async def _waiter(_tool_name, _payload, _requirement, _pending_callback=None):
+    async def _waiter(_tool_name, _payload, _runtime, _requirement, _pending_callback=None):
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
             approval={

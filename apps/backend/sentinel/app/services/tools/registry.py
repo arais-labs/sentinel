@@ -3,16 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Awaitable, Callable
+from uuid import UUID
 
 
-ToolExecutorFn = Callable[[dict[str, Any]], Awaitable[Any]]
+@dataclass(slots=True)
+class ToolRuntimeContext:
+    session_id: UUID | None = None
+
+
+ToolExecutorFn = Callable[[dict[str, Any], ToolRuntimeContext], Awaitable[Any]]
 ToolApprovalCheckFn = (
     Callable[[], "ToolApprovalEvaluation" | Awaitable["ToolApprovalEvaluation"]]
     | Callable[[dict[str, Any]], "ToolApprovalEvaluation" | Awaitable["ToolApprovalEvaluation"]]
+    | Callable[[dict[str, Any], ToolRuntimeContext], "ToolApprovalEvaluation" | Awaitable["ToolApprovalEvaluation"]]
 )
 ToolApprovalPendingFn = Callable[[dict[str, Any]], Awaitable[None]]
 ToolApprovalWaiterFn = Callable[
-    [str, dict[str, Any], "ToolApprovalRequirement", ToolApprovalPendingFn | None],
+    [str, dict[str, Any], ToolRuntimeContext, "ToolApprovalRequirement", ToolApprovalPendingFn | None],
     "Awaitable[ToolApprovalOutcome]",
 ]
 ToolApprovalResultRecorderFn = Callable[[str, Any], Awaitable[None]]

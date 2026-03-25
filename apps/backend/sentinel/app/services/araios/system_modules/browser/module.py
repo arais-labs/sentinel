@@ -29,9 +29,6 @@ from .handlers import (
     handle_type,
     handle_wait_for,
 )
-from .shared import BROWSER_SESSION_PROP
-
-
 def _base_schema(
     *,
     required: list[str] | None = None,
@@ -40,11 +37,8 @@ def _base_schema(
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", *(required or [])],
-        "properties": {
-            **BROWSER_SESSION_PROP,
-            **(properties or {}),
-        },
+        "required": list(required or []),
+        "properties": properties or {},
     }
 
 
@@ -83,7 +77,7 @@ def _steps_prop() -> dict:
 
 
 def _browser_actions() -> list[ActionDefinition]:
-    return [
+    actions = [
         ActionDefinition(
             id="navigate",
             label="Navigate",
@@ -400,6 +394,9 @@ def _browser_actions() -> list[ActionDefinition]:
             ),
         ),
     ]
+    for action in actions:
+        action.requires_runtime_context = True
+    return actions
 
 
 MODULE = ModuleDefinition(

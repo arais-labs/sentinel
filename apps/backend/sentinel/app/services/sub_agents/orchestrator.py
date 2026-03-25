@@ -20,6 +20,7 @@ from app.services.llm.ids import TierName
 from app.services.llm.generic.types import AgentEvent
 from app.services.tools import ToolDefinition, ToolExecutor, ToolRegistry
 from app.services.tools.executor import ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
 
 
 class SubAgentOrchestrator:
@@ -290,7 +291,7 @@ class SubAgentOrchestrator:
         if isinstance(required, list):
             schema["required"] = [item for item in required if item != "tab_id"]
 
-        async def _execute(payload: dict) -> dict:
+        async def _execute(payload: dict, runtime: ToolRuntimeContext) -> dict:
             scoped_payload = dict(payload or {})
             command = scoped_payload.get("command")
             normalized_command = (
@@ -304,7 +305,7 @@ class SubAgentOrchestrator:
                 )
             if normalized_command in BROWSER_TAB_TARGETABLE_COMMANDS:
                 scoped_payload["tab_id"] = pinned_tab_id
-            return await tool.execute(scoped_payload)
+            return await tool.execute(scoped_payload, runtime)
 
         return ToolDefinition(
             name=tool.name,

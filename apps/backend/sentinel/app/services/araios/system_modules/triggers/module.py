@@ -3,12 +3,6 @@ from __future__ import annotations
 from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import handle_create, handle_delete, handle_list, handle_update
-
-
-def _session_id_prop() -> dict:
-    return {"type": "string", "description": "Context session ID used to scope trigger ownership."}
-
-
 def _trigger_id_prop() -> dict:
     return {"type": "string", "description": "Trigger UUID."}
 
@@ -53,7 +47,6 @@ def _create_parameters_schema() -> dict:
         "additionalProperties": False,
         "required": ["name", "type", "config", "action_type", "action_config"],
         "properties": {
-            "session_id": _session_id_prop(),
             "name": _name_prop(),
             "type": _type_prop(),
             "config": _config_prop(),
@@ -68,9 +61,8 @@ def _list_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id"],
+        "required": [],
         "properties": {
-            "session_id": _session_id_prop(),
             "enabled_only": {"type": "boolean", "description": "If true, only enabled triggers are returned."},
         },
     }
@@ -80,9 +72,8 @@ def _update_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "trigger_id"],
+        "required": ["trigger_id"],
         "properties": {
-            "session_id": _session_id_prop(),
             "trigger_id": _trigger_id_prop(),
             "name": _name_prop(),
             "config": _config_prop(),
@@ -96,9 +87,8 @@ def _delete_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["session_id", "trigger_id"],
+        "required": ["trigger_id"],
         "properties": {
-            "session_id": _session_id_prop(),
             "trigger_id": _trigger_id_prop(),
         },
     }
@@ -121,6 +111,7 @@ MODULE = ModuleDefinition(
             label="Create Trigger",
             description="Create a new scheduled trigger.",
             handler=handle_create,
+            requires_runtime_context=True,
             parameters_schema=_create_parameters_schema(),
         ),
         ActionDefinition(
@@ -128,6 +119,7 @@ MODULE = ModuleDefinition(
             label="List Triggers",
             description="List triggers visible to the current session owner.",
             handler=handle_list,
+            requires_runtime_context=True,
             parameters_schema=_list_parameters_schema(),
         ),
         ActionDefinition(
@@ -135,6 +127,7 @@ MODULE = ModuleDefinition(
             label="Update Trigger",
             description="Update an existing trigger by ID.",
             handler=handle_update,
+            requires_runtime_context=True,
             parameters_schema=_update_parameters_schema(),
         ),
         ActionDefinition(
@@ -142,6 +135,7 @@ MODULE = ModuleDefinition(
             label="Delete Trigger",
             description="Delete an existing trigger by ID.",
             handler=handle_delete,
+            requires_runtime_context=True,
             parameters_schema=_delete_parameters_schema(),
         ),
     ],

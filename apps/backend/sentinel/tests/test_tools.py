@@ -24,7 +24,7 @@ from app.services.araios.system_modules.runtime_exec import handlers as runtime_
 from app.services.runtime.ssh_client import SSHExecResult
 from app.services.tools import ToolExecutor
 from app.services.araios.system_modules.shared import validate_public_hostname as _validate_public_hostname
-from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus
+from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus, ToolRuntimeContext
 from app.services.tools.runtime_registry import build_runtime_registry
 from tests.fake_db import FakeDB
 
@@ -143,11 +143,10 @@ def _restore_app_tool_runtime(previous_registry, previous_executor, previous_get
 def _runtime_exec_input(
     *,
     shell_command: str,
-    session_id: str,
     action: str = "run_user",
     **extra: object,
 ) -> dict[str, object]:
-    payload: dict[str, object] = {"command": action, "shell_command": shell_command, "session_id": session_id}
+    payload: dict[str, object] = {"command": action, "shell_command": shell_command}
     payload.update(extra)
     return payload
 
@@ -234,7 +233,10 @@ def test_tools_registry_and_execution():
         assert estop.status_code == 200
         blocked = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "run_user", "shell_command": "echo blocked", "session_id": session_id}},
+            json={
+                "input": {"command": "run_user", "shell_command": "echo blocked"},
+                "runtime_context": {"session_id": session_id},
+            },
             headers=headers,
         )
         assert blocked.status_code == 200
@@ -307,7 +309,10 @@ def test_runtime_exec_runs_command():
 
         run = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": _runtime_exec_input(shell_command="echo hello", session_id=session_id)},
+            json={
+                "input": _runtime_exec_input(shell_command="echo hello"),
+                "runtime_context": {"session_id": session_id},
+            },
             headers=headers,
         )
         assert run.status_code == 200
@@ -363,11 +368,8 @@ def test_runtime_exec_detached_job_lifecycle():
         run = client.post(
             "/api/v1/tools/runtime_exec/execute",
             json={
-                "input": _runtime_exec_input(
-                    shell_command="sleep 30",
-                    session_id=session_id,
-                    detached=True,
-                )
+                "input": _runtime_exec_input(shell_command="sleep 30", detached=True),
+                "runtime_context": {"session_id": session_id},
             },
             headers=headers,
         )
@@ -386,7 +388,7 @@ def test_runtime_exec_detached_job_lifecycle():
 
         listed = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "jobs_list", "session_id": session_id}},
+            json={"input": {"command": "jobs_list"}, "runtime_context": {"session_id": session_id}},
             headers=headers,
         )
         assert listed.status_code == 200
@@ -401,7 +403,10 @@ def test_runtime_exec_detached_job_lifecycle():
 
         status = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "job_status", "session_id": session_id, "job_id": job_id}},
+            json={
+                "input": {"command": "job_status", "job_id": job_id},
+                "runtime_context": {"session_id": session_id},
+            },
             headers=headers,
         )
         assert status.status_code == 200
@@ -415,7 +420,10 @@ def test_runtime_exec_detached_job_lifecycle():
 
         logs = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "job_logs", "session_id": session_id, "job_id": job_id}},
+            json={
+                "input": {"command": "job_logs", "job_id": job_id},
+                "runtime_context": {"session_id": session_id},
+            },
             headers=headers,
         )
         assert logs.status_code == 200
@@ -430,7 +438,10 @@ def test_runtime_exec_detached_job_lifecycle():
 
         stopped = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "job_stop", "session_id": session_id, "job_id": job_id}},
+            json={
+                "input": {"command": "job_stop", "job_id": job_id},
+                "runtime_context": {"session_id": session_id},
+            },
             headers=headers,
         )
         assert stopped.status_code == 200
@@ -472,7 +483,10 @@ def test_runtime_exec_rejects_background_without_detached():
 
         run = client.post(
             "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "run_user", "shell_command": "sleep 1 &", "session_id": session_id}},
+            json={
+                "input": {"command": "run_user", "shell_command": "sleep 1 &"},
+                "runtime_context": {"session_id": session_id},
+            },
             headers=headers,
         )
         assert run.status_code == 422
@@ -515,11 +529,8 @@ def test_runtime_exec_timeout_returns_result():
         run = client.post(
             "/api/v1/tools/runtime_exec/execute",
             json={
-                "input": _runtime_exec_input(
-                    shell_command="sleep 3",
-                    session_id=session_id,
-                    timeout_seconds=1,
-                )
+                "input": _runtime_exec_input(shell_command="sleep 3", timeout_seconds=1),
+                "runtime_context": {"session_id": session_id},
             },
             headers=headers,
         )
@@ -537,7 +548,7 @@ def test_runtime_exec_root_privilege_requires_approval():
     fake_db = FakeDB()
     waiter_seen: dict[str, object] = {}
 
-    async def _fake_waiter(_tool_name, _payload, requirement, _pending_callback=None):
+    async def _fake_waiter(_tool_name, _payload, _runtime, requirement, _pending_callback=None):
         waiter_seen["action"] = requirement.action
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
@@ -587,8 +598,8 @@ def test_runtime_exec_root_privilege_requires_approval():
                 "input": {
                     "command": "run_root",
                     "shell_command": "echo root-approved",
-                    "session_id": session_id,
-                }
+                },
+                "runtime_context": {"session_id": session_id},
             },
             headers=headers,
         )
@@ -1267,7 +1278,7 @@ def test_modules_import_package_rejects_system_true():
         app_main.init_db = old_init
 
 
-def test_module_manager_grouped_tool_accepts_optional_session_id_for_non_session_commands():
+def test_module_manager_grouped_tool_accepts_runtime_context_for_non_session_commands():
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
 
@@ -1277,10 +1288,8 @@ def test_module_manager_grouped_tool_accepts_optional_session_id_for_non_session
         result, _duration = asyncio.run(
             executor.execute(
                 "module_manager",
-                {
-                    "command": "list_modules",
-                    "session_id": "7eeab26f-1f5e-4964-98d8-201bf66c38a1",
-                },
+                {"command": "list_modules"},
+                runtime=ToolRuntimeContext(session_id=uuid.UUID("7eeab26f-1f5e-4964-98d8-201bf66c38a1")),
             )
         )
         assert result == {"modules": []}
