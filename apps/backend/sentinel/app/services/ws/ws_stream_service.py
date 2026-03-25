@@ -209,6 +209,7 @@ async def run_agent_once(
         loop=agent_runtime_support,
         db=db,
         session_id=session_id,
+        persist_incremental=True,
     )
 
     async def _broadcast_event(event: Any) -> None:
@@ -232,7 +233,6 @@ async def run_agent_once(
                     stream=True,
                     provider_metadata={
                         "agent_mode": agent_mode,
-                        "persist_incremental": True,
                         "persist_user_message": persist_user_message,
                     },
                 ),

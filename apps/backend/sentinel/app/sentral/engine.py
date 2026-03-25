@@ -144,8 +144,8 @@ class AgentRuntimeEngine(Runtime):
         iterations = 0
         pending_approval: ApprovalRequest | None = None
         last_stop_reason: str | None = None
-        timeout_seconds = config.provider_metadata.get("timeout_seconds")
-        inject_queue = config.provider_metadata.get("inject_queue")
+        timeout_seconds = request.timeout_seconds
+        interjection_source = request.interjection_source
 
         async def _emit(event: AgentEvent) -> None:
             nonlocal last_stop_reason, pending_approval
@@ -162,25 +162,14 @@ class AgentRuntimeEngine(Runtime):
                 return
             await checkpoint(items)
 
-        async def _drain_injected_messages() -> None:
-            if inject_queue is None:
+        async def _drain_injected_items() -> None:
+            if interjection_source is None:
                 return
-            while True:
-                try:
-                    injected_text = inject_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                if not isinstance(injected_text, str) or not injected_text.strip():
-                    continue
-                injected_item = ConversationItem(
-                    id=_new_item_id("user"),
-                    role="user",
-                    content=[TextBlock(text=f"[Operator interjection]: {injected_text}")],
-                    metadata={"source": "operator_interjection"},
-                )
-                working_history.append(injected_item)
-                created_items.append(injected_item)
-                await _checkpoint([injected_item])
+            injected = interjection_source()
+            for item in injected:
+                working_history.append(item)
+                created_items.append(item)
+                await _checkpoint([item])
 
         await _checkpoint(list(request.new_items))
 
@@ -192,7 +181,7 @@ class AgentRuntimeEngine(Runtime):
             grace_check_done = False
 
             for index in range(total_limit):
-                await _drain_injected_messages()
+                await _drain_injected_items()
                 if index == effective_max and not grace_check_done:
                     grace_check_done = True
                     if not await self._grace_analysis(working_history, effective_max, grace_extension):
