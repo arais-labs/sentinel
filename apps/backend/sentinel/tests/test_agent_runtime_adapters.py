@@ -118,12 +118,12 @@ class _FakeIndexedProvider(LLMProvider):
         yield AgentEvent(
             type="toolcall_start",
             content_index=4,
-            tool_call=ToolCallContent(id="call-1", name="runtime_exec", arguments={}),
+            tool_call=ToolCallContent(id="call-1", name="runtime", arguments={}),
         )
         yield AgentEvent(
             type="toolcall_delta",
             content_index=4,
-            delta='{"command":"run_user","shell_command":"pwd"}',
+            delta='{"command":"user","shell_command":"pwd"}',
         )
         yield AgentEvent(type="done", stop_reason="tool_use")
 
@@ -234,7 +234,7 @@ async def test_provider_adapter_preserves_content_index_for_streamed_tool_calls(
 
     assert tool_start.metadata["content_index"] == 4
     assert tool_delta.metadata["content_index"] == 4
-    assert tool_delta.delta == '{"command":"run_user","shell_command":"pwd"}'
+    assert tool_delta.delta == '{"command":"user","shell_command":"pwd"}'
 
 
 @pytest.mark.asyncio
@@ -334,12 +334,12 @@ async def test_tool_registry_adapter_hides_and_injects_session_id_for_grouped_to
         return {"ok": True, "payload": dict(payload)}
 
     module = ModuleDefinition(
-        name="runtime_exec",
-        label="Runtime Exec",
+        name="runtime",
+        label="Runtime",
         grouped_tool=True,
         actions=[
             ActionDefinition(
-                id="run_user",
+                id="user",
                 label="Run User",
                 handler=_handle_run_user,
                 parameters_schema={
@@ -362,11 +362,11 @@ async def test_tool_registry_adapter_hides_and_injects_session_id_for_grouped_to
         session_id=session_id,
     )
 
-    tool = adapter.get_tool("runtime_exec")
+    tool = adapter.get_tool("runtime")
     assert tool is not None
     assert "command" in tool.parameters_schema["required"]
 
-    result = await tool.execute({"command": "run_user", "shell_command": "pwd"})
+    result = await tool.execute({"command": "user", "shell_command": "pwd"})
 
     assert result.status == "ok"
     assert seen_payloads == [

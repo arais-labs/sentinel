@@ -457,8 +457,8 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
                     "tool_calls": [
                         {
                             "id": "toolu_pending_runtime",
-                            "name": "runtime_exec",
-                            "arguments": {"command": "run_user", "shell_command": "sleep 20"},
+                            "name": "runtime",
+                            "arguments": {"command": "user", "shell_command": "sleep 20"},
                         }
                     ]
                 },
@@ -478,7 +478,7 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
                 for item in items
                 if item["role"] == "tool_result"
                 and item.get("tool_call_id") == "toolu_pending_runtime"
-                and item.get("tool_name") == "runtime_exec"
+                and item.get("tool_name") == "runtime"
             ),
             None,
         )

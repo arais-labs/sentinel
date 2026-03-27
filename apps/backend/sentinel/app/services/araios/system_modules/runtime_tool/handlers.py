@@ -1,4 +1,4 @@
-"""Native module: runtime_exec — shell command execution in the runtime container."""
+"""Native module: runtime — shell command execution in the runtime container."""
 
 from __future__ import annotations
 
@@ -311,7 +311,7 @@ async def _handle_run_with_privilege(
         raise ToolValidationError("Field 'detached' must be a boolean")
     if not detached and _command_requests_background_execution(command_text):
         raise ToolValidationError(
-            "Background shell execution is not allowed for inline runtime_exec. "
+            "Background shell execution is not allowed for inline runtime commands. "
             "Use detached=true for long-running/background commands."
         )
 
@@ -411,7 +411,7 @@ async def handle_job_stop(payload: dict[str, Any], runtime: ToolRuntimeContext) 
         session_id,
         job_id=job_id.strip(),
         force=force,
-        reason="Stopped by runtime_exec command=job_stop",
+        reason="Stopped by runtime command=job_stop",
     )
     if job is None:
         raise ToolValidationError("Detached runtime job not found")

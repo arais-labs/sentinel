@@ -20,7 +20,7 @@ from app.models.system import SystemSetting
 from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
 from app.services.araios.system_modules.git_tool import handlers as git_module
 from app.services.araios.system_modules.module_manager import handlers as module_manager_module
-from app.services.araios.system_modules.runtime_exec import handlers as runtime_exec_module
+from app.services.araios.system_modules.runtime_tool import handlers as runtime_tool_module
 from app.services.runtime.ssh_client import SSHExecResult
 from app.services.tools import ToolExecutor
 from app.services.araios.system_modules.shared import validate_public_hostname as _validate_public_hostname
@@ -119,12 +119,12 @@ def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
     previous_executor = getattr(app.state, "tool_executor", None)
     previous_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
     previous_db_factory = getattr(app.state, "db_factory", None)
-    previous_get_runtime = runtime_exec_module.get_runtime
+    previous_get_runtime = runtime_tool_module.get_runtime
     session_factory = _FakeSessionFactory(fake_db)
-    runtime_exec_module.AsyncSessionLocal = session_factory
+    runtime_tool_module.AsyncSessionLocal = session_factory
     git_module.AsyncSessionLocal = session_factory
     module_manager_module.AsyncSessionLocal = session_factory
-    runtime_exec_module.get_runtime = lambda: _FakeRuntimeProvider()
+    runtime_tool_module.get_runtime = lambda: _FakeRuntimeProvider()
     reset_runtime_services()
     configure_runtime_services(app_state=app.state)
     registry = asyncio.run(build_runtime_registry(session_factory=session_factory))
@@ -141,7 +141,7 @@ def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
 def _restore_app_tool_runtime(previous_registry, previous_executor, previous_runtime_state) -> None:
     previous_get_runtime, previous_agent_runtime_support, previous_db_factory = previous_runtime_state
     reset_runtime_services()
-    runtime_exec_module.get_runtime = previous_get_runtime
+    runtime_tool_module.get_runtime = previous_get_runtime
     app.state.tool_registry = previous_registry
     app.state.tool_executor = previous_executor
     app.state.agent_runtime_support = previous_agent_runtime_support
@@ -149,10 +149,10 @@ def _restore_app_tool_runtime(previous_registry, previous_executor, previous_run
     app.state.db_session_factory = None
 
 
-def _runtime_exec_input(
+def _runtime_input(
     *,
     shell_command: str,
-    action: str = "run_user",
+    action: str = "user",
     **extra: object,
 ) -> dict[str, object]:
     payload: dict[str, object] = {"command": action, "shell_command": shell_command}
@@ -189,7 +189,7 @@ def test_tools_registry_and_execution():
         names = {item["name"] for item in listed.json()["items"]}
         assert {
             "http_request",
-            "runtime_exec",
+            "runtime",
             "git",
             "str_replace_editor",
             "browser",
@@ -241,9 +241,9 @@ def test_tools_registry_and_execution():
         estop = client.post("/api/v1/admin/estop", headers=headers)
         assert estop.status_code == 200
         blocked = client.post(
-            "/api/v1/tools/runtime_exec/execute",
+            "/api/v1/tools/runtime/execute",
             json={
-                "input": {"command": "run_user", "shell_command": "echo blocked"},
+                "input": {"command": "user", "shell_command": "echo blocked"},
                 "runtime_context": {"session_id": session_id},
             },
             headers=headers,
@@ -287,7 +287,7 @@ def test_tool_auth_required():
         app_main.init_db = old_init
 
 
-def test_runtime_exec_runs_command():
+def test_runtime_runs_command():
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
 
@@ -317,9 +317,9 @@ def test_runtime_exec_runs_command():
         session_id = created_session.json()["id"]
 
         run = client.post(
-            "/api/v1/tools/runtime_exec/execute",
+            "/api/v1/tools/runtime/execute",
             json={
-                "input": _runtime_exec_input(shell_command="echo hello"),
+                "input": _runtime_input(shell_command="echo hello"),
                 "runtime_context": {"session_id": session_id},
             },
             headers=headers,
@@ -345,7 +345,7 @@ def test_runtime_exec_runs_command():
         app_main.init_db = old_init
 
 
-def test_runtime_exec_detached_job_lifecycle():
+def test_runtime_detached_job_lifecycle():
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
 
@@ -375,9 +375,9 @@ def test_runtime_exec_detached_job_lifecycle():
         session_id = created_session.json()["id"]
 
         run = client.post(
-            "/api/v1/tools/runtime_exec/execute",
+            "/api/v1/tools/runtime/execute",
             json={
-                "input": _runtime_exec_input(shell_command="sleep 30", detached=True),
+                "input": _runtime_input(shell_command="sleep 30", detached=True),
                 "runtime_context": {"session_id": session_id},
             },
             headers=headers,
@@ -396,8 +396,8 @@ def test_runtime_exec_detached_job_lifecycle():
             assert "/tmp/sentinel/session_runtime" not in json.dumps(payload["job"])
 
         listed = client.post(
-            "/api/v1/tools/runtime_exec/execute",
-            json={"input": {"command": "jobs_list"}, "runtime_context": {"session_id": session_id}},
+            "/api/v1/tools/runtime/execute",
+            json={"input": {"command": "jobs"}, "runtime_context": {"session_id": session_id}},
             headers=headers,
         )
         assert listed.status_code == 200
@@ -411,7 +411,7 @@ def test_runtime_exec_detached_job_lifecycle():
             assert "/tmp/sentinel/session_runtime" not in json.dumps(listed_job)
 
         status = client.post(
-            "/api/v1/tools/runtime_exec/execute",
+            "/api/v1/tools/runtime/execute",
             json={
                 "input": {"command": "job_status", "job_id": job_id},
                 "runtime_context": {"session_id": session_id},
@@ -428,7 +428,7 @@ def test_runtime_exec_detached_job_lifecycle():
             assert "/tmp/sentinel/session_runtime" not in json.dumps(status_job)
 
         logs = client.post(
-            "/api/v1/tools/runtime_exec/execute",
+            "/api/v1/tools/runtime/execute",
             json={
                 "input": {"command": "job_logs", "job_id": job_id},
                 "runtime_context": {"session_id": session_id},
@@ -446,7 +446,7 @@ def test_runtime_exec_detached_job_lifecycle():
             assert "/tmp/sentinel/session_runtime" not in json.dumps(logs_job)
 
         stopped = client.post(
-            "/api/v1/tools/runtime_exec/execute",
+            "/api/v1/tools/runtime/execute",
             json={
                 "input": {"command": "job_stop", "job_id": job_id},
                 "runtime_context": {"session_id": session_id},
@@ -461,7 +461,7 @@ def test_runtime_exec_detached_job_lifecycle():
         app_main.init_db = old_init
 
 
-def test_runtime_exec_rejects_background_without_detached():
+def test_runtime_rejects_background_without_detached():
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
 
@@ -491,9 +491,9 @@ def test_runtime_exec_rejects_background_without_detached():
         session_id = created_session.json()["id"]
 
         run = client.post(
-            "/api/v1/tools/runtime_exec/execute",
+            "/api/v1/tools/runtime/execute",
             json={
-                "input": {"command": "run_user", "shell_command": "sleep 1 &"},
+                "input": {"command": "user", "shell_command": "sleep 1 &"},
                 "runtime_context": {"session_id": session_id},
             },
             headers=headers,
@@ -506,7 +506,7 @@ def test_runtime_exec_rejects_background_without_detached():
         app_main.init_db = old_init
 
 
-def test_runtime_exec_timeout_returns_result():
+def test_runtime_timeout_returns_result():
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
 
@@ -536,9 +536,9 @@ def test_runtime_exec_timeout_returns_result():
         session_id = created_session.json()["id"]
 
         run = client.post(
-            "/api/v1/tools/runtime_exec/execute",
+            "/api/v1/tools/runtime/execute",
             json={
-                "input": _runtime_exec_input(shell_command="sleep 3", timeout_seconds=1),
+                "input": _runtime_input(shell_command="sleep 3", timeout_seconds=1),
                 "runtime_context": {"session_id": session_id},
             },
             headers=headers,
@@ -553,7 +553,7 @@ def test_runtime_exec_timeout_returns_result():
         app_main.init_db = old_init
 
 
-def test_runtime_exec_root_privilege_requires_approval():
+def test_runtime_root_privilege_requires_approval():
     fake_db = FakeDB()
     waiter_seen: dict[str, object] = {}
 
@@ -562,7 +562,7 @@ def test_runtime_exec_root_privilege_requires_approval():
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
             approval={
-                "provider": "runtime_exec",
+                "provider": "runtime",
                 "approval_id": "apr_runtime_root",
                 "status": "approved",
                 "pending": False,
@@ -602,10 +602,10 @@ def test_runtime_exec_root_privilege_requires_approval():
         session_id = created_session.json()["id"]
 
         run = client.post(
-            "/api/v1/tools/runtime_exec/execute",
+            "/api/v1/tools/runtime/execute",
             json={
                 "input": {
-                    "command": "run_root",
+                    "command": "root",
                     "shell_command": "echo root-approved",
                 },
                 "runtime_context": {"session_id": session_id},
@@ -616,9 +616,9 @@ def test_runtime_exec_root_privilege_requires_approval():
         payload = run.json()["result"]
         assert payload["ok"] is True
         assert "root-approved" in payload["stdout"]
-        assert payload["approval"]["provider"] == "runtime_exec"
+        assert payload["approval"]["provider"] == "runtime"
         assert payload["approval"]["approval_id"] == "apr_runtime_root"
-        assert waiter_seen["action"] == "runtime_exec.run_root"
+        assert waiter_seen["action"] == "runtime.root"
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()

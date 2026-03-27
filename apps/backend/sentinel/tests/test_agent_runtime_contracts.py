@@ -123,7 +123,7 @@ def test_engine_assemble_turn_ignores_tool_calls_without_ids() -> None:
         [
             AgentEvent(
                 type="toolcall_start",
-                tool_call=ToolCallBlock(id="", name="runtime_exec", arguments={"command": "pwd"}),
+                tool_call=ToolCallBlock(id="", name="runtime", arguments={"command": "pwd"}),
             ),
             AgentEvent(type="toolcall_delta", delta='{"command":"pwd"}'),
             AgentEvent(type="done", stop_reason="tool_use"),
