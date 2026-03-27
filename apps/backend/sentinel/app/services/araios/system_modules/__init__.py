@@ -8,7 +8,7 @@ from app.services.araios.module_types import ModuleDefinition
 _SYSTEM_MODULE_NAMES = (
     "runtime_exec",
     "python",
-    "git_exec",
+    "git_tool",
     "str_replace_editor",
     "http_request",
     "browser",

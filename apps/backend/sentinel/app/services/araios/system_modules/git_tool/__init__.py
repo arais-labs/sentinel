@@ -10,8 +10,8 @@ from .handlers import (
     _run_blocking,
     _run_git_subprocess,
     handle_accounts,
-    handle_run_read,
-    handle_run_write,
+    handle_read,
+    handle_write,
 )
 from .module import MODULE
 
@@ -26,6 +26,6 @@ __all__ = [
     "_run_blocking",
     "_run_git_subprocess",
     "handle_accounts",
-    "handle_run_read",
-    "handle_run_write",
+    "handle_read",
+    "handle_write",
 ]

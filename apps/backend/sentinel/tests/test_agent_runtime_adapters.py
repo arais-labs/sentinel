@@ -22,7 +22,7 @@ from app.services.llm.generic.types import (
     TokenUsage,
     ToolCallContent,
 )
-from app.services.tools.executor import ToolExecutor
+from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
 from app.services.tools.registry import (
     ToolApprovalEvaluation,
     ToolApprovalOutcome,
@@ -275,7 +275,7 @@ async def test_tool_registry_adapter_maps_pending_approval() -> None:
             ),
         )
     )
-    executor = ToolExecutor(registry, approval_waiter=_fake_pending_approval_waiter)
+    executor = _PendingApprovalExecutor()
     adapter = SentinelToolRegistryAdapter(registry, executor)
 
     tool = adapter.get_tool("git.push")
@@ -286,6 +286,42 @@ async def test_tool_registry_adapter_maps_pending_approval() -> None:
     assert result.approval_request is not None
     assert result.approval_request.id == "approval-1"
     assert result.approval_request.action == "git.push"
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_adapter_maps_post_approval_validation_error_to_error() -> None:
+    registry = ToolRegistry()
+
+    async def _invalid_after_approval(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+        _ = payload, runtime
+        raise ToolValidationError("Field 'command' must be 'read' for non-write git or gh commands")
+
+    registry.register(
+        ToolDefinition(
+            name="git",
+            description="Git tool",
+            parameters_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            execute=_invalid_after_approval,
+            approval_check=lambda: ToolApprovalEvaluation.require(
+                ToolApprovalRequirement(
+                    action="git.write",
+                    description="Execute write git command.",
+                )
+            ),
+        )
+    )
+    executor = ToolExecutor(registry, approval_waiter=_fake_approved_waiter)
+    adapter = SentinelToolRegistryAdapter(registry, executor)
+
+    tool = adapter.get_tool("git")
+    assert tool is not None
+    result = await tool.execute({"command": "write", "cli_command": "git clone https://github.com/example/repo.git"})
+
+    assert result.status == "error"
+    assert result.approval_request is None
+    assert result.error == "Field 'command' must be 'read' for non-write git or gh commands"
+    assert result.metadata["approval"]["status"] == "approved"
+    assert result.metadata["approval"]["pending"] is False
 
 
 @pytest.mark.asyncio
@@ -343,6 +379,32 @@ async def _ok_tool(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict
     return {"ok": True, **payload}
 
 
+class _PendingApprovalExecutor:
+    async def execute(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        runtime: ToolRuntimeContext | None = None,
+        agent_mode: Any = None,
+        on_pending_approval: Any = None,
+    ) -> tuple[Any, int]:
+        _ = payload, runtime, agent_mode
+        approval_payload = {
+            "provider": name,
+            "approval_id": "approval-1",
+            "status": "pending",
+            "pending": True,
+            "can_resolve": True,
+            "label": f"{name} approval",
+            "action": "git.push",
+            "description": "Push current branch to remote.",
+        }
+        if callable(on_pending_approval):
+            await on_pending_approval(approval_payload)
+        raise ToolExecutionError("Approval pending.", approval=approval_payload)
+
+
 async def _fake_pending_approval_waiter(
     tool_name: str,
     payload: dict[str, Any],
@@ -367,4 +429,35 @@ async def _fake_pending_approval_waiter(
         status=ToolApprovalOutcomeStatus.CANCELLED,
         approval=pending_payload,
         message="Approval cancelled.",
+    )
+
+
+async def _fake_approved_waiter(
+    tool_name: str,
+    payload: dict[str, Any],
+    runtime: ToolRuntimeContext,
+    requirement: ToolApprovalRequirement,
+    on_pending_approval: Any = None,
+) -> ToolApprovalOutcome:
+    _ = payload, runtime
+    pending_payload = {
+        "provider": tool_name,
+        "approval_id": "approval-2",
+        "status": "pending",
+        "pending": True,
+        "can_resolve": True,
+        "label": f"{tool_name} approval",
+        "action": requirement.action,
+        "description": requirement.description,
+    }
+    if callable(on_pending_approval):
+        await on_pending_approval(pending_payload)
+    approved_payload = dict(pending_payload)
+    approved_payload["status"] = "approved"
+    approved_payload["pending"] = False
+    approved_payload["can_resolve"] = False
+    return ToolApprovalOutcome(
+        status=ToolApprovalOutcomeStatus.APPROVED,
+        approval=approved_payload,
+        message="Approved.",
     )

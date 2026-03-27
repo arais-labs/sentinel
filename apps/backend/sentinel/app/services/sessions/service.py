@@ -706,7 +706,10 @@ class SessionService:
         await db.commit()
         await db.refresh(message)
         if role == "user":
-            naming = SessionNamingService(provider=getattr(self._agent_runtime_support, "provider", None))
+            naming = SessionNamingService(
+                provider=getattr(self._agent_runtime_support, "provider", None),
+                db_factory=self._db_factory,
+            )
             await naming.maybe_auto_rename(session_id=session.id)
         return message
 
@@ -807,7 +810,10 @@ class SessionService:
                 ),
             )
         )
-        naming = SessionNamingService(provider=getattr(self._agent_runtime_support, "provider", None))
+        naming = SessionNamingService(
+            provider=getattr(self._agent_runtime_support, "provider", None),
+            db_factory=self._db_factory,
+        )
         await naming.maybe_auto_rename(session_id=session.id)
         return ChatRunResult(
             final_text=str(result.metadata.get("final_text") or ""),

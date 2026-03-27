@@ -47,14 +47,14 @@ def test_runtime_context_snapshot_includes_conversation_history_layer():
                 TextContent(text="I will check the repository."),
                 ToolCallContent(
                     id="call_1",
-                    name="git_exec",
-                    arguments={"command": "run_read", "cli_command": "git status"},
+                    name="git",
+                    arguments={"command": "read", "cli_command": "git status"},
                 ),
             ]
         ),
         ToolResultMessage(
             tool_call_id="call_1",
-            tool_name="git_exec",
+            tool_name="git",
             content='{"ok": true}',
             is_error=False,
         ),
@@ -83,9 +83,9 @@ def test_runtime_context_snapshot_includes_conversation_history_layer():
     assert history_messages[0]["image_count"] == 1
     assert history_messages[1]["role"] == "assistant"
     assert history_messages[1]["tool_call_count"] == 1
-    assert history_messages[1]["tool_calls"][0]["name"] == "git_exec"
+    assert history_messages[1]["tool_calls"][0]["name"] == "git"
     assert history_messages[2]["role"] == "tool_result"
-    assert history_messages[2]["tool_name"] == "git_exec"
+    assert history_messages[2]["tool_name"] == "git"
     assert structured["history_message_count"] == 3
 
 

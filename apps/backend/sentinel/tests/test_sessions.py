@@ -392,14 +392,14 @@ def test_stop_session_generation_cancels_pending_git_approvals():
         session_id = uuid.UUID(session_resp.json()["id"])
 
         pending = ToolApproval(
-            provider="git_exec",
-            tool_name="git_exec",
+            provider="git",
+            tool_name="git",
             session_id=session_id,
-            action="git_exec.run_write",
+            action="git.write",
             description="Execute an approval-gated git or supported gh write command inside the session workspace.",
             status="pending",
             requested_by="session:test",
-            payload_json={"tool_name": "git_exec"},
+            payload_json={"tool_name": "git"},
             expires_at=datetime.now(UTC) + timedelta(minutes=10),
         )
         fake_db.add(pending)

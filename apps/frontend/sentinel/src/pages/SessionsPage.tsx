@@ -2605,7 +2605,7 @@ export function SessionsPage() {
           if (
             toolNameForRefresh === 'runtime_exec' ||
             toolNameForRefresh === 'python' ||
-            toolNameForRefresh === 'git_exec'
+            toolNameForRefresh === 'git'
           ) {
             void fetchRuntimeStatus(sessionId, 120);
             if (rightRailTab === 'runtime') {

@@ -26,7 +26,7 @@ BEGIN
     SELECT
         g.id,
         'git',
-        'git_exec',
+        'git',
         g.session_id,
         'git.write',
         ('Allow write operation: ' || g.command),

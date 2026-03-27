@@ -61,7 +61,7 @@ def test_git_accounts_crud_and_approval_resolution():
                 "name": "Client GitHub",
                 "host": "github.com",
                 "scope_pattern": "arais-labs/*",
-                "author_name": "Alexandre",
+                "author_name": "Test User",
                 "author_email": "alex@example.com",
                 "token_read": "ghr_read_123",
                 "token_write": "ghw_write_456",
@@ -91,30 +91,30 @@ def test_git_accounts_crud_and_approval_resolution():
         assert updated.json()["author_email"] == "ops@example.com"
 
         approval = ToolApproval(
-            provider="git_exec",
-            tool_name="git_exec",
+            provider="git",
+            tool_name="git",
             session_id=None,
-            action="git_exec.run_write",
+            action="git.write",
             description="Execute an approval-gated git or supported gh write command inside the session workspace.",
             status="pending",
             requested_by="session:test",
-            payload_json={"tool_name": "git_exec"},
+            payload_json={"tool_name": "git"},
             expires_at=datetime.now(UTC) + timedelta(minutes=10),
         )
         fake_db.add(approval)
 
-        approvals = client.get("/api/v1/approvals?provider=git_exec&status=pending", headers=admin_headers)
+        approvals = client.get("/api/v1/approvals?provider=git&status=pending", headers=admin_headers)
         assert approvals.status_code == 200
         assert approvals.json()["total"] == 1
         approval_id = approvals.json()["items"][0]["approval_id"]
 
         resolved = client.post(
-            f"/api/v1/approvals/git_exec/{approval_id}/approve",
+            f"/api/v1/approvals/git/{approval_id}/approve",
             json={"note": "approved"},
             headers=admin_headers,
         )
         assert resolved.status_code == 200
-        assert resolved.json()["provider"] == "git_exec"
+        assert resolved.json()["provider"] == "git"
         assert resolved.json()["status"] == "approved"
         assert resolved.json()["decision_note"] == "approved"
 
@@ -152,7 +152,7 @@ def test_git_routes_require_admin_role():
         app_main.init_db = old_init
 
 
-def test_generic_approvals_routes_list_and_resolve_git_exec_tool_approval():
+def test_generic_approvals_routes_list_and_resolve_git_tool_approval():
     fake_db = FakeDB()
 
     async def _override_get_db():
@@ -186,14 +186,14 @@ def test_generic_approvals_routes_list_and_resolve_git_exec_tool_approval():
         fake_db.add(account)
         fake_db.add(
             ToolApproval(
-                provider="git_exec",
-                tool_name="git_exec",
+                provider="git",
+                tool_name="git",
                 session_id=None,
-                action="git_exec.run_write",
+                action="git.write",
                 description="Execute an approval-gated git or supported gh write command inside the session workspace.",
                 status="pending",
                 requested_by="session:test",
-                payload_json={"tool_name": "git_exec"},
+                payload_json={"tool_name": "git"},
                 expires_at=datetime.now(UTC) + timedelta(minutes=10),
             )
         )
@@ -203,18 +203,18 @@ def test_generic_approvals_routes_list_and_resolve_git_exec_tool_approval():
         body = approvals.json()
         assert body["total"] == 1
         item = body["items"][0]
-        assert item["provider"] == "git_exec"
+        assert item["provider"] == "git"
         assert item["pending"] is True
         assert item["can_resolve"] is True
         assert isinstance(item["approval_id"], str)
 
         resolved = client.post(
-            f"/api/v1/approvals/git_exec/{item['approval_id']}/approve",
+            f"/api/v1/approvals/git/{item['approval_id']}/approve",
             json={"note": "approved from generic endpoint"},
             headers=admin_headers,
         )
         assert resolved.status_code == 200
-        assert resolved.json()["provider"] == "git_exec"
+        assert resolved.json()["provider"] == "git"
         assert resolved.json()["status"] == "approved"
         assert resolved.json()["pending"] is False
     finally:

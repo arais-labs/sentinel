@@ -234,8 +234,8 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
                     "tool_calls": [
                         {
                             "id": "toolu_pending_1",
-                            "name": "git_exec",
-                            "arguments": {"command": "run_write", "cli_command": "git push origin main"},
+                            "name": "git",
+                            "arguments": {"command": "write", "cli_command": "git push origin main"},
                         }
                     ]
                 },
@@ -243,14 +243,14 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
         )
         fake_db.add(
             ToolApproval(
-                provider="git_exec",
-                tool_name="git_exec",
+                provider="git",
+                tool_name="git",
                 session_id=uuid.UUID(session_id),
-                action="git_exec.run_write",
+                action="git.write",
                 description="Execute an approval-gated git or supported gh write command inside the session workspace.",
                 status="pending",
                 requested_by="session:test",
-                payload_json={"tool_name": "git_exec"},
+                payload_json={"tool_name": "git"},
                 expires_at=datetime.now(UTC) + timedelta(minutes=10),
             )
         )
@@ -263,12 +263,12 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             replay_start = ws.receive_json()
             assert replay_start["type"] == "toolcall_start"
             assert replay_start["tool_call"]["id"] == "toolu_pending_1"
-            assert replay_start["tool_call"]["name"] == "git_exec"
+            assert replay_start["tool_call"]["name"] == "git"
 
             replay_pending = ws.receive_json()
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_1"
-            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "run_write", "cli_command": "git push origin main"}
+            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "write", "cli_command": "git push origin main"}
             assert replay_pending["tool_result"]["content"]["status"] == "running"
             assert "pending" not in replay_pending["tool_result"]["metadata"]
             assert "approval" not in replay_pending["tool_result"]["metadata"]
@@ -290,8 +290,8 @@ def test_unresolved_tool_calls_ignore_calls_with_persisted_tool_result():
                 "tool_calls": [
                     {
                         "id": "toolu_pending_1",
-                        "name": "git_exec",
-                        "arguments": {"command": "run_write", "cli_command": "git push origin main"},
+                        "name": "git",
+                        "arguments": {"command": "write", "cli_command": "git push origin main"},
                     }
                 ]
             },
@@ -300,10 +300,10 @@ def test_unresolved_tool_calls_ignore_calls_with_persisted_tool_result():
             "id": "result-1",
             "role": "tool_result",
             "tool_call_id": "toolu_pending_1",
-            "tool_name": "git_exec",
+            "tool_name": "git",
             "metadata": {
                 "approval": {
-                    "provider": "git_exec",
+                    "provider": "git",
                     "approval_id": "approval-1",
                     "status": "pending",
                     "pending": True,
@@ -354,9 +354,9 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
                     "tool_calls": [
                         {
                             "id": "toolu_pending_2",
-                            "name": "git_exec",
+                            "name": "git",
                             "arguments": {
-                                "command": "run_write",
+                                "command": "write",
                                 "cli_command": "gh pr create --repo exampleco/exampleco-gitops --title Test --body Body",
                             },
                         }
@@ -369,12 +369,12 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
                 session_id=uuid.UUID(session_id),
                 role="tool_result",
                 tool_call_id="toolu_pending_2",
-                tool_name="git_exec",
+                tool_name="git",
                 content='{"status":"pending","message":"Action requires approval."}',
                 metadata_json={
                     "pending": True,
                     "approval": {
-                        "provider": "git_exec",
+                        "provider": "git",
                         "approval_id": str(uuid.uuid4()),
                         "status": "pending",
                         "pending": True,
@@ -394,7 +394,7 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
             assert pending_result["tool_call_id"] == "toolu_pending_2"
             approval = pending_result["metadata"].get("approval")
             assert isinstance(approval, dict)
-            assert approval.get("provider") == "git_exec"
+            assert approval.get("provider") == "git"
             assert approval.get("pending") is True
     finally:
         if old_run_registry is None:
@@ -521,22 +521,22 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
                     "tool_calls": [
                         {
                             "id": "toolu_stale_1",
-                            "name": "git_exec",
-                            "arguments": {"command": "run_write", "cli_command": "git push origin main"},
+                            "name": "git",
+                            "arguments": {"command": "write", "cli_command": "git push origin main"},
                         }
                     ]
                 },
             )
         )
         pending_approval = ToolApproval(
-            provider="git_exec",
-            tool_name="git_exec",
+            provider="git",
+            tool_name="git",
             session_id=uuid.UUID(session_id),
-            action="git_exec.run_write",
+            action="git.write",
             description="Execute an approval-gated git or supported gh write command inside the session workspace.",
             status="pending",
             requested_by="session:test",
-            payload_json={"tool_name": "git_exec"},
+            payload_json={"tool_name": "git"},
             expires_at=datetime.now(UTC) + timedelta(minutes=10),
         )
         fake_db.add(pending_approval)
@@ -551,7 +551,7 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
                     for item in history
                     if item.get("role") == "tool_result"
                     and item.get("tool_call_id") == "toolu_stale_1"
-                    and item.get("tool_name") == "git_exec"
+                    and item.get("tool_name") == "git"
                 ),
                 None,
             )
