@@ -75,7 +75,7 @@ const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: r
     input: ['command', 'id', 'title', 'status', 'priority', 'owner'],
     output: ['tasks', 'id', 'title', 'status', 'priority', 'ok', 'message'],
   },
-  runtime_exec: {
+  runtime: {
     input: ['command', 'shell_command', 'cwd', 'job_id', 'detached'],
     output: ['stdout', 'ok', 'returncode', 'timed_out', 'stderr', 'job', 'items'],
   },

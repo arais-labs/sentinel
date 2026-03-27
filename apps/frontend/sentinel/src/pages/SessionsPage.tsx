@@ -2603,7 +2603,7 @@ export function SessionsPage() {
             void fetchTasks(sessionId);
           }
           if (
-            toolNameForRefresh === 'runtime_exec' ||
+            toolNameForRefresh === 'runtime' ||
             toolNameForRefresh === 'python' ||
             toolNameForRefresh === 'git'
           ) {

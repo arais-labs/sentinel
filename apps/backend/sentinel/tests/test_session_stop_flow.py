@@ -70,9 +70,9 @@ async def test_stop_generation_waits_for_cancelled_run_to_materialize_tool_resul
                         "tool_calls": [
                             {
                                 "id": "toolu_cancelled_1",
-                                "name": "runtime_exec",
+                                "name": "runtime",
                                 "arguments": {
-                                    "command": "run_user",
+                                    "command": "user",
                                     "shell_command": "sleep 20",
                                 },
                             }
@@ -108,7 +108,7 @@ async def test_stop_generation_waits_for_cancelled_run_to_materialize_tool_resul
         ]
         assert len(tool_results) == 1
         result = tool_results[0]
-        assert result.tool_name == "runtime_exec"
+        assert result.tool_name == "runtime"
         assert result.metadata_json["cancelled_by_stop"] is True
         assert result.metadata_json["pending"] is False
         generation = result.metadata_json.get("generation") or {}

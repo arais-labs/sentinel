@@ -10,6 +10,8 @@ from .handlers import (
     handle_run_root,
     handle_run_user,
 )
+
+
 def _job_id_prop() -> dict:
     return {"type": "string", "description": "Detached job ID."}
 
@@ -76,30 +78,29 @@ def _job_stop_parameters_schema() -> dict:
 
 
 MODULE = ModuleDefinition(
-    name="runtime_exec",
-    label="Runtime Exec",
+    name="runtime",
+    label="Runtime",
     description=(
-        "Execute arbitrary shell commands in a per-session runtime workspace. "
-        "User commands run in a confined sandbox limited to workspace writes. "
-        "Root commands run unconfined."
+        "Execute shell commands inside the per-session runtime workspace. "
+        "Use `user` for the default runtime user and `root` for elevated execution."
     ),
     icon="terminal",
     system=True,
     grouped_tool=True,
     actions=[
         ActionDefinition(
-            id="run_user",
-            label="Run User Command",
-            description="Run a user-privileged shell command inside the session runtime workspace.",
+            id="user",
+            label="User Command",
+            description="Run a shell command as the default runtime user inside the session workspace.",
             streaming=True,
             handler=handle_run_user,
             requires_runtime_context=True,
             parameters_schema=_run_parameters_schema(),
         ),
         ActionDefinition(
-            id="run_root",
-            label="Run Root Command",
-            description="Run a root-privileged shell command inside the session runtime workspace.",
+            id="root",
+            label="Root Command",
+            description="Run a shell command as root inside the session runtime workspace.",
             streaming=True,
             handler=handle_run_root,
             approval=True,
@@ -107,7 +108,7 @@ MODULE = ModuleDefinition(
             parameters_schema=_run_parameters_schema(),
         ),
         ActionDefinition(
-            id="jobs_list",
+            id="jobs",
             label="List Jobs",
             description="List detached runtime jobs for a session.",
             handler=handle_jobs_list,

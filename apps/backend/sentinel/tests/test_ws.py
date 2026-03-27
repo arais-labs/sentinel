@@ -444,8 +444,8 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
                     "tool_calls": [
                         {
                             "id": "toolu_pending_runtime",
-                            "name": "runtime_exec",
-                            "arguments": {"command": "run_user", "shell_command": "sleep 10"},
+                            "name": "runtime",
+                            "arguments": {"command": "user", "shell_command": "sleep 10"},
                         }
                     ]
                 },
@@ -460,12 +460,12 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
             replay_start = ws.receive_json()
             assert replay_start["type"] == "toolcall_start"
             assert replay_start["tool_call"]["id"] == "toolu_pending_runtime"
-            assert replay_start["tool_call"]["name"] == "runtime_exec"
+            assert replay_start["tool_call"]["name"] == "runtime"
 
             replay_pending = ws.receive_json()
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_runtime"
-            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "run_user", "shell_command": "sleep 10"}
+            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "user", "shell_command": "sleep 10"}
             assert replay_pending["tool_result"]["content"]["status"] == "running"
             assert "pending" not in replay_pending["tool_result"]["metadata"]
             assert "approval_id" not in replay_pending["tool_result"]["metadata"]

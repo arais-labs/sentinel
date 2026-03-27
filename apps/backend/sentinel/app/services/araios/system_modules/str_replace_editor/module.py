@@ -10,7 +10,7 @@ MODULE = ModuleDefinition(
     label="Str Replace Editor",
     description=(
         "Replace an exact string in a file with a new string. "
-        "Runs through the same user sandbox runtime path as runtime_exec and requires a unique exact match."
+        "Runs through the same user runtime path as runtime and requires a unique exact match."
     ),
     icon="file-edit",
     system=True,
@@ -20,7 +20,7 @@ MODULE = ModuleDefinition(
             label="Edit File",
             description=(
                 "Replace an exact string in a file with a new string. "
-                "Runs through the same user sandbox runtime path as runtime_exec and requires a unique exact match."
+                "Runs through the same user runtime path as runtime and requires a unique exact match."
             ),
             handler=handle_edit,
             requires_runtime_context=True,

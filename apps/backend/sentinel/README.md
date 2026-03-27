@@ -29,8 +29,8 @@ docker compose -f docker-compose.dev.yml exec -T sentinel-backend python -m pyte
 
 - `GET /api/v1/health`
 
-## runtime_exec Contract
+## runtime Contract
 
-- `command=run_user`: confined execution inside the session runtime workspace.
-- `command=run_root`: root execution inside the session runtime workspace and approval-gated by default.
-- Job actions are explicit commands too: `jobs_list`, `job_status`, `job_logs`, `job_stop`.
+- `command=user`: execution as the default runtime user inside the session workspace.
+- `command=root`: root execution inside the session runtime workspace and approval-gated by default.
+- Job actions are explicit commands too: `jobs`, `job_status`, `job_logs`, `job_stop`.

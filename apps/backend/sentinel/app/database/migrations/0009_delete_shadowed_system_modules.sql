@@ -5,6 +5,7 @@
 
 DELETE FROM modules
 WHERE name IN (
+    'runtime',
     'runtime_exec',
     'python',
     'git',
