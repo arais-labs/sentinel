@@ -148,6 +148,15 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 last_stop_reason = runtime_event.stop_reason
             if runtime_event.approval_request is not None:
                 pending_approval = runtime_event.approval_request
+            elif runtime_event.type == "tool_result" and runtime_event.tool_result is not None:
+                approval = runtime_event.tool_result.metadata.get("approval")
+                if isinstance(approval, dict):
+                    approval_status = str(approval.get("status") or "").strip().lower()
+                    approval_pending = approval.get("pending") is True or approval_status in {"pending", ""}
+                    if not approval_pending:
+                        pending_approval = None
+            elif runtime_event.type == "done" and runtime_event.stop_reason != "pending_approval":
+                pending_approval = None
             if runtime_event.type == "toolcall_start" and runtime_event.tool_call:
                 tool_call_ids_by_name[runtime_event.tool_call.name] = runtime_event.tool_call.id
             if config.stream and runtime_event.type == "done" and runtime_event.stop_reason != "tool_use":

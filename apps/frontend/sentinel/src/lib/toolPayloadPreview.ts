@@ -47,7 +47,7 @@ const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: r
     input: ['title', 'summary', 'dsl'],
     output: ['share_url', 'url', 'error'],
   },
-  git_exec: {
+  git: {
     input: ['command', 'cli_command', 'cwd', 'host', 'repo_url'],
     output: ['ok', 'stdout', 'stderr', 'returncode', 'timed_out', 'total', 'accounts'],
   },

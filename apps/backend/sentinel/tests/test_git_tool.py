@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.models import GitAccount, Session
-from app.services.araios.system_modules.git_exec import handlers as git_exec_module
+from app.services.araios.system_modules.git_tool import handlers as git_module
 from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
 from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus, ToolRegistry, ToolRuntimeContext
 from app.services.tools.registry_builder import build_default_registry
@@ -26,7 +26,7 @@ def _run_via_executor(tool, payload: dict, *, approval_waiter=None):
     session_id = payload.pop("session_id", None)
     if session_id is not None:
         runtime = ToolRuntimeContext(session_id=UUID(str(session_id)))
-    result, _ = _run(executor.execute("git_exec", payload, runtime=runtime))
+    result, _ = _run(executor.execute("git", payload, runtime=runtime))
     return result
 
 
@@ -58,16 +58,16 @@ class _SessionFactory:
         return _SessionCtx(self._db)
 
 
-def _git_exec_tool(*, session_factory=None):
+def _build_git_tool(*, session_factory=None):
     if session_factory is not None:
-        git_exec_module.AsyncSessionLocal = session_factory
+        git_module.AsyncSessionLocal = session_factory
     registry = build_default_registry(session_factory=session_factory)
-    tool = registry.get("git_exec")
+    tool = registry.get("git")
     assert tool is not None
     return tool
 
 
-git_exec_module.git_exec_tool = _git_exec_tool
+git_module.git_tool = _build_git_tool
 
 
 def test_resolve_origin_url_reports_not_git_repo(monkeypatch, tmp_path):
@@ -80,10 +80,10 @@ def test_resolve_origin_url_reports_not_git_repo(monkeypatch, tmp_path):
             "timed_out": False,
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_blocking", _fake_run_blocking)
+    monkeypatch.setattr(git_module, "_run_blocking", _fake_run_blocking)
 
     with pytest.raises(ToolValidationError, match="requires a git repository"):
-        git_exec_module._resolve_origin_url(tmp_path)
+        git_module._resolve_origin_url(tmp_path)
 
 
 def test_resolve_origin_url_reports_missing_remote(monkeypatch, tmp_path):
@@ -96,10 +96,10 @@ def test_resolve_origin_url_reports_missing_remote(monkeypatch, tmp_path):
             "timed_out": False,
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_blocking", _fake_run_blocking)
+    monkeypatch.setattr(git_module, "_run_blocking", _fake_run_blocking)
 
     with pytest.raises(ToolValidationError, match="Git remote 'upstream' was not found"):
-        git_exec_module._resolve_origin_url(tmp_path, remote_name="upstream")
+        git_module._resolve_origin_url(tmp_path, remote_name="upstream")
 
 
 def test_resolve_origin_url_includes_generic_git_error(monkeypatch, tmp_path):
@@ -112,10 +112,10 @@ def test_resolve_origin_url_includes_generic_git_error(monkeypatch, tmp_path):
             "timed_out": False,
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_blocking", _fake_run_blocking)
+    monkeypatch.setattr(git_module, "_run_blocking", _fake_run_blocking)
 
     with pytest.raises(ToolValidationError, match="remote helper crashed unexpectedly"):
-        git_exec_module._resolve_origin_url(tmp_path)
+        git_module._resolve_origin_url(tmp_path)
 
 
 def test_resolve_origin_url_success(monkeypatch, tmp_path):
@@ -128,18 +128,18 @@ def test_resolve_origin_url_success(monkeypatch, tmp_path):
             "timed_out": False,
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_blocking", _fake_run_blocking)
+    monkeypatch.setattr(git_module, "_run_blocking", _fake_run_blocking)
 
-    repo_url = git_exec_module._resolve_origin_url(tmp_path)
+    repo_url = git_module._resolve_origin_url(tmp_path)
     assert repo_url == "https://github.com/arais-labs/sentinel.git"
 
 
 def test_network_mode_for_request_pull_is_read():
-    assert git_exec_module._network_mode_for_command("request-pull") == "read"
+    assert git_module._network_mode_for_command("request-pull") == "read"
 
 
 def test_resolve_network_repo_url_for_request_pull_with_url(tmp_path):
-    repo_url, remote_name = git_exec_module._resolve_network_repo_url(
+    repo_url, remote_name = git_module._resolve_network_repo_url(
         "request-pull",
         ["origin/main", "https://github.com/exampleco/exampleco-gitops.git", "feat/branch"],
         tmp_path,
@@ -154,9 +154,9 @@ def test_resolve_network_repo_url_for_request_pull_with_remote_name(monkeypatch,
         assert remote_name == "upstream"
         return "https://github.com/exampleco/exampleco-gitops.git"
 
-    monkeypatch.setattr(git_exec_module, "_resolve_origin_url", _fake_resolve_origin_url)
+    monkeypatch.setattr(git_module, "_resolve_origin_url", _fake_resolve_origin_url)
 
-    repo_url, remote_name = git_exec_module._resolve_network_repo_url(
+    repo_url, remote_name = git_module._resolve_network_repo_url(
         "request-pull",
         ["origin/main", "upstream", "feat/branch"],
         tmp_path,
@@ -165,7 +165,7 @@ def test_resolve_network_repo_url_for_request_pull_with_remote_name(monkeypatch,
     assert remote_name == "upstream"
 
 
-def test_git_exec_supports_gh_repo_list_with_account_token(monkeypatch):
+def test_git_supports_gh_repo_list_with_account_token(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh")
     fake_db.add(session)
@@ -199,13 +199,13 @@ def test_git_exec_supports_gh_repo_list_with_account_token(monkeypatch):
             "command": " ".join(args),
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     result = _run_tool(
         tool,
         {
-            "command": "run_read",
+            "command": "read",
             "session_id": str(session.id),
             "cli_command": "gh repo list arais-labs --limit 5",
         },
@@ -222,7 +222,7 @@ def test_git_exec_supports_gh_repo_list_with_account_token(monkeypatch):
     assert "ghr_read_token_123" in captured["redactions"]
 
 
-def test_git_exec_supports_ownerless_gh_repo_list_with_explicit_account(monkeypatch):
+def test_git_supports_ownerless_gh_repo_list_with_explicit_account(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-ownerless")
     fake_db.add(session)
@@ -256,13 +256,13 @@ def test_git_exec_supports_ownerless_gh_repo_list_with_explicit_account(monkeypa
             "command": " ".join(args),
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     result = _run_tool(
         tool,
         {
-            "command": "run_read",
+            "command": "read",
             "session_id": str(session.id),
             "cli_command": "gh repo list --limit 5",
             "git_account_name": "selected-account",
@@ -279,7 +279,7 @@ def test_git_exec_supports_ownerless_gh_repo_list_with_explicit_account(monkeypa
     assert env["GITHUB_TOKEN"] == "ghr_ownerless_token"
 
 
-def test_git_exec_supports_gh_repo_clone_with_explicit_account(monkeypatch):
+def test_git_supports_gh_repo_clone_with_explicit_account(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-repo-clone")
     fake_db.add(session)
@@ -314,13 +314,13 @@ def test_git_exec_supports_gh_repo_clone_with_explicit_account(monkeypatch):
             "command": " ".join(args),
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     result = _run_tool(
         tool,
         {
-            "command": "run_read",
+            "command": "read",
             "session_id": str(session.id),
             "cli_command": "gh repo clone example-org/example-repo",
             "git_account_name": "selected-account",
@@ -337,7 +337,7 @@ def test_git_exec_supports_gh_repo_clone_with_explicit_account(monkeypatch):
     assert env["GITHUB_TOKEN"] == "ghr_clone_token"
 
 
-def test_git_exec_rejects_ownerless_gh_repo_list_without_explicit_account():
+def test_git_rejects_ownerless_gh_repo_list_without_explicit_account():
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-ownerless-missing-account")
     fake_db.add(session)
@@ -352,20 +352,20 @@ def test_git_exec_rejects_ownerless_gh_repo_list_without_explicit_account():
             token_write="ghw_ownerless_token",
         )
     )
-    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+    tool = git_module.git_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="provide an explicit git account selection"):
         _run_tool(
             tool,
             {
-                "command": "run_read",
+                "command": "read",
                 "session_id": str(session.id),
                 "cli_command": "gh repo list --limit 5",
             },
         )
 
 
-def test_git_exec_rejects_gh_repo_clone_destination_outside_workspace():
+def test_git_rejects_gh_repo_clone_destination_outside_workspace():
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-repo-clone-outside")
     fake_db.add(session)
@@ -380,13 +380,13 @@ def test_git_exec_rejects_gh_repo_clone_destination_outside_workspace():
             token_write="ghw_clone_token",
         )
     )
-    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+    tool = git_module.git_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="gh repo clone destination must stay inside session workspace"):
         _run_tool(
             tool,
             {
-                "command": "run_read",
+                "command": "read",
                 "session_id": str(session.id),
                 "cli_command": "gh repo clone example-org/example-repo ../escape",
                 "git_account_name": "selected-account",
@@ -394,7 +394,7 @@ def test_git_exec_rejects_gh_repo_clone_destination_outside_workspace():
         )
 
 
-def test_git_exec_supports_session_example_ownerless_gh_api_user_repos_with_explicit_account(monkeypatch):
+def test_git_supports_session_example_ownerless_gh_api_user_repos_with_explicit_account(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-api-user-repos")
     fake_db.add(session)
@@ -428,13 +428,13 @@ def test_git_exec_supports_session_example_ownerless_gh_api_user_repos_with_expl
             "command": " ".join(args),
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     result = _run_tool(
         tool,
         {
-            "command": "run_read",
+            "command": "read",
             "session_id": str(session.id),
             "cli_command": "gh api /user/repos?per_page=200",
             "git_account_name": "selected-account",
@@ -447,7 +447,7 @@ def test_git_exec_supports_session_example_ownerless_gh_api_user_repos_with_expl
     assert captured["args"] == ["gh", "api", "/user/repos?per_page=200"]
 
 
-def test_git_exec_supports_generic_ownerless_gh_api_with_explicit_account(monkeypatch):
+def test_git_supports_generic_ownerless_gh_api_with_explicit_account(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-api-user")
     fake_db.add(session)
@@ -481,13 +481,13 @@ def test_git_exec_supports_generic_ownerless_gh_api_with_explicit_account(monkey
             "command": " ".join(args),
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     result = _run_tool(
         tool,
         {
-            "command": "run_read",
+            "command": "read",
             "session_id": str(session.id),
             "cli_command": "gh api /user",
             "git_account_name": "selected-account",
@@ -504,7 +504,7 @@ def test_git_exec_supports_generic_ownerless_gh_api_with_explicit_account(monkey
     assert env["GITHUB_TOKEN"] == "ghr_user_token"
 
 
-def test_git_exec_supports_gh_pr_view_with_read_token(monkeypatch):
+def test_git_supports_gh_pr_view_with_read_token(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-pr-view")
     fake_db.add(session)
@@ -542,14 +542,14 @@ def test_git_exec_supports_gh_pr_view_with_read_token(monkeypatch):
             "command": " ".join(args),
         }
 
-    monkeypatch.setattr(git_exec_module, "_resolve_origin_url", _fake_resolve_origin_url)
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_resolve_origin_url", _fake_resolve_origin_url)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     result = _run_tool(
         tool,
         {
-            "command": "run_read",
+            "command": "read",
             "session_id": str(session.id),
             "cli_command": "gh pr view 37 --json state,mergeStateStatus,isDraft",
         },
@@ -566,58 +566,58 @@ def test_git_exec_supports_gh_pr_view_with_read_token(monkeypatch):
     assert "ghr_read_token_123" in captured["redactions"]
 
 
-def test_git_exec_rejects_unsupported_gh_write_command():
+def test_git_rejects_unsupported_gh_write_command():
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-write")
     fake_db.add(session)
-    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+    tool = git_module.git_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="Unsupported gh command"):
         _run_tool(
             tool,
             {
-                "command": "run_read",
+                "command": "read",
                 "session_id": str(session.id),
                 "cli_command": "gh repo create arais-labs/new-repo --private",
             },
         )
 
 
-def test_git_exec_rejects_gh_auth_with_clear_guidance():
+def test_git_rejects_gh_auth_with_clear_guidance():
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-auth")
     fake_db.add(session)
-    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+    tool = git_module.git_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="Authentication is managed automatically"):
         _run_tool(
             tool,
             {
-                "command": "run_read",
+                "command": "read",
                 "session_id": str(session.id),
                 "cli_command": "gh auth status",
             },
         )
 
 
-def test_git_exec_rejects_gh_api_unsupported_method():
+def test_git_rejects_gh_api_unsupported_method():
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-api")
     fake_db.add(session)
-    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+    tool = git_module.git_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="GET, POST, and PUT"):
         _run_tool(
             tool,
             {
-                "command": "run_read",
+                "command": "read",
                 "session_id": str(session.id),
                 "cli_command": "gh api -X DELETE /orgs/arais-labs/repos",
             },
         )
 
 
-def test_git_exec_supports_gh_api_post_with_approval(monkeypatch):
+def test_git_supports_gh_api_post_with_approval(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-api-post")
     fake_db.add(session)
@@ -651,21 +651,21 @@ def test_git_exec_supports_gh_api_post_with_approval(monkeypatch):
             "command": " ".join(args),
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     async def _fake_waiter(tool_name, payload, runtime, requirement, pending_callback=None):
         _ = tool_name, payload, runtime, requirement, pending_callback
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
-            approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
+            approval={"provider": "git", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
             message="ok",
         )
 
     result = _run_via_executor(
         tool,
         {
-            "command": "run_write",
+            "command": "write",
             "session_id": str(session.id),
             "cli_command": "gh api -X POST /repos/exampleco/exampleco-gitops/pulls -f title='Test PR'",
         },
@@ -682,7 +682,7 @@ def test_git_exec_supports_gh_api_post_with_approval(monkeypatch):
     assert "ghw_write_token_456" in captured["redactions"]
 
 
-def test_git_exec_supports_gh_api_put_with_approval(monkeypatch):
+def test_git_supports_gh_api_put_with_approval(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-api-put")
     fake_db.add(session)
@@ -716,21 +716,21 @@ def test_git_exec_supports_gh_api_put_with_approval(monkeypatch):
             "command": " ".join(args),
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     async def _fake_waiter(tool_name, payload, runtime, requirement, pending_callback=None):
         _ = tool_name, payload, runtime, requirement, pending_callback
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
-            approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
+            approval={"provider": "git", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
             message="ok",
         )
 
     result = _run_via_executor(
         tool,
         {
-            "command": "run_write",
+            "command": "write",
             "session_id": str(session.id),
             "cli_command": "gh api -X PUT /repos/exampleco/exampleco-gitops/pulls/35/merge -f merge_method=merge",
         },
@@ -748,7 +748,7 @@ def test_git_exec_supports_gh_api_put_with_approval(monkeypatch):
     assert "ghw_write_token_456" in captured["redactions"]
 
 
-def test_git_exec_supports_gh_pr_create_with_approval(monkeypatch):
+def test_git_supports_gh_pr_create_with_approval(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-pr-create")
     fake_db.add(session)
@@ -782,21 +782,21 @@ def test_git_exec_supports_gh_pr_create_with_approval(monkeypatch):
             "command": " ".join(args),
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     async def _fake_waiter(tool_name, payload, runtime, requirement, pending_callback=None):
         _ = tool_name, payload, runtime, requirement, pending_callback
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
-            approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
+            approval={"provider": "git", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
             message="ok",
         )
 
     result = _run_via_executor(
         tool,
         {
-            "command": "run_write",
+            "command": "write",
             "session_id": str(session.id),
             "cli_command": (
                 "gh pr create --repo exampleco/exampleco-gitops "
@@ -817,7 +817,7 @@ def test_git_exec_supports_gh_pr_create_with_approval(monkeypatch):
     assert "ghw_write_token_456" in captured["redactions"]
 
 
-def test_git_exec_supports_gh_pr_merge_with_approval(monkeypatch):
+def test_git_supports_gh_pr_merge_with_approval(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-pr-merge")
     fake_db.add(session)
@@ -851,21 +851,21 @@ def test_git_exec_supports_gh_pr_merge_with_approval(monkeypatch):
             "command": " ".join(args),
         }
 
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     async def _fake_waiter(tool_name, payload, runtime, requirement, pending_callback=None):
         _ = tool_name, payload, runtime, requirement, pending_callback
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.APPROVED,
-            approval={"provider": "git_exec", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
+            approval={"provider": "git", "approval_id": str(session.id), "status": "approved", "pending": False, "can_resolve": False},
             message="ok",
         )
 
     result = _run_via_executor(
         tool,
         {
-            "command": "run_write",
+            "command": "write",
             "session_id": str(session.id),
             "cli_command": (
                 "gh pr merge 35 --repo exampleco/exampleco-gitops "
@@ -886,7 +886,7 @@ def test_git_exec_supports_gh_pr_merge_with_approval(monkeypatch):
     assert "ghw_write_token_456" in captured["redactions"]
 
 
-def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
+def test_git_rejects_gh_api_post_when_not_approved(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="gh-api-post-denied")
     fake_db.add(session)
@@ -903,12 +903,12 @@ def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
     )
     session_factory = _SessionFactory(fake_db)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     async def _fake_waiter(tool_name, payload, runtime, requirement, pending_callback=None):
         _ = tool_name, payload, runtime, requirement, pending_callback
         return ToolApprovalOutcome(
             status=ToolApprovalOutcomeStatus.REJECTED,
-            approval={"provider": "git_exec", "approval_id": str(session.id), "status": "rejected", "pending": False, "can_resolve": False},
+            approval={"provider": "git", "approval_id": str(session.id), "status": "rejected", "pending": False, "can_resolve": False},
             message="User rejected action.",
         )
 
@@ -916,7 +916,7 @@ def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
         _run_via_executor(
             tool,
             {
-                "command": "run_write",
+                "command": "write",
                 "session_id": str(session.id),
                 "cli_command": "gh api -X POST /repos/exampleco/exampleco-gitops/pulls",
             },
@@ -924,7 +924,7 @@ def test_git_exec_rejects_gh_api_post_when_not_approved(monkeypatch):
         )
 
 
-def test_git_exec_uses_explicit_git_account_name_for_clone(monkeypatch):
+def test_git_uses_explicit_git_account_name_for_clone(monkeypatch):
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="explicit-git-account")
     fake_db.add(session)
@@ -970,14 +970,14 @@ def test_git_exec_uses_explicit_git_account_name_for_clone(monkeypatch):
         _ = kwargs
         return None
 
-    monkeypatch.setattr(git_exec_module, "_run_git_subprocess", _fake_run_subprocess)
-    monkeypatch.setattr(git_exec_module, "_configure_author_identity_after_clone", _noop_configure_clone_author)
+    monkeypatch.setattr(git_module, "_run_git_subprocess", _fake_run_subprocess)
+    monkeypatch.setattr(git_module, "_configure_author_identity_after_clone", _noop_configure_clone_author)
 
-    tool = git_exec_module.git_exec_tool(session_factory=session_factory)
+    tool = git_module.git_tool(session_factory=session_factory)
     result = _run_tool(
         tool,
         {
-            "command": "run_read",
+            "command": "read",
             "session_id": str(session.id),
             "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
             "git_account_name": "selected-account",
@@ -989,7 +989,7 @@ def test_git_exec_uses_explicit_git_account_name_for_clone(monkeypatch):
     assert captured["args"][0:4] == ["git", "-c", "credential.helper=", "clone"]
 
 
-def test_git_exec_rejects_unknown_explicit_git_account_name():
+def test_git_rejects_unknown_explicit_git_account_name():
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="missing-account")
     fake_db.add(session)
@@ -1004,13 +1004,13 @@ def test_git_exec_rejects_unknown_explicit_git_account_name():
             token_write="secondary-write",
         )
     )
-    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+    tool = git_module.git_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="Requested git account 'selected-account' was not found"):
         _run_tool(
             tool,
             {
-                "command": "run_read",
+                "command": "read",
                 "session_id": str(session.id),
                 "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
                 "git_account_name": "selected-account",
@@ -1018,7 +1018,7 @@ def test_git_exec_rejects_unknown_explicit_git_account_name():
         )
 
 
-def test_git_exec_rejects_explicit_git_account_scope_mismatch():
+def test_git_rejects_explicit_git_account_scope_mismatch():
     fake_db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="scope-mismatch")
     fake_db.add(session)
@@ -1033,13 +1033,13 @@ def test_git_exec_rejects_explicit_git_account_scope_mismatch():
             token_write="secondary-write",
         )
     )
-    tool = git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db))
+    tool = git_module.git_tool(session_factory=_SessionFactory(fake_db))
 
     with pytest.raises(ToolValidationError, match="scope does not match repository"):
         _run_tool(
             tool,
             {
-                "command": "run_read",
+                "command": "read",
                 "session_id": str(session.id),
                 "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
                 "git_account_name": "secondary",
@@ -1047,7 +1047,8 @@ def test_git_exec_rejects_explicit_git_account_scope_mismatch():
         )
 
 
-def test_git_exec_accounts_operation_lists_matching_accounts():
+
+def test_git_accounts_operation_lists_matching_accounts():
     fake_db = FakeDB()
     fake_db.add(
         GitAccount(
@@ -1073,7 +1074,7 @@ def test_git_exec_accounts_operation_lists_matching_accounts():
     )
 
     result = _run_via_executor(
-        git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db)),
+        git_module.git_tool(session_factory=_SessionFactory(fake_db)),
         {
             "command": "accounts",
             "host": "github.com",
@@ -1087,7 +1088,7 @@ def test_git_exec_accounts_operation_lists_matching_accounts():
     assert result["accounts"][0]["name"] == "github-main"
 
 
-def test_git_exec_accounts_ignores_injected_session_id():
+def test_git_accounts_ignores_injected_session_id():
     fake_db = FakeDB()
     fake_db.add(
         GitAccount(
@@ -1102,7 +1103,7 @@ def test_git_exec_accounts_ignores_injected_session_id():
     )
 
     result = _run_via_executor(
-        git_exec_module.git_exec_tool(session_factory=_SessionFactory(fake_db)),
+        git_module.git_tool(session_factory=_SessionFactory(fake_db)),
         {
             "command": "accounts",
             "session_id": str(uuid4()),

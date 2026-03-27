@@ -176,12 +176,12 @@ def test_grouped_tool_allows_shared_field_schema_across_actions():
 
 def test_grouped_tool_requires_explicit_selector_field():
     module = ModuleDefinition(
-        name="git_exec",
-        label="Git Exec",
+        name="git",
+        label="Git",
         grouped_tool=True,
         actions=[
             ActionDefinition(
-                id="run_read",
+                id="read",
                 label="Run Read",
                 handler=_handle_click,
                 parameters_schema={
@@ -229,12 +229,12 @@ def test_grouped_tool_ignores_fields_not_used_by_selected_action():
         return payload
 
     module = ModuleDefinition(
-        name="git_exec",
-        label="Git Exec",
+        name="git",
+        label="Git",
         grouped_tool=True,
         actions=[
             ActionDefinition(
-                id="run_read",
+                id="read",
                 label="Run Read",
                 handler=_handle_run,
                 parameters_schema={

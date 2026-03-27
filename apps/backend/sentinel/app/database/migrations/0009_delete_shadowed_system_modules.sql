@@ -7,7 +7,7 @@ DELETE FROM modules
 WHERE name IN (
     'runtime_exec',
     'python',
-    'git_exec',
+    'git',
     'str_replace_editor',
     'http_request',
     'browser',

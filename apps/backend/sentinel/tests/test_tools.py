@@ -18,7 +18,7 @@ from app.models import GitAccount
 from app.models.araios import AraiosModule, AraiosModuleRecord, AraiosPermission
 from app.models.system import SystemSetting
 from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
-from app.services.araios.system_modules.git_exec import handlers as git_exec_module
+from app.services.araios.system_modules.git_tool import handlers as git_module
 from app.services.araios.system_modules.module_manager import handlers as module_manager_module
 from app.services.araios.system_modules.runtime_exec import handlers as runtime_exec_module
 from app.services.runtime.ssh_client import SSHExecResult
@@ -117,10 +117,12 @@ class _FakeRuntimeProvider:
 def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
     previous_registry = getattr(app.state, "tool_registry", None)
     previous_executor = getattr(app.state, "tool_executor", None)
+    previous_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
+    previous_db_factory = getattr(app.state, "db_factory", None)
     previous_get_runtime = runtime_exec_module.get_runtime
     session_factory = _FakeSessionFactory(fake_db)
     runtime_exec_module.AsyncSessionLocal = session_factory
-    git_exec_module.AsyncSessionLocal = session_factory
+    git_module.AsyncSessionLocal = session_factory
     module_manager_module.AsyncSessionLocal = session_factory
     runtime_exec_module.get_runtime = lambda: _FakeRuntimeProvider()
     reset_runtime_services()
@@ -129,14 +131,21 @@ def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
     app.state.tool_registry = registry
     app.state.tool_executor = ToolExecutor(registry, approval_waiter=approval_waiter)
     app.state.db_session_factory = session_factory
-    return previous_registry, previous_executor, previous_get_runtime
+    return previous_registry, previous_executor, (
+        previous_get_runtime,
+        previous_agent_runtime_support,
+        previous_db_factory,
+    )
 
 
-def _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime) -> None:
+def _restore_app_tool_runtime(previous_registry, previous_executor, previous_runtime_state) -> None:
+    previous_get_runtime, previous_agent_runtime_support, previous_db_factory = previous_runtime_state
     reset_runtime_services()
     runtime_exec_module.get_runtime = previous_get_runtime
     app.state.tool_registry = previous_registry
     app.state.tool_executor = previous_executor
+    app.state.agent_runtime_support = previous_agent_runtime_support
+    app.state.db_factory = previous_db_factory
     app.state.db_session_factory = None
 
 
@@ -181,7 +190,7 @@ def test_tools_registry_and_execution():
         assert {
             "http_request",
             "runtime_exec",
-            "git_exec",
+            "git",
             "str_replace_editor",
             "browser",
             "module_manager",
@@ -211,7 +220,7 @@ def test_tools_registry_and_execution():
             )
         )
         accounts_run = client.post(
-            "/api/v1/tools/git_exec/execute",
+            "/api/v1/tools/git/execute",
             json={"input": {"command": "accounts", "repo_url": "https://github.com/arais-labs/sentinel.git"}},
             headers=headers,
         )

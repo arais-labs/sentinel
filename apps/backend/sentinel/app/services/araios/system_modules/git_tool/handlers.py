@@ -1,4 +1,4 @@
-"""Native module: git_exec — git/GitHub CLI execution with managed credentials."""
+"""Native module: git — git/GitHub CLI execution with managed credentials."""
 
 from __future__ import annotations
 
@@ -126,7 +126,7 @@ def _parse_cli_command(command: str) -> list[str]:
     if tokens[0] not in {"git", "gh"}:
         raise ToolValidationError(
             "Only git or selected gh commands are allowed. "
-            "Supported gh commands in git_exec: `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT)."
+            "Supported gh commands in git: `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT)."
         )
     return tokens
 
@@ -151,9 +151,9 @@ def _extract_git_subcommand(tokens: list[str]) -> tuple[str, int]:
 def _validate_no_forbidden_global_flags(tokens: list[str]) -> None:
     for token in tokens:
         if token in _FORBIDDEN_GIT_GLOBAL_FLAGS:
-            raise ToolValidationError(f"Git flag '{token}' is not allowed in git_exec")
+            raise ToolValidationError(f"Git flag '{token}' is not allowed in git")
         if token.startswith("--git-dir=") or token.startswith("--work-tree="):
-            raise ToolValidationError("Custom git-dir/work-tree is not allowed in git_exec")
+            raise ToolValidationError("Custom git-dir/work-tree is not allowed in git")
 
 
 def _normalize_command(command: str) -> str:
@@ -197,7 +197,7 @@ def _gh_network_mode(tokens: list[str]) -> str | None:
                 return "read"
             if method in _GH_API_WRITE_METHODS:
                 return "write"
-            raise ToolValidationError("gh api supports GET, POST, and PUT in git_exec")
+            raise ToolValidationError("gh api supports GET, POST, and PUT in git")
         return "read"
     return None
 
@@ -208,7 +208,7 @@ def _gh_subcommand(tokens: list[str]) -> tuple[str, str | None]:
     primary = tokens[1].strip().lower()
     if primary.startswith("-"):
         raise ToolValidationError(
-            "gh global flags before subcommand are not supported in git_exec; place subcommand first"
+            "gh global flags before subcommand are not supported in git; place subcommand first"
         )
     if primary == "api":
         return primary, None
@@ -971,14 +971,14 @@ async def _execute_gh_command(
     if mode not in {"read", "write"}:
         if primary == "auth":
             raise ToolValidationError(
-                "Unsupported gh auth command in git_exec. "
+                "Unsupported gh auth command in git. "
                 "Authentication is managed automatically via configured Git account tokens, "
                 "so interactive auth commands like `gh auth status/login` are not needed. "
                 "Use supported commands: `gh repo clone <org>/<repo>`, `gh repo list <org>`, `gh repo view <org>/<repo>`, "
                 "`gh pr view`, `gh pr create`, `gh pr merge`, `gh api <endpoint>` (GET/POST/PUT)."
             )
         raise ToolValidationError(
-            "Unsupported gh command in git_exec. "
+            "Unsupported gh command in git. "
             "Supported: `gh repo clone <org>/<repo>`, `gh repo list <org>`, `gh repo view <org>/<repo>`, "
             "`gh pr view`, `gh pr create`, `gh pr merge`, `gh api <endpoint>` (GET/POST/PUT)."
         )
@@ -1141,9 +1141,9 @@ def _validate_run_command_kind(
 ) -> None:
     is_write = _is_git_write_command(cli_command)
     if expect_write and not is_write:
-        raise ToolValidationError("Field 'command' must be 'run_read' for non-write git or gh commands")
+        raise ToolValidationError("Field 'command' must be 'read' for non-write git or gh commands")
     if (not expect_write) and is_write:
-        raise ToolValidationError("Field 'command' must be 'run_write' for write git or gh commands")
+        raise ToolValidationError("Field 'command' must be 'write' for write git or gh commands")
 
 
 async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
@@ -1266,7 +1266,7 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
     )
 
 
-async def handle_run_read(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+async def handle_read(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     cli_command = payload.get("cli_command")
     if not isinstance(cli_command, str) or not cli_command.strip():
         raise ToolValidationError("Field 'cli_command' must be a non-empty string")
@@ -1274,7 +1274,7 @@ async def handle_run_read(payload: dict[str, Any], runtime: ToolRuntimeContext) 
     return await _handle_run(payload, runtime)
 
 
-async def handle_run_write(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+async def handle_write(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     cli_command = payload.get("cli_command")
     if not isinstance(cli_command, str) or not cli_command.strip():
         raise ToolValidationError("Field 'cli_command' must be a non-empty string")

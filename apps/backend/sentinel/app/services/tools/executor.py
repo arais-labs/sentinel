@@ -22,11 +22,15 @@ logger = logging.getLogger(__name__)
 
 
 class ToolExecutionError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, approval: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.approval = approval
 
 
 class ToolValidationError(ValueError):
-    pass
+    def __init__(self, message: str, *, approval: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.approval = approval
 
 
 class ToolExecutor:
@@ -69,14 +73,20 @@ class ToolExecutor:
         started = time.perf_counter()
         try:
             result = await tool.execute(payload, runtime_context)
-        except ToolValidationError:
+        except ToolValidationError as exc:
+            await self._record_approval_result(
+                approval=approved_metadata,
+                result={"ok": False, "error": str(exc)},
+            )
+            if approved_metadata and getattr(exc, "approval", None) is None:
+                exc.approval = approved_metadata
             raise
         except Exception as exc:  # pragma: no cover - defensive wrapper
             await self._record_approval_result(
                 approval=approved_metadata,
                 result={"ok": False, "error": str(exc)},
             )
-            raise ToolExecutionError(str(exc)) from exc
+            raise ToolExecutionError(str(exc), approval=approved_metadata) from exc
         await self._record_approval_result(approval=approved_metadata, result=result)
         if approved_metadata and isinstance(result, dict) and not isinstance(result.get("approval"), dict):
             result["approval"] = approved_metadata
@@ -169,12 +179,9 @@ class ToolExecutor:
         approval_payload = dict(outcome.approval)
         if not isinstance(approval_payload.get("provider"), str):
             approval_payload["provider"] = tool.name
-        if not isinstance(approval_payload.get("status"), str):
-            approval_payload["status"] = outcome.status.value
-        if "pending" not in approval_payload:
-            approval_payload["pending"] = False
-        if "can_resolve" not in approval_payload:
-            approval_payload["can_resolve"] = False
+        approval_payload["status"] = outcome.status.value
+        approval_payload["pending"] = False
+        approval_payload["can_resolve"] = False
         logger.info(
             "tool_approval_outcome tool=%s status=%s provider=%s approval_id=%s pending=%s can_resolve=%s",
             tool.name,
@@ -186,7 +193,7 @@ class ToolExecutor:
         )
         if outcome.status != ToolApprovalOutcomeStatus.APPROVED:
             message = (outcome.message or "").strip() or f"Approval {outcome.status.value}."
-            raise ToolExecutionError(message)
+            raise ToolExecutionError(message, approval=approval_payload)
         return approval_payload
 
     async def _run_approval_check(

@@ -4,8 +4,8 @@ from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import (
     handle_accounts,
-    handle_run_read,
-    handle_run_write,
+    handle_read,
+    handle_write,
 )
 def _run_parameters_schema() -> dict:
     return {
@@ -59,8 +59,8 @@ def _accounts_parameters_schema() -> dict:
 
 
 MODULE = ModuleDefinition(
-    name="git_exec",
-    label="Git Exec",
+    name="git",
+    label="Git",
     description=(
         "Execute git commands and selected GitHub CLI commands inside the session workspace with managed credentials. "
         "Allowed gh commands: `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT). "
@@ -72,18 +72,18 @@ MODULE = ModuleDefinition(
     grouped_tool=True,
     actions=[
         ActionDefinition(
-            id="run_read",
-            label="Run Standard Git Command",
+            id="read",
+            label="Read Git Command",
             description="Execute a git or supported gh read-oriented command inside the session workspace.",
-            handler=handle_run_read,
+            handler=handle_read,
             requires_runtime_context=True,
             parameters_schema=_run_parameters_schema(),
         ),
         ActionDefinition(
-            id="run_write",
-            label="Run Write Git Command",
+            id="write",
+            label="Write Git Command",
             description="Execute a git or supported gh write-oriented command inside the session workspace.",
-            handler=handle_run_write,
+            handler=handle_write,
             approval=True,
             requires_runtime_context=True,
             parameters_schema=_run_parameters_schema(),

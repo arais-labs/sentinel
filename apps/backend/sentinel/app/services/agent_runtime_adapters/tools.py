@@ -78,18 +78,29 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
                     on_pending_approval=_on_pending_approval,
                 )
             except (ToolExecutionError, ToolValidationError, PermissionError, KeyError) as exc:
-                if pending_approval_payload is not None:
-                    return ToolExecutionResult(
-                        status="pending_approval",
-                        error=str(exc),
-                        approval_request=approval_payload_to_request(
-                            pending_approval_payload,
-                            payload=execution_payload,
-                        ),
-                    )
+                approval_metadata = getattr(exc, "approval", None)
+                if not isinstance(approval_metadata, dict) and pending_approval_payload is not None:
+                    approval_metadata = pending_approval_payload
+
+                if isinstance(approval_metadata, dict):
+                    approval_status = str(approval_metadata.get("status") or "").strip().lower()
+                    approval_pending = approval_metadata.get("pending") is True or approval_status in {"pending", ""}
+                    if approval_pending:
+                        return ToolExecutionResult(
+                            status="pending_approval",
+                            error=str(exc),
+                            approval_request=approval_payload_to_request(
+                                approval_metadata,
+                                payload=execution_payload,
+                            ),
+                        )
+                metadata: dict[str, Any] = {}
+                if isinstance(approval_metadata, dict):
+                    metadata["approval"] = approval_metadata
                 return ToolExecutionResult(
                     status="error",
                     error=str(exc),
+                    metadata=metadata,
                 )
 
             metadata: dict[str, Any] = {}
