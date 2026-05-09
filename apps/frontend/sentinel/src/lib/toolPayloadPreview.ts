@@ -67,7 +67,7 @@ const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: r
     input: ['command', 'module', 'name', 'record_id', 'action_id', 'data', 'params'],
     output: ['modules', 'records', 'count', 'ok', 'message', 'result'],
   },
-  sub_agents: {
+  delegate: {
     input: ['command', 'session_id', 'task_id', 'objective', 'scope', 'browser_tab_id'],
     output: ['task_id', 'status', 'objective', 'result', 'items', 'note'],
   },

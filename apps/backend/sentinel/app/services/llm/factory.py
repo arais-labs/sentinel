@@ -6,6 +6,7 @@ from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.tier import TierConfig, TierModelConfig, TierProvider
 from app.services.llm.generic.types import ReasoningConfig
 from app.services.llm.ids import ProviderChoice, TierName, parse_provider_choice
+from app.services.llm.providers.gemini_oauth import GeminiOAuthProvider
 from app.config import Settings
 
 DEFAULT_TIER_NAME = TierName.NORMAL
@@ -128,7 +129,10 @@ def _build_enabled_providers(settings: Settings) -> tuple[dict[ProviderChoice, L
         )
 
     gemini_api_key = settings.gemini_api_key
-    if gemini_api_key:
+    gemini_oauth_credentials = settings.gemini_oauth_credentials
+    if gemini_oauth_credentials:
+        providers[ProviderChoice.GEMINI] = GeminiOAuthProvider(gemini_oauth_credentials)
+    elif gemini_api_key:
         providers[ProviderChoice.GEMINI] = GeminiProvider(gemini_api_key)
 
     return providers, openai_uses_codex

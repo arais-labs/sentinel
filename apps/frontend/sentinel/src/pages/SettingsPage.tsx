@@ -53,6 +53,16 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: stri
     ],
     command: 'npx codex --full-setup',
   },
+  gemini: {
+    title: 'How to get Gemini OAuth credentials',
+    steps: [
+      'Install and run the Gemini CLI: npm install -g @google/gemini-cli or run gemini directly if already installed.',
+      'Start gemini and choose Sign in with Google.',
+      'After authorization, open ~/.gemini/oauth_creds.json.',
+      'Copy the full JSON file contents and paste them here. Sentinel uses the same refreshable Code Assist credentials, so the JSON must include refresh_token.',
+    ],
+    command: 'gemini',
+  },
 };
 
 // ── provider editor ─────────────────────────────────────────────────────────
@@ -71,13 +81,15 @@ function ProviderRow({
 }) {
   const [editing, setEditing] = useState(false);
   const help = OAUTH_HELP[providerId];
-  const [mode, setMode] = useState<'oauth' | 'api'>(help ? 'api' : 'api');
+  const [mode, setMode] = useState<'oauth' | 'api'>('api');
   const [value, setValue] = useState('');
   const [showValue, setShowValue] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   const configured = status?.configured ?? false;
+  const isGeminiOauth = providerId === 'gemini' && mode === 'oauth';
+  const oauthLabel = providerId === 'gemini' ? 'OAuth Credentials' : 'OAuth Token';
 
   function handleSave() {
     if (!value.trim()) return;
@@ -153,7 +165,7 @@ function ProviderRow({
             <div className="flex items-center gap-2">
               <div className="flex rounded-lg bg-[color:var(--surface-2)] p-0.5 w-fit">
                 {([
-                  { id: 'oauth', label: 'OAuth Token' },
+                  { id: 'oauth', label: oauthLabel },
                   { id: 'api',   label: 'API Key' },
                 ] as const).map(m => (
                   <button key={m.id} onClick={() => { setMode(m.id); setShowHelp(false); }}
@@ -200,15 +212,26 @@ function ProviderRow({
 
           <div className="flex gap-2">
             <div className="relative flex-1">
-              <input type={showValue ? 'text' : 'password'} value={value} onChange={e => setValue(e.target.value)}
-                placeholder={mode === 'oauth' ? 'Paste OAuth token...' : 'Paste API key...'}
-                className="input-field h-10 pr-10 font-mono text-xs w-full"
-                onKeyDown={e => e.key === 'Enter' && handleSave()}
-              />
-              <button type="button" onClick={() => setShowValue(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]">
-                {showValue ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
+              {isGeminiOauth ? (
+                <textarea
+                  value={value}
+                  onChange={e => setValue(e.target.value)}
+                  placeholder='Paste Gemini OAuth credentials JSON...'
+                  className="input-field min-h-[128px] py-3 font-mono text-xs w-full resize-y"
+                />
+              ) : (
+                <>
+                  <input type={showValue ? 'text' : 'password'} value={value} onChange={e => setValue(e.target.value)}
+                    placeholder={mode === 'oauth' ? 'Paste OAuth token...' : 'Paste API key...'}
+                    className="input-field h-10 pr-10 font-mono text-xs w-full"
+                    onKeyDown={e => e.key === 'Enter' && handleSave()}
+                  />
+                  <button type="button" onClick={() => setShowValue(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]">
+                    {showValue ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </>
+              )}
             </div>
             <button onClick={handleSave} disabled={!value.trim() || saving}
               className="btn-primary h-10 px-4 text-[10px] font-bold uppercase tracking-widest shrink-0">
@@ -216,6 +239,11 @@ function ProviderRow({
               Save
             </button>
           </div>
+          {isGeminiOauth && (
+            <p className="text-[10px] text-[color:var(--text-muted)]">
+              Paste the full contents of <span className="font-mono text-[color:var(--text-primary)]">~/.gemini/oauth_creds.json</span>. Sentinel mirrors Gemini CLI and stores the refreshable Code Assist credential bundle, not a short-lived token.
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -260,6 +288,7 @@ export function SettingsPage() {
         body.openai_oauth_token = data.oauthToken;
       } else {
         body.gemini_api_key = data.apiKey;
+        body.gemini_oauth_credentials = data.oauthToken;
       }
       await api.post('/settings/api-keys', body);
       const labels = { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini' };
@@ -343,7 +372,7 @@ export function SettingsPage() {
           <div className="bg-[color:var(--surface-1)] p-4 rounded-xl border border-[color:var(--border-subtle)] flex items-start gap-3">
             <Info size={16} className="text-[color:var(--accent-solid)] shrink-0 mt-0.5" />
             <p className="text-[11px] text-[color:var(--text-secondary)] leading-relaxed font-medium uppercase tracking-tight">
-              Credentials are derived from your araiOS session. Contact your system administrator to modify role assignments.
+              Identity and role come from your active Sentinel session.
             </p>
           </div>
         </Panel>

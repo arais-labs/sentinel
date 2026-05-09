@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import traceback
 
@@ -20,11 +21,18 @@ router = APIRouter()
 _NOVNC_PORT = 6080
 
 
-def _get_container_ip(session_id: str) -> str | None:
+def _get_runtime_host(session_id: str) -> str | None:
     provider = get_runtime()
-    if hasattr(provider, "get_container_ip"):
-        return provider.get_container_ip(session_id)
-    return None
+    return provider.get_host(session_id)
+
+
+def _get_runtime_vnc_port(session_id: str) -> int:
+    provider = get_runtime()
+    try:
+        port = provider.resolve_port(session_id, _NOVNC_PORT)
+    except Exception:
+        port = None
+    return int(port or _NOVNC_PORT)
 
 
 @router.api_route(
@@ -33,11 +41,16 @@ def _get_container_ip(session_id: str) -> str | None:
     include_in_schema=False,
 )
 async def vnc_http_proxy(request: Request, session_id: str, path: str = "") -> Response:
-    ip = _get_container_ip(session_id)
-    if not ip:
+    host = _get_runtime_host(session_id)
+    if not host:
         return Response(content="Runtime not found", status_code=404)
+    port = _get_runtime_vnc_port(session_id)
 
-    upstream = f"http://{ip}:{_NOVNC_PORT}/{path}"
+    if path == "package.json":
+        payload = json.dumps({"name": "novnc-proxy", "version": "0.0.0"})
+        return Response(content="" if request.method == "HEAD" else payload, status_code=200, media_type="application/json")
+
+    upstream = f"http://{host}:{port}/{path}"
     qs = str(request.url.query)
     if qs:
         upstream += f"?{qs}"
@@ -46,7 +59,7 @@ async def vnc_http_proxy(request: Request, session_id: str, path: str = "") -> R
         resp = await client.request(
             request.method,
             upstream,
-            headers={"Host": f"{ip}:{_NOVNC_PORT}"},
+            headers={"Host": f"{host}:{port}"},
         )
     # Strip headers that block iframe embedding or WebSocket connections
     headers = dict(resp.headers)
@@ -62,10 +75,11 @@ async def vnc_http_proxy(request: Request, session_id: str, path: str = "") -> R
 
 @router.websocket("/vnc/{session_id}/websockify")
 async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
-    ip = _get_container_ip(session_id)
-    logger.warning("VNC WS proxy: session=%s ip=%s", session_id, ip)
+    host = _get_runtime_host(session_id)
+    port = _get_runtime_vnc_port(session_id)
+    logger.warning("VNC WS proxy: session=%s host=%s", session_id, host)
 
-    if not ip:
+    if not host:
         await websocket.close(code=4004, reason="Runtime container not found")
         return
 
@@ -75,7 +89,7 @@ async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
 
     upstream_ws = None
     try:
-        upstream_url = f"ws://{ip}:{_NOVNC_PORT}/websockify"
+        upstream_url = f"ws://{host}:{port}/websockify"
         logger.warning("VNC WS proxy: connecting to upstream %s", upstream_url)
 
         upstream_ws = await asyncio.wait_for(

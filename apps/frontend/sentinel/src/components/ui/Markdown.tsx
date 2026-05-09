@@ -1,5 +1,6 @@
-import { isValidElement } from 'react';
-import type { HTMLAttributes } from 'react';
+import { Check, Copy } from 'lucide-react';
+import { isValidElement, useEffect, useState } from 'react';
+import type { HTMLAttributes, ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
@@ -50,14 +51,66 @@ const markdownComponents: Components = {
       }
     }
 
-    return (
-      <div className="markdown-pre-shell">
-        <div className="markdown-pre-bar">{language}</div>
-        <pre {...props}>{children}</pre>
-      </div>
-    );
+    return <CodeBlockShell language={language} props={props}>{children}</CodeBlockShell>;
   },
 };
+
+function extractNodeText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractNodeText).join('');
+  if (isValidElement(node)) {
+    const props = node.props as { children?: ReactNode } | undefined;
+    return extractNodeText(props?.children ?? '');
+  }
+  return '';
+}
+
+function CodeBlockShell({
+  language,
+  props,
+  children,
+}: {
+  language: string;
+  props: HTMLAttributes<HTMLPreElement>;
+  children: ReactNode;
+}) {
+  const [copied, setCopied] = useState(false);
+  const code = extractNodeText(children).replace(/\n$/, '');
+
+  useEffect(() => {
+    if (!copied) return undefined;
+    const timer = window.setTimeout(() => setCopied(false), 1200);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  async function handleCopy() {
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="markdown-pre-shell">
+      <div className="markdown-pre-bar flex items-center justify-between gap-3">
+        <span>{language}</span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-[color:var(--text-muted)] transition-colors hover:text-[color:var(--text-primary)] hover:bg-white/10"
+          title="Copy code"
+        >
+          {copied ? <Check size={11} /> : <Copy size={11} />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre {...props}>{children}</pre>
+    </div>
+  );
+}
 
 export function Markdown({
   content,

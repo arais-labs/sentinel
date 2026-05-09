@@ -25,6 +25,8 @@ from app.services.tools import ToolDefinition, ToolExecutor, ToolRegistry
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 
+_SUB_AGENT_EXCLUDED_TOOLS = frozenset({"delegate"})
+
 
 class SubAgentOrchestrator:
     """Manage sub-agent task lifecycle, execution, and completion callbacks."""
@@ -186,6 +188,7 @@ class SubAgentOrchestrator:
                     loop=scoped_runtime_support,
                     db=db,
                     session_id=child_session.id,
+                    runtime_session_id=parent_session.id,
                     persist_incremental=True,
                 )
                 runtime_task = asyncio.create_task(
@@ -303,13 +306,18 @@ class SubAgentOrchestrator:
             task.allowed_tools if isinstance(task.allowed_tools, list) else []
         )
         pinned_tab_id = self._pinned_browser_tab_id(task)
-        if not allowed_tools and pinned_tab_id is None:
-            return self._agent_runtime_support
-
         if allowed_tools:
-            allowed = {str(item) for item in allowed_tools if isinstance(item, str)}
+            allowed = {
+                str(item)
+                for item in allowed_tools
+                if isinstance(item, str) and str(item) not in _SUB_AGENT_EXCLUDED_TOOLS
+            }
         else:
-            allowed = {tool.name for tool in self._base_tool_registry.list_all()}
+            allowed = {
+                tool.name
+                for tool in self._base_tool_registry.list_all()
+                if tool.name not in _SUB_AGENT_EXCLUDED_TOOLS
+            }
 
         scoped_registry = ToolRegistry()
         for tool in self._base_tool_registry.list_all():

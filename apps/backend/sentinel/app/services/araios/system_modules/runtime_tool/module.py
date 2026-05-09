@@ -82,7 +82,9 @@ MODULE = ModuleDefinition(
     label="Runtime",
     description=(
         "Execute shell commands inside the per-session runtime workspace. "
-        "Use `user` for the default runtime user and `root` for elevated execution."
+        "Use `user` for the default runtime user and `root` for elevated execution. "
+        "Commands requested with a timeout above 30 seconds may start immediately as tracked background jobs "
+        "instead of running inline."
     ),
     icon="terminal",
     system=True,

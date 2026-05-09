@@ -25,15 +25,10 @@ Sentinel is an open source autonomous agent platform built by [ARAIS](https://ar
 
 ---
 
-## Two systems, one stack
+## One stack
 
-### Sentinel
-The agent runtime and user interface. Handles the loop, sessions, memory, triggers, tools, and browser execution.
-
-### araiOS
-The control plane underneath Sentinel. Handles modules, permission policies, approvals, platform auth, and coordination APIs.
-
-> **Sentinel is the agent. araiOS defines what the agent can access and how actions are controlled.**
+Sentinel includes the agent runtime, user interface, sessions, memory, triggers,
+browser execution, modules, permission policies, approvals, and coordination APIs.
 
 ---
 
@@ -42,4 +37,4 @@ The control plane underneath Sentinel. Handles modules, permission policies, app
 - [Quick Start](/quickstart)
 - [Installation](/guides/installation)
 - [What is Sentinel?](/concepts/what-is-sentinel)
-- [What is araiOS?](/concepts/what-is-araios)
+- [Modules and permissions](/concepts/modules-and-permissions)

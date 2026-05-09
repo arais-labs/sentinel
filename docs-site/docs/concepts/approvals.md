@@ -17,7 +17,7 @@ Sentinel uses three distinct approval providers, which are aggregated in the app
 |---|---|
 | `tool` | Sentinel-native tool-level approval gate (blocking, in-process), including `runtime_exec` root mode |
 | `git` | Git push and PR operations |
-| `araios` | araiOS module actions (async, persisted to DB) |
+| `araios` | Module actions (async, persisted to DB) |
 
 Each provider is independent. You must pass the correct `provider` field when resolving an approval. Sending `provider=tool` to resolve a `git` approval will return a 404.
 
@@ -32,12 +32,12 @@ This is the most important thing to understand about the approval system.
 | **HTTP 202** | Action requires approval — created and pending, not an error |
 | **HTTP 403** | Action is denied — blocked permanently, no approval possible |
 
-When the araiOS permission for an action is set to `approval`, the API returns **202 Accepted** with the approval object. This is not a failure. The agent is expected to see the 202, recognize it as a pending approval, and wait for resolution.
+When the module permission for an action is set to `approval`, the API returns **202 Accepted** with the approval object. This is not a failure. The agent is expected to see the 202, recognize it as a pending approval, and wait for resolution.
 
 A 403 means the permission is set to `deny`. There is no approval flow — the action will never proceed.
 
 :::warning Common mistake
-Treating a 202 response as an error and surfacing it as a failure to the user is wrong. A 202 means "waiting for human review", not "something went wrong". Always check for 202 before treating an araiOS response as an error.
+Treating a 202 response as an error and surfacing it as a failure to the user is wrong. A 202 means "waiting for human review", not "something went wrong". Always check for 202 before treating a module API response as an error.
 :::
 
 ---
@@ -72,9 +72,9 @@ This exact key must match across:
 ## Approval flow step by step
 
 1. Agent attempts an action with an `approval` permission rule
-2. araiOS returns **HTTP 202** with an approval object
+2. Sentinel returns **HTTP 202** with an approval object
 3. Agent recognizes the 202, pauses that action, and informs the user
-4. Approval appears in the araiOS workspace under **Approvals**
+4. Approval appears in the Modules workspace under **Approvals**
 5. Operator reviews the action, the payload, and the context
 6. Operator approves or denies
 7. On approval: the pending tool call is allowed to proceed
@@ -111,4 +111,4 @@ GET /api/approvals?session_id=<uuid>
 
 ## Approval for module registration
 
-New araiOS modules require operator approval before agents can use them. After creating a module via the API, it appears in the approval queue. The operator approves the registration before the module becomes accessible.
+New modules require operator approval before agents can use them. After creating a module via the API, it appears in the approval queue. The operator approves the registration before the module becomes accessible.

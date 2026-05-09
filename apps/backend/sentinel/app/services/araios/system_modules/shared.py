@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Session
 from app.services.runtime import get_runtime
-from app.services.runtime.ssh_client import SSHExecResult
+from app.services.runtime.base import RuntimeCommandClient, RuntimeExecResult
 from app.services.runtime.session_runtime import (
     register_detached_runtime_job,
     runtime_logs_dir,
@@ -93,7 +93,7 @@ async def validate_public_hostname(hostname: str) -> None:
             )
 
 
-async def execute_via_ssh(
+async def execute_in_runtime(
     *,
     session_id: UUID,
     command_text: str,
@@ -104,11 +104,12 @@ async def execute_via_ssh(
     timeout_seconds: int = 300,
     detached: bool = False,
 ) -> dict[str, Any]:
-    """Execute a command in the session's runtime container via SSH."""
+    """Execute a command in the session runtime through the runtime client."""
     rt = get_runtime()
-    ssh = await rt.ssh(str(session_id))
+    runtime = await rt.ensure(str(session_id))
+    client = runtime.client
 
-    ws_dir = workspace_dir or runtime_workspace_dir(session_id)
+    ws_dir = workspace_dir or runtime.workspace_path
     cwd = ws_dir
     if cwd_raw:
         candidate = os.path.normpath(os.path.join(ws_dir, cwd_raw.strip()))
@@ -127,7 +128,7 @@ async def execute_via_ssh(
 
     if detached:
         job_id = await _launch_detached(
-            ssh=ssh,
+            client=client,
             session_id=session_id,
             command=full_command,
             cwd=cwd,
@@ -144,11 +145,10 @@ async def execute_via_ssh(
         }
 
     try:
-        result: SSHExecResult = await asyncio.wait_for(
-            ssh.run(
+        result: RuntimeExecResult = await asyncio.wait_for(
+            client.run(
                 full_command,
                 cwd=cwd,
-                user="root" if privilege == "root" else None,
             ),
             timeout=timeout_seconds,
         )
@@ -169,9 +169,9 @@ async def execute_via_ssh(
     stderr = truncate_runtime_exec_text(result.stderr)
 
     return {
-        "ok": result.returncode == 0,
+        "ok": result.exit_status == 0,
         "timed_out": False,
-        "returncode": result.returncode,
+        "returncode": result.exit_status,
         "stdout": stdout,
         "stderr": stderr,
         "message": None,
@@ -183,7 +183,7 @@ async def execute_via_ssh(
 
 async def _launch_detached(
     *,
-    ssh: Any,
+    client: RuntimeCommandClient,
     session_id: UUID,
     command: str,
     cwd: str,
@@ -207,7 +207,7 @@ async def _launch_detached(
         f"echo $! > {ssh_shell_quote(pid_file)}"
     )
 
-    await ssh.run(wrapper, cwd=cwd, user="root" if privilege == "root" else None)
+    await client.run(wrapper, cwd=cwd)
 
     await register_detached_runtime_job(
         session_id=session_id,

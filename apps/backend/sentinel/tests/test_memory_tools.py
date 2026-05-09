@@ -749,12 +749,14 @@ def test_context_builder_adds_delegation_policy_when_tools_available():
 
     builder = ContextBuilder(
         default_system_prompt="sys",
-        available_tools={"sub_agents"},
+        available_tools={"delegate"},
     )
     context = _run(builder.build(db, session.id))
     system_messages = [m.content for m in context if getattr(m, "role", "") == "system"]
 
     delegation = next((msg for msg in system_messages if "## Delegation Policy" in msg), None)
     assert delegation is not None
-    assert "bounded one-off tasks" in delegation
-    assert "command=check" in delegation
+    assert "independent branches" in delegation
+    assert "Use delegate instead of doing multiple exploratory or checking tool calls yourself" in delegation
+    assert "command=spawn" in delegation
+    assert "do not immediately poll with command=status" in delegation

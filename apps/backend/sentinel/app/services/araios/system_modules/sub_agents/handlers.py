@@ -1,4 +1,4 @@
-"""Native module: sub_agents — spawn, check, list, and cancel sub-agent tasks."""
+"""Native module: delegate — spawn, status, list, and cancel delegated sub-agent tasks."""
 from __future__ import annotations
 
 import contextlib
@@ -201,14 +201,17 @@ async def handle_spawn(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
         "auto_assigned_browser_tab": auto_assigned_browser_tab,
         "note": (
             f"Sub-agent spawned (timeout: {timeout_seconds}s). "
-            "Next steps: use sub_agents with command=check and this task_id before reporting delegated output. "
-            "Do not block waiting in-turn; continue other work and check status later. "
-            "The main session can be prompted when results are ready."
+            "Do not call delegate with command=status immediately in the normal case. "
+            "Default to ending the turn and waiting so the user can steer while it runs. "
+            "The main session will be prompted automatically when results are ready, so immediate polling is usually unnecessary. "
+            "Only continue if you still have other real pending work that does not duplicate the delegated branch. "
+            "Wait until the main session is prompted that results are ready before requesting status in the normal case. "
+            "Use command=status only when the next decision depends on that result, the user explicitly asks for status, or before reporting delegated output as final."
         ),
     }
 
 
-async def handle_check(payload: dict[str, Any]) -> dict[str, Any]:
+async def handle_status(payload: dict[str, Any]) -> dict[str, Any]:
     task_id = payload.get("task_id")
     if not isinstance(task_id, str) or not task_id.strip():
         raise ToolValidationError("Field 'task_id' must be a non-empty string")
@@ -222,12 +225,16 @@ async def handle_check(payload: dict[str, Any]) -> dict[str, Any]:
 
         result_payload = task.result if isinstance(task.result, dict) else None
         status = str(task.status)
-        next_action = "Continue other work and call sub_agents with command=check again later."
+        next_action = (
+            "Do not poll repeatedly. In the normal case, end the turn and wait. "
+            "The main session will be prompted automatically when results are ready. "
+            "Call delegate with command=status later only when you need this result for the next decision or the user asks for status."
+        )
         retry_recommended = False
         if status == "completed":
             next_action = (
                 "Evaluate whether the delegated output fully satisfies the objective. "
-                "If not, call sub_agents with command=spawn again with a refined objective/scope."
+                "If not, call delegate with command=spawn again with a refined objective/scope."
             )
             final_text = (
                 result_payload.get("final_text") if isinstance(result_payload, dict) else None

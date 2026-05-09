@@ -1,4 +1,4 @@
-"""Native module: module_manager — manage araiOS modules, records, and actions."""
+"""Native module: module_manager — manage dynamic modules, records, and actions."""
 from __future__ import annotations
 
 import logging
@@ -35,6 +35,48 @@ def _serialize_record(r: AraiosModuleRecord) -> dict[str, Any]:
     d["created_at"] = r.created_at.isoformat() if r.created_at else None
     d["updated_at"] = r.updated_at.isoformat() if r.updated_at else None
     return d
+
+
+def _normalize_records_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    records = payload.get("records")
+    if not isinstance(records, list) or not records:
+        raise ValueError("'records' must be a non-empty array of objects")
+    normalized: list[dict[str, Any]] = []
+    for index, entry in enumerate(records):
+        if not isinstance(entry, dict):
+            raise ValueError(f"'records[{index}]' must be an object")
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_updates_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    updates = payload.get("updates")
+    if not isinstance(updates, list) or not updates:
+        raise ValueError("'updates' must be a non-empty array of objects")
+    normalized: list[dict[str, Any]] = []
+    for index, entry in enumerate(updates):
+        if not isinstance(entry, dict):
+            raise ValueError(f"'updates[{index}]' must be an object")
+        record_id = entry.get("record_id")
+        if not isinstance(record_id, str) or not record_id.strip():
+            raise ValueError(f"'updates[{index}].record_id' must be a non-empty string")
+        data = entry.get("data")
+        if not isinstance(data, dict):
+            raise ValueError(f"'updates[{index}].data' must be an object")
+        normalized.append({"record_id": record_id.strip(), "data": data})
+    return normalized
+
+
+def _normalize_record_ids_payload(payload: dict[str, Any]) -> list[str]:
+    record_ids = payload.get("record_ids")
+    if not isinstance(record_ids, list) or not record_ids:
+        raise ValueError("'record_ids' must be a non-empty array of strings")
+    normalized: list[str] = []
+    for index, record_id in enumerate(record_ids):
+        if not isinstance(record_id, str) or not record_id.strip():
+            raise ValueError(f"'record_ids[{index}]' must be a non-empty string")
+        normalized.append(record_id.strip())
+    return normalized
 
 
 async def _require_module_exists(
@@ -268,74 +310,97 @@ async def handle_get_record(payload: dict[str, Any]) -> dict[str, Any]:
         return _serialize_record(rec)
 
 
-async def handle_create_record(payload: dict[str, Any]) -> dict[str, Any]:
+async def handle_create_records(payload: dict[str, Any]) -> dict[str, Any]:
     module_name = (payload.get("module") or "").strip().lower()
     if not module_name:
         raise ValueError("'module' is required")
-    data = payload.get("data", {})
-    if not isinstance(data, dict):
-        raise ValueError("'data' must be an object")
+    records_data = _normalize_records_payload(payload)
     async with AsyncSessionLocal() as db:
         await _require_module_exists(db, module_name)
-        rec = AraiosModuleRecord(
-            id=araios_gen_id(), module_name=module_name, data=data,
-        )
-        db.add(rec)
+        records: list[AraiosModuleRecord] = []
+        for data in records_data:
+            rec = AraiosModuleRecord(
+                id=araios_gen_id(),
+                module_name=module_name,
+                data=data,
+            )
+            db.add(rec)
+            records.append(rec)
         await db.commit()
-        await db.refresh(rec)
-        return _serialize_record(rec)
+        for record in records:
+            await db.refresh(record)
+        return {
+            "records": [_serialize_record(record) for record in records],
+            "count": len(records),
+        }
 
 
-async def handle_update_record(payload: dict[str, Any]) -> dict[str, Any]:
+async def handle_update_records(payload: dict[str, Any]) -> dict[str, Any]:
     module_name = (payload.get("module") or "").strip().lower()
-    record_id = payload.get("record_id")
     if not module_name:
         raise ValueError("'module' is required")
-    if not record_id:
-        raise ValueError("'record_id' is required for update_record")
-    data = payload.get("data", {})
-    if not isinstance(data, dict):
-        raise ValueError("'data' must be an object")
+    updates = _normalize_updates_payload(payload)
+    update_ids = [entry["record_id"] for entry in updates]
     async with AsyncSessionLocal() as db:
         await _require_module_exists(db, module_name)
         result = await db.execute(
             select(AraiosModuleRecord).where(
                 AraiosModuleRecord.module_name == module_name,
-                AraiosModuleRecord.id == record_id,
+                AraiosModuleRecord.id.in_(update_ids),
             )
         )
-        rec = result.scalars().first()
-        if not rec:
-            raise ValueError(f"Record '{record_id}' not found")
-        merged = dict(rec.data or {})
-        merged.update(data)
-        rec.data = merged
+        records_by_id = {
+            record.id: record
+            for record in result.scalars().all()
+        }
+        missing = [record_id for record_id in update_ids if record_id not in records_by_id]
+        if missing:
+            raise ValueError(f"Record(s) not found: {', '.join(missing)}")
+        updated_records: list[AraiosModuleRecord] = []
+        for entry in updates:
+            record = records_by_id[entry["record_id"]]
+            merged = dict(record.data or {})
+            merged.update(entry["data"])
+            record.data = merged
+            updated_records.append(record)
         await db.commit()
-        await db.refresh(rec)
-        return _serialize_record(rec)
+        for record in updated_records:
+            await db.refresh(record)
+        return {
+            "records": [_serialize_record(record) for record in updated_records],
+            "count": len(updated_records),
+        }
 
 
-async def handle_delete_record(payload: dict[str, Any]) -> dict[str, Any]:
+async def handle_delete_records(payload: dict[str, Any]) -> dict[str, Any]:
     module_name = (payload.get("module") or "").strip().lower()
-    record_id = payload.get("record_id")
     if not module_name:
         raise ValueError("'module' is required")
-    if not record_id:
-        raise ValueError("'record_id' is required for delete_record")
+    record_ids = _normalize_record_ids_payload(payload)
     async with AsyncSessionLocal() as db:
         await _require_module_exists(db, module_name)
         result = await db.execute(
             select(AraiosModuleRecord).where(
                 AraiosModuleRecord.module_name == module_name,
-                AraiosModuleRecord.id == record_id,
+                AraiosModuleRecord.id.in_(record_ids),
             )
         )
-        rec = result.scalars().first()
-        if not rec:
-            raise ValueError(f"Record '{record_id}' not found")
-        await db.delete(rec)
+        records_by_id = {
+            record.id: record
+            for record in result.scalars().all()
+        }
+        missing = [record_id for record_id in record_ids if record_id not in records_by_id]
+        if missing:
+            raise ValueError(f"Record(s) not found: {', '.join(missing)}")
+        for record_id in record_ids:
+            await db.delete(records_by_id[record_id])
         await db.commit()
-        return {"ok": True, "message": f"Record '{record_id}' deleted"}
+        return {
+            "ok": True,
+            "record_ids": record_ids,
+            "count": len(record_ids),
+            "message": f"Deleted {len(record_ids)} record(s)",
+        }
 
 
 # ── Action handler ──

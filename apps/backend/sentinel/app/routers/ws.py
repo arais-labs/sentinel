@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import defaultdict
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -19,6 +21,7 @@ from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.compaction import CompactionService
 from app.services.messages import normalize_generation_metadata, with_generation_metadata
 from app.services.sessions.session_naming import SessionNamingService
+from app.services.runtime.activation import queue_runtime_activation
 from app.services.ws.ws_manager import ConnectionManager
 from app.services.ws.ws_stream_parser import parse_ws_message
 from app.services.ws.ws_stream_service import (
@@ -38,6 +41,31 @@ _COMPACTION_AUTO_RESUME_PROMPT = (
     "Context was compacted automatically. Continue the same task from the latest state. "
     "Do not repeat finished steps. If you are blocked, say exactly what is blocking you and the best next step."
 )
+
+
+async def _persist_retryable_error(
+    db: AsyncSession,
+    *,
+    message: Message,
+    error: str,
+) -> None:
+    metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+    metadata["retryable_error"] = error
+    message.metadata_json = metadata
+    await db.commit()
+
+
+async def _clear_retryable_error(
+    db: AsyncSession,
+    *,
+    message: Message,
+) -> None:
+    metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+    if "retryable_error" not in metadata:
+        return
+    metadata.pop("retryable_error", None)
+    message.metadata_json = metadata
+    await db.commit()
 
 
 @router.websocket("/{id}/stream")
@@ -93,20 +121,32 @@ async def stream_session(
         }
     )
 
+    queue_runtime_activation(websocket.app, session_key)
+
     logger.info(
         "ws_unresolved_tool_rehydrate session_id=%s unresolved_count=%s",
         session_key,
         len(unresolved_calls),
     )
 
+    pending_approvals = await _load_pending_tool_approvals(db, session_id=id)
+
     for call in unresolved_calls:
-        pending_metadata: dict[str, object] = {
-            "rehydrated": True,
-        }
-        pending_content = {
-            "status": "running",
-            "message": "Tool call is still running or waiting for completion.",
-        }
+        pending_metadata: dict[str, object] = {"rehydrated": True}
+        pending_content: dict[str, object]
+        pending_approval = _match_pending_tool_approval(call, pending_approvals)
+        if pending_approval is not None:
+            pending_metadata["pending"] = True
+            pending_metadata["approval"] = _approval_payload(pending_approval)
+            pending_content = {
+                "status": "pending",
+                "message": "Action requires approval.",
+            }
+        else:
+            pending_content = {
+                "status": "running",
+                "message": "Tool call is still running or waiting for completion.",
+            }
         await websocket.send_json(
             {
                 "type": "toolcall_start",
@@ -132,6 +172,9 @@ async def stream_session(
                 },
             }
         )
+    current_phase = await run_registry.get_phase(session_key) if session_running else None
+    if session_running and not unresolved_calls and (current_phase in {None, "thinking"}):
+        await manager.broadcast_thinking_start(session_key)
     session_has_messages = len(history) > 0
 
     try:
@@ -195,6 +238,14 @@ async def stream_session(
                 agent_mode=parsed.agent_mode,
                 persist_user_message=False,
             )
+            if outcome.failed or (outcome.run_error and not outcome.cancelled):
+                await _persist_retryable_error(
+                    db,
+                    message=message,
+                    error=outcome.run_error or "Agent failed",
+                )
+                continue
+            await _clear_retryable_error(db, message=message)
             if outcome.failed:
                 continue
 
@@ -232,6 +283,77 @@ def _resolve_run_registry(websocket: WebSocket) -> AgentRunRegistry:
     if isinstance(registry, AgentRunRegistry):
         return registry
     raise RuntimeError("Agent run registry is not initialized on app.state")
+
+
+async def _load_pending_tool_approvals(
+    db: AsyncSession,
+    *,
+    session_id: UUID,
+) -> dict[str, list[ToolApproval]]:
+    result = await db.execute(
+        select(ToolApproval)
+        .where(
+            ToolApproval.session_id == session_id,
+            ToolApproval.status == "pending",
+        )
+        .order_by(ToolApproval.created_at.asc())
+    )
+    approvals_by_tool: dict[str, list[ToolApproval]] = defaultdict(list)
+    for row in result.scalars().all():
+        tool_name = (row.tool_name or "").strip()
+        if tool_name:
+            approvals_by_tool[tool_name].append(row)
+    return approvals_by_tool
+
+
+def _match_pending_tool_approval(
+    call: dict[str, object],
+    pending_approvals: dict[str, list[ToolApproval]],
+) -> ToolApproval | None:
+    tool_name = str(call.get("name") or "").strip()
+    if not tool_name:
+        return None
+
+    candidates = pending_approvals.get(tool_name)
+    if not candidates:
+        return None
+
+    expected_action = _expected_approval_action(call)
+    if expected_action:
+        for index, row in enumerate(candidates):
+            if (row.action or "").strip() == expected_action:
+                return candidates.pop(index)
+        return None
+
+    return candidates.pop(0)
+
+
+def _expected_approval_action(call: dict[str, object]) -> str | None:
+    tool_name = str(call.get("name") or "").strip()
+    arguments = call.get("arguments")
+    if not tool_name or not isinstance(arguments, dict):
+        return None
+    command = arguments.get("command")
+    if not isinstance(command, str):
+        return None
+    normalized = command.strip()
+    if not normalized:
+        return None
+    return f"{tool_name}.{normalized}"
+
+
+def _approval_payload(row: ToolApproval) -> dict[str, Any]:
+    return {
+        "provider": row.provider,
+        "approval_id": str(row.id),
+        "status": row.status,
+        "pending": row.status == "pending",
+        "can_resolve": row.status == "pending",
+        "label": f"{row.tool_name} approval",
+        "action": row.action,
+        "description": row.description,
+        "session_id": str(row.session_id) if row.session_id else None,
+    }
 
 async def _materialize_interrupted_tool_results(
     db: AsyncSession,

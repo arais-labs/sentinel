@@ -5,7 +5,7 @@ from typing import Any
 from app.services.araios.runtime_services import get_browser_pool
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
-from app.services.tools.runtime_context import require_session_id
+from app.services.tools.runtime_context import require_runtime_session_id
 
 BROWSER_SESSION_PROP: dict[str, dict[str, str]] = {}
 
@@ -23,7 +23,7 @@ async def resolve_browser_manager(
     runtime: ToolRuntimeContext,
 ):
     del payload
-    return await get_browser_pool().get(str(require_session_id(runtime)))
+    return await get_browser_pool().get(str(require_runtime_session_id(runtime)))
 
 
 def extract_browser_tab_constraint(constraints: Any) -> str | None:

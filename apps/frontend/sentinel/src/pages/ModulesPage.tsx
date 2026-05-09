@@ -42,7 +42,7 @@ import { AppShell } from '../components/AppShell';
    API helper — bypasses Sentinel's /api/v1 prefix
    ═══════════════════════════════════════════════════════════════════════════ */
 
-async function araiosApi<T = any>(path: string, opts?: { method?: string; body?: unknown }): Promise<T> {
+async function modulesApi<T = any>(path: string, opts?: { method?: string; body?: unknown }): Promise<T> {
   const res = await fetch(path, {
     method: opts?.method ?? 'GET',
     headers: { 'Content-Type': 'application/json' },
@@ -491,7 +491,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
 
   useEffect(() => {
     if (!hasRecordActions) return;
-    araiosApi<{ records: any[] }>(`/api/modules/${config.name}/records`)
+    modulesApi<{ records: any[] }>(`/api/modules/${config.name}/records`)
       .then(res => setRecords(res.records || []))
       .catch(() => {});
   }, [config.name, hasRecordActions]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -499,7 +499,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
   const loadSecrets = useCallback(async () => {
     if (!(config.secrets || []).length) return;
     try {
-      const res = await araiosApi<{ secrets: Record<string, boolean> }>(`/api/modules/${config.name}/secrets-status`);
+      const res = await modulesApi<{ secrets: Record<string, boolean> }>(`/api/modules/${config.name}/secrets-status`);
       setSecretsStatus(res.secrets || {});
     } catch { /* non-fatal */ }
   }, [config.name, config.secrets]);
@@ -526,7 +526,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
 
   const resetSecret = async (key: string, label: string) => {
     try {
-      await araiosApi(`/api/modules/${config.name}/secrets/${key}`, { method: 'DELETE' });
+      await modulesApi(`/api/modules/${config.name}/secrets/${key}`, { method: 'DELETE' });
       toast.success(`${label} cleared`);
       loadSecrets();
     } catch { toast.error('Could not clear secret'); }
@@ -608,7 +608,7 @@ function SecretCard({ moduleName, secret, isSet, onSaved }: { moduleName: string
     if (!value.trim()) return;
     try {
       setSaving(true);
-      await araiosApi(`/api/modules/${moduleName}/secrets/${secret.key}`, { method: 'PUT', body: { value } });
+      await modulesApi(`/api/modules/${moduleName}/secrets/${secret.key}`, { method: 'PUT', body: { value } });
       setValue('');
       setEditing(false);
       toast.success(`${secret.label} saved`);
@@ -710,7 +710,7 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
       const url = isRecordAction && selectedRecordId
         ? `/api/modules/${moduleName}/records/${selectedRecordId}/action/${action.id}`
         : `/api/modules/${moduleName}/action/${action.id}`;
-      const res = await araiosApi(url, { method: 'POST', body: form });
+      const res = await modulesApi(url, { method: 'POST', body: form });
       const ok = res?.ok !== false;
       setResult({ ok, data: res });
       if (!ok) toast.error(res?.error || 'Action returned an error');
@@ -804,7 +804,7 @@ function PageModule({ config }: { config: any }) {
   const save = async () => {
     try {
       setSaving(true);
-      await araiosApi(`/api/modules/${config.name}`, { method: 'PATCH', body: { page_content: content } });
+      await modulesApi(`/api/modules/${config.name}`, { method: 'PATCH', body: { page_content: content } });
       toast.success('Page saved');
       setDirty(false);
       setEditing(false);
@@ -888,14 +888,14 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmDeleteModule, setConfirmDeleteModule] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<'records' | 'actions'>('records');
+  const [activeTab, setActiveTab] = useState<'records' | 'actions' | 'page'>('records');
 
   const loadAll = useCallback(async (silent = false) => {
     try {
       if (!silent) setLoading(true);
       const [cfgRes, recRes] = await Promise.all([
-        araiosApi(`/api/modules/${moduleName}`),
-        araiosApi<{ records: any[] }>(`/api/modules/${moduleName}/records`),
+        modulesApi(`/api/modules/${moduleName}`),
+        modulesApi<{ records: any[] }>(`/api/modules/${moduleName}/records`),
       ]);
       setConfig(cfgRes);
       const recs = Array.isArray(recRes?.records) ? recRes.records : [];
@@ -954,7 +954,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
   const handleCreate = async (data: Record<string, any>) => {
     try {
       setSaving(true);
-      const rec = await araiosApi(`/api/modules/${moduleName}/records`, { method: 'POST', body: data });
+      const rec = await modulesApi(`/api/modules/${moduleName}/records`, { method: 'POST', body: data });
       setCreateOpen(false);
       toast.success('Created');
       await loadAll(true);
@@ -967,7 +967,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
     if (!selectedId) return;
     try {
       setSaving(true);
-      await araiosApi(`/api/modules/${moduleName}/records/${selectedId}`, { method: 'PATCH', body: patch });
+      await modulesApi(`/api/modules/${moduleName}/records/${selectedId}`, { method: 'PATCH', body: patch });
       toast.success('Saved');
       await loadAll(true);
     } catch { toast.error('Save failed'); }
@@ -977,7 +977,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
   const handleDelete = async (id: string) => {
     try {
       setSaving(true);
-      await araiosApi(`/api/modules/${moduleName}/records/${id}`, { method: 'DELETE' });
+      await modulesApi(`/api/modules/${moduleName}/records/${id}`, { method: 'DELETE' });
       setConfirmDeleteId(null);
       setSelectedId(null);
       toast.success('Deleted');
@@ -988,7 +988,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
 
   const handleDeleteModule = async () => {
     try {
-      await araiosApi(`/api/modules/${moduleName}`, { method: 'DELETE' });
+      await modulesApi(`/api/modules/${moduleName}`, { method: 'DELETE' });
       toast.success(`${config?.label || moduleName} deleted`);
       (onDeleted ?? onBack)?.();
     } catch { toast.error('Failed to delete module'); }
@@ -998,7 +998,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
     if (!selectedId) return;
     try {
       setSaving(true);
-      const res = await araiosApi(`/api/modules/${moduleName}/records/${selectedId}/action/${actionId}`, { method: 'POST', body: {} });
+      const res = await modulesApi(`/api/modules/${moduleName}/records/${selectedId}/action/${actionId}`, { method: 'POST', body: {} });
       if (res?.ok !== false) toast.success('Action completed');
       else toast.error(res?.error || 'Action returned an error');
       await loadAll(true);
@@ -1028,7 +1028,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
   const hasFields = (config.fields || []).length > 0;
   const hasActions = (config.actions || []).length > 0;
   const hasPage = Boolean(config.page_title);
-  const tabs: string[] = [];
+  const tabs: Array<'records' | 'actions' | 'page'> = [];
   if (hasFields) tabs.push('records');
   if (hasActions) tabs.push('actions');
   if (hasPage) tabs.push('page');
@@ -1221,7 +1221,7 @@ function ModulesSection() {
   const load = useCallback(async (keepSelection = false) => {
     try {
       setLoading(prev => !keepSelection && prev === true ? true : prev);
-      const data = await araiosApi<{ modules: any[] }>('/api/modules');
+      const data = await modulesApi<{ modules: any[] }>('/api/modules');
       const list = data.modules || [];
       setModules(list);
       if (!keepSelection) {
@@ -1242,7 +1242,7 @@ function ModulesSection() {
       setImporting(true);
       const text = await file.text();
       const payload = JSON.parse(text);
-      const response = await araiosApi<{ module: any; imported_records: number }>('/api/modules/import', {
+      const response = await modulesApi<{ module: any; imported_records: number }>('/api/modules/import', {
         method: 'POST',
         body: payload,
       });
@@ -1374,7 +1374,7 @@ function ApprovalsSection() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await araiosApi<{ items: any[]; total: number }>('/api/v1/approvals');
+      const data = await modulesApi<{ items: any[]; total: number }>('/api/v1/approvals');
       setApprovals(data.items || []);
     } catch { toast.error('Failed to load approvals'); }
     finally { setLoading(false); }
@@ -1392,7 +1392,7 @@ function ApprovalsSection() {
       const approval = approvals.find(a => (a.approval_id ?? a.id) === id);
       const provider = approval?.provider ?? 'tool';
       const approvalId = approval?.approval_id ?? id;
-      await araiosApi(`/api/v1/approvals/${provider}/${approvalId}/${action}`, { method: 'POST' });
+      await modulesApi(`/api/v1/approvals/${provider}/${approvalId}/${action}`, { method: 'POST' });
       toast.success(action === 'approve' ? 'Approved' : 'Rejected');
       load();
     } catch { toast.error(`Failed to ${action}`); }
@@ -1509,7 +1509,7 @@ function PermissionsSection() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await araiosApi<{ permissions: { action: string; level: string }[] }>('/api/permissions');
+      const data = await modulesApi<{ permissions: { action: string; level: string }[] }>('/api/permissions');
       setPermissions(data.permissions || []);
     } catch { toast.error('Failed to load permissions'); }
     finally { setLoading(false); }
@@ -1522,7 +1522,7 @@ function PermissionsSection() {
   const handleToggle = async (action: string, newLevel: string) => {
     try {
       setUpdatingAction(action);
-      await araiosApi(`/api/permissions/${action}`, { method: 'PATCH', body: { level: newLevel } });
+      await modulesApi(`/api/permissions/${action}`, { method: 'PATCH', body: { level: newLevel } });
       setPermissions(prev => prev.map(p => p.action === action ? { ...p, level: newLevel } : p));
       toast.success(`${action} \u2192 ${newLevel}`);
     } catch { toast.error('Failed to update permission'); }
@@ -1616,7 +1616,7 @@ function DocumentsSection() {
     try {
       setLoading(true);
       const url = tagFilter ? `/api/documents?tag=${encodeURIComponent(tagFilter)}` : '/api/documents';
-      const data = await araiosApi<{ documents: any[] }>(url);
+      const data = await modulesApi<{ documents: any[] }>(url);
       setDocuments(data.documents || []);
     } catch { /* ignore */ }
     finally { setLoading(false); }
@@ -1626,7 +1626,7 @@ function DocumentsSection() {
 
   const loadDoc = async (slug: string) => {
     try {
-      const data = await araiosApi(`/api/documents/${slug}`);
+      const data = await modulesApi(`/api/documents/${slug}`);
       setActiveDoc(data);
       setActiveSlug(slug);
     } catch { toast.error('Failed to load document'); }
@@ -1766,7 +1766,7 @@ function TasksSection() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await araiosApi<{ tasks: any[] }>('/api/tasks');
+      const data = await modulesApi<{ tasks: any[] }>('/api/tasks');
       const list = Array.isArray(data.tasks) ? data.tasks : [];
       setTasks(list);
       if (list.length > 0 && !selectedId) setSelectedId(list[0].id);
@@ -1797,7 +1797,7 @@ function TasksSection() {
 
   const patchTask = async (taskId: string, patch: Record<string, any>, message = 'Saved') => {
     try {
-      await araiosApi(`/api/tasks/${taskId}`, { method: 'PATCH', body: patch });
+      await modulesApi(`/api/tasks/${taskId}`, { method: 'PATCH', body: patch });
       toast.success(message);
       load();
     } catch { toast.error('Save failure'); }
@@ -1818,7 +1818,7 @@ function TasksSection() {
         status: newTask.status || 'todo', priority: newTask.priority || 'medium',
         owner: asNullable(newTask.owner), handoffTo: asNullable(newTask.handoffTo),
       };
-      const created = await araiosApi('/api/tasks', { method: 'POST', body: payload });
+      const created = await modulesApi('/api/tasks', { method: 'POST', body: payload });
       toast.success('Task created');
       setCreating(false);
       setNewTask({ title: '', summary: '', client: '', repo: '', source: 'manual', type: 'task', status: 'todo', priority: 'medium', owner: '', handoffTo: '' });
@@ -1829,7 +1829,7 @@ function TasksSection() {
 
   const deleteTask = async (id: string) => {
     try {
-      await araiosApi(`/api/tasks/${id}`, { method: 'DELETE' });
+      await modulesApi(`/api/tasks/${id}`, { method: 'DELETE' });
       toast.success('Task deleted');
       setSelectedId(null);
       setConfirmDeleteId(null);
@@ -2106,7 +2106,7 @@ function CoordinationSection() {
   const load = useCallback(async (silent = false) => {
     try {
       if (!silent) setLoading(true);
-      const data = await araiosApi<{ messages: any[] }>('/api/coordination?limit=200');
+      const data = await modulesApi<{ messages: any[] }>('/api/coordination?limit=200');
       setMessages((data.messages || []).reverse());
     } catch { /* ignore */ }
     finally { setLoading(false); }
@@ -2131,7 +2131,7 @@ function CoordinationSection() {
     if (!message || sending) return;
     try {
       setSending(true);
-      const created = await araiosApi('/api/coordination', { method: 'POST', body: { message, context: { source: 'human_ui' } } });
+      const created = await modulesApi('/api/coordination', { method: 'POST', body: { message, context: { source: 'human_ui' } } });
       setMessages(prev => [created, ...prev]);
       setDraft('');
       toast.success('Message sent');
@@ -2233,12 +2233,12 @@ function CoordinationSection() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   AraiOSPage — main exported page component
+   ModulesPage — main exported page component
    ═══════════════════════════════════════════════════════════════════════════ */
 
-type AraiOSSection = 'modules' | 'approvals' | 'permissions' | 'documents' | 'tasks' | 'coordination';
+type ModuleSection = 'modules' | 'approvals' | 'permissions' | 'documents' | 'tasks' | 'coordination';
 
-const SECTION_LABELS: Record<AraiOSSection, string> = {
+const SECTION_LABELS: Record<ModuleSection, string> = {
   modules: 'Modules',
   approvals: 'Approvals',
   permissions: 'Permissions',
@@ -2249,7 +2249,7 @@ const SECTION_LABELS: Record<AraiOSSection, string> = {
 
 export function ModulesPage() {
   const location = useLocation();
-  let activeSection: AraiOSSection = 'modules';
+  let activeSection: ModuleSection = 'modules';
   if (location.pathname.startsWith('/approvals')) activeSection = 'approvals';
   else if (location.pathname.startsWith('/permissions')) activeSection = 'permissions';
 

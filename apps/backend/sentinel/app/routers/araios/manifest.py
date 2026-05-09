@@ -1,4 +1,4 @@
-"""AraiOS Manifest router — async SQLAlchemy.
+"""Module manifest router — async SQLAlchemy.
 
 Returns the full module manifest including registered endpoints and auth info.
 """
@@ -15,7 +15,7 @@ from app.middleware.auth import TokenPayload, require_auth
 from app.models.araios import AraiosModule
 from app.models.system import SystemSetting
 
-router = APIRouter(tags=["araios-manifest"])
+router = APIRouter(tags=["module-manifest"])
 
 
 # ── Helpers ──
@@ -56,21 +56,21 @@ async def get_manifest(
 
     # Core endpoints manifest
     endpoints = [
-        {"method": "GET", "path": "/api/v1/araios/manifest", "description": "This manifest"},
-        {"method": "GET", "path": "/api/v1/araios/agent-guide", "description": "Full agent guide"},
-        {"method": "GET", "path": "/api/v1/araios/coordination", "description": "List coordination messages"},
-        {"method": "POST", "path": "/api/v1/araios/coordination", "description": "Send coordination message"},
-        {"method": "GET", "path": "/api/v1/araios/documents", "description": "List documents"},
-        {"method": "GET", "path": "/api/v1/araios/documents/{slug}", "description": "Get document"},
-        {"method": "POST", "path": "/api/v1/araios/documents", "description": "Create document"},
-        {"method": "PUT", "path": "/api/v1/araios/documents/{slug}", "description": "Update document"},
-        {"method": "DELETE", "path": "/api/v1/araios/documents/{slug}", "description": "Delete document"},
-        {"method": "GET", "path": "/api/v1/araios/tasks", "description": "List tasks"},
-        {"method": "POST", "path": "/api/v1/araios/tasks", "description": "Create task"},
-        {"method": "PATCH", "path": "/api/v1/araios/tasks/{task_id}", "description": "Update task"},
-        {"method": "DELETE", "path": "/api/v1/araios/tasks/{task_id}", "description": "Delete task"},
-        {"method": "GET", "path": "/api/v1/araios/settings", "description": "List system settings"},
-        {"method": "PUT", "path": "/api/v1/araios/settings/{key}", "description": "Set system setting"},
+        {"method": "GET", "path": "/api/manifest", "description": "This manifest"},
+        {"method": "GET", "path": "/api/agent", "description": "Full agent guide"},
+        {"method": "GET", "path": "/api/coordination", "description": "List coordination messages"},
+        {"method": "POST", "path": "/api/coordination", "description": "Send coordination message"},
+        {"method": "GET", "path": "/api/documents", "description": "List documents"},
+        {"method": "GET", "path": "/api/documents/{slug}", "description": "Get document"},
+        {"method": "POST", "path": "/api/documents", "description": "Create document"},
+        {"method": "PUT", "path": "/api/documents/{slug}", "description": "Update document"},
+        {"method": "DELETE", "path": "/api/documents/{slug}", "description": "Delete document"},
+        {"method": "GET", "path": "/api/tasks", "description": "List tasks"},
+        {"method": "POST", "path": "/api/tasks", "description": "Create task"},
+        {"method": "PATCH", "path": "/api/tasks/{task_id}", "description": "Update task"},
+        {"method": "DELETE", "path": "/api/tasks/{task_id}", "description": "Delete task"},
+        {"method": "GET", "path": "/api/settings", "description": "List system settings"},
+        {"method": "PUT", "path": "/api/settings/{key}", "description": "Set system setting"},
     ]
 
     return {

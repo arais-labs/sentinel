@@ -1,4 +1,10 @@
-# Unified Module System — Architecture Plan
+# Unified Module System — Migration Notes
+
+This is a historical migration note for unifying Sentinel tools and dynamic modules.
+It is not the canonical user-facing API documentation. The current implementation keeps
+the module system as the primary user-facing surface while retaining the internal
+`ToolRegistry` adapter used by runtime execution and agent adapters. The old
+`/api/v1/tools` HTTP surface has been removed.
 
 ## Goal
 
@@ -6,16 +12,16 @@ Replace the dual tool/module system with a single concept: **modules**. Every ca
 
 ---
 
-## Current State (Problems)
+## Original Problem Statement
 
-1. **Two parallel systems**: Sentinel `ToolDefinition`/`ToolRegistry` (code) and AraiOS modules (DB)
+1. **Two parallel systems**: Sentinel `ToolDefinition`/`ToolRegistry` (code) and dynamic modules (DB)
 2. **Three meta-tools** (`araios_modules`, `araios_records`, `araios_action`) bridge the gap
 3. **Two API surfaces**: `/api/v1/tools` and `/api/modules`
 4. **Two UI pages**: Tools page and Modules page
 5. **Separate router trees**: `app/routers/araios/` and `app/routers/tools.py`
 6. **Action limitations**: flat params, no streaming, no multi-path operations, no native handler routing
 
-## Target State
+## Desired End State
 
 - **One concept**: module
 - **One API**: `/api/modules`
@@ -166,7 +172,7 @@ modules_discovery (always pinned):
   - list_modules: returns all modules with descriptions
   - get_module: returns full module config
   - list_records: returns records for a module
-  - create_record / update_record / delete_record
+  - create_records / update_records / delete_records
   - run_action: execute an action on an unpinned module
 ```
 
@@ -176,13 +182,13 @@ This replaces `araios_modules`, `araios_records`, `araios_action` — one tool i
 
 ## API Surface
 
-### Before (current)
+### Before
 
 ```
 /api/v1/tools                          — list native tools
 /api/v1/tools/{name}                   — get native tool
 /api/v1/tools/{name}/execute           — execute native tool
-/api/modules                           — list araios modules
+/api/modules                           — list dynamic modules
 /api/modules/{name}                    — get module
 /api/modules/{name}/records            — CRUD records
 /api/modules/{name}/action/{id}        — execute action
@@ -203,7 +209,7 @@ This replaces `araios_modules`, `araios_records`, `araios_action` — one tool i
 /api/permissions                       — permissions
 ```
 
-`/api/v1/tools` dies. `/api/v1/tools/{name}/execute` dies. Everything goes through modules.
+`/api/v1/tools` and `/api/v1/tools/{name}/execute` have been removed. Everything public goes through modules.
 
 ---
 
@@ -216,7 +222,7 @@ Sessions
 Session Logs
 Memory
 Triggers
-Modules          ← replaces both Tools and AraiOS Modules
+Modules          ← replaces both Tools and dynamic modules
 Approvals
 Permissions
 Git
@@ -253,7 +259,7 @@ Files:
 - `app/routers/araios/modules.py` — update serialization, validation
 - `app/services/tools/araios_tools.py` — update tool descriptions
 - SQL migration for `system` column on modules table
-- Frontend `AraiOSPage.tsx` — render `parameters_schema` in action forms
+- Frontend `ModulesPage.tsx` — render `parameters_schema` in action forms
 
 ### Phase 2 — System Module Definitions
 
@@ -282,7 +288,7 @@ Files:
 - `app/services/tools/araios_tools.py` — rewrite as single discovery tool
 - `app/services/agent/policies.py` — update policy
 
-### Phase 5 — Kill Old Tool System
+### Phase 5 — Kill Old Tool HTTP Surface
 
 **What:** Remove `/api/v1/tools`, `ToolsPage.tsx`, old tool router, app switcher.
 
@@ -296,7 +302,7 @@ Files:
 
 ### Phase 6 — Flatten Routes
 
-**What:** Move module routes from `/api/modules` to be the canonical API. Remove `/api/v1/tools/*` references from tests and frontend.
+**What:** Move module routes from `/api/modules` to be the canonical API. Remove `/api/v1/tools/*` references from frontend and behavior tests.
 
 ---
 

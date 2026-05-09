@@ -86,9 +86,10 @@ class GeminiProvider(LLMProvider):
             tool_choice=tool_choice,
         )
         url = f"{self._base_url}/models/{model}:generateContent"
+        headers = await self._request_headers()
 
         async with self._client_factory() as client:
-            response = await client.post(url, json=payload, headers=self._headers())
+            response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
 
@@ -123,6 +124,7 @@ class GeminiProvider(LLMProvider):
             tool_choice=tool_choice,
         )
         url = f"{self._base_url}/models/{model}:streamGenerateContent?alt=sse"
+        headers = await self._request_headers()
 
         started = False
         text_started = False
@@ -136,7 +138,7 @@ class GeminiProvider(LLMProvider):
         last_block_reason: str | None = None
 
         async with self._client_factory() as client:
-            async with client.stream("POST", url, json=payload, headers=self._headers()) as response:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
                 if response.is_error:
                     body = await response.aread()
                     detail = body.decode("utf-8", errors="replace").strip()
@@ -346,6 +348,9 @@ class GeminiProvider(LLMProvider):
             "x-goog-api-key": self._api_key,
             "content-type": "application/json",
         }
+
+    async def _request_headers(self) -> dict[str, str]:
+        return self._headers()
 
     # ------------------------------------------------------------------
     # Message format conversion

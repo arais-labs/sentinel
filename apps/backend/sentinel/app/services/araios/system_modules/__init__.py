@@ -12,6 +12,7 @@ _SYSTEM_MODULE_NAMES = (
     "str_replace_editor",
     "http_request",
     "browser",
+    "port_forward",
     "memory",
     "sub_agents",
     "telegram",

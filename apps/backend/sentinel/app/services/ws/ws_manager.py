@@ -67,6 +67,15 @@ class ConnectionManager:
             },
         )
 
+    async def broadcast_thinking_start(self, session_id: str) -> None:
+        await self.broadcast(
+            session_id,
+            {
+                "type": "thinking_start",
+                "session_id": session_id,
+            },
+        )
+
     async def broadcast_agent_event(self, session_id: str, event: AgentEvent) -> None:
         payload = self._event_payload(event)
         payload["session_id"] = session_id

@@ -370,7 +370,13 @@ async def test_tool_registry_adapter_hides_and_injects_session_id_for_grouped_to
 
     assert result.status == "ok"
     assert seen_payloads == [
-        ({"shell_command": "pwd"}, ToolRuntimeContext(session_id=UUID(session_id)))
+        (
+            {"shell_command": "pwd"},
+            ToolRuntimeContext(
+                session_id=UUID(session_id),
+                runtime_session_id=UUID(session_id),
+            ),
+        )
     ]
 
 

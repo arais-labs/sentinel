@@ -157,13 +157,6 @@ class TierProvider(LLMProvider):
                 for fb in tier_cfg.fallbacks
             ]
 
-            reasoning_effort: str | None = None
-            for fb in tier_cfg.fallbacks:
-                frc = fb.reasoning_config
-                if frc.reasoning_effort:
-                    reasoning_effort = frc.reasoning_effort
-                    break
-
             result.append(
                 ModelOptionResponse(
                     label=label,
@@ -173,7 +166,7 @@ class TierProvider(LLMProvider):
                     primary_model_id=tier_cfg.primary.model,
                     fallback_providers=fallback_providers,
                     thinking_budget=thinking_budget,
-                    reasoning_effort=reasoning_effort,
+                    reasoning_effort=rc.reasoning_effort or None,
                 )
             )
         return result

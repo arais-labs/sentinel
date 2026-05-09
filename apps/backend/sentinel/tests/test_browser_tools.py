@@ -204,9 +204,21 @@ class _StubBrowserPool:
 
     def __init__(self, manager: _StubBrowserManager | None = None):
         self._manager = manager or _StubBrowserManager()
+        self.reset_called = False
 
     async def get(self, session_id):
         return self._manager
+
+    async def reset(self, session_id):
+        _ = session_id
+        self.reset_called = True
+        return {
+            "reset": True,
+            "url": "about:blank",
+            "title": "",
+            "tab_id": "t1",
+            "cdp_endpoint": "http://127.0.0.1:9223",
+        }
 
     async def remove(self, session_id):
         pass
@@ -342,22 +354,20 @@ def test_browser_manager_lazy_init_and_actions():
 
 def test_browser_pool_restarts_remote_browser_when_cdp_is_unavailable():
     state = {"created": 0}
-    ssh_runs: list[str] = []
-
-    class _FakeSSH:
-        async def run(self, command: str, *, timeout: int = 300, cwd=None, env=None):
-            _ = timeout, cwd, env
-            ssh_runs.append(command)
-            return None
+    restart_calls: list[str] = []
 
     class _FakeRuntimeProvider:
         async def ensure(self, session_id):
             _ = session_id
-            return type("Runtime", (), {"ssh": _FakeSSH()})()
+            return type("Runtime", (), {"host": "127.0.0.1"})()
 
-        def get_container_ip(self, session_id):
+        def get_host(self, session_id):
             _ = session_id
             return "127.0.0.1"
+
+        async def restart_browser(self, session_id, runtime):
+            _ = runtime
+            restart_calls.append(str(session_id))
 
     class _FakeBrowserManager:
         def __init__(self, *, cdp_endpoint: str | None = None):
@@ -386,18 +396,21 @@ def test_browser_pool_restarts_remote_browser_when_cdp_is_unavailable():
 
     assert isinstance(manager, _FakeBrowserManager)
     assert manager.instance_number == 1
-    assert any("--remote-debugging-port=9222" in command for command in ssh_runs)
+    assert restart_calls == [_SID]
 
 
 def test_browser_pool_recreates_unhealthy_cached_manager():
     class _FakeRuntimeProvider:
         async def ensure(self, session_id):
             _ = session_id
-            return type("Runtime", (), {"ssh": None})()
+            return type("Runtime", (), {"host": "127.0.0.1"})()
 
-        def get_container_ip(self, session_id):
+        def get_host(self, session_id):
             _ = session_id
             return "127.0.0.1"
+
+        async def restart_browser(self, session_id, runtime):
+            _ = session_id, runtime
 
     class _FakeBrowserManager:
         instances: list["_FakeBrowserManager"] = []
@@ -570,11 +583,65 @@ def test_browser_snapshot_rejects_unexpected_payload_fields():
 
 
 def test_browser_reset_tool_executes():
-    registry = _browser_registry()
+    pool = _stub_pool()
+    reset_runtime_services()
+    configure_runtime_services(browser_pool=pool)
+    registry = build_default_registry()
     executor = ToolExecutor(registry)
     result, _ = _run(executor.execute("browser", {"command": "reset"}, runtime=_RUNTIME))
     assert result["reset"] is True
     assert result["url"] == "about:blank"
+    assert pool.reset_called is True
+
+
+def test_browser_pool_reset_restarts_remote_browser():
+    state = {"created": 0}
+    restart_calls: list[str] = []
+
+    class _FakeRuntimeProvider:
+        async def ensure(self, session_id):
+            _ = session_id
+            return type("Runtime", (), {"host": "127.0.0.1"})()
+
+        def get_host(self, session_id):
+            _ = session_id
+            return "127.0.0.1"
+
+        async def restart_browser(self, session_id, runtime):
+            _ = runtime
+            restart_calls.append(str(session_id))
+
+    class _FakeBrowserManager:
+        def __init__(self, *, cdp_endpoint: str | None = None):
+            self.cdp_endpoint = cdp_endpoint
+            self.instance_number = state["created"]
+            state["created"] += 1
+            self.closed = False
+
+        async def ensure_connected(self):
+            return None
+
+        async def warmup(self):
+            return {"url": "about:blank", "title": "", "tab_id": "t1"}
+
+        async def close(self):
+            self.closed = True
+
+    old_get_runtime = runtime_module.get_runtime
+    old_manager_cls = browser_pool_module.BrowserManager
+    browser_pool_module.BrowserManager = _FakeBrowserManager
+    runtime_module.get_runtime = lambda: _FakeRuntimeProvider()
+    try:
+        pool = browser_pool_module.BrowserPool()
+        result = _run(pool.reset(_SID))
+    finally:
+        browser_pool_module.BrowserManager = old_manager_cls
+        runtime_module.get_runtime = old_get_runtime
+
+    assert result["reset"] is True
+    assert result["url"] == "about:blank"
+    assert result["cdp_endpoint"] == "http://127.0.0.1:9223"
+    assert restart_calls == [_SID]
 
 
 def test_browser_tabs_tool_executes():

@@ -1,11 +1,11 @@
 ---
 sidebar_position: 1
-title: araiOS API Reference
+title: Module API Reference
 ---
 
-# araiOS API Reference
+# Module API Reference
 
-All agent to araiOS interaction happens through this REST API.
+Agent module/control-plane interaction happens through this REST API.
 
 :::tip Start here
 Always begin with `GET /api/agent`. It returns the full guide for the current instance: modules, endpoints, permission rules, and usage context.
@@ -13,18 +13,10 @@ Always begin with `GET /api/agent`. It returns the full guide for the current in
 
 ---
 
-## Auth and token exchange
+## Auth
 
-araiOS platform auth routes live under `/platform/auth`.
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/platform/auth/token` | Exchange API key for access and refresh tokens |
-| `POST` | `/platform/auth/refresh` | Refresh access token |
-| `POST` | `/platform/auth/logout` | Revoke current token set |
-| `GET` | `/platform/auth/me` | Current identity |
-
-Most `/api/*` routes require a valid bearer access token.
+Human users authenticate through Sentinel auth under `/api/v1/auth`.
+Module/control-plane routes use the active Sentinel session cookie.
 
 ---
 
@@ -97,4 +89,4 @@ Returns `202` when approval is required, `200` with result when executed.
 
 ## Important distinction
 
-Sentinel routes such as onboarding, memory, sessions, triggers, and websocket chat are in Sentinel backend APIs, not araiOS APIs.
+Sentinel routes such as onboarding, memory, sessions, triggers, and websocket chat live under `/api/v1`.

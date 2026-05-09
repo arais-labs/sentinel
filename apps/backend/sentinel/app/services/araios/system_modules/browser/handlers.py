@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.araios.runtime_services import get_browser_pool
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.runtime_context import require_runtime_session_id
 
 from .shared import optional_browser_tab_id, resolve_browser_manager
 
@@ -212,8 +214,8 @@ async def handle_snapshot(payload: dict[str, Any], runtime: ToolRuntimeContext) 
 
 
 async def handle_reset(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    manager = await resolve_browser_manager(payload, runtime)
-    return await manager.reset()
+    del payload
+    return await get_browser_pool().reset(str(require_runtime_session_id(runtime)))
 
 
 async def handle_tabs(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:

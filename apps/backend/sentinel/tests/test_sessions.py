@@ -1,7 +1,11 @@
+import asyncio
 import os
 import subprocess
 import tempfile
 import uuid
+import zipfile
+from types import SimpleNamespace
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -34,6 +38,32 @@ def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") 
         secret,
         algorithm="HS256",
     )
+
+
+def test_schedule_runtime_provision_deduplicates_same_session(monkeypatch):
+    from app.routers import sessions as sessions_router
+
+    started: list[str] = []
+    release = asyncio.Event()
+
+    async def _fake_provision_runtime(session_id, ws_manager=None):  # noqa: ARG001
+        started.append(str(session_id))
+        await release.wait()
+
+    monkeypatch.setattr(sessions_router, "_provision_runtime", _fake_provision_runtime)
+
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    session_id = uuid.uuid4()
+
+    async def _run() -> None:
+        sessions_router._schedule_runtime_provision(request, session_id)
+        sessions_router._schedule_runtime_provision(request, session_id)
+        await asyncio.sleep(0)
+        assert started == [str(session_id)]
+        release.set()
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
 
 
 def test_sessions_crud_and_ownership():
@@ -192,6 +222,111 @@ def test_session_rename_endpoint():
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
+
+
+def test_retry_message_endpoint_reruns_existing_user_message():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    old_ws_manager = getattr(app.state, "ws_manager", None)
+    old_runtime_support = getattr(app.state, "agent_runtime_support", None)
+    old_db_factory = getattr(app.state, "db_factory", None)
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    captured: dict[str, object] = {}
+    scheduled: list[object] = []
+
+    class _DummyManager:
+        async def broadcast_agent_thinking(self, session_key: str) -> None:
+            captured["thinking_session_key"] = session_key
+
+    @asynccontextmanager
+    async def _db_factory():
+        yield fake_db
+
+    async def _fake_run_agent_once(**kwargs):
+        captured.update(kwargs)
+
+        class _Outcome:
+            failed = False
+            cancelled = False
+            run_error = None
+
+        return _Outcome()
+
+    def _fake_create_task(coro):
+        scheduled.append(coro)
+        return coro
+
+    try:
+        app.state.ws_manager = _DummyManager()
+        app.state.agent_runtime_support = object()
+        app.state.db_factory = _db_factory
+
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        created = client.post("/api/v1/sessions", json={"title": "alpha"}, headers=headers)
+        assert created.status_code == 200
+        session_id = created.json()["id"]
+
+        message = client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={
+                "role": "user",
+                "content": "retry me",
+                "metadata": {
+                    "agent_mode": "read_only",
+                    "generation": {
+                        "requested_tier": "hard",
+                        "max_iterations": 17,
+                    },
+                },
+            },
+            headers=headers,
+        )
+        assert message.status_code == 200
+        message_id = message.json()["id"]
+
+        with patch("app.routers.sessions.run_agent_once", new=_fake_run_agent_once), patch(
+            "app.routers.sessions.asyncio.create_task", side_effect=_fake_create_task
+        ):
+            response = client.post(
+                f"/api/v1/sessions/{session_id}/messages/{message_id}/retry",
+                headers=headers,
+            )
+
+            assert response.status_code == 200
+            assert response.json()["status"] == "retrying"
+            assert len(scheduled) == 1
+
+            asyncio.run(scheduled[0])
+
+            assert captured["session_key"] == session_id
+            assert captured["persist_user_message"] is False
+            assert str(captured["tier"]) == "hard"
+            assert captured["max_iterations"] == 17
+            assert str(captured["agent_mode"]) == "read_only"
+            assert captured["payload"] == "retry me"
+            assert captured["thinking_session_key"] == session_id
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+        app.state.ws_manager = old_ws_manager
+        app.state.agent_runtime_support = old_runtime_support
+        app.state.db_factory = old_db_factory
 
 
 def test_cannot_set_telegram_channel_session_as_main():
@@ -618,6 +753,140 @@ def test_runtime_file_explorer_endpoints():
                     headers=headers,
                 )
                 assert forbidden.status_code == 400
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_git_diff_supports_deleted_and_untracked_files():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        created = client.post("/api/v1/sessions", json={"title": "runtime-git-diff"}, headers=headers)
+        assert created.status_code == 200
+        session_id = created.json()["id"]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_base = Path(temp_dir)
+            repo_dir = runtime_base / session_id / "workspace" / "repo"
+            repo_dir.mkdir(parents=True, exist_ok=True)
+
+            subprocess.run(["git", "-C", str(repo_dir), "init"], check=True)
+            subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test User"], check=True)
+            subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "test-user@example.com"], check=True)
+
+            deleted_file = repo_dir / "old.txt"
+            deleted_file.write_text("before\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo_dir), "add", "old.txt"], check=True)
+            subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "seed"], check=True)
+            deleted_file.unlink()
+
+            added_file = repo_dir / "new.txt"
+            added_file.write_text("after\n", encoding="utf-8")
+
+            with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
+                deleted_resp = client.get(
+                    f"/api/v1/sessions/{session_id}/runtime/git/diff?path=repo/old.txt&base_ref=HEAD&staged=false&context_lines=3&max_bytes=120000",
+                    headers=headers,
+                )
+                assert deleted_resp.status_code == 200
+                deleted_payload = deleted_resp.json()
+                assert deleted_payload["path"] == "repo/old.txt"
+                assert "deleted file mode" in deleted_payload["diff"]
+
+                added_resp = client.get(
+                    f"/api/v1/sessions/{session_id}/runtime/git/diff?path=repo/new.txt&base_ref=HEAD&staged=false&context_lines=3&max_bytes=120000",
+                    headers=headers,
+                )
+                assert added_resp.status_code == 200
+                added_payload = added_resp.json()
+                assert added_payload["path"] == "repo/new.txt"
+                assert "+++ b/new.txt" in added_payload["diff"]
+                assert "+after" in added_payload["diff"]
+    finally:
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_download_supports_files_and_directories():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        created = client.post("/api/v1/sessions", json={"title": "runtime-download"}, headers=headers)
+        assert created.status_code == 200
+        session_id = created.json()["id"]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_base = Path(temp_dir)
+            workspace = runtime_base / session_id / "workspace"
+            docs_dir = workspace / "docs"
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            readme = workspace / "README.md"
+            readme.write_text("# demo\n", encoding="utf-8")
+            guide = docs_dir / "guide.txt"
+            guide.write_text("hello zip\n", encoding="utf-8")
+
+            with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
+                file_resp = client.get(
+                    f"/api/v1/sessions/{session_id}/runtime/download?path=README.md",
+                    headers=headers,
+                )
+                assert file_resp.status_code == 200
+                assert file_resp.headers["content-type"].startswith("text/markdown")
+                assert "filename=\"README.md\"" in file_resp.headers["content-disposition"]
+                assert file_resp.text == "# demo\n"
+
+                folder_resp = client.get(
+                    f"/api/v1/sessions/{session_id}/runtime/download?path=docs",
+                    headers=headers,
+                )
+                assert folder_resp.status_code == 200
+                assert folder_resp.headers["content-type"] == "application/zip"
+                assert "filename=\"docs.zip\"" in folder_resp.headers["content-disposition"]
+
+                archive_path = runtime_base / "download-check.zip"
+                archive_path.write_bytes(folder_resp.content)
+                with zipfile.ZipFile(archive_path) as archive:
+                    assert archive.namelist() == ["guide.txt"]
+                    assert archive.read("guide.txt").decode("utf-8") == "hello zip\n"
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init

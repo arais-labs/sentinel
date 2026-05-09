@@ -1,21 +1,20 @@
 ---
 sidebar_position: 2
-title: What is araiOS?
+title: Modules and Permissions
 ---
 
-# What is araiOS?
+# Modules and Permissions
 
-araiOS is the control plane that sits underneath Sentinel. It handles everything the agent is allowed to do: custom tools, persistent data stores, permissions, human approval gates, and agent coordination.
+Sentinel includes a module control plane for custom tools, persistent data stores,
+permissions, human approval gates, and agent coordination.
 
-> **Sentinel is the agent. araiOS is the environment the agent operates within.**
-
-Agents interact with araiOS exclusively through a REST API. Every action is auditable. There are no backdoors.
+Agents interact with modules through the `/api/*` module REST API. Every action is auditable.
 
 ---
 
 ## Module system
 
-araiOS is built around modules. A module is either a data store or a callable tool.
+Sentinel modules are either data stores or callable tools.
 
 ### Data modules
 Persistent record stores with full CRUD. You define fields, types, and validation. Agents read, create, update, and delete records through scoped permission rules.
@@ -23,7 +22,7 @@ Persistent record stores with full CRUD. You define fields, types, and validatio
 Examples: leads, clients, proposals, tasks, competitors.
 
 ### Tool modules
-Callable actions backed by sandboxed Python. No stored records — just execution. You write the Python code; araiOS runs it in a controlled environment and passes secrets through a `secrets` dictionary in action execution context.
+Callable actions backed by sandboxed Python. No stored records — just execution. You write the Python code; Sentinel runs it in a controlled environment and passes secrets through a `secrets` dictionary in action execution context.
 
 Examples: send a Slack message, call an external API, run a calculation, trigger a webhook.
 
@@ -42,7 +41,7 @@ Every agent action maps to one of three policies:
 The default policy for any unlisted action is `allow`. The `agent` role cannot resolve approvals — only `admin` can.
 
 :::important
-When an action hits `approval`, the araiOS API returns **HTTP 202**, not an error. The agent must handle 202 responses correctly — they mean "created and pending" not "failed". A 403 means "denied" and is permanent.
+When an action hits `approval`, the module API returns **HTTP 202**, not an error. The agent must handle 202 responses correctly — they mean "created and pending" not "failed". A 403 means "denied" and is permanent.
 :::
 
 ---
@@ -51,9 +50,9 @@ When an action hits `approval`, the araiOS API returns **HTTP 202**, not an erro
 
 When a `202` is returned:
 
-1. araiOS creates an `Approval` record with a `match_key`
+1. Sentinel creates an `Approval` record with a `match_key`
 2. The agent sees the 202, pauses the current action
-3. The approval appears in the araiOS workspace under **Approvals**
+3. The approval appears in the Modules workspace under **Approvals**
 4. The operator reviews the action, payload, and context
 5. The operator approves or denies
 6. The agent polls for resolution and resumes on approval, or surfaces the denial to the user
@@ -70,7 +69,7 @@ API keys and credentials are stored at the module level. Agents never see raw se
 
 ## Agent coordination
 
-araiOS provides a coordination bus for multi-agent setups. Agents post messages, hand off tasks, and read coordination state through the same API. This is useful for orchestrating parallel sub-agents or signaling between agents in different sessions.
+Sentinel provides a coordination bus for multi-agent setups. Agents post messages, hand off tasks, and read coordination state through the same API. This is useful for orchestrating parallel sub-agents or signaling between agents in different sessions.
 
 ---
 
@@ -93,7 +92,7 @@ Always start with:
 GET /api/agent
 ```
 
-This returns the full guide for the current araiOS instance: available modules, registered actions, permission rules, and usage notes. Agents call this first when entering an unfamiliar instance.
+This returns the full guide for the current instance: available modules, registered actions, permission rules, and usage notes. Agents call this first when entering an unfamiliar instance.
 
 ---
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
-from .handlers import handle_cancel, handle_check, handle_list, handle_spawn
+from .handlers import handle_cancel, handle_list, handle_spawn, handle_status
 def _task_id_prop() -> dict:
     return {"type": "string", "description": "Sub-agent task ID."}
 
@@ -15,11 +15,11 @@ def _spawn_parameters_schema() -> dict:
         "properties": {
             "objective": {
                 "type": "string",
-                "description": "Concrete one-off outcome the sub-agent should produce.",
+                "description": "Concrete delegated outcome the sub-agent should produce, such as investigating one candidate, checking one surface, or validating one branch of work.",
             },
             "scope": {
                 "type": "string",
-                "description": "Extra context or constraints for the sub-agent.",
+                "description": "Extra context, boundaries, or success criteria for that delegated branch.",
             },
             "allowed_tools": {
                 "type": "array",
@@ -42,7 +42,7 @@ def _spawn_parameters_schema() -> dict:
     }
 
 
-def _check_parameters_schema() -> dict:
+def _status_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
@@ -75,11 +75,10 @@ def _cancel_parameters_schema() -> dict:
 
 
 MODULE = ModuleDefinition(
-    name="sub_agents",
-    label="Sub-Agents",
+    name="delegate",
+    label="Delegate",
     description=(
-        "Spawn bounded sub-agent tasks for delegation, check their status, "
-        "list active tasks, and cancel running sub-agents."
+        "Delegate independent branches of work to sub-agents. Use this instead of doing multiple exploratory or status-checking tool calls yourself when a task can be split into parallel investigations, candidate exploration, verification, or other bounded subproblems, then review results and integrate them in the main loop."
     ),
     icon="users",
     system=True,
@@ -87,31 +86,31 @@ MODULE = ModuleDefinition(
     actions=[
         ActionDefinition(
             id="spawn",
-            label="Spawn Sub-Agent",
-            description="Spawn one bounded sub-agent task.",
+            label="Spawn Delegated Branch",
+            description="Spawn one bounded delegated branch, especially for parallel investigation, candidate exploration, isolated execution, or verification. This should be the default first move when independent branches are clear. After spawning, do not normally request status immediately; let it run and either end the turn or do distinct non-overlapping work. The main session will be prompted automatically when the delegated branch finishes.",
             handler=handle_spawn,
             requires_runtime_context=True,
             parameters_schema=_spawn_parameters_schema(),
         ),
         ActionDefinition(
-            id="check",
-            label="Check Sub-Agent",
-            description="Check the status of one sub-agent task.",
-            handler=handle_check,
-            parameters_schema=_check_parameters_schema(),
+            id="status",
+            label="Delegated Branch Status",
+            description="Get the status and current result of one delegated branch only when you actually need it now. Not for immediate post-spawn polling in the normal case, because the main session will be prompted automatically when the delegated branch finishes.",
+            handler=handle_status,
+            parameters_schema=_status_parameters_schema(),
         ),
         ActionDefinition(
             id="list",
-            label="List Sub-Agents",
-            description="List sub-agent tasks for the current session.",
+            label="List Delegated Branches",
+            description="List delegated branches for the current session when you need to inspect work already in flight or avoid overlap.",
             handler=handle_list,
             requires_runtime_context=True,
             parameters_schema=_list_parameters_schema(),
         ),
         ActionDefinition(
             id="cancel",
-            label="Cancel Sub-Agent",
-            description="Cancel a running sub-agent task for the current session.",
+            label="Cancel Delegated Branch",
+            description="Cancel a delegated branch that is no longer needed or should be retried with a better scope.",
             handler=handle_cancel,
             requires_runtime_context=True,
             parameters_schema=_cancel_parameters_schema(),

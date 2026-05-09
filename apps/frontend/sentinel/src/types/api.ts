@@ -402,6 +402,17 @@ export interface RuntimeLiveView {
   mode?: string;
   url: string | null;
   reason: string | null;
+  provider: {
+    id: string;
+    label: string;
+    status: string | null;
+    summary: string | null;
+    items: Array<{
+      key: string;
+      label: string;
+      value: string;
+    }>;
+  };
 }
 
 export interface ConfigResponse {

@@ -14,7 +14,7 @@ This component README is intentionally short and only covers backend-specific co
 From repo root:
 
 ```bash
-docker compose -f docker-compose.dev.yml up --build postgres araios-backend sentinel-backend
+docker compose -f docker-compose.dev.yml up --build postgres sentinel-backend
 ```
 
 ## Tests

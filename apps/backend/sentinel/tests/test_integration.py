@@ -4,10 +4,45 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
 
-from app.dependencies import get_db
+from app.dependencies import get_db, get_optional_llm_provider
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.services.llm.generic.base import LLMProvider
+from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent
 from tests.fake_db import FakeDB
+
+
+class _NoopProvider(LLMProvider):
+    @property
+    def name(self) -> str:
+        return "noop"
+
+    async def chat(
+        self,
+        messages,
+        model,
+        tools=None,
+        temperature=0.7,
+        reasoning_config=None,
+        tool_choice=None,
+    ):
+        return AssistantMessage(
+            content=[TextContent(text="noop")],
+            model=model,
+            provider=self.name,
+        )
+
+    async def stream(
+        self,
+        messages,
+        model,
+        tools=None,
+        temperature=0.7,
+        reasoning_config=None,
+        tool_choice=None,
+    ):
+        yield AgentEvent(type="start")
+        yield AgentEvent(type="done", stop_reason="stop")
 
 
 def test_full_integration_happy_path():
@@ -31,6 +66,7 @@ def test_full_integration_happy_path():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_optional_llm_provider] = lambda: _NoopProvider()
     sessions_router._provision_runtime = _noop_provision_runtime
 
     try:
@@ -102,10 +138,10 @@ def test_full_integration_happy_path():
         )
         assert fired.status_code == 200
 
-        tools = client.get("/api/v1/tools", headers=headers)
-        assert tools.status_code == 200
-        tool_names = {item["name"] for item in tools.json()["items"]}
-        assert "module_manager" in tool_names
+        modules = client.get("/api/modules", headers=headers)
+        assert modules.status_code == 200
+        module_names = {item["name"] for item in modules.json()["modules"]}
+        assert "runtime" in module_names
 
         live_view = client.get(
             "/api/v1/runtime/live-view",

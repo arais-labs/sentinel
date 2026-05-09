@@ -65,11 +65,10 @@ Then it writes `.instances/<instance>.env` with core values and calls `action_up
 
 1. `docker compose up --build -d`
 2. tries managed auth seed into `system_settings`
-3. tries bootstrap araiOS agent token creation via API
-4. seeds cross app URL settings
-5. prints onboarding block with URLs and token hints
+3. seeds instance URL settings
+4. prints onboarding block with URLs
 
-If API based cross app seeding fails, it falls back to DB seeding.
+If API based instance URL seeding fails, it falls back to DB seeding.
 
 ---
 
@@ -77,17 +76,8 @@ If API based cross app seeding fails, it falls back to DB seeding.
 
 Managed reset writes these keys:
 
-Sentinel keys:
-
 - `sentinel.auth.username`
 - `sentinel.auth.password_hash`
-
-araiOS keys:
-
-- `araios.auth.username`
-- `araios.auth.password_hash`
-
-You can target both, Sentinel only, or araiOS only.
 
 Password hash generation uses PBKDF2 SHA256 with random salt.
 
@@ -132,4 +122,3 @@ For routine ops:
 - Global Status
 - Tail Logs
 - Stop Instance
-

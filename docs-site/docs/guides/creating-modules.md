@@ -3,9 +3,9 @@ sidebar_position: 2
 title: Creating Modules
 ---
 
-# Creating araiOS modules
+# Creating Modules
 
-This page is code accurate to `apps/backend/araios/app/routers/modules.py` and executor behavior.
+This page is code accurate to Sentinel's module router and executor behavior.
 
 ---
 

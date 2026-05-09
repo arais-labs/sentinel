@@ -12,6 +12,7 @@ from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.errors import TransientProviderError
 from app.services.llm.providers.codex import CodexProvider
 from app.services.llm.providers.gemini import GeminiProvider
+from app.services.llm.providers.gemini_oauth import GeminiOAuthCredentials, GeminiOAuthProvider
 from app.services.llm.providers.gemini_schema_cleaner import clean_schema_for_gemini
 from app.services.llm.providers.openai import OpenAIProvider
 from app.services.llm.generic.reliable import ReliableProvider
@@ -53,10 +54,11 @@ class _FakeResponse:
 
 
 class _FakeStreamResponse:
-    def __init__(self, lines: list[str], status_code: int = 200):
+    def __init__(self, lines: list[str], status_code: int = 200, body: bytes = b""):
         self._lines = lines
         self.status_code = status_code
         self.is_error = status_code >= 400
+        self._body = body
 
     async def __aenter__(self):
         return self
@@ -71,7 +73,7 @@ class _FakeStreamResponse:
             raise httpx.HTTPStatusError("request failed", request=request, response=response)
 
     async def aread(self) -> bytes:
-        return b""
+        return self._body
 
     async def aiter_lines(self):
         for line in self._lines:
@@ -83,11 +85,15 @@ class _FakeAsyncClient:
         self,
         *,
         post_response: _FakeResponse | None = None,
+        post_responses: list[_FakeResponse] | None = None,
         stream_response: _FakeStreamResponse | None = None,
+        stream_responses: list[_FakeStreamResponse] | None = None,
         get_response: _FakeResponse | None = None,
     ):
         self.post_response = post_response or _FakeResponse({})
+        self.post_responses = list(post_responses or [])
         self.stream_response = stream_response or _FakeStreamResponse([])
+        self.stream_responses = list(stream_responses or [])
         self.get_response = get_response or _FakeResponse({})
         self.post_calls: list[dict] = []
         self.stream_calls: list[dict] = []
@@ -99,8 +105,17 @@ class _FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def post(self, url: str, *, json: dict, headers: dict[str, str]):
-        self.post_calls.append({"url": url, "json": json, "headers": headers})
+    async def post(
+        self,
+        url: str,
+        *,
+        json: dict | None = None,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str],
+    ):
+        self.post_calls.append({"url": url, "json": json, "headers": headers, "data": data})
+        if self.post_responses:
+            return self.post_responses.pop(0)
         return self.post_response
 
     async def get(
@@ -117,6 +132,8 @@ class _FakeAsyncClient:
         self.stream_calls.append(
             {"method": method, "url": url, "json": json, "headers": headers}
         )
+        if self.stream_responses:
+            return self.stream_responses.pop(0)
         return self.stream_response
 
 
@@ -881,6 +898,115 @@ def test_tier_provider_available_tiers_returns_all_tiers():
     assert normal.primary_model_id == "claude-sonnet"
 
 
+def test_tier_provider_available_tiers_reports_primary_reasoning_effort():
+    primary = _TierCaptureProvider("openai")
+    fallback = _TierCaptureProvider("anthropic")
+    tp = TierProvider(
+        tiers={
+            TierName.HARD: TierConfig(
+                primary=TierModelConfig(
+                    provider=primary,
+                    model="gpt-5.5",
+                    reasoning_config=ReasoningConfig(
+                        max_tokens=40000,
+                        reasoning_effort="high",
+                    ),
+                ),
+                fallbacks=[
+                    TierModelConfig(
+                        provider=fallback,
+                        model="claude-opus",
+                        reasoning_config=ReasoningConfig(
+                            max_tokens=40000,
+                            thinking_budget=32000,
+                        ),
+                    )
+                ],
+            )
+        },
+        default_tier=TierName.HARD,
+    )
+
+    [hard] = tp.available_tiers()
+
+    assert hard.primary_provider_id == ProviderId.OPENAI
+    assert hard.primary_model_id == "gpt-5.5"
+    assert hard.reasoning_effort == "high"
+    assert hard.thinking_budget is None
+
+
+def test_tier_provider_available_tiers_does_not_leak_fallback_reasoning_effort():
+    primary = _TierCaptureProvider("anthropic")
+    fallback = _TierCaptureProvider("openai")
+    tp = TierProvider(
+        tiers={
+            TierName.HARD: TierConfig(
+                primary=TierModelConfig(
+                    provider=primary,
+                    model="claude-opus",
+                    reasoning_config=ReasoningConfig(
+                        max_tokens=40000,
+                        thinking_budget=32000,
+                    ),
+                ),
+                fallbacks=[
+                    TierModelConfig(
+                        provider=fallback,
+                        model="gpt-5.5",
+                        reasoning_config=ReasoningConfig(
+                            max_tokens=40000,
+                            reasoning_effort="high",
+                        ),
+                    )
+                ],
+            )
+        },
+        default_tier=TierName.HARD,
+    )
+
+    [hard] = tp.available_tiers()
+
+    assert hard.primary_provider_id == ProviderId.ANTHROPIC
+    assert hard.primary_model_id == "claude-opus"
+    assert hard.reasoning_effort is None
+    assert hard.thinking_budget == 32000
+
+
+def test_tier_provider_available_tiers_ignores_conflicting_fallback_reasoning_effort():
+    primary = _TierCaptureProvider("openai")
+    fallback = _TierCaptureProvider("openai-codex")
+    tp = TierProvider(
+        tiers={
+            TierName.NORMAL: TierConfig(
+                primary=TierModelConfig(
+                    provider=primary,
+                    model="gpt-4o",
+                    reasoning_config=ReasoningConfig(
+                        max_tokens=8192,
+                        reasoning_effort="medium",
+                    ),
+                ),
+                fallbacks=[
+                    TierModelConfig(
+                        provider=fallback,
+                        model="gpt-5.5",
+                        reasoning_config=ReasoningConfig(
+                            max_tokens=40000,
+                            reasoning_effort="high",
+                        ),
+                    )
+                ],
+            )
+        },
+        default_tier=TierName.NORMAL,
+    )
+
+    [normal] = tp.available_tiers()
+
+    assert normal.primary_provider_id == ProviderId.OPENAI
+    assert normal.reasoning_effort == "medium"
+
+
 def test_tier_provider_stream_routes_correctly():
     primary = _TierCaptureProvider("anthropic")
     tp = _make_tier_provider(primary)
@@ -1106,6 +1232,308 @@ def test_gemini_chat_parses_tool_calls():
     assert result.content[1].id.startswith("gemini_")
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+def test_gemini_oauth_credentials_parse_gemini_cli_json():
+    credentials = GeminiOAuthCredentials.parse_input(
+        json.dumps(
+            {
+                "access_token": "access-1",
+                "refresh_token": "refresh-1",
+                "client_id": "test-client-id",
+                "client_secret": "test-client-secret",
+                "token_type": "Bearer",
+                "scope": "scope-a scope-b",
+                "expiry_date": 12345,
+            }
+        )
+    )
+
+    assert credentials.access_token == "access-1"
+    assert credentials.refresh_token == "refresh-1"
+    assert credentials.resolved_client_id() == "test-client-id"
+    assert credentials.resolved_client_secret() == "test-client-secret"
+    assert credentials.token_type == "Bearer"
+    assert credentials.mask_secret() == "refr...sh-1"
+
+
+def test_gemini_oauth_credentials_require_client_fields():
+    with pytest.raises(ValueError, match="client_id"):
+        GeminiOAuthCredentials.parse_input(json.dumps({"refresh_token": "refresh-1"}))
+
+    with pytest.raises(ValueError, match="client_secret"):
+        GeminiOAuthCredentials.parse_input(
+            json.dumps({"refresh_token": "refresh-1", "client_id": "test-client-id"})
+        )
+
+
+def test_gemini_oauth_provider_refreshes_and_uses_bearer_token():
+    fake_client = _FakeAsyncClient(
+        post_responses=[
+            _FakeResponse({"access_token": "fresh-access", "expires_in": 3600}),
+            _FakeResponse({"cloudaicompanionProject": "projects/test-project"}),
+            _FakeResponse(
+                {
+                    "response": {
+                        "candidates": [
+                            {
+                                "content": {"parts": [{"text": "hello from code assist"}]},
+                                "finishReason": "STOP",
+                            }
+                        ],
+                        "usageMetadata": {
+                            "promptTokenCount": 4,
+                            "candidatesTokenCount": 5,
+                        },
+                    }
+                }
+            ),
+        ]
+    )
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: fake_client,
+    )
+
+    result = _run(provider.chat([UserMessage(content="hello")], model="gemini-2.5-flash"))
+
+    refresh_call = fake_client.post_calls[0]
+    load_call = fake_client.post_calls[1]
+    request_call = fake_client.post_calls[2]
+    assert refresh_call["url"] == "https://oauth2.googleapis.com/token"
+    assert refresh_call["data"]["grant_type"] == "refresh_token"
+    assert refresh_call["data"]["refresh_token"] == "refresh-token"
+    assert refresh_call["data"]["client_id"] == "test-client-id"
+    assert refresh_call["data"]["client_secret"] == "test-client-secret"
+    assert load_call["url"] == "https://codeassist.example/v1internal:loadCodeAssist"
+    assert load_call["headers"]["authorization"] == "Bearer fresh-access"
+    assert load_call["json"]["metadata"]["pluginType"] == "GEMINI"
+    assert request_call["url"] == "https://codeassist.example/v1internal:generateContent"
+    assert request_call["headers"]["authorization"] == "Bearer fresh-access"
+    assert request_call["json"]["model"] == "gemini-2.5-flash"
+    assert request_call["json"]["project"] == "projects/test-project"
+    assert request_call["json"]["request"]["contents"][0]["parts"][0]["text"] == "hello"
+    assert result.provider == ProviderId.GEMINI
+    assert result.content[0].text == "hello from code assist"
+    assert result.usage.input_tokens == 4
+    assert result.usage.output_tokens == 5
+
+
+def test_gemini_oauth_provider_rejects_missing_code_assist_scope():
+    provider = GeminiOAuthProvider(
+        credentials={
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "scope": "openid https://www.googleapis.com/auth/userinfo.email",
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: _FakeAsyncClient(),
+    )
+
+    with pytest.raises(RuntimeError) as exc:
+        _run(provider.chat([UserMessage(content="hello")], model="gemini-2.5-flash"))
+
+    assert "cloud-platform" in str(exc.value)
+
+
+def test_gemini_oauth_provider_resolves_cli_alias_models():
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: _FakeAsyncClient(),
+    )
+
+    assert provider.resolve_generation_hint("pro") == (
+        ProviderId.GEMINI,
+        "gemini-3-pro-preview",
+    )
+    assert provider._iter_candidate_models("pro") == [
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+    ]
+    assert provider._iter_candidate_models("auto-gemini-2.5") == [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+    ]
+
+
+def test_gemini_oauth_provider_skips_recently_exhausted_model():
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: _FakeAsyncClient(),
+    )
+
+    provider._record_model_capacity("gemini-3.1-pro-preview")
+
+    assert provider._iter_candidate_models("gemini-3.1-pro-preview") == [
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+    ]
+
+
+def test_gemini_oauth_stream_uses_code_assist_sse_wrapper():
+    fake_client = _FakeAsyncClient(
+        post_responses=[
+            _FakeResponse({"access_token": "fresh-access", "expires_in": 3600}),
+            _FakeResponse({"cloudaicompanionProject": "projects/test-project"}),
+        ],
+        stream_response=_FakeStreamResponse(
+            [
+                'data: {"response":{"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}]}}',
+                "",
+            ]
+        ),
+    )
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: fake_client,
+    )
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+
+    assert [event.type for event in events] == ["start", "text_start", "text_delta", "text_end", "done"]
+    assert fake_client.stream_calls[0]["url"] == (
+        "https://codeassist.example/v1internal:streamGenerateContent?alt=sse"
+    )
+    assert fake_client.stream_calls[0]["json"]["project"] == "projects/test-project"
+
+
+def test_gemini_oauth_stream_falls_back_on_capacity_429():
+    fake_client = _FakeAsyncClient(
+        post_responses=[
+            _FakeResponse({"access_token": "fresh-access", "expires_in": 3600}),
+            _FakeResponse({"cloudaicompanionProject": "projects/test-project"}),
+        ],
+        stream_responses=[
+            _FakeStreamResponse(
+                [],
+                status_code=429,
+                body=(
+                    b'{"error":{"code":429,"message":"No capacity available for model '
+                    b'gemini-3.1-pro-preview on the server","status":"RESOURCE_EXHAUSTED"}}'
+                ),
+            ),
+            _FakeStreamResponse(
+                [
+                    'data: {"response":{"candidates":[{"content":{"parts":[{"text":"fallback worked"}]},"finishReason":"STOP"}]}}',
+                    "",
+                ]
+            ),
+        ],
+    )
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: fake_client,
+    )
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream([UserMessage(content="hello")], model="gemini-3.1-pro-preview"):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+
+    assert [event.type for event in events] == ["start", "text_start", "text_delta", "text_end", "done"]
+    assert fake_client.stream_calls[0]["json"]["model"] == "gemini-3.1-pro-preview"
+    assert fake_client.stream_calls[1]["json"]["model"] == "gemini-3-pro-preview"
+
+
+def test_gemini_oauth_stream_empty_stop_chunk_closes_turn():
+    fake_client = _FakeAsyncClient(
+        post_responses=[
+            _FakeResponse({"access_token": "fresh-access", "expires_in": 3600}),
+            _FakeResponse({"cloudaicompanionProject": "projects/test-project"}),
+        ],
+        stream_response=_FakeStreamResponse(
+            [
+                'data: {"response":{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}]}}',
+                "",
+            ]
+        ),
+    )
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: fake_client,
+    )
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+    assert [event.type for event in events] == ["start", "done"]
+    assert events[-1].stop_reason == "stop"
+
+
+def test_regular_gemini_provider_does_not_resolve_cli_alias_models():
+    fake_client = _FakeAsyncClient(
+        post_response=_FakeResponse(
+            {
+                "candidates": [
+                    {"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}
+                ],
+                "usageMetadata": {},
+            }
+        )
+    )
+    provider = GeminiProvider(
+        api_key="test-key",
+        base_url="https://gemini.example/v1beta",
+        client_factory=lambda: fake_client,
+    )
+
+    _run(provider.chat([UserMessage(content="hello")], model="pro"))
+
+    assert fake_client.post_calls[0]["url"] == (
+        "https://gemini.example/v1beta/models/pro:generateContent"
+    )
 
 
 def test_gemini_formats_user_image_blocks():
@@ -1838,7 +2266,7 @@ def test_codex_stream_sanitizes_nested_object_tool_schemas():
     tools = [
         ToolSchema(
             name="module_manager",
-            description="Call AraiOS",
+            description="Call module API",
             parameters=raw_parameters,
         )
     ]

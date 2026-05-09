@@ -13,7 +13,7 @@ from app.services.runtime import get_runtime
 from app.services.runtime.session_runtime import ensure_runtime_layout
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
-from app.services.tools.runtime_context import require_session_id
+from app.services.tools.runtime_context import require_runtime_session_id
 
 # ---------------------------------------------------------------------------
 # Constants (moved from builtin.py)
@@ -131,8 +131,8 @@ def _validate_python_venv_name(name: Any) -> str | None:
     return cleaned
 
 
-def _python_venv_container_path(workspace_path: str, venv_name: str | None) -> str:
-    base = f"{workspace_path}/.venvs"
+def _python_venv_container_path(workspace_path: str, venv_name: str | None, *, venv_root: str | None = None) -> str:
+    base = venv_root or f"{workspace_path}/.venvs"
     if not venv_name:
         return f"{base}/default"
     return f"{base}/{venv_name}"
@@ -161,7 +161,10 @@ async def _run_python_in_runtime(
 ) -> dict[str, Any]:
     runtime = await get_runtime().ensure(session_id)
     workspace = runtime.workspace_path
-    venv_path = _python_venv_container_path(workspace, venv_name)
+    venv_root = runtime.metadata.get("python_venv_root")
+    if not isinstance(venv_root, str) or not venv_root.strip():
+        venv_root = None
+    venv_path = _python_venv_container_path(workspace, venv_name, venv_root=venv_root)
 
     payload_b64 = base64.b64encode(
         json.dumps(
@@ -179,7 +182,7 @@ async def _run_python_in_runtime(
     )
 
     try:
-        result = await runtime.ssh.run(
+        result = await runtime.client.run(
             f"bash -lc {_ssh_shell_quote(command)}",
             cwd=workspace,
             timeout=timeout_seconds,
@@ -227,7 +230,7 @@ async def _ensure_session_exists(session_id: UUID) -> None:
 
 
 async def handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    session_id = require_session_id(runtime)
+    session_id = require_runtime_session_id(runtime)
 
     code = payload.get("code")
     if not isinstance(code, str) or not code.strip():

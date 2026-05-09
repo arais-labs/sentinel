@@ -71,9 +71,8 @@ Then it writes `.instances/<instance>.env` and starts stack.
 
 1. `docker compose up --build -d`
 2. attempts auth credential seeding in DB
-3. attempts bootstrap araiOS agent token creation via APIs
-4. seeds cross app URL settings
-5. prints onboarding instructions
+3. seeds instance URL settings
+4. prints onboarding instructions
 
 If auth seed fails, CLI tells you to use Reset Auth.
 
@@ -85,13 +84,6 @@ For managed instances, auth reset writes password hash into `system_settings` ta
 
 - `sentinel.auth.username`
 - `sentinel.auth.password_hash`
-- `araios.auth.username`
-- `araios.auth.password_hash`
-
-Target can be both apps, Sentinel only, or araiOS only.
-
----
-
 ## Dev mode in Advanced Mode
 
 Advanced mode start uses `docker-compose.dev.yml` and shares Postgres volume name with project.
@@ -129,4 +121,3 @@ This removes containers, volumes, and instance env file.
 - Docker not running -> CLI will fail readiness check
 - Port already in use -> CLI warns during create
 - Login fails after start -> run Reset Auth action
-- araiOS token not auto created -> open manage UI and create token manually

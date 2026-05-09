@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import CHAT_DEFAULT_ITERATIONS
 from app.database import AsyncSessionLocal
 from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth
@@ -30,6 +35,12 @@ from app.schemas.sessions import (
     SessionRuntimeResponse,
     SessionResponse,
 )
+from app.services.agent.agent_modes import (
+    get_default_agent_mode,
+    parse_agent_mode,
+)
+from app.services.llm.generic.types import ImageContent, TextContent
+from app.services.llm.ids import TierName, parse_tier_name
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions import (
     AgentRuntimeUnavailableError,
@@ -43,10 +54,38 @@ from app.services.sessions import (
     SessionNotFoundError,
     SessionService,
 )
+from app.services.ws.ws_stream_service import run_agent_once
 
 router = APIRouter()
 
 _logger = logging.getLogger(__name__)
+
+
+def _runtime_provision_tasks(request: Request) -> dict[str, asyncio.Task[None]]:
+    tasks = getattr(request.app.state, "runtime_provision_tasks", None)
+    if isinstance(tasks, dict):
+        return tasks
+    tasks = {}
+    request.app.state.runtime_provision_tasks = tasks
+    return tasks
+
+
+def _schedule_runtime_provision(request: Request, session_id: UUID) -> None:
+    tasks = _runtime_provision_tasks(request)
+    key = str(session_id)
+    existing = tasks.get(key)
+    if existing is not None and not existing.done():
+        return
+    ws = getattr(request.app.state, "ws_manager", None)
+    task = asyncio.create_task(_provision_runtime(session_id, ws_manager=ws))
+    tasks[key] = task
+
+    def _cleanup(_task: asyncio.Task[None]) -> None:
+        current = tasks.get(key)
+        if current is _task:
+            tasks.pop(key, None)
+
+    task.add_done_callback(_cleanup)
 
 
 async def _provision_runtime(session_id: UUID, ws_manager: object | None = None) -> None:
@@ -72,6 +111,14 @@ def _resolve_session_service(request: Request) -> SessionService:
         agent_runtime_support=getattr(request.app.state, "agent_runtime_support", None),
         db_factory=getattr(request.app.state, "db_factory", AsyncSessionLocal),
     )
+
+
+def _resolve_run_registry(request: Request) -> AgentRunRegistry:
+    run_registry = getattr(request.app.state, "agent_run_registry", None)
+    if not isinstance(run_registry, AgentRunRegistry):
+        run_registry = AgentRunRegistry()
+        request.app.state.agent_run_registry = run_registry
+    return run_registry
 
 
 def _raise_http_for_session_error(exc: Exception) -> None:
@@ -121,6 +168,111 @@ def _raise_http_for_session_error(exc: Exception) -> None:
     raise exc
 
 
+def _message_retry_attachments(message: Message) -> list[dict[str, Any]]:
+    metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+    raw = metadata.get("attachments")
+    if not isinstance(raw, list):
+        return []
+    attachments: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        mime_type = str(item.get("mime_type") or "").strip()
+        base64_data = str(item.get("base64") or "").strip()
+        if ";base64," in base64_data:
+            _, _, base64_data = base64_data.partition(";base64,")
+        if not mime_type or not base64_data:
+            continue
+        filename_raw = item.get("filename")
+        filename = filename_raw.strip() if isinstance(filename_raw, str) else None
+        size_bytes = item.get("size_bytes")
+        attachments.append(
+            {
+                "mime_type": mime_type,
+                "base64": base64_data,
+                "filename": filename,
+                "size_bytes": size_bytes if isinstance(size_bytes, int) else None,
+            }
+        )
+    return attachments
+
+
+def _message_retry_payload(
+    message: Message,
+) -> str | list[TextContent | ImageContent]:
+    attachments = _message_retry_attachments(message)
+    content = message.content.strip()
+    if not attachments:
+        return content
+
+    blocks: list[TextContent | ImageContent] = []
+    if content:
+        blocks.append(TextContent(text=content))
+    for item in attachments:
+        blocks.append(
+            ImageContent(
+                media_type=item["mime_type"],
+                data=item["base64"],
+            )
+        )
+    return blocks
+
+
+def _message_retry_tier(message: Message) -> TierName | None:
+    metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+    generation = metadata.get("generation")
+    if not isinstance(generation, dict):
+        return None
+    requested_tier = generation.get("requested_tier")
+    return parse_tier_name(requested_tier if isinstance(requested_tier, str) else None)
+
+
+def _message_retry_max_iterations(message: Message) -> int:
+    metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+    generation = metadata.get("generation")
+    if not isinstance(generation, dict):
+        return CHAT_DEFAULT_ITERATIONS
+    raw = generation.get("max_iterations")
+    if isinstance(raw, int) and raw >= 1:
+        return raw
+    return CHAT_DEFAULT_ITERATIONS
+
+
+def _message_retry_agent_mode(message: Message) -> str:
+    metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+    parsed = parse_agent_mode(metadata.get("agent_mode"))
+    return (parsed or get_default_agent_mode()).value
+
+
+async def _retry_existing_user_message_run(
+    *,
+    db_factory: Any,
+    session_id: UUID,
+    manager: Any,
+    run_registry: AgentRunRegistry,
+    agent_runtime_support: Any,
+    payload: str | list[TextContent | ImageContent],
+    tier: TierName | None,
+    max_iterations: int,
+    agent_mode: str,
+) -> None:
+    async with db_factory() as db:
+        await manager.broadcast_agent_thinking(str(session_id))
+        await run_agent_once(
+            db=db,
+            session_id=session_id,
+            session_key=str(session_id),
+            manager=manager,
+            run_registry=run_registry,
+            agent_runtime_support=agent_runtime_support,
+            payload=payload,
+            tier=tier,
+            max_iterations=max_iterations,
+            agent_mode=parse_agent_mode(agent_mode) or get_default_agent_mode(),
+            persist_user_message=False,
+        )
+
+
 @router.get("")
 async def list_sessions(
     request: Request,
@@ -164,8 +316,6 @@ async def create_session(
         agent_id=user.agent_id,
         title=payload.title,
     )
-    ws = getattr(request.app.state, "ws_manager", None)
-    asyncio.create_task(_provision_runtime(session.id, ws_manager=ws))
     main_session_id = await service.get_main_session_id(db, user_id=user.sub)
     return await _session_response(session, service, main_session_id=main_session_id)
 
@@ -180,8 +330,6 @@ async def get_default_session(
     session = await service.get_default_session(
         db, user_id=user.sub, agent_id=user.agent_id
     )
-    ws = getattr(request.app.state, "ws_manager", None)
-    asyncio.create_task(_provision_runtime(session.id, ws_manager=ws))
     return await _session_response(session, service, main_session_id=session.id)
 
 
@@ -195,8 +343,6 @@ async def reset_default_session(
     session = await service.reset_default_session(
         db, user_id=user.sub, agent_id=user.agent_id
     )
-    ws = getattr(request.app.state, "ws_manager", None)
-    asyncio.create_task(_provision_runtime(session.id, ws_manager=ws))
     return await _session_response(session, service, main_session_id=session.id)
 
 
@@ -325,6 +471,35 @@ async def get_session_runtime_file(
         _raise_http_for_session_error(exc)
         raise
     return SessionRuntimeFilePreviewResponse(**payload)
+
+
+@router.get("/{id}/runtime/download")
+async def download_session_runtime_path(
+    id: UUID,
+    request: Request,
+    path: str = Query(..., min_length=1),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    service = _resolve_session_service(request)
+    try:
+        payload = await service.get_runtime_download(
+            db,
+            session_id=id,
+            user_id=user.sub,
+            path=path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    return FileResponse(
+        path=payload.host_path,
+        media_type=payload.media_type,
+        filename=payload.download_name,
+        background=BackgroundTask(payload.cleanup_path.unlink)
+        if payload.cleanup_path is not None
+        else None,
+    )
 
 
 @router.get("/{id}/runtime/git/roots", response_model=SessionRuntimeGitRootsResponse)
@@ -513,6 +688,78 @@ async def create_message(
         _raise_http_for_session_error(exc)
         raise
     return _message_response(message)
+
+
+@router.post("/{id}/messages/{message_id}/retry")
+async def retry_message(
+    id: UUID,
+    message_id: UUID,
+    request: Request,
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    service = _resolve_session_service(request)
+    try:
+        await service.get_session(db, session_id=id, user_id=user.sub)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+
+    result = await db.execute(
+        select(Message).where(
+            Message.id == message_id,
+            Message.session_id == id,
+        )
+    )
+    message = result.scalars().first()
+    if message is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Message not found",
+        )
+    if message.role != "user":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only user messages can be retried",
+        )
+
+    manager = getattr(request.app.state, "ws_manager", None)
+    agent_runtime_support = getattr(request.app.state, "agent_runtime_support", None)
+    if manager is None or agent_runtime_support is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Agent runtime unavailable",
+        )
+
+    run_registry = _resolve_run_registry(request)
+    session_key = str(id)
+    if await run_registry.is_running(session_key):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Agent is already processing this session",
+        )
+
+    metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+    if "retryable_error" in metadata:
+        metadata.pop("retryable_error", None)
+        message.metadata_json = metadata
+        await db.commit()
+
+    db_factory = getattr(request.app.state, "db_factory", AsyncSessionLocal)
+    asyncio.create_task(
+        _retry_existing_user_message_run(
+            db_factory=db_factory,
+            session_id=id,
+            manager=manager,
+            run_registry=run_registry,
+            agent_runtime_support=agent_runtime_support,
+            payload=_message_retry_payload(message),
+            tier=_message_retry_tier(message),
+            max_iterations=_message_retry_max_iterations(message),
+            agent_mode=_message_retry_agent_mode(message),
+        )
+    )
+    return {"status": "retrying"}
 
 
 @router.get("/{id}/messages")

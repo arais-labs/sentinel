@@ -15,14 +15,15 @@ def is_runtime_available_for_session(session_id: str) -> bool:
     try:
         from app.services.runtime import get_runtime
         provider = get_runtime()
-        if hasattr(provider, "get_container_ip"):
-            ip = provider.get_container_ip(session_id)
-            if not ip:
-                return False
-            timeout = max(settings.runtime_live_probe_timeout_ms, 50) / 1000.0
-            with socket.create_connection((ip, 6080), timeout=timeout):
-                return True
-        return False
+        host = provider.get_host(session_id)
+        if not host:
+            return False
+        port = provider.resolve_port(session_id, settings.runtime_live_port)
+        if not port:
+            port = int(settings.runtime_live_port)
+        timeout = max(settings.runtime_live_probe_timeout_ms, 50) / 1000.0
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
     except (OSError, Exception):
         return False
 

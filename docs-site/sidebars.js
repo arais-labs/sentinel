@@ -13,7 +13,7 @@ const sidebars = {
       collapsed: false,
       items: [
         'concepts/what-is-sentinel',
-        'concepts/what-is-araios',
+        'concepts/modules-and-permissions',
         'concepts/agent-loop',
         'concepts/memory',
         'concepts/triggers',

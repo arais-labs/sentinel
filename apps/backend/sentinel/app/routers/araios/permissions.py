@@ -21,7 +21,7 @@ from app.services.araios.system_modules import get_system_modules
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["araios-permissions"])
+router = APIRouter(tags=["module-permissions"])
 
 
 @router.get("", response_model=PermissionListResponse)

@@ -28,7 +28,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         ("GET", re.compile(r"^/api/v1/memory$"), 60, "token_or_ip"),
         ("POST", re.compile(r"^/api/v1/sessions/[^/]+/sub-agents$"), 10, "token_or_ip"),
         ("GET", re.compile(r"^/api/v1/triggers$"), 60, "token_or_ip"),
-        ("GET", re.compile(r"^/api/v1/tools$"), 60, "token_or_ip"),
         ("POST", re.compile(r"^/api/v1/admin/estop$"), 5, "token_or_ip"),
         ("DELETE", re.compile(r"^/api/v1/admin/estop$"), 5, "token_or_ip"),
         ("POST", re.compile(r"^/api/v1/webhooks/[^/]+$"), 60, "public_ip"),

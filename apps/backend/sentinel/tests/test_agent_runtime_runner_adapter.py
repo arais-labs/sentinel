@@ -347,6 +347,138 @@ async def _empty_history_loader(_db, _session_id):
     return []
 
 
+class _DelegateSpawnPlanningProvider(_FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_calls = 0
+        self.chat_calls = 0
+
+    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        self.chat_calls += 1
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "tools": list(tools or []),
+                "model": model,
+                "temperature": temperature,
+                "tool_choice": tool_choice,
+                "planner": True,
+            }
+        )
+        return AssistantMessage(
+            content=[
+                TextContent(
+                    text=json.dumps(
+                        {
+                            "spawn_decisions": [
+                                {
+                                    "tool_call_id": "call_delegate",
+                                    "allow": False,
+                                    "reason": "Clone the target repositories in the shared workspace before delegating repo inspection.",
+                                    "missing_prerequisites": [
+                                        "Clone the kanban and kiban repositories into the shared workspace.",
+                                    ],
+                                    "main_thread_task": "Clone the target repositories in the shared workspace.",
+                                }
+                            ]
+                        }
+                    )
+                )
+            ],
+            model="fake-model",
+            provider="fake",
+            usage=TokenUsage(input_tokens=4, output_tokens=8),
+            stop_reason="stop",
+        )
+
+    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        self.stream_calls += 1
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "tools": list(tools or []),
+                "model": model,
+                "temperature": temperature,
+                "stream": True,
+                "stream_calls": self.stream_calls,
+            }
+        )
+        if self.stream_calls == 1:
+            yield AgentEvent(
+                type="toolcall_start",
+                tool_call=ToolCallContent(
+                    id="call_delegate",
+                    name="delegate",
+                    arguments={
+                        "command": "spawn",
+                        "objective": "Inspect the kanban repo deployment workflow.",
+                        "scope": "Compare CI/CD files and deployment behavior.",
+                    },
+                ),
+            )
+            yield AgentEvent(type="done", stop_reason="tool_use")
+            return
+        yield AgentEvent(type="text_delta", delta="setup first")
+        yield AgentEvent(type="done", stop_reason="stop")
+
+
+@pytest.mark.asyncio
+async def test_runtime_adapter_blocks_delegate_spawn_until_collaboration_prerequisites_are_ready() -> None:
+    session_id = uuid4()
+    loop = _FakeLoop()
+    loop.provider = _DelegateSpawnPlanningProvider()
+
+    async def _delegate_spawn(_payload: dict, runtime: ToolRuntimeContext):
+        assert runtime.session_id == session_id
+        return {"spawned": True}
+
+    loop.tool_adapter.registry.register(
+        ToolDefinition(
+            name="delegate",
+            description="delegate work",
+            parameters_schema={"type": "object", "additionalProperties": True},
+            execute=_delegate_spawn,
+        )
+    )
+
+    adapter = SentinelLoopRuntimeAdapter(
+        loop=loop,
+        db=object(),
+        session_id=session_id,
+        history_loader=_empty_history_loader,
+    )
+
+    result = await adapter.run_turn(
+        RunTurnRequest(
+            conversation_id=str(session_id),
+            new_items=[
+                ConversationItem(
+                    id="user-1",
+                    role="user",
+                    content=[TextBlock(text="Align kiban deployment workflow with kanban.")],
+                )
+            ],
+            config=GenerationConfig(model="normal", stream=True, max_iterations=4),
+        )
+    )
+
+    assert result.status == "completed"
+    assert loop.provider.chat_calls == 1
+    persisted = [message for call in loop.persist_calls for message in call["created"]]
+    blocked_result = next(
+        message
+        for message in persisted
+        if message.role == "tool_result" and message.tool_call_id == "call_delegate"
+    )
+    assert blocked_result.tool_name == "delegate"
+    assert blocked_result.is_error is True
+    assert blocked_result.metadata["collaboration_plan"]["main_thread_task"] == (
+        "Clone the target repositories in the shared workspace."
+    )
+    assert "Collaboration plan blocked delegate.spawn" in blocked_result.content
+    assert "Clone the target repositories in the shared workspace" in blocked_result.content
+
+
 class _ToolUseProvider(_FakeProvider):
     async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
         raise AssertionError("chat() should not be called in this test")

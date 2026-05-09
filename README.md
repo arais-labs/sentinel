@@ -38,7 +38,7 @@ Built by [ARAIS](https://arais.us).
 - Keep persistent hierarchical memory across sessions.
 - Delegate bounded work to sub agents.
 - Gate risky actions behind human approvals.
-- Connect to custom araiOS modules for data and actions.
+- Connect to custom modules for data and actions.
 - Run git operations freely and only gate at push or PR creation, so the agent moves fast without surprise commits to main.
 - Authenticate with your existing Claude Code or Codex CLI OAuth token, no extra API subscription needed.
 
@@ -47,16 +47,16 @@ Built by [ARAIS](https://arais.us).
 ```text
 User / Telegram / Trigger
         ↓
-  Sentinel UI  ↔  araiOS Workspace
+  Sentinel UI
         ↓
   Agent Runtime (Python)
   ├── Context builder (memory + history)
   ├── LLM provider (Anthropic / OpenAI / failover)
-  ├── Tool adapter (araiOS + browser + runtime + git)
+  ├── Tool adapter (modules + browser + runtime + git)
   ├── Approval gate (pause/resume on sensitive actions)
   └── Estop service (freeze or kill execution at any depth)
         ↓
-  araiOS Control Plane
+  Module Control Plane
   ├── Custom tool modules (sandboxed Python)
   ├── Data modules (persistent record stores)
   ├── Permissions (allow / approval / deny per action)
@@ -86,13 +86,12 @@ For first run:
 2. Set instance values or accept defaults
 3. Let CLI start services and seed auth
 
-### 3) Open gateway
+### 3) Open Sentinel
 
 Default URLs:
 
-- `http://localhost:4747/` gateway
-- `http://localhost:4747/sentinel/` Sentinel
-- `http://localhost:4747/araios/` araiOS
+- `http://localhost:4747/` Sentinel
+- `http://localhost:4747/modules` modules
 - `http://localhost:4747/vnc/` live browser monitor
 
 ### 4) Sign in
@@ -123,8 +122,6 @@ docker compose -f docker-compose.dev.yml up --build
 
 - `apps/backend/sentinel` Sentinel backend
 - `apps/frontend/sentinel` Sentinel frontend
-- `apps/backend/araios` araiOS backend
-- `apps/frontend/araios` araiOS frontend
 - `infra/` gateway and runtime wiring
 - `docs-site/` full documentation source
 - `docs/` project notes and assets
@@ -140,7 +137,7 @@ docker compose -f docker-compose.dev.yml up --build
 
 ## Security model
 
-Sentinel uses explicit policy based controls through araiOS:
+Sentinel uses explicit policy based controls for module actions:
 
 - `allow` executes immediately
 - `approval` pauses and requests human review

@@ -26,10 +26,15 @@ RUN apt-get update \
         websockify \
         x11vnc \
         xvfb \
+        xserver-xorg-core \
+        xserver-xorg-video-dummy \
+        mesa-utils \
         # SSH
         openssh-server \
         # Browser (from Debian bookworm — real .deb, not snap)
         chromium \
+        chromium-sandbox \
+        tzdata \
         # Dev tools
         socat \
         build-essential \
@@ -58,18 +63,6 @@ RUN mkdir -p /var/run/sshd \
     && sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
     && sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 
-# Chromium wrapper — always passes --no-sandbox (required in Docker)
-# This replaces the system binary so KDE desktop icons, CLI, and everything else works.
-RUN mv /usr/bin/chromium /usr/bin/chromium-real \
-    && printf '#!/bin/sh\nexec /usr/bin/chromium-real --no-sandbox "$@"\n' > /usr/bin/chromium \
-    && chmod +x /usr/bin/chromium
-
-# Override the system .desktop entry to use our wrapper
-RUN mkdir -p /usr/share/applications \
-    && sed 's|Exec=chromium|Exec=chromium|g' /usr/share/applications/chromium.desktop \
-       > /tmp/chromium-fixed.desktop 2>/dev/null || true \
-    && [ -f /tmp/chromium-fixed.desktop ] && mv /tmp/chromium-fixed.desktop /usr/share/applications/chromium.desktop || true
-
 # Workspace
 RUN mkdir -p /home/sentinel/workspace \
     && chown -R sentinel:sentinel /home/sentinel
@@ -77,6 +70,6 @@ RUN mkdir -p /home/sentinel/workspace \
 COPY scripts/start-runtime.sh /start.sh
 RUN chmod +x /start.sh
 
-EXPOSE 22 6080 9223
+EXPOSE 22 6080 9223 12000-12009
 
 CMD ["/start.sh"]

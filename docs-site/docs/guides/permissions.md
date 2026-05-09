@@ -5,7 +5,7 @@ title: Permissions
 
 # Permissions
 
-Permissions in araiOS map an action string to one level.
+Permissions map a module action string to one level.
 
 Levels:
 
@@ -26,7 +26,7 @@ Permissions are stored as rows with:
 - `action` example: `tasks.create`, `modules.create`, `slack.send_message`
 - `level` one of `allow`, `approval`, `deny`
 
-There is no separate resource column and no ordered wildcard rule engine in araiOS permission storage.
+There is no separate resource column and no ordered wildcard rule engine in permission storage.
 
 ---
 

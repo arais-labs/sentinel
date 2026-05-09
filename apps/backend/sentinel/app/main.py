@@ -1,7 +1,8 @@
 import asyncio
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 from fastapi import FastAPI
 
@@ -10,9 +11,6 @@ from app.logging_context import configure_logging
 # Configure logging so our debug/info logs are visible and session-scoped.
 configure_logging()
 logger = logging.getLogger(__name__)
-# Set DEBUG for our agent/provider modules specifically
-logging.getLogger("app.services.agent").setLevel(logging.DEBUG)
-logging.getLogger("app.services.llm").setLevel(logging.DEBUG)
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
@@ -40,13 +38,12 @@ from app.routers import (
     sessions_compaction,
     sub_agents,
     telegram,
-    tools,
     triggers,
     vnc_proxy,
     ws,
     webhooks,
 )
-from app.routers.araios import api_router as araios_api_router, platform_auth_router as araios_platform_auth_router
+from app.routers.araios import api_router as araios_api_router
 from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter, runtime_event_to_sentinel_event
 from app.services.sessions.agent_run_registry import AgentRunRegistry
@@ -56,7 +53,10 @@ from app.services.llm.factory import build_tier_provider_from_settings
 from app.services.llm.ids import TierName
 from app.services.memory.backfill import run_memory_embedding_backfill
 from app.services.memory.search import MemorySearchService
-from app.services.runtime.session_runtime import run_session_runtime_janitor
+from app.services.runtime.session_runtime import (
+    configure_runtime_job_completion_callback,
+    run_session_runtime_janitor,
+)
 from app.services.sessions.session_naming import SessionNamingService
 from app.services.sub_agents import SubAgentOrchestrator
 from app.services.tools import ToolExecutor
@@ -94,6 +94,7 @@ async def lifespan(app: FastAPI):
             "openai_api_key": "openai_api_key",
             "openai_oauth_token": "openai_oauth_token",
             "gemini_api_key": "gemini_api_key",
+            "gemini_oauth_credentials": "gemini_oauth_credentials",
             "default_system_prompt": "default_system_prompt",
             "telegram_bot_token": "telegram_bot_token",
             "telegram_owner_user_id": "telegram_owner_user_id",
@@ -118,7 +119,7 @@ async def lifespan(app: FastAPI):
             if _s:
                 setattr(settings, _settings_attr, _s.value)
 
-    # Seed AraiOS default permissions
+    # Seed default module permissions.
     async with AsyncSessionLocal() as _araios_db:
         from app.models.araios import AraiosPermission
         from app.services.araios.permissions import combined_agent_permissions
@@ -178,7 +179,7 @@ async def lifespan(app: FastAPI):
     available_tools = {tool.name for tool in registry.list_all()}
     ws_manager = ConnectionManager()
     run_registry = AgentRunRegistry()
-    wakeup_pending: dict[str, int] = defaultdict(int)
+    wakeup_pending: dict[str, deque[str]] = defaultdict(deque)
     wakeup_workers: set[str] = set()
     wakeup_lock = asyncio.Lock()
 
@@ -195,8 +196,8 @@ async def lifespan(app: FastAPI):
     app.state.llm_provider = provider
     app.state.agent_runtime_support = None
 
-    async def _wakeup_main_agent(session_id: object) -> bool:
-        """Server-initiated agent turn triggered by sub-agent completion.
+    async def _wakeup_main_agent(session_id: object, prompt: str) -> bool:
+        """Server-initiated agent turn triggered by queued background updates.
 
         Returns True when one queued wakeup item is consumed, False when it
         should be retried later (for example while another run is active).
@@ -238,15 +239,11 @@ async def lifespan(app: FastAPI):
                         conversation_id=session_key,
                         new_items=[
                             ConversationItem(
-                                id="sub-agent-completion",
+                                id=f"server-wakeup-{uuid4().hex}",
                                 role="user",
                                 content=[
                                     TextBlock(
-                                        text=(
-                                            "A delegated sub-agent just finished. "
-                                            "Review the latest [Sub-Agent Report] system message(s), integrate useful findings, "
-                                            "and continue helping the user immediately."
-                                        )
+                                        text=prompt
                                     )
                                 ],
                             )
@@ -257,6 +254,7 @@ async def lifespan(app: FastAPI):
                             stream=True,
                             provider_metadata={"persist_user_message": False},
                         ),
+                        interjection_source=lambda: run_registry.drain_interjections(session_key),
                     ),
                     sink=_on_event,
                 )
@@ -292,11 +290,11 @@ async def lifespan(app: FastAPI):
                     pass
         return True
 
-    async def _enqueue_main_agent_wakeup(session_id: object) -> None:
+    async def _enqueue_main_agent_wakeup(session_id: object, prompt: str) -> None:
         session_key = str(session_id)
         should_start_worker = False
         async with wakeup_lock:
-            wakeup_pending[session_key] += 1
+            wakeup_pending[session_key].append(prompt)
             if session_key not in wakeup_workers:
                 wakeup_workers.add(session_key)
                 should_start_worker = True
@@ -308,30 +306,103 @@ async def lifespan(app: FastAPI):
         try:
             while True:
                 async with wakeup_lock:
-                    pending = int(wakeup_pending.get(session_key, 0))
-                if pending <= 0:
+                    pending = wakeup_pending.get(session_key)
+                    prompt = pending[0] if pending else None
+                if prompt is None:
                     return
 
-                consumed = await _wakeup_main_agent(session_id)
+                consumed = await _wakeup_main_agent(session_id, prompt)
                 if not consumed:
                     await asyncio.sleep(0.75)
                     continue
 
                 async with wakeup_lock:
-                    current = int(wakeup_pending.get(session_key, 0))
-                    if current <= 1:
+                    current = wakeup_pending.get(session_key)
+                    if not current:
                         wakeup_pending.pop(session_key, None)
                     else:
-                        wakeup_pending[session_key] = current - 1
+                        current.popleft()
+                    if not current:
+                        wakeup_pending.pop(session_key, None)
         finally:
             async with wakeup_lock:
                 wakeup_workers.discard(session_key)
-                has_pending = int(wakeup_pending.get(session_key, 0)) > 0
+                has_pending = bool(wakeup_pending.get(session_key))
                 should_restart = has_pending and session_key not in wakeup_workers
                 if should_restart:
                     wakeup_workers.add(session_key)
             if should_restart:
                 asyncio.create_task(_drain_main_agent_wakeups(session_id))
+
+    def _runtime_job_report_text(
+        job: dict[str, object],
+        *,
+        stdout_tail: str,
+        stderr_tail: str,
+    ) -> str:
+        lines = [
+            "[Runtime Job Report]",
+            "A background runtime job just finished while you were working.",
+            "Finish the current step, then integrate this result on the next loop if relevant. If you are already wrapping up, process it immediately afterward.",
+            "",
+            f"Job ID: {str(job.get('id') or '').strip()}",
+            f"Status: {str(job.get('status') or '').strip() or 'unknown'}",
+        ]
+        returncode = job.get("returncode")
+        if returncode is not None:
+            lines.append(f"Return code: {returncode}")
+        command = str(job.get("command") or "").strip()
+        if command:
+            lines.extend(["", "Command:", command])
+        stdout_text = stdout_tail.strip()
+        if stdout_text:
+            lines.extend(["", "Stdout tail:", stdout_text])
+        stderr_text = stderr_tail.strip()
+        if stderr_text:
+            lines.extend(["", "Stderr tail:", stderr_text])
+        return "\n".join(lines).strip()
+
+    async def _handle_runtime_job_completed(
+        session_id: str,
+        job: dict[str, object],
+        stdout_tail: str,
+        stderr_tail: str,
+    ) -> None:
+        session_key = str(session_id)
+        run_registry.enqueue_interjection(
+            session_key,
+            ConversationItem(
+                id=f"runtime-job-report-{str(job.get('id') or uuid4().hex)}",
+                role="system",
+                content=[TextBlock(text=_runtime_job_report_text(job, stdout_tail=stdout_tail, stderr_tail=stderr_tail))],
+                metadata={
+                    "source": "runtime_job_completion",
+                    "job_id": str(job.get("id") or ""),
+                    "status": str(job.get("status") or ""),
+                },
+            ),
+        )
+        if await run_registry.is_running(session_key):
+            return
+        await _enqueue_main_agent_wakeup(
+            session_id,
+            (
+                "A background runtime job just finished. Review the latest [Runtime Job Report] system message(s), "
+                "integrate useful findings, and continue helping the user immediately."
+            ),
+        )
+
+    async def _resume_pending_runtime_job_updates(session_key: str) -> None:
+        await _enqueue_main_agent_wakeup(
+            session_key,
+            (
+                "A background runtime job finished while you were busy. Review the latest [Runtime Job Report] "
+                "system message(s), integrate useful findings, and continue helping the user immediately."
+            ),
+        )
+
+    run_registry.configure_idle_interjections_callback(_resume_pending_runtime_job_updates)
+    configure_runtime_job_completion_callback(_handle_runtime_job_completed)
 
     async def _broadcast_sub_agent_completed(task) -> None:
         await ws_manager.broadcast_sub_agent_completed(
@@ -364,7 +435,13 @@ async def lifespan(app: FastAPI):
                 await db.commit()
         except Exception:  # noqa: BLE001
             pass
-        await _enqueue_main_agent_wakeup(task.session_id)
+        await _enqueue_main_agent_wakeup(
+            task.session_id,
+            (
+                "A delegated sub-agent just finished. Review the latest [Sub-Agent Report] system message(s), "
+                "integrate useful findings, and continue helping the user immediately."
+            ),
+        )
 
     app.state.sub_agent_orchestrator = SubAgentOrchestrator(
         agent_runtime_support=None,
@@ -415,6 +492,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        configure_runtime_job_completion_callback(None)
+        run_registry.configure_idle_interjections_callback(None)
         stop_event.set()
         await cleanup_task
         await runtime_janitor_task
@@ -454,7 +533,6 @@ app.include_router(memory.router, prefix="/api/v1/memory", tags=["memory"])
 app.include_router(sub_agents.router, prefix="/api/v1/sessions", tags=["sub-agents"])
 app.include_router(triggers.router, prefix="/api/v1/triggers", tags=["triggers"])
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
-app.include_router(tools.router, prefix="/api/v1/tools", tags=["tools"])
 app.include_router(git_router.router, prefix="/api/v1/git", tags=["git"])
 app.include_router(approvals_router.router, prefix="/api/v1/approvals", tags=["approvals"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
@@ -467,6 +545,5 @@ app.include_router(telegram.router, prefix="/api/v1/telegram", tags=["telegram"]
 app.include_router(vnc_proxy.router, tags=["vnc"])
 app.include_router(ws.router, prefix="/ws/sessions", tags=["ws"])
 
-# AraiOS routes — serves /api/* and /platform/auth/* for the AraiOS frontend
-app.include_router(araios_api_router, prefix="/api", tags=["araios"])
-app.include_router(araios_platform_auth_router, prefix="/platform/auth", tags=["araios-platform-auth"])
+# Module/control-plane routes used by the Sentinel modules surface.
+app.include_router(araios_api_router, prefix="/api", tags=["modules"])

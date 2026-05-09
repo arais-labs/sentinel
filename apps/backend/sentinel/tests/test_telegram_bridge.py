@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from telegram.constants import ParseMode
 
 from app.config import settings
 from app.models import Session, SessionBinding
@@ -17,6 +18,7 @@ from app.services.telegram import (
     TelegramBridge,
     start_telegram_bridge,
 )
+from app.services.telegram.bridge import _telegram_tool_result_summary
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 from tests.fake_db import FakeDB
@@ -415,6 +417,80 @@ def test_enqueue_marks_owner_by_owner_chat_id_fallback():
     finally:
         settings.telegram_owner_chat_id = old_owner_chat
         settings.telegram_owner_telegram_user_id = old_owner_tg_user
+
+
+def test_send_chunked_to_chat_formats_markdown_using_html_parse_mode():
+    db = FakeDB()
+    bridge = _build_bridge(db=db, user_id="admin")
+    bridge._app = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))  # noqa: SLF001
+    bridge._running = True  # noqa: SLF001
+
+    _run(
+        bridge._send_chunked_to_chat(  # noqa: SLF001
+            123,
+            "**bold** `code` [site](https://example.com)\n\n```py\nprint('x')\n```",
+        )
+    )
+
+    calls = bridge._app.bot.send_message.await_args_list  # noqa: SLF001
+    assert len(calls) == 1
+    assert calls[0].kwargs["chat_id"] == 123
+    assert calls[0].kwargs["parse_mode"] == ParseMode.HTML
+    rendered = calls[0].kwargs["text"]
+    assert "<b>bold</b>" in rendered
+    assert "<code>code</code>" in rendered
+    assert '<a href="https://example.com">site</a>' in rendered
+    assert "<pre>print(&#x27;x&#x27;)</pre>" in rendered
+
+
+def test_send_chunked_reply_formats_markdown_using_html_parse_mode():
+    db = FakeDB()
+    bridge = _build_bridge(db=db, user_id="admin")
+    update = SimpleNamespace(message=SimpleNamespace(reply_text=AsyncMock()))
+
+    _run(bridge._send_chunked(update, "*italic* and **bold**"))  # noqa: SLF001
+
+    calls = update.message.reply_text.await_args_list
+    assert len(calls) == 1
+    assert calls[0].kwargs["parse_mode"] == ParseMode.HTML
+    assert calls[0].args[0] == "<i>italic</i> and <b>bold</b>"
+
+
+def test_deliver_inline_owner_reply_finalizes_existing_stream_message():
+    db = FakeDB()
+    bridge = _build_bridge(db=db, user_id="admin")
+    bridge._app = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))  # noqa: SLF001
+    update = SimpleNamespace(message=SimpleNamespace(reply_text=AsyncMock()))
+    streamed_message = SimpleNamespace(edit_text=AsyncMock())
+
+    _run(
+        bridge._deliver_inline_owner_reply(  # noqa: SLF001
+            update,
+            chat_id=123,
+            final_text="**done**",
+            attachments=[],
+            streamed_message=streamed_message,
+        )
+    )
+
+    streamed_message.edit_text.assert_awaited_once_with(
+        "<b>done</b>",
+        parse_mode=ParseMode.HTML,
+    )
+    update.message.reply_text.assert_not_called()
+
+
+def test_telegram_tool_result_summary_skips_internal_telegram_tool():
+    assert _telegram_tool_result_summary(tool_name="telegram", content="{}", is_error=False) is None
+
+
+def test_telegram_tool_result_summary_formats_compact_code_block():
+    summary = _telegram_tool_result_summary(
+        tool_name="runtime",
+        content="line 1\nline 2",
+        is_error=False,
+    )
+    assert summary == "Tool Result · runtime\n\n```\nline 1\nline 2\n```"
 
 
 def test_should_reply_inline_owner_private_only():

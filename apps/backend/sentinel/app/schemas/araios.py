@@ -1,4 +1,4 @@
-"""Pydantic schemas for AraiOS API endpoints."""
+"""Pydantic schemas for dynamic module/control-plane API endpoints."""
 from __future__ import annotations
 
 from typing import Any

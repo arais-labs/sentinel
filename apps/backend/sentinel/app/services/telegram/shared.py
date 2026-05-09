@@ -19,6 +19,8 @@ class _RunRegistryProtocol(Protocol):
 
     async def is_running(self, session_id: str) -> bool: ...
 
+    def drain_interjections(self, session_id: str) -> list[Any]: ...
+
 
 class _WSManagerProtocol(Protocol):
     async def broadcast_message_ack(

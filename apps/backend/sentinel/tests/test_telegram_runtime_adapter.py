@@ -72,6 +72,9 @@ class _RunRegistry:
     async def clear(self, _session_key: str, _task) -> None:
         return None
 
+    def drain_interjections(self, _session_key: str) -> list:
+        return []
+
 
 class _FakeProvider(LLMProvider):
     def __init__(self) -> None:

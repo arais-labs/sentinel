@@ -38,6 +38,35 @@ from app.services.ws.ws_stream_parser import ParsedWsMessage
 logger = logging.getLogger(__name__)
 
 
+def _phase_from_sentinel_event(event: Any) -> str | None:
+    event_type = getattr(event, "type", None)
+    if event_type in {"agent_thinking", "thinking_start", "thinking_delta"}:
+        return "thinking"
+    if event_type == "text_delta":
+        return "streaming_text"
+    if event_type in {"toolcall_start", "toolcall_delta"}:
+        return "tool_running"
+    if event_type == "approval_required":
+        return "pending_approval"
+    if event_type == "tool_result":
+        tool_result = getattr(event, "tool_result", None)
+        metadata = getattr(tool_result, "metadata", None)
+        if isinstance(metadata, dict):
+            approval = metadata.get("approval")
+            if metadata.get("pending") is True:
+                return "pending_approval"
+            if isinstance(approval, dict) and approval.get("pending") is True:
+                return "pending_approval"
+            if metadata.get("cancelled_by_stop") is True:
+                return None
+        return "thinking"
+    if event_type in {"thinking_end", "toolcall_end"}:
+        return None
+    if event_type in {"done", "error", "agent_error"}:
+        return None
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class AgentRunOutcome:
     failed: bool
@@ -214,6 +243,11 @@ async def run_agent_once(
 
     async def _broadcast_event(event: Any) -> None:
         sentinel_event = runtime_event_to_sentinel_event(event)
+        phase = _phase_from_sentinel_event(sentinel_event)
+        if phase is not None:
+            await run_registry.set_phase(session_key, phase)
+        elif getattr(sentinel_event, "type", None) in {"thinking_end", "toolcall_end", "done", "error", "agent_error"}:
+            await run_registry.set_phase(session_key, None)
         await manager.broadcast_agent_event(session_key, sentinel_event)
 
     run_task = asyncio.create_task(
@@ -236,6 +270,7 @@ async def run_agent_once(
                         "persist_user_message": persist_user_message,
                     },
                 ),
+                interjection_source=lambda: run_registry.drain_interjections(session_key),
             ),
             sink=_broadcast_event,
         )
@@ -257,6 +292,7 @@ async def run_agent_once(
     run_error: str | None = None
     failed = False
     try:
+        await run_registry.set_phase(session_key, "thinking")
         run_result = await run_task
         run_error = getattr(run_result, "error", None)
         cancelled = getattr(run_result, "status", None) == "aborted" or run_error == "Generation stopped by user"
@@ -264,6 +300,7 @@ async def run_agent_once(
         cancelled = True
     except Exception as exc:  # noqa: BLE001
         failed = True
+        run_error = str(exc)
         await manager.broadcast_agent_error(session_key, str(exc))
         await manager.broadcast_done(session_key, "error")
     finally:

@@ -158,7 +158,7 @@ def test_runtime_context_assembly_when_user_skips_everything():
         builder = ContextBuilder(
             default_system_prompt=settings.default_system_prompt,
             available_tools={
-                "sub_agents",
+                "delegate",
                 "triggers",
             },
         )
@@ -266,7 +266,7 @@ def test_runtime_context_assembly_when_user_inputs_everything():
         builder = ContextBuilder(
             default_system_prompt=settings.default_system_prompt,
             available_tools={
-                "sub_agents",
+                "delegate",
                 "triggers",
             },
         )

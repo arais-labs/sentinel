@@ -150,6 +150,12 @@ class ToolExecutionResult:
 
 
 @dataclass(slots=True)
+class ToolCallInterceptionResult:
+    tool_calls: list[ToolCallBlock] = field(default_factory=list)
+    synthetic_results: list[ToolResultBlock] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ToolDefinition:
     name: str
     description: str

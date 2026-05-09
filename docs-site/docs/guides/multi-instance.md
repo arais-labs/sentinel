@@ -52,7 +52,7 @@ bash ./sentinel-cli.sh
 |---|---|
 | Memory tree | — |
 | Agent sessions and history | — |
-| araiOS modules and permissions | — |
+| Modules and permissions | — |
 | LLM API keys (per config) | — |
 | Docker volumes | — |
 | — | Host machine resources (CPU, RAM) |
@@ -72,4 +72,4 @@ Instances use sequential port offsets from the base port (4747 by default). If y
 | project-alpha | 4748 |
 | project-beta | 4749 |
 
-Each instance has the same URL structure (`/`, `/sentinel/`, `/araios/`, `/vnc/`) on its own port.
+Each instance has the same URL structure (`/`, `/modules`, `/vnc/`) on its own port.

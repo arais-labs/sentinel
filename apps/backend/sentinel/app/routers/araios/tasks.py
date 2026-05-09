@@ -1,4 +1,4 @@
-"""AraiOS Tasks router — async SQLAlchemy."""
+"""Tasks router for dynamic module/control-plane APIs."""
 from __future__ import annotations
 
 from datetime import datetime, UTC
@@ -13,7 +13,7 @@ from app.middleware.auth import TokenPayload, require_auth
 from app.models.araios import AraiosTask, araios_gen_id
 from app.schemas.araios import TaskCreate, TaskUpdate, TaskOut, TaskListResponse, OkResponse
 
-router = APIRouter(tags=["araios-tasks"])
+router = APIRouter(tags=["tasks"])
 
 
 # ── Field mapping (camelCase schema <-> snake_case model) ──

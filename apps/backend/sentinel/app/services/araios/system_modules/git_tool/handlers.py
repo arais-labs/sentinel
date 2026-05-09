@@ -26,7 +26,7 @@ from app.models import GitAccount, Session
 from app.services.runtime.session_runtime import ensure_runtime_layout, runtime_workspace_dir
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
-from app.services.tools.runtime_context import require_session_id
+from app.services.tools.runtime_context import require_runtime_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -1147,7 +1147,7 @@ def _validate_run_command_kind(
 
 
 async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    session_id = require_session_id(runtime)
+    session_id = require_runtime_session_id(runtime)
 
     cli_command = payload.get("cli_command")
     if not isinstance(cli_command, str) or not cli_command.strip():

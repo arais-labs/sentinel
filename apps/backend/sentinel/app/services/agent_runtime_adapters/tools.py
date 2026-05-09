@@ -33,12 +33,18 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
         *,
         agent_mode: AgentMode | str | None = None,
         session_id: UUID | str | None = None,
+        runtime_session_id: UUID | str | None = None,
         on_pending_tool_result: Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._registry = registry
         self._executor = executor
         self._agent_mode = agent_mode
         self._session_id = str(session_id) if session_id is not None else None
+        self._runtime_session_id = (
+            str(runtime_session_id)
+            if runtime_session_id is not None
+            else self._session_id
+        )
         self._on_pending_tool_result = on_pending_tool_result
 
     def list_tools(self) -> list[RuntimeToolDefinition]:
@@ -60,7 +66,12 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
             pending_approval_payload: dict[str, Any] | None = None
             execution_payload = await resolve_secrets_in_payload(dict(payload))
             runtime = ToolRuntimeContext(
-                session_id=UUID(self._session_id) if self._session_id is not None else None
+                session_id=UUID(self._session_id) if self._session_id is not None else None,
+                runtime_session_id=(
+                    UUID(self._runtime_session_id)
+                    if self._runtime_session_id is not None
+                    else None
+                ),
             )
 
             async def _on_pending_approval(approval_payload: dict[str, Any]) -> None:

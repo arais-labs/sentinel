@@ -4,15 +4,15 @@ from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import (
     handle_create_module,
-    handle_create_record,
+    handle_create_records,
     handle_delete_module,
-    handle_delete_record,
+    handle_delete_records,
     handle_get_module,
     handle_get_record,
     handle_list_modules,
     handle_list_records,
     handle_run_action,
-    handle_update_record,
+    handle_update_records,
 )
 
 
@@ -109,39 +109,58 @@ def _get_record_parameters_schema() -> dict:
     }
 
 
-def _create_record_parameters_schema() -> dict:
+def _create_records_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["module", "data"],
+        "required": ["module", "records"],
         "properties": {
             "module": _module_prop(),
-            "data": {"type": "object"},
+            "records": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "object"},
+            },
         },
     }
 
 
-def _update_record_parameters_schema() -> dict:
+def _update_records_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["module", "record_id", "data"],
+        "required": ["module", "updates"],
         "properties": {
             "module": _module_prop(),
-            "record_id": _record_id_prop(),
-            "data": {"type": "object"},
+            "updates": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["record_id", "data"],
+                    "properties": {
+                        "record_id": _record_id_prop(),
+                        "data": {"type": "object"},
+                    },
+                },
+            },
         },
     }
 
 
-def _delete_record_parameters_schema() -> dict:
+def _delete_records_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["module", "record_id"],
+        "required": ["module", "record_ids"],
         "properties": {
             "module": _module_prop(),
-            "record_id": _record_id_prop(),
+            "record_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string"},
+            },
         },
     }
 
@@ -163,7 +182,7 @@ def _run_action_parameters_schema() -> dict:
 MODULE = ModuleDefinition(
     name="module_manager",
     label="Module Manager",
-    description="Unified araiOS module engine for module CRUD, record CRUD, and action execution.",
+    description="Unified dynamic module engine for module CRUD, record CRUD, and action execution.",
     icon="boxes",
     system=True,
     grouped_tool=True,
@@ -171,14 +190,14 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="list_modules",
             label="List Modules",
-            description="List all araiOS modules.",
+            description="List all dynamic modules.",
             handler=handle_list_modules,
             parameters_schema=_list_modules_parameters_schema(),
         ),
         ActionDefinition(
             id="get_module",
             label="Get Module",
-            description="Get one araiOS module by name.",
+            description="Get one dynamic module by name.",
             handler=handle_get_module,
             parameters_schema=_get_module_parameters_schema(),
         ),
@@ -186,7 +205,7 @@ MODULE = ModuleDefinition(
             id="create_module",
             label="Create Module",
             description=(
-                "Create a new araiOS module. "
+                "Create a new dynamic module. "
                 "IMPORTANT: 'fields' must be an array of field OBJECTS — never plain strings. "
                 "Each field object requires 'key' (snake_case string) and 'label' (human-readable string). "
                 "Optional per-field: 'type' (text|textarea|email|url|number|date|select|tags, default: text), "
@@ -201,7 +220,7 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="delete_module",
             label="Delete Module",
-            description="Delete one araiOS module and its related data.",
+            description="Delete one dynamic module and its related data.",
             handler=handle_delete_module,
             approval=True,
             parameters_schema=_delete_module_parameters_schema(),
@@ -221,25 +240,25 @@ MODULE = ModuleDefinition(
             parameters_schema=_get_record_parameters_schema(),
         ),
         ActionDefinition(
-            id="create_record",
-            label="Create Record",
-            description="Create a new record in a module.",
-            handler=handle_create_record,
-            parameters_schema=_create_record_parameters_schema(),
+            id="create_records",
+            label="Create Records",
+            description="Create one or more records in a module.",
+            handler=handle_create_records,
+            parameters_schema=_create_records_parameters_schema(),
         ),
         ActionDefinition(
-            id="update_record",
-            label="Update Record",
-            description="Update one record in a module.",
-            handler=handle_update_record,
-            parameters_schema=_update_record_parameters_schema(),
+            id="update_records",
+            label="Update Records",
+            description="Update one or more records in a module.",
+            handler=handle_update_records,
+            parameters_schema=_update_records_parameters_schema(),
         ),
         ActionDefinition(
-            id="delete_record",
-            label="Delete Record",
-            description="Delete one record from a module.",
-            handler=handle_delete_record,
-            parameters_schema=_delete_record_parameters_schema(),
+            id="delete_records",
+            label="Delete Records",
+            description="Delete one or more records from a module.",
+            handler=handle_delete_records,
+            parameters_schema=_delete_records_parameters_schema(),
         ),
         ActionDefinition(
             id="run_action",

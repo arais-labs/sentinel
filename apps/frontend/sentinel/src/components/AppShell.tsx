@@ -101,10 +101,12 @@ export function AppShell({
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">
       {/* Sidebar Desktop */}
-      {!hideSidebar ? (
       <aside
-        className={`hidden md:flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] transition-all duration-200 ease-in-out ${
-          isSidebarExpanded ? 'w-64' : 'w-16'
+        aria-hidden={hideSidebar}
+        className={`hidden md:flex flex-col overflow-hidden border-r bg-[color:var(--surface-0)] transition-[width,opacity,border-color] duration-250 ease-out ${
+          hideSidebar
+            ? 'w-0 opacity-0 border-r-transparent pointer-events-none'
+            : `${isSidebarExpanded ? 'w-64' : 'w-16'} opacity-100 border-r-[color:var(--border-subtle)]`
         }`}
         onMouseEnter={() => setIsSidebarExpanded(true)}
         onMouseLeave={() => setIsSidebarExpanded(false)}
@@ -135,13 +137,18 @@ export function AppShell({
           </button>
         </div>
       </aside>
-      ) : null}
 
       {/* Main Content Area */}
       <div className="flex flex-1 flex-col min-w-0">
         {/* Header */}
-        {!hideHeader ? (
-        <header className="flex h-16 shrink-0 items-center justify-between border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-4 md:px-6 gap-2">
+        <header
+          aria-hidden={hideHeader}
+          className={`flex shrink-0 items-center justify-between overflow-hidden bg-[color:var(--surface-0)] gap-2 transition-[height,opacity,padding,border-color] duration-250 ease-out ${
+            hideHeader
+              ? 'h-0 opacity-0 px-0 md:px-0 border-b border-b-transparent pointer-events-none'
+              : 'h-16 opacity-100 px-4 md:px-6 border-b border-[color:var(--border-subtle)]'
+          }`}
+        >
           <div className="flex items-center gap-4 min-w-0">
             <button
               onClick={() => setIsMobileMenuOpen(true)}
@@ -161,7 +168,6 @@ export function AppShell({
             {actions}
           </div>
         </header>
-        ) : null}
 
         {/* Content */}
         <main className={`flex-1 overflow-y-auto p-4 md:p-6 ${contentClassName}`}>

@@ -40,6 +40,11 @@ class _AlwaysRunningRegistry(AgentRunRegistry):
         return True
 
 
+class _ThinkingRunningRegistry(_AlwaysRunningRegistry):
+    async def get_phase(self, session_id: str) -> str | None:  # noqa: ARG002
+        return "thinking"
+
+
 def test_ws_connect_send_ack_and_rejections():
     fake_db = FakeDB()
 
@@ -118,7 +123,10 @@ def test_ws_connect_send_ack_and_rejections():
 
         messages = client.get(f"/api/v1/sessions/{session_id}/messages", headers=owner_headers)
         assert messages.status_code == 200
-        stored = next(item for item in messages.json()["items"] if item["content"] == "hello from ws")
+        matching = [item for item in messages.json()["items"] if item["content"] == "hello from ws"]
+        assert len(matching) == 1
+        stored = matching[0]
+        assert stored["role"] == "user"
         assert stored["metadata"]["source"] == "web"
         assert stored["metadata"]["agent_mode"] == "read_only"
         assert len(stored["metadata"]["attachments"]) == 1
@@ -209,7 +217,7 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
 
     old_init = app_main.init_db
     old_run_registry = getattr(app.state, "agent_run_registry", None)
-    app.state.agent_run_registry = _AlwaysRunningRegistry()
+    app.state.agent_run_registry = _ThinkingRunningRegistry()
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
@@ -269,9 +277,62 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_1"
             assert replay_pending["tool_result"]["tool_arguments"] == {"command": "write", "cli_command": "git push origin main"}
-            assert replay_pending["tool_result"]["content"]["status"] == "running"
-            assert "pending" not in replay_pending["tool_result"]["metadata"]
-            assert "approval" not in replay_pending["tool_result"]["metadata"]
+            assert replay_pending["tool_result"]["content"]["status"] == "pending"
+            assert replay_pending["tool_result"]["content"]["message"] == "Action requires approval."
+            assert replay_pending["tool_result"]["metadata"]["pending"] is True
+            approval = replay_pending["tool_result"]["metadata"].get("approval")
+            assert isinstance(approval, dict)
+            assert approval["provider"] == "git"
+            assert approval["status"] == "pending"
+            assert approval["pending"] is True
+            assert approval["can_resolve"] is True
+            assert approval["action"] == "git.write"
+    finally:
+        if old_run_registry is None:
+            delattr(app.state, "agent_run_registry")
+        else:
+            app.state.agent_run_registry = old_run_registry
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_ws_connected_rehydrates_active_run_as_thinking_when_no_tool_pending():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    old_run_registry = getattr(app.state, "agent_run_registry", None)
+    app.state.agent_run_registry = _AlwaysRunningRegistry()
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        owner_token = login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "ws-running"}, headers=owner_headers)
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
+        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+            connected = ws.receive_json()
+            assert connected["type"] == "connected"
+            assert connected["session_id"] == session_id
+
+            replay_running = ws.receive_json()
+            assert replay_running["type"] == "thinking_start"
+            assert replay_running["session_id"] == session_id
     finally:
         if old_run_registry is None:
             delattr(app.state, "agent_run_registry")
@@ -469,6 +530,89 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
             assert replay_pending["tool_result"]["content"]["status"] == "running"
             assert "pending" not in replay_pending["tool_result"]["metadata"]
             assert "approval_id" not in replay_pending["tool_result"]["metadata"]
+    finally:
+        if old_run_registry is None:
+            delattr(app.state, "agent_run_registry")
+        else:
+            app.state.agent_run_registry = old_run_registry
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_ws_connected_does_not_attach_mismatched_pending_approval():
+    fake_db = FakeDB()
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    old_run_registry = getattr(app.state, "agent_run_registry", None)
+    app.state.agent_run_registry = _AlwaysRunningRegistry()
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        owner_token = login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+        session_resp = client.post("/api/v1/sessions", json={"title": "ws-pending-mismatch"}, headers=owner_headers)
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
+        fake_db.add(
+            Message(
+                session_id=uuid.UUID(session_id),
+                role="assistant",
+                content="",
+                metadata_json={
+                    "tool_calls": [
+                        {
+                            "id": "toolu_git_read",
+                            "name": "git",
+                            "arguments": {"command": "read", "cli_command": "git status"},
+                        }
+                    ]
+                },
+            )
+        )
+        fake_db.add(
+            ToolApproval(
+                provider="git",
+                tool_name="git",
+                session_id=uuid.UUID(session_id),
+                action="git.write",
+                description="Execute an approval-gated git or supported gh write command inside the session workspace.",
+                status="pending",
+                requested_by="session:test",
+                payload_json={"tool_name": "git"},
+                expires_at=datetime.now(UTC) + timedelta(minutes=10),
+            )
+        )
+
+        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+            connected = ws.receive_json()
+            assert connected["type"] == "connected"
+            assert connected["session_id"] == session_id
+
+            replay_start = ws.receive_json()
+            assert replay_start["type"] == "toolcall_start"
+            assert replay_start["tool_call"]["id"] == "toolu_git_read"
+            assert replay_start["tool_call"]["name"] == "git"
+
+            replay_pending = ws.receive_json()
+            assert replay_pending["type"] == "tool_result"
+            assert replay_pending["tool_result"]["tool_call_id"] == "toolu_git_read"
+            assert replay_pending["tool_result"]["content"]["status"] == "running"
+            assert "approval" not in replay_pending["tool_result"]["metadata"]
     finally:
         if old_run_registry is None:
             delattr(app.state, "agent_run_registry")

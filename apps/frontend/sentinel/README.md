@@ -27,8 +27,8 @@ cp .env.example .env.local
 Then run:
 
 ```bash
-VITE_BASE_PATH=/sentinel/ \
-VITE_ROUTER_BASENAME=/sentinel \
-VITE_SENTINEL_API_BASE_URL=/sentinel/api/v1 \
+VITE_BASE_PATH=/ \
+VITE_ROUTER_BASENAME=/ \
+VITE_SENTINEL_API_BASE_URL=/api/v1 \
 npm run dev -- --host --port 5173
 ```

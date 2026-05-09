@@ -41,6 +41,7 @@ _CODEX_EXECUTION_MARKER = "You are Codex, a coding agent running in Sentinel."
 _CODEX_EXECUTION_PRELUDE = (
     f"{_CODEX_EXECUTION_MARKER}\n\n"
     "Keep acting until the task is complete. Do not stop at analysis if the user asked for execution.\n"
+    "When you are about to use tools, provide a brief user-facing progress update about what you are doing or checking.\n"
     "When verification is possible via tools, run the tools instead of guessing.\n"
     "Do not claim commands were run or files were changed unless tool output confirms it.\n"
     "If blocked, state the concrete blocker and the best immediate next action."

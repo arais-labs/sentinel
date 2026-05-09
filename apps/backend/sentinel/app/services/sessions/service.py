@@ -35,6 +35,7 @@ from app.services.runtime.session_runtime import (
     list_runtime_workspace_git_changed_files,
     list_runtime_workspace_git_roots,
     list_runtime_workspace_entries,
+    prepare_runtime_workspace_download,
     read_runtime_workspace_git_diff,
     read_runtime_workspace_file_preview,
     stop_all_detached_runtime_jobs,
@@ -312,6 +313,26 @@ class SessionService:
             raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
         except IsADirectoryError as exc:
             raise RuntimePathInvalidError(str(exc) or "Runtime path is a directory") from exc
+
+    async def get_runtime_download(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        path: str,
+    ):
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        try:
+            return await asyncio.to_thread(
+                prepare_runtime_workspace_download,
+                session.id,
+                path=path,
+            )
+        except ValueError as exc:
+            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
+        except FileNotFoundError as exc:
+            raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
 
     async def list_runtime_git_roots(
         self,
@@ -808,6 +829,7 @@ class SessionService:
                     system_prompt=system_prompt,
                     provider_metadata={"agent_mode": mode},
                 ),
+                interjection_source=lambda: self._run_registry.drain_interjections(str(session.id)),
             )
         )
         naming = SessionNamingService(

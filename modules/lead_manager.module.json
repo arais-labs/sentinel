@@ -289,9 +289,9 @@
   "permissions": {
     "list_records": "allow",
     "get_record": "allow",
-    "create_record": "allow",
-    "update_record": "allow",
-    "delete_record": "approval",
+    "create_records": "allow",
+    "update_records": "allow",
+    "delete_records": "approval",
     "get_page": "allow",
     "edit_page": "approval",
     "qualify_lead": "allow",

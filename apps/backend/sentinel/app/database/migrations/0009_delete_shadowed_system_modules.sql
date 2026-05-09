@@ -1,6 +1,5 @@
 -- Remove DB rows whose names are reserved for code-defined system modules.
--- These were seeded by the legacy AraiOS system and are now superseded by
--- ModuleDefinition in app/services/araios/system_modules/.
+-- These names are reserved by code-defined system modules.
 -- Also adds a DB-level constraint so the conflict can never happen again.
 
 DELETE FROM modules

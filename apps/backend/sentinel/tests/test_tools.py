@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import tempfile
 import uuid
 from unittest.mock import patch
@@ -21,8 +22,9 @@ from app.services.araios.runtime_services import configure_runtime_services, res
 from app.services.araios.system_modules.git_tool import handlers as git_module
 from app.services.araios.system_modules.module_manager import handlers as module_manager_module
 from app.services.araios.system_modules.runtime_tool import handlers as runtime_tool_module
-from app.services.runtime.ssh_client import SSHExecResult
+from app.services.runtime.base import RuntimeExecResult
 from app.services.tools import ToolExecutor
+from app.services.tools.executor import ToolExecutionError, ToolValidationError
 from app.services.araios.system_modules.shared import validate_public_hostname as _validate_public_hostname
 from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus, ToolRuntimeContext
 from app.services.tools.runtime_registry import build_runtime_registry
@@ -68,17 +70,55 @@ class _FakeSessionFactory:
 class _FakeRuntimeSSH:
     _next_pid = 40_000
 
-    async def run(self, command: str, *, timeout: int = 300, cwd: str | None = None, env: dict[str, str] | None = None):
-        _ = cwd, env
+    async def run(
+        self,
+        command: str,
+        *,
+        timeout: int = 300,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        as_root: bool = False,
+    ):
+        _ = cwd, env, as_root
+        if "setsid nohup bash -lc" in command and "echo $!" in command:
+            stdout_path_match = re.search(r">\s*'([^']+\.stdout\.log)'", command)
+            stderr_path_match = re.search(r"2>\s*'([^']+\.stderr\.log)'", command)
+            exitcode_path_match = re.search(r">\s*'([^']+\.exitcode)'", command)
+            stdout_path = stdout_path_match.group(1) if stdout_path_match else None
+            stderr_path = stderr_path_match.group(1) if stderr_path_match else None
+            exitcode_path = exitcode_path_match.group(1) if exitcode_path_match else None
+            if stdout_path:
+                os.makedirs(os.path.dirname(stdout_path), exist_ok=True)
+                with open(stdout_path, "w", encoding="utf-8") as handle:
+                    handle.write("")
+            if stderr_path:
+                os.makedirs(os.path.dirname(stderr_path), exist_ok=True)
+                with open(stderr_path, "w", encoding="utf-8") as handle:
+                    handle.write("")
+            if exitcode_path:
+                os.makedirs(os.path.dirname(exitcode_path), exist_ok=True)
+                with open(exitcode_path, "w", encoding="utf-8") as handle:
+                    handle.write("0")
+            pid = self._next_pid
+            type(self)._next_pid += 1
+            return RuntimeExecResult(exit_status=0, stdout=f"{pid}\n", stderr="")
         if "sleep 3" in command and timeout <= 1:
             raise TimeoutError()
+        if "tail -c" in command:
+            match = re.search(r"(/[^'\"\\s]+\\.log)", command)
+            if match:
+                path = match.group(1)
+                if os.path.exists(path):
+                    with open(path, encoding="utf-8") as handle:
+                        return RuntimeExecResult(exit_status=0, stdout=handle.read(), stderr="")
+                return RuntimeExecResult(exit_status=0, stdout="", stderr="")
         if "echo hello" in command:
-            return SSHExecResult(exit_status=0, stdout="hello\n", stderr="")
+            return RuntimeExecResult(exit_status=0, stdout="hello\n", stderr="")
         if "echo root-approved" in command:
-            return SSHExecResult(exit_status=0, stdout="root-approved\n", stderr="")
+            return RuntimeExecResult(exit_status=0, stdout="root-approved\n", stderr="")
         if "echo blocked" in command:
-            return SSHExecResult(exit_status=0, stdout="blocked\n", stderr="")
-        return SSHExecResult(exit_status=0, stdout="", stderr="")
+            return RuntimeExecResult(exit_status=0, stdout="blocked\n", stderr="")
+        return RuntimeExecResult(exit_status=0, stdout="", stderr="")
 
     async def run_detached(
         self,
@@ -88,8 +128,31 @@ class _FakeRuntimeSSH:
         stderr_path: str,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        as_root: bool = False,
     ) -> int:
-        _ = command, stdout_path, stderr_path, cwd, env
+        _ = cwd, env, as_root
+        os.makedirs(os.path.dirname(stdout_path), exist_ok=True)
+        os.makedirs(os.path.dirname(stderr_path), exist_ok=True)
+        stdout = ""
+        stderr = ""
+        exitcode_path = None
+        match = re.search(r">\s*'([^']+\.exitcode)'", command)
+        if match:
+            exitcode_path = match.group(1)
+        if "echo hello" in command:
+            stdout = "hello\n"
+        elif "echo root-approved" in command:
+            stdout = "root-approved\n"
+        elif "echo blocked" in command:
+            stdout = "blocked\n"
+        with open(stdout_path, "w", encoding="utf-8") as handle:
+            handle.write(stdout)
+        with open(stderr_path, "w", encoding="utf-8") as handle:
+            handle.write(stderr)
+        if exitcode_path:
+            os.makedirs(os.path.dirname(exitcode_path), exist_ok=True)
+            with open(exitcode_path, "w", encoding="utf-8") as handle:
+                handle.write("0")
         pid = self._next_pid
         type(self)._next_pid += 1
         return pid
@@ -98,7 +161,8 @@ class _FakeRuntimeSSH:
 class _FakeRuntimeInstance:
     def __init__(self, workspace_path: str):
         self.workspace_path = workspace_path
-        self.ssh = _FakeRuntimeSSH()
+        self.client = _FakeRuntimeSSH()
+        self.host = "127.0.0.1"
 
 
 class _FakeRuntimeProvider:
@@ -112,6 +176,21 @@ class _FakeRuntimeProvider:
             instance = _FakeRuntimeInstance("/tmp/fake-runtime/workspace")
             self._instances[key] = instance
         return instance
+
+    def get(self, session_id):
+        return self._instances.get(str(session_id))
+
+    def get_host(self, session_id):
+        instance = self.get(session_id)
+        return instance.host if instance is not None else None
+
+    def get_public_host(self, session_id):
+        _ = session_id
+        return "localhost"
+
+    def resolve_port(self, session_id, internal_port):
+        _ = session_id
+        return int(internal_port)
 
 
 def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
@@ -160,6 +239,50 @@ def _runtime_input(
     return payload
 
 
+class _ToolResponse:
+    def __init__(self, status_code: int, payload: dict[str, object]):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
+def _tool_error(message: str) -> dict[str, object]:
+    return {"detail": message, "error": {"message": message}}
+
+
+def _execute_tool_for_test(
+    name: str,
+    payload: dict[str, object],
+    *,
+    session_id: str | None = None,
+) -> _ToolResponse:
+    runtime = ToolRuntimeContext(session_id=uuid.UUID(session_id) if session_id else None)
+    executor = app.state.tool_executor
+    try:
+        result, duration_ms = asyncio.run(executor.execute(name, payload, runtime=runtime))
+    except KeyError:
+        return _ToolResponse(404, _tool_error("Tool not found"))
+    except ToolValidationError as exc:
+        return _ToolResponse(422, _tool_error(str(exc)))
+    except ToolExecutionError as exc:
+        return _ToolResponse(400, _tool_error(str(exc)))
+    except PermissionError as exc:
+        return _ToolResponse(403, _tool_error(str(exc)))
+    return _ToolResponse(200, {"result": result, "duration_ms": duration_ms})
+
+
+def _registered_tool_names() -> set[str]:
+    return {tool.name for tool in app.state.tool_registry.list_all()}
+
+
+def _registered_tool_schema(name: str) -> dict[str, object]:
+    tool = app.state.tool_registry.get(name)
+    assert tool is not None
+    return tool.parameters_schema
+
+
 def test_tools_registry_and_execution():
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
@@ -184,9 +307,7 @@ def test_tools_registry_and_execution():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        listed = client.get("/api/v1/tools", headers=headers)
-        assert listed.status_code == 200
-        names = {item["name"] for item in listed.json()["items"]}
+        names = _registered_tool_names()
         assert {
             "http_request",
             "runtime",
@@ -196,16 +317,10 @@ def test_tools_registry_and_execution():
             "module_manager",
         } <= names
 
-        detail = client.get("/api/v1/tools/http_request", headers=headers)
-        assert detail.status_code == 200
-        schema = detail.json()["parameters_schema"]
+        schema = _registered_tool_schema("http_request")
         assert "url" in schema["properties"]
 
-        invalid = client.post(
-            "/api/v1/tools/http_request/execute",
-            json={"input": {}},
-            headers=headers,
-        )
+        invalid = _execute_tool_for_test("http_request", {})
         assert invalid.status_code == 422
 
         fake_db.add(
@@ -219,10 +334,9 @@ def test_tools_registry_and_execution():
                 token_write="write-token",
             )
         )
-        accounts_run = client.post(
-            "/api/v1/tools/git/execute",
-            json={"input": {"command": "accounts", "repo_url": "https://github.com/arais-labs/sentinel.git"}},
-            headers=headers,
+        accounts_run = _execute_tool_for_test(
+            "git",
+            {"command": "accounts", "repo_url": "https://github.com/arais-labs/sentinel.git"},
         )
         assert accounts_run.status_code == 200
         payload = accounts_run.json()["result"]
@@ -240,13 +354,10 @@ def test_tools_registry_and_execution():
 
         estop = client.post("/api/v1/admin/estop", headers=headers)
         assert estop.status_code == 200
-        blocked = client.post(
-            "/api/v1/tools/runtime/execute",
-            json={
-                "input": {"command": "user", "shell_command": "echo blocked"},
-                "runtime_context": {"session_id": session_id},
-            },
-            headers=headers,
+        blocked = _execute_tool_for_test(
+            "runtime",
+            {"command": "user", "shell_command": "echo blocked"},
+            session_id=session_id,
         )
         assert blocked.status_code == 200
     finally:
@@ -255,36 +366,15 @@ def test_tools_registry_and_execution():
         app_main.init_db = old_init
 
 
-def test_tool_auth_required():
-    fake_db = FakeDB()
-    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+def test_tools_http_api_is_not_exposed():
+    client = TestClient(app)
+    response = client.get("/api/v1/tools")
+    assert response.status_code == 404
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
-
-    try:
-        client = TestClient(app)
-        response = client.get("/api/v1/tools")
-        assert response.status_code == 401
-
-        user_token = _make_token(sub="standard-user")
-        auth = {"Authorization": f"Bearer {user_token}"}
-        response = client.get("/api/v1/tools", headers=auth)
-        assert response.status_code == 200
-    finally:
-        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+    user_token = _make_token(sub="standard-user")
+    auth = {"Authorization": f"Bearer {user_token}"}
+    response = client.get("/api/v1/tools", headers=auth)
+    assert response.status_code == 404
 
 
 def test_runtime_runs_command():
@@ -316,13 +406,10 @@ def test_runtime_runs_command():
         assert created_session.status_code == 200
         session_id = created_session.json()["id"]
 
-        run = client.post(
-            "/api/v1/tools/runtime/execute",
-            json={
-                "input": _runtime_input(shell_command="echo hello"),
-                "runtime_context": {"session_id": session_id},
-            },
-            headers=headers,
+        run = _execute_tool_for_test(
+            "runtime",
+            _runtime_input(shell_command="echo hello"),
+            session_id=session_id,
         )
         assert run.status_code == 200
         payload = run.json()["result"]
@@ -374,13 +461,10 @@ def test_runtime_detached_job_lifecycle():
         assert created_session.status_code == 200
         session_id = created_session.json()["id"]
 
-        run = client.post(
-            "/api/v1/tools/runtime/execute",
-            json={
-                "input": _runtime_input(shell_command="sleep 30", detached=True),
-                "runtime_context": {"session_id": session_id},
-            },
-            headers=headers,
+        run = _execute_tool_for_test(
+            "runtime",
+            _runtime_input(shell_command="sleep 30", detached=True),
+            session_id=session_id,
         )
         assert run.status_code == 200
         payload = run.json()["result"]
@@ -391,49 +475,39 @@ def test_runtime_detached_job_lifecycle():
             assert str(payload["workspace"]).endswith("/workspace")
             assert str(payload["cwd"]).endswith("/workspace")
             assert str(payload["job"]["cwd"]).endswith("/workspace")
-            assert "/workspace/" in str(payload["job"].get("stdout_path", ""))
-            assert "/workspace/" in str(payload["job"].get("stderr_path", ""))
+            assert str(payload["job"].get("stdout_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
+            assert str(payload["job"].get("stderr_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
             assert "/tmp/sentinel/session_runtime" not in json.dumps(payload["job"])
 
-        listed = client.post(
-            "/api/v1/tools/runtime/execute",
-            json={"input": {"command": "jobs"}, "runtime_context": {"session_id": session_id}},
-            headers=headers,
-        )
+        listed = _execute_tool_for_test("runtime", {"command": "jobs"}, session_id=session_id)
         assert listed.status_code == 200
         jobs = listed.json()["result"]["jobs"]
         listed_job = next((item for item in jobs if item["id"] == job_id), None)
         assert listed_job is not None
         if payload["privilege"] == "user":
             assert str(listed_job["cwd"]).endswith("/workspace")
-            assert "/workspace/" in str(listed_job.get("stdout_path", ""))
-            assert "/workspace/" in str(listed_job.get("stderr_path", ""))
+            assert str(listed_job.get("stdout_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
+            assert str(listed_job.get("stderr_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
             assert "/tmp/sentinel/session_runtime" not in json.dumps(listed_job)
 
-        status = client.post(
-            "/api/v1/tools/runtime/execute",
-            json={
-                "input": {"command": "job_status", "job_id": job_id},
-                "runtime_context": {"session_id": session_id},
-            },
-            headers=headers,
+        status = _execute_tool_for_test(
+            "runtime",
+            {"command": "job_status", "job_id": job_id},
+            session_id=session_id,
         )
         assert status.status_code == 200
         status_job = status.json()["result"]["job"]
         assert status_job["id"] == job_id
         if payload["privilege"] == "user":
             assert str(status_job["cwd"]).endswith("/workspace")
-            assert "/workspace/" in str(status_job.get("stdout_path", ""))
-            assert "/workspace/" in str(status_job.get("stderr_path", ""))
+            assert str(status_job.get("stdout_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
+            assert str(status_job.get("stderr_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
             assert "/tmp/sentinel/session_runtime" not in json.dumps(status_job)
 
-        logs = client.post(
-            "/api/v1/tools/runtime/execute",
-            json={
-                "input": {"command": "job_logs", "job_id": job_id},
-                "runtime_context": {"session_id": session_id},
-            },
-            headers=headers,
+        logs = _execute_tool_for_test(
+            "runtime",
+            {"command": "job_logs", "job_id": job_id},
+            session_id=session_id,
         )
         assert logs.status_code == 200
         logs_result = logs.json()["result"]
@@ -441,20 +515,152 @@ def test_runtime_detached_job_lifecycle():
         if payload["privilege"] == "user":
             logs_job = logs_result["job"]
             assert str(logs_job["cwd"]).endswith("/workspace")
-            assert "/workspace/" in str(logs_job.get("stdout_path", ""))
-            assert "/workspace/" in str(logs_job.get("stderr_path", ""))
+            assert str(logs_job.get("stdout_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
+            assert str(logs_job.get("stderr_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
             assert "/tmp/sentinel/session_runtime" not in json.dumps(logs_job)
 
-        stopped = client.post(
-            "/api/v1/tools/runtime/execute",
-            json={
-                "input": {"command": "job_stop", "job_id": job_id},
-                "runtime_context": {"session_id": session_id},
-            },
-            headers=headers,
+        stopped = _execute_tool_for_test(
+            "runtime",
+            {"command": "job_stop", "job_id": job_id},
+            session_id=session_id,
         )
         assert stopped.status_code == 200
         assert stopped.json()["result"]["job"]["status"] in {"cancelled", "completed", "failed"}
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_auto_promotes_long_running_command(monkeypatch):
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    async def _fake_get_detached_runtime_job(session_id, *, job_id, include_internal=False):  # noqa: ARG001
+        return {
+            "id": job_id,
+            "status": "running",
+            "cwd": "/tmp/fake-runtime/workspace",
+            "stdout_path": "/tmp/fake-runtime/workspace/.runtime/logs/test.stdout.log",
+            "stderr_path": "/tmp/fake-runtime/workspace/.runtime/logs/test.stderr.log",
+        }
+
+    try:
+        monkeypatch.setattr(runtime_tool_module, "_RUNTIME_EXEC_AUTO_PROMOTE_SECONDS", 1)
+        monkeypatch.setattr(runtime_tool_module, "get_detached_runtime_job", _fake_get_detached_runtime_job)
+
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-auto-promote"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = _execute_tool_for_test(
+            "runtime",
+            _runtime_input(
+                shell_command="echo start-long-background-test; sleep 120; echo done-long-background-test",
+                timeout_seconds=600,
+            ),
+            session_id=session_id,
+        )
+        assert run.status_code == 200
+        payload = run.json()["result"]
+        assert payload["detached"] is True
+        assert payload["auto_promoted"] is True
+        assert payload["preemptively_backgrounded"] is True
+        assert payload["background_reason"] == "requested_timeout_exceeds_interactive_threshold"
+        assert payload["job"]["status"] == "running"
+        assert "requested timeout (600s)" in payload["message"]
+        assert "interactive threshold (1s)" in payload["message"]
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_auto_promote_keeps_detached_when_completion_is_half_baked(monkeypatch):
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    async def _fake_wait_for_detached_runtime_job_completion(*args, **kwargs):  # noqa: ARG001
+        return {
+            "job": {
+                "id": "job-half-baked",
+                "status": "completed",
+                "returncode": None,
+                "cwd": "/tmp/fake-runtime/workspace",
+                "stdout_path": "/tmp/fake-runtime/workspace/.runtime/logs/test.stdout.log",
+                "stderr_path": "/tmp/fake-runtime/workspace/.runtime/logs/test.stderr.log",
+            },
+            "logs": {
+                "stdout_tail": "partial output\n",
+                "stderr_tail": "",
+            },
+        }
+
+    try:
+        monkeypatch.setattr(
+            runtime_tool_module,
+            "_wait_for_detached_runtime_job_completion",
+            _fake_wait_for_detached_runtime_job_completion,
+        )
+
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-auto-promote-half-baked"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = _execute_tool_for_test(
+            "runtime",
+            _runtime_input(
+                shell_command="echo start-long-test; sleep 35; echo done-long-test",
+                timeout_seconds=180,
+            ),
+            session_id=session_id,
+        )
+        assert run.status_code == 200
+        payload = run.json()["result"]
+        assert payload["detached"] is True
+        assert payload["auto_promoted"] is True
+        assert payload["job"]["id"] == "job-half-baked"
+        assert payload["job"]["returncode"] is None
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()
@@ -490,16 +696,63 @@ def test_runtime_rejects_background_without_detached():
         assert created_session.status_code == 200
         session_id = created_session.json()["id"]
 
-        run = client.post(
-            "/api/v1/tools/runtime/execute",
-            json={
-                "input": {"command": "user", "shell_command": "sleep 1 &"},
-                "runtime_context": {"session_id": session_id},
-            },
-            headers=headers,
+        run = _execute_tool_for_test(
+            "runtime",
+            {"command": "user", "shell_command": "sleep 1 &"},
+            session_id=session_id,
         )
         assert run.status_code == 422
         assert "detached=true" in run.json()["error"]["message"]
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_background_detector_allows_fd_redirection():
+    assert runtime_tool_module._command_requests_background_execution("whoami") is False
+    assert runtime_tool_module._command_requests_background_execution("echo hi && whoami") is False
+    assert runtime_tool_module._command_requests_background_execution("which git python3 node npm curl docker 2>&1") is False
+    assert runtime_tool_module._command_requests_background_execution("cat /etc/os-release && which git python3 node npm curl docker 2>&1") is False
+    assert runtime_tool_module._command_requests_background_execution("command 1>&2") is False
+
+
+def test_runtime_allows_inline_fd_redirection():
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "runtime-inline-redirection"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = _execute_tool_for_test(
+            "runtime",
+            {"command": "user", "shell_command": "which git python3 node npm curl docker 2>&1"},
+            session_id=session_id,
+        )
+        assert run.status_code == 200
+        assert run.json()["result"]["ok"] is True
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()
@@ -535,13 +788,10 @@ def test_runtime_timeout_returns_result():
         assert created_session.status_code == 200
         session_id = created_session.json()["id"]
 
-        run = client.post(
-            "/api/v1/tools/runtime/execute",
-            json={
-                "input": _runtime_input(shell_command="sleep 3", timeout_seconds=1),
-                "runtime_context": {"session_id": session_id},
-            },
-            headers=headers,
+        run = _execute_tool_for_test(
+            "runtime",
+            _runtime_input(shell_command="sleep 3", timeout_seconds=1),
+            session_id=session_id,
         )
         assert run.status_code == 200
         payload = run.json()["result"]
@@ -601,16 +851,13 @@ def test_runtime_root_privilege_requires_approval():
         assert created_session.status_code == 200
         session_id = created_session.json()["id"]
 
-        run = client.post(
-            "/api/v1/tools/runtime/execute",
-            json={
-                "input": {
-                    "command": "root",
-                    "shell_command": "echo root-approved",
-                },
-                "runtime_context": {"session_id": session_id},
+        run = _execute_tool_for_test(
+            "runtime",
+            {
+                "command": "root",
+                "shell_command": "echo root-approved",
             },
-            headers=headers,
+            session_id=session_id,
         )
         assert run.status_code == 200
         payload = run.json()["result"]
@@ -647,11 +894,7 @@ def test_removed_file_read_tool_returns_not_found():
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        response = client.post(
-            "/api/v1/tools/file_read/execute",
-            json={"input": {"path": "/etc/passwd"}},
-            headers=headers,
-        )
+        response = _execute_tool_for_test("file_read", {"path": "/etc/passwd"})
         assert response.status_code == 404
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
@@ -681,10 +924,9 @@ def test_http_request_ssrf_blocked():
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        response = client.post(
-            "/api/v1/tools/http_request/execute",
-            json={"input": {"url": "http://127.0.0.1:8000/health", "method": "GET"}},
-            headers=headers,
+        response = _execute_tool_for_test(
+            "http_request",
+            {"url": "http://127.0.0.1:8000/health", "method": "GET"},
         )
         assert response.status_code == 422
         assert "SSRF blocked" in response.json()["error"]["message"]
@@ -718,48 +960,6 @@ class _FakeHttpxResponse:
         return self._payload
 
 
-class _FakeAraiOSAsyncClient:
-    def __init__(self, *_args, **_kwargs):
-        self._request_count = 0
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-    async def post(self, url: str, json: dict | None = None):
-        if url.endswith("/platform/auth/token"):
-            assert json is not None
-            assert json.get("api_key", "").startswith("sk-arais-agent-")
-            return _FakeHttpxResponse(
-                200,
-                {
-                    "access_token": "test-access-token",
-                    "refresh_token": "test-refresh-token",
-                    "expires_in": 3600,
-                },
-            )
-        if url.endswith("/platform/auth/refresh"):
-            return _FakeHttpxResponse(
-                200,
-                {
-                    "access_token": "test-access-token-refresh",
-                    "refresh_token": "test-refresh-token-next",
-                    "expires_in": 3600,
-                },
-            )
-        return _FakeHttpxResponse(404, {"detail": "not found"})
-
-    async def request(self, method: str, url: str, **kwargs):
-        self._request_count += 1
-        headers = kwargs.get("headers", {})
-        assert headers.get("Authorization", "").startswith("Bearer test-access-token")
-        return _FakeHttpxResponse(
-            200, {"ok": True, "method": method, "url": url, "attempt": self._request_count}
-        )
-
-
 def test_module_manager_lists_db_modules():
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
@@ -782,11 +982,7 @@ def test_module_manager_lists_db_modules():
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
-        response = client.post(
-            "/api/v1/tools/module_manager/execute",
-            json={"input": {"command": "list_modules"}},
-            headers=headers,
-        )
+        response = _execute_tool_for_test("module_manager", {"command": "list_modules"})
         assert response.status_code == 200
         modules = response.json()["result"]["modules"]
         assert any(item["name"] == "notes" for item in modules)
@@ -817,11 +1013,7 @@ def test_module_manager_requires_command():
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
-        response = client.post(
-            "/api/v1/tools/module_manager/execute",
-            json={"input": {}},
-            headers=headers,
-        )
+        response = _execute_tool_for_test("module_manager", {})
         assert response.status_code == 422
         assert "command" in response.json()["error"]["message"]
     finally:
@@ -873,21 +1065,17 @@ def test_module_manager_create_registers_dynamic_tool_and_permissions():
             "page_title": "Clients",
             "page_content": "# Clients",
             "permissions": {
-                "delete_record": "deny",
+                "delete_records": "deny",
                 "edit_page": "approval",
                 "sync_hubspot": "allow",
                 "archive": "approval",
             },
         }
-        created = client.post(
-            "/api/v1/tools/module_manager/execute",
-            json={"input": create_payload},
-            headers=headers,
-        )
+        created = _execute_tool_for_test("module_manager", create_payload)
         assert created.status_code == 200
         result = created.json()["result"]
         assert result["module"] == "clients"
-        assert result["permissions"]["delete_record"] == "deny"
+        assert result["permissions"]["delete_records"] == "deny"
         assert result["permissions"]["archive"] == "approval"
 
         permission_rows = {
@@ -896,53 +1084,39 @@ def test_module_manager_create_registers_dynamic_tool_and_permissions():
             if row.action.startswith("clients.")
         }
         assert permission_rows["clients.list_records"] == "allow"
-        assert permission_rows["clients.delete_record"] == "deny"
+        assert permission_rows["clients.delete_records"] == "deny"
         assert permission_rows["clients.edit_page"] == "approval"
         assert permission_rows["clients.sync_hubspot"] == "allow"
         assert permission_rows["clients.archive"] == "approval"
 
-        listed = client.get("/api/v1/tools", headers=headers)
-        assert listed.status_code == 200
-        names = {item["name"] for item in listed.json()["items"]}
+        names = _registered_tool_names()
         assert "clients" in names
 
-        detail = client.get("/api/v1/tools/clients", headers=headers)
-        assert detail.status_code == 200
-        command_enum = detail.json()["parameters_schema"]["properties"]["command"]["enum"]
+        command_enum = _registered_tool_schema("clients")["properties"]["command"]["enum"]
         assert "list_records" in command_enum
         assert "get_page" in command_enum
         assert "edit_page" in command_enum
         assert "sync_hubspot" in command_enum
         assert "archive" in command_enum
 
-        created_record = client.post(
-            "/api/v1/tools/clients/execute",
-            json={"input": {"command": "create_record", "data": {"name": "Acme"}}},
-            headers=headers,
+        created_record = _execute_tool_for_test(
+            "clients",
+            {"command": "create_records", "records": [{"name": "Acme"}]},
         )
         assert created_record.status_code == 200
-        record_id = created_record.json()["result"]["id"]
+        record_id = created_record.json()["result"]["records"][0]["id"]
 
-        run_custom = client.post(
-            "/api/v1/tools/clients/execute",
-            json={"input": {"command": "sync_hubspot", "source": "crm"}},
-            headers=headers,
-        )
+        run_custom = _execute_tool_for_test("clients", {"command": "sync_hubspot", "source": "crm"})
         assert run_custom.status_code == 200
         assert run_custom.json()["result"]["source"] == "crm"
 
-        get_page = client.post(
-            "/api/v1/tools/clients/execute",
-            json={"input": {"command": "get_page"}},
-            headers=headers,
-        )
+        get_page = _execute_tool_for_test("clients", {"command": "get_page"})
         assert get_page.status_code == 200
         assert get_page.json()["result"]["page_content"] == "# Clients"
 
-        denied_delete = client.post(
-            "/api/v1/tools/clients/execute",
-            json={"input": {"command": "delete_record", "record_id": record_id}},
-            headers=headers,
+        denied_delete = _execute_tool_for_test(
+            "clients",
+            {"command": "delete_records", "record_ids": [record_id]},
         )
         assert denied_delete.status_code == 400
         denied_payload = denied_delete.json()
@@ -975,17 +1149,14 @@ def test_module_manager_rejects_reserved_dynamic_action_names():
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
-        response = client.post(
-            "/api/v1/tools/module_manager/execute",
-            json={
-                "input": {
-                    "command": "create_module",
-                    "name": "badmodule",
-                    "label": "Bad Module",
-                    "actions": [{"id": "create_record", "label": "Nope", "code": "result={'ok': True}"}],
-                }
+        response = _execute_tool_for_test(
+            "module_manager",
+            {
+                "command": "create_module",
+                "name": "badmodule",
+                "label": "Bad Module",
+                "actions": [{"id": "create_records", "label": "Nope", "code": "result={'ok': True}"}],
             },
-            headers=headers,
         )
         assert response.status_code == 400
         payload = response.json()
@@ -1112,8 +1283,8 @@ def test_permissions_api_lists_static_system_and_dynamic_actions():
         assert permissions["modules.create"] == "approval"
         assert permissions["browser.navigate"] == "allow"
         assert permissions["clients.list_records"] == "allow"
-        assert permissions["clients.create_record"] == "allow"
-        assert permissions["clients.delete_record"] == "approval"
+        assert permissions["clients.create_records"] == "allow"
+        assert permissions["clients.delete_records"] == "approval"
         assert permissions["clients.sync_hubspot"] == "allow"
         assert permissions["clients.archive"] == "deny"
     finally:
@@ -1154,11 +1325,11 @@ def test_permissions_api_updates_known_action_and_rejects_unknown_action():
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        update = client.patch("/api/permissions/clients.create_record", json={"level": "approval"}, headers=headers)
+        update = client.patch("/api/permissions/clients.create_records", json={"level": "approval"}, headers=headers)
         assert update.status_code == 200
-        assert update.json() == {"action": "clients.create_record", "level": "approval"}
+        assert update.json() == {"action": "clients.create_records", "level": "approval"}
 
-        stored = next(row for row in fake_db.storage[AraiosPermission] if row.action == "clients.create_record")
+        stored = next(row for row in fake_db.storage[AraiosPermission] if row.action == "clients.create_records")
         assert stored.level == "approval"
 
         missing = client.patch("/api/permissions/clients.not_real", json={"level": "deny"}, headers=headers)
@@ -1220,7 +1391,7 @@ def test_modules_import_package_creates_module_records_and_permissions():
                 {"full_name": "Luis Ortega", "company": "Veritas"},
             ],
             "permissions": {
-                "delete_record": "approval",
+                "delete_records": "approval",
                 "qualify_lead": "allow",
             },
         }

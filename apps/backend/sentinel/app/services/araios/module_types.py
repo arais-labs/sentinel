@@ -410,7 +410,7 @@ def _resolve_action_approval_check(
             )
         if level == "deny":
             return ToolApprovalEvaluation.deny(
-                f"Execution denied by AraiOS permission for action '{action_key}'."
+                f"Execution denied by module permission for action '{action_key}'."
             )
         if level == "approval":
             return ToolApprovalEvaluation.require(

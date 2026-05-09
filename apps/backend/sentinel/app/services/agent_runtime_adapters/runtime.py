@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from uuid import UUID
 
@@ -23,6 +24,8 @@ from app.sentral import (
     Runtime,
     TextBlock,
     TokenUsage,
+    ToolCallBlock,
+    ToolCallInterceptionResult,
     ToolResultBlock,
     TurnResult,
 )
@@ -33,6 +36,7 @@ from app.services.agent.runtime_support import SentinelRuntimeSupport
 from app.services.estop import EstopLevel
 from app.services.agent_runtime_adapters.conversions import (
     db_messages_to_runtime_items,
+    runtime_items_to_sentinel_messages,
     runtime_item_to_sentinel_message,
     sentinel_message_to_runtime_item,
 )
@@ -60,6 +64,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
         loop: SentinelRuntimeSupport,
         db: AsyncSession,
         session_id: UUID,
+        runtime_session_id: UUID | None = None,
         compactor: Compactor | None = None,
         history_loader: HistoryLoader | None = None,
         persist_incremental: bool = False,
@@ -67,6 +72,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
         self._loop = loop
         self._db = db
         self._session_id = session_id
+        self._runtime_session_id = runtime_session_id or session_id
         self._compactor = compactor
         self._history_loader = history_loader or self._load_runtime_history
         self._persist_incremental = persist_incremental
@@ -205,6 +211,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
         persist_user_message = bool(config.provider_metadata.get("persist_user_message", True))
         user_message = UserMessage(content=user_payload, metadata=user_metadata)
         created_seed = [user_message] if persist_user_message else []
+        skipped_pre_persisted_new_items = 0 if persist_user_message else len(request.new_items)
 
         if await self._loop.estop_level(self._db) == EstopLevel.KILL_ALL:
             await self._loop.persist_created_messages(
@@ -261,13 +268,21 @@ class SentinelLoopRuntimeAdapter(Runtime):
         ]
 
         async def _persist_runtime_batch(batch: list[ConversationItem]) -> None:
-            nonlocal context_snapshot_pending, persisted_count
+            nonlocal context_snapshot_pending, persisted_count, skipped_pre_persisted_new_items
             if not batch:
                 return
-            sentinel_batch = [runtime_item_to_sentinel_message(item) for item in batch]
+            batch_to_persist = batch
+            if skipped_pre_persisted_new_items > 0:
+                skip_count = min(skipped_pre_persisted_new_items, len(batch))
+                skipped_pre_persisted_new_items -= skip_count
+                batch_to_persist = batch[skip_count:]
+            if not batch_to_persist:
+                persisted_count += len(batch)
+                return
+            sentinel_batch = [runtime_item_to_sentinel_message(item) for item in batch_to_persist]
             assistant_iterations_batch = {
                 id(message): int(item.metadata.get("iteration") or 0)
-                for item, message in zip(batch, sentinel_batch, strict=False)
+                for item, message in zip(batch_to_persist, sentinel_batch, strict=False)
                 if getattr(item, "role", None) == "assistant"
             }
             snapshot = runtime_context_snapshot if context_snapshot_pending else None
@@ -286,16 +301,19 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 context_snapshot_pending = False
             persisted_count += len(batch)
 
+        provider_adapter = SentinelProviderAdapter(self._loop.provider)
         runtime = AgentRuntimeEngine(
-            provider=SentinelProviderAdapter(self._loop.provider),
+            provider=provider_adapter,
             tool_registry=SentinelToolRegistryAdapter(
                 self._loop.tool_adapter.registry,
                 self._loop.tool_adapter.executor,
                 agent_mode=mode_definition.id,
                 session_id=self._session_id,
+                runtime_session_id=self._runtime_session_id,
                 on_pending_tool_result=_on_pending_tool_result,
             ),
             compactor=self._compactor,
+            tool_call_interceptor=self._collaboration_tool_call_interceptor(provider_adapter),
         )
         runtime_result = await runtime.run_turn(
             RunTurnRequest(
@@ -421,6 +439,252 @@ class SentinelLoopRuntimeAdapter(Runtime):
         )
         messages = list(result.scalars().all())
         return db_messages_to_runtime_items(messages)
+
+    def _collaboration_tool_call_interceptor(
+        self,
+        provider: SentinelProviderAdapter,
+    ) -> Callable[[list[ConversationItem], list[ToolCallBlock], GenerationConfig], Awaitable[ToolCallInterceptionResult | None]]:
+        async def _intercept(
+            working_history: list[ConversationItem],
+            tool_calls: list[ToolCallBlock],
+            config: GenerationConfig,
+        ) -> ToolCallInterceptionResult | None:
+            spawn_calls = [
+                call
+                for call in tool_calls
+                if call.name == "delegate"
+                and str(call.arguments.get("command") or "").strip() == "spawn"
+            ]
+            if not spawn_calls:
+                return None
+            return await self._plan_delegate_spawn_calls(
+                provider=provider,
+                working_history=working_history,
+                tool_calls=tool_calls,
+                spawn_calls=spawn_calls,
+                config=config,
+            )
+
+        return _intercept
+
+    async def _plan_delegate_spawn_calls(
+        self,
+        *,
+        provider: SentinelProviderAdapter,
+        working_history: list[ConversationItem],
+        tool_calls: list[ToolCallBlock],
+        spawn_calls: list[ToolCallBlock],
+        config: GenerationConfig,
+    ) -> ToolCallInterceptionResult | None:
+        planner_messages = self._build_collaboration_planner_messages(
+            working_history=working_history,
+            tool_calls=tool_calls,
+            spawn_calls=spawn_calls,
+        )
+        try:
+            planner_response = await asyncio.wait_for(
+                provider.chat(
+                    messages=planner_messages,
+                    tools=[],
+                    config=GenerationConfig(
+                        model=config.model,
+                        temperature=0.0,
+                        max_iterations=1,
+                        stream=False,
+                        tool_choice="none",
+                    ),
+                ),
+                timeout=15.0,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+        plan = self._parse_collaboration_plan_response(planner_response.item)
+        if not isinstance(plan, dict):
+            return None
+        decisions = plan.get("spawn_decisions")
+        if not isinstance(decisions, list):
+            return None
+
+        decision_by_call_id: dict[str, dict[str, object]] = {}
+        for decision in decisions:
+            if not isinstance(decision, dict):
+                continue
+            tool_call_id = str(decision.get("tool_call_id") or "").strip()
+            if tool_call_id:
+                decision_by_call_id[tool_call_id] = decision
+
+        blocked_results: list[ToolResultBlock] = []
+        allowed_calls: list[ToolCallBlock] = []
+        changed = False
+
+        for call in tool_calls:
+            if call.name != "delegate" or str(call.arguments.get("command") or "").strip() != "spawn":
+                allowed_calls.append(call)
+                continue
+            decision = decision_by_call_id.get(call.id)
+            if not isinstance(decision, dict) or bool(decision.get("allow", True)):
+                allowed_calls.append(call)
+                continue
+            changed = True
+            blocked_results.append(
+                ToolResultBlock(
+                    tool_call_id=call.id,
+                    tool_name=call.name,
+                    content=self._blocked_delegate_spawn_message(decision),
+                    is_error=True,
+                    metadata={
+                        "collaboration_plan": {
+                            "reason": str(decision.get("reason") or "").strip() or None,
+                            "missing_prerequisites": [
+                                str(item).strip()
+                                for item in (decision.get("missing_prerequisites") or [])
+                                if isinstance(item, str) and item.strip()
+                            ],
+                            "main_thread_task": str(decision.get("main_thread_task") or "").strip() or None,
+                        }
+                    },
+                    tool_arguments=dict(call.arguments),
+                )
+            )
+
+        if not changed:
+            return None
+        return ToolCallInterceptionResult(
+            tool_calls=allowed_calls,
+            synthetic_results=blocked_results,
+        )
+
+    def _build_collaboration_planner_messages(
+        self,
+        *,
+        working_history: list[ConversationItem],
+        tool_calls: list[ToolCallBlock],
+        spawn_calls: list[ToolCallBlock],
+    ) -> list[ConversationItem]:
+        history_tail = self._collaboration_history_tail(working_history)
+        current_calls = [
+            {
+                "tool_call_id": call.id,
+                "name": call.name,
+                "arguments": dict(call.arguments),
+            }
+            for call in tool_calls
+        ]
+        delegated_spawns = [
+            {
+                "tool_call_id": call.id,
+                "objective": str(call.arguments.get("objective") or "").strip(),
+                "scope": str(call.arguments.get("scope") or "").strip(),
+                "allowed_tools": list(call.arguments.get("allowed_tools") or []),
+            }
+            for call in spawn_calls
+        ]
+        system_text = (
+            "You are a collaboration harness for delegated work.\n"
+            "Decide whether each proposed delegate spawn may run now.\n"
+            "Block a spawn if the delegated branch depends on shared setup that is not yet established "
+            "(for example: repo not cloned or opened yet, workspace path not prepared yet, browser tab state not prepared yet), "
+            "or if the main thread would obviously duplicate the delegated branch.\n"
+            "Allow a spawn only when the branch is bounded and its prerequisites are satisfied.\n"
+            "Respond ONLY with valid JSON matching this schema:\n"
+            "{\"spawn_decisions\":[{\"tool_call_id\":\"...\",\"allow\":true,\"reason\":\"...\",\"missing_prerequisites\":[\"...\"],\"main_thread_task\":\"...\"}]}"
+        )
+        user_text = (
+            "Recent runtime history tail:\n"
+            f"{history_tail}\n\n"
+            "Current assistant-step tool calls:\n"
+            f"{json.dumps(current_calls, ensure_ascii=False)}\n\n"
+            "Delegate spawn calls to evaluate:\n"
+            f"{json.dumps(delegated_spawns, ensure_ascii=False)}"
+        )
+        return [
+            ConversationItem(
+                id="collaboration-system",
+                role="system",
+                content=[TextBlock(text=system_text)],
+            ),
+            ConversationItem(
+                id="collaboration-user",
+                role="user",
+                content=[TextBlock(text=user_text)],
+            ),
+        ]
+
+    @staticmethod
+    def _parse_collaboration_plan_response(item: ConversationItem) -> dict[str, object] | None:
+        text = "\n".join(
+            block.text
+            for block in item.content
+            if isinstance(block, TextBlock) and block.text
+        ).strip()
+        if not text:
+            return None
+        if text.startswith("```"):
+            text = text.split("```")[1] if "```" in text[3:] else text
+            text = text.lstrip("json").strip()
+        try:
+            parsed = json.loads(text)
+        except Exception:  # noqa: BLE001
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @staticmethod
+    def _blocked_delegate_spawn_message(decision: dict[str, object]) -> str:
+        reason = (
+            str(decision.get("reason") or "").strip()
+            or "Do required shared setup first before delegating this branch."
+        )
+        missing = [
+            str(item).strip()
+            for item in (decision.get("missing_prerequisites") or [])
+            if isinstance(item, str) and item.strip()
+        ]
+        main_thread_task = str(decision.get("main_thread_task") or "").strip()
+        pieces = [f"Collaboration plan blocked delegate.spawn: {reason}"]
+        if missing:
+            pieces.append(f"Missing prerequisites: {', '.join(missing)}")
+        if main_thread_task:
+            pieces.append(f"Main-thread task first: {main_thread_task}")
+        return " ".join(pieces)
+
+    @staticmethod
+    def _collaboration_history_tail(working_history: list[ConversationItem]) -> str:
+        tail = working_history[-16:] if len(working_history) > 16 else list(working_history)
+        lines: list[str] = []
+        for item in tail:
+            if item.role == "user":
+                text = "\n".join(
+                    block.text
+                    for block in item.content
+                    if isinstance(block, TextBlock) and block.text
+                ).strip()
+                if text:
+                    lines.append(f"user: {text[:240]}")
+            elif item.role == "assistant":
+                text = "\n".join(
+                    block.text
+                    for block in item.content
+                    if isinstance(block, TextBlock) and block.text
+                ).strip()
+                tool_names = [
+                    block.name
+                    for block in item.content
+                    if isinstance(block, ToolCallBlock) and block.name
+                ]
+                if text:
+                    lines.append(f"assistant: {text[:240]}")
+                if tool_names:
+                    lines.append(f"assistant_tools: {', '.join(tool_names[:6])}")
+            elif item.role == "tool":
+                for block in item.content:
+                    if isinstance(block, ToolResultBlock):
+                        status = "error" if block.is_error else "ok"
+                        preview = (block.content or "").strip().replace("\n", " ")
+                        lines.append(
+                            f"tool_result[{block.tool_name}:{status}]: {preview[:220]}"
+                        )
+        return "\n".join(lines[-24:])
 
     @staticmethod
     def _last_assistant_item(

@@ -19,9 +19,9 @@ VALID_PERMISSION_LEVELS = {"allow", "approval", "deny"}
 RESERVED_DYNAMIC_MODULE_COMMANDS = (
     "list_records",
     "get_record",
-    "create_record",
-    "update_record",
-    "delete_record",
+    "create_records",
+    "update_records",
+    "delete_records",
     "get_page",
     "edit_page",
 )
@@ -30,14 +30,19 @@ _NON_EXECUTABLE_ACTION_TYPES = {"create", "delete"}
 _DEFAULT_COMMAND_PERMISSION_LEVELS: dict[str, str] = {
     "list_records": "allow",
     "get_record": "allow",
-    "create_record": "allow",
-    "update_record": "allow",
-    "delete_record": "approval",
+    "create_records": "allow",
+    "update_records": "allow",
+    "delete_records": "approval",
     "get_page": "allow",
     "edit_page": "approval",
 }
 _RECORD_ID_PROPERTY = {"type": "string", "description": "Record ID."}
 _RECORD_DATA_PROPERTY = {"type": "object", "description": "Record data."}
+_LEGACY_COMMAND_ALIASES = {
+    "create_records": "create_record",
+    "update_records": "update_record",
+    "delete_records": "delete_record",
+}
 
 
 def build_dynamic_module_definition(
@@ -77,46 +82,69 @@ def build_dynamic_module_definition(
             permission_default=levels["get_record"],
         ),
         ActionDefinition(
-            id="create_record",
-            label="Create Record",
-            description=f"Create a new record in the {module.label} module.",
-            handler=_make_create_record_handler(module.name, session_factory),
+            id="create_records",
+            label="Create Records",
+            description=f"Create one or more records in the {module.label} module.",
+            handler=_make_create_records_handler(module.name, session_factory),
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["data"],
-                "properties": {"data": dict(_RECORD_DATA_PROPERTY)},
-            },
-            permission_default=levels["create_record"],
-        ),
-        ActionDefinition(
-            id="update_record",
-            label="Update Record",
-            description=f"Update an existing record in the {module.label} module.",
-            handler=_make_update_record_handler(module.name, session_factory),
-            parameters_schema={
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["record_id", "data"],
+                "required": ["records"],
                 "properties": {
-                    "record_id": dict(_RECORD_ID_PROPERTY),
-                    "data": dict(_RECORD_DATA_PROPERTY),
+                    "records": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": dict(_RECORD_DATA_PROPERTY),
+                    }
                 },
             },
-            permission_default=levels["update_record"],
+            permission_default=levels["create_records"],
         ),
         ActionDefinition(
-            id="delete_record",
-            label="Delete Record",
-            description=f"Delete a record from the {module.label} module.",
-            handler=_make_delete_record_handler(module.name, session_factory),
+            id="update_records",
+            label="Update Records",
+            description=f"Update one or more existing records in the {module.label} module.",
+            handler=_make_update_records_handler(module.name, session_factory),
             parameters_schema={
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["record_id"],
-                "properties": {"record_id": dict(_RECORD_ID_PROPERTY)},
+                "required": ["updates"],
+                "properties": {
+                    "updates": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["record_id", "data"],
+                            "properties": {
+                                "record_id": dict(_RECORD_ID_PROPERTY),
+                                "data": dict(_RECORD_DATA_PROPERTY),
+                            },
+                        },
+                    },
+                },
             },
-            permission_default=levels["delete_record"],
+            permission_default=levels["update_records"],
+        ),
+        ActionDefinition(
+            id="delete_records",
+            label="Delete Records",
+            description=f"Delete one or more records from the {module.label} module.",
+            handler=_make_delete_records_handler(module.name, session_factory),
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["record_ids"],
+                "properties": {
+                    "record_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string"},
+                    }
+                },
+            },
+            permission_default=levels["delete_records"],
         ),
         ActionDefinition(
             id="get_page",
@@ -236,7 +264,12 @@ def build_dynamic_module_permission_levels(
         raise ValueError(
             f"Permission '{invalid_override}' must be one of: allow, approval, deny."
         )
-    unknown_override = sorted(key for key in overrides if key not in commands)
+    legacy_override_commands = set(_LEGACY_COMMAND_ALIASES.values())
+    unknown_override = sorted(
+        key
+        for key in overrides
+        if key not in commands and key not in legacy_override_commands
+    )
     if unknown_override:
         raise ValueError(
             f"Unknown permission command(s) for module '{module_name}': {', '.join(unknown_override)}."
@@ -251,8 +284,15 @@ def build_dynamic_module_permission_levels(
         if command in overrides:
             levels[command] = overrides[command] or "allow"
             continue
+        legacy_command = _LEGACY_COMMAND_ALIASES.get(command)
+        if legacy_command and legacy_command in overrides:
+            levels[command] = overrides[legacy_command] or "allow"
+            continue
         if command in existing_levels:
             levels[command] = existing_levels[command]
+            continue
+        if legacy_command and legacy_command in existing_levels:
+            levels[command] = existing_levels[legacy_command]
             continue
         levels[command] = _DEFAULT_COMMAND_PERMISSION_LEVELS.get(command, "allow")
     return levels
@@ -291,6 +331,14 @@ async def sync_dynamic_module_permissions(
     for command, level in levels.items():
         action_key = f"{module_name}.{command}"
         if action_key in existing_actions:
+            continue
+        legacy_command = _LEGACY_COMMAND_ALIASES.get(command)
+        legacy_key = f"{module_name}.{legacy_command}" if legacy_command else None
+        if legacy_key and legacy_key in existing_actions:
+            row = next((existing_row for existing_row in existing_rows if existing_row.action == legacy_key), None)
+            if row is not None:
+                row.action = action_key
+                row.level = level
             continue
         db.add(AraiosPermission(action=action_key, level=level))
     await db.commit()
@@ -432,6 +480,48 @@ def _serialize_record(record: AraiosModuleRecord) -> dict[str, Any]:
     return data
 
 
+def _normalize_record_objects(payload: dict[str, Any], *, key: str = "records") -> list[dict[str, Any]]:
+    records = payload.get(key)
+    if not isinstance(records, list) or not records:
+        raise ValueError(f"'{key}' must be a non-empty array of objects")
+    normalized: list[dict[str, Any]] = []
+    for index, entry in enumerate(records):
+        if not isinstance(entry, dict):
+            raise ValueError(f"'{key}[{index}]' must be an object")
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_record_updates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    updates = payload.get("updates")
+    if not isinstance(updates, list) or not updates:
+        raise ValueError("'updates' must be a non-empty array of objects")
+    normalized: list[dict[str, Any]] = []
+    for index, entry in enumerate(updates):
+        if not isinstance(entry, dict):
+            raise ValueError(f"'updates[{index}]' must be an object")
+        record_id = entry.get("record_id")
+        if not isinstance(record_id, str) or not record_id.strip():
+            raise ValueError(f"'updates[{index}].record_id' must be a non-empty string")
+        data = entry.get("data")
+        if not isinstance(data, dict):
+            raise ValueError(f"'updates[{index}].data' must be an object")
+        normalized.append({"record_id": record_id.strip(), "data": data})
+    return normalized
+
+
+def _normalize_record_ids(payload: dict[str, Any]) -> list[str]:
+    record_ids = payload.get("record_ids")
+    if not isinstance(record_ids, list) or not record_ids:
+        raise ValueError("'record_ids' must be a non-empty array of strings")
+    normalized: list[str] = []
+    for index, record_id in enumerate(record_ids):
+        if not isinstance(record_id, str) or not record_id.strip():
+            raise ValueError(f"'record_ids[{index}]' must be a non-empty string")
+        normalized.append(record_id.strip())
+    return normalized
+
+
 async def _require_module(
     session_factory: "async_sessionmaker[AsyncSession]",
     module_name: str,
@@ -498,67 +588,71 @@ def _make_get_record_handler(module_name: str, session_factory: "async_sessionma
     return _handler
 
 
-def _make_create_record_handler(module_name: str, session_factory: "async_sessionmaker[AsyncSession]"):
+def _make_create_records_handler(module_name: str, session_factory: "async_sessionmaker[AsyncSession]"):
     async def _handler(payload: dict[str, Any]) -> dict[str, Any]:
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise ValueError("'data' must be an object")
+        records_data = _normalize_record_objects(payload)
         async with session_factory() as db:
-            record = AraiosModuleRecord(id=araios_gen_id(), module_name=module_name, data=data)
-            db.add(record)
+            records: list[AraiosModuleRecord] = []
+            for data in records_data:
+                record = AraiosModuleRecord(id=araios_gen_id(), module_name=module_name, data=data)
+                db.add(record)
+                records.append(record)
             await db.commit()
-            await db.refresh(record)
-        return _serialize_record(record)
+            for record in records:
+                await db.refresh(record)
+        return {"records": [_serialize_record(record) for record in records], "count": len(records)}
 
     return _handler
 
 
-def _make_update_record_handler(module_name: str, session_factory: "async_sessionmaker[AsyncSession]"):
+def _make_update_records_handler(module_name: str, session_factory: "async_sessionmaker[AsyncSession]"):
     async def _handler(payload: dict[str, Any]) -> dict[str, Any]:
-        record_id = payload.get("record_id")
-        if not isinstance(record_id, str) or not record_id.strip():
-            raise ValueError("'record_id' is required")
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise ValueError("'data' must be an object")
+        updates = _normalize_record_updates(payload)
+        record_ids = [entry["record_id"] for entry in updates]
         async with session_factory() as db:
             result = await db.execute(
                 select(AraiosModuleRecord).where(
                     AraiosModuleRecord.module_name == module_name,
-                    AraiosModuleRecord.id == record_id.strip(),
+                    AraiosModuleRecord.id.in_(record_ids),
                 )
             )
-            record = result.scalars().first()
-            if record is None:
-                raise ValueError(f"Record '{record_id}' not found")
-            merged = dict(record.data or {})
-            merged.update(data)
-            record.data = merged
+            records_by_id = {record.id: record for record in result.scalars().all()}
+            missing = [record_id for record_id in record_ids if record_id not in records_by_id]
+            if missing:
+                raise ValueError(f"Record(s) not found: {', '.join(missing)}")
+            updated_records: list[AraiosModuleRecord] = []
+            for entry in updates:
+                record = records_by_id[entry["record_id"]]
+                merged = dict(record.data or {})
+                merged.update(entry["data"])
+                record.data = merged
+                updated_records.append(record)
             await db.commit()
-            await db.refresh(record)
-        return _serialize_record(record)
+            for record in updated_records:
+                await db.refresh(record)
+        return {"records": [_serialize_record(record) for record in updated_records], "count": len(updated_records)}
 
     return _handler
 
 
-def _make_delete_record_handler(module_name: str, session_factory: "async_sessionmaker[AsyncSession]"):
+def _make_delete_records_handler(module_name: str, session_factory: "async_sessionmaker[AsyncSession]"):
     async def _handler(payload: dict[str, Any]) -> dict[str, Any]:
-        record_id = payload.get("record_id")
-        if not isinstance(record_id, str) or not record_id.strip():
-            raise ValueError("'record_id' is required")
+        record_ids = _normalize_record_ids(payload)
         async with session_factory() as db:
             result = await db.execute(
                 select(AraiosModuleRecord).where(
                     AraiosModuleRecord.module_name == module_name,
-                    AraiosModuleRecord.id == record_id.strip(),
+                    AraiosModuleRecord.id.in_(record_ids),
                 )
             )
-            record = result.scalars().first()
-            if record is None:
-                raise ValueError(f"Record '{record_id}' not found")
-            await db.delete(record)
+            records_by_id = {record.id: record for record in result.scalars().all()}
+            missing = [record_id for record_id in record_ids if record_id not in records_by_id]
+            if missing:
+                raise ValueError(f"Record(s) not found: {', '.join(missing)}")
+            for record_id in record_ids:
+                await db.delete(records_by_id[record_id])
             await db.commit()
-        return {"ok": True, "record_id": record_id.strip()}
+        return {"ok": True, "record_ids": record_ids, "count": len(record_ids)}
 
     return _handler
 

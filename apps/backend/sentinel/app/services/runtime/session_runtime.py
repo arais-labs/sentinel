@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import json
 import logging
+import mimetypes
 import os
 import signal
 import subprocess
 import shutil
+import tempfile
+import zipfile
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -39,6 +44,22 @@ _DEFAULT_RUNTIME_GIT_DIFF_BYTES = 120_000
 _MAX_RUNTIME_GIT_DIFF_BYTES = 500_000
 _RUNTIME_ACTION_TEXT_MAX_CHARS = 12_000
 _runtime_meta_lock = asyncio.Lock()
+_runtime_job_completion_callback: Callable[[str, dict[str, Any], str, str], Awaitable[None]] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWorkspaceDownload:
+    host_path: Path
+    download_name: str
+    media_type: str
+    cleanup_path: Path | None = None
+
+
+def configure_runtime_job_completion_callback(
+    callback: Callable[[str, dict[str, Any], str, str], Awaitable[None]] | None,
+) -> None:
+    global _runtime_job_completion_callback
+    _runtime_job_completion_callback = callback
 
 
 def _utc_now() -> datetime:
@@ -268,6 +289,58 @@ def read_runtime_workspace_file_preview(
     }
 
 
+def prepare_runtime_workspace_download(
+    session_id: UUID | str,
+    *,
+    path: str,
+) -> RuntimeWorkspaceDownload:
+    session_key = str(session_id)
+    workspace = runtime_workspace_dir(session_key).resolve()
+    normalized_path = _normalize_runtime_relative_path(path)
+    if not normalized_path:
+        raise ValueError("Runtime path is required")
+    resolved_path = _resolve_workspace_child_path(workspace, normalized_path)
+    if not resolved_path.exists():
+        raise FileNotFoundError(normalized_path)
+
+    if resolved_path.is_file():
+        media_type = mimetypes.guess_type(resolved_path.name)[0] or "application/octet-stream"
+        return RuntimeWorkspaceDownload(
+            host_path=resolved_path,
+            download_name=resolved_path.name,
+            media_type=media_type,
+        )
+
+    if not resolved_path.is_dir():
+        raise ValueError("Runtime path must be a file or directory")
+
+    safe_base_name = resolved_path.name.strip() or "workspace"
+    fd, archive_name = tempfile.mkstemp(prefix=f"{safe_base_name}-", suffix=".zip")
+    os.close(fd)
+    archive_path = Path(archive_name)
+    try:
+        with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for item in sorted(resolved_path.rglob("*")):
+                relative = item.relative_to(resolved_path)
+                if item.is_dir():
+                    if any(item.iterdir()):
+                        continue
+                    archive.writestr(f"{relative.as_posix().rstrip('/')}/", "")
+                    continue
+                archive.write(item, arcname=relative.as_posix())
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            archive_path.unlink()
+        raise
+
+    return RuntimeWorkspaceDownload(
+        host_path=archive_path,
+        download_name=f"{safe_base_name}.zip",
+        media_type="application/zip",
+        cleanup_path=archive_path,
+    )
+
+
 def list_runtime_workspace_git_roots(
     session_id: UUID | str,
     *,
@@ -332,12 +405,15 @@ def read_runtime_workspace_git_diff(
     if not normalized_path:
         raise IsADirectoryError("workspace root")
     resolved_path = _resolve_workspace_child_path(workspace, normalized_path)
-    if not resolved_path.exists():
+    probe_path = resolved_path if resolved_path.exists() else resolved_path.parent
+    while probe_path != workspace and not probe_path.exists():
+        probe_path = probe_path.parent
+    if not probe_path.exists():
         raise FileNotFoundError(normalized_path)
-    if not resolved_path.is_file():
+    if resolved_path.exists() and not resolved_path.is_file():
         raise IsADirectoryError(normalized_path)
 
-    git_root = _resolve_git_root(resolved_path.parent, workspace)
+    git_root = _resolve_git_root(probe_path if probe_path.is_dir() else probe_path.parent, workspace)
     if git_root is None:
         raise ValueError("Path is not inside a git repository within runtime workspace")
 
@@ -364,6 +440,27 @@ def read_runtime_workspace_git_diff(
     if code not in {0}:
         detail = stderr.strip() or stdout.strip() or "git diff failed"
         raise RuntimeError(detail)
+
+    if not stdout and resolved_path.exists():
+        tracked_code, _tracked_stdout, _tracked_stderr = _run_command(
+            ["git", "-C", str(git_root), "ls-files", "--error-unmatch", "--", file_rel_to_repo],
+            timeout_seconds=4,
+        )
+        if tracked_code != 0:
+            try:
+                file_text = resolved_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                file_text = resolved_path.read_text(encoding="utf-8", errors="replace")
+            new_lines = file_text.splitlines(keepends=True)
+            stdout = "".join(
+                difflib.unified_diff(
+                    [],
+                    new_lines,
+                    fromfile="/dev/null",
+                    tofile=f"b/{file_rel_to_repo}",
+                    n=normalized_context_lines,
+                )
+            )
 
     diff_text, truncated = _truncate_utf8(stdout, max_bytes=normalized_max_bytes)
     return {
@@ -474,10 +571,14 @@ async def register_detached_runtime_job(
     session_id: UUID | str,
     *,
     command: str,
-    cwd: Path,
+    cwd: str,
     pid: int,
-    stdout_path: Path,
-    stderr_path: Path,
+    stdout_path: str,
+    stderr_path: str,
+    host_stdout_path: Path,
+    host_stderr_path: Path,
+    exitcode_path: str | None = None,
+    host_exitcode_path: Path | None = None,
 ) -> dict[str, Any]:
     now = _utc_now().isoformat()
     root = runtime_root_dir(session_id)
@@ -491,10 +592,14 @@ async def register_detached_runtime_job(
             "id": uuid4().hex,
             "status": "running",
             "command": command,
-            "cwd": str(cwd),
+            "cwd": cwd,
             "pid": int(pid),
-            "stdout_path": str(stdout_path),
-            "stderr_path": str(stderr_path),
+            "stdout_path": stdout_path,
+            "stderr_path": stderr_path,
+            "host_stdout_path": str(host_stdout_path),
+            "host_stderr_path": str(host_stderr_path),
+            "exitcode_path": exitcode_path,
+            "host_exitcode_path": str(host_exitcode_path) if host_exitcode_path is not None else None,
             "created_at": now,
             "updated_at": now,
             "started_at": now,
@@ -531,6 +636,7 @@ async def finalize_detached_runtime_job(
     jobs_path = root / _RUNTIME_JOBS_FILENAME
     actions_path = root / _RUNTIME_ACTIONS_FILENAME
     now = _utc_now().isoformat()
+    notification: tuple[dict[str, Any], str, str] | None = None
     async with _runtime_meta_lock:
         jobs = _read_runtime_jobs(jobs_path)
         updated: dict[str, Any] | None = None
@@ -549,13 +655,16 @@ async def finalize_detached_runtime_job(
             return None
         _write_runtime_jobs(jobs_path, jobs)
         stdout_tail = _tail_text(
-            _runtime_job_host_path(session_id, updated.get("stdout_path")),
+            _runtime_job_host_log_path(session_id, updated, "stdout_path"),
             max_bytes=6_000,
         )
         stderr_tail = _tail_text(
-            _runtime_job_host_path(session_id, updated.get("stderr_path")),
+            _runtime_job_host_log_path(session_id, updated, "stderr_path"),
             max_bytes=6_000,
         )
+        if not _string_or_none(updated.get("completion_notified_at")):
+            updated["completion_notified_at"] = now
+            notification = (dict(updated), stdout_tail, stderr_tail)
         _append_runtime_action(
             actions_path,
             {
@@ -573,7 +682,11 @@ async def finalize_detached_runtime_job(
                 ),
             },
         )
-        return _serialize_detached_runtime_job(session_id, updated)
+        _write_runtime_jobs(jobs_path, jobs)
+        serialized = _serialize_detached_runtime_job(session_id, updated)
+    if notification is not None:
+        await _notify_runtime_job_completed(session_id, *notification)
+    return serialized
 
 
 async def list_detached_runtime_jobs(
@@ -584,12 +697,43 @@ async def list_detached_runtime_jobs(
 ) -> list[dict[str, Any]]:
     root = runtime_root_dir(session_id)
     jobs_path = root / _RUNTIME_JOBS_FILENAME
+    notifications: list[tuple[dict[str, Any], str, str]] = []
     async with _runtime_meta_lock:
         jobs = _read_runtime_jobs(jobs_path)
+        previous_statuses = {
+            str(item.get("id") or ""): (
+                str(item.get("status") or ""),
+                _string_or_none(item.get("completion_notified_at")),
+            )
+            for item in jobs
+        }
         jobs = _refresh_runtime_jobs(jobs)
+        now = _utc_now().isoformat()
+        for item in jobs:
+            job_id = str(item.get("id") or "")
+            prev_status, prev_notified = previous_statuses.get(job_id, ("", None))
+            status = str(item.get("status") or "")
+            if status not in {"completed", "failed"}:
+                continue
+            if prev_notified or _string_or_none(item.get("completion_notified_at")):
+                continue
+            if prev_status and prev_status != "running":
+                continue
+            item["completion_notified_at"] = now
+            stdout_tail = _tail_text(
+                _runtime_job_host_log_path(session_id, item, "stdout_path"),
+                max_bytes=6_000,
+            )
+            stderr_tail = _tail_text(
+                _runtime_job_host_log_path(session_id, item, "stderr_path"),
+                max_bytes=6_000,
+            )
+            notifications.append((dict(item), stdout_tail, stderr_tail))
         _write_runtime_jobs(jobs_path, jobs)
     jobs.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     filtered = jobs if include_completed else [item for item in jobs if str(item.get("status")) == "running"]
+    for item, stdout_tail, stderr_tail in notifications:
+        await _notify_runtime_job_completed(session_id, item, stdout_tail, stderr_tail)
     if include_internal:
         return [dict(item) for item in filtered]
     return [_serialize_detached_runtime_job(session_id, item) for item in filtered]
@@ -661,11 +805,11 @@ async def stop_detached_runtime_job(
         target["termination_reason"] = reason or "stopped"
         _write_runtime_jobs(jobs_path, jobs)
         stdout_tail = _tail_text(
-            _runtime_job_host_path(session_id, target.get("stdout_path")),
+            _runtime_job_host_log_path(session_id, target, "stdout_path"),
             max_bytes=6_000,
         )
         stderr_tail = _tail_text(
-            _runtime_job_host_path(session_id, target.get("stderr_path")),
+            _runtime_job_host_log_path(session_id, target, "stderr_path"),
             max_bytes=6_000,
         )
         _append_runtime_action(
@@ -719,11 +863,11 @@ async def stop_all_detached_runtime_jobs(
             item["termination_reason"] = reason or "stopped"
             stopped += 1
             stdout_tail = _tail_text(
-                _runtime_job_host_path(session_id, item.get("stdout_path")),
+                _runtime_job_host_log_path(session_id, item, "stdout_path"),
                 max_bytes=6_000,
             )
             stderr_tail = _tail_text(
-                _runtime_job_host_path(session_id, item.get("stderr_path")),
+                _runtime_job_host_log_path(session_id, item, "stderr_path"),
                 max_bytes=6_000,
             )
             _append_runtime_action(
@@ -759,8 +903,8 @@ async def read_detached_runtime_job_logs(
     if job is None:
         return None
     max_bytes = max(256, min(int(tail_bytes), 200_000))
-    stdout_path = _runtime_job_host_path(session_id, job.get("stdout_path"))
-    stderr_path = _runtime_job_host_path(session_id, job.get("stderr_path"))
+    stdout_path = _runtime_job_host_log_path(session_id, job, "stdout_path")
+    stderr_path = _runtime_job_host_log_path(session_id, job, "stderr_path")
     stdout = _tail_text(stdout_path, max_bytes=max_bytes)
     stderr = _tail_text(stderr_path, max_bytes=max_bytes)
     return {
@@ -918,9 +1062,15 @@ def _refresh_runtime_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         pid = _int_or_none(item.get("pid"))
         if pid is None or _process_exists(pid):
             continue
-        item["status"] = "completed"
+        returncode = _runtime_job_recorded_returncode(item)
+        if returncode is None and (
+            _string_or_none(item.get("exitcode_path")) or _string_or_none(item.get("host_exitcode_path"))
+        ):
+            continue
+        item["status"] = "completed" if returncode in {None, 0} else "failed"
         item["ended_at"] = item.get("ended_at") or now
         item["updated_at"] = now
+        item["returncode"] = returncode
         item["termination_reason"] = item.get("termination_reason") or "process_exited"
     return jobs
 
@@ -1323,6 +1473,10 @@ def _serialize_detached_runtime_job(
     payload["cwd"] = _runtime_job_public_path(session_id, payload.get("cwd"))
     payload["stdout_path"] = _runtime_job_public_path(session_id, payload.get("stdout_path"))
     payload["stderr_path"] = _runtime_job_public_path(session_id, payload.get("stderr_path"))
+    payload.pop("host_stdout_path", None)
+    payload.pop("host_stderr_path", None)
+    payload.pop("host_exitcode_path", None)
+    payload.pop("completion_notified_at", None)
     return payload
 
 
@@ -1347,6 +1501,52 @@ def _runtime_job_host_path(session_id: UUID | str, value: Any) -> Path:
     if mapped is not None:
         return mapped
     return Path(raw)
+
+
+def _runtime_job_host_log_path(
+    session_id: UUID | str,
+    job: dict[str, Any],
+    key: str,
+) -> Path:
+    host_key = f"host_{key}"
+    preferred = job.get(host_key)
+    if preferred:
+        return _runtime_job_host_path(session_id, preferred)
+    return _runtime_job_host_path(session_id, job.get(key))
+
+
+def _runtime_job_recorded_returncode(job: dict[str, Any]) -> int | None:
+    existing = _int_or_none(job.get("returncode"))
+    if existing is not None:
+        return existing
+    raw_path = _string_or_none(job.get("host_exitcode_path")) or _string_or_none(job.get("exitcode_path"))
+    if not raw_path:
+        return None
+    try:
+        raw = Path(raw_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+async def _notify_runtime_job_completed(
+    session_id: UUID | str,
+    job: dict[str, Any],
+    stdout_tail: str,
+    stderr_tail: str,
+) -> None:
+    callback = _runtime_job_completion_callback
+    if callback is None:
+        return
+    try:
+        await callback(str(session_id), _serialize_detached_runtime_job(session_id, job), stdout_tail, stderr_tail)
+    except Exception:
+        logger.warning("Runtime job completion callback failed", exc_info=True)
 
 
 def _map_host_runtime_path_to_public(session_id: UUID | str, host_path: str) -> str | None:

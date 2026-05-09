@@ -1,4 +1,4 @@
-"""AraiOS Coordination router — async SQLAlchemy."""
+"""Coordination router for dynamic module/control-plane APIs."""
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -11,7 +11,7 @@ from app.models.araios import AraiosCoordinationMessage, araios_gen_id
 from app.schemas.araios import CoordinationSend, CoordinationMessageOut, CoordinationListResponse
 
 
-router = APIRouter(tags=["araios-coordination"])
+router = APIRouter(tags=["coordination"])
 
 
 def _get_agent_id(user: TokenPayload = Depends(require_auth)) -> str:

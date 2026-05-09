@@ -222,9 +222,9 @@ Recommended example:
 Reserved command names:
 - `list_records`
 - `get_record`
-- `create_record`
-- `update_record`
-- `delete_record`
+- `create_records`
+- `update_records`
+- `delete_records`
 - `get_page`
 - `edit_page`
 
@@ -412,9 +412,9 @@ Example:
 Valid built-in command keys for every dynamic module:
 - `list_records`
 - `get_record`
-- `create_record`
-- `update_record`
-- `delete_record`
+- `create_records`
+- `update_records`
+- `delete_records`
 - `get_page`
 - `edit_page`
 
@@ -426,9 +426,9 @@ Example:
 {
   "list_records": "allow",
   "get_record": "allow",
-  "create_record": "allow",
-  "update_record": "approval",
-  "delete_record": "approval",
+  "create_records": "allow",
+  "update_records": "approval",
+  "delete_records": "approval",
   "health_check": "allow"
 }
 ```

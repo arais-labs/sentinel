@@ -9,6 +9,7 @@ from uuid import UUID
 @dataclass(slots=True)
 class ToolRuntimeContext:
     session_id: UUID | None = None
+    runtime_session_id: UUID | None = None
 
 
 ToolExecutorFn = Callable[[dict[str, Any], ToolRuntimeContext], Awaitable[Any]]

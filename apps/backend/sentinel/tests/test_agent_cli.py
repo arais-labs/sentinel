@@ -113,7 +113,7 @@ def test_collect_boot_provider_overrides_from_pasted_secret() -> None:
 
 
 def test_collect_boot_provider_overrides_from_env_var_name() -> None:
-    prompts = iter(["5", "2", "MY_GEMINI_TOKEN"])
+    prompts = iter(["6", "2", "MY_GEMINI_TOKEN"])
 
     overrides = _collect_boot_provider_overrides(
         env={"MY_GEMINI_TOKEN": "gemini-secret"},
@@ -124,6 +124,21 @@ def test_collect_boot_provider_overrides_from_env_var_name() -> None:
     assert overrides == {
         "PRIMARY_PROVIDER": "gemini",
         "GEMINI_API_KEY": "gemini-secret",
+    }
+
+
+def test_collect_boot_provider_overrides_from_gemini_oauth_json() -> None:
+    prompts = iter(['5', '1', '{"refresh_token":"refresh-token","access_token":"access-token"}'])
+
+    overrides = _collect_boot_provider_overrides(
+        env={},
+        input_fn=lambda _prompt: next(prompts),
+        interactive=True,
+    )
+
+    assert overrides == {
+        "PRIMARY_PROVIDER": "gemini",
+        "GEMINI_OAUTH_CREDENTIALS": '{"refresh_token":"refresh-token","access_token":"access-token"}',
     }
 
 

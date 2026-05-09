@@ -189,7 +189,7 @@ export function AdminPage() {
               </div>
 
               <p className="text-[10px] text-[color:var(--text-muted)]">
-                AraiOS integration URLs are managed in Settings.
+                Instance URLs are managed in Settings.
               </p>
             </div>
           </Panel>

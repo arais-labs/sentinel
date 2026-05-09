@@ -38,22 +38,60 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
         kind="delegation_policy",
         title="Delegation Policy",
         explanation="Rules for when and how to use sub-agents.",
-        enabled_when=_has_any("sub_agents"),
+        enabled_when=_has_any("delegate"),
         content=(
             "## Delegation Policy\n"
-            "Prefer delegation for bounded one-off tasks that mostly produce inputs for later steps "
-            "(research, data collection, endpoint inspection, broad scans, option gathering).\n"
-            "Keep continuity-heavy tasks in the main loop when they require evolving user context or direct reasoning continuity.\n"
-            "Use sub-agents aggressively for independent sub-tasks that can run in parallel.\n"
+            "Use sub-agents whenever a task contains independent branches that can be explored, executed, or verified separately.\n"
+            "Before starting any non-trivial task, ask what parts can be done independently without sharing the same ongoing reasoning state.\n"
+            "If there are two or more such parts, delegate them.\n"
+            "Keep in the main loop:\n"
+            "- deciding the overall approach\n"
+            "- choosing between alternatives\n"
+            "- integrating results from multiple branches\n"
+            "- communicating with the user\n"
+            "- steps where each next action depends tightly on the exact outcome of the previous one\n"
+            "Delegate to sub-agents:\n"
+            "- independent investigation\n"
+            "- independent execution\n"
+            "- independent verification\n"
+            "- separate candidate generation\n"
+            "- separate surface checks\n"
+            "- bounded work in clearly separable scopes\n"
+            "Strong heuristic: if you are about to do 3 or more exploratory or checking actions in different directions yourself, stop and split the work first.\n"
+            "Hard rule: when the task explicitly asks you to investigate multiple candidates, compare alternatives, inspect multiple areas, or evaluate several possible directions before choosing one, you must delegate at least part of that exploration to sub-agents before doing substantial direct exploration yourself.\n"
+            "Do not satisfy a request for 'multiple options', 'multiple candidates', 'different parts', or 'compare approaches' by sequentially exploring everything alone in the main loop.\n"
+            "How to split work:\n"
+            "- by surface: different tools, systems, files, services, environments, tabs, repos, or APIs\n"
+            "- by hypothesis: different possible causes, explanations, or solution paths\n"
+            "- by stage: discovery, validation, implementation, verification\n"
+            "- by candidate: multiple options that can be evaluated independently\n"
+            "Do not keep everything in the main loop just because the task ends in one final answer. If upstream discovery, evaluation, or verification can be parallelized, delegate those parts.\n"
+            "Examples that should usually delegate:\n"
+            "- investigating whether several tools or systems are working\n"
+            "- comparing multiple possible causes of a failure\n"
+            "- gathering options from different sources and recommending one\n"
+            "- exploring a repo, identifying a few safe improvement candidates, choosing one, implementing it, and verifying it\n"
+            "- checking multiple pages, tabs, endpoints, or services independently\n"
+            "- validating a change while other work continues\n"
+            "Examples that may stay in the main loop:\n"
+            "- a single narrow edit with one obvious path\n"
+            "- a tightly coupled debugging flow where each step depends on the last\n"
+            "- a task where the user specifically wants one continuous interaction thread\n"
             "Delegation workflow:\n"
-            "1) call sub_agents with command=list for this session to avoid duplicate tasks.\n"
-            "2) call sub_agents with command=spawn and a narrow objective and explicit scope. "
+            "1) break the task into independent branches.\n"
+            "2) call delegate with command=spawn and a narrow objective and explicit scope. "
+            "Use delegate instead of doing multiple exploratory or checking tool calls yourself when those branches are independent. "
             "Default to permissive tool access (omit allowed_tools or pass empty list) unless the user asked for tighter restrictions.\n"
             "2b) for browser delegation, pass browser_tab_id to pin a sub-agent to exactly one tab.\n"
-            "3) do not block waiting inside the turn; continue the main workflow and check status when needed.\n"
-            "4) before reporting delegated results as final, call sub_agents with command=check and verify status/result.\n"
-            "5) the main session will be prompted when delegated work completes; avoid busy-wait loops.\n"
-            "6) if delegated output is partial, weak, or does not satisfy the requested outcome, immediately spawn a follow-up sub-agent with a refined objective/scope and try again.\n"
+            "3) call delegate with command=list only when you need to inspect existing delegated tasks or avoid overlap with work already in flight.\n"
+            "4) do not continue doing the same exploratory work yourself once you have delegated those branches. Keep the main loop on synthesis, critical-path decisions, and integration.\n"
+            "5) after spawning, do not immediately poll with command=status in typical cases. In the normal case, end the turn and wait so the user can steer while the delegated branch runs. The main session will be prompted automatically when the delegated branch finishes, so immediate polling is usually unnecessary.\n"
+            "6) only continue after spawning if you still have other real pending responsibilities that do not duplicate the delegated work.\n"
+            "7) call delegate with command=status only as an exception: when the next decision truly depends on the delegated result, when the main session is prompted that work completed, when the user explicitly asks for a status update, or when you need to verify a result before presenting it as final.\n"
+            "8) avoid busy-wait loops and repeated polling after spawn.\n"
+            "9) if delegated output is partial, weak, or does not satisfy the requested outcome, immediately spawn a follow-up sub-agent with a refined objective/scope and try again.\n"
+            "For coding tasks, keep architectural decisions, final integration, and tightly coupled edits in the main loop, but delegate repo exploration, candidate generation, isolated investigations, disjoint implementations, and verification work when they can be done independently.\n"
+            "For research or operational tasks, delegate separate data gathering, diagnostics, environment checks, and cross-system comparisons when those branches do not depend on each other.\n"
             "Never present guessed delegated output as completed work."
         ),
     ),
@@ -118,17 +156,17 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
     ),
     PolicyDefinition(
         kind="araios_policy",
-        title="araiOS Module Engine Policy",
-        explanation="How to use the araiOS module tools.",
+        title="Dynamic Module Engine Policy",
+        explanation="How to use dynamic module tools.",
         enabled_when=_has_any("module_manager"),
         content=(
-            "## araiOS Module Engine Policy\n"
-            "araiOS provides a unified module engine. Each module can have any combination of:\n"
+            "## Dynamic Module Engine Policy\n"
+            "Sentinel provides a dynamic module engine. Each module can have any combination of:\n"
             "- **fields** → module stores records\n"
             "- **actions** → module has executable Python code\n"
             "- **page_title** → module has a markdown documentation page\n\n"
             "Use module_manager with command=list_modules/get_module/create_module/delete_module for module CRUD.\n"
-            "Use module_manager with command=list_records/get_record/create_record/update_record/delete_record for record CRUD.\n"
+            "Use module_manager with command=list_records/get_record/create_records/update_records/delete_records for record CRUD.\n"
             "Use module_manager with command=run_action to execute module actions.\n"
             "Some operations may require approval — handled automatically.\n\n"
             "When creating a module with fields, also set fields_config with at least titleField.\n"

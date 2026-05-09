@@ -10,6 +10,9 @@ cd "$ROOT_DIR"
 INSTANCES_DIR="$ROOT_DIR/.instances"
 mkdir -p "$INSTANCES_DIR"
 TMP_PICK="/tmp/sentinel_pick_$(id -u)"
+STATUS_CACHE_TS=0
+STATUS_CACHE_TEXT=""
+MENU_NOTE=""
 
 # Colors and Styling
 if [[ -t 1 ]]; then
@@ -56,6 +59,78 @@ print_header_content() {
   printf "${BLUE}    S T A C K   C O N T R O L   C E N T E R${RESET}${CLEAR_LINE}\n"
   printf "${DIM}    Arrows ⬆️ ⬇️  to navigate • Enter ↵  to select${RESET}${CLEAR_LINE}\n"
   printf "${CLEAR_LINE}\n"
+}
+
+invalidate_status_cache() {
+  STATUS_CACHE_TS=0
+  STATUS_CACHE_TEXT=""
+}
+
+set_menu_note() {
+  MENU_NOTE="${1:-}"
+}
+
+print_menu_note() {
+  [[ -n "$MENU_NOTE" ]] || return 0
+  printf "%b${CLEAR_LINE}\n" "$MENU_NOTE"
+  printf "${CLEAR_LINE}\n"
+}
+
+build_status_header() {
+  local now
+  now="$(date +%s)"
+  if [[ -n "$STATUS_CACHE_TEXT" ]] && (( now - STATUS_CACHE_TS < 2 )); then
+    printf "%b" "$STATUS_CACHE_TEXT"
+    return 0
+  fi
+
+  local docker_summary docker_ok="false"
+  if ! require_cmd docker; then
+    docker_summary="${RED}Docker missing${RESET}"
+  elif docker info >/dev/null 2>&1; then
+    docker_ok="true"
+    docker_summary="${GREEN}Docker running${RESET}"
+  else
+    docker_summary="${YELLOW}Docker unavailable${RESET}"
+  fi
+
+  local instances=()
+  while IFS= read -r line; do [[ -n "$line" ]] && instances+=("$line"); done < <(get_instances)
+
+  local summary
+  summary="${DIM}Status${RESET}  ${docker_summary}"
+  if [[ ${#instances[@]} -eq 0 ]]; then
+    summary+=$'\n'"${DIM}Instances${RESET}  none yet"
+  else
+    local inst
+    for inst in "${instances[@]}"; do
+      local backend port state running
+      backend="$(backend_label "$(current_instance_backend "$inst")")"
+      port="$(read_env_value "$(instance_env_file "$inst")" "STACK_PORT" || echo "4747")"
+      state="${DIM}stopped${RESET}"
+      if [[ "$docker_ok" == "true" ]]; then
+        running="$(count_running_instance_services "$inst")"
+        if [[ "$running" =~ ^[0-9]+$ ]] && (( running > 0 )); then
+          state="${GREEN}running:${running}${RESET}"
+        fi
+      else
+        state="${YELLOW}docker-off${RESET}"
+      fi
+      summary+=$'\n'"${DIM}Instance${RESET}  ${BOLD}${inst}${RESET} • ${backend} • :${port} • ${state}"
+    done
+  fi
+  summary+=$'\n'"${CLEAR_LINE}"
+
+  STATUS_CACHE_TS="$now"
+  STATUS_CACHE_TEXT="$summary"
+  printf "%b" "$STATUS_CACHE_TEXT"
+}
+
+count_running_instance_services() {
+  local inst="$1"
+  docker ps \
+    --filter "label=com.docker.compose.project=$(instance_project_name "$inst")" \
+    --format '{{.ID}}' 2>/dev/null | awk 'NF { count++ } END { print count + 0 }'
 }
 
 info() { echo -e "${BLUE}${ICON_INFO} [INFO]${RESET} $*"; }
@@ -126,6 +201,427 @@ instance_env_file() { echo "$INSTANCES_DIR/${1}/.env"; }
 instance_project_name() { echo "sentinel-${1}"; }
 instance_backup_dir() { echo "$INSTANCES_DIR/${1}/backups"; }
 instance_workspaces_dir() { echo "$INSTANCES_DIR/${1}/workspaces"; }
+instance_bridge_pid_file() { echo "$(instance_dir "$1")/multipass-bridge.pid"; }
+instance_bridge_log_file() { echo "$(instance_dir "$1")/multipass-bridge.log"; }
+instance_qemu_bridge_pid_file() { echo "$(instance_dir "$1")/qemu-bridge.pid"; }
+instance_qemu_bridge_log_file() { echo "$(instance_dir "$1")/qemu-bridge.log"; }
+instance_qemu_run_dir() { echo "$(instance_dir "$1")/qemu-run"; }
+
+host_os() {
+  case "$(uname -s)" in
+    Darwin) echo "macos" ;;
+    Linux) echo "linux" ;;
+    MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+upsert_env_value() {
+  local file="$1" key="$2" value="$3"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    local tmp
+    tmp="$(mktemp)"
+    awk -v key="$key" -v value="$value" '
+      BEGIN { replaced = 0 }
+      $0 ~ ("^" key "=") {
+        print key "=" value
+        replaced = 1
+        next
+      }
+      { print }
+      END {
+        if (!replaced) {
+          print key "=" value
+        }
+      }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+  else
+    printf "%s=%s\n" "$key" "$value" >> "$file"
+  fi
+}
+
+ensure_instance_structure() {
+  local inst="$1"
+  mkdir -p "$(instance_dir "$inst")"
+  mkdir -p "$(instance_backup_dir "$inst")"
+  mkdir -p "$(instance_workspaces_dir "$inst")"
+}
+
+multipass_is_ready() {
+  require_cmd multipass || return 1
+  multipass version >/dev/null 2>&1
+}
+
+print_multipass_manual_install_hint() {
+  local os_name="$1"
+  warn "Multipass could not be installed automatically."
+  case "$os_name" in
+    macos)
+      printf "Install it manually from Canonical's installer, then return and run Instance Config again.\n"
+      ;;
+    windows)
+      printf "Install it manually from Canonical's installer or a supported package manager, then return and run Instance Config again.\n"
+      ;;
+    linux)
+      printf "Install it manually following the official Multipass instructions, then return and run Instance Config again.\n"
+      ;;
+    *)
+      printf "Install Multipass manually, then return and run Instance Config again.\n"
+      ;;
+  esac
+  printf "Docs: https://documentation.ubuntu.com/multipass/latest/how-to-guides/install-multipass/\n"
+}
+
+attempt_multipass_install() {
+  local os_name="$1"
+  echo -n "$CURSOR_ON"
+  case "$os_name" in
+    macos)
+      if require_cmd brew; then
+        brew install --cask multipass
+      else
+        return 1
+      fi
+      ;;
+    windows)
+      if require_cmd winget; then
+        winget install -e --id Canonical.Multipass
+      else
+        return 1
+      fi
+      ;;
+    linux)
+      if require_cmd snap; then
+        sudo snap install multipass
+      else
+        return 1
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ensure_multipass_available_interactive() {
+  if multipass_is_ready; then
+    return 0
+  fi
+
+  local os_name
+  os_name="$(host_os)"
+  warn "Multipass is not currently available on this machine."
+  read -r -p "Attempt to install Multipass now? [y/N]: " confirm < /dev/tty
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    print_multipass_manual_install_hint "$os_name"
+    echo -n "$CURSOR_OFF"
+    return 1
+  fi
+
+  if attempt_multipass_install "$os_name" && multipass_is_ready; then
+    success "Multipass is installed and ready."
+    echo -n "$CURSOR_OFF"
+    return 0
+  fi
+
+  print_multipass_manual_install_hint "$os_name"
+  echo -n "$CURSOR_OFF"
+  return 1
+}
+
+current_instance_backend() {
+  local inst="$1"
+  local value
+  value="$(read_env_value "$(instance_env_file "$inst")" "RUNTIME_EXEC_BACKEND" || true)"
+  echo "${value:-docker}"
+}
+
+backend_label() {
+  case "${1:-docker}" in
+    docker) echo "Docker" ;;
+    multipass) echo "Multipass" ;;
+    qemu) echo "QEMU" ;;
+    remote) echo "Custom SSH" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+default_multipass_mount_mode() {
+  case "$(host_os)" in
+    windows) echo "transfer" ;;
+    *) echo "mount" ;;
+  esac
+}
+
+default_multipass_image_path() {
+  local arch image_dir candidate
+  arch="$(uname -m)"
+  image_dir="$ROOT_DIR/infra/multipass"
+  candidate="$image_dir/sentinel-runtime-base-${arch}.img"
+  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
+  candidate="$image_dir/sentinel-runtime-base.img"
+  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
+  echo ""
+}
+
+default_qemu_image_path() {
+  local arch image_dir candidate
+  arch="$(uname -m)"
+  image_dir="$ROOT_DIR/qemu/output"
+  candidate="$image_dir/sentinel-runtime-base-${arch}.qcow2"
+  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
+  candidate="$image_dir/sentinel-runtime-base.qcow2"
+  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
+  candidate="$image_dir/sentinel-runtime-base-arm64.qcow2"
+  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
+  echo ""
+}
+
+default_qemu_key_path() {
+  local image_path
+  image_path="$(default_qemu_image_path)"
+  [[ -n "$image_path" ]] || { echo ""; return 0; }
+  local candidate="${image_path%.qcow2}.id_ed25519"
+  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
+  echo ""
+}
+
+default_multipass_bridge_port() {
+  local inst="$1"
+  local ef stack_port
+  ef="$(instance_env_file "$inst")"
+  stack_port="$(read_env_value "$ef" "STACK_PORT" || echo 4747)"
+  if [[ "$stack_port" =~ ^[0-9]+$ ]]; then
+    local port=$((stack_port + 40000))
+    if (( port > 65535 )); then
+      echo 47480
+      return 0
+    fi
+    echo "$port"
+    return 0
+  fi
+  echo 47480
+}
+
+default_qemu_bridge_port() {
+  local inst="$1"
+  local ef stack_port
+  ef="$(instance_env_file "$inst")"
+  stack_port="$(read_env_value "$ef" "STACK_PORT" || echo 4747)"
+  if [[ "$stack_port" =~ ^[0-9]+$ ]]; then
+    local port=$((stack_port + 40001))
+    if (( port > 65535 )); then
+      echo 47481
+      return 0
+    fi
+    echo "$port"
+    return 0
+  fi
+  echo 47481
+}
+
+ensure_multipass_bridge_settings() {
+  local inst="$1"
+  local ef token port
+  ef="$(instance_env_file "$inst")"
+  token="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_TOKEN" || true)"
+  port="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_PORT" || true)"
+  [[ -z "$token" ]] && token="$(generate_secret 24)"
+  [[ -z "$port" ]] && port="$(default_multipass_bridge_port "$inst")"
+  upsert_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_TOKEN" "$token"
+  upsert_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_PORT" "$port"
+  upsert_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_URL" "http://host.docker.internal:${port}"
+}
+
+ensure_qemu_bridge_settings() {
+  local inst="$1"
+  local ef token port
+  ef="$(instance_env_file "$inst")"
+  token="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_TOKEN" || true)"
+  port="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_PORT" || true)"
+  [[ -z "$token" ]] && token="$(generate_secret 24)"
+  [[ -z "$port" ]] && port="$(default_qemu_bridge_port "$inst")"
+  upsert_env_value "$ef" "RUNTIME_QEMU_BRIDGE_TOKEN" "$token"
+  upsert_env_value "$ef" "RUNTIME_QEMU_BRIDGE_PORT" "$port"
+  upsert_env_value "$ef" "RUNTIME_QEMU_BRIDGE_URL" "http://host.docker.internal:${port}"
+}
+
+is_multipass_bridge_healthy() {
+  local inst="$1"
+  local ef token port
+  ef="$(instance_env_file "$inst")"
+  token="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_TOKEN" || true)"
+  port="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_PORT" || true)"
+  [[ -z "$token" || -z "$port" ]] && return 1
+  curl -fsS -H "X-Sentinel-Bridge-Token: $token" "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1
+}
+
+is_qemu_bridge_healthy() {
+  local inst="$1"
+  local ef token port
+  ef="$(instance_env_file "$inst")"
+  token="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_TOKEN" || true)"
+  port="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_PORT" || true)"
+  [[ -z "$token" || -z "$port" ]] && return 1
+  curl -fsS -H "X-Sentinel-Bridge-Token: $token" "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1
+}
+
+ensure_multipass_bridge_running() {
+  local inst="$1"
+  ensure_multipass_bridge_settings "$inst"
+  if is_multipass_bridge_healthy "$inst"; then
+    return 0
+  fi
+
+  local ef token port pid_file log_file
+  ef="$(instance_env_file "$inst")"
+  token="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_TOKEN" || true)"
+  port="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_PORT" || true)"
+  pid_file="$(instance_bridge_pid_file "$inst")"
+  log_file="$(instance_bridge_log_file "$inst")"
+
+  mkdir -p "$(dirname "$pid_file")"
+  if [[ -f "$pid_file" ]]; then
+    local existing_pid
+    existing_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
+      if is_multipass_bridge_healthy "$inst"; then
+        return 0
+      fi
+      kill "$existing_pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$pid_file"
+  fi
+
+  if ! require_cmd python3; then
+    error "python3 is required to run the Multipass bridge."
+    return 1
+  fi
+
+  nohup python3 "$ROOT_DIR/scripts/multipass_bridge.py" \
+    --port "$port" \
+    --token "$token" \
+    >"$log_file" 2>&1 &
+  echo $! > "$pid_file"
+
+  for _ in {1..20}; do
+    if is_multipass_bridge_healthy "$inst"; then
+      success "Multipass bridge is running for '$inst' on port $port."
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  error "Multipass bridge failed to start for '$inst'."
+  return 1
+}
+
+ensure_qemu_bridge_running() {
+  local inst="$1"
+  ensure_qemu_bridge_settings "$inst"
+  if is_qemu_bridge_healthy "$inst"; then
+    return 0
+  fi
+
+  local ef token port pid_file log_file
+  ef="$(instance_env_file "$inst")"
+  token="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_TOKEN" || true)"
+  port="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_PORT" || true)"
+  pid_file="$(instance_qemu_bridge_pid_file "$inst")"
+  log_file="$(instance_qemu_bridge_log_file "$inst")"
+
+  mkdir -p "$(dirname "$pid_file")"
+  if [[ -f "$pid_file" ]]; then
+    local existing_pid
+    existing_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
+      if is_qemu_bridge_healthy "$inst"; then
+        return 0
+      fi
+      kill "$existing_pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$pid_file"
+  fi
+
+  if ! require_cmd python3; then
+    error "python3 is required to run the QEMU bridge."
+    return 1
+  fi
+  if ! require_cmd qemu-system-aarch64 || ! require_cmd qemu-img; then
+    error "QEMU is required for the QEMU runtime backend."
+    return 1
+  fi
+
+  nohup python3 "$ROOT_DIR/scripts/qemu_bridge.py" \
+    --port "$port" \
+    --token "$token" \
+    >"$log_file" 2>&1 &
+  echo $! > "$pid_file"
+
+  for _ in {1..20}; do
+    if is_qemu_bridge_healthy "$inst"; then
+      success "QEMU bridge is running for '$inst' on port $port."
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  error "QEMU bridge failed to start for '$inst'."
+  return 1
+}
+
+stop_multipass_bridge() {
+  local inst="$1"
+  local pid_file
+  pid_file="$(instance_bridge_pid_file "$inst")"
+  [[ -f "$pid_file" ]] || return 0
+  local pid
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    kill "$pid" >/dev/null 2>&1 || true
+  fi
+  rm -f "$pid_file"
+}
+
+stop_qemu_bridge() {
+  local inst="$1"
+  local pid_file
+  pid_file="$(instance_qemu_bridge_pid_file "$inst")"
+  [[ -f "$pid_file" ]] || return 0
+  local pid
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    kill "$pid" >/dev/null 2>&1 || true
+  fi
+  rm -f "$pid_file"
+}
+
+write_instance_defaults() {
+  local inst="$1"
+  local ef
+  ef="$(instance_env_file "$inst")"
+  ensure_instance_structure "$inst"
+
+  local stack_port postgres_db postgres_user postgres_password jwt_secret jwt_algorithm runtime_backend
+  stack_port="$(read_env_value "$ef" "STACK_PORT" || true)"
+  postgres_db="$(read_env_value "$ef" "POSTGRES_DB" || true)"
+  postgres_user="$(read_env_value "$ef" "POSTGRES_USER" || true)"
+  postgres_password="$(read_env_value "$ef" "POSTGRES_PASSWORD" || true)"
+  jwt_secret="$(read_env_value "$ef" "JWT_SECRET_KEY" || true)"
+  jwt_algorithm="$(read_env_value "$ef" "JWT_ALGORITHM" || true)"
+  runtime_backend="$(read_env_value "$ef" "RUNTIME_EXEC_BACKEND" || true)"
+
+  upsert_env_value "$ef" "STACK_PORT" "${stack_port:-4747}"
+  upsert_env_value "$ef" "POSTGRES_DB" "${postgres_db:-arai_stack}"
+  upsert_env_value "$ef" "POSTGRES_USER" "${postgres_user:-arai_stack}"
+  upsert_env_value "$ef" "POSTGRES_PASSWORD" "${postgres_password:-$(generate_secret 12)}"
+  upsert_env_value "$ef" "JWT_SECRET_KEY" "${jwt_secret:-$(generate_secret 32)}"
+  upsert_env_value "$ef" "JWT_ALGORITHM" "${jwt_algorithm:-HS256}"
+  upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "${runtime_backend:-docker}"
+  upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
+}
 
 sql_quote_identifier() {
   local value="$1"
@@ -238,6 +734,8 @@ select_option() {
   while true; do
     echo -n "$GOTO_TOP"
     print_header_content
+    build_status_header
+    print_menu_note
     printf "${BOLD}%s${RESET}${CLEAR_LINE}\n" "$title"
     for i in "${!options[@]}"; do
       if [[ $i -eq $current ]]; then
@@ -345,10 +843,6 @@ auth_sql() {
   sql+="INSERT INTO system_settings(key, value) SELECT 'sentinel.auth.username', ${auth_user_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
   sql+="WITH up AS (UPDATE system_settings SET value = ${auth_hash_lit} WHERE key = 'sentinel.auth.password_hash' RETURNING 1) "
   sql+="INSERT INTO system_settings(key, value) SELECT 'sentinel.auth.password_hash', ${auth_hash_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
-  sql+="WITH up AS (UPDATE system_settings SET value = ${auth_user_lit} WHERE key = 'araios.auth.username' RETURNING 1) "
-  sql+="INSERT INTO system_settings(key, value) SELECT 'araios.auth.username', ${auth_user_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
-  sql+="WITH up AS (UPDATE system_settings SET value = ${auth_hash_lit} WHERE key = 'araios.auth.password_hash' RETURNING 1) "
-  sql+="INSERT INTO system_settings(key, value) SELECT 'araios.auth.password_hash', ${auth_hash_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
   echo "$sql"
 }
 
@@ -459,9 +953,21 @@ action_up() {
   [[ -z "$inst" ]] && return 0
 
   info "${ICON_START} Launching '$inst'${mode_label:+ (${mode_label})}..."
+  if [[ "$(current_instance_backend "$inst")" == "multipass" ]]; then
+    if ! ensure_multipass_bridge_running "$inst"; then
+      error "Cannot start '$inst' without a healthy Multipass bridge."
+      return 0
+    fi
+  elif [[ "$(current_instance_backend "$inst")" == "qemu" ]]; then
+    if ! ensure_qemu_bridge_running "$inst"; then
+      error "Cannot start '$inst' without a healthy QEMU bridge."
+      return 0
+    fi
+  fi
   "$compose_runner" "$inst" build sentinel-runtime 2>/dev/null || true
   if "$compose_runner" "$inst" up --build -d; then
     success "'$inst' is running."
+    invalidate_status_cache
     local seed_status="not_requested"
     if [[ -n "$seed_user" && -n "$seed_password" ]]; then
       info "Initializing auth credentials in DB..."
@@ -482,15 +988,242 @@ action_up() {
       printf "2. Log in with your admin credentials.\n"
       printf "   👤 Username: ${YELLOW}${BOLD}%s${RESET}\n" "$(trim_lower "$seed_user")"
     elif [[ -n "$seed_user" && "$seed_status" == "failed" ]]; then
-      printf "2. Auth initialization failed; use existing credentials or run ${BOLD}Reset Auth${RESET}.\n"
+      printf "2. Auth initialization failed; use existing credentials or run ${BOLD}Instance Config → Reset Auth${RESET}.\n"
     else
       printf "2. Log in with your existing credentials.\n"
     fi
     printf "${DIM}---------------------------------------${RESET}\n"
+
+    local ready_note
+    ready_note="${GREEN}${inst}${RESET} running at ${BOLD}http://localhost:${p}/${RESET}"
+    if [[ -n "$seed_user" && "$seed_status" == "ok" ]]; then
+      ready_note+=$'\n'"Admin: ${BOLD}$(trim_lower "$seed_user")${RESET}"
+    elif [[ -n "$seed_user" && "$seed_status" == "failed" ]]; then
+      ready_note+=$'\n'"${YELLOW}Auth initialization failed.${RESET} Use ${BOLD}Instance Config → Reset Auth${RESET}."
+    fi
+    set_menu_note "$ready_note"
   else
     error "Failed to start '$inst'."
+    set_menu_note "${RED}Failed to start '${inst}'.${RESET}"
   fi
   return 0
+}
+
+action_create() {
+  local inst="${1:-}"
+  echo -n "$CURSOR_ON"
+
+  if [[ -z "$inst" ]]; then
+    local suggested_name="main"
+    local raw_name
+    raw_name="$(prompt_default "Instance Name" "$suggested_name")"
+    inst="$(sanitize_instance_name "$raw_name")"
+  fi
+
+  if [[ -z "$inst" ]]; then
+    warn "Instance name cannot be empty."
+    set_menu_note "${YELLOW}Instance name cannot be empty.${RESET}"
+    return 0
+  fi
+
+  local ef
+  ef="$(instance_env_file "$inst")"
+  if [[ -f "$ef" ]]; then
+    warn "Instance '$inst' already exists. Use Instance Config to edit it."
+    set_menu_note "${YELLOW}Instance '${inst}' already exists.${RESET} Use ${BOLD}Instance Config${RESET} to edit it."
+    echo -n "$CURSOR_OFF"
+    return 0
+  fi
+
+  write_instance_defaults "$inst"
+
+  local stack_port postgres_db postgres_user postgres_password
+  stack_port="$(prompt_default "Stack Port" "$(read_env_value "$ef" "STACK_PORT" || echo 4747)")"
+  postgres_db="$(prompt_default "Postgres DB Name" "$(read_env_value "$ef" "POSTGRES_DB" || echo arai_stack)")"
+  postgres_user="$(prompt_default "Postgres User" "$(read_env_value "$ef" "POSTGRES_USER" || echo arai_stack)")"
+  postgres_password="$(prompt_default "Postgres Password" "$(read_env_value "$ef" "POSTGRES_PASSWORD" || generate_secret 12)")"
+
+  upsert_env_value "$ef" "STACK_PORT" "$stack_port"
+  upsert_env_value "$ef" "POSTGRES_DB" "$postgres_db"
+  upsert_env_value "$ef" "POSTGRES_USER" "$postgres_user"
+  upsert_env_value "$ef" "POSTGRES_PASSWORD" "$postgres_password"
+  upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
+
+  success "Instance '$inst' created."
+  info "Current runtime backend: $(backend_label "$(current_instance_backend "$inst")")"
+  invalidate_status_cache
+  set_menu_note "${GREEN}Instance '${inst}' created.${RESET} Runtime backend: ${BOLD}$(backend_label "$(current_instance_backend "$inst")")${RESET}"
+  echo -n "$CURSOR_OFF"
+  return 0
+}
+
+action_edit_instance() {
+  local inst="$1"
+  [[ -z "$inst" ]] && return 0
+
+  local ef
+  ef="$(instance_env_file "$inst")"
+  write_instance_defaults "$inst"
+
+  echo -n "$CURSOR_ON"
+  local stack_port postgres_db postgres_user postgres_password
+  stack_port="$(prompt_default "Stack Port" "$(read_env_value "$ef" "STACK_PORT" || echo 4747)")"
+  postgres_db="$(prompt_default "Postgres DB Name" "$(read_env_value "$ef" "POSTGRES_DB" || echo arai_stack)")"
+  postgres_user="$(prompt_default "Postgres User" "$(read_env_value "$ef" "POSTGRES_USER" || echo arai_stack)")"
+  postgres_password="$(prompt_default "Postgres Password" "$(read_env_value "$ef" "POSTGRES_PASSWORD" || generate_secret 12)")"
+
+  upsert_env_value "$ef" "STACK_PORT" "$stack_port"
+  upsert_env_value "$ef" "POSTGRES_DB" "$postgres_db"
+  upsert_env_value "$ef" "POSTGRES_USER" "$postgres_user"
+  upsert_env_value "$ef" "POSTGRES_PASSWORD" "$postgres_password"
+  upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
+
+  success "Instance '$inst' updated."
+  invalidate_status_cache
+  set_menu_note "${GREEN}Instance '${inst}' updated.${RESET} Port ${BOLD}${stack_port}${RESET} • Backend ${BOLD}$(backend_label "$(current_instance_backend "$inst")")${RESET}"
+  echo -n "$CURSOR_OFF"
+  return 0
+}
+
+action_instance_runtime_backend() {
+  local inst="$1"
+  [[ -z "$inst" ]] && return 0
+
+  local ef
+  ef="$(instance_env_file "$inst")"
+  write_instance_defaults "$inst"
+
+  local current_backend
+  current_backend="$(current_instance_backend "$inst")"
+  local options=(
+    "Docker"
+    "Multipass"
+    "QEMU"
+    "Custom SSH"
+    "⬅️  Back"
+  )
+
+  while true; do
+    echo -n "$CLEAR_SCREEN"
+    current_backend="$(current_instance_backend "$inst")"
+    select_option "RUNTIME BACKEND: $inst ($(backend_label "$current_backend"))" "${options[@]}"
+    local choice=$?
+    printf "\n\n"
+
+    case "$choice" in
+      0)
+        upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "docker"
+        upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
+        invalidate_status_cache
+        set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Docker${RESET} for runtimes."
+        ;;
+      1)
+        if ensure_multipass_available_interactive; then
+          local image_path
+          image_path="$(default_multipass_image_path)"
+          upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "multipass"
+          if [[ -n "$image_path" ]]; then
+            upsert_env_value "$ef" "RUNTIME_MULTIPASS_IMAGE" "$image_path"
+          fi
+          upsert_env_value "$ef" "RUNTIME_MULTIPASS_WORKSPACE_ROOT" "$(instance_workspaces_dir "$inst")"
+          upsert_env_value "$ef" "RUNTIME_MULTIPASS_MOUNT_MODE" "$(read_env_value "$ef" "RUNTIME_MULTIPASS_MOUNT_MODE" || default_multipass_mount_mode)"
+          invalidate_status_cache
+          if [[ -n "$image_path" ]]; then
+            set_menu_note "${GREEN}${inst}${RESET} now prefers ${BOLD}Multipass${RESET} with baked image ${BOLD}$(basename "$image_path")${RESET}."
+          else
+            set_menu_note "${GREEN}${inst}${RESET} now prefers ${BOLD}Multipass${RESET} for runtimes."
+          fi
+        fi
+        ;;
+      2)
+        local qemu_image_path qemu_key_path
+        qemu_image_path="$(default_qemu_image_path)"
+        qemu_key_path="$(default_qemu_key_path)"
+        if [[ -z "$qemu_image_path" || -z "$qemu_key_path" ]]; then
+          warn "QEMU baked image or SSH key is missing under $ROOT_DIR/qemu/output."
+          set_menu_note "${YELLOW}Build the QEMU image first from ${BOLD}./qemu/build-base-image.sh${RESET}${YELLOW}.${RESET}"
+        else
+          upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "qemu"
+          upsert_env_value "$ef" "RUNTIME_QEMU_IMAGE" "$qemu_image_path"
+          upsert_env_value "$ef" "RUNTIME_QEMU_SSH_KEY_PATH" "/data/runtime/qemu-output/$(basename "$qemu_key_path")"
+          upsert_env_value "$ef" "RUNTIME_QEMU_WORKSPACE_ROOT" "$(instance_workspaces_dir "$inst")"
+          upsert_env_value "$ef" "RUNTIME_QEMU_RUN_ROOT" "$(instance_qemu_run_dir "$inst")"
+          invalidate_status_cache
+          set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}QEMU${RESET} with baked image ${BOLD}$(basename "$qemu_image_path")${RESET}."
+        fi
+        ;;
+      3)
+        echo -n "$CURSOR_ON"
+        local remote_host remote_port remote_user remote_key remote_workspace
+        remote_host="$(prompt_default "Remote SSH Host" "$(read_env_value "$ef" "RUNTIME_SSH_HOST" || echo localhost)")"
+        remote_port="$(prompt_default "Remote SSH Port" "$(read_env_value "$ef" "RUNTIME_SSH_PORT" || echo 22)")"
+        remote_user="$(prompt_default "Remote SSH User" "$(read_env_value "$ef" "RUNTIME_SSH_USER" || echo sentinel)")"
+        remote_key="$(prompt_default "Remote SSH Key Path" "$(read_env_value "$ef" "RUNTIME_SSH_KEY_PATH" || true)")"
+        remote_workspace="$(prompt_default "Remote Workspace Path" "$(read_env_value "$ef" "RUNTIME_SSH_WORKSPACE" || echo /home/sentinel/workspace)")"
+        echo -n "$CURSOR_OFF"
+
+        if [[ -z "$remote_host" ]]; then
+          warn "Remote SSH host cannot be empty."
+          set_menu_note "${YELLOW}Remote SSH host cannot be empty.${RESET}"
+        else
+          upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "remote"
+          upsert_env_value "$ef" "RUNTIME_SSH_HOST" "$remote_host"
+          upsert_env_value "$ef" "RUNTIME_SSH_PORT" "$remote_port"
+          upsert_env_value "$ef" "RUNTIME_SSH_USER" "$remote_user"
+          upsert_env_value "$ef" "RUNTIME_SSH_KEY_PATH" "$remote_key"
+          upsert_env_value "$ef" "RUNTIME_SSH_WORKSPACE" "$remote_workspace"
+          invalidate_status_cache
+          set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Custom SSH${RESET} for runtimes."
+        fi
+        ;;
+      4)
+        return 0
+        ;;
+    esac
+  done
+}
+
+action_instance_config() {
+  local inst=""
+  rm -f "$TMP_PICK"
+  if pick_instance_interactive; then
+    inst=$(cat "$TMP_PICK")
+  fi
+  [[ -z "$inst" ]] && return 0
+
+  local options=(
+    "✏️  Edit Instance"
+    "🧩  Runtime Backend"
+    "🔐  Reset Auth"
+    "📜  Tail Logs"
+    "🗑️   Delete Instance"
+    "⬅️  Back"
+  )
+
+  while true; do
+    echo -n "$CLEAR_SCREEN"
+    local ef backend port
+    ef="$(instance_env_file "$inst")"
+    backend="$(backend_label "$(current_instance_backend "$inst")")"
+    port="$(read_env_value "$ef" "STACK_PORT" || echo "4747")"
+    select_option "INSTANCE CONFIG: $inst (${backend} • :${port})" "${options[@]}"
+    local choice=$?
+    printf "\n\n"
+
+    case "$choice" in
+      0) action_edit_instance "$inst" ;;
+      1) action_instance_runtime_backend "$inst" ;;
+      2) action_reset_auth_managed "$inst" ;;
+      3) action_logs "$inst" ;;
+      4)
+        action_delete "$inst"
+        if [[ ! -f "$(instance_env_file "$inst")" ]]; then
+          return 0
+        fi
+        ;;
+      5) return 0 ;;
+    esac
+  done
 }
 
 action_advanced_mode() {
@@ -511,27 +1244,30 @@ action_advanced_mode() {
       1) action_manage_custom_auth ;;
       2) return 0 ;;
     esac
-
-    while read -r -t 0; do read -r; done < /dev/tty
-    printf "\n${DIM}Press Enter to return to Advanced Mode...${RESET}"
-    read -r _ < /dev/tty
   done
 }
 
 action_down() {
   ensure_docker_ready || return 0
-  local inst=""
-  rm -f "$TMP_PICK"
-  if pick_instance_interactive; then
-    inst=$(cat "$TMP_PICK")
+  local inst="${1:-}"
+  if [[ -z "$inst" ]]; then
+    rm -f "$TMP_PICK"
+    if pick_instance_interactive; then
+      inst=$(cat "$TMP_PICK")
+    fi
   fi
   [[ -z "$inst" ]] && return 0
   
   info "${ICON_STOP} Stopping '$inst'..."
   if compose_instance "$inst" down; then
+    stop_multipass_bridge "$inst"
+    stop_qemu_bridge "$inst"
     success "Stopped."
+    invalidate_status_cache
+    set_menu_note "${GREEN}${inst}${RESET} stopped."
   else
     error "Failed to stop '$inst'."
+    set_menu_note "${RED}Failed to stop '${inst}'.${RESET}"
   fi
   return 0
 }
@@ -541,7 +1277,7 @@ action_list() {
   while IFS= read -r line; do [[ -n "$line" ]] && instances+=("$line"); done < <(get_instances)
   
   if [[ ${#instances[@]} -eq 0 ]]; then
-    info "No instances found. Use 'New/Edit Instance' to get started."
+    info "No instances found. Use 'New Instance' to get started."
     return 0
   fi
 
@@ -553,7 +1289,7 @@ action_list() {
     local state="${RED}STOPPED${RESET}"
     local running="0"
     if [[ "$docker_ok" == "true" ]]; then
-      running="$(compose_instance "$inst" ps --services --status running 2>/dev/null | wc -l | tr -d ' ')"
+      running="$(count_running_instance_services "$inst")"
       [[ "$running" -gt 0 ]] && state="${GREEN}RUNNING${RESET}"
     else
       state="${YELLOW}DOCKER OFF${RESET}"
@@ -565,24 +1301,29 @@ action_list() {
 
 action_logs() {
   ensure_docker_ready || return 0
-  local inst=""
-  rm -f "$TMP_PICK"
-  if pick_instance_interactive; then
-    inst=$(cat "$TMP_PICK")
+  local inst="${1:-}"
+  if [[ -z "$inst" ]]; then
+    rm -f "$TMP_PICK"
+    if pick_instance_interactive; then
+      inst=$(cat "$TMP_PICK")
+    fi
   fi
   [[ -z "$inst" ]] && return 0
   
   info "Attaching to logs for '$inst' (Ctrl+C to detach)..."
   compose_instance "$inst" logs -f
+  set_menu_note "${DIM}Stopped tailing logs for ${inst}.${RESET}"
   return 0
 }
 
 action_reset_auth_managed() {
   ensure_docker_ready || return 0
-  local inst=""
-  rm -f "$TMP_PICK"
-  if pick_instance_interactive; then
-    inst=$(cat "$TMP_PICK")
+  local inst="${1:-}"
+  if [[ -z "$inst" ]]; then
+    rm -f "$TMP_PICK"
+    if pick_instance_interactive; then
+      inst=$(cat "$TMP_PICK")
+    fi
   fi
   [[ -z "$inst" ]] && return 0
 
@@ -594,6 +1335,7 @@ action_reset_auth_managed() {
 
   if apply_auth_managed_instance "$inst" "$auth_user" "$auth_password"; then
     success "Auth reset completed for '$inst'."
+    set_menu_note "${GREEN}Auth reset completed for ${inst}.${RESET} Admin: ${BOLD}$(trim_lower "$auth_user")${RESET}"
   fi
   return 0
 }
@@ -626,9 +1368,11 @@ action_db_backup_create() {
       printf "%s  %s\n" "$checksum" "$(basename "$backup_file")" > "${backup_file}.sha256"
     fi
     success "Backup created: $backup_file"
+    set_menu_note "${GREEN}Backup created for ${inst}.${RESET} $(basename "$backup_file")"
   else
     rm -f "$temp_file"
     error "Backup failed for '$inst'."
+    set_menu_note "${RED}Backup failed for ${inst}.${RESET}"
   fi
   return 0
 }
@@ -645,16 +1389,19 @@ action_db_backup_list() {
   while IFS= read -r file; do [[ -n "$file" ]] && backups+=("$file"); done < <(get_instance_backups "$inst")
   if [[ ${#backups[@]} -eq 0 ]]; then
     info "No backups found for '$inst' in $(instance_backup_dir "$inst")."
+    set_menu_note "${DIM}No backups found for ${inst}.${RESET}"
     return 0
   fi
 
-  printf "\n${BOLD}BACKUPS FOR %s${RESET}\n" "$inst"
+  local summary
+  summary="${BOLD}Backups for ${inst}:${RESET}"
   local file size mod
   for file in "${backups[@]}"; do
     size="$(du -h "$file" | awk '{print $1}')"
     mod="$(date -r "$file" "+%Y-%m-%d %H:%M:%S")"
-    printf "  • %-36s  %8s  %s\n" "$(basename "$file")" "$size" "$mod"
+    summary+=$'\n'"• $(basename "$file")  ${size}  ${mod}"
   done
+  set_menu_note "$summary"
   return 0
 }
 
@@ -681,7 +1428,7 @@ action_db_backup_restore() {
   warn "This will replace DB '$DB_NAME' for instance '$inst'."
   warn "Backup selected: $(basename "$backup_file")"
   read -r -p "Type RESTORE to confirm: " confirm < /dev/tty
-  [[ "$confirm" != "RESTORE" ]] && { info "Restore aborted."; return 0; }
+  [[ "$confirm" != "RESTORE" ]] && { info "Restore aborted."; set_menu_note "${DIM}Restore aborted for ${inst}.${RESET}"; return 0; }
 
   local db_lit db_ident user_ident
   db_lit="$(sql_quote_literal "$DB_NAME")"
@@ -709,8 +1456,10 @@ action_db_backup_restore() {
   if gunzip -c "$backup_file" | compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
     psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" >/dev/null; then
     success "Restore completed for '$inst'."
+    set_menu_note "${GREEN}Restore completed for ${inst}.${RESET} Source: $(basename "$backup_file")"
   else
     error "Restore failed for '$inst'."
+    set_menu_note "${RED}Restore failed for ${inst}.${RESET}"
     return 0
   fi
 
@@ -743,8 +1492,10 @@ action_db_backup_delete() {
   if [[ "$confirm" == "DELETE" ]]; then
     rm -f "$backup_file" "${backup_file}.sha256"
     success "Backup deleted."
+    set_menu_note "${GREEN}Deleted backup for ${inst}.${RESET} $(basename "$backup_file")"
   else
     info "Delete aborted."
+    set_menu_note "${DIM}Backup delete aborted for ${inst}.${RESET}"
   fi
   return 0
 }
@@ -771,10 +1522,6 @@ action_db_backups_menu() {
       3) action_db_backup_delete ;;
       4) return 0 ;;
     esac
-
-    while read -r -t 0; do read -r; done < /dev/tty
-    printf "\n${DIM}Press Enter to return to Database Backups...${RESET}"
-    read -r _ < /dev/tty
   done
 }
 
@@ -810,10 +1557,12 @@ action_manage_custom_auth() {
 }
 
 action_delete() {
-  local inst=""
-  rm -f "$TMP_PICK"
-  if pick_instance_interactive; then
-    inst=$(cat "$TMP_PICK")
+  local inst="${1:-}"
+  if [[ -z "$inst" ]]; then
+    rm -f "$TMP_PICK"
+    if pick_instance_interactive; then
+      inst=$(cat "$TMP_PICK")
+    fi
   fi
   [[ -z "$inst" ]] && return 0
   
@@ -823,24 +1572,26 @@ action_delete() {
     if docker info >/dev/null 2>&1; then
       compose_instance "$inst" down -v --remove-orphans || true
     fi
+    stop_multipass_bridge "$inst"
+    stop_qemu_bridge "$inst"
     rm -rf "$(instance_dir "$inst")"
     success "Deleted."
+    invalidate_status_cache
+    set_menu_note "${GREEN}Deleted instance '${inst}'.${RESET}"
   else
     info "Aborted."
+    set_menu_note "${DIM}Delete aborted for ${inst}.${RESET}"
   fi
   return 0
 }
 
 menu_loop() {
   local options=(
-    "${ICON_CONFIG}  New/Edit Instance"
+    "${ICON_CONFIG}  New Instance"
+    "🧭  Instance Config"
     "${ICON_START}  Start Instance"
     "${ICON_STOP}  Stop Instance"
-    "🔐  Reset Auth (Managed Instance)"
     "🗄️  Database Backups"
-    "${ICON_LIST}  Global Status"
-    "📜  Tail Logs"
-    "🗑️   Delete Instance"
     "🛠️  Advanced Mode"
     "🚪  Exit"
   )
@@ -854,22 +1605,15 @@ menu_loop() {
 
     case "$choice" in
       0) action_create "" ;;
-      1) action_up "" ;;
-      2) action_down ;;
-      3) action_reset_auth_managed ;;
+      1) action_instance_config ;;
+      2) action_up "" ;;
+      3) action_down ;;
       4) action_db_backups_menu ;;
-      5) action_list ;;
-      6) action_logs ;;
-      7) action_delete ;;
-      8) action_advanced_mode ;;
-      9) echo "Goodbye!"; exit 0 ;;
+      5) action_advanced_mode ;;
+      6) echo "Goodbye!"; exit 0 ;;
     esac
-    
-    # BUFFER FLUSH: Prevents skipping the "Press Enter" prompt due to trailing characters from Docker
+
     while read -r -t 0; do read -r; done < /dev/tty
-    
-    printf "\n${DIM}Press Enter to return to menu...${RESET}"
-    read -r _ < /dev/tty
   done
 }
 

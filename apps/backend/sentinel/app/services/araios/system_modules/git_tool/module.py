@@ -15,7 +15,7 @@ def _run_parameters_schema() -> dict:
         "properties": {
             "cli_command": {
                 "type": "string",
-                "description": "Git or supported GitHub CLI command to execute.",
+                "description": "Git or supported GitHub CLI command to execute. Use command=read for read operations like `git clone`, `git fetch`, `git pull`, `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, and `gh api` GET. Use command=write for write operations like push, commit, branch mutation, `gh pr create`, `gh pr merge`, and `gh api` POST/PUT.",
             },
             "cwd": {
                 "type": "string",
@@ -63,6 +63,8 @@ MODULE = ModuleDefinition(
     label="Git",
     description=(
         "Execute git commands and selected GitHub CLI commands inside the session workspace with managed credentials. "
+        "Use `read` for read operations like `git clone/fetch/pull/ls-remote/submodule/request-pull` and `gh repo clone/list/view`, `gh pr view`, `gh api` GET. "
+        "Use `write` only for mutating operations like push, commit, branch updates, `gh pr create`, `gh pr merge`, and `gh api` POST/PUT. "
         "Allowed gh commands: `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT). "
         "Allowed network git reads include `git clone/fetch/pull/ls-remote/submodule/request-pull`; "
         "`git request-pull` only generates a pull-request summary and does not open a GitHub PR."
@@ -74,7 +76,7 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="read",
             label="Read Git Command",
-            description="Execute a git or supported gh read-oriented command inside the session workspace.",
+            description="Execute a git or supported gh read-oriented command inside the session workspace. Use this for clone, fetch, pull, ls-remote, repo listing/viewing, PR viewing, and gh api GET.",
             handler=handle_read,
             requires_runtime_context=True,
             parameters_schema=_run_parameters_schema(),
@@ -82,7 +84,7 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="write",
             label="Write Git Command",
-            description="Execute a git or supported gh write-oriented command inside the session workspace.",
+            description="Execute a git or supported gh write-oriented command inside the session workspace. Use this only for mutating operations like push, commit, branch updates, gh pr create, gh pr merge, and gh api POST/PUT. Do not use this for clone.",
             handler=handle_write,
             approval=True,
             requires_runtime_context=True,

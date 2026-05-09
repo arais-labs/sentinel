@@ -1,4 +1,4 @@
-"""AraiOS Settings router — async SQLAlchemy."""
+"""Settings router for dynamic module/control-plane APIs."""
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
@@ -10,7 +10,7 @@ from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_auth, require_admin
 from app.models.system import SystemSetting
 
-router = APIRouter(tags=["araios-settings"])
+router = APIRouter(tags=["module-settings"])
 
 
 # ── Schemas ──

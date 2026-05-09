@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowRight, Check, CheckCircle2, ChevronDown, Clock3, Globe, Hash, Loader2, Send, Terminal, Users, Wrench, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, CheckCircle2, ChevronDown, Clock3, ExternalLink, Globe, Hash, Loader2, RotateCcw, Send, Terminal, Users, Wrench, X } from 'lucide-react';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -297,6 +297,164 @@ function PopupContent({ content }: { content: string }) {
   );
 }
 
+function normalizeForwardUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+function RuntimeForwardResultView({ raw }: { raw: string }) {
+  const parsed = useMemo(() => parsePayloadJson(raw), [raw]);
+  if (!isObjectRecord(parsed)) {
+    return <ToolPayloadView raw={raw} emptyLabel="No output." payloadKind="output" toolName="port_forward" />;
+  }
+
+  const status = typeof parsed.status === 'string' ? parsed.status.trim() : '';
+  const singleUrl = typeof parsed.url === 'string' ? normalizeForwardUrl(parsed.url) : '';
+  const label = typeof parsed.label === 'string' ? parsed.label.trim() : '';
+  const port = typeof parsed.port === 'number' ? parsed.port : null;
+  const protocol = typeof parsed.protocol === 'string' ? parsed.protocol.trim() : '';
+  const items = Array.isArray(parsed.forwards) ? parsed.forwards : [];
+
+  if (singleUrl) {
+    return (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-emerald-400">
+            {status || 'open'}
+          </span>
+          {label ? (
+            <span className="text-[10px] font-semibold text-[color:var(--text-primary)]">{label}</span>
+          ) : null}
+          {port != null ? (
+            <span className="text-[10px] text-[color:var(--text-muted)]">port {port}</span>
+          ) : null}
+          {protocol ? (
+            <span className="text-[10px] uppercase tracking-wide text-[color:var(--text-muted)]">{protocol}</span>
+          ) : null}
+        </div>
+        <a
+          href={singleUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-xl border border-sky-500/25 bg-sky-500/8 px-3 py-2 text-[11px] font-mono text-sky-300 hover:bg-sky-500/14 hover:border-sky-500/40 transition-colors"
+        >
+          <ExternalLink size={13} />
+          <span className="break-all">{singleUrl}</span>
+        </a>
+      </div>
+    );
+  }
+
+  if (items.length > 0) {
+    return (
+      <div className="space-y-2">
+        {items.map((item, index) => {
+          if (!isObjectRecord(item)) return null;
+          const itemUrl = typeof item.url === 'string' ? normalizeForwardUrl(item.url) : '';
+          if (!itemUrl) return null;
+          const itemStatus = typeof item.status === 'string' ? item.status.trim() : 'open';
+          const itemLabel = typeof item.label === 'string' ? item.label.trim() : '';
+          const itemPort = typeof item.port === 'number' ? item.port : null;
+          return (
+            <div key={`${itemUrl}-${index}`} className="flex flex-wrap items-center gap-2 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/70 px-3 py-2">
+              <span className="inline-flex items-center rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-widest text-emerald-400">
+                {itemStatus}
+              </span>
+              {itemLabel ? (
+                <span className="text-[10px] font-semibold text-[color:var(--text-primary)]">{itemLabel}</span>
+              ) : null}
+              {itemPort != null ? (
+                <span className="text-[10px] text-[color:var(--text-muted)]">port {itemPort}</span>
+              ) : null}
+              <a
+                href={itemUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex min-w-0 items-center gap-1.5 text-[10px] font-mono text-sky-300 hover:text-sky-200 transition-colors"
+              >
+                <ExternalLink size={12} />
+                <span className="truncate">{itemUrl}</span>
+              </a>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return <ToolPayloadView raw={raw} emptyLabel="No output." payloadKind="output" toolName="port_forward" />;
+}
+
+function RuntimeForwardCompactSummary({ raw, outputError = false }: { raw: string; outputError?: boolean }) {
+  const parsed = useMemo(() => parsePayloadJson(raw), [raw]);
+  if (!isObjectRecord(parsed)) {
+    return (
+      <ToolPayloadCompactSummary
+        toolName="port_forward"
+        inputRaw=""
+        outputRaw={raw}
+        outputEmptyLabel="No output payload."
+        outputError={outputError}
+        hideInput
+      />
+    );
+  }
+
+  const singleUrl = typeof parsed.url === 'string' ? normalizeForwardUrl(parsed.url) : '';
+  const items = Array.isArray(parsed.forwards) ? parsed.forwards : [];
+  const status = typeof parsed.status === 'string' ? parsed.status.trim() : '';
+
+  if (singleUrl) {
+    return (
+      <div className="mt-2.5 flex items-center gap-2 overflow-hidden px-1">
+        {outputError ? (
+          <AlertCircle size={10} className="text-rose-500/70 shrink-0" />
+        ) : (
+          <CheckCircle2 size={10} className="text-emerald-500/70 shrink-0" />
+        )}
+        <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500/60">{status || 'open'}</span>
+        <a
+          href={singleUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex min-w-0 items-center gap-1.5 text-[10px] font-mono text-sky-300 hover:text-sky-200 transition-colors"
+        >
+          <ExternalLink size={12} />
+          <span className="truncate max-w-[420px]">{singleUrl}</span>
+        </a>
+      </div>
+    );
+  }
+
+  if (items.length > 0) {
+    return (
+      <div className="mt-2.5 flex items-center gap-2 overflow-hidden px-1">
+        {outputError ? (
+          <AlertCircle size={10} className="text-rose-500/70 shrink-0" />
+        ) : (
+          <CheckCircle2 size={10} className="text-emerald-500/70 shrink-0" />
+        )}
+        <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500/60">
+          {items.length} forward{items.length === 1 ? '' : 's'}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <ToolPayloadCompactSummary
+      toolName="port_forward"
+      inputRaw=""
+      outputRaw={raw}
+      outputEmptyLabel="No output payload."
+      outputError={outputError}
+      hideInput
+    />
+  );
+}
+
 function ToolFieldPopup({
   title,
   content,
@@ -561,10 +719,23 @@ export function ToolPayloadCompactSummary({
     [toolName, outputRaw],
   );
 
-  const compactValue = (value: string): string => {
+  const compactValue = (key: string, value: string): string => {
     const trimmed = value.replace(/\s+/g, ' ').trim();
-    if (trimmed.length <= 48) return trimmed;
-    return `${trimmed.slice(0, 48)}…`;
+    const normalizedKey = key.trim().toLowerCase();
+    const maxChars =
+      normalizedKey === 'shell_command' || normalizedKey === 'command'
+        ? 160
+        : 96;
+    if (trimmed.length <= maxChars) return trimmed;
+    return `${trimmed.slice(0, maxChars)}…`;
+  };
+
+  const compactValueWidthClass = (key: string): string => {
+    const normalizedKey = key.trim().toLowerCase();
+    if (normalizedKey === 'shell_command' || normalizedKey === 'command') {
+      return 'max-w-[420px]';
+    }
+    return 'max-w-[280px]';
   };
 
   return (
@@ -576,8 +747,8 @@ export function ToolPayloadCompactSummary({
             {inputFields.map(item => (
               <div key={item.key} className="flex items-center gap-1.5 shrink-0">
                 <span className="text-[8px] font-black uppercase tracking-widest text-sky-500/60">{item.key}</span>
-                <span className="text-[10px] font-mono text-[color:var(--text-primary)] truncate max-w-[180px]">
-                   {item.redacted ? '****' : compactValue(item.text)}
+                <span className={`text-[10px] font-mono text-[color:var(--text-primary)] truncate ${compactValueWidthClass(item.key)}`}>
+                   {item.redacted ? '****' : compactValue(item.key, item.text)}
                 </span>
               </div>
             ))}
@@ -594,8 +765,8 @@ export function ToolPayloadCompactSummary({
           {outputFields.length > 0 ? outputFields.map(item => (
             <div key={item.key} className="flex items-center gap-1.5 shrink-0">
               <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500/60">{item.key}</span>
-              <span className="text-[10px] font-mono text-[color:var(--text-primary)] truncate max-w-[180px]">
-                 {item.redacted ? '****' : compactValue(item.text)}
+              <span className={`text-[10px] font-mono text-[color:var(--text-primary)] truncate ${compactValueWidthClass(item.key)}`}>
+                 {item.redacted ? '****' : compactValue(item.key, item.text)}
               </span>
             </div>
           )) : (
@@ -653,11 +824,17 @@ export const SessionMessageCard = memo(({
   toolArgumentsByCallId,
   onResolveApproval,
   resolvingApprovalKey = null,
+  onRetryMessage,
+  retryError = null,
+  retrying = false,
 }: {
   message: Message;
   toolArgumentsByCallId: Map<string, string>;
   onResolveApproval?: (approval: ApprovalRef, decision: 'approve' | 'reject') => void;
   resolvingApprovalKey?: string | null;
+  onRetryMessage?: (message: Message) => void;
+  retryError?: string | null;
+  retrying?: boolean;
 }) => {
   const isUser = message.role === 'user';
   const isToolResult = message.role === 'tool_result';
@@ -728,6 +905,7 @@ export const SessionMessageCard = memo(({
   const cardWidthClass = isToolResult
     ? (toolExpanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]')
     : 'max-w-[90%]';
+  const showRetry = isUser && Boolean(onRetryMessage) && Boolean(retryError);
 
   return (
     <div className={`flex w-full flex-col gap-1 animate-in ${isUser ? 'items-end' : 'items-start'}`}>
@@ -742,15 +920,14 @@ export const SessionMessageCard = memo(({
       </div>
 
       <div
-        onMouseEnter={() => !pendingApproval && setToolExpanded(true)}
-        onMouseLeave={() => !pendingApproval && !isScreenshotTool && setToolExpanded(false)}
-        className={`${isToolResult ? `${cardWidthClass} inline-flex flex-col` : cardWidthClass} rounded-2xl px-4 py-2 text-xs shadow-sm border transition-all duration-300 ease-in-out ${
+        onClick={isToolResult && !toolExpanded ? () => setToolExpanded(true) : undefined}
+        className={`${isToolResult ? `${cardWidthClass} inline-flex flex-col relative group/card` : cardWidthClass} rounded-2xl px-4 py-2 text-xs shadow-sm border transition-all duration-300 ease-in-out ${
           isUser
             ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] border-transparent rounded-tr-none font-medium'
             : isToolResult
               ? pendingApproval
                 ? 'bg-rose-500/8 border-rose-500/30 rounded-tl-none shadow-md ring-1 ring-rose-500/20'
-                : `bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] shadow-sm rounded-tl-none`
+                : `bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] shadow-sm rounded-tl-none ${toolExpanded ? '' : 'cursor-pointer hover:border-sky-500/30 hover:bg-sky-500/[0.03]'}`
               : isTelegramGroupResponse
                 ? 'bg-emerald-500/8 border-emerald-500/25 rounded-tl-none font-medium'
                 : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] rounded-tl-none font-medium'
@@ -758,8 +935,13 @@ export const SessionMessageCard = memo(({
       >
         {isToolResult ? (
           <>
-            <div
-              className={`${toolExpanded ? 'w-full mb-0.5' : 'w-auto'} flex items-center justify-between gap-4 text-left group/tool-btn py-0.5 cursor-default`}
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setToolExpanded((value) => !value);
+              }}
+              className={`${toolExpanded ? 'w-full mb-0.5' : 'w-auto'} flex items-center justify-between gap-4 text-left group/tool-btn py-0.5 cursor-pointer`}
             >
               <div className="flex items-center gap-3 min-w-0">
                 <div className={`flex items-center justify-center w-6 h-6 rounded-lg ${pendingApproval ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' : 'bg-sky-500/10 text-sky-400 border border-sky-500/20'} shrink-0`}>
@@ -779,9 +961,16 @@ export const SessionMessageCard = memo(({
                 </div>
               </div>
               <div className={`p-1 rounded-full ${pendingApproval ? 'text-rose-300' : 'text-sky-400'} transition-colors shrink-0`}>
-                <ChevronDown size={14} strokeWidth={3} className={`transition-transform duration-500 ${toolExpanded ? 'rotate-180 opacity-40' : 'opacity-100'}`} />
+                {toolExpanded || pendingApproval ? (
+                  <ChevronDown size={14} strokeWidth={3} className={`transition-transform duration-500 ${toolExpanded ? 'rotate-180 opacity-40' : 'opacity-100'}`} />
+                ) : (
+                  <div className="inline-flex items-center gap-1 rounded-full border border-sky-500/15 bg-sky-500/[0.05] px-2 py-1 text-[8px] font-bold uppercase tracking-[0.14em] text-sky-400/80 opacity-0 transition-all duration-200 group-hover/card:opacity-100 group-hover/card:border-sky-500/30 group-hover/card:bg-sky-500/[0.08] group-hover/card:text-sky-300">
+                    <ChevronDown size={10} strokeWidth={3} />
+                    Click to expand
+                  </div>
+                )}
               </div>
-            </div>
+            </button>
             {toolExpanded ? (
               <div className="mt-0 pt-3 animate-in fade-in slide-in-from-top-1 duration-200">
                 <div className="space-y-6">
@@ -835,6 +1024,8 @@ export const SessionMessageCard = memo(({
                            Frame captured
                         </div>
                       </div>
+                    ) : message.tool_name === 'port_forward' ? (
+                      <RuntimeForwardResultView raw={message.content} />
                     ) : (
                       <div className="space-y-4">
                         <ToolPayloadView
@@ -880,16 +1071,19 @@ export const SessionMessageCard = memo(({
                   </div>
                 </div>
               </div>
-            ) : (
-              <ToolPayloadCompactSummary
-                toolName={message.tool_name || 'tool_result'}
-                inputRaw={toolInputRaw}
-                outputRaw={message.content}
-                outputEmptyLabel="No output payload."
-                outputError={toolFailed}
-                hideInput={isScreenshotTool}
-              />
-            )}
+            ) : message.tool_name === 'port_forward' ? (
+                <RuntimeForwardCompactSummary raw={message.content} outputError={toolFailed} />
+              ) : (
+                <ToolPayloadCompactSummary
+                  toolName={message.tool_name || 'tool_result'}
+                  inputRaw={toolInputRaw}
+                  outputRaw={message.content}
+                  outputEmptyLabel="No output payload."
+                  outputError={toolFailed}
+                  hideInput={isScreenshotTool}
+                />
+              )
+            }
           </>
         ) : (
           <div className="space-y-2">
@@ -904,6 +1098,20 @@ export const SessionMessageCard = memo(({
               </div>
             ) : null}
             <Markdown content={renderedAssistantContent} invert={isUser} />
+            {showRetry ? (
+              <div className="flex justify-end pt-1">
+                <button
+                  type="button"
+                  onClick={() => onRetryMessage?.(message)}
+                  disabled={retrying}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-black/10 bg-black/5 px-3 py-1.5 text-[9px] font-bold uppercase tracking-[0.16em] text-black/70 shadow-sm hover:bg-black/10 hover:border-black/15 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
+                  title={retryError ?? 'Retry'}
+                >
+                  {retrying ? <Loader2 size={10} className="animate-spin" /> : <RotateCcw size={10} />}
+                  Retry
+                </button>
+              </div>
+            ) : null}
             {userAttachments.length > 0 ? (
               <div className="grid grid-cols-2 gap-2">
                 {userAttachments.map((item, index) => (

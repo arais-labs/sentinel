@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fastapi import HTTPException
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +9,12 @@ from app.dependencies import (
     get_db,
     get_runtime_rebuild_service,
     get_settings_service,
+)
+from app.logging_context import (
+    clear_all_runtime_logger_overrides,
+    clear_runtime_logger_override,
+    get_logging_config_snapshot,
+    set_runtime_logger_override,
 )
 from app.middleware.auth import TokenPayload, require_auth
 from app.services.llm.ids import ProviderChoice
@@ -23,6 +30,7 @@ class SetApiKeysRequest(BaseModel):
     openai_api_key: str | None = None
     openai_oauth_token: str | None = None
     gemini_api_key: str | None = None
+    gemini_oauth_credentials: str | None = None
 
 
 @router.post("/api-keys")
@@ -41,6 +49,7 @@ async def set_api_keys(
         openai_api_key=payload.openai_api_key,
         openai_oauth_token=payload.openai_oauth_token,
         gemini_api_key=payload.gemini_api_key,
+        gemini_oauth_credentials=payload.gemini_oauth_credentials,
     )
     runtime_rebuild_service.rebuild_agent_runtime_support(request.app.state)
     return {"success": True}
@@ -100,3 +109,44 @@ async def set_primary_provider(
     await settings_service.set_primary_provider(db, provider=payload.provider)
     runtime_rebuild_service.rebuild_agent_runtime_support(request.app.state)
     return {"success": True, "primary_provider": payload.provider.value}
+
+
+class SetLoggerLevelRequest(BaseModel):
+    logger: str
+    level: str
+
+
+@router.get("/logging")
+async def get_logging_config(
+    _: TokenPayload = Depends(require_auth),
+) -> dict:
+    return get_logging_config_snapshot()
+
+
+@router.post("/logging/levels")
+async def set_logging_level(
+    payload: SetLoggerLevelRequest,
+    _: TokenPayload = Depends(require_auth),
+) -> dict:
+    try:
+        return set_runtime_logger_override(payload.logger, payload.level)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/logging/levels")
+async def delete_logging_level(
+    logger: str,
+    _: TokenPayload = Depends(require_auth),
+) -> dict:
+    try:
+        return clear_runtime_logger_override(logger)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/logging/reset")
+async def reset_logging_overrides(
+    _: TokenPayload = Depends(require_auth),
+) -> dict:
+    return clear_all_runtime_logger_overrides()

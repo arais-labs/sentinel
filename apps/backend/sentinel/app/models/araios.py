@@ -1,6 +1,6 @@
-"""AraiOS models — ported to async SQLAlchemy (Mapped/mapped_column).
+"""Dynamic module/control-plane models.
 
-Table names preserved from original AraiOS to avoid data migration.
+Table names are stable for existing module data.
 Class names prefixed with 'Araios' to avoid collision with Sentinel models.
 """
 from __future__ import annotations
@@ -276,25 +276,6 @@ class AraiosDocument(Base):
     last_edited_by: Mapped[str] = mapped_column(String, nullable=False)
     tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     version: Mapped[int] = mapped_column(Integer, server_default=text("1"))
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
-# ── Platform API Keys ──
-
-
-class AraiOSPlatformApiKey(Base):
-    __tablename__ = "platform_api_keys"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=araios_gen_id)
-    label: Mapped[str] = mapped_column(String, nullable=False)
-    role: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'agent'"))
-    subject: Mapped[str] = mapped_column(String, nullable=False)
-    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    key_hash: Mapped[str] = mapped_column(String, nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

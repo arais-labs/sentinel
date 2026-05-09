@@ -1,4 +1,4 @@
-"""AraiOS Documents router — async SQLAlchemy."""
+"""Documents router for dynamic module/control-plane APIs."""
 from __future__ import annotations
 
 from sqlalchemy import select, delete
@@ -18,7 +18,7 @@ from app.schemas.araios import (
 )
 
 
-router = APIRouter(tags=["araios-documents"])
+router = APIRouter(tags=["documents"])
 
 
 def _get_agent_id(user: TokenPayload = Depends(require_auth)) -> str:

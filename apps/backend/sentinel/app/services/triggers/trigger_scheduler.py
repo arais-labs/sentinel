@@ -499,6 +499,11 @@ class TriggerScheduler:
                             "user_metadata": ingress_metadata,
                         },
                     ),
+                    interjection_source=(
+                        (lambda: self._run_registry.drain_interjections(session_key))
+                        if self._run_registry is not None
+                        else None
+                    ),
                 ),
                 sink=_on_event,
             )

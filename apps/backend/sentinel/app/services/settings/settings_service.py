@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.services.llm.ids import ProviderChoice, parse_provider_choice
+from app.services.llm.providers.gemini_oauth import GeminiOAuthCredentials
 from app.services.settings.system_settings import (
     delete_system_setting,
     upsert_system_setting,
@@ -37,6 +38,7 @@ class SettingsService:
         openai_api_key: str | None,
         openai_oauth_token: str | None,
         gemini_api_key: str | None,
+        gemini_oauth_credentials: str | None,
     ) -> None:
         await self._persist_if_present(
             db,
@@ -68,6 +70,13 @@ class SettingsService:
             setting_key="gemini_api_key",
             value=gemini_api_key,
         )
+        normalized_gemini_oauth = self._normalize_gemini_oauth_credentials(gemini_oauth_credentials)
+        await self._persist_if_present(
+            db,
+            setting_attr="gemini_oauth_credentials",
+            setting_key="gemini_oauth_credentials",
+            value=normalized_gemini_oauth,
+        )
 
     def get_api_keys_status(self) -> ApiKeysStatus:
         anthropic_key = settings.anthropic_api_key
@@ -75,6 +84,7 @@ class SettingsService:
         openai_key = settings.openai_api_key
         openai_oauth = settings.openai_oauth_token
         gemini_key = settings.gemini_api_key
+        gemini_oauth = settings.gemini_oauth_credentials
         primary_provider = parse_provider_choice(settings.primary_provider) or ProviderChoice.ANTHROPIC
 
         return ApiKeysStatus(
@@ -91,9 +101,9 @@ class SettingsService:
                     masked_key=self._mask_secret(openai_oauth or openai_key),
                 ),
                 ProviderChoice.GEMINI: ProviderAuthStatus(
-                    configured=bool(gemini_key),
-                    auth_method="api_key" if gemini_key else None,
-                    masked_key=self._mask_secret(gemini_key),
+                    configured=bool(gemini_key or gemini_oauth),
+                    auth_method="oauth" if gemini_oauth else ("api_key" if gemini_key else None),
+                    masked_key=self._mask_gemini_secret(gemini_oauth or gemini_key),
                 ),
             },
         )
@@ -113,7 +123,9 @@ class SettingsService:
             return
         if provider == ProviderChoice.GEMINI:
             settings.gemini_api_key = None
+            settings.gemini_oauth_credentials = None
             await delete_system_setting(db, key="gemini_api_key")
+            await delete_system_setting(db, key="gemini_oauth_credentials")
 
     async def set_primary_provider(
         self,
@@ -146,6 +158,17 @@ class SettingsService:
         return normalized or None
 
     @staticmethod
+    def _normalize_gemini_oauth_credentials(value: str | None) -> str | None:
+        normalized = SettingsService._strip_or_none(value)
+        if normalized is None:
+            return None
+        try:
+            credentials = GeminiOAuthCredentials.parse_input(normalized)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return credentials.as_json()
+
+    @staticmethod
     def _normalize_url(
         value: str | None,
         *,
@@ -167,3 +190,17 @@ class SettingsService:
         if len(value) <= 8:
             return "****"
         return value[:4] + "..." + value[-4:]
+
+    @staticmethod
+    def _mask_gemini_secret(value: str | None) -> str | None:
+        if not value:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.startswith("{"):
+            try:
+                return GeminiOAuthCredentials.parse_input(normalized).mask_secret()
+            except ValueError:
+                return SettingsService._mask_secret(normalized)
+        return SettingsService._mask_secret(normalized)

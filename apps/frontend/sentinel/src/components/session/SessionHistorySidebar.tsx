@@ -3,6 +3,7 @@ import { SessionRow, sessionChannelKind } from './SessionRow';
 import type { Session } from '../../types/api';
 
 interface SessionHistorySidebarProps {
+  showHeaderTitle?: boolean;
   historyTab: 'sessions' | 'sub_agents';
   setHistoryTab: (tab: 'sessions' | 'sub_agents') => void;
   sessionFilter: string;
@@ -32,6 +33,7 @@ interface SessionHistorySidebarProps {
 }
 
 export function SessionHistorySidebar({
+  showHeaderTitle = true,
   historyTab,
   setHistoryTab,
   sessionFilter,
@@ -62,7 +64,9 @@ export function SessionHistorySidebar({
   return (
     <div className="flex flex-col h-full min-w-[16rem]">
       <div className="p-3 border-b border-[color:var(--border-subtle)] space-y-2">
-        <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">History</h2>
+        {showHeaderTitle ? (
+          <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">History</h2>
+        ) : null}
         <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
           {/* Sliding Indicator */}
           <div 

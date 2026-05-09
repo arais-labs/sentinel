@@ -3,18 +3,64 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 from uuid import UUID
 
 from app.config import settings
-from app.services.runtime.provider import RuntimeInstance
+from app.services.runtime.base import RuntimeInstance, RuntimeProviderInfo, RuntimeProviderInfoItem
+from app.services.runtime.playwright_runtime import (
+    DEFAULT_BROWSER_LOCALE,
+    DEFAULT_BROWSER_TIMEZONE_ID,
+)
 from app.services.runtime.ssh_client import SSHClient
 
 logger = logging.getLogger(__name__)
 
 CONTAINER_WORKSPACE = "/home/sentinel/workspace"
 _NAME_PREFIX = "sentinel-runtime-"
+_DOCKER_BROWSER_RESTART_CMD = (
+    "pkill -u sentinel -x chromium || true; "
+    "pkill -u sentinel -x chromium-real || true; "
+    "rm -f /home/sentinel/.config/chromium/SingletonLock "
+    "/home/sentinel/.config/chromium/SingletonSocket "
+    "/home/sentinel/.config/chromium/SingletonCookie 2>/dev/null || true; "
+    "if ! pgrep -f 'socat TCP-LISTEN:9223' >/dev/null; then "
+    "nohup socat TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222 "
+    ">/tmp/chromium-socat.log 2>&1 & "
+    "fi; "
+    "nohup su - sentinel -c "
+    "\"DISPLAY=:99 MESA_LOADER_DRIVER_OVERRIDE=llvmpipe chromium "
+    "--disable-dev-shm-usage "
+    "--use-gl=angle "
+    "--use-angle=gl "
+    "--ignore-gpu-blocklist "
+    "--disable-gpu-driver-bug-workaround "
+    "--remote-debugging-address=0.0.0.0 "
+    "--remote-debugging-port=9222 "
+    "--no-first-run "
+    "--no-default-browser-check "
+    "--window-size=1920,1080 "
+    "about:blank\" "
+    ">/tmp/chromium-reset.log 2>&1 &"
+)
+_DOCKER_BROWSER_READY_CHECK_CMD = (
+    "for i in $(seq 1 30); do "
+    "if curl -fsS http://127.0.0.1:9223/json/version >/dev/null 2>&1; then exit 0; fi; "
+    "sleep 0.5; "
+    "done; "
+    "exit 1"
+)
+
+
+def _compose_project_from_network(network: str) -> str | None:
+    value = (network or "").strip()
+    if not value:
+        return None
+    if value.endswith("_default"):
+        return value[: -len("_default")] or None
+    return None
 
 
 class DockerRuntimeProvider:
@@ -66,16 +112,42 @@ class DockerRuntimeProvider:
             host_ws.mkdir(parents=True, exist_ok=True)
 
             # Launch container
+            compose_project = _compose_project_from_network(self._network)
             cmd = [
                 "docker", "run", "-d",
                 "--name", container_name,
                 "--network", self._network,
+                "-P",
+                "--cap-add=SYS_ADMIN",
+                "--security-opt", "seccomp=unconfined",
                 "--memory", self._memory,
                 "--cpus", str(self._cpus),
                 "-e", f"SSH_PUBLIC_KEY={pub_key}",
                 "-v", f"{host_ws}:/home/sentinel/workspace",
-                self._image,
             ]
+            browser_user_agent = os.getenv("BROWSER_USER_AGENT", "").strip()
+            browser_locale = os.getenv("BROWSER_LOCALE", "").strip() or DEFAULT_BROWSER_LOCALE
+            browser_timezone = os.getenv("BROWSER_TIMEZONE_ID", "").strip() or DEFAULT_BROWSER_TIMEZONE_ID
+            if browser_user_agent:
+                cmd.extend(["-e", f"BROWSER_USER_AGENT={browser_user_agent}"])
+            cmd.extend(
+                [
+                    "-e",
+                    f"BROWSER_LOCALE={browser_locale}",
+                    "-e",
+                    f"BROWSER_TIMEZONE_ID={browser_timezone}",
+                    "-e",
+                    f"TZ={browser_timezone}",
+                ]
+            )
+            if compose_project:
+                cmd.extend(
+                    [
+                        "--label", f"com.docker.compose.project={compose_project}",
+                        "--label", "com.docker.compose.service=sentinel-runtime",
+                    ]
+                )
+            cmd.append(self._image)
             result = await asyncio.to_thread(
                 subprocess.run, cmd, capture_output=True, text=True, check=True,
             )
@@ -96,8 +168,9 @@ class DockerRuntimeProvider:
 
         runtime = RuntimeInstance(
             session_id=key,
-            ssh=ssh,
+            client=ssh,
             workspace_path=CONTAINER_WORKSPACE,
+            host=ip,
         )
         self._instances[key] = _DockerInstance(
             container_id=container_id,
@@ -108,6 +181,55 @@ class DockerRuntimeProvider:
         logger.info("Runtime ready for session %s at %s", key, ip)
         return runtime
 
+    async def activate_session(self, session_id: UUID | str) -> RuntimeInstance:
+        return await self.ensure(session_id)
+
+    async def describe(self, session_id: UUID | str) -> RuntimeProviderInfo:
+        key = str(session_id)
+        inst = self._instances.get(key)
+        container_name = inst.container_name if inst is not None else f"{_NAME_PREFIX}{key[:12]}"
+        status = "missing"
+        container_id = inst.container_id if inst is not None else ""
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["docker", "inspect", "--format", "{{.Id}} {{.State.Status}}", container_name],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            parts = (result.stdout or "").strip().split()
+            if len(parts) >= 2:
+                container_id = parts[0]
+                status = parts[1].strip().lower() or "unknown"
+        vnc_port = self.resolve_port(key, settings.runtime_live_port)
+        cdp_port = self.resolve_port(key, 9223)
+        host = self.get_public_host(key) or "localhost"
+        items = [
+            RuntimeProviderInfoItem(key="container", label="Container", value=container_name),
+            RuntimeProviderInfoItem(key="state", label="State", value=status.upper()),
+            RuntimeProviderInfoItem(key="container_id", label="Container ID", value=(container_id[:12] if container_id else "—")),
+            RuntimeProviderInfoItem(key="host", label="Host", value=host),
+            RuntimeProviderInfoItem(key="vnc_port", label="VNC Port", value=(str(vnc_port) if vnc_port else "—")),
+            RuntimeProviderInfoItem(key="cdp_port", label="CDP Port", value=(str(cdp_port) if cdp_port else "—")),
+        ]
+        summary = {
+            "running": "Per-session container is running.",
+            "created": "Container exists but is not running yet.",
+            "exited": "Container exists but is stopped.",
+            "missing": "Container has not been created yet.",
+        }.get(status, f"Container state: {status}.")
+        return RuntimeProviderInfo(
+            id="docker",
+            label="Docker",
+            status=status,
+            summary=summary,
+            items=items,
+        )
+
+    async def hard_restart(self, session_id: UUID | str) -> RuntimeInstance:
+        await self.destroy(session_id)
+        return await self.activate_session(session_id)
+
     async def destroy(self, session_id) -> None:
         """Kill and remove the runtime container for a session."""
         key = str(session_id)
@@ -115,7 +237,7 @@ class DockerRuntimeProvider:
         container_name = f"{_NAME_PREFIX}{key[:12]}"
         if inst is not None:
             try:
-                await inst.runtime.ssh.close()
+                await inst.runtime.client.close()
             except Exception:
                 pass
             container_name = inst.container_name
@@ -195,8 +317,9 @@ class DockerRuntimeProvider:
 
             runtime = RuntimeInstance(
                 session_id=full_key,
-                ssh=ssh,
+                client=ssh,
                 workspace_path=CONTAINER_WORKSPACE,
+                host=ip,
             )
             self._instances[full_key] = _DockerInstance(
                 container_id=container_id,
@@ -214,7 +337,7 @@ class DockerRuntimeProvider:
         inst = self._instances.pop(key, None)
         if inst is None:
             return False
-        await inst.runtime.ssh.close()
+        await inst.runtime.client.close()
         await asyncio.to_thread(
             subprocess.run,
             ["docker", "rm", "-f", inst.container_id],
@@ -233,13 +356,50 @@ class DockerRuntimeProvider:
         inst = self._instances.get(str(session_id))
         return inst.runtime if inst else None
 
-    def get_container_ip(self, session_id: UUID | str) -> str | None:
+    def get_host(self, session_id: UUID | str) -> str | None:
         key = str(session_id)
         inst = self._instances.get(key)
         if inst:
             return inst.ip
         # Fallback: check if a container exists on Docker (e.g. after hot-reload)
         return self._get_container_ip_sync(f"{_NAME_PREFIX}{key[:12]}")
+
+    def get_public_host(self, session_id: UUID | str) -> str | None:
+        _ = session_id
+        host = (settings.runtime_forward_public_host or "").strip()
+        return host or "localhost"
+
+    def resolve_port(self, session_id: UUID | str, internal_port: int) -> int | None:
+        key = str(session_id)
+        inst = self._instances.get(key)
+        container_ref = inst.container_name if inst is not None else f"{_NAME_PREFIX}{key[:12]}"
+        try:
+            result = subprocess.run(
+                ["docker", "port", container_ref, f"{int(internal_port)}/tcp"],
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        for line in (result.stdout or "").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            _, _, port_text = text.rpartition(":")
+            try:
+                return int(port_text)
+            except ValueError:
+                continue
+        return None
+
+    async def restart_browser(self, session_id: UUID | str, runtime: RuntimeInstance) -> None:
+        _ = session_id
+        await runtime.client.run(_DOCKER_BROWSER_RESTART_CMD, timeout=15)
+        result = await runtime.client.run(_DOCKER_BROWSER_READY_CHECK_CMD, timeout=20)
+        if result.exit_status != 0:
+            raise RuntimeError("Browser CDP did not become ready")
 
     def _get_container_ip_sync(self, container_name: str) -> str | None:
         """Synchronous fallback to get container IP directly from Docker."""

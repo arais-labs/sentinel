@@ -111,19 +111,27 @@ function WelcomeStep() {
   );
 }
 
-function ProviderCard({ name, color, apiKey, setApiKey, oauthToken, setOauthToken, apiPlaceholder, oauthPlaceholder, oauthPrefix, apiHint, oauthInstructions }: {
+function ProviderCard({
+  name, color, apiKey, setApiKey, oauthToken, setOauthToken,
+  apiPlaceholder, oauthPlaceholder, apiHint, oauthInstructions,
+  oauthHint, oauthInputKind = 'token', defaultMode = 'oauth',
+}: {
   name: string; color: string;
   apiKey: string; setApiKey: (v: string) => void;
   oauthToken: string; setOauthToken: (v: string) => void;
-  apiPlaceholder: string; oauthPlaceholder: string; oauthPrefix: string;
+  apiPlaceholder: string; oauthPlaceholder: string;
   apiHint: string;
   oauthInstructions?: React.ReactNode;
+  oauthHint: React.ReactNode;
+  oauthInputKind?: 'token' | 'json';
+  defaultMode?: 'oauth' | 'api';
 }) {
   const [showKey, setShowKey] = useState(false);
   const [showToken, setShowToken] = useState(false);
-  const [mode, setMode] = useState<'oauth' | 'api'>('oauth');
+  const [mode, setMode] = useState<'oauth' | 'api'>(defaultMode);
   const [showHelp, setShowHelp] = useState(false);
   const hasValue = !!(apiKey || oauthToken);
+  const oauthLabel = oauthInputKind === 'json' ? 'OAuth Credentials' : 'OAuth Token';
 
   return (
     <div className={`rounded-xl border-2 transition-all ${hasValue ? `border-emerald-500/40 bg-emerald-500/5` : 'border-[color:var(--border)] bg-[color:var(--surface-1)]'}`}>
@@ -136,7 +144,7 @@ function ProviderCard({ name, color, apiKey, setApiKey, oauthToken, setOauthToke
         {/* Auth mode toggle */}
         <div className="flex rounded-lg bg-[color:var(--surface-2)] p-0.5 w-fit">
           {([
-            { id: 'oauth', label: 'OAuth Token' },
+            { id: 'oauth', label: oauthLabel },
             { id: 'api',   label: 'API Key' },
           ] as const).map(m => (
             <button key={m.id} onClick={() => setMode(m.id)}
@@ -148,16 +156,25 @@ function ProviderCard({ name, color, apiKey, setApiKey, oauthToken, setOauthToke
 
         {mode === 'oauth' ? (
           <div className="space-y-2">
-            <div className="relative">
-              <input type={showToken ? 'text' : 'password'} value={oauthToken} onChange={e => setOauthToken(e.target.value)}
-                placeholder={oauthPlaceholder} className="input-field h-9 pr-10 font-mono text-xs" />
-              <button type="button" onClick={() => setShowToken(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]">
-                {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-            </div>
+            {oauthInputKind === 'json' ? (
+              <textarea
+                value={oauthToken}
+                onChange={e => setOauthToken(e.target.value)}
+                placeholder={oauthPlaceholder}
+                className="input-field min-h-[132px] py-3 font-mono text-xs resize-y"
+              />
+            ) : (
+              <div className="relative">
+                <input type={showToken ? 'text' : 'password'} value={oauthToken} onChange={e => setOauthToken(e.target.value)}
+                  placeholder={oauthPlaceholder} className="input-field h-9 pr-10 font-mono text-xs" />
+                <button type="button" onClick={() => setShowToken(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]">
+                  {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+            )}
             <div className="flex items-center justify-between">
-              <p className="text-[10px] text-[color:var(--text-muted)]">Starts with <span className="font-mono text-[color:var(--text-primary)]">{oauthPrefix}</span></p>
+              <div className="text-[10px] text-[color:var(--text-muted)]">{oauthHint}</div>
               {oauthInstructions && (
                 <button onClick={() => setShowHelp(v => !v)} className="text-[10px] font-bold text-[color:var(--accent-solid)] hover:opacity-70 transition-opacity">
                   {showHelp ? 'Hide help' : 'How to get a token?'}
@@ -184,45 +201,21 @@ function ProviderCard({ name, color, apiKey, setApiKey, oauthToken, setOauthToke
   );
 }
 
-function GeminiCard({ apiKey, setApiKey }: { apiKey: string; setApiKey: (v: string) => void }) {
-  const [showKey, setShowKey] = useState(false);
-  const hasValue = !!apiKey;
-
-  return (
-    <div className={`rounded-xl border-2 transition-all ${hasValue ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-[color:var(--border)] bg-[color:var(--surface-1)]'}`}>
-      <div className="flex items-center gap-3 px-4 py-2.5 border-b border-[color:var(--border-subtle)]">
-        <div className={`h-2 w-2 rounded-full ${hasValue ? 'bg-emerald-500' : ''}`} style={hasValue ? {} : { backgroundColor: '#4285F4' }} />
-        <span className="text-xs font-bold uppercase tracking-widest">Google Gemini</span>
-        {hasValue && <Check size={14} className="text-emerald-500 ml-auto" />}
-      </div>
-      <div className="px-4 py-2.5 space-y-2">
-        <div className="relative">
-          <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => setApiKey(e.target.value)}
-            placeholder="AIza..." className="input-field h-9 pr-10 font-mono text-xs" />
-          <button type="button" onClick={() => setShowKey(v => !v)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]">
-            {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
-          </button>
-        </div>
-        <p className="text-[10px] text-[color:var(--text-muted)]">Get your key at <span className="font-mono text-[color:var(--text-primary)]">aistudio.google.com/apikey</span></p>
-      </div>
-    </div>
-  );
-}
-
 function LLMStep({
   apiKey, setApiKey, oauthToken, setOauthToken,
   openaiApiKey, setOpenaiApiKey, openaiOauthToken, setOpenaiOauthToken,
-  geminiApiKey, setGeminiApiKey,
+  geminiApiKey, setGeminiApiKey, geminiOauthCredentials, setGeminiOauthCredentials,
 }: {
   apiKey: string; setApiKey: (v: string) => void;
   oauthToken: string; setOauthToken: (v: string) => void;
   openaiApiKey: string; setOpenaiApiKey: (v: string) => void;
   openaiOauthToken: string; setOpenaiOauthToken: (v: string) => void;
   geminiApiKey: string; setGeminiApiKey: (v: string) => void;
+  geminiOauthCredentials: string; setGeminiOauthCredentials: (v: string) => void;
 }) {
   const [copiedAnthropic, setCopiedAnthropic] = useState(false);
   const [copiedOpenai, setCopiedOpenai] = useState(false);
+  const [copiedGemini, setCopiedGemini] = useState(false);
 
   function copyAnthropicCmd() {
     navigator.clipboard.writeText('claude setup-token');
@@ -234,6 +227,12 @@ function LLMStep({
     navigator.clipboard.writeText('npx codex --full-setup');
     setCopiedOpenai(true);
     setTimeout(() => setCopiedOpenai(false), 2000);
+  }
+
+  function copyGeminiCmd() {
+    navigator.clipboard.writeText('gemini');
+    setCopiedGemini(true);
+    setTimeout(() => setCopiedGemini(false), 2000);
   }
 
   const anthropicOauthInstructions = (
@@ -276,6 +275,28 @@ function LLMStep({
     </div>
   );
 
+  const geminiOauthInstructions = (
+    <div className="rounded-lg bg-[color:var(--surface-2)] divide-y divide-[color:var(--border-subtle)] mt-1">
+      <div className="flex items-center gap-2 px-3 py-1.5">
+        <span className="text-[9px] font-black" style={{ color: '#4285F4' }}>1.</span>
+        <div className="flex items-center gap-2 flex-1 rounded-md bg-[color:var(--app-bg)] px-2 py-1 font-mono text-[11px] text-[color:var(--text-primary)] border border-[color:var(--border)]">
+          <span className="flex-1">gemini</span>
+          <button onClick={copyGeminiCmd} className="text-[9px] font-bold uppercase tracking-widest hover:opacity-70 transition-opacity shrink-0" style={{ color: '#4285F4' }}>
+            {copiedGemini ? <Check size={10} /> : 'Copy'}
+          </button>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 px-3 py-1.5">
+        <span className="text-[9px] font-black" style={{ color: '#4285F4' }}>2.</span>
+        <p className="text-[10px] text-[color:var(--text-muted)]">Choose <span className="font-mono text-[color:var(--text-primary)]">Sign in with Google</span> and complete the browser flow.</p>
+      </div>
+      <div className="flex items-center gap-2 px-3 py-1.5">
+        <span className="text-[9px] font-black" style={{ color: '#4285F4' }}>3.</span>
+        <p className="text-[10px] text-[color:var(--text-muted)]">Copy the full JSON from <span className="font-mono text-[color:var(--text-primary)]">~/.gemini/oauth_creds.json</span>. Sentinel uses the same Code Assist credentials, so it must include <span className="font-mono text-[color:var(--text-primary)]">refresh_token</span>.</p>
+      </div>
+    </div>
+  );
+
   return (
     <div className="flex flex-col gap-5 max-w-lg">
       <div>
@@ -293,8 +314,8 @@ function LLMStep({
           oauthToken={oauthToken} setOauthToken={setOauthToken}
           apiPlaceholder="sk-ant-api03-..."
           oauthPlaceholder="sk-ant-oat01-..."
-          oauthPrefix="sk-ant-oat01-"
           apiHint="Get your key at console.anthropic.com"
+          oauthHint={<>Starts with <span className="font-mono text-[color:var(--text-primary)]">sk-ant-oat01-</span></>}
           oauthInstructions={anthropicOauthInstructions}
         />
         <ProviderCard
@@ -304,11 +325,23 @@ function LLMStep({
           oauthToken={openaiOauthToken} setOauthToken={setOpenaiOauthToken}
           apiPlaceholder="sk-..."
           oauthPlaceholder="Paste Codex OAuth token..."
-          oauthPrefix="eyJhbG..."
           apiHint="Get your key at platform.openai.com/api-keys"
+          oauthHint={<>Starts with <span className="font-mono text-[color:var(--text-primary)]">eyJhbG...</span></>}
           oauthInstructions={openaiOauthInstructions}
         />
-        <GeminiCard apiKey={geminiApiKey} setApiKey={setGeminiApiKey} />
+        <ProviderCard
+          name="Google Gemini"
+          color="#4285F4"
+          apiKey={geminiApiKey} setApiKey={setGeminiApiKey}
+          oauthToken={geminiOauthCredentials} setOauthToken={setGeminiOauthCredentials}
+          apiPlaceholder="AIza..."
+          oauthPlaceholder='{"refresh_token":"...","access_token":"..."}'
+          apiHint="Get your key at aistudio.google.com/apikey"
+          oauthHint={<>Paste the full JSON from <span className="font-mono text-[color:var(--text-primary)]">~/.gemini/oauth_creds.json</span></>}
+          oauthInstructions={geminiOauthInstructions}
+          oauthInputKind="json"
+          defaultMode="api"
+        />
       </div>
 
       <div className="rounded-lg bg-[color:var(--surface-2)] px-4 py-3 text-[11px] text-[color:var(--text-muted)]">
@@ -454,6 +487,7 @@ export function OnboardingPage() {
   const [openaiOauthToken, setOpenaiOauthToken] = useState('');
   // LLM keys — Gemini
   const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [geminiOauthCredentials, setGeminiOauthCredentials] = useState('');
 
   // Agent identity
   const [agentName, setAgentName] = useState('');
@@ -488,7 +522,7 @@ export function OnboardingPage() {
       // 1. Save API keys
       const hasAnthropic = !!(apiKey || oauthToken);
       const hasOpenai = !!(openaiApiKey || openaiOauthToken);
-      const hasGemini = !!geminiApiKey;
+      const hasGemini = !!(geminiApiKey || geminiOauthCredentials);
       if (hasAnthropic || hasOpenai || hasGemini) {
         await api.post('/settings/api-keys', {
           anthropic_api_key: apiKey || undefined,
@@ -496,6 +530,7 @@ export function OnboardingPage() {
           openai_api_key: openaiApiKey || undefined,
           openai_oauth_token: openaiOauthToken || undefined,
           gemini_api_key: geminiApiKey || undefined,
+          gemini_oauth_credentials: geminiOauthCredentials || undefined,
         });
         const saved: string[] = [];
         if (hasAnthropic) saved.push('Anthropic');
@@ -573,7 +608,7 @@ export function OnboardingPage() {
           <div className="flex-1 overflow-y-auto px-4 py-5 pb-28 sm:px-6 sm:py-6 md:px-12 md:py-10 md:pb-8">
             <div className="w-full max-w-xl mx-auto flex flex-col gap-4 animate-in fade-in duration-300" key={step}>
               {step === 0 && <WelcomeStep />}
-              {step === 1 && <LLMStep apiKey={apiKey} setApiKey={setApiKey} oauthToken={oauthToken} setOauthToken={setOauthToken} openaiApiKey={openaiApiKey} setOpenaiApiKey={setOpenaiApiKey} openaiOauthToken={openaiOauthToken} setOpenaiOauthToken={setOpenaiOauthToken} geminiApiKey={geminiApiKey} setGeminiApiKey={setGeminiApiKey} />}
+              {step === 1 && <LLMStep apiKey={apiKey} setApiKey={setApiKey} oauthToken={oauthToken} setOauthToken={setOauthToken} openaiApiKey={openaiApiKey} setOpenaiApiKey={setOpenaiApiKey} openaiOauthToken={openaiOauthToken} setOpenaiOauthToken={setOpenaiOauthToken} geminiApiKey={geminiApiKey} setGeminiApiKey={setGeminiApiKey} geminiOauthCredentials={geminiOauthCredentials} setGeminiOauthCredentials={setGeminiOauthCredentials} />}
               {step === 2 && <AgentStep name={agentName} setName={setAgentName} role={agentRole} setRole={setAgentRole} personality={agentPersonality} setPersonality={setAgentPersonality} />}
               {step === 3 && <UserStep userName={userName} setUserName={setUserName} userContext={userContext} setUserContext={setUserContext} />}
               {step === 4 && (

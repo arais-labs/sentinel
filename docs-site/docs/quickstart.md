@@ -47,19 +47,17 @@ What the CLI does during startup:
 
 - runs `docker compose up --build -d`
 - seeds auth credentials in DB
-- tries creating bootstrap araiOS agent token
-- seeds cross app URL settings
-- prints onboarding instructions with login target and token guidance
+- seeds instance URL settings
+- prints onboarding instructions with the login target
 
 ---
 
-## 3) Open the gateway
+## 3) Open Sentinel
 
 Use the port you configured (default 4747):
 
-- `http://localhost:4747/` gateway
-- `http://localhost:4747/sentinel/` Sentinel UI
-- `http://localhost:4747/araios/` araiOS UI
+- `http://localhost:4747/` Sentinel UI
+- `http://localhost:4747/modules` modules UI
 - `http://localhost:4747/vnc/` live browser view
 
 ---
@@ -78,7 +76,7 @@ If auth seeding failed, run CLI action:
 
 1. Open Sentinel UI
 2. Send a simple message to confirm LLM path
-3. Open araiOS UI and confirm modules and permissions load
+3. Open Modules and confirm modules and permissions load
 4. Optionally open VNC page and run one browser action
 
 ---

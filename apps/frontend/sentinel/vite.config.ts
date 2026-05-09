@@ -17,10 +17,6 @@ export default defineConfig({
         target: 'http://sentinel-backend:8000',
         changeOrigin: true,
       },
-      '/platform': {
-        target: 'http://sentinel-backend:8000',
-        changeOrigin: true,
-      },
       '/ws': {
         target: 'ws://sentinel-backend:8000',
         changeOrigin: true,

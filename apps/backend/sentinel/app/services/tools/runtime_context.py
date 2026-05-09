@@ -17,3 +17,16 @@ def require_session_id(runtime: ToolRuntimeContext | None) -> UUID:
     if session_id is None:
         raise ToolValidationError("Missing runtime session context")
     return session_id
+
+
+def optional_runtime_session_id(runtime: ToolRuntimeContext | None) -> UUID | None:
+    if runtime is None:
+        return None
+    return runtime.runtime_session_id or runtime.session_id
+
+
+def require_runtime_session_id(runtime: ToolRuntimeContext | None) -> UUID:
+    session_id = optional_runtime_session_id(runtime)
+    if session_id is None:
+        raise ToolValidationError("Missing runtime workspace context")
+    return session_id

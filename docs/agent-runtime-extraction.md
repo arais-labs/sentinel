@@ -336,18 +336,18 @@ class TurnResult(TypedDict, total=False):
 
 These should eventually move behind adapters:
 
-- [loop.py](sentinel/apps/backend/sentinel/app/services/agent/loop.py)
-- [tool_adapter.py](sentinel/apps/backend/sentinel/app/services/agent/tool_adapter.py)
-- [context_builder.py](sentinel/apps/backend/sentinel/app/services/agent/context_builder.py)
-- generic provider interfaces under [llm/generic](sentinel/apps/backend/sentinel/app/services/llm/generic)
+- [loop.py](../apps/backend/sentinel/app/services/agent/loop.py)
+- [tool_adapter.py](../apps/backend/sentinel/app/services/agent/tool_adapter.py)
+- [context_builder.py](../apps/backend/sentinel/app/services/agent/context_builder.py)
+- generic provider interfaces under [llm/generic](../apps/backend/sentinel/app/services/llm/generic)
 
 These stay in Sentinel and become consumers/adapters:
 
-- [ws.py](sentinel/apps/backend/sentinel/app/routers/ws.py)
-- [ws_stream_service.py](sentinel/apps/backend/sentinel/app/services/ws/ws_stream_service.py)
-- [bridge.py](sentinel/apps/backend/sentinel/app/services/telegram/bridge.py)
-- [trigger_scheduler.py](sentinel/apps/backend/sentinel/app/services/triggers/trigger_scheduler.py)
-- [service.py](sentinel/apps/backend/sentinel/app/services/sessions/service.py)
+- [ws.py](../apps/backend/sentinel/app/routers/ws.py)
+- [ws_stream_service.py](../apps/backend/sentinel/app/services/ws/ws_stream_service.py)
+- [bridge.py](../apps/backend/sentinel/app/services/telegram/bridge.py)
+- [trigger_scheduler.py](../apps/backend/sentinel/app/services/triggers/trigger_scheduler.py)
+- [service.py](../apps/backend/sentinel/app/services/sessions/service.py)
 
 ## Biggest Current Extraction Blockers
 

@@ -1,6 +1,6 @@
-"""AraiOS Agent Guide router — async SQLAlchemy.
+"""Module agent guide router — async SQLAlchemy.
 
-Returns a comprehensive guide for AI agents interacting with the AraiOS platform.
+Returns a comprehensive guide for AI agents interacting with modules.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from app.middleware.auth import TokenPayload, require_auth
 from app.models.araios import AraiosModule
 from app.models.system import SystemSetting
 
-router = APIRouter(tags=["araios-agent-guide"])
+router = APIRouter(tags=["module-agent-guide"])
 
 
 @router.get("")
@@ -48,11 +48,10 @@ async def get_agent_guide(
 
     guide: dict[str, Any] = {
         "system": {
-            "name": "AraiOS",
+            "name": "Sentinel Modules",
             "description": (
-                "AraiOS is the operating-system layer for ARAIS — it provides modules, "
-                "coordination, documents, tasks, and settings to AI agents "
-                "and human operators."
+                "Sentinel modules provide data stores, callable actions, coordination, "
+                "documents, tasks, and settings to AI agents and human operators."
             ),
             "settings": system_settings,
         },
@@ -62,33 +61,33 @@ async def get_agent_guide(
             "example": "Authorization: Bearer <token>",
             "roles": {
                 "admin": "Full access to all endpoints and settings",
-                "agent": "Access to the AraiOS application surface",
+                "agent": "Access to the module application surface",
             },
         },
         "endpoints": {
             "manifest": {
-                "GET /api/v1/araios/manifest": "Full system manifest with modules and endpoints",
+                "GET /api/manifest": "Full system manifest with modules and endpoints",
             },
             "coordination": {
-                "GET /api/v1/araios/coordination": "List coordination messages (query: limit)",
-                "POST /api/v1/araios/coordination": "Send a coordination message",
+                "GET /api/coordination": "List coordination messages (query: limit)",
+                "POST /api/coordination": "Send a coordination message",
             },
             "documents": {
-                "GET /api/v1/araios/documents": "List documents (query: tag)",
-                "GET /api/v1/araios/documents/{slug}": "Get full document by slug",
-                "POST /api/v1/araios/documents": "Create a new document",
-                "PUT /api/v1/araios/documents/{slug}": "Update document (If-Match for optimistic locking)",
-                "DELETE /api/v1/araios/documents/{slug}": "Delete a document",
+                "GET /api/documents": "List documents (query: tag)",
+                "GET /api/documents/{slug}": "Get full document by slug",
+                "POST /api/documents": "Create a new document",
+                "PUT /api/documents/{slug}": "Update document (If-Match for optimistic locking)",
+                "DELETE /api/documents/{slug}": "Delete a document",
             },
             "tasks": {
-                "GET /api/v1/araios/tasks": "List tasks (query: client, status, owner)",
-                "POST /api/v1/araios/tasks": "Create a new task",
-                "PATCH /api/v1/araios/tasks/{task_id}": "Update a task",
-                "DELETE /api/v1/araios/tasks/{task_id}": "Delete a task",
+                "GET /api/tasks": "List tasks (query: client, status, owner)",
+                "POST /api/tasks": "Create a new task",
+                "PATCH /api/tasks/{task_id}": "Update a task",
+                "DELETE /api/tasks/{task_id}": "Delete a task",
             },
             "settings": {
-                "GET /api/v1/araios/settings": "List all system settings",
-                "PUT /api/v1/araios/settings/{key}": "Set a system setting (admin only)",
+                "GET /api/settings": "List all system settings",
+                "PUT /api/settings/{key}": "Set a system setting (admin only)",
             },
         },
         "moduleCreation": {
@@ -97,9 +96,9 @@ async def get_agent_guide(
                 "Each module defines fields, list configuration, and optional actions."
             ),
             "steps": [
-                "POST /api/v1/araios/modules with name, label, fields, etc.",
-                "Records are stored via POST /api/v1/araios/modules/{name}/records",
-                "Module metadata can be updated via PUT /api/v1/araios/modules/{name}",
+                "POST /api/modules with name, label, fields, etc.",
+                "Records are stored via POST /api/modules/{name}/records",
+                "Module metadata can be updated via PATCH /api/modules/{name}",
             ],
             "fieldTypes": [
                 "string", "text", "number", "boolean", "date", "select", "json",

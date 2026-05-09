@@ -49,7 +49,7 @@ High-risk operations pause the agent and surface a request for operator review. 
 | Live browser monitor | VNC view of the agent's browser |
 | Memory inspector | Browse and edit the full memory tree |
 | Trigger manager | View, create, enable, and disable scheduled triggers |
-| araiOS workspace | Tools, permissions, approvals, and module management |
+| Modules workspace | Tools, permissions, approvals, and module management |
 
 ---
 
@@ -58,16 +58,16 @@ High-risk operations pause the agent and surface a request for operator review. 
 ```
 User / Telegram / Trigger
         ↓
-  Sentinel UI  ↔  araiOS Workspace
+  Sentinel UI
         ↓
   Agent Runtime (Python)
   ├── Context builder (memory + history)
   ├── LLM provider (Anthropic / OpenAI / failover)
-  ├── Tool adapter (araiOS + browser + runtime + git)
+  ├── Tool adapter (modules + browser + runtime + git)
   ├── Approval gate (pause/resume on sensitive actions)
   └── Estop service (freeze or kill execution at any depth)
         ↓
-  araiOS Control Plane
+  Module Control Plane
   ├── Custom tool modules (sandboxed Python)
   ├── Data modules (persistent record stores)
   ├── Permissions (allow / approval / deny per action)

@@ -16,7 +16,7 @@ from app.services.runtime import get_runtime
 from app.services.runtime.session_runtime import ensure_runtime_layout, runtime_workspace_dir
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
-from app.services.tools.runtime_context import require_session_id
+from app.services.tools.runtime_context import require_runtime_session_id
 
 _STR_REPLACE_TIMEOUT_SECONDS = 120
 
@@ -155,7 +155,7 @@ async def _run_str_replace_in_runtime_exec(
     )
 
     try:
-        result = await runtime.ssh.run(
+        result = await runtime.client.run(
             f"bash -lc {_shell_quote(command)}",
             cwd=runtime.workspace_path,
             timeout=_STR_REPLACE_TIMEOUT_SECONDS,
@@ -194,7 +194,7 @@ async def _run_str_replace_in_runtime_exec(
 
 
 async def handle_edit(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    session_id = require_session_id(runtime)
+    session_id = require_runtime_session_id(runtime)
 
     path_raw = payload.get("path")
     if not isinstance(path_raw, str) or not path_raw.strip():

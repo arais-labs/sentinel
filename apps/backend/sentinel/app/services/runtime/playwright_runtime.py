@@ -1,13 +1,47 @@
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
-_STEALTH_INIT_SCRIPT = """
-Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-window.chrome = window.chrome || { runtime: {} };
-Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
-Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+DEFAULT_BROWSER_LOCALE = "en-US"
+DEFAULT_BROWSER_TIMEZONE_ID = "America/Los_Angeles"
+DEFAULT_BROWSER_LANGUAGES = ["en-US", "en"]
+
+
+def _build_stealth_init_script() -> str:
+    locale = os.getenv("BROWSER_LOCALE", "").strip() or DEFAULT_BROWSER_LOCALE
+    language_values = [part.strip() for part in locale.split(",") if part.strip()]
+    if not language_values:
+        language_values = list(DEFAULT_BROWSER_LANGUAGES)
+    elif len(language_values) == 1 and "-" in language_values[0]:
+        language_values.append(language_values[0].split("-", 1)[0])
+    primary_language = language_values[0]
+    timezone_id = os.getenv("BROWSER_TIMEZONE_ID", "").strip() or DEFAULT_BROWSER_TIMEZONE_ID
+
+    return f"""
+(() => {{
+  const define = (target, property, value) => {{
+    try {{
+      Object.defineProperty(target, property, {{
+        configurable: true,
+        get: () => value,
+      }});
+    }} catch (_err) {{}}
+  }};
+
+  const navigatorProto = Navigator.prototype;
+
+  define(navigatorProto, "webdriver", undefined);
+  define(navigatorProto, "language", {json.dumps(primary_language)});
+  define(navigatorProto, "languages", {json.dumps(language_values)});
+
+  window.chrome = window.chrome || {{ runtime: {{}}, app: {{}} }};
+  window.__sentinelBrowserIdentity = {{
+    locale: {json.dumps(primary_language)},
+    timezone: {json.dumps(timezone_id)},
+  }};
+}})();
 """
 
 
@@ -54,14 +88,18 @@ def build_chromium_launch_options(*, headless: bool | None = None) -> dict[str, 
     live_view_enabled = _env_bool("BROWSER_LIVE_VIEW_ENABLED", False)
     default_headless = not live_view_enabled
     resolved_headless = _env_bool("BROWSER_HEADLESS", default_headless) if headless is None else bool(headless)
-    no_sandbox = _env_bool("BROWSER_NO_SANDBOX", True)
+    no_sandbox = _env_bool("BROWSER_NO_SANDBOX", False)
     slow_mo = max(_env_int("BROWSER_SLOW_MO_MS", 0), 0)
 
     args = [
-        "--disable-blink-features=AutomationControlled",
         "--disable-dev-shm-usage",
+        "--use-gl=angle",
+        "--use-angle=gl",
+        "--ignore-gpu-blocklist",
+        "--disable-gpu-driver-bug-workaround",
         "--no-first-run",
         "--no-default-browser-check",
+        f"--lang={os.getenv('BROWSER_LOCALE', '').strip() or DEFAULT_BROWSER_LOCALE}",
     ]
     if no_sandbox:
         args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
@@ -98,13 +136,11 @@ def build_browser_context_options() -> dict[str, Any]:
     if user_agent:
         options["user_agent"] = user_agent
 
-    locale = os.getenv("BROWSER_LOCALE", "").strip()
-    if locale:
-        options["locale"] = locale
+    locale = os.getenv("BROWSER_LOCALE", "").strip() or DEFAULT_BROWSER_LOCALE
+    options["locale"] = locale
 
-    timezone_id = os.getenv("BROWSER_TIMEZONE_ID", "").strip()
-    if timezone_id:
-        options["timezone_id"] = timezone_id
+    timezone_id = os.getenv("BROWSER_TIMEZONE_ID", "").strip() or DEFAULT_BROWSER_TIMEZONE_ID
+    options["timezone_id"] = timezone_id
 
     return options
 
@@ -118,7 +154,7 @@ async def apply_stealth_init_script(context: Any) -> None:
     if context is None or not hasattr(context, "add_init_script"):
         return
     try:
-        await context.add_init_script(_STEALTH_INIT_SCRIPT)
+        await context.add_init_script(_build_stealth_init_script())
     except Exception:
         # Best effort only; some mocked contexts in tests may not support this.
         return

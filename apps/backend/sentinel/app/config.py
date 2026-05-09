@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     gemini_api_key: str | None = None
+    gemini_oauth_credentials: str | None = None
     primary_provider: ProviderChoice = ProviderChoice.ANTHROPIC
     embedding_api_key: str | None = None
     embedding_model: str = "text-embedding-3-small"
@@ -38,7 +39,7 @@ class Settings(BaseSettings):
     # --- Tier: Fast ---
     tier_fast_anthropic_model: str = "claude-haiku-4-5-20251001"
     tier_fast_openai_model: str = "gpt-4o-mini"
-    tier_fast_codex_model: str = "gpt-5.3-codex-spark"
+    tier_fast_codex_model: str = "gpt-5.4-mini"
     tier_fast_gemini_model: str = "gemini-3-flash-preview"
     tier_fast_max_tokens: int = 4096
     tier_fast_temperature: float = 0.3
@@ -60,7 +61,7 @@ class Settings(BaseSettings):
     # --- Tier: Hard ---
     tier_hard_anthropic_model: str = "claude-opus-4-6"
     tier_hard_openai_model: str = "o3"
-    tier_hard_codex_model: str = "gpt-5.3-codex"
+    tier_hard_codex_model: str = "gpt-5.5"
     tier_hard_gemini_model: str = "gemini-3.1-pro-preview"
     tier_hard_max_tokens: int = 40000
     tier_hard_temperature: float = 0.7
@@ -86,6 +87,9 @@ class Settings(BaseSettings):
     runtime_live_autoconnect: bool = True
     runtime_live_resize: str = "scale"
     runtime_live_probe_timeout_ms: int = 500
+    runtime_forward_public_host: str = "localhost"
+    runtime_forward_port_start: int = 12000
+    runtime_forward_port_end: int = 12009
     runtime_prewarm_on_start: bool = False
     runtime_vnc_password: str | None = None
     context_token_budget: int = 200_000
@@ -97,7 +101,7 @@ class Settings(BaseSettings):
     session_auto_rename_context_messages: int = 24
     session_auto_rename_model_tier: str = "fast"
     # --- Runtime Execution ---
-    runtime_exec_backend: str = "docker"  # "docker" or "remote"
+    runtime_exec_backend: str = "docker"  # "docker", "multipass", "qemu", or "remote"
     # Docker runtime
     runtime_image: str = "sentinel-runtime"
     runtime_docker_network: str = "sentinel_default"
@@ -105,16 +109,37 @@ class Settings(BaseSettings):
     runtime_cpu_limit: float = 2.0
     runtime_ssh_key_dir: str = "/data/runtime/ssh"
     runtime_workspaces_host_dir: str = "/data/runtime/workspaces"
+    # Multipass runtime
+    runtime_multipass_image: str | None = None
+    runtime_multipass_cpus: str | None = None
+    runtime_multipass_memory: str | None = None
+    runtime_multipass_disk: str | None = None
+    runtime_multipass_workspace_root: str | None = None
+    runtime_multipass_mount_mode: str = "mount"
+    runtime_multipass_bridge_url: str = "http://host.docker.internal:47480"
+    runtime_multipass_bridge_token: str | None = None
+    # QEMU runtime
+    runtime_qemu_image: str | None = None
+    runtime_qemu_ssh_key_path: str | None = None
+    runtime_qemu_cpus: int = 4
+    runtime_qemu_memory_mb: int = 4096
+    runtime_qemu_bridge_url: str = "http://host.docker.internal:47481"
+    runtime_qemu_bridge_token: str | None = None
+    runtime_qemu_run_root: str = "/data/runtime/qemu"
+    runtime_qemu_workspace_root: str | None = None
+    runtime_qemu_ssh_port: int = 2227
+    runtime_qemu_vnc_port: int = 16081
+    runtime_qemu_cdp_port: int = 19224
+    runtime_qemu_host: str = "host.docker.internal"
+    runtime_qemu_public_host: str = "localhost"
+    runtime_qemu_share_tag: str = "sentinel-host-workspaces"
+    runtime_qemu_share_mount: str = "/mnt/sentinel-host-workspaces"
     # Remote SSH runtime
     runtime_ssh_host: str | None = None
     runtime_ssh_port: int = 22
     runtime_ssh_user: str = "sentinel"
     runtime_ssh_key_path: str | None = None
     runtime_ssh_workspace: str = "/home/sentinel/workspace"
-
-    # --- AraiOS ---
-    araios_auth_username: str = "admin"
-    araios_auth_password: str = "admin"
 
     # --- Telegram ---
     telegram_bot_token: str | None = None
@@ -125,7 +150,11 @@ class Settings(BaseSettings):
     telegram_pairing_code_expires_at: str | None = None
     telegram_enabled: bool = False
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 settings = Settings()

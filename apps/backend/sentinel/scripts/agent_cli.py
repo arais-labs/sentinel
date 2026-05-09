@@ -136,6 +136,12 @@ _PROVIDER_CREDENTIAL_OPTIONS = (
         primary_provider="openai",
     ),
     ProviderCredentialOption(
+        key="gemini_oauth",
+        label="Gemini CLI OAuth credentials JSON",
+        env_keys=("GEMINI_OAUTH_CREDENTIALS",),
+        primary_provider="gemini",
+    ),
+    ProviderCredentialOption(
         key="gemini_api",
         label="Gemini API key",
         env_keys=("GEMINI_API_KEY",),
@@ -394,6 +400,7 @@ def _build_provider() -> LLMProvider:
         from app.services.llm.providers.anthropic import AnthropicProvider
         from app.services.llm.providers.codex import CodexProvider
         from app.services.llm.providers.gemini import GeminiProvider
+        from app.services.llm.providers.gemini_oauth import GeminiOAuthProvider
         from app.services.llm.providers.openai import OpenAIProvider
     except ModuleNotFoundError as exc:  # pragma: no cover - env-dependent
         missing = exc.name or "unknown"
@@ -422,14 +429,17 @@ def _build_provider() -> LLMProvider:
     elif openai_api_key:
         openai = OpenAIProvider(openai_api_key, base_url=openai_base_url)
 
+    gemini_oauth_credentials = _env_lookup("GEMINI_OAUTH_CREDENTIALS", env)
     gemini_key = _env_lookup("GEMINI_API_KEY", env)
-    if gemini_key:
+    if gemini_oauth_credentials:
+        gemini = GeminiOAuthProvider(gemini_oauth_credentials)
+    elif gemini_key:
         gemini = GeminiProvider(gemini_key)
 
     if not anthropic and not openai and not gemini:
         raise RuntimeError(
             "No provider credentials found. Set one of ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_API_KEY, "
-            "OPENAI_OAUTH_TOKEN, OPENAI_API_KEY, or GEMINI_API_KEY."
+            "OPENAI_OAUTH_TOKEN, OPENAI_API_KEY, GEMINI_OAUTH_CREDENTIALS, or GEMINI_API_KEY."
         )
 
     primary_provider = _env_lookup("PRIMARY_PROVIDER", env) or "anthropic"
@@ -439,7 +449,7 @@ def _build_provider() -> LLMProvider:
             "fast",
             _env_lookup("TIER_FAST_ANTHROPIC_MODEL", env) or "claude-haiku-4-5-20251001",
             _env_lookup("TIER_FAST_OPENAI_MODEL", env) or "gpt-4o-mini",
-            _env_lookup("TIER_FAST_CODEX_MODEL", env) or "gpt-5.3-codex-spark",
+            _env_lookup("TIER_FAST_CODEX_MODEL", env) or "gpt-5.4-mini",
             _env_lookup("TIER_FAST_GEMINI_MODEL", env) or "gemini-3-flash-preview",
             int(_env_lookup("TIER_FAST_MAX_TOKENS", env) or 4096),
             float(_env_lookup("TIER_FAST_TEMPERATURE", env) or 0.3),
@@ -463,7 +473,7 @@ def _build_provider() -> LLMProvider:
             "hard",
             _env_lookup("TIER_HARD_ANTHROPIC_MODEL", env) or "claude-opus-4-6",
             _env_lookup("TIER_HARD_OPENAI_MODEL", env) or "o3",
-            _env_lookup("TIER_HARD_CODEX_MODEL", env) or "gpt-5.3-codex",
+            _env_lookup("TIER_HARD_CODEX_MODEL", env) or "gpt-5.5",
             _env_lookup("TIER_HARD_GEMINI_MODEL", env) or "gemini-3.1-pro-preview",
             int(_env_lookup("TIER_HARD_MAX_TOKENS", env) or 40000),
             float(_env_lookup("TIER_HARD_TEMPERATURE", env) or 0.7),
