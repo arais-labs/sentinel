@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'rc=$?; echo "ERROR line ${LINENO}: ${BASH_COMMAND} exited with ${rc}" >&2; exit "${rc}"' ERR
 
 export DEBIAN_FRONTEND=noninteractive
 export TZ="${TZ:-America/Los_Angeles}"
@@ -484,19 +485,36 @@ chown root:root "${BROWSER_SCRIPT}" "${BROWSER_UNIT}"
 systemctl daemon-reload
 systemctl enable sentinel-runtime-desktop.service sentinel-runtime-browser.service
 systemctl restart sentinel-runtime-desktop.service
+desktop_ready=0
 for _ in $(seq 1 60); do
   if curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null 2>&1; then
+    desktop_ready=1
     break
   fi
   sleep 1
 done
+if [ "${desktop_ready}" -ne 1 ]; then
+  systemctl --no-pager status sentinel-runtime-desktop.service >&2 || true
+  journalctl -u sentinel-runtime-desktop.service --no-pager -n 120 >&2 || true
+  exit 1
+fi
+
 systemctl restart sentinel-runtime-browser.service
+browser_ready=0
 for _ in $(seq 1 120); do
   if curl -fsS http://127.0.0.1:9223/json/version >/dev/null 2>&1; then
+    browser_ready=1
     break
   fi
   sleep 1
 done
+if [ "${browser_ready}" -ne 1 ]; then
+  systemctl --no-pager status sentinel-runtime-browser.service >&2 || true
+  journalctl -u sentinel-runtime-browser.service --no-pager -n 120 >&2 || true
+  tail -120 /tmp/chromium-reset.log >&2 2>/dev/null || true
+  tail -120 /tmp/chromium-socat.log >&2 2>/dev/null || true
+  exit 1
+fi
 
 touch "${RUNTIME_MARKER}"
 touch "${BROWSER_MARKER}"

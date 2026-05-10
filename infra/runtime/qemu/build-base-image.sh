@@ -167,15 +167,93 @@ for _ in $(seq 1 180); do
 done
 ssh "${SSH_OPTS[@]}" "${BUILDER_USER}"@127.0.0.1 true >/dev/null
 
+print_guest_progress() {
+  ssh "${SSH_OPTS[@]}" "${BUILDER_USER}"@127.0.0.1 'bash -s' <<'REMOTE' 2>/dev/null || true
+set -euo pipefail
+
+status="$(cloud-init status 2>/dev/null | sed 's/^/cloud-init: /' || true)"
+if [[ -n "${status}" ]]; then
+  echo "${status}"
+fi
+
+if [[ -f /var/log/apt/term.log ]]; then
+  apt_line="$(sudo tail -1 /var/log/apt/term.log 2>/dev/null || true)"
+  if [[ -n "${apt_line}" ]]; then
+    echo "apt: ${apt_line}"
+  fi
+fi
+
+if [[ -f /var/log/sentinel-runtime-base.log ]]; then
+  sentinel_line="$(sudo tail -1 /var/log/sentinel-runtime-base.log 2>/dev/null || true)"
+  if [[ -n "${sentinel_line}" ]]; then
+    echo "sentinel: ${sentinel_line}"
+  fi
+fi
+
+markers=()
+for marker in runtime-provisioned-v1 browser-provisioned-v1; do
+  if [[ -f "/var/lib/sentinel/${marker}" ]]; then
+    markers+=("${marker}")
+  fi
+done
+if [[ ${#markers[@]} -gt 0 ]]; then
+  echo "markers: ${markers[*]}"
+fi
+REMOTE
+}
+
+dump_guest_failure_logs() {
+  ssh "${SSH_OPTS[@]}" "${BUILDER_USER}"@127.0.0.1 'bash -s' <<'REMOTE' 2>/dev/null || true
+set -euo pipefail
+
+echo "--- cloud-init status ---"
+cloud-init status --long 2>&1 || true
+
+echo "--- sentinel image provision log ---"
+sudo tail -240 /var/log/sentinel-image-provision.log 2>&1 || true
+
+echo "--- cloud-init output ---"
+sudo tail -160 /var/log/cloud-init-output.log 2>&1 || true
+
+echo "--- failed systemd units ---"
+systemctl --no-pager --failed 2>&1 || true
+
+echo "--- sentinel desktop service ---"
+systemctl --no-pager status sentinel-runtime-desktop.service 2>&1 || true
+
+echo "--- sentinel browser service ---"
+systemctl --no-pager status sentinel-runtime-browser.service 2>&1 || true
+
+echo "--- chromium logs ---"
+sudo tail -120 /tmp/chromium-reset.log 2>&1 || true
+sudo tail -120 /tmp/chromium-socat.log 2>&1 || true
+REMOTE
+}
+
 echo "Waiting for baked runtime markers and services..."
 READY_CMD=$'test -f /var/lib/sentinel/runtime-provisioned-v1 && test -f /var/lib/sentinel/browser-provisioned-v1 && curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null && curl -fsS http://127.0.0.1:9223/json/version >/dev/null'
-for _ in $(seq 1 1800); do
+FAILED_CMD=$'cloud-init status 2>/dev/null | grep -Eq "status: (error|done)"'
+READY=0
+for attempt in $(seq 1 1800); do
   if ssh "${SSH_OPTS[@]}" "${BUILDER_USER}"@127.0.0.1 "${READY_CMD}" >/dev/null 2>&1; then
+    READY=1
     break
+  fi
+  if ssh "${SSH_OPTS[@]}" "${BUILDER_USER}"@127.0.0.1 "${FAILED_CMD}" >/dev/null 2>&1; then
+    echo "QEMU image provisioning finished before runtime readiness checks passed." >&2
+    dump_guest_failure_logs >&2
+    exit 1
+  fi
+  if (( attempt == 1 || attempt % 15 == 0 )); then
+    print_guest_progress
   fi
   sleep 2
 done
-ssh "${SSH_OPTS[@]}" "${BUILDER_USER}"@127.0.0.1 "${READY_CMD}" >/dev/null
+if [[ "${READY}" -ne 1 ]]; then
+  echo "QEMU image provisioning did not become ready before timeout." >&2
+  dump_guest_failure_logs >&2
+  exit 1
+fi
 
 echo "Shutting down builder VM..."
 ssh "${SSH_OPTS[@]}" "${BUILDER_USER}"@127.0.0.1 "sudo shutdown -h now" >/dev/null 2>&1 || true

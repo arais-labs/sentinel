@@ -390,15 +390,23 @@ build_qemu_artifacts_interactive() {
       ;;
   esac
 
+  pause_for_qemu_failure() {
+    printf "%s" "$CURSOR_ON" >&2
+    read -r -p "Press Enter to return to the runtime backend menu..." _ < /dev/tty
+    printf "%s" "$CURSOR_OFF" >&2
+  }
+
   info "Building QEMU base image. This can take several minutes."
   "$runtime_dir/build-base-image.sh" || {
     error "QEMU base image build failed."
+    pause_for_qemu_failure
     return 1
   }
 
   info "Validating QEMU base image."
   "$runtime_dir/validate-base-image.sh" || {
     error "QEMU base image validation failed."
+    pause_for_qemu_failure
     return 1
   }
 
@@ -997,6 +1005,8 @@ action_create() {
   upsert_env_value "$ef" "POSTGRES_PASSWORD" "$postgres_password"
   upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
 
+  select_runtime_backend_once "$inst"
+
   success "Instance '$inst' created."
   info "Current runtime backend: $(backend_label "$(current_instance_backend "$inst")")"
   invalidate_status_cache
@@ -1033,6 +1043,77 @@ action_edit_instance() {
   return 0
 }
 
+configure_runtime_backend_choice() {
+  local inst="$1"
+  local choice="$2"
+  local ef
+  ef="$(instance_env_file "$inst")"
+
+  case "$choice" in
+    0)
+      upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "docker"
+      upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
+      invalidate_status_cache
+      set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Docker${RESET} for runtimes."
+      return 0
+      ;;
+    1)
+      configure_qemu_backend "$inst" "$ef"
+      return $?
+      ;;
+    2)
+      echo -n "$CURSOR_ON"
+      local remote_host remote_port remote_user remote_key remote_workspace
+      remote_host="$(prompt_default "Remote SSH Host" "$(read_env_value "$ef" "RUNTIME_SSH_HOST" || echo localhost)")"
+      remote_port="$(prompt_default "Remote SSH Port" "$(read_env_value "$ef" "RUNTIME_SSH_PORT" || echo 22)")"
+      remote_user="$(prompt_default "Remote SSH User" "$(read_env_value "$ef" "RUNTIME_SSH_USER" || echo sentinel)")"
+      remote_key="$(prompt_default "Remote SSH Key Path" "$(read_env_value "$ef" "RUNTIME_SSH_KEY_PATH" || true)")"
+      remote_workspace="$(prompt_default "Remote Workspace Path" "$(read_env_value "$ef" "RUNTIME_SSH_WORKSPACE" || echo /home/sentinel/workspace)")"
+      echo -n "$CURSOR_OFF"
+
+      if [[ -z "$remote_host" ]]; then
+        warn "Remote SSH host cannot be empty."
+        set_menu_note "${YELLOW}Remote SSH host cannot be empty.${RESET}"
+        return 1
+      fi
+
+      upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "remote"
+      upsert_env_value "$ef" "RUNTIME_SSH_HOST" "$remote_host"
+      upsert_env_value "$ef" "RUNTIME_SSH_PORT" "$remote_port"
+      upsert_env_value "$ef" "RUNTIME_SSH_USER" "$remote_user"
+      upsert_env_value "$ef" "RUNTIME_SSH_KEY_PATH" "$remote_key"
+      upsert_env_value "$ef" "RUNTIME_SSH_WORKSPACE" "$remote_workspace"
+      invalidate_status_cache
+      set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Custom SSH${RESET} for runtimes."
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+select_runtime_backend_once() {
+  local inst="$1"
+  local current_backend
+  local options=(
+    "Docker"
+    "QEMU"
+    "Custom SSH"
+  )
+
+  while true; do
+    echo -n "$CLEAR_SCREEN"
+    current_backend="$(current_instance_backend "$inst")"
+    select_option "RUNTIME BACKEND: $inst ($(backend_label "$current_backend"))" "${options[@]}"
+    local choice=$?
+    printf "\n\n"
+
+    if configure_runtime_backend_choice "$inst" "$choice"; then
+      return 0
+    fi
+  done
+}
+
 action_instance_runtime_backend() {
   local inst="$1"
   [[ -z "$inst" ]] && return 0
@@ -1058,39 +1139,7 @@ action_instance_runtime_backend() {
     printf "\n\n"
 
     case "$choice" in
-      0)
-        upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "docker"
-        upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
-        invalidate_status_cache
-        set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Docker${RESET} for runtimes."
-        ;;
-      1)
-        configure_qemu_backend "$inst" "$ef" || true
-        ;;
-      2)
-        echo -n "$CURSOR_ON"
-        local remote_host remote_port remote_user remote_key remote_workspace
-        remote_host="$(prompt_default "Remote SSH Host" "$(read_env_value "$ef" "RUNTIME_SSH_HOST" || echo localhost)")"
-        remote_port="$(prompt_default "Remote SSH Port" "$(read_env_value "$ef" "RUNTIME_SSH_PORT" || echo 22)")"
-        remote_user="$(prompt_default "Remote SSH User" "$(read_env_value "$ef" "RUNTIME_SSH_USER" || echo sentinel)")"
-        remote_key="$(prompt_default "Remote SSH Key Path" "$(read_env_value "$ef" "RUNTIME_SSH_KEY_PATH" || true)")"
-        remote_workspace="$(prompt_default "Remote Workspace Path" "$(read_env_value "$ef" "RUNTIME_SSH_WORKSPACE" || echo /home/sentinel/workspace)")"
-        echo -n "$CURSOR_OFF"
-
-        if [[ -z "$remote_host" ]]; then
-          warn "Remote SSH host cannot be empty."
-          set_menu_note "${YELLOW}Remote SSH host cannot be empty.${RESET}"
-        else
-          upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "remote"
-          upsert_env_value "$ef" "RUNTIME_SSH_HOST" "$remote_host"
-          upsert_env_value "$ef" "RUNTIME_SSH_PORT" "$remote_port"
-          upsert_env_value "$ef" "RUNTIME_SSH_USER" "$remote_user"
-          upsert_env_value "$ef" "RUNTIME_SSH_KEY_PATH" "$remote_key"
-          upsert_env_value "$ef" "RUNTIME_SSH_WORKSPACE" "$remote_workspace"
-          invalidate_status_cache
-          set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Custom SSH${RESET} for runtimes."
-        fi
-        ;;
+      0|1|2) configure_runtime_backend_choice "$inst" "$choice" || true ;;
       3)
         return 0
         ;;
