@@ -58,17 +58,6 @@ async def get_manifest(
     endpoints = [
         {"method": "GET", "path": "/api/manifest", "description": "This manifest"},
         {"method": "GET", "path": "/api/agent", "description": "Full agent guide"},
-        {"method": "GET", "path": "/api/coordination", "description": "List coordination messages"},
-        {"method": "POST", "path": "/api/coordination", "description": "Send coordination message"},
-        {"method": "GET", "path": "/api/documents", "description": "List documents"},
-        {"method": "GET", "path": "/api/documents/{slug}", "description": "Get document"},
-        {"method": "POST", "path": "/api/documents", "description": "Create document"},
-        {"method": "PUT", "path": "/api/documents/{slug}", "description": "Update document"},
-        {"method": "DELETE", "path": "/api/documents/{slug}", "description": "Delete document"},
-        {"method": "GET", "path": "/api/tasks", "description": "List tasks"},
-        {"method": "POST", "path": "/api/tasks", "description": "Create task"},
-        {"method": "PATCH", "path": "/api/tasks/{task_id}", "description": "Update task"},
-        {"method": "DELETE", "path": "/api/tasks/{task_id}", "description": "Delete task"},
         {"method": "GET", "path": "/api/settings", "description": "List system settings"},
         {"method": "PUT", "path": "/api/settings/{key}", "description": "Set system setting"},
     ]

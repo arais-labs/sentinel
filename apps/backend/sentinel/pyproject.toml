@@ -34,9 +34,6 @@ dev = [
   "black>=25.1.0,<26.0.0",
 ]
 
-[tool.setuptools]
-py-modules = ["main"]
-
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]

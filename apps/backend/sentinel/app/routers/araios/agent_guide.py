@@ -68,23 +68,6 @@ async def get_agent_guide(
             "manifest": {
                 "GET /api/manifest": "Full system manifest with modules and endpoints",
             },
-            "coordination": {
-                "GET /api/coordination": "List coordination messages (query: limit)",
-                "POST /api/coordination": "Send a coordination message",
-            },
-            "documents": {
-                "GET /api/documents": "List documents (query: tag)",
-                "GET /api/documents/{slug}": "Get full document by slug",
-                "POST /api/documents": "Create a new document",
-                "PUT /api/documents/{slug}": "Update document (If-Match for optimistic locking)",
-                "DELETE /api/documents/{slug}": "Delete a document",
-            },
-            "tasks": {
-                "GET /api/tasks": "List tasks (query: client, status, owner)",
-                "POST /api/tasks": "Create a new task",
-                "PATCH /api/tasks/{task_id}": "Update a task",
-                "DELETE /api/tasks/{task_id}": "Delete a task",
-            },
             "settings": {
                 "GET /api/settings": "List all system settings",
                 "PUT /api/settings/{key}": "Set a system setting (admin only)",

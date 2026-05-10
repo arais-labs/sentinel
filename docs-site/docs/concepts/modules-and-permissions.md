@@ -101,9 +101,9 @@ This returns the full guide for the current instance: available modules, registe
 ```
 GET  /api/agent                          # Full instance guide — call this first
 GET  /api/modules                        # List all modules
-POST /api/modules/:name/records          # Create a record in a data module
+GET  /api/modules/:name/records          # List records for a module, for example /api/modules/tasks/records
+POST /api/modules/:name/records          # Create a record in a DB-backed data module. Body is field JSON, for example {"title":"Follow up","status":"todo"}
 POST /api/modules/:name/action/:id       # Invoke a tool module action
-GET  /api/tasks                          # List tasks
 GET  /api/approvals?status=pending       # Check pending approvals
 POST /api/approvals/:id/approve or /reject # Resolve an approval (admin only)
 ```

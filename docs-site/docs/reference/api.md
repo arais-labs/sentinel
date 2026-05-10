@@ -80,9 +80,9 @@ Returns `202` when approval is required, `200` with result when executed.
 
 | Resource | Endpoint prefix |
 |---|---|
-| Tasks | `/api/tasks` |
-| Coordination messages | `/api/coordination` |
-| Documents | `/api/documents` |
+| Module registry | `/api/modules` |
+| Module records | `/api/modules/{name}/records` |
+| Module actions | `/api/modules/{name}/action/{action_id}` |
 | Settings | `/api/settings` |
 
 ---
