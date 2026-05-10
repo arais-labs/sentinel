@@ -8,6 +8,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 INSTANCES_DIR="$ROOT_DIR/.instances"
+BACKUP_FORMAT="sentinel.instance.backup"
+BACKUP_VERSION="1"
 mkdir -p "$INSTANCES_DIR"
 TMP_PICK="/tmp/sentinel_pick_$(id -u)"
 STATUS_CACHE_TS=0
@@ -628,29 +630,63 @@ ensure_instance_postgres_ready() {
   return 0
 }
 
+ensure_instance_ready_for_backup() {
+  local inst="$1"
+  if ensure_instance_postgres_ready "$inst"; then
+    return 0
+  fi
+
+  warn "Instance '$inst' is not running, so backup cannot read Postgres."
+  local confirm
+  printf "%s" "$CURSOR_ON" >&2
+  read -r -p "Start '$inst' now and continue backup? [y/N]: " confirm < /dev/tty
+  printf "%s" "$CURSOR_OFF" >&2
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      info "Backup aborted."
+      set_menu_note "${DIM}Backup aborted for ${inst}.${RESET}"
+      return 1
+      ;;
+  esac
+
+  action_up "$inst" >/dev/tty
+  load_instance_db_credentials "$inst" || return 1
+  ensure_instance_postgres_ready "$inst"
+}
+
 get_instance_backups() {
   local inst="$1"
   local dir
   dir="$(instance_backup_dir "$inst")"
   [[ -d "$dir" ]] || return 0
-  find "$dir" -maxdepth 1 -type f -name "*.sql.gz" | sort -r
+  find "$dir" -maxdepth 1 -type f -name "*.sentinel-backup.tar.gz" | sort -r
+}
+
+get_all_instance_backups() {
+  [[ -d "$INSTANCES_DIR" ]] || return 0
+  find "$INSTANCES_DIR" -path "*/backups/*.sentinel-backup.tar.gz" -type f | sort -r
 }
 
 pick_backup_interactive() {
-  local inst="$1"
+  local inst="${1:-}"
   local title="$2"
   local backups=()
-  while IFS= read -r file; do [[ -n "$file" ]] && backups+=("$file"); done < <(get_instance_backups "$inst")
+  if [[ -n "$inst" ]]; then
+    while IFS= read -r file; do [[ -n "$file" ]] && backups+=("$file"); done < <(get_instance_backups "$inst")
+  else
+    while IFS= read -r file; do [[ -n "$file" ]] && backups+=("$file"); done < <(get_all_instance_backups)
+  fi
 
   if [[ ${#backups[@]} -eq 0 ]]; then
-    warn "No backups found for '$inst' in $(instance_backup_dir "$inst")."
+    warn "No Sentinel instance backups found."
     return 1
   fi
 
   local options=()
   local file
   for file in "${backups[@]}"; do
-    options+=("$(basename "$file")")
+    options+=("$(basename "$(dirname "$(dirname "$file")")") / $(basename "$file")")
   done
   options+=("⬅️  Go Back")
 
@@ -678,6 +714,80 @@ verify_backup_checksum() {
     return 1
   fi
   return 0
+}
+
+write_backup_manifest() {
+  local inst="$1" db_name="$2" workspaces_included="$3" output="$4"
+  if ! require_cmd python3; then
+    error "python3 is required to write backup manifests."
+    return 1
+  fi
+  BACKUP_FORMAT="$BACKUP_FORMAT" BACKUP_VERSION="$BACKUP_VERSION" BACKUP_INSTANCE="$inst" BACKUP_DATABASE="$db_name" BACKUP_WORKSPACES_INCLUDED="$workspaces_included" python3 - "$output" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+target = sys.argv[1]
+document = {
+    "format": os.environ["BACKUP_FORMAT"],
+    "version": int(os.environ["BACKUP_VERSION"]),
+    "instanceName": os.environ["BACKUP_INSTANCE"],
+    "databaseName": os.environ["BACKUP_DATABASE"],
+    "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    "source": "cli",
+    "workspacesIncluded": os.environ["BACKUP_WORKSPACES_INCLUDED"] == "true",
+}
+with open(target, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2)
+    handle.write("\n")
+PY
+}
+
+read_backup_manifest_field() {
+  local backup_root="$1" field="$2"
+  python3 - "$backup_root/sentinel-backup.json" "$field" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    document = json.load(handle)
+value = document.get(sys.argv[2], "")
+print(value)
+PY
+}
+
+validate_extracted_backup() {
+  local backup_root="$1"
+  if [[ ! -f "$backup_root/sentinel-backup.json" || ! -f "$backup_root/instance.env" || ! -f "$backup_root/database.sql" || ! -d "$backup_root/workspaces" ]]; then
+    error "Backup is missing sentinel-backup.json, instance.env, database.sql, or workspaces/."
+    return 1
+  fi
+  local format version
+  format="$(read_backup_manifest_field "$backup_root" "format" 2>/dev/null || true)"
+  version="$(read_backup_manifest_field "$backup_root" "version" 2>/dev/null || true)"
+  if [[ "$format" != "$BACKUP_FORMAT" || "$version" != "$BACKUP_VERSION" ]]; then
+    error "Unsupported Sentinel backup format."
+    return 1
+  fi
+  return 0
+}
+
+prompt_backup_workspaces() {
+  local inst="$1"
+  local size="unknown"
+  if [[ -d "$(instance_workspaces_dir "$inst")" ]]; then
+    size="$(du -sh "$(instance_workspaces_dir "$inst")" 2>/dev/null | awk '{print $1}')"
+  fi
+  warn "Workspaces for '$inst' are ${size}. Including them can make the backup slow and large."
+  local confirm
+  printf "%s" "$CURSOR_ON" >&2
+  read -r -p "Include workspaces in this backup? [y/N]: " confirm < /dev/tty
+  printf "%s" "$CURSOR_OFF" >&2
+  case "$confirm" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 select_option() {
@@ -1313,30 +1423,41 @@ action_db_backup_create() {
   [[ -z "$inst" ]] && return 0
 
   load_instance_db_credentials "$inst" || return 0
-  ensure_instance_postgres_ready "$inst" || return 0
+  ensure_instance_ready_for_backup "$inst" || return 0
 
-  local backup_dir ts backup_file temp_file checksum
+  local backup_dir ts backup_file temp_file tmp_dir checksum
   backup_dir="$(instance_backup_dir "$inst")"
   mkdir -p "$backup_dir"
   ts="$(date +%Y%m%d-%H%M%S)"
-  backup_file="${backup_dir}/${ts}_${inst}.sql.gz"
+  backup_file="${backup_dir}/${ts}_${inst}.sentinel-backup.tar.gz"
   temp_file="${backup_file}.tmp"
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/sentinel-backup-${inst}.XXXXXX")"
+  local workspaces_included="false"
+  if prompt_backup_workspaces "$inst"; then
+    workspaces_included="true"
+  fi
 
-  info "Creating DB backup for '$inst'..."
-  if compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
-      pg_dump -U "$DB_USER" "$DB_NAME" | gzip -c > "$temp_file"; then
+  info "Creating instance backup for '$inst'..."
+  if write_backup_manifest "$inst" "$DB_NAME" "$workspaces_included" "$tmp_dir/sentinel-backup.json" \
+      && cp "$(instance_env_file "$inst")" "$tmp_dir/instance.env" \
+      && mkdir -p "$tmp_dir/workspaces" \
+      && { [[ "$workspaces_included" != "true" ]] || cp -R "$(instance_workspaces_dir "$inst")/." "$tmp_dir/workspaces/"; } \
+      && compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
+        pg_dump --no-owner --no-privileges -U "$DB_USER" "$DB_NAME" > "$tmp_dir/database.sql" \
+      && tar -czf "$temp_file" -C "$tmp_dir" .; then
     mv "$temp_file" "$backup_file"
     checksum="$(file_sha256 "$backup_file")"
     if [[ -n "$checksum" ]]; then
       printf "%s  %s\n" "$checksum" "$(basename "$backup_file")" > "${backup_file}.sha256"
     fi
-    success "Backup created: $backup_file"
+    success "Instance backup created: $backup_file"
     set_menu_note "${GREEN}Backup created for ${inst}.${RESET} $(basename "$backup_file")"
   else
     rm -f "$temp_file"
     error "Backup failed for '$inst'."
     set_menu_note "${RED}Backup failed for ${inst}.${RESET}"
   fi
+  rm -rf "$tmp_dir"
   return 0
 }
 
@@ -1351,7 +1472,7 @@ action_db_backup_list() {
   local backups=()
   while IFS= read -r file; do [[ -n "$file" ]] && backups+=("$file"); done < <(get_instance_backups "$inst")
   if [[ ${#backups[@]} -eq 0 ]]; then
-    info "No backups found for '$inst' in $(instance_backup_dir "$inst")."
+    info "No Sentinel instance backups found for '$inst' in $(instance_backup_dir "$inst")."
     set_menu_note "${DIM}No backups found for ${inst}.${RESET}"
     return 0
   fi
@@ -1370,68 +1491,87 @@ action_db_backup_list() {
 
 action_db_backup_restore() {
   ensure_docker_ready || return 0
-  local inst=""
   rm -f "$TMP_PICK"
-  if pick_instance_interactive; then
-    inst=$(cat "$TMP_PICK")
-  fi
-  [[ -z "$inst" ]] && return 0
-
-  rm -f "$TMP_PICK"
-  if ! pick_backup_interactive "$inst" "RESTORE BACKUP"; then
+  if ! pick_backup_interactive "" "RESTORE BACKUP"; then
     return 0
   fi
-  local backup_file
+  local backup_file tmp_dir source_name inst
   backup_file="$(cat "$TMP_PICK")"
-
-  load_instance_db_credentials "$inst" || return 0
-  ensure_instance_postgres_ready "$inst" || return 0
   verify_backup_checksum "$backup_file" || return 0
 
-  warn "This will replace DB '$DB_NAME' for instance '$inst'."
-  warn "Backup selected: $(basename "$backup_file")"
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/sentinel-restore.XXXXXX")"
+  if ! tar -xzf "$backup_file" -C "$tmp_dir" || ! validate_extracted_backup "$tmp_dir"; then
+    rm -rf "$tmp_dir"
+    set_menu_note "${RED}Restore failed: invalid backup archive.${RESET}"
+    return 0
+  fi
+
+  source_name="$(read_backup_manifest_field "$tmp_dir" "instanceName" 2>/dev/null || echo main)"
+  inst="$(sanitize_instance_name "$(prompt_default "Restore As Instance" "$source_name")")"
+  if [[ -z "$inst" ]]; then
+    rm -rf "$tmp_dir"
+    error "Instance name cannot be empty."
+    return 0
+  fi
+  if [[ -e "$(instance_dir "$inst")" ]]; then
+    rm -rf "$tmp_dir"
+    error "Instance '$inst' already exists. Restore creates a new instance; it does not overwrite."
+    set_menu_note "${RED}Restore aborted because ${inst} already exists.${RESET}"
+    return 0
+  fi
+
+  warn "This will create a new instance '$inst' from backup $(basename "$backup_file")."
   read -r -p "Type RESTORE to confirm: " confirm < /dev/tty
-  [[ "$confirm" != "RESTORE" ]] && { info "Restore aborted."; set_menu_note "${DIM}Restore aborted for ${inst}.${RESET}"; return 0; }
+  [[ "$confirm" != "RESTORE" ]] && { rm -rf "$tmp_dir"; info "Restore aborted."; set_menu_note "${DIM}Restore aborted.${RESET}"; return 0; }
 
-  local db_lit db_ident user_ident
-  db_lit="$(sql_quote_literal "$DB_NAME")"
-  db_ident="$(sql_quote_identifier "$DB_NAME")"
-  user_ident="$(sql_quote_identifier "$DB_USER")"
+  mkdir -p "$(instance_dir "$inst")"
+  cp "$tmp_dir/instance.env" "$(instance_env_file "$inst")"
+  rm -rf "$(instance_workspaces_dir "$inst")"
+  cp -R "$tmp_dir/workspaces" "$(instance_workspaces_dir "$inst")"
+  mkdir -p "$(instance_backup_dir "$inst")" "$(instance_qemu_run_dir "$inst")"
+  upsert_env_value "$(instance_env_file "$inst")" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
+  upsert_env_value "$(instance_env_file "$inst")" "RUNTIME_QEMU_WORKSPACE_ROOT" "$(instance_workspaces_dir "$inst")"
+  upsert_env_value "$(instance_env_file "$inst")" "RUNTIME_QEMU_RUN_ROOT" "$(instance_qemu_run_dir "$inst")"
 
-  info "Terminating active DB sessions..."
-  if ! compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
-    psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d postgres \
-    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${db_lit} AND pid <> pg_backend_pid();" >/dev/null; then
-    error "Failed to terminate active sessions."
+  load_instance_db_credentials "$inst" || { rm -rf "$(instance_dir "$inst")" "$tmp_dir"; return 0; }
+  if ! compose_instance "$inst" up -d postgres >/dev/null; then
+    rm -rf "$(instance_dir "$inst")" "$tmp_dir"
+    error "Failed to start Postgres for restored instance '$inst'."
+    set_menu_note "${RED}Restore failed for ${inst}.${RESET}"
     return 0
   fi
 
-  info "Recreating database '$DB_NAME'..."
-  if ! compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
-    psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d postgres \
-    -c "DROP DATABASE IF EXISTS ${db_ident};" \
-    -c "CREATE DATABASE ${db_ident} OWNER ${user_ident};" >/dev/null; then
-    error "Failed to recreate database '$DB_NAME'."
+  local ready=false
+  for _ in {1..60}; do
+    if compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
+      psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
+      ready=true
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ "$ready" != "true" ]]; then
+    compose_instance "$inst" down -v --remove-orphans >/dev/null 2>&1 || true
+    rm -rf "$(instance_dir "$inst")" "$tmp_dir"
+    error "Postgres did not become ready for restored instance '$inst'."
+    set_menu_note "${RED}Restore failed for ${inst}.${RESET}"
     return 0
   fi
 
-  info "Restoring from $(basename "$backup_file")..."
-  if gunzip -c "$backup_file" | compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
-    psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" >/dev/null; then
-    success "Restore completed for '$inst'."
-    set_menu_note "${GREEN}Restore completed for ${inst}.${RESET} Source: $(basename "$backup_file")"
-  else
+  info "Restoring database for '$inst'..."
+  if ! compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
+      psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" < "$tmp_dir/database.sql" >/dev/null; then
+    compose_instance "$inst" down -v --remove-orphans >/dev/null 2>&1 || true
+    rm -rf "$(instance_dir "$inst")" "$tmp_dir"
     error "Restore failed for '$inst'."
     set_menu_note "${RED}Restore failed for ${inst}.${RESET}"
     return 0
   fi
 
-  if compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
-      psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
-    success "Post-restore DB check passed."
-  else
-    warn "Post-restore DB check failed."
-  fi
+  rm -rf "$tmp_dir"
+  success "Restore completed for '$inst'."
+  invalidate_status_cache
+  set_menu_note "${GREEN}Restore completed as ${inst}.${RESET} Source: $(basename "$backup_file")"
   return 0
 }
 
@@ -1465,7 +1605,7 @@ action_db_backup_delete() {
 
 action_db_backups_menu() {
   local options=(
-    "📦  Backup Current Instance DB"
+    "📦  Backup Instance"
     "🧾  List Backups"
     "♻️  Restore Backup"
     "🗑️   Delete Backup"
@@ -1474,7 +1614,7 @@ action_db_backups_menu() {
 
   while true; do
     echo -n "$CLEAR_SCREEN"
-    select_option "DATABASE BACKUPS" "${options[@]}"
+    select_option "INSTANCE BACKUPS" "${options[@]}"
     local choice=$?
 
     printf "\n\n"
@@ -1553,7 +1693,7 @@ menu_loop() {
     "🧭  Instance Config"
     "${ICON_START}  Start Instance"
     "${ICON_STOP}  Stop Instance"
-    "🗄️  Database Backups"
+    "🗄️  Instance Backups"
     "🛠️  Advanced Mode"
     "🚪  Exit"
   )

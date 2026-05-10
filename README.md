@@ -118,9 +118,16 @@ docker compose up --build -d
 docker compose -f docker-compose.dev.yml up --build
 ```
 
+### Desktop app
+
+The Electron desktop package is under [`apps/desktop/sentinel`](apps/desktop/sentinel).
+It is a native management shell for local Sentinel instances. The CLI remains
+supported for terminal workflows.
+
 ## Repository layout
 
 - `apps/backend/sentinel` Sentinel backend
+- `apps/desktop/sentinel` Sentinel Electron desktop shell
 - `apps/frontend/sentinel` Sentinel frontend
 - `infra/` gateway and runtime wiring
 - `docs-site/` full documentation source

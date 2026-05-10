@@ -621,6 +621,7 @@ export function SessionsPage() {
 
   const [liveView, setLiveView] = useState<RuntimeLiveView | null>(null);
   const [runtimeBooting, setRuntimeBooting] = useState(false);
+  const isDesktopRuntimeStarting = Boolean(liveView?.enabled && !liveView.available) || runtimeBooting;
   const [debugMenuOpen, setDebugMenuOpen] = useState(false);
   const [debugEvents, setDebugEvents] = useState<SessionDebugEvent[]>([]);
   const [mode, setMode] = useState<'solo' | 'advanced'>(
@@ -1089,6 +1090,27 @@ export function SessionsPage() {
     void fetchLiveView();
   }, [activeSessionId]);
 
+  useEffect(() => {
+    if (!activeSessionId || rightRailTab !== 'desktop') return;
+    if (!runtimeBooting && liveView?.enabled && liveView.available) return;
+
+    let cancelled = false;
+    const refresh = async () => {
+      if (cancelled) return;
+      await fetchLiveView();
+    };
+    const interval = window.setInterval(() => {
+      void refresh();
+    }, 2000);
+
+    void refresh();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeSessionId, rightRailTab, runtimeBooting, liveView?.enabled, liveView?.available]);
+
   // Poll sessions every 30s to pick up unread changes
   useEffect(() => {
     const interval = setInterval(() => { void fetchSessions({ autoSelectIfEmpty: false }); }, 30_000);
@@ -1469,6 +1491,10 @@ export function SessionsPage() {
       const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?session_id=${sid}`);
       setLiveView(payload);
       if (payload.enabled && payload.available) {
+        setRuntimeBooting(false);
+      } else if (payload.enabled) {
+        setRuntimeBooting(true);
+      } else {
         setRuntimeBooting(false);
       }
     } catch {
@@ -2637,7 +2663,10 @@ export function SessionsPage() {
               }
             } catch { /* retry */ }
           }
-          setRuntimeBooting(false);
+          const sid = activeSessionIdRef.current;
+          if (!sid) {
+            setRuntimeBooting(false);
+          }
         })();
         break;
       case 'done': {
@@ -3638,7 +3667,7 @@ export function SessionsPage() {
                       url={liveView?.enabled && liveView?.available ? liveView.url : null}
                       isFullscreen={isDesktopFullscreen}
                       onClose={() => setIsDesktopFullscreen(false)}
-                      isBooting={runtimeBooting && !(liveView?.enabled && liveView?.available)}
+                      isBooting={isDesktopRuntimeStarting && !(liveView?.enabled && liveView?.available)}
                       layoutKey={mode}
                       onFrameLoad={handleDesktopFrameLoad}
                       onInteract={handleDesktopInteract}
@@ -3657,7 +3686,7 @@ export function SessionsPage() {
                                 <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
                                 <span className="text-[10px] font-mono font-bold text-emerald-500">CONNECTED</span>
                               </>
-                            ) : runtimeBooting ? (
+                            ) : isDesktopRuntimeStarting ? (
                               <>
                                 <div className="h-1.5 w-1.5 rounded-full bg-sky-400 animate-pulse" />
                                 <span className="text-[10px] font-mono font-bold text-sky-400">STARTING</span>

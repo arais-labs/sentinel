@@ -42,7 +42,14 @@ pnpm-debug.log*
 # Build artifacts
 dist/
 build/
+release/
 *.tsbuildinfo
+apps/desktop/sentinel/resources/postgres/*
+!apps/desktop/sentinel/resources/postgres/README.md
+apps/desktop/sentinel/resources/python/*
+!apps/desktop/sentinel/resources/python/README.md
+apps/desktop/sentinel/resources/runtime-manifest.local.json
+.desktop-artifacts/
 
 # Local tooling / temp
 .tmp-license-venvs/

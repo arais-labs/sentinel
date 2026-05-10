@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sentinel Desktop</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-layout">
+      <header class="app-header">
+        <div class="header-left">
+          <div class="brand-container">
+            <img class="brand-mark-mini" src="../../assets/icon.png" alt="" />
+          </div>
+          <div class="header-title-block">
+            <h1>Sentinel Desktop</h1>
+            <p class="subtitle">Console Control Center</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button id="refreshBtn" class="btn-ghost">Refresh</button>
+          <button id="openBtn" class="primary">Open Sentinel</button>
+        </div>
+      </header>
+
+      <main class="app-content">
+        <section class="grid status-grid reveal delay-1">
+          <article class="card">
+            <span class="label">App support</span>
+            <strong id="supportPath">-</strong>
+            <div class="card-actions">
+              <button id="revealBtn">Reveal Folder</button>
+            </div>
+          </article>
+          <article class="card">
+            <span class="label">QEMU Protocol</span>
+            <strong id="qemuStatus">-</strong>
+            <p id="qemuMessage" class="status-msg"></p>
+          </article>
+          <article class="card">
+            <span class="label">Runtime Image</span>
+            <strong id="imageStatus">-</strong>
+            <div class="card-actions">
+              <button id="buildImageBtn">Build</button>
+              <button id="validateImageBtn">Validate</button>
+            </div>
+          </article>
+        </section>
+
+        <section class="panel reveal delay-2">
+          <div class="panel-header">
+            <div class="panel-title-block">
+              <h2 class="panel-title">Local Instances</h2>
+              <p class="panel-subtitle">Sequential Workspace Registry</p>
+            </div>
+            <form id="createForm" class="create-form">
+              <input id="instanceName" placeholder="instance name" value="main" />
+              <button type="submit">Create Instance</button>
+            </form>
+            <form id="restoreForm" class="restore-form">
+              <input id="restoreName" placeholder="restore as" />
+              <input id="restorePath" placeholder="/path/to/backup.sentinel-backup.tar.gz" />
+              <button type="submit">Restore</button>
+            </form>
+          </div>
+          <div id="instances" class="instances"></div>
+        </section>
+
+        <section class="panel reveal delay-3">
+          <div class="panel-header">
+            <div class="panel-title-block">
+              <h2 class="panel-title">Managed Services</h2>
+              <p class="panel-subtitle">Process Health & Port Allocation</p>
+            </div>
+            <button id="stopBtn" class="danger">Stop All Active</button>
+          </div>
+          <div id="services" class="services"></div>
+        </section>
+
+        <section class="panel logs-panel reveal delay-4">
+          <div class="panel-header">
+            <div class="panel-title-block">
+              <h2 class="panel-title">Audit Output</h2>
+              <p class="panel-subtitle">Live Supervisor Stream</p>
+            </div>
+          </div>
+          <pre id="logs"></pre>
+        </section>
+      </main>
+    </div>
+
+    <div id="authModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <form id="authForm" class="modal-card">
+        <div>
+          <p id="authEyebrow" class="modal-eyebrow">Admin credentials</p>
+          <h2 id="authTitle">Set admin password</h2>
+          <p id="authDescription">Choose the credentials used to sign in to this Sentinel instance.</p>
+        </div>
+        <label>
+          <span>Username</span>
+          <input id="authUsername" autocomplete="username" value="admin" />
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="authPassword" type="password" autocomplete="new-password" />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" data-modal-close="true">Cancel</button>
+          <button id="authSubmit" type="submit" class="primary">Apply</button>
+        </div>
+      </form>
+    </div>
+    <script type="module" src="../../dist/renderer/renderer.js"></script>
+  </body>
+</html>

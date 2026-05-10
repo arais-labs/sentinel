@@ -1,0 +1,91 @@
+{
+  "name": "sentinel-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Sentinel desktop management app",
+  "type": "module",
+  "main": "dist/main/main.js",
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "npm run build && electron .",
+    "artifacts:local": "node scripts/build-local-runtime-artifacts.mjs",
+    "resources:fetch": "node scripts/fetch-runtime-artifacts.mjs",
+    "dist:mac": "npm run build && npm run resources:fetch && electron-builder --mac dmg --arm64",
+    "dist:mac:shell": "npm run build && electron-builder --mac dmg --arm64",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "http-proxy": "^1.18.1",
+    "sirv": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/http-proxy": "^1.17.16",
+    "@types/node": "^22.19.11",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "~5.9.3"
+  },
+  "build": {
+    "appId": "us.arais.sentinel.desktop",
+    "productName": "Sentinel",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "assets/icon.png",
+      "dist/**/*",
+      "src/renderer/index.html",
+      "src/renderer/styles.css",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../../frontend/sentinel/dist",
+        "to": "frontend"
+      },
+      {
+        "from": "../../backend/sentinel",
+        "to": "backend",
+        "filter": [
+          "app/**/*",
+          "scripts/start-backend.sh",
+          "pyproject.toml",
+          "uv.lock"
+        ]
+      },
+      {
+        "from": "../../../infra/runtime/qemu",
+        "to": "runtime/qemu",
+        "filter": [
+          "bridge.py",
+          "build-base-image.sh",
+          "validate-base-image.sh",
+          "cloud-init/**/*",
+          "provision/**/*"
+        ]
+      },
+      {
+        "from": "resources/postgres",
+        "to": "postgres"
+      },
+      {
+        "from": "resources/python",
+        "to": "python"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.png",
+      "target": [
+        "dmg"
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    }
+  }
+}

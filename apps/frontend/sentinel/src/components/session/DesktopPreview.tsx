@@ -59,6 +59,8 @@ export const DesktopPreview = memo(({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [isPanelTransitionEnabled, setIsPanelTransitionEnabled] = useState(false);
   const [isControlActive, setIsControlActive] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const retryCountRef = useRef(0);
 
   const cleanUrl = useMemo(() => {
     if (!url) return null;
@@ -71,15 +73,22 @@ export const DesktopPreview = memo(({
       parsed.searchParams.set('resize', 'scale');
       parsed.searchParams.set('autoconnect', '1');
       parsed.searchParams.set('view_only', '0');
+      parsed.searchParams.set('reconnect', '1');
+      parsed.searchParams.set('reconnect_delay', '1000');
+      if (retryNonce > 0) {
+        parsed.searchParams.set('sentinel_retry', String(retryNonce));
+      }
       return parsed.toString();
     } catch {
       return normalized;
     }
-  }, [url]);
+  }, [url, retryNonce]);
 
   useEffect(() => {
     setIsControlActive(false);
-  }, [cleanUrl, layoutKey]);
+    retryCountRef.current = 0;
+    setRetryNonce(0);
+  }, [url, layoutKey]);
 
   useEffect(() => {
     if (isFullscreen) {
@@ -95,6 +104,28 @@ export const DesktopPreview = memo(({
   const handleFrameLoad = () => {
     iframeRef.current?.blur();
     onFrameLoad?.();
+
+    window.setTimeout(() => {
+      const frame = iframeRef.current;
+      if (!frame || retryCountRef.current >= 5) return;
+
+      try {
+        const doc = frame.contentDocument;
+        const root = doc?.documentElement;
+        const status = doc?.getElementById('noVNC_status');
+        const hasConnectionFailure =
+          root?.classList.contains('noVNC_disconnected') &&
+          status?.classList.contains('noVNC_status_error') &&
+          status?.classList.contains('noVNC_open');
+
+        if (hasConnectionFailure) {
+          retryCountRef.current += 1;
+          setRetryNonce((value) => value + 1);
+        }
+      } catch {
+        // If the iframe is not readable, leave noVNC's own retry behavior in charge.
+      }
+    }, 1500);
   };
 
   useLayoutEffect(() => {

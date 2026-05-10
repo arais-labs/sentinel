@@ -4,7 +4,7 @@ set -euo pipefail
 QEMU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${QEMU_DIR}/../../.." && pwd)"
 OUTPUT_IMAGE="${SENTINEL_QEMU_VALIDATE_IMAGE:-${QEMU_DIR}/output/sentinel-runtime-base-arm64.qcow2}"
-RUN_DIR="${QEMU_DIR}/run/validate"
+RUN_DIR="${SENTINEL_QEMU_VALIDATE_RUN_DIR:-${QEMU_DIR}/run/validate}"
 SSH_PORT="${SENTINEL_QEMU_VALIDATE_SSH_PORT:-2224}"
 VNC_PORT="${SENTINEL_QEMU_VALIDATE_VNC_PORT:-16080}"
 CDP_PORT="${SENTINEL_QEMU_VALIDATE_CDP_PORT:-19223}"

@@ -3,10 +3,10 @@ set -euo pipefail
 
 QEMU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${QEMU_DIR}/../../.." && pwd)"
-CACHE_DIR="${QEMU_DIR}/cache"
-BUILD_ROOT="${QEMU_DIR}/build"
-OUTPUT_DIR="${QEMU_DIR}/output"
-RUN_DIR="${QEMU_DIR}/run"
+CACHE_DIR="${SENTINEL_QEMU_CACHE_DIR:-${QEMU_DIR}/cache}"
+BUILD_ROOT="${SENTINEL_QEMU_BUILD_ROOT:-${QEMU_DIR}/build}"
+OUTPUT_DIR="${SENTINEL_QEMU_OUTPUT_DIR:-${QEMU_DIR}/output}"
+RUN_DIR="${SENTINEL_QEMU_RUN_DIR:-${QEMU_DIR}/run}"
 CLOUD_INIT_DIR="${QEMU_DIR}/cloud-init"
 PROVISION_SCRIPT="${QEMU_DIR}/provision/runtime-base.sh"
 

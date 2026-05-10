@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import socket
+from http.client import HTTPConnection
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from fastapi import Request
@@ -22,9 +22,16 @@ def is_runtime_available_for_session(session_id: str) -> bool:
         if not port:
             port = int(settings.runtime_live_port)
         timeout = max(settings.runtime_live_probe_timeout_ms, 50) / 1000.0
-        with socket.create_connection((host, int(port)), timeout=timeout):
-            return True
-    except (OSError, Exception):
+        connection = HTTPConnection(host, int(port), timeout=timeout)
+        try:
+            connection.request("GET", "/vnc.html")
+            response = connection.getresponse()
+            return 200 <= int(response.status) < 300
+        finally:
+            connection.close()
+    except Exception:
+        # Suppress network-level failures (refused, timeout, bad status, DNS)
+        # so callers can uniformly treat them as "runtime not available yet".
         return False
 
 
@@ -46,6 +53,8 @@ def build_runtime_view_url(request: Request, session_id: str | None = None) -> s
     parsed_base = urlparse(base)
     query = dict(parse_qsl(parsed_base.query, keep_blank_values=True))
     query.setdefault("autoconnect", "1" if settings.runtime_live_autoconnect else "0")
+    query.setdefault("reconnect", "1")
+    query.setdefault("reconnect_delay", "1000")
     query.setdefault("resize", _normalize_resize_mode(settings.runtime_live_resize))
     query.setdefault("view_only", "1" if settings.runtime_live_view_only else "0")
     # Tell noVNC the correct websocket path so it connects through our proxy
