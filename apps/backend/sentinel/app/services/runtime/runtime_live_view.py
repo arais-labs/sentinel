@@ -29,7 +29,9 @@ def is_runtime_available_for_session(session_id: str) -> bool:
             return 200 <= int(response.status) < 300
         finally:
             connection.close()
-    except (OSError, Exception):
+    except Exception:
+        # Suppress network-level failures (refused, timeout, bad status, DNS)
+        # so callers can uniformly treat them as "runtime not available yet".
         return False
 
 

@@ -30,8 +30,11 @@ export class ProcessSupervisor extends EventEmitter {
     return this.services.get(name)?.state === 'running';
   }
 
-  start(options: ManagedProcessOptions): void {
-    this.stop(options.name);
+  async start(options: ManagedProcessOptions): Promise<void> {
+    // Wait for any prior process under this name to fully exit before spawning
+    // the replacement; otherwise the old SIGTERM'd process can still hold the
+    // listening port and cause EADDRINUSE on the new one.
+    await this.stopAndWait(options.name);
     this.setStatus({
       name: options.name,
       state: 'starting',

@@ -316,6 +316,7 @@ export class DesktopManager {
     let databaseCreated = false;
     let restored = false;
     try {
+      await this.assertSafeBackupArchive(backupPath);
       await execFileText('tar', ['-xzf', backupPath, '-C', tmp]);
       const manifest = JSON.parse(await readFile(path.join(tmp, 'sentinel-backup.json'), 'utf8')) as BackupManifest;
       if (manifest.format !== BACKUP_FORMAT || manifest.version !== BACKUP_VERSION) {
@@ -413,7 +414,7 @@ export class DesktopManager {
       await this.waitForPostgres();
       return;
     }
-    this.supervisor.start({
+    await this.supervisor.start({
       name: 'postgres',
       command: postgresBin,
       args: ['-D', dataDir, '-p', String(this.ports!.postgres), '-h', '127.0.0.1'],
@@ -469,7 +470,7 @@ export class DesktopManager {
   private async startBackend(instance: string): Promise<void> {
     const env = await this.backendEnv(instance);
     const python = await this.resolvePythonBinary();
-    this.supervisor.start({
+    await this.supervisor.start({
       name: 'backend',
       command: python,
       args: ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(this.ports!.backend)],
@@ -484,7 +485,7 @@ export class DesktopManager {
     const python = (await commandExists('python3')) || 'python3';
     const token = randomUUID();
     process.env.SENTINEL_DESKTOP_QEMU_BRIDGE_TOKEN = token;
-    this.supervisor.start({
+    await this.supervisor.start({
       name: 'qemuBridge',
       command: python,
       args: [path.join(qemuResourcePath(), 'bridge.py'), '--host', '127.0.0.1', '--port', String(this.ports!.qemuBridge), '--token', token],
@@ -770,6 +771,33 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
     const salt = randomBytes(16).toString('hex');
     const digest = pbkdf2Sync(password, salt, AUTH_PASSWORD_HASH_ROUNDS, 32, 'sha256').toString('hex');
     return `${salt}$${digest}`;
+  }
+
+  private async assertSafeBackupArchive(backupPath: string): Promise<void> {
+    // BSD tar (default on macOS) does not refuse archive entries with `..`
+    // segments or absolute paths; it only strips a leading slash. Validate the
+    // listing ourselves before extraction so a malicious .sentinel-backup
+    // cannot escape the tmp dir or plant symlinks pointing outside of it.
+    const verbose = await execFileText('tar', ['-tzvf', backupPath]);
+    for (const rawLine of verbose.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const type = line[0];
+      if (type !== 'd' && type !== '-') {
+        throw new Error(`Refusing backup with unsafe entry type '${type}': ${line}`);
+      }
+    }
+    const paths = await execFileText('tar', ['-tzf', backupPath]);
+    for (const rawPath of paths.split('\n')) {
+      const entry = rawPath.trim();
+      if (!entry) continue;
+      if (entry.startsWith('/')) {
+        throw new Error(`Refusing backup with absolute path: ${entry}`);
+      }
+      if (entry.split('/').some((segment) => segment === '..')) {
+        throw new Error(`Refusing backup with parent traversal: ${entry}`);
+      }
+    }
   }
 
   private async migrateLegacyRuntimeOutput(): Promise<void> {
