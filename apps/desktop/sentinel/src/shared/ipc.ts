@@ -21,6 +21,7 @@ export interface InstanceSummary {
   configPath: string;
   workspacePath: string;
   qemuRunPath: string;
+  databaseName: string;
 }
 
 export interface DesktopStatus {
@@ -55,6 +56,11 @@ export interface CreateInstanceRequest {
   password?: string;
 }
 
+export interface RestoreInstanceRequest {
+  name: string;
+  backupPath: string;
+}
+
 export interface DesktopApi {
   getStatus(): Promise<DesktopStatus>;
   createInstance(request: CreateInstanceRequest): Promise<DesktopStatus>;
@@ -62,9 +68,10 @@ export interface DesktopApi {
   startInstance(name: string): Promise<DesktopStatus>;
   stopInstance(): Promise<DesktopStatus>;
   restartInstance(name: string): Promise<DesktopStatus>;
+  renameInstance(name: string, newName: string): Promise<DesktopStatus>;
   resetAuth(name: string, username: string, password: string): Promise<DesktopStatus>;
   backupInstance(name: string): Promise<string>;
-  restoreInstance(name: string, backupPath: string): Promise<DesktopStatus>;
+  restoreInstance(request: RestoreInstanceRequest): Promise<DesktopStatus>;
   buildQemuImage(): Promise<void>;
   validateQemuImage(): Promise<void>;
   openSentinel(): Promise<DesktopStatus>;
@@ -82,6 +89,7 @@ export const IPC = {
   startInstance: 'desktop:startInstance',
   stopInstance: 'desktop:stopInstance',
   restartInstance: 'desktop:restartInstance',
+  renameInstance: 'desktop:renameInstance',
   resetAuth: 'desktop:resetAuth',
   backupInstance: 'desktop:backupInstance',
   restoreInstance: 'desktop:restoreInstance',

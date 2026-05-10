@@ -127,9 +127,10 @@ function registerIpc(): void {
   ipcMain.handle(IPC.startInstance, async (_event, name) => showSentinelAfterIpc(await manager.startInstance(name)));
   ipcMain.handle(IPC.stopInstance, () => manager.stopInstance());
   ipcMain.handle(IPC.restartInstance, async (_event, name) => showSentinelAfterIpc(await manager.restartInstance(name)));
+  ipcMain.handle(IPC.renameInstance, (_event, name, newName) => manager.renameInstance(name, newName));
   ipcMain.handle(IPC.resetAuth, (_event, name, username, password) => manager.resetAuth(name, username, password));
   ipcMain.handle(IPC.backupInstance, (_event, name) => manager.backupInstance(name));
-  ipcMain.handle(IPC.restoreInstance, (_event, name, backupPath) => manager.restoreInstance(name, backupPath));
+  ipcMain.handle(IPC.restoreInstance, (_event, request) => manager.restoreInstance(request));
   ipcMain.handle(IPC.buildQemuImage, () => manager.buildQemuImage());
   ipcMain.handle(IPC.validateQemuImage, () => manager.validateQemuImage());
   ipcMain.handle(IPC.openSentinel, () => showSentinel());

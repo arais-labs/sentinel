@@ -48,6 +48,7 @@ function renderInstances(instances: InstanceSummary[]): void {
             <button data-action="start" data-name="${escapeHtml(instance.name)}">Start</button>
             <button data-action="restart" data-name="${escapeHtml(instance.name)}">Restart</button>
             <button data-action="reset-auth" data-name="${escapeHtml(instance.name)}">Reset Auth</button>
+            <button data-action="rename" data-name="${escapeHtml(instance.name)}">Rename</button>
             <button data-action="backup" data-name="${escapeHtml(instance.name)}">Backup</button>
             <button data-action="delete" data-name="${escapeHtml(instance.name)}" class="danger">Delete</button>
           </div>
@@ -121,6 +122,10 @@ document.addEventListener('click', async (event) => {
     if (action === 'reset-auth' && name) {
       showAuthModal({ kind: 'reset', name });
     }
+    if (action === 'rename' && name) {
+      const nextName = prompt(`Rename instance ${name} to:`, name);
+      if (nextName && nextName !== name) render(await api.renameInstance(name, nextName));
+    }
     if (action === 'backup' && name) {
       const backupPath = await api.backupInstance(name);
       logs.push({ service: 'manager', line: `Backup written to ${backupPath}`, at: new Date().toISOString() });
@@ -158,6 +163,13 @@ el<HTMLFormElement>('authForm').addEventListener('submit', async (event) => {
     logs.push({ service: 'manager', line: String((error as Error).message || error), at: new Date().toISOString() });
     renderLogs();
   }
+});
+
+el<HTMLFormElement>('restoreForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const name = el<HTMLInputElement>('restoreName').value;
+  const backupPath = el<HTMLInputElement>('restorePath').value;
+  render(await api.restoreInstance({ name, backupPath }));
 });
 
 document.addEventListener('click', (event) => {

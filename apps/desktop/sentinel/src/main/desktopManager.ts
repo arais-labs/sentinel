@@ -1,11 +1,11 @@
 import { app, shell } from 'electron';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readdir, rm } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { pbkdf2Sync, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, pbkdf2Sync, randomBytes, randomUUID } from 'node:crypto';
 import readline from 'node:readline';
-import type { CreateInstanceRequest, DesktopStatus, InstanceSummary, LogEntry } from '../shared/ipc.js';
+import type { CreateInstanceRequest, DesktopStatus, InstanceSummary, LogEntry, RestoreInstanceRequest } from '../shared/ipc.js';
 import { appSupportRoot, backendPath, frontendDistPath, instanceEnvPath, instanceRoot, qemuResourcePath } from './paths.js';
 import { findFreePort } from './ports.js';
 import { commandExists, commandSearchPath, execFileText } from './shell.js';
@@ -26,6 +26,17 @@ interface Ports {
 const AUTH_USERNAME_KEY = 'sentinel.auth.username';
 const AUTH_PASSWORD_HASH_KEY = 'sentinel.auth.password_hash';
 const AUTH_PASSWORD_HASH_ROUNDS = 240_000;
+const BACKUP_FORMAT = 'sentinel.instance.backup';
+const BACKUP_VERSION = 1;
+
+interface BackupManifest {
+  format: typeof BACKUP_FORMAT;
+  version: typeof BACKUP_VERSION;
+  instanceName: string;
+  databaseName: string;
+  createdAt: string;
+  source: 'desktop' | 'cli';
+}
 
 export class DesktopManager {
   private readonly supervisor = new ProcessSupervisor();
@@ -112,6 +123,7 @@ export class DesktopManager {
     if (!password) throw new Error('Admin password cannot be empty');
     const root = instanceRoot(name);
     const envPath = instanceEnvPath(name);
+    if (existsSync(root)) throw new Error(`Instance already exists: ${name}`);
     await mkdir(root, { recursive: true });
     await mkdir(path.join(root, 'workspaces'), { recursive: true });
     await mkdir(path.join(root, 'qemu-run'), { recursive: true });
@@ -119,7 +131,7 @@ export class DesktopManager {
     const values = {
       ...existing,
       STACK_PORT: String(request.stackPort || 5050),
-      POSTGRES_DB: existing.POSTGRES_DB || 'sentinel',
+      POSTGRES_DB: existing.POSTGRES_DB || this.instanceDatabaseName(name),
       POSTGRES_USER: existing.POSTGRES_USER || 'sentinel',
       POSTGRES_PASSWORD: existing.POSTGRES_PASSWORD || randomSecret(24),
       JWT_SECRET_KEY: existing.JWT_SECRET_KEY || randomSecret(48),
@@ -133,17 +145,20 @@ export class DesktopManager {
       RUNTIME_QEMU_WORKSPACE_ROOT: path.join(root, 'workspaces'),
       RUNTIME_QEMU_RUN_ROOT: path.join(root, 'qemu-run'),
     };
-    await writeEnvFile(envPath, values);
+    await this.writeInstanceEnv(name, values);
     this.supervisor.appendManagerLog(`Created instance ${name}`);
     return this.emitStatus();
   }
 
   async deleteInstance(name: string): Promise<DesktopStatus> {
-    if (this.activeInstance === name) {
+    const safe = this.sanitizeInstanceName(name);
+    if (this.activeInstance === safe) {
       await this.stopInstance();
     }
-    await rm(instanceRoot(this.sanitizeInstanceName(name)), { recursive: true, force: true });
-    this.supervisor.appendManagerLog(`Deleted instance ${name}`);
+    await this.startPostgres();
+    await this.dropDatabase((await readEnvFile(instanceEnvPath(safe))).POSTGRES_DB || this.instanceDatabaseName(safe));
+    await rm(instanceRoot(safe), { recursive: true, force: true });
+    this.supervisor.appendManagerLog(`Deleted instance ${safe}`);
     return this.emitStatus();
   }
 
@@ -151,7 +166,7 @@ export class DesktopManager {
     const instance = this.sanitizeInstanceName(name);
     const envPath = instanceEnvPath(instance);
     if (!existsSync(envPath)) {
-      await this.createInstance({ name: instance });
+      throw new Error(`Instance not found: ${instance}`);
     }
     if (!this.ports) {
       await this.initialize();
@@ -161,6 +176,7 @@ export class DesktopManager {
     }
 
     await this.startPostgres();
+    await this.ensureInstanceDatabase(instance);
     await this.startQemuBridge();
     await this.startBackend(instance);
     await this.waitForBackend();
@@ -200,6 +216,31 @@ export class DesktopManager {
     return this.startInstance(name);
   }
 
+  async renameInstance(name: string, newName: string): Promise<DesktopStatus> {
+    const oldSafe = this.sanitizeInstanceName(name);
+    const newSafe = this.sanitizeInstanceName(newName);
+    if (!oldSafe || !newSafe) throw new Error('Instance name cannot be empty');
+    if (oldSafe === newSafe) return this.emitStatus();
+    if (this.activeInstance === oldSafe) {
+      await this.stopInstance();
+    }
+    const oldRoot = instanceRoot(oldSafe);
+    const newRoot = instanceRoot(newSafe);
+    if (!existsSync(oldRoot)) throw new Error(`Instance not found: ${oldSafe}`);
+    if (existsSync(newRoot)) throw new Error(`Instance already exists: ${newSafe}`);
+    const oldEnv = await readEnvFile(instanceEnvPath(oldSafe));
+    const oldDb = oldEnv.POSTGRES_DB || this.instanceDatabaseName(oldSafe);
+    const newDb = this.instanceDatabaseName(newSafe);
+    await this.startPostgres();
+    await this.renameDatabaseIfExists(oldDb, newDb);
+    await rename(oldRoot, newRoot);
+    const nextEnv = await readEnvFile(instanceEnvPath(newSafe));
+    nextEnv.POSTGRES_DB = newDb;
+    await this.writeInstanceEnv(newSafe, nextEnv);
+    this.supervisor.appendManagerLog(`Renamed instance ${oldSafe} to ${newSafe}`);
+    return this.emitStatus();
+  }
+
   async resetAuth(name: string, username: string, password: string): Promise<DesktopStatus> {
     const normalizedUsername = this.normalizeAuthUsername(username);
     const normalizedPassword = password.trim();
@@ -212,8 +253,9 @@ export class DesktopManager {
     await writeEnvFile(envPath, env);
 
     await this.startPostgres();
+    await this.ensureInstanceDatabase(this.sanitizeInstanceName(name));
     try {
-      await this.upsertAuthSettings(normalizedUsername, normalizedPassword);
+      await this.upsertAuthSettings(env.POSTGRES_DB || this.instanceDatabaseName(this.sanitizeInstanceName(name)), normalizedUsername, normalizedPassword);
     } catch (error) {
       const message = String((error as Error).message || error);
       if (!message.includes('system_settings')) throw error;
@@ -225,19 +267,75 @@ export class DesktopManager {
 
   async backupInstance(name: string): Promise<string> {
     const safe = this.sanitizeInstanceName(name);
-    const backupPath = path.join(appSupportRoot(), 'backups', `${safe}-${Date.now()}.tar.gz`);
-    await mkdir(path.dirname(backupPath), { recursive: true });
-    await execFileText('tar', ['-czf', backupPath, '-C', this.instancesRoot(), safe]);
+    const env = await readEnvFile(instanceEnvPath(safe));
+    const dbName = env.POSTGRES_DB || this.instanceDatabaseName(safe);
+    const backupPath = path.join(appSupportRoot(), 'backups', `${safe}-${Date.now()}.sentinel-backup.tar.gz`);
+    const tmp = await mkdtemp(path.join(appSupportRoot(), 'backup-build-'));
+    try {
+      await mkdir(path.dirname(backupPath), { recursive: true });
+      await this.startPostgres();
+      await this.ensureInstanceDatabase(safe);
+      await writeFile(path.join(tmp, 'sentinel-backup.json'), JSON.stringify({
+        format: BACKUP_FORMAT,
+        version: BACKUP_VERSION,
+        instanceName: safe,
+        databaseName: dbName,
+        createdAt: new Date().toISOString(),
+        source: 'desktop',
+      } satisfies BackupManifest, null, 2));
+      await writeFile(path.join(tmp, 'instance.env'), serializeEnv(env));
+      await this.dumpDatabase(dbName, path.join(tmp, 'database.sql'));
+      await cp(path.join(instanceRoot(safe), 'workspaces'), path.join(tmp, 'workspaces'), { recursive: true });
+      await execFileText('tar', ['-czf', backupPath, '-C', tmp, '.']);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
     this.supervisor.appendManagerLog(`Created backup ${backupPath}`);
     return backupPath;
   }
 
-  async restoreInstance(name: string, backupPath: string): Promise<DesktopStatus> {
-    const safe = this.sanitizeInstanceName(name);
-    await rm(instanceRoot(safe), { recursive: true, force: true });
-    await mkdir(this.instancesRoot(), { recursive: true });
-    await execFileText('tar', ['-xzf', backupPath, '-C', this.instancesRoot()]);
-    this.supervisor.appendManagerLog(`Restored ${safe} from ${backupPath}`);
+  async restoreInstance(request: RestoreInstanceRequest): Promise<DesktopStatus> {
+    const safe = this.sanitizeInstanceName(request.name);
+    const backupPath = request.backupPath.trim();
+    if (!safe) throw new Error('Instance name cannot be empty');
+    if (!backupPath) throw new Error('Backup path cannot be empty');
+    if (existsSync(instanceRoot(safe))) throw new Error(`Instance already exists: ${safe}`);
+    const dbName = this.instanceDatabaseName(safe);
+    const tmp = await mkdtemp(path.join(appSupportRoot(), 'backup-restore-'));
+    let databaseCreated = false;
+    let restored = false;
+    try {
+      await execFileText('tar', ['-xzf', backupPath, '-C', tmp]);
+      const manifest = JSON.parse(await readFile(path.join(tmp, 'sentinel-backup.json'), 'utf8')) as BackupManifest;
+      if (manifest.format !== BACKUP_FORMAT || manifest.version !== BACKUP_VERSION) {
+        throw new Error('Unsupported Sentinel backup format');
+      }
+      const env = parseEnv(await readFile(path.join(tmp, 'instance.env'), 'utf8'));
+      await mkdir(instanceRoot(safe), { recursive: true });
+      await mkdir(path.join(instanceRoot(safe), 'qemu-run'), { recursive: true });
+      await cp(path.join(tmp, 'workspaces'), path.join(instanceRoot(safe), 'workspaces'), { recursive: true });
+      await this.writeInstanceEnv(safe, {
+        ...env,
+        POSTGRES_DB: dbName,
+      });
+      await this.startPostgres();
+      if (await this.databaseExists(dbName)) {
+        throw new Error(`Database already exists for restored instance: ${dbName}`);
+      }
+      await this.createEmptyDatabase(dbName);
+      databaseCreated = true;
+      await this.restoreDatabase(dbName, path.join(tmp, 'database.sql'));
+      restored = true;
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+      if (!restored) {
+        await rm(instanceRoot(safe), { recursive: true, force: true });
+        if (databaseCreated) {
+          await this.dropDatabase(dbName).catch(() => undefined);
+        }
+      }
+    }
+    this.supervisor.appendManagerLog(`Restored instance ${safe} from ${backupPath}`);
     return this.emitStatus();
   }
 
@@ -292,7 +390,6 @@ export class DesktopManager {
       port: this.ports!.postgres,
     });
     await this.waitForPostgres();
-    await this.ensurePostgresDatabase();
   }
 
   private async startBackend(instance: string): Promise<void> {
@@ -370,6 +467,7 @@ export class DesktopManager {
         configPath: instanceEnvPath(name),
         workspacePath: path.join(instanceRoot(name), 'workspaces'),
         qemuRunPath: path.join(instanceRoot(name), 'qemu-run'),
+        databaseName: env.POSTGRES_DB || this.instanceDatabaseName(name),
       });
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
@@ -460,13 +558,86 @@ export class DesktopManager {
     throw new Error('Backend did not become ready');
   }
 
-  private async ensurePostgresDatabase(): Promise<void> {
-    const createdb = await this.resolvePostgresBinary('createdb');
+  private async ensureInstanceDatabase(instance: string): Promise<void> {
+    const env = await readEnvFile(instanceEnvPath(instance));
+    const dbName = env.POSTGRES_DB || this.instanceDatabaseName(instance);
+    await this.createEmptyDatabase(dbName);
     const psql = await this.resolvePostgresBinary('psql');
-    const baseArgs = ['-h', '127.0.0.1', '-p', String(this.ports!.postgres), '-U', 'sentinel'];
-    const env = this.postgresEnv();
-    await execFileText(createdb, [...baseArgs, 'sentinel'], { env }).catch(() => '');
-    await execFileText(psql, [...baseArgs, '-d', 'sentinel', '-c', 'CREATE EXTENSION IF NOT EXISTS vector;'], { env });
+    await execFileText(psql, [...this.databaseArgs(dbName), '-c', 'CREATE EXTENSION IF NOT EXISTS vector;'], { env: this.postgresEnv() });
+  }
+
+  private async createEmptyDatabase(dbName: string): Promise<void> {
+    this.assertDatabaseName(dbName);
+    const psql = await this.resolvePostgresBinary('psql');
+    await execFileText(
+      psql,
+      [...this.maintenanceDatabaseArgs()],
+      {
+        env: this.postgresEnv(),
+        input: `SELECT 'CREATE DATABASE ${dbName}' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '${dbName}')\\gexec\n`,
+      },
+    );
+  }
+
+  private async dropDatabase(dbName: string): Promise<void> {
+    this.assertDatabaseName(dbName);
+    const psql = await this.resolvePostgresBinary('psql');
+    await execFileText(psql, [...this.maintenanceDatabaseArgs()], {
+      env: this.postgresEnv(),
+      input: `
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${dbName}';
+DROP DATABASE IF EXISTS ${dbName};
+`,
+    });
+  }
+
+  private async renameDatabaseIfExists(oldName: string, newName: string): Promise<void> {
+    this.assertDatabaseName(oldName);
+    this.assertDatabaseName(newName);
+    if (!(await this.databaseExists(oldName))) return;
+    if (await this.databaseExists(newName)) {
+      throw new Error(`Database already exists for renamed instance: ${newName}`);
+    }
+    const psql = await this.resolvePostgresBinary('psql');
+    await execFileText(psql, [...this.maintenanceDatabaseArgs()], {
+      env: this.postgresEnv(),
+      input: `
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${oldName}';
+ALTER DATABASE ${oldName} RENAME TO ${newName};
+`,
+    });
+  }
+
+  private async databaseExists(dbName: string): Promise<boolean> {
+    this.assertDatabaseName(dbName);
+    const psql = await this.resolvePostgresBinary('psql');
+    const output = await execFileText(psql, [...this.maintenanceDatabaseArgs(), '-tAc', `SELECT 1 FROM pg_database WHERE datname = '${dbName}'`], {
+      env: this.postgresEnv(),
+    });
+    return output.trim() === '1';
+  }
+
+  private async dumpDatabase(dbName: string, outputPath: string): Promise<void> {
+    this.assertDatabaseName(dbName);
+    const pgDump = await this.resolvePostgresBinary('pg_dump');
+    await execFileText(pgDump, [...this.databaseArgs(dbName), '--no-owner', '--no-privileges', '-f', outputPath], {
+      env: this.postgresEnv(),
+    });
+  }
+
+  private async restoreDatabase(dbName: string, inputPath: string): Promise<void> {
+    this.assertDatabaseName(dbName);
+    const psql = await this.resolvePostgresBinary('psql');
+    await execFileText(psql, [...this.databaseArgs(dbName), '-f', inputPath], { env: this.postgresEnv() });
+  }
+
+  private maintenanceDatabaseArgs(): string[] {
+    return ['-h', '127.0.0.1', '-p', String(this.ports!.postgres), '-U', 'sentinel', '-d', 'postgres'];
+  }
+
+  private databaseArgs(dbName: string): string[] {
+    this.assertDatabaseName(dbName);
+    return ['-h', '127.0.0.1', '-p', String(this.ports!.postgres), '-U', 'sentinel', '-d', dbName];
   }
 
   private postgresEnv(): NodeJS.ProcessEnv {
@@ -479,9 +650,8 @@ export class DesktopManager {
     };
   }
 
-  private async upsertAuthSettings(username: string, password: string): Promise<void> {
+  private async upsertAuthSettings(dbName: string, username: string, password: string): Promise<void> {
     const psql = await this.resolvePostgresBinary('psql');
-    const baseArgs = ['-h', '127.0.0.1', '-p', String(this.ports!.postgres), '-U', 'sentinel', '-d', 'sentinel'];
     const sql = `
 INSERT INTO system_settings(key, value)
 VALUES
@@ -491,7 +661,7 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
 `;
     await execFileText(
       psql,
-      [...baseArgs, '-v', `username=${username}`, '-v', `password_hash=${this.hashAuthPassword(password)}`],
+      [...this.databaseArgs(dbName), '-v', `username=${username}`, '-v', `password_hash=${this.hashAuthPassword(password)}`],
       { env: this.postgresEnv(), input: sql },
     );
   }
@@ -524,6 +694,37 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
 
   private sanitizeInstanceName(name: string): string {
     return name.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  private instanceDatabaseName(name: string): string {
+    const safe = this.sanitizeInstanceName(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'instance';
+    const hash = createHash('sha256').update(name).digest('hex').slice(0, 8);
+    return `sentinel_${safe.slice(0, 40)}_${hash}`;
+  }
+
+  private assertDatabaseName(dbName: string): void {
+    if (!/^sentinel_[a-z0-9_]+_[a-f0-9]{8}$/.test(dbName)) {
+      throw new Error(`Invalid Sentinel database name: ${dbName}`);
+    }
+  }
+
+  private async writeInstanceEnv(name: string, values: Record<string, string>): Promise<void> {
+    const root = instanceRoot(name);
+    const env = {
+      ...values,
+      POSTGRES_DB: values.POSTGRES_DB || this.instanceDatabaseName(name),
+      POSTGRES_USER: values.POSTGRES_USER || 'sentinel',
+      POSTGRES_PASSWORD: values.POSTGRES_PASSWORD || randomSecret(24),
+      JWT_SECRET_KEY: values.JWT_SECRET_KEY || randomSecret(48),
+      JWT_ALGORITHM: values.JWT_ALGORITHM || 'HS256',
+      RUNTIME_EXEC_BACKEND: 'qemu',
+      RUNTIME_WORKSPACES_HOST_DIR: path.join(root, 'workspaces'),
+      RUNTIME_QEMU_IMAGE: this.runtimeImagePath(),
+      RUNTIME_QEMU_SSH_KEY_PATH: this.runtimeKeyPath(),
+      RUNTIME_QEMU_WORKSPACE_ROOT: path.join(root, 'workspaces'),
+      RUNTIME_QEMU_RUN_ROOT: path.join(root, 'qemu-run'),
+    };
+    await writeEnvFile(instanceEnvPath(name), env);
   }
 
   private instancesRoot(): string {

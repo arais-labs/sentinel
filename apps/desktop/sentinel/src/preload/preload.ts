@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { CreateInstanceRequest, DesktopApi, DesktopStatus, LogEntry } from '../shared/ipc.js';
+import type { CreateInstanceRequest, DesktopApi, DesktopStatus, LogEntry, RestoreInstanceRequest } from '../shared/ipc.js';
 import { IPC } from '../shared/ipc.js';
 
 const api: DesktopApi = {
@@ -9,9 +9,10 @@ const api: DesktopApi = {
   startInstance: (name: string) => ipcRenderer.invoke(IPC.startInstance, name),
   stopInstance: () => ipcRenderer.invoke(IPC.stopInstance),
   restartInstance: (name: string) => ipcRenderer.invoke(IPC.restartInstance, name),
+  renameInstance: (name: string, newName: string) => ipcRenderer.invoke(IPC.renameInstance, name, newName),
   resetAuth: (name: string, username: string, password: string) => ipcRenderer.invoke(IPC.resetAuth, name, username, password),
   backupInstance: (name: string) => ipcRenderer.invoke(IPC.backupInstance, name),
-  restoreInstance: (name: string, backupPath: string) => ipcRenderer.invoke(IPC.restoreInstance, name, backupPath),
+  restoreInstance: (request: RestoreInstanceRequest) => ipcRenderer.invoke(IPC.restoreInstance, request),
   buildQemuImage: () => ipcRenderer.invoke(IPC.buildQemuImage),
   validateQemuImage: () => ipcRenderer.invoke(IPC.validateQemuImage),
   openSentinel: () => ipcRenderer.invoke(IPC.openSentinel),

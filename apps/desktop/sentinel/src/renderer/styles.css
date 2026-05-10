@@ -299,15 +299,25 @@ input::placeholder {
   letter-spacing: 0.05em;
 }
 
-.create-form {
+.create-form,
+.restore-form {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
 }
 
-.create-form input {
+.create-form input,
+.restore-form input {
   min-width: 220px;
+}
+
+.restore-form {
+  margin-top: 8px;
+}
+
+.restore-form #restorePath {
+  min-width: 360px;
 }
 
 .instances,
