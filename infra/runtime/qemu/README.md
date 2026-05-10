@@ -25,7 +25,7 @@ Output:
 - `infra/runtime/qemu/output/sentinel-runtime-base-arm64.id_ed25519`
 - `infra/runtime/qemu/output/sentinel-runtime-base-arm64.id_ed25519.pub`
 
-These output files are local build artifacts and are intentionally ignored by git. A new machine must build them before selecting the QEMU runtime backend.
+These output files are local build artifacts and are intentionally ignored by git. A new machine can select the QEMU runtime backend from `./sentinel-cli.sh`; if the artifacts are missing, the CLI checks prerequisites and asks whether to build and validate them before enabling QEMU.
 
 Prerequisites:
 - Homebrew
@@ -33,7 +33,7 @@ Prerequisites:
 - GNU coreutils for `sha512sum`: `brew install coreutils`
 - macOS command line tools for `ssh`, `ssh-keygen`, `curl`, and `python3`
 
-Main commands:
+Manual commands:
 
 ```bash
 ./infra/runtime/qemu/build-base-image.sh

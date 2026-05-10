@@ -286,7 +286,7 @@ ensure_supported_runtime_backend() {
 default_qemu_image_path() {
   local arch image_dir candidate
   arch="$(uname -m)"
-  image_dir="$ROOT_DIR/infra/runtime/qemu/output"
+  image_dir="$(qemu_output_dir)"
   candidate="$image_dir/sentinel-runtime-base-${arch}.qcow2"
   [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
   candidate="$image_dir/sentinel-runtime-base.qcow2"
@@ -296,6 +296,9 @@ default_qemu_image_path() {
   echo ""
 }
 
+qemu_runtime_dir() { echo "$ROOT_DIR/infra/runtime/qemu"; }
+qemu_output_dir() { echo "$(qemu_runtime_dir)/output"; }
+
 default_qemu_key_path() {
   local image_path
   image_path="$(default_qemu_image_path)"
@@ -303,6 +306,139 @@ default_qemu_key_path() {
   local candidate="${image_path%.qcow2}.id_ed25519"
   [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
   echo ""
+}
+
+qemu_firmware_ready() {
+  local candidates=()
+  if require_cmd brew; then
+    local prefix
+    prefix="$(brew --prefix qemu 2>/dev/null || true)"
+    [[ -n "$prefix" ]] && candidates+=("$prefix" "${prefix%/opt/qemu}")
+  fi
+  candidates+=("/opt/homebrew/Cellar/qemu" "/usr/local/Cellar/qemu")
+
+  local code="" vars="" root
+  for root in "${candidates[@]}"; do
+    [[ -d "$root" ]] || continue
+    [[ -z "$code" ]] && code="$(find "$root" -path '*/share/qemu/edk2-aarch64-code.fd' 2>/dev/null | head -n 1)"
+    [[ -z "$vars" ]] && vars="$(find "$root" -path '*/share/qemu/edk2-arm-vars.fd' 2>/dev/null | head -n 1)"
+    [[ -n "$code" && -n "$vars" ]] && return 0
+  done
+  return 1
+}
+
+ensure_qemu_runtime_prerequisites() {
+  local missing=()
+  local cmd
+  for cmd in python3 qemu-img qemu-system-aarch64; do
+    require_cmd "$cmd" || missing+=("$cmd")
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    error "Missing QEMU runtime prerequisite(s): ${missing[*]}"
+    warn "On macOS, install QEMU with: brew install qemu"
+    return 1
+  fi
+
+  if ! qemu_firmware_ready; then
+    error "Could not locate QEMU aarch64 firmware files."
+    warn "Install or repair Homebrew QEMU with: brew install qemu"
+    return 1
+  fi
+
+  return 0
+}
+
+ensure_qemu_build_prerequisites() {
+  local missing=()
+  local cmd
+  for cmd in brew curl hdiutil qemu-img qemu-system-aarch64 ssh ssh-keygen python3 sha512sum; do
+    require_cmd "$cmd" || missing+=("$cmd")
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    error "Missing QEMU build prerequisite(s): ${missing[*]}"
+    warn "On macOS, install the runtime prerequisites with: brew install qemu coreutils"
+    return 1
+  fi
+
+  if ! qemu_firmware_ready; then
+    error "Could not locate QEMU aarch64 firmware files."
+    warn "Install or repair Homebrew QEMU with: brew install qemu"
+    return 1
+  fi
+
+  return 0
+}
+
+build_qemu_artifacts_interactive() {
+  local runtime_dir output_dir confirm
+  runtime_dir="$(qemu_runtime_dir)"
+  output_dir="$(qemu_output_dir)"
+
+  warn "QEMU baked image or SSH key is missing under $output_dir."
+  ensure_qemu_build_prerequisites || return 1
+
+  printf "%s" "$CURSOR_ON" >&2
+  read -r -p "Build and validate the QEMU base image now? [y/N]: " confirm < /dev/tty
+  printf "%s" "$CURSOR_OFF" >&2
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      warn "QEMU setup cancelled."
+      return 1
+      ;;
+  esac
+
+  info "Building QEMU base image. This can take several minutes."
+  "$runtime_dir/build-base-image.sh" || {
+    error "QEMU base image build failed."
+    return 1
+  }
+
+  info "Validating QEMU base image."
+  "$runtime_dir/validate-base-image.sh" || {
+    error "QEMU base image validation failed."
+    return 1
+  }
+
+  return 0
+}
+
+configure_qemu_backend() {
+  local inst="$1" ef="$2"
+  local qemu_image_path qemu_key_path
+
+  ensure_qemu_runtime_prerequisites || {
+    set_menu_note "${YELLOW}QEMU was not enabled because local runtime prerequisites are missing.${RESET}"
+    return 1
+  }
+
+  qemu_image_path="$(default_qemu_image_path)"
+  qemu_key_path="$(default_qemu_key_path)"
+  if [[ -z "$qemu_image_path" || -z "$qemu_key_path" ]]; then
+    if ! build_qemu_artifacts_interactive; then
+      set_menu_note "${YELLOW}QEMU was not enabled. Build a base image under ${BOLD}./infra/runtime/qemu/output${RESET}${YELLOW}, then select QEMU again.${RESET}"
+      return 1
+    fi
+    qemu_image_path="$(default_qemu_image_path)"
+    qemu_key_path="$(default_qemu_key_path)"
+  fi
+
+  if [[ -z "$qemu_image_path" || -z "$qemu_key_path" ]]; then
+    error "QEMU build completed, but expected image/key artifacts are still missing."
+    set_menu_note "${RED}QEMU was not enabled because image/key artifacts could not be found.${RESET}"
+    return 1
+  fi
+
+  upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "qemu"
+  upsert_env_value "$ef" "RUNTIME_QEMU_IMAGE" "$qemu_image_path"
+  upsert_env_value "$ef" "RUNTIME_QEMU_SSH_KEY_PATH" "/data/runtime/qemu-output/$(basename "$qemu_key_path")"
+  upsert_env_value "$ef" "RUNTIME_QEMU_WORKSPACE_ROOT" "$(instance_workspaces_dir "$inst")"
+  upsert_env_value "$ef" "RUNTIME_QEMU_RUN_ROOT" "$(instance_qemu_run_dir "$inst")"
+  invalidate_status_cache
+  set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}QEMU${RESET} with baked image ${BOLD}$(basename "$qemu_image_path")${RESET}."
+  return 0
 }
 
 default_qemu_bridge_port() {
@@ -929,21 +1065,7 @@ action_instance_runtime_backend() {
         set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Docker${RESET} for runtimes."
         ;;
       1)
-        local qemu_image_path qemu_key_path
-        qemu_image_path="$(default_qemu_image_path)"
-        qemu_key_path="$(default_qemu_key_path)"
-        if [[ -z "$qemu_image_path" || -z "$qemu_key_path" ]]; then
-          warn "QEMU baked image or SSH key is missing under $ROOT_DIR/infra/runtime/qemu/output."
-          set_menu_note "${YELLOW}Build the QEMU image first from ${BOLD}./infra/runtime/qemu/build-base-image.sh${RESET}${YELLOW}.${RESET}"
-        else
-          upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "qemu"
-          upsert_env_value "$ef" "RUNTIME_QEMU_IMAGE" "$qemu_image_path"
-          upsert_env_value "$ef" "RUNTIME_QEMU_SSH_KEY_PATH" "/data/runtime/qemu-output/$(basename "$qemu_key_path")"
-          upsert_env_value "$ef" "RUNTIME_QEMU_WORKSPACE_ROOT" "$(instance_workspaces_dir "$inst")"
-          upsert_env_value "$ef" "RUNTIME_QEMU_RUN_ROOT" "$(instance_qemu_run_dir "$inst")"
-          invalidate_status_cache
-          set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}QEMU${RESET} with baked image ${BOLD}$(basename "$qemu_image_path")${RESET}."
-        fi
+        configure_qemu_backend "$inst" "$ef" || true
         ;;
       2)
         echo -n "$CURSOR_ON"
