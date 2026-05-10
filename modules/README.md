@@ -167,10 +167,7 @@ Notes:
 - `readonly` fields are excluded from the create/edit form
 - `badge` is mainly a display-oriented field type
 - records are still stored as plain JSON objects in `module_records.data`
-
-Compatibility note:
-- older examples may use an array of plain strings for `fields`
-- for new packages, prefer the full object shape above
+- fields must be objects with at least `key` and `label`; bare string fields are rejected by import validation
 
 ### `module.fields_config`
 
@@ -353,9 +350,10 @@ Recommended shape:
 ```json
 [
   {
-    "key": "SLACK_BOT_TOKEN",
+    "key": "token",
+    "label": "Slack Token",
     "required": true,
-    "description": "Slack bot token used by the module after import."
+    "description": "Slack token used by the module after import."
   }
 ]
 ```
@@ -363,6 +361,8 @@ Recommended shape:
 Supported keys:
 - `key`
   - required
+- `label`
+  - optional but recommended
 - `required`
   - optional boolean
 - `description`
@@ -459,7 +459,7 @@ This is the smallest useful shape:
 
 If an agent is generating a module package, it should follow these rules:
 - always emit one `*.module.json` file only
-- prefer full field objects over bare string field names
+- use full field objects; bare string field names are invalid
 - always set `module.name` in lowercase snake_case
 - always include `fields_config.titleField` when the module has fields
 - never use reserved action ids
@@ -484,4 +484,5 @@ Before importing a package, validate:
 ## Example
 
 Reference example:
-- `qa_example_module.module.json`
+- `lead_manager.module.json`
+- `slack.module.json`
