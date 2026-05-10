@@ -78,7 +78,6 @@ services:
       RUNTIME_QEMU_SHARE_MOUNT: ${RUNTIME_QEMU_SHARE_MOUNT:-/mnt/sentinel-host-workspaces}
       SESSION_RUNTIME_BASE_DIR: /data/runtime/workspaces
       UVICORN_RELOAD: "true"
-    command: bash ./scripts/start-backend.sh
     volumes:
       - ./apps/backend/sentinel:/app
       - sentinel-runtime-ssh-dev:/data/runtime/ssh
