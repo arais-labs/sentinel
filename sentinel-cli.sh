@@ -717,12 +717,12 @@ verify_backup_checksum() {
 }
 
 write_backup_manifest() {
-  local inst="$1" db_name="$2" output="$3"
+  local inst="$1" db_name="$2" workspaces_included="$3" output="$4"
   if ! require_cmd python3; then
     error "python3 is required to write backup manifests."
     return 1
   fi
-  BACKUP_FORMAT="$BACKUP_FORMAT" BACKUP_VERSION="$BACKUP_VERSION" BACKUP_INSTANCE="$inst" BACKUP_DATABASE="$db_name" python3 - "$output" <<'PY'
+  BACKUP_FORMAT="$BACKUP_FORMAT" BACKUP_VERSION="$BACKUP_VERSION" BACKUP_INSTANCE="$inst" BACKUP_DATABASE="$db_name" BACKUP_WORKSPACES_INCLUDED="$workspaces_included" python3 - "$output" <<'PY'
 import json
 import os
 import sys
@@ -736,6 +736,7 @@ document = {
     "databaseName": os.environ["BACKUP_DATABASE"],
     "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     "source": "cli",
+    "workspacesIncluded": os.environ["BACKUP_WORKSPACES_INCLUDED"] == "true",
 }
 with open(target, "w", encoding="utf-8") as handle:
     json.dump(document, handle, indent=2)
@@ -770,6 +771,23 @@ validate_extracted_backup() {
     return 1
   fi
   return 0
+}
+
+prompt_backup_workspaces() {
+  local inst="$1"
+  local size="unknown"
+  if [[ -d "$(instance_workspaces_dir "$inst")" ]]; then
+    size="$(du -sh "$(instance_workspaces_dir "$inst")" 2>/dev/null | awk '{print $1}')"
+  fi
+  warn "Workspaces for '$inst' are ${size}. Including them can make the backup slow and large."
+  local confirm
+  printf "%s" "$CURSOR_ON" >&2
+  read -r -p "Include workspaces in this backup? [y/N]: " confirm < /dev/tty
+  printf "%s" "$CURSOR_OFF" >&2
+  case "$confirm" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 select_option() {
@@ -1414,11 +1432,16 @@ action_db_backup_create() {
   backup_file="${backup_dir}/${ts}_${inst}.sentinel-backup.tar.gz"
   temp_file="${backup_file}.tmp"
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/sentinel-backup-${inst}.XXXXXX")"
+  local workspaces_included="false"
+  if prompt_backup_workspaces "$inst"; then
+    workspaces_included="true"
+  fi
 
   info "Creating instance backup for '$inst'..."
-  if write_backup_manifest "$inst" "$DB_NAME" "$tmp_dir/sentinel-backup.json" \
+  if write_backup_manifest "$inst" "$DB_NAME" "$workspaces_included" "$tmp_dir/sentinel-backup.json" \
       && cp "$(instance_env_file "$inst")" "$tmp_dir/instance.env" \
-      && cp -R "$(instance_workspaces_dir "$inst")" "$tmp_dir/workspaces" \
+      && mkdir -p "$tmp_dir/workspaces" \
+      && { [[ "$workspaces_included" != "true" ]] || cp -R "$(instance_workspaces_dir "$inst")/." "$tmp_dir/workspaces/"; } \
       && compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
         pg_dump --no-owner --no-privileges -U "$DB_USER" "$DB_NAME" > "$tmp_dir/database.sql" \
       && tar -czf "$temp_file" -C "$tmp_dir" .; then

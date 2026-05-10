@@ -36,6 +36,7 @@ interface BackupManifest {
   databaseName: string;
   createdAt: string;
   source: 'desktop' | 'cli';
+  workspacesIncluded: boolean;
 }
 
 export class DesktopManager {
@@ -282,6 +283,7 @@ export class DesktopManager {
         databaseName: dbName,
         createdAt: new Date().toISOString(),
         source: 'desktop',
+        workspacesIncluded: true,
       } satisfies BackupManifest, null, 2));
       await writeFile(path.join(tmp, 'instance.env'), serializeEnv(env));
       await this.dumpDatabase(dbName, path.join(tmp, 'database.sql'));
