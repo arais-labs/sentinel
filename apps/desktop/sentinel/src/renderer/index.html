@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sentinel Desktop</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero reveal">
+        <div class="brand-block">
+          <img class="brand-mark" src="../../assets/icon.png" alt="" />
+          <div>
+            <p class="eyebrow">Sentinel Desktop</p>
+            <h1>Native control center</h1>
+            <p class="subcopy">Run Sentinel locally with bundled backend services, QEMU runtime control, and persistent instances without Docker.</p>
+          </div>
+        </div>
+        <div class="hero-actions">
+          <button id="refreshBtn">Refresh</button>
+          <button id="openBtn" class="primary">Open Sentinel</button>
+        </div>
+      </section>
+
+      <section class="grid status-grid reveal delay-1">
+        <article class="card support-card">
+          <span class="label">App support</span>
+          <strong id="supportPath">-</strong>
+          <button id="revealBtn">Reveal Folder</button>
+        </article>
+        <article class="card">
+          <span class="label">QEMU</span>
+          <strong id="qemuStatus">-</strong>
+          <p id="qemuMessage"></p>
+        </article>
+        <article class="card">
+          <span class="label">Runtime Image</span>
+          <strong id="imageStatus">-</strong>
+          <button id="buildImageBtn">Build Image</button>
+          <button id="validateImageBtn">Validate</button>
+        </article>
+      </section>
+
+      <section class="panel reveal delay-2">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Instances</p>
+            <h2>Local instances</h2>
+          </div>
+          <form id="createForm" class="create-form">
+            <input id="instanceName" placeholder="instance name" value="main" />
+            <button type="submit">Create</button>
+          </form>
+        </div>
+        <div id="instances" class="instances"></div>
+      </section>
+
+      <section class="panel reveal delay-3">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Services</p>
+            <h2>Process health</h2>
+          </div>
+          <button id="stopBtn" class="danger">Stop Active</button>
+        </div>
+        <div id="services" class="services"></div>
+      </section>
+
+      <section class="panel logs-panel reveal delay-4">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Logs</p>
+            <h2>Live output</h2>
+          </div>
+        </div>
+        <pre id="logs"></pre>
+      </section>
+    </main>
+    <script type="module" src="../../dist/renderer/renderer.js"></script>
+  </body>
+</html>
