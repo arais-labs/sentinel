@@ -32,8 +32,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/backend/sentinel[dev]"
+          python -m pip install --upgrade "pip>=25.1"
+          python -m pip install -e "apps/backend/sentinel" --group ./apps/backend/sentinel/pyproject.toml:dev
 
       - name: Test backend
         env:
