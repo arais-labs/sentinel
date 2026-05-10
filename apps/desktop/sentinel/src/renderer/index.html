@@ -7,76 +7,83 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="hero reveal">
-        <div class="brand-block">
-          <img class="brand-mark" src="../../assets/icon.png" alt="" />
-          <div>
-            <p class="eyebrow">Sentinel Desktop</p>
-            <h1>Native control center</h1>
-            <p class="subcopy">Run Sentinel locally with bundled backend services, QEMU runtime control, and persistent instances without Docker.</p>
+    <div class="app-layout">
+      <header class="app-header">
+        <div class="header-left">
+          <div class="brand-container">
+            <img class="brand-mark-mini" src="../../assets/icon.png" alt="" />
+          </div>
+          <div class="header-title-block">
+            <h1>Sentinel Desktop</h1>
+            <p class="subtitle">Console Control Center</p>
           </div>
         </div>
-        <div class="hero-actions">
-          <button id="refreshBtn">Refresh</button>
+        <div class="header-actions">
+          <button id="refreshBtn" class="btn-ghost">Refresh</button>
           <button id="openBtn" class="primary">Open Sentinel</button>
         </div>
-      </section>
+      </header>
 
-      <section class="grid status-grid reveal delay-1">
-        <article class="card support-card">
-          <span class="label">App support</span>
-          <strong id="supportPath">-</strong>
-          <button id="revealBtn">Reveal Folder</button>
-        </article>
-        <article class="card">
-          <span class="label">QEMU</span>
-          <strong id="qemuStatus">-</strong>
-          <p id="qemuMessage"></p>
-        </article>
-        <article class="card">
-          <span class="label">Runtime Image</span>
-          <strong id="imageStatus">-</strong>
-          <button id="buildImageBtn">Build Image</button>
-          <button id="validateImageBtn">Validate</button>
-        </article>
-      </section>
+      <main class="app-content">
+        <section class="grid status-grid reveal delay-1">
+          <article class="card">
+            <span class="label">App support</span>
+            <strong id="supportPath">-</strong>
+            <div class="card-actions">
+              <button id="revealBtn">Reveal Folder</button>
+            </div>
+          </article>
+          <article class="card">
+            <span class="label">QEMU Protocol</span>
+            <strong id="qemuStatus">-</strong>
+            <p id="qemuMessage" class="status-msg"></p>
+          </article>
+          <article class="card">
+            <span class="label">Runtime Image</span>
+            <strong id="imageStatus">-</strong>
+            <div class="card-actions">
+              <button id="buildImageBtn">Build</button>
+              <button id="validateImageBtn">Validate</button>
+            </div>
+          </article>
+        </section>
 
-      <section class="panel reveal delay-2">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">Instances</p>
-            <h2>Local instances</h2>
+        <section class="panel reveal delay-2">
+          <div class="panel-header">
+            <div class="panel-title-block">
+              <h2 class="panel-title">Local Instances</h2>
+              <p class="panel-subtitle">Sequential Workspace Registry</p>
+            </div>
+            <form id="createForm" class="create-form">
+              <input id="instanceName" placeholder="instance name" value="main" />
+              <button type="submit">Create Instance</button>
+            </form>
           </div>
-          <form id="createForm" class="create-form">
-            <input id="instanceName" placeholder="instance name" value="main" />
-            <button type="submit">Create</button>
-          </form>
-        </div>
-        <div id="instances" class="instances"></div>
-      </section>
+          <div id="instances" class="instances"></div>
+        </section>
 
-      <section class="panel reveal delay-3">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">Services</p>
-            <h2>Process health</h2>
+        <section class="panel reveal delay-3">
+          <div class="panel-header">
+            <div class="panel-title-block">
+              <h2 class="panel-title">Managed Services</h2>
+              <p class="panel-subtitle">Process Health & Port Allocation</p>
+            </div>
+            <button id="stopBtn" class="danger">Stop All Active</button>
           </div>
-          <button id="stopBtn" class="danger">Stop Active</button>
-        </div>
-        <div id="services" class="services"></div>
-      </section>
+          <div id="services" class="services"></div>
+        </section>
 
-      <section class="panel logs-panel reveal delay-4">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">Logs</p>
-            <h2>Live output</h2>
+        <section class="panel logs-panel reveal delay-4">
+          <div class="panel-header">
+            <div class="panel-title-block">
+              <h2 class="panel-title">Audit Output</h2>
+              <p class="panel-subtitle">Live Supervisor Stream</p>
+            </div>
           </div>
-        </div>
-        <pre id="logs"></pre>
-      </section>
-    </main>
+          <pre id="logs"></pre>
+        </section>
+      </main>
+    </div>
     <script type="module" src="../../dist/renderer/renderer.js"></script>
   </body>
 </html>
