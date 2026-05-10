@@ -67,14 +67,18 @@ export class DesktopManager {
     await mkdir(this.runtimeRunDir(), { recursive: true });
     await mkdir(this.postgresDataDir(), { recursive: true });
     await this.migrateLegacyRuntimeOutput();
+    await this.reapOrphanedRuntimeProcesses();
+    // Default ports are offset from the dev-compose stack (which uses 5050/2227/
+    // 16081/19224) so that running both surfaces side by side does not collide.
+    // findFreePort still shifts further if any default is already taken.
     this.ports = {
-      app: await findFreePort(5050),
-      backend: await findFreePort(18000),
-      postgres: await findFreePort(15432),
+      app: await findFreePort(5070),
+      backend: await findFreePort(18020),
+      postgres: await findFreePort(15452),
       qemuBridge: await findFreePort(47481),
-      qemuSsh: await findFreePort(2227),
-      qemuVnc: await findFreePort(16081),
-      qemuCdp: await findFreePort(19224),
+      qemuSsh: await findFreePort(2247),
+      qemuVnc: await findFreePort(16101),
+      qemuCdp: await findFreePort(19244),
     };
     await this.emitStatus();
   }
@@ -796,6 +800,81 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
       }
       if (entry.split('/').some((segment) => segment === '..')) {
         throw new Error(`Refusing backup with parent traversal: ${entry}`);
+      }
+    }
+  }
+
+  private async reapOrphanedRuntimeProcesses(): Promise<void> {
+    // macOS does not deliver a parent-death signal, so child processes spawned
+    // by a previous Electron run that crashed or was force-quit can survive
+    // forever as launchd-parented orphans. At each desktop boot, sweep:
+    //   1. recorded vm.pid files under instances/*/qemu-run/ and SIGTERM any
+    //      live PID (this Electron just started, so anything still alive must
+    //      be from a prior run).
+    //   2. bridge.py processes with our resources path whose parent is launchd.
+    await this.reapOrphanedQemuVms();
+    await this.reapOrphanedBridges();
+  }
+
+  private async reapOrphanedQemuVms(): Promise<void> {
+    const root = this.instancesRoot();
+    if (!existsSync(root)) return;
+    let entries;
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const pidFile = path.join(root, entry.name, 'qemu-run', 'vm.pid');
+      if (!existsSync(pidFile)) continue;
+      try {
+        const raw = await readFile(pidFile, 'utf8');
+        const pid = Number(raw.trim());
+        if (Number.isInteger(pid) && pid > 0) {
+          try {
+            process.kill(pid, 0);
+            process.kill(pid, 'SIGTERM');
+            this.supervisor.appendManagerLog(
+              `Reaped orphaned QEMU pid=${pid} for instance ${entry.name}`,
+            );
+          } catch {
+            // Process is already gone; nothing to do.
+          }
+        }
+        await rm(pidFile, { force: true });
+      } catch {
+        // Best-effort sweep; ignore parse/read errors.
+      }
+    }
+  }
+
+  private async reapOrphanedBridges(): Promise<void> {
+    const bridgePath = path.join(qemuResourcePath(), 'bridge.py');
+    if (!existsSync(bridgePath)) return;
+    let listing: string;
+    try {
+      listing = await execFileText('ps', ['-eo', 'pid,ppid,command']);
+    } catch {
+      return;
+    }
+    for (const line of listing.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const match = trimmed.match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const ppid = Number(match[2]);
+      const command = match[3] ?? '';
+      if (ppid !== 1) continue;
+      if (!command.includes(bridgePath)) continue;
+      if (pid === process.pid) continue;
+      try {
+        process.kill(pid, 'SIGTERM');
+        this.supervisor.appendManagerLog(`Reaped orphaned QEMU bridge pid=${pid}`);
+      } catch {
+        // Already gone.
       }
     }
   }

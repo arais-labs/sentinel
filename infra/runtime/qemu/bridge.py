@@ -7,6 +7,8 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
+import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,6 +67,181 @@ def _read_json_file(path: Path) -> dict | None:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _qemu_img_info(path: Path) -> dict | None:
+    try:
+        result = subprocess.run(
+            ["qemu-img", "info", "--output=json", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return None
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _overlay_base_sidecar(overlay: Path) -> Path:
+    return overlay.with_name(overlay.name + ".base.json")
+
+
+def _overlay_should_reset(overlay: Path, image: Path) -> str | None:
+    """Return a human-readable reason if the overlay must be recreated.
+
+    A stale overlay (backing path missing, drifted to a different file, or
+    pointing at a base whose contents have changed since the overlay was
+    created) keeps SSH authorized_keys baked into the original base image.
+    Once the base is rebuilt or moved, the host's new private key no longer
+    matches and SSH auth fails forever, so the overlay must be regenerated
+    from the current base.
+    """
+    if not overlay.exists():
+        return None
+    info = _qemu_img_info(overlay)
+    if info is None:
+        return "unable to read overlay metadata"
+    backing = info.get("full-backing-filename") or info.get("backing-filename")
+    if not backing:
+        return None
+    backing_path = Path(backing).resolve()
+    target = image.resolve()
+    if backing_path != target:
+        return f"backing path drifted: {backing_path} != {target}"
+    if not backing_path.exists():
+        return f"backing image missing at {backing_path}"
+    sidecar = _overlay_base_sidecar(overlay)
+    recorded = _read_json_file(sidecar)
+    if recorded is None:
+        return None
+    try:
+        stat = backing_path.stat()
+    except OSError:
+        return f"unable to stat backing image at {backing_path}"
+    if int(recorded.get("size", -1)) != stat.st_size:
+        return "base image size changed since overlay creation"
+    if int(recorded.get("mtime_ns", -1)) != stat.st_mtime_ns:
+        return "base image mtime changed since overlay creation"
+    return None
+
+
+def _record_overlay_base(overlay: Path, image: Path) -> None:
+    sidecar = _overlay_base_sidecar(overlay)
+    try:
+        stat = image.stat()
+    except OSError:
+        return
+    sidecar.write_text(
+        json.dumps(
+            {
+                "image_path": str(image),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+# Run directories the bridge has spawned QEMU processes into during this run.
+# We use this to tear them down when our parent process disappears or we are
+# asked to exit, so VMs do not survive the bridge as orphans.
+_TRACKED_LOCK = threading.Lock()
+_TRACKED_RUN_DIRS: set[Path] = set()
+
+
+def _track_run_dir(run_root: Path) -> None:
+    with _TRACKED_LOCK:
+        _TRACKED_RUN_DIRS.add(run_root)
+
+
+def _tracked_run_dirs() -> list[Path]:
+    with _TRACKED_LOCK:
+        return list(_TRACKED_RUN_DIRS)
+
+
+def _terminate_qemu(run_root: Path, *, sigkill_after: float = 5.0) -> None:
+    """Best-effort SIGTERM (then SIGKILL) of the QEMU recorded for run_root."""
+    pid_file = run_root / "vm.pid"
+    if not pid_file.exists():
+        return
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (OSError, ValueError):
+        return
+    if pid <= 0 or not _pid_alive(pid):
+        pid_file.unlink(missing_ok=True)
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    deadline = time.monotonic() + sigkill_after
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            break
+        time.sleep(0.1)
+    if _pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    pid_file.unlink(missing_ok=True)
+
+
+def _stop_all_tracked_qemus() -> None:
+    for run_dir in _tracked_run_dirs():
+        try:
+            _terminate_qemu(run_dir)
+        except Exception as exc:
+            print(
+                f"sentinel-bridge: failed to stop QEMU for {run_dir}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
+def _watch_parent(parent_pid: int, *, interval: float = 2.0) -> None:
+    """Exit the bridge when our parent process disappears.
+
+    macOS does not support PR_SET_PDEATHSIG, so we poll. When the parent dies
+    the kernel reparents us to PID 1 (launchd/init); detect that, tear down
+    any spawned QEMU VMs, and exit cleanly so we do not become a long-lived
+    orphan that holds host ports.
+    """
+    while True:
+        try:
+            current_parent = os.getppid()
+        except OSError:
+            current_parent = 1
+        if current_parent != parent_pid or current_parent == 1:
+            print(
+                "sentinel-bridge: parent process exited; shutting down spawned QEMU processes",
+                file=sys.stderr,
+                flush=True,
+            )
+            _stop_all_tracked_qemus()
+            os._exit(0)
+        time.sleep(interval)
+
+
+def _install_signal_handlers() -> None:
+    def _handle(sig: int, _frame) -> None:
+        print(
+            f"sentinel-bridge: received signal {sig}; shutting down spawned QEMU processes",
+            file=sys.stderr,
+            flush=True,
+        )
+        _stop_all_tracked_qemus()
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, _handle)
+    signal.signal(signal.SIGINT, _handle)
 
 
 class QemuBridgeHandler(BaseHTTPRequestHandler):
@@ -249,6 +426,24 @@ class QemuBridgeHandler(BaseHTTPRequestHandler):
         requested_config = _launch_config(payload)
         launch_config = run_dir / "launch.json"
 
+        image = Path(image_path)
+        if not image.exists():
+            raise FileNotFoundError(f"QEMU image not found: {image}")
+
+        overlay = run_dir / "runtime-overlay.qcow2"
+
+        reset_reason = _overlay_should_reset(overlay, image)
+        if reset_reason:
+            print(
+                f"sentinel-bridge: recreating overlay at {overlay} ({reset_reason})",
+                file=sys.stderr,
+                flush=True,
+            )
+            if self._status(run_dir).get("running"):
+                self._stop_vm(run_dir)
+            overlay.unlink(missing_ok=True)
+            _overlay_base_sidecar(overlay).unlink(missing_ok=True)
+
         status = self._status(run_dir)
         if status.get("running"):
             current_config = status.get("config")
@@ -256,11 +451,6 @@ class QemuBridgeHandler(BaseHTTPRequestHandler):
                 return {"ok": True, **status}
             self._stop_vm(run_dir)
 
-        image = Path(image_path)
-        if not image.exists():
-            raise FileNotFoundError(f"QEMU image not found: {image}")
-
-        overlay = run_dir / "runtime-overlay.qcow2"
         pid_file = run_dir / "vm.pid"
         serial_log = run_dir / "serial.log"
         qemu_log = run_dir / "qemu.log"
@@ -285,6 +475,7 @@ class QemuBridgeHandler(BaseHTTPRequestHandler):
                 capture_output=True,
                 text=True,
             )
+            _record_overlay_base(overlay, image)
 
         qemu_cmd = [
             "qemu-system-aarch64",
@@ -330,6 +521,7 @@ class QemuBridgeHandler(BaseHTTPRequestHandler):
             )
         pid_file.write_text(str(process.pid))
         launch_config.write_text(json.dumps(requested_config, ensure_ascii=True, indent=2, sort_keys=True))
+        _track_run_dir(run_dir)
         return {
             "ok": True,
             "running": True,
@@ -350,9 +542,16 @@ def main() -> None:
     parser.add_argument("--token", required=True)
     args = parser.parse_args()
 
+    parent_pid = os.getppid()
+    threading.Thread(target=_watch_parent, args=(parent_pid,), daemon=True).start()
+    _install_signal_handlers()
+
     server = ThreadingHTTPServer((args.host, args.port), QemuBridgeHandler)
     server.bridge_token = args.token
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        _stop_all_tracked_qemus()
 
 
 if __name__ == "__main__":
