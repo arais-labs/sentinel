@@ -16,7 +16,7 @@ services:
   sentinel-runtime:
     build:
       context: .
-      dockerfile: infra/docker/runtime.Dockerfile
+      dockerfile: infra/runtime/docker/Dockerfile
     image: sentinel-runtime
     profiles:
       - build-only
@@ -83,7 +83,7 @@ services:
       - ./apps/backend/sentinel:/app
       - sentinel-runtime-ssh-dev:/data/runtime/ssh
       - ${RUNTIME_WORKSPACES_HOST_DIR:-/data/runtime/workspaces}:/data/runtime/workspaces
-      - ./qemu/output:/data/runtime/qemu-output:ro
+      - ./infra/runtime/qemu/output:/data/runtime/qemu-output:ro
       - /var/run/docker.sock:/var/run/docker.sock
     extra_hosts:
       - "host.docker.internal:host-gateway"

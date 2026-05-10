@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-QEMU_DIR="${ROOT_DIR}/qemu"
+QEMU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${QEMU_DIR}/../../.." && pwd)"
 CACHE_DIR="${QEMU_DIR}/cache"
 BUILD_ROOT="${QEMU_DIR}/build"
 OUTPUT_DIR="${QEMU_DIR}/output"

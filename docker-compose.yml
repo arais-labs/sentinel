@@ -17,7 +17,7 @@ services:
   sentinel-runtime:
     build:
       context: .
-      dockerfile: infra/docker/runtime.Dockerfile
+      dockerfile: infra/runtime/docker/Dockerfile
     image: sentinel-runtime
     profiles:
       - build-only

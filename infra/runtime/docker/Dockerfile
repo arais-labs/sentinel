@@ -67,7 +67,7 @@ RUN mkdir -p /var/run/sshd \
 RUN mkdir -p /home/sentinel/workspace \
     && chown -R sentinel:sentinel /home/sentinel
 
-COPY scripts/start-runtime.sh /start.sh
+COPY infra/runtime/docker/start.sh /start.sh
 RUN chmod +x /start.sh
 
 EXPOSE 22 6080 9223 12000-12009

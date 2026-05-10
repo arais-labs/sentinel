@@ -286,7 +286,7 @@ ensure_supported_runtime_backend() {
 default_qemu_image_path() {
   local arch image_dir candidate
   arch="$(uname -m)"
-  image_dir="$ROOT_DIR/qemu/output"
+  image_dir="$ROOT_DIR/infra/runtime/qemu/output"
   candidate="$image_dir/sentinel-runtime-base-${arch}.qcow2"
   [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
   candidate="$image_dir/sentinel-runtime-base.qcow2"
@@ -381,7 +381,7 @@ ensure_qemu_bridge_running() {
     return 1
   fi
 
-  nohup python3 "$ROOT_DIR/scripts/qemu_bridge.py" \
+  nohup python3 "$ROOT_DIR/infra/runtime/qemu/bridge.py" \
     --port "$port" \
     --token "$token" \
     >"$log_file" 2>&1 &
@@ -933,8 +933,8 @@ action_instance_runtime_backend() {
         qemu_image_path="$(default_qemu_image_path)"
         qemu_key_path="$(default_qemu_key_path)"
         if [[ -z "$qemu_image_path" || -z "$qemu_key_path" ]]; then
-          warn "QEMU baked image or SSH key is missing under $ROOT_DIR/qemu/output."
-          set_menu_note "${YELLOW}Build the QEMU image first from ${BOLD}./qemu/build-base-image.sh${RESET}${YELLOW}.${RESET}"
+          warn "QEMU baked image or SSH key is missing under $ROOT_DIR/infra/runtime/qemu/output."
+          set_menu_note "${YELLOW}Build the QEMU image first from ${BOLD}./infra/runtime/qemu/build-base-image.sh${RESET}${YELLOW}.${RESET}"
         else
           upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "qemu"
           upsert_env_value "$ef" "RUNTIME_QEMU_IMAGE" "$qemu_image_path"

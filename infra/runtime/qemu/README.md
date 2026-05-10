@@ -21,9 +21,9 @@ Current target:
   - `/usr/local/bin/sentinel-session-cleanup.sh`
 
 Output:
-- `qemu/output/sentinel-runtime-base-arm64.qcow2`
-- `qemu/output/sentinel-runtime-base-arm64.id_ed25519`
-- `qemu/output/sentinel-runtime-base-arm64.id_ed25519.pub`
+- `infra/runtime/qemu/output/sentinel-runtime-base-arm64.qcow2`
+- `infra/runtime/qemu/output/sentinel-runtime-base-arm64.id_ed25519`
+- `infra/runtime/qemu/output/sentinel-runtime-base-arm64.id_ed25519.pub`
 
 These output files are local build artifacts and are intentionally ignored by git. A new machine must build them before selecting the QEMU runtime backend.
 
@@ -36,11 +36,11 @@ Prerequisites:
 Main commands:
 
 ```bash
-./qemu/build-base-image.sh
-./qemu/validate-base-image.sh
+./infra/runtime/qemu/build-base-image.sh
+./infra/runtime/qemu/validate-base-image.sh
 ```
 
-After the image validates, select the QEMU runtime backend from `./sentinel-cli.sh` instance config. The CLI expects the image/key under `qemu/output/` and writes the required `RUNTIME_QEMU_*` values into the selected instance `.env`.
+After the image validates, select the QEMU runtime backend from `./sentinel-cli.sh` instance config. The CLI expects the image/key under `infra/runtime/qemu/output/` and writes the required `RUNTIME_QEMU_*` values into the selected instance `.env`.
 
 The SSH key written beside the image is local-only and is used for validation and first-boot inspection of the baked image.
 
