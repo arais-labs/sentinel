@@ -72,9 +72,6 @@ def test_error_response_format_consistency():
         assert validation.status_code == 422
         assert validation.json()["error"]["code"] == "validation_error"
 
-        estop = client.post("/api/v1/admin/estop", headers=headers)
-        assert estop.status_code == 200
-
         non_admin_headers = {"Authorization": f"Bearer {_make_token(sub='standard-user', role='agent')}"}
         forbidden = client.get("/api/v1/admin/config", headers=non_admin_headers)
         assert forbidden.status_code == 403

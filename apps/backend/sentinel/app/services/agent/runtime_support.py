@@ -16,7 +16,6 @@ from app.models import Message, Session
 from app.services.agent.agent_modes import AgentMode
 from app.services.agent.context_builder import ContextBuilder
 from app.services.agent.tool_adapter import ToolAdapter
-from app.services.estop import EstopLevel, EstopService
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import (
     AgentMessage,
@@ -86,15 +85,10 @@ class SentinelRuntimeSupport:
         provider: LLMProvider,
         context_builder: ContextBuilder,
         tool_adapter: ToolAdapter,
-        estop_service: EstopService | None = None,
     ) -> None:
         self.provider = provider
         self.context_builder = context_builder
         self.tool_adapter = tool_adapter
-        self._estop = estop_service or EstopService()
-
-    async def estop_level(self, db: AsyncSession) -> EstopLevel:
-        return await self._estop.check_level(db)
 
     async def prepare_runtime_turn_context(
         self,

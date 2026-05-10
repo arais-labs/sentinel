@@ -418,7 +418,6 @@ export interface RuntimeLiveView {
 export interface ConfigResponse {
   app_name: string;
   app_env: string;
-  estop_active: boolean;
   jwt_algorithm: string;
   access_token_ttl_seconds: number;
   refresh_token_ttl_seconds: number;

@@ -33,7 +33,6 @@ from app.config import settings
 from app.models import Message
 from app.services.agent.agent_modes import get_agent_mode_definition
 from app.services.agent.runtime_support import SentinelRuntimeSupport
-from app.services.estop import EstopLevel
 from app.services.agent_runtime_adapters.conversions import (
     db_messages_to_runtime_items,
     runtime_items_to_sentinel_messages,
@@ -212,38 +211,6 @@ class SentinelLoopRuntimeAdapter(Runtime):
         user_message = UserMessage(content=user_payload, metadata=user_metadata)
         created_seed = [user_message] if persist_user_message else []
         skipped_pre_persisted_new_items = 0 if persist_user_message else len(request.new_items)
-
-        if await self._loop.estop_level(self._db) == EstopLevel.KILL_ALL:
-            await self._loop.persist_created_messages(
-                self._db,
-                self._session_id,
-                created_seed,
-                {},
-                requested_tier=config.model,
-                temperature=config.temperature,
-                max_iterations=config.max_iterations,
-            )
-            await _emit_runtime_event(
-                RuntimeAgentEvent(type="error", error="Emergency stop KILL_ALL is active")
-            )
-            await _emit_runtime_event(
-                RuntimeAgentEvent(type="done", stop_reason="aborted")
-            )
-            history = await self._history_loader(self._db, self._session_id)
-            final_item = self._last_assistant_item(history)
-            return (
-                TurnResult(
-                    status="aborted",
-                    history=history,
-                    usage=TokenUsage(),
-                    iterations=0,
-                    final_item=final_item,
-                    stop_reason="aborted",
-                    error=None,
-                    metadata={"messages_created": len(created_seed)},
-                ),
-                events,
-            )
 
         prepared = await self._loop.prepare_runtime_turn_context(
             self._db,

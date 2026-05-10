@@ -26,7 +26,6 @@ class AuditLogListResponse(BaseModel):
 class ConfigResponse(BaseModel):
     app_name: str
     app_env: str
-    estop_active: bool = False
     jwt_algorithm: str
     access_token_ttl_seconds: int
     refresh_token_ttl_seconds: int

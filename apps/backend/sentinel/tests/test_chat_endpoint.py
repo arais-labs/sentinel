@@ -1,5 +1,4 @@
 import os
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -53,13 +52,6 @@ class _FakeLoop:
         self.calls = []
         self.provider = _FakeProvider()
         self.tool_adapter = ToolAdapter(ToolRegistry(), ToolExecutor(ToolRegistry()))
-        self._estop = SimpleNamespace(check_level=self._check_level)
-
-    async def _check_level(self, _db):
-        return None
-
-    async def estop_level(self, db):
-        return await self._estop.check_level(db)
 
     async def prepare_runtime_turn_context(
         self,

@@ -19,7 +19,6 @@ const sidebars = {
         'concepts/triggers',
         'concepts/browser-automation',
         'concepts/approvals',
-        'concepts/estop',
         'concepts/sessions',
       ],
     },

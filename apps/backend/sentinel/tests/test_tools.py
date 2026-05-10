@@ -344,22 +344,6 @@ def test_tools_registry_and_execution():
         assert payload["accounts"][0]["name"] == "primary-gh"
         assert payload["accounts"][0]["matches_repo"] is True
 
-        created_session = client.post(
-            "/api/v1/sessions",
-            json={"title": "tools-runtime-exec-estop"},
-            headers=headers,
-        )
-        assert created_session.status_code == 200
-        session_id = created_session.json()["id"]
-
-        estop = client.post("/api/v1/admin/estop", headers=headers)
-        assert estop.status_code == 200
-        blocked = _execute_tool_for_test(
-            "runtime",
-            {"command": "user", "shell_command": "echo blocked"},
-            session_id=session_id,
-        )
-        assert blocked.status_code == 200
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()

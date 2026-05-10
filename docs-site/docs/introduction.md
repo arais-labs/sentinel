@@ -20,7 +20,7 @@ Sentinel is an open source autonomous agent platform built by [ARAIS](https://ar
 | **Built in browser automation** | Playwright tools plus live VNC view for visibility |
 | **Built in scheduling** | Cron and heartbeat triggers for recurring runs |
 | **Built in memory** | Hierarchical persistent memory across sessions |
-| **Built in controls** | Permission policies, approvals, audit trail, and estop levels |
+| **Built in controls** | Permission policies, approvals, audit trail, and per-session stop controls |
 | **Built in UI** | Session UI, approvals queue, logs, and operational controls |
 
 ---

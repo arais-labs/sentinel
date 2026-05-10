@@ -65,7 +65,7 @@ User / Telegram / Trigger
   ├── LLM provider (Anthropic / OpenAI / failover)
   ├── Tool adapter (modules + browser + runtime + git)
   ├── Approval gate (pause/resume on sensitive actions)
-  └── Estop service (freeze or kill execution at any depth)
+  └── Per-session stop controls
         ↓
   Module Control Plane
   ├── Custom tool modules (sandboxed Python)

@@ -44,14 +44,10 @@ class _FakeProvider(LLMProvider):
 
 class _FakeLoop:
     def __init__(self, deltas_by_run: list[list[str]] | None = None) -> None:
-        self._estop = SimpleNamespace(check_level=self._check_level)
         self.context_builder = SimpleNamespace(build=self._build_context)
         registry = ToolRegistry()
         self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
         self.provider = _FakeProvider(deltas_by_run)
-
-    async def estop_level(self, db):
-        return await self._estop.check_level(db)
 
     async def prepare_runtime_turn_context(
         self,
@@ -76,9 +72,6 @@ class _FakeLoop:
 
     async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
         await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
-
-    async def _check_level(self, _db):
-        return None
 
     async def _build_context(self, _db, _session_id, system_prompt, pending_user_message, agent_mode):
         _ = (system_prompt, pending_user_message, agent_mode)

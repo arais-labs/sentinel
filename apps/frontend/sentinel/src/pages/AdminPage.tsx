@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
 import {
-  ShieldAlert,
-  Power,
   RefreshCw,
   History,
   Info,
@@ -32,8 +30,6 @@ export function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [offset, setOffset] = useState(0);
-  const [activating, setActivating] = useState(false);
-  const [deactivating, setDeactivating] = useState(false);
 
   useEffect(() => {
     void loadAdminData(true);
@@ -63,26 +59,6 @@ export function AdminPage() {
     finally { setLoading(false); }
   }
 
-  async function activateEstop() {
-    setActivating(true);
-    try {
-      await api.post('/admin/estop', {});
-      toast.error('EMERGENCY STOP ENGAGED');
-      await loadAdminData(true);
-    } catch { toast.error('ESTOP engagement failed'); }
-    finally { setActivating(false); }
-  }
-
-  async function deactivateEstop() {
-    setDeactivating(true);
-    try {
-      await api.delete('/admin/estop');
-      toast.success('System re-authorized');
-      await loadAdminData(true);
-    } catch { toast.error('Authorization override failed'); }
-    finally { setDeactivating(false); }
-  }
-
   async function loadMore() {
     if (loadingMore) return;
     setLoadingMore(true);
@@ -106,43 +82,6 @@ export function AdminPage() {
       }    >
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6 items-start animate-in fade-in duration-300">
         <div className="space-y-6">
-          {/* ESTOP Control */}
-          <Panel className={`p-6 border-2 transition-all ${config?.estop_active ? 'border-rose-500 bg-rose-500/5' : 'border-emerald-500/20 bg-emerald-500/[0.02]'}`}>
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <ShieldAlert size={20} className={config?.estop_active ? 'text-rose-500' : 'text-emerald-500'} />
-                <h2 className="text-sm font-bold uppercase tracking-widest">ESTOP Protocol</h2>
-              </div>
-              <StatusChip 
-                label={config?.estop_active ? 'ENGAGED' : 'READY'} 
-                tone={config?.estop_active ? 'danger' : 'good'} 
-              />
-            </div>
-            
-            <p className="text-[11px] text-[color:var(--text-secondary)] font-medium uppercase tracking-tight leading-relaxed mb-6">
-              Immediately freezes all high-risk tool execution and browser automation across the entire system instance.
-            </p>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button 
-                onClick={activateEstop}
-                disabled={activating || deactivating || config?.estop_active}
-                className={`flex items-center justify-center h-11 px-6 rounded-full text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 transition-all active:scale-95 ${config?.estop_active ? 'opacity-40 grayscale cursor-not-allowed' : 'bg-rose-600 text-white hover:bg-rose-700 shadow-lg shadow-rose-500/20'}`}
-              >
-                {activating ? <RefreshCw size={14} className="animate-spin" /> : <Power size={14} />}
-                Engage
-              </button>
-              <button 
-                onClick={deactivateEstop}
-                disabled={activating || deactivating || !config?.estop_active}
-                className="flex items-center justify-center h-11 px-6 rounded-full text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] text-[color:var(--text-primary)] transition-all hover:bg-[color:var(--surface-1)] active:scale-95 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {deactivating ? <RefreshCw size={14} className="animate-spin" /> : <ShieldAlert size={14} />}
-                Authorize
-              </button>
-            </div>
-          </Panel>
-
           {/* System Parameters */}
           <Panel className="p-6 space-y-6">
             <div className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] pb-4">

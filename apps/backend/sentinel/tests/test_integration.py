@@ -159,9 +159,6 @@ def test_full_integration_happy_path():
             assert ack["type"] == "message_ack"
             assert ack["content"] == "integration websocket message"
 
-        estop = client.post("/api/v1/admin/estop", headers=headers)
-        assert estop.status_code == 200
-
         config = client.get("/api/v1/admin/config", headers=headers)
         assert config.status_code == 200
 

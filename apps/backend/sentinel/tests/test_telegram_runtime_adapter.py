@@ -113,14 +113,10 @@ class _FakeProvider(LLMProvider):
 class _RuntimeSupportStub:
     def __init__(self) -> None:
         self.provider = _FakeProvider()
-        self._estop = SimpleNamespace(check_level=AsyncMock(return_value=None))
         self.context_builder = SimpleNamespace(build=AsyncMock(return_value=[]))
         registry = ToolRegistry()
         self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
         self.persist_calls: list[dict] = []
-
-    async def estop_level(self, db):
-        return await self._estop.check_level(db)
 
     async def prepare_runtime_turn_context(
         self,

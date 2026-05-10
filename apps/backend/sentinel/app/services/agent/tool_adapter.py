@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Message
 from app.services.agent.agent_modes import AgentMode
-from app.services.estop import EstopService
 from app.services.llm.generic.credential_scrubber import scrub
 from app.services.llm.generic.types import ToolCallContent, ToolResultMessage, ToolSchema
 from app.services.tools.executor import ToolExecutor
@@ -47,12 +46,10 @@ class ToolAdapter:
         self,
         registry: ToolRegistry,
         executor: ToolExecutor,
-        estop_service: EstopService | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._registry = registry
         self._executor = executor
-        self._estop = estop_service or EstopService()
         self._session_factory = session_factory
 
     @property
@@ -163,7 +160,7 @@ class ToolAdapter:
         agent_mode: AgentMode | str | None,
         on_pending_tool_result: Any = None,
     ) -> ToolResultMessage:
-        """Execute a single tool call with estop enforcement and consistent error wrapping."""
+        """Execute a single tool call with consistent error wrapping."""
         pending_message_id: str | None = None
 
         try:
@@ -171,11 +168,6 @@ class ToolAdapter:
             if tool is None:
                 raise KeyError(call.name)
 
-            if self._session_factory is not None:
-                async with self._session_factory() as estop_db:
-                    await self._estop.enforce_tool(estop_db, call.name)
-            else:
-                await self._estop.enforce_tool(db, call.name)
             arguments = call.arguments if isinstance(call.arguments, dict) else {}
             payload = dict(arguments)
             runtime = ToolRuntimeContext(

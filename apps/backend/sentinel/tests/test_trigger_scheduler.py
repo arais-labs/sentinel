@@ -41,14 +41,10 @@ class _SessionFactory:
 class _RuntimeSupportStub:
     def __init__(self) -> None:
         self.calls: list[dict] = []
-        self._estop = SimpleNamespace(check_level=self._check_level)
         self.context_builder = SimpleNamespace(build=self._build_context)
         registry = ToolRegistry()
         self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
         self.provider = _StreamingProvider()
-
-    async def estop_level(self, db):
-        return await self._estop.check_level(db)
 
     async def prepare_runtime_turn_context(
         self,
@@ -73,9 +69,6 @@ class _RuntimeSupportStub:
 
     async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
         await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
-
-    async def _check_level(self, _db):
-        return None
 
     async def _build_context(self, db, session_id, system_prompt, pending_user_message, agent_mode):
         self.calls.append(
@@ -111,14 +104,10 @@ class _RuntimeSupportStub:
 
 class _BlockingRuntimeSupportStub:
     def __init__(self) -> None:
-        self._estop = SimpleNamespace(check_level=self._check_level)
         self.context_builder = SimpleNamespace(build=self._build_context)
         registry = ToolRegistry()
         self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
         self.provider = _BlockingProvider()
-
-    async def estop_level(self, db):
-        return await self._estop.check_level(db)
 
     async def prepare_runtime_turn_context(
         self,
@@ -143,9 +132,6 @@ class _BlockingRuntimeSupportStub:
 
     async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
         await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
-
-    async def _check_level(self, _db):
-        return None
 
     async def _build_context(self, _db, _session_id, system_prompt, pending_user_message, agent_mode):
         _ = (system_prompt, pending_user_message, agent_mode)

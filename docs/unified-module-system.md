@@ -1,319 +1,194 @@
-# Unified Module System — Migration Notes
+# Unified Module System
 
-This is a historical migration note for unifying Sentinel tools and dynamic modules.
-It is not the canonical user-facing API documentation. The current implementation keeps
-the module system as the primary user-facing surface while retaining the internal
-`ToolRegistry` adapter used by runtime execution and agent adapters. The old
-`/api/v1/tools` HTTP surface has been removed.
+Sentinel exposes modules as the main user-facing capability surface. Native
+capabilities and user-created capabilities are both represented as modules.
+The internal `ToolRegistry` still exists, but it is an adapter layer for the
+agent/runtime loop, not a public product surface.
 
-## Goal
+## Current Shape
 
-Replace the dual tool/module system with a single concept: **modules**. Every capability in the platform — native (runtime_exec, git, python) and user-created (CRM, weather checker) — is a module. The "tool" concept disappears from the data model and only exists as a translation layer for LLM compatibility.
+- Public module API: `/api/modules`, mounted from
+  `apps/backend/sentinel/app/routers/araios/modules.py`.
+- System modules: code-defined modules under
+  `apps/backend/sentinel/app/services/araios/system_modules/*/module.py`.
+- Dynamic modules: DB-backed modules loaded by
+  `apps/backend/sentinel/app/services/araios/dynamic_modules.py`.
+- Tool adapter: modules are converted into `ToolDefinition` objects by
+  `ModuleDefinition.to_tool_definitions()` in
+  `apps/backend/sentinel/app/services/araios/module_types.py`.
+- Runtime registry: system and dynamic module tools are merged by
+  `apps/backend/sentinel/app/services/tools/runtime_registry.py`.
+- The old `/api/v1/tools` HTTP surface is no longer mounted.
 
----
+The broader application still has non-module APIs such as `/api/v1/sessions`,
+`/api/v1/runtime`, `/api/v1/git`, and `/api/v1/telegram`. Modules are the
+capability/control-plane surface, not the only API in the app.
 
-## Original Problem Statement
+## Module Model
 
-1. **Two parallel systems**: Sentinel `ToolDefinition`/`ToolRegistry` (code) and dynamic modules (DB)
-2. **Three meta-tools** (`araios_modules`, `araios_records`, `araios_action`) bridge the gap
-3. **Two API surfaces**: `/api/v1/tools` and `/api/modules`
-4. **Two UI pages**: Tools page and Modules page
-5. **Separate router trees**: `app/routers/araios/` and `app/routers/tools.py`
-6. **Action limitations**: flat params, no streaming, no multi-path operations, no native handler routing
-
-## Desired End State
-
-- **One concept**: module
-- **One API**: `/api/modules`
-- **One UI page**: Modules
-- **One registry**: merges code-defined system modules + DB user modules
-- **"Tool"** exists only as an adapter that generates `ToolDefinition` structs for the agent loop
-
----
-
-## Module Schema (Final)
-
-```
-module:
-  name: string              # required — slug, unique, lowercase
-  label: string             # required — display name
-  description: string       # optional — what the agent and user see
-  icon: string              # optional — lucide icon name, defaults to "box"
-
-  fields:                   # optional — if present, module stores records
-    - key: string           # required
-      label: string         # required
-      type: string          # required (text|textarea|email|url|number|date|select|badge|tags|readonly)
-      required: bool        # optional, defaults to false
-      options: string[]     # optional, only for select/badge
-
-  fields_config:            # optional — UI display for record lists
-    titleField: string
-    subtitleField: string
-    badgeField: string
-    filterField: string
-    metaField: string
-
-  actions:                  # optional — executable capabilities
-    - id: string                    # required
-      label: string                 # required
-      description: string           # optional
-      type: "standalone" | "record" # optional, defaults to "standalone"
-      parameters_schema: object     # full JSON Schema (replaces flat params)
-      code: string                  # user modules — Python executed in runtime container
-      handler: string               # system modules — native function name (mutually exclusive with code)
-      approval: object              # optional — custom approval config
-      streaming: bool               # optional — if true, output streams via WS
-
-  secrets:                  # optional — runtime credentials
-    - key: string           # required
-      label: string         # required
-      required: bool        # optional, defaults to false
-      hint: string          # optional
-
-  page_title: string        # optional — if set, module has a markdown page tab
-  pinned: bool              # if true, actions registered in agent context always
-  system: bool              # if true, defined in code, read-only in UI
+```text
+module
+  name: string
+  label: string
+  description?: string
+  icon?: string
+  fields?: field[]
+  fields_config?: object
+  actions?: action[]
+  secrets?: secret[]
+  page_title?: string
+  page_content?: string
+  system?: bool
+  order?: int
+  grouped_tool?: bool
 ```
 
-### Key Changes from Current
-
-| Before | After |
-|--------|-------|
-| `type: "data" \| "tool" \| "page"` | Gone — capabilities derived from what's defined |
-| `placement: "standalone" \| "detail"` | `type: "standalone" \| "record"` on action |
-| `params: [{key, label, type, required}]` | `parameters_schema: {JSON Schema}` |
-| No native handler routing | `handler: string` on action |
-| No streaming | `streaming: bool` on action |
-| No multi-path operations | `parameters_schema` supports enums, conditionals |
-| `is_system: bool` | `system: bool` — read-only in UI |
-
-### Execution Routing
-
-```
-action has handler? → call native Python function (system module)
-action has code?    → execute in runtime container via SSH (user module)
-neither?            → error
+```text
+action
+  id: string
+  label: string
+  description?: string
+  type?: "standalone" | "record"
+  parameters_schema?: JSON Schema object
+  params?: legacy flat parameter list
+  code?: Python source for dynamic modules
+  handler?: callable for system modules
+  streaming?: bool
+  approval?: bool
+  permission_default?: "allow" | "approval" | "deny"
+  requires_runtime_context?: bool
 ```
 
-### Streaming
+`params` is still accepted for compatibility and is converted into
+`parameters_schema` on read. New code should use `parameters_schema`.
 
-- `streaming: true` + `handler` → native handler streams via WS (like runtime_exec today)
-- `streaming: true` + `code` → runtime execution streams stdout via SSH → WS
-- `streaming: false` → request-response, return dict
+## System Modules
 
----
+System modules are registered by
+`apps/backend/sentinel/app/services/araios/system_modules/__init__.py`.
+Each package exports a `MODULE` object.
 
-## System Modules (Code-Defined)
+Current system module packages include:
 
-Defined in `app/services/araios/system_modules.py` as Python dicts. NOT stored in DB. Merged into the module list at runtime.
+- `runtime_tool`, exposed as tool/module name `runtime`
+- `python`
+- `git_tool`, exposed as `git`
+- `str_replace_editor`
+- `http_request`
+- `browser`
+- `port_forward`
+- `memory`
+- `sub_agents`, exposed as `delegate`
+- `telegram`
+- `triggers`
+- `module_manager`
+- `tasks`
+- `documents`
+- `coordination`
 
-Each system module maps to existing native tool implementations:
+System module actions store direct Python callables on `ActionDefinition.handler`.
+There is no central `NATIVE_HANDLERS` string registry.
 
-| Module | Actions | Handler Functions |
-|--------|---------|-------------------|
-| `runtime_exec` | `run` | `_execute_via_ssh()` in builtin.py |
-| `python` | `run` | `_run_python_in_runtime()` in builtin.py |
-| `git_exec` | `run` | git_exec.py handler |
-| `str_replace_editor` | `edit` (multi-path via `command` enum) | editor.py handler |
-| `http_request` | `request` | http_request handler in builtin.py |
-| `browser` | `navigate`, `screenshot`, `click`, `type`, `scroll`, `evaluate`, ... | browser tool handlers |
-| `memory` | `store`, `roots`, `tree`, `get_node`, `list_children` | memory tool handlers |
-| `sub_agents` | `spawn`, `check`, `list`, `cancel` | sub-agent handlers |
-| `send_telegram_message` | `send` | telegram bridge handler |
+## Dynamic Modules
 
-### Handler Registry
+Dynamic modules are stored in the database and converted into grouped tools by
+`build_dynamic_module_definition()`.
 
-```python
-NATIVE_HANDLERS: dict[str, Callable] = {
-    "runtime_exec.run": _execute_via_ssh,
-    "python.run": _run_python_in_runtime,
-    "git_exec.run": _git_exec_handler,
-    "str_replace_editor.edit": _str_replace_handler,
-    ...
-}
-```
+Every dynamic module automatically gets management commands:
 
-When a system module action executes, the execution layer looks up `{module_name}.{action_id}` in `NATIVE_HANDLERS` and calls the function.
+- `list_records`
+- `get_record`
+- `create_records`
+- `update_records`
+- `delete_records`
+- `get_page`
+- `edit_page`
 
----
+Bulk create, update, and delete are the canonical record mutation paths. Legacy
+singular command aliases are kept only as compatibility shims.
 
-## Translation Layer: Module → ToolDefinition
+Custom dynamic actions can include Python `code`. Today that code executes
+in-process through `apps/backend/sentinel/app/services/araios/executor.py` with
+a restricted import/builtin environment. It does not currently execute inside
+the session runtime VM/container.
 
-The agent loop expects `ToolDefinition` objects. The translation layer generates these from modules:
+## Module To Tool Translation
 
-```
-For each pinned module:
-  For each action in module.actions:
-    If module has only one action:
-      tool_name = module.name
-    Else:
-      tool_name = f"{module.name}_{action.id}"  # or keep as module.name with sub-commands
+The agent still consumes `ToolDefinition` objects. Translation happens at
+registry-build time:
 
-    ToolDefinition(
-      name = tool_name,
-      description = module.description + action.description,
-      parameters_schema = action.parameters_schema,
-      execute = route_to_handler_or_runtime(module, action),
-      approval_gate = build_gate_from_action_approval(action),
-    )
-```
+- Non-grouped modules with one action become one tool named after the module.
+- Non-grouped modules with multiple actions become one tool per action using
+  `{module}_{action}`.
+- Grouped modules become one tool named after the module, with a `command`
+  enum selecting the action.
+- Approval checks are built from action permission defaults and DB permission
+  overrides.
+- Dynamic module tools are loaded alongside system module tools when the runtime
+  registry is built or rebuilt.
 
-### Token Efficiency
+The grouped-tool pattern is preferred for modules with many related actions
+because it keeps the agent tool list smaller.
 
-Multi-action modules (like `str_replace_editor` with 5 commands) become ONE tool with a `command` enum in the schema — not 5 separate tools. The `parameters_schema` handles this natively via JSON Schema.
+## Module Manager
 
-### Unpinned Module Discovery
+`module_manager` is the agent-facing management/discovery module. It replaces
+the older multi-tool bridge concepts.
 
-Unpinned modules are NOT registered as tools. The agent accesses them via a single discovery meta-tool:
-
-```
-modules_discovery (always pinned):
-  - list_modules: returns all modules with descriptions
-  - get_module: returns full module config
-  - list_records: returns records for a module
-  - create_records / update_records / delete_records
-  - run_action: execute an action on an unpinned module
-```
-
-This replaces `araios_modules`, `araios_records`, `araios_action` — one tool instead of three.
-
----
+It supports module discovery, module creation/deletion, record list/get/create/
+update/delete, and action execution through one grouped tool.
 
 ## API Surface
 
-### Before
+Primary module routes:
 
-```
-/api/v1/tools                          — list native tools
-/api/v1/tools/{name}                   — get native tool
-/api/v1/tools/{name}/execute           — execute native tool
-/api/modules                           — list dynamic modules
-/api/modules/{name}                    — get module
-/api/modules/{name}/records            — CRUD records
-/api/modules/{name}/action/{id}        — execute action
-/api/modules/{name}/records/{id}/action/{id} — record-scoped action
-/api/approvals                         — approvals
-/api/permissions                       — permissions
-```
+```text
+GET    /api/modules
+POST   /api/modules
+GET    /api/modules/{name}
+PATCH  /api/modules/{name}
+DELETE /api/modules/{name}
 
-### After (unified)
+GET    /api/modules/{name}/records
+POST   /api/modules/{name}/records
+PATCH  /api/modules/{name}/records/{record_id}
+DELETE /api/modules/{name}/records/{record_id}
 
-```
-/api/modules                           — list ALL modules (system + user)
-/api/modules/{name}                    — get module
-/api/modules/{name}/records            — CRUD records
-/api/modules/{name}/action/{id}        — execute action (routes to handler or runtime)
-/api/modules/{name}/records/{id}/action/{id} — record-scoped action
-/api/approvals                         — approvals
-/api/permissions                       — permissions
+POST   /api/modules/{name}/action/{action_id}
+POST   /api/modules/{name}/records/{record_id}/action/{action_id}
+
+PUT    /api/modules/{name}/secrets/{key}
+DELETE /api/modules/{name}/secrets/{key}
+GET    /api/modules/{name}/secrets-status
+POST   /api/modules/import
 ```
 
-`/api/v1/tools` and `/api/v1/tools/{name}/execute` have been removed. Everything public goes through modules.
+Related module/control-plane routes remain mounted under `/api`:
 
----
+- `/api/permissions`
+- `/api/coordination`
+- `/api/documents`
+- `/api/tasks`
+- `/api/settings`
+- `/api/manifest`
+- `/api/agent`
 
 ## Frontend
 
-### Sidebar (unified)
+`apps/frontend/sentinel/src/pages/ModulesPage.tsx` is the current module UI.
+It displays system and dynamic modules in one surface. System modules are
+read-only; dynamic modules can be created, edited, deleted, and used for
+records/actions/pages/secrets.
 
-```
-Sessions
-Session Logs
-Memory
-Triggers
-Modules          ← replaces both Tools and dynamic modules
-Approvals
-Permissions
-Git
-Telegram
-Settings
-```
+There is no separate Tools page.
 
-### Modules Page
+## Known Gaps
 
-One grid showing all modules. System modules have a "system" badge and are not editable. User modules are fully editable. Click → tabs based on capabilities (Records, Actions, Page).
-
-### Switcher
-
-Dead. One app, one nav.
-
-### Tools Page
-
-Dead. Replaced by Modules page.
-
-### Right Rail Modules Tab
-
-Stays — session-scoped activity view.
-
----
-
-## Implementation Phases
-
-### Phase 1 — Action Schema Upgrade
-
-**What:** Update action schema to support `parameters_schema`, `handler`, `streaming`, `approval`.
-
-Files:
-- `app/models/araios.py` — no model change needed (actions is JSON)
-- `app/routers/araios/modules.py` — update serialization, validation
-- `app/services/tools/araios_tools.py` — update tool descriptions
-- SQL migration for `system` column on modules table
-- Frontend `ModulesPage.tsx` — render `parameters_schema` in action forms
-
-### Phase 2 — System Module Definitions
-
-**What:** Define all native tools as system module dicts in code. Create handler registry mapping `{module}.{action}` → native function.
-
-Files:
-- `app/services/araios/system_modules.py` — module definitions
-- `app/services/araios/handlers.py` — handler registry + routing
-- `app/routers/araios/modules.py` — merge system modules into list endpoint
-
-### Phase 3 — Translation Layer
-
-**What:** Replace `ToolRegistry` + `builtin.py` tool factory with module-based tool generation. Pinned modules auto-register as `ToolDefinition`. Execution routes through module system.
-
-Files:
-- `app/services/tools/module_adapter.py` — new: generates ToolDefinitions from modules
-- `app/services/tools/builtin.py` — gut: remove individual tool factories
-- `app/main.py` — wire module adapter into startup
-- `app/services/agent/tool_adapter.py` — may need updates
-
-### Phase 4 — Unify Discovery Tool
-
-**What:** Replace `araios_modules` + `araios_records` + `araios_action` with one `modules_discovery` tool.
-
-Files:
-- `app/services/tools/araios_tools.py` — rewrite as single discovery tool
-- `app/services/agent/policies.py` — update policy
-
-### Phase 5 — Kill Old Tool HTTP Surface
-
-**What:** Remove `/api/v1/tools`, `ToolsPage.tsx`, old tool router, app switcher.
-
-Files:
-- Delete `app/routers/tools.py`
-- Delete `app/schemas/tools.py`
-- Delete `apps/frontend/sentinel/src/pages/ToolsPage.tsx`
-- `app/main.py` — remove tools router mount
-- `App.tsx` — remove /tools route
-- `AppShell.tsx` — remove switcher, flatten sidebar, remove Tools nav item, add Modules/Approvals/Permissions
-
-### Phase 6 — Flatten Routes
-
-**What:** Move module routes from `/api/modules` to be the canonical API. Remove `/api/v1/tools/*` references from frontend and behavior tests.
-
----
-
-## Risks & Open Questions
-
-1. **Backward compatibility** — existing sessions have tool call history referencing `runtime_exec`, `git_exec`, etc. The translation layer must generate tools with the SAME names so history stays valid.
-
-2. **Hot reload** — when a user creates/edits a pinned module, the tool registry needs to update without restart. Needs a mechanism to invalidate and regenerate.
-
-3. **Parameter schema migration** — existing user module actions use flat `params`. Need a migration path to `parameters_schema` (or support both and translate flat params → JSON Schema on read).
-
-4. **Streaming for user modules** — executing code in the runtime and streaming back via SSH → WS is new infrastructure. Can defer to a later phase.
-
-5. **Approval evaluator registry** — mapping action `approval.evaluator` strings to Python functions needs a clean registry pattern.
+- Dynamic action Python runs in-process instead of inside the session runtime.
+- Module/user-code streaming is not equivalent to runtime command streaming.
+- Permission and approval behavior exists, but the policy surface still needs
+  simplification.
+- `ToolRegistry` remains a required internal adapter until the agent runtime can
+  consume modules directly.
+- Some compatibility route concepts and legacy names remain in tests/history and
+  should not be reintroduced as public product concepts.

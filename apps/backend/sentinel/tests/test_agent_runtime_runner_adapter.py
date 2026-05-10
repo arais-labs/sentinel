@@ -22,11 +22,6 @@ class _FakeUsage:
     output_tokens: int = 0
 
 
-class _FakeEstop:
-    async def check_level(self, _db):
-        return None
-
-
 class _FakeContextBuilder:
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -85,15 +80,11 @@ class _FakeProvider(LLMProvider):
 
 class _FakeLoop:
     def __init__(self) -> None:
-        self._estop = _FakeEstop()
         self.context_builder = _FakeContextBuilder()
         registry = ToolRegistry()
         self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
         self.provider = _FakeProvider()
         self.persist_calls: list[dict] = []
-
-    async def estop_level(self, db):
-        return await self._estop.check_level(db)
 
     async def prepare_runtime_turn_context(
         self,
