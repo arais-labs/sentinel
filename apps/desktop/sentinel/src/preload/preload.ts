@@ -15,6 +15,7 @@ const api: DesktopApi = {
   buildQemuImage: () => ipcRenderer.invoke(IPC.buildQemuImage),
   validateQemuImage: () => ipcRenderer.invoke(IPC.validateQemuImage),
   openSentinel: () => ipcRenderer.invoke(IPC.openSentinel),
+  showControlCenter: () => ipcRenderer.invoke(IPC.showControlCenter),
   revealAppSupport: () => ipcRenderer.invoke(IPC.revealAppSupport),
   getLogs: () => ipcRenderer.invoke(IPC.getLogs),
   onStatus: (listener: (status: DesktopStatus) => void) => {

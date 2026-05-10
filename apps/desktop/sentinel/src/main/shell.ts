@@ -2,7 +2,20 @@ import { execFile } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 
-export function execFileText(file: string, args: string[] = [], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
+const DEFAULT_COMMAND_PATHS = [
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/usr/bin',
+  '/bin',
+  '/usr/sbin',
+  '/sbin',
+];
+
+export function execFileText(
+  file: string,
+  args: string[] = [],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string } = {},
+): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(file, args, { cwd: options.cwd, env: options.env }, (error, stdout, stderr) => {
       if (error) {
@@ -10,13 +23,16 @@ export function execFileText(file: string, args: string[] = [], options: { cwd?:
         return;
       }
       resolve(stdout.toString());
-    });
+    }).stdin?.end(options.input);
   });
 }
 
+export function commandSearchPath(pathValue = process.env.PATH || ''): string {
+  return [...new Set([...pathValue.split(':').filter(Boolean), ...DEFAULT_COMMAND_PATHS])].join(':');
+}
+
 export async function commandExists(command: string): Promise<string | undefined> {
-  const pathValue = process.env.PATH || '';
-  for (const dir of pathValue.split(':')) {
+  for (const dir of commandSearchPath().split(':')) {
     const candidate = `${dir}/${command}`;
     try {
       await access(candidate, constants.X_OK);

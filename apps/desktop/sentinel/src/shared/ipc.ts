@@ -51,6 +51,8 @@ export interface LogEntry {
 export interface CreateInstanceRequest {
   name: string;
   stackPort?: number;
+  username?: string;
+  password?: string;
 }
 
 export interface DesktopApi {
@@ -65,7 +67,8 @@ export interface DesktopApi {
   restoreInstance(name: string, backupPath: string): Promise<DesktopStatus>;
   buildQemuImage(): Promise<void>;
   validateQemuImage(): Promise<void>;
-  openSentinel(): Promise<void>;
+  openSentinel(): Promise<DesktopStatus>;
+  showControlCenter(): Promise<void>;
   revealAppSupport(): Promise<void>;
   getLogs(): Promise<LogEntry[]>;
   onStatus(listener: (status: DesktopStatus) => void): () => void;
@@ -85,6 +88,7 @@ export const IPC = {
   buildQemuImage: 'desktop:buildQemuImage',
   validateQemuImage: 'desktop:validateQemuImage',
   openSentinel: 'desktop:openSentinel',
+  showControlCenter: 'desktop:showControlCenter',
   revealAppSupport: 'desktop:revealAppSupport',
   getLogs: 'desktop:getLogs',
   statusChanged: 'desktop:statusChanged',

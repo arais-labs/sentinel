@@ -26,6 +26,14 @@ export class LocalServer {
       ws: true,
       changeOrigin: true,
     });
+    proxy.on('error', (_error, _req, res) => {
+      if ('writeHead' in res) {
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'backend_unavailable' }));
+        return;
+      }
+      res.destroy();
+    });
 
     this.server = http.createServer((req, res) => {
       const url = req.url || '/';

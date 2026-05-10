@@ -3,6 +3,7 @@ import type { DesktopStatus, InstanceSummary, LogEntry, ManagedServiceStatus } f
 const api = window.sentinelDesktop;
 let latestStatus: DesktopStatus | undefined;
 let logs: LogEntry[] = [];
+let pendingAuthAction: { kind: 'create'; name: string } | { kind: 'reset'; name: string } | undefined;
 
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -31,7 +32,7 @@ function render(status: DesktopStatus): void {
 function renderInstances(instances: InstanceSummary[]): void {
   const root = el('instances');
   if (instances.length === 0) {
-    root.innerHTML = '<p class="subcopy">No instances yet. Create one to start local Sentinel.</p>';
+    root.innerHTML = '<div class="empty-state">No instances yet. Create one to start local Sentinel.</div>';
     return;
   }
   root.innerHTML = instances
@@ -46,6 +47,7 @@ function renderInstances(instances: InstanceSummary[]): void {
           <div class="row-actions">
             <button data-action="start" data-name="${escapeHtml(instance.name)}">Start</button>
             <button data-action="restart" data-name="${escapeHtml(instance.name)}">Restart</button>
+            <button data-action="reset-auth" data-name="${escapeHtml(instance.name)}">Reset Auth</button>
             <button data-action="backup" data-name="${escapeHtml(instance.name)}">Backup</button>
             <button data-action="delete" data-name="${escapeHtml(instance.name)}" class="danger">Delete</button>
           </div>
@@ -58,7 +60,7 @@ function renderInstances(instances: InstanceSummary[]): void {
 function renderServices(services: ManagedServiceStatus[]): void {
   const root = el('services');
   if (services.length === 0) {
-    root.innerHTML = '<p class="subcopy">No managed services are running.</p>';
+    root.innerHTML = '<div class="empty-state">No managed services are running.</div>';
     return;
   }
   root.innerHTML = services
@@ -79,6 +81,27 @@ function renderLogs(): void {
   el('logs').scrollTop = el('logs').scrollHeight;
 }
 
+function showAuthModal(action: typeof pendingAuthAction): void {
+  pendingAuthAction = action;
+  const isCreate = action?.kind === 'create';
+  el('authTitle').textContent = isCreate ? 'Create admin login' : 'Reset admin login';
+  el('authDescription').textContent = isCreate
+    ? `Set credentials for instance "${action?.name}".`
+    : `Replace credentials for instance "${action?.name}".`;
+  el('authSubmit').textContent = isCreate ? 'Create Instance' : 'Reset Auth';
+  el<HTMLInputElement>('authUsername').value = 'admin';
+  el<HTMLInputElement>('authPassword').value = '';
+  el('authModal').classList.remove('hidden');
+  el('authModal').setAttribute('aria-hidden', 'false');
+  el<HTMLInputElement>('authPassword').focus();
+}
+
+function hideAuthModal(): void {
+  pendingAuthAction = undefined;
+  el('authModal').classList.add('hidden');
+  el('authModal').setAttribute('aria-hidden', 'true');
+}
+
 async function refresh(): Promise<void> {
   render(await api.getStatus());
   logs = await api.getLogs();
@@ -95,6 +118,9 @@ document.addEventListener('click', async (event) => {
     button.disabled = true;
     if (action === 'start' && name) render(await api.startInstance(name));
     if (action === 'restart' && name) render(await api.restartInstance(name));
+    if (action === 'reset-auth' && name) {
+      showAuthModal({ kind: 'reset', name });
+    }
     if (action === 'backup' && name) {
       const backupPath = await api.backupInstance(name);
       logs.push({ service: 'manager', line: `Backup written to ${backupPath}`, at: new Date().toISOString() });
@@ -112,7 +138,33 @@ document.addEventListener('click', async (event) => {
 el<HTMLFormElement>('createForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const name = el<HTMLInputElement>('instanceName').value;
-  render(await api.createInstance({ name }));
+  showAuthModal({ kind: 'create', name });
+});
+
+el<HTMLFormElement>('authForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!pendingAuthAction) return;
+  const username = el<HTMLInputElement>('authUsername').value;
+  const password = el<HTMLInputElement>('authPassword').value;
+  const action = pendingAuthAction;
+  try {
+    if (action.kind === 'create') {
+      render(await api.createInstance({ name: action.name, username, password }));
+    } else {
+      render(await api.resetAuth(action.name, username, password));
+    }
+    hideAuthModal();
+  } catch (error) {
+    logs.push({ service: 'manager', line: String((error as Error).message || error), at: new Date().toISOString() });
+    renderLogs();
+  }
+});
+
+document.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement;
+  if (target.dataset.modalClose === 'true') {
+    hideAuthModal();
+  }
 });
 
 el('refreshBtn').addEventListener('click', () => void refresh());

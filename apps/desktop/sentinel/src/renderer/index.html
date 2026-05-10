@@ -84,6 +84,29 @@
         </section>
       </main>
     </div>
+
+    <div id="authModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <form id="authForm" class="modal-card">
+        <div>
+          <p id="authEyebrow" class="modal-eyebrow">Admin credentials</p>
+          <h2 id="authTitle">Set admin password</h2>
+          <p id="authDescription">Choose the credentials used to sign in to this Sentinel instance.</p>
+        </div>
+        <label>
+          <span>Username</span>
+          <input id="authUsername" autocomplete="username" value="admin" />
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="authPassword" type="password" autocomplete="new-password" />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" data-modal-close="true">Cancel</button>
+          <button id="authSubmit" type="submit" class="primary">Apply</button>
+        </div>
+      </form>
+    </div>
     <script type="module" src="../../dist/renderer/renderer.js"></script>
   </body>
 </html>

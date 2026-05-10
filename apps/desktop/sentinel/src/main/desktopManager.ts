@@ -1,14 +1,14 @@
 import { app, shell } from 'electron';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, rm } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { pbkdf2Sync, randomBytes, randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import type { CreateInstanceRequest, DesktopStatus, InstanceSummary, LogEntry } from '../shared/ipc.js';
 import { appSupportRoot, backendPath, frontendDistPath, instanceEnvPath, instanceRoot, qemuResourcePath } from './paths.js';
 import { findFreePort } from './ports.js';
-import { commandExists, execFileText } from './shell.js';
+import { commandExists, commandSearchPath, execFileText } from './shell.js';
 import { parseEnv, randomSecret, readEnvFile, serializeEnv, writeEnvFile } from './env.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { LocalServer } from './localServer.js';
@@ -22,6 +22,10 @@ interface Ports {
   qemuVnc: number;
   qemuCdp: number;
 }
+
+const AUTH_USERNAME_KEY = 'sentinel.auth.username';
+const AUTH_PASSWORD_HASH_KEY = 'sentinel.auth.password_hash';
+const AUTH_PASSWORD_HASH_ROUNDS = 240_000;
 
 export class DesktopManager {
   private readonly supervisor = new ProcessSupervisor();
@@ -41,7 +45,11 @@ export class DesktopManager {
   async initialize(): Promise<void> {
     await mkdir(this.instancesRoot(), { recursive: true });
     await mkdir(this.runtimeOutputDir(), { recursive: true });
+    await mkdir(this.runtimeCacheDir(), { recursive: true });
+    await mkdir(this.runtimeBuildDir(), { recursive: true });
+    await mkdir(this.runtimeRunDir(), { recursive: true });
     await mkdir(this.postgresDataDir(), { recursive: true });
+    await this.migrateLegacyRuntimeOutput();
     this.ports = {
       app: await findFreePort(5050),
       backend: await findFreePort(18000),
@@ -98,6 +106,10 @@ export class DesktopManager {
   async createInstance(request: CreateInstanceRequest): Promise<DesktopStatus> {
     const name = this.sanitizeInstanceName(request.name);
     if (!name) throw new Error('Instance name cannot be empty');
+    const username = this.normalizeAuthUsername(request.username || '');
+    const password = (request.password || '').trim();
+    if (!username) throw new Error('Admin username cannot be empty');
+    if (!password) throw new Error('Admin password cannot be empty');
     const root = instanceRoot(name);
     const envPath = instanceEnvPath(name);
     await mkdir(root, { recursive: true });
@@ -112,6 +124,8 @@ export class DesktopManager {
       POSTGRES_PASSWORD: existing.POSTGRES_PASSWORD || randomSecret(24),
       JWT_SECRET_KEY: existing.JWT_SECRET_KEY || randomSecret(48),
       JWT_ALGORITHM: existing.JWT_ALGORITHM || 'HS256',
+      SENTINEL_AUTH_USERNAME: username,
+      SENTINEL_AUTH_PASSWORD: password,
       RUNTIME_EXEC_BACKEND: 'qemu',
       RUNTIME_WORKSPACES_HOST_DIR: path.join(root, 'workspaces'),
       RUNTIME_QEMU_IMAGE: this.runtimeImagePath(),
@@ -149,6 +163,7 @@ export class DesktopManager {
     await this.startPostgres();
     await this.startQemuBridge();
     await this.startBackend(instance);
+    await this.waitForBackend();
     await this.localServer.start({
       frontendDir: frontendDistPath(),
       backendPort: this.ports!.backend,
@@ -186,12 +201,25 @@ export class DesktopManager {
   }
 
   async resetAuth(name: string, username: string, password: string): Promise<DesktopStatus> {
+    const normalizedUsername = this.normalizeAuthUsername(username);
+    const normalizedPassword = password.trim();
+    if (!normalizedUsername) throw new Error('Admin username cannot be empty');
+    if (!normalizedPassword) throw new Error('Admin password cannot be empty');
     const envPath = instanceEnvPath(this.sanitizeInstanceName(name));
     const env = await readEnvFile(envPath);
-    env.SENTINEL_AUTH_USERNAME = username;
-    env.SENTINEL_AUTH_PASSWORD = password;
+    env.SENTINEL_AUTH_USERNAME = normalizedUsername;
+    env.SENTINEL_AUTH_PASSWORD = normalizedPassword;
     await writeEnvFile(envPath, env);
-    this.supervisor.appendManagerLog(`Queued auth reset for ${name}; restart required`);
+
+    await this.startPostgres();
+    try {
+      await this.upsertAuthSettings(normalizedUsername, normalizedPassword);
+    } catch (error) {
+      const message = String((error as Error).message || error);
+      if (!message.includes('system_settings')) throw error;
+      this.supervisor.appendManagerLog('Auth database settings table is not initialized yet; env seed was updated');
+    }
+    this.supervisor.appendManagerLog(`Reset admin credentials for ${name}`);
     return this.emitStatus();
   }
 
@@ -215,24 +243,27 @@ export class DesktopManager {
 
   async buildQemuImage(): Promise<void> {
     await mkdir(this.runtimeOutputDir(), { recursive: true });
+    await mkdir(this.runtimeCacheDir(), { recursive: true });
+    await mkdir(this.runtimeBuildDir(), { recursive: true });
+    await mkdir(this.runtimeRunDir(), { recursive: true });
     await this.runScript('manager', path.join(qemuResourcePath(), 'build-base-image.sh'), [], {
       SENTINEL_QEMU_OUTPUT_IMAGE_NAME: path.basename(this.runtimeImagePath()),
       SENTINEL_QEMU_OUTPUT_DIR: this.runtimeOutputDir(),
+      SENTINEL_QEMU_CACHE_DIR: this.runtimeCacheDir(),
+      SENTINEL_QEMU_BUILD_ROOT: this.runtimeBuildDir(),
+      SENTINEL_QEMU_RUN_DIR: this.runtimeRunDir(),
     });
     await this.emitStatus();
   }
 
   async validateQemuImage(): Promise<void> {
+    await mkdir(this.runtimeValidateRunDir(), { recursive: true });
     await this.runScript('manager', path.join(qemuResourcePath(), 'validate-base-image.sh'), [], {
       SENTINEL_QEMU_VALIDATE_IMAGE: this.runtimeImagePath(),
       SENTINEL_QEMU_VALIDATE_KEY: this.runtimeKeyPath(),
+      SENTINEL_QEMU_VALIDATE_RUN_DIR: this.runtimeValidateRunDir(),
     });
     await this.emitStatus();
-  }
-
-  async openSentinel(): Promise<void> {
-    const url = (await this.getStatus()).appUrl;
-    if (url) await shell.openExternal(url);
   }
 
   async revealAppSupport(): Promise<void> {
@@ -249,13 +280,15 @@ export class DesktopManager {
     const postgresBin = await this.resolvePostgresBinary('postgres');
     const initdbBin = await this.resolvePostgresBinary('initdb');
     const dataDir = this.postgresDataDir();
+    const env = this.postgresEnv();
     if (!existsSync(path.join(dataDir, 'PG_VERSION'))) {
-      await execFileText(initdbBin, ['-D', dataDir, '-U', 'sentinel', '--encoding=UTF8']);
+      await execFileText(initdbBin, ['-D', dataDir, '-U', 'sentinel', '--encoding=UTF8'], { env });
     }
     this.supervisor.start({
       name: 'postgres',
       command: postgresBin,
       args: ['-D', dataDir, '-p', String(this.ports!.postgres), '-h', '127.0.0.1'],
+      env,
       port: this.ports!.postgres,
     });
     await this.waitForPostgres();
@@ -297,6 +330,9 @@ export class DesktopManager {
     return {
       ...process.env,
       ...values,
+      PATH: commandSearchPath(values.PATH || process.env.PATH || ''),
+      LANG: values.LANG || process.env.LANG || 'C',
+      LC_ALL: values.LC_ALL || process.env.LC_ALL || 'C',
       APP_ENV: 'desktop',
       DATABASE_URL: `postgresql+asyncpg://${user}:${password}@127.0.0.1:${this.ports!.postgres}/${db}`,
       RUNTIME_EXEC_BACKEND: 'qemu',
@@ -353,6 +389,7 @@ export class DesktopManager {
         env: {
           ...process.env,
           ...env,
+          PATH: commandSearchPath(env.PATH || process.env.PATH || ''),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -398,7 +435,9 @@ export class DesktopManager {
     }
     for (let i = 0; i < 60; i += 1) {
       try {
-        await execFileText(pgIsReady, ['-h', '127.0.0.1', '-p', String(this.ports!.postgres), '-U', 'sentinel']);
+        await execFileText(pgIsReady, ['-h', '127.0.0.1', '-p', String(this.ports!.postgres), '-U', 'sentinel'], {
+          env: this.postgresEnv(),
+        });
         return;
       } catch {
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -407,12 +446,80 @@ export class DesktopManager {
     throw new Error('Postgres did not become ready');
   }
 
+  private async waitForBackend(): Promise<void> {
+    const url = `http://127.0.0.1:${this.ports!.backend}/health`;
+    for (let i = 0; i < 120; i += 1) {
+      try {
+        const response = await fetch(url);
+        if (response.ok) return;
+      } catch {
+        // Backend is still starting.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error('Backend did not become ready');
+  }
+
   private async ensurePostgresDatabase(): Promise<void> {
     const createdb = await this.resolvePostgresBinary('createdb');
     const psql = await this.resolvePostgresBinary('psql');
     const baseArgs = ['-h', '127.0.0.1', '-p', String(this.ports!.postgres), '-U', 'sentinel'];
-    await execFileText(createdb, [...baseArgs, 'sentinel']).catch(() => '');
-    await execFileText(psql, [...baseArgs, '-d', 'sentinel', '-c', 'CREATE EXTENSION IF NOT EXISTS vector;']);
+    const env = this.postgresEnv();
+    await execFileText(createdb, [...baseArgs, 'sentinel'], { env }).catch(() => '');
+    await execFileText(psql, [...baseArgs, '-d', 'sentinel', '-c', 'CREATE EXTENSION IF NOT EXISTS vector;'], { env });
+  }
+
+  private postgresEnv(): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      PATH: commandSearchPath(),
+      LANG: 'C',
+      LC_ALL: 'C',
+      LC_CTYPE: 'C',
+    };
+  }
+
+  private async upsertAuthSettings(username: string, password: string): Promise<void> {
+    const psql = await this.resolvePostgresBinary('psql');
+    const baseArgs = ['-h', '127.0.0.1', '-p', String(this.ports!.postgres), '-U', 'sentinel', '-d', 'sentinel'];
+    const sql = `
+INSERT INTO system_settings(key, value)
+VALUES
+  ('${AUTH_USERNAME_KEY}', :'username'),
+  ('${AUTH_PASSWORD_HASH_KEY}', :'password_hash')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
+`;
+    await execFileText(
+      psql,
+      [...baseArgs, '-v', `username=${username}`, '-v', `password_hash=${this.hashAuthPassword(password)}`],
+      { env: this.postgresEnv(), input: sql },
+    );
+  }
+
+  private normalizeAuthUsername(username: string): string {
+    return username.trim().toLowerCase();
+  }
+
+  private hashAuthPassword(password: string): string {
+    const salt = randomBytes(16).toString('hex');
+    const digest = pbkdf2Sync(password, salt, AUTH_PASSWORD_HASH_ROUNDS, 32, 'sha256').toString('hex');
+    return `${salt}$${digest}`;
+  }
+
+  private async migrateLegacyRuntimeOutput(): Promise<void> {
+    const files = [
+      'sentinel-runtime-base-arm64.qcow2',
+      'sentinel-runtime-base-arm64.id_ed25519',
+      'sentinel-runtime-base-arm64.id_ed25519.pub',
+    ];
+    for (const file of files) {
+      const currentPath = path.join(this.runtimeOutputDir(), file);
+      const legacyPath = path.join(this.legacyRuntimeOutputDir(), file);
+      if (existsSync(currentPath) || !existsSync(legacyPath)) continue;
+      await mkdir(this.runtimeOutputDir(), { recursive: true });
+      await copyFile(legacyPath, currentPath);
+      this.supervisor.appendManagerLog(`Migrated QEMU artifact ${file}`);
+    }
   }
 
   private sanitizeInstanceName(name: string): string {
@@ -424,7 +531,27 @@ export class DesktopManager {
   }
 
   private runtimeOutputDir(): string {
+    return path.join(appSupportRoot(), 'qemu/output');
+  }
+
+  private legacyRuntimeOutputDir(): string {
     return path.join(appSupportRoot(), 'runtime/qemu/output');
+  }
+
+  private runtimeCacheDir(): string {
+    return path.join(appSupportRoot(), 'qemu/cache');
+  }
+
+  private runtimeBuildDir(): string {
+    return path.join(appSupportRoot(), 'qemu/build');
+  }
+
+  private runtimeRunDir(): string {
+    return path.join(appSupportRoot(), 'qemu/run');
+  }
+
+  private runtimeValidateRunDir(): string {
+    return path.join(this.runtimeRunDir(), 'validate');
   }
 
   private runtimeImagePath(): string {
