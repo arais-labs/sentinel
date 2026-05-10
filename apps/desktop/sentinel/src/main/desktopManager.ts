@@ -312,13 +312,15 @@ export class DesktopManager {
       if (manifest.format !== BACKUP_FORMAT || manifest.version !== BACKUP_VERSION) {
         throw new Error('Unsupported Sentinel backup format');
       }
-      const env = parseEnv(await readFile(path.join(tmp, 'instance.env'), 'utf8'));
+      const env = this.normalizeRestoredInstanceEnv(parseEnv(await readFile(path.join(tmp, 'instance.env'), 'utf8')));
       await mkdir(instanceRoot(safe), { recursive: true });
       await mkdir(path.join(instanceRoot(safe), 'qemu-run'), { recursive: true });
       await cp(path.join(tmp, 'workspaces'), path.join(instanceRoot(safe), 'workspaces'), { recursive: true });
       await this.writeInstanceEnv(safe, {
         ...env,
         POSTGRES_DB: dbName,
+        POSTGRES_USER: 'sentinel',
+        POSTGRES_PASSWORD: this.desktopPostgresPassword(),
       });
       await this.startPostgres();
       if (await this.databaseExists(dbName)) {
@@ -535,7 +537,7 @@ export class DesktopManager {
     }
     for (let i = 0; i < 60; i += 1) {
       try {
-        await execFileText(pgIsReady, ['-h', '127.0.0.1', '-p', String(this.ports!.postgres), '-U', 'sentinel'], {
+        await execFileText(pgIsReady, ['-h', '127.0.0.1', '-p', String(this.ports!.postgres), '-U', 'sentinel', '-d', 'postgres'], {
           env: this.postgresEnv(),
         });
         return;
@@ -727,6 +729,22 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
       RUNTIME_QEMU_RUN_ROOT: path.join(root, 'qemu-run'),
     };
     await writeEnvFile(instanceEnvPath(name), env);
+  }
+
+  private normalizeRestoredInstanceEnv(values: Record<string, string>): Record<string, string> {
+    const env = { ...values };
+    for (const key of Object.keys(env)) {
+      if (key.startsWith('RUNTIME_MULTIPASS_')) delete env[key];
+      if (key === 'RUNTIME_QEMU_BRIDGE_PORT' || key === 'RUNTIME_QEMU_BRIDGE_TOKEN' || key === 'RUNTIME_QEMU_BRIDGE_URL') delete env[key];
+    }
+    delete env.DATABASE_URL;
+    delete env.POSTGRES_USER;
+    delete env.POSTGRES_PASSWORD;
+    return env;
+  }
+
+  private desktopPostgresPassword(): string {
+    return 'sentinel';
   }
 
   private instancesRoot(): string {
