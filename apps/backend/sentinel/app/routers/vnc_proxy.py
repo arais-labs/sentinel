@@ -46,6 +46,13 @@ async def vnc_http_proxy(request: Request, session_id: str, path: str = "") -> R
         return Response(content="Runtime not found", status_code=404)
     port = _get_runtime_vnc_port(session_id)
 
+    if path == "websockify":
+        return Response(
+            content="VNC websocket endpoint requires a WebSocket upgrade",
+            status_code=426,
+            media_type="text/plain",
+        )
+
     if path == "package.json":
         payload = json.dumps({"name": "novnc-proxy", "version": "0.0.0"})
         return Response(content="" if request.method == "HEAD" else payload, status_code=200, media_type="application/json")
@@ -55,15 +62,23 @@ async def vnc_http_proxy(request: Request, session_id: str, path: str = "") -> R
     if qs:
         upstream += f"?{qs}"
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.request(
-            request.method,
-            upstream,
-            headers={"Host": f"{host}:{port}"},
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.request(
+                request.method,
+                upstream,
+                headers={"Host": f"{host}:{port}"},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("VNC HTTP proxy failed: session=%s path=%s upstream=%s error=%s", session_id, path, upstream, exc)
+        return Response(
+            content=f"VNC upstream unavailable for {path or 'vnc.html'}",
+            status_code=502,
+            media_type="text/plain",
         )
     # Strip headers that block iframe embedding or WebSocket connections
     headers = dict(resp.headers)
-    for h in ("x-frame-options", "content-security-policy", "content-length", "transfer-encoding"):
+    for h in ("x-frame-options", "content-security-policy", "content-length", "transfer-encoding", "server", "date"):
         headers.pop(h, None)
 
     return Response(
@@ -83,8 +98,12 @@ async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
         await websocket.close(code=4004, reason="Runtime container not found")
         return
 
-    # Accept without forcing a subprotocol — let the browser decide
-    await websocket.accept()
+    requested_protocols = [
+        protocol.strip()
+        for protocol in (websocket.headers.get("sec-websocket-protocol") or "").split(",")
+        if protocol.strip()
+    ]
+    await websocket.accept(subprotocol="binary" if "binary" in requested_protocols else None)
     logger.warning("VNC WS proxy: accepted client websocket")
 
     upstream_ws = None

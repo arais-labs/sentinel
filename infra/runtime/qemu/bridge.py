@@ -46,6 +46,27 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _launch_config(payload: dict) -> dict:
+    return {
+        "image_path": str(payload.get("image_path") or ""),
+        "ssh_port": int(payload.get("ssh_port") or 0),
+        "vnc_port": int(payload.get("vnc_port") or 0),
+        "cdp_port": int(payload.get("cdp_port") or 0),
+        "cpus": int(payload.get("cpus") or 0),
+        "memory_mb": int(payload.get("memory_mb") or 0),
+        "workspace_root": str(payload.get("workspace_root") or ""),
+        "share_tag": str(payload.get("share_tag") or ""),
+    }
+
+
+def _read_json_file(path: Path) -> dict | None:
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 class QemuBridgeHandler(BaseHTTPRequestHandler):
     server_version = "SentinelQemuBridge/1.0"
 
@@ -159,13 +180,33 @@ class QemuBridgeHandler(BaseHTTPRequestHandler):
         pid_file = run_root / "vm.pid"
         overlay = run_root / "runtime-overlay.qcow2"
         serial_log = run_root / "serial.log"
+        launch_config = run_root / "launch.json"
         if not pid_file.exists():
-            return {"running": False, "pid": None, "overlay_path": str(overlay), "serial_log": str(serial_log)}
+            return {
+                "running": False,
+                "pid": None,
+                "overlay_path": str(overlay),
+                "serial_log": str(serial_log),
+                "launch_config": str(launch_config),
+            }
         pid = int(pid_file.read_text().strip())
         if not _pid_alive(pid):
             pid_file.unlink(missing_ok=True)
-            return {"running": False, "pid": pid, "overlay_path": str(overlay), "serial_log": str(serial_log)}
-        return {"running": True, "pid": pid, "overlay_path": str(overlay), "serial_log": str(serial_log)}
+            return {
+                "running": False,
+                "pid": pid,
+                "overlay_path": str(overlay),
+                "serial_log": str(serial_log),
+                "launch_config": str(launch_config),
+            }
+        return {
+            "running": True,
+            "pid": pid,
+            "overlay_path": str(overlay),
+            "serial_log": str(serial_log),
+            "launch_config": str(launch_config),
+            "config": _read_json_file(launch_config),
+        }
 
     def _stop_vm(self, run_root: Path) -> None:
         pid_file = run_root / "vm.pid"
@@ -205,10 +246,15 @@ class QemuBridgeHandler(BaseHTTPRequestHandler):
         run_dir = Path(run_root)
         run_dir.mkdir(parents=True, exist_ok=True)
         Path(workspace_root).mkdir(parents=True, exist_ok=True)
+        requested_config = _launch_config(payload)
+        launch_config = run_dir / "launch.json"
 
         status = self._status(run_dir)
         if status.get("running"):
-            return {"ok": True, **status}
+            current_config = status.get("config")
+            if current_config == requested_config:
+                return {"ok": True, **status}
+            self._stop_vm(run_dir)
 
         image = Path(image_path)
         if not image.exists():
@@ -283,6 +329,7 @@ class QemuBridgeHandler(BaseHTTPRequestHandler):
                 start_new_session=True,
             )
         pid_file.write_text(str(process.pid))
+        launch_config.write_text(json.dumps(requested_config, ensure_ascii=True, indent=2, sort_keys=True))
         return {
             "ok": True,
             "running": True,

@@ -10,6 +10,8 @@ const __dirname = path.dirname(__filename);
 let mainWindow: BrowserWindow | undefined;
 const manager = new DesktopManager();
 let activeSentinelOrigin: string | undefined;
+let isQuitting = false;
+const singleInstanceLock = app.requestSingleInstanceLock();
 
 function rendererIndexPath(): string {
   return path.resolve(__dirname, '../../src/renderer/index.html');
@@ -20,7 +22,7 @@ function preloadPath(): string {
 }
 
 async function createWindow(): Promise<void> {
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1280,
     height: 860,
     minWidth: 980,
@@ -34,20 +36,31 @@ async function createWindow(): Promise<void> {
       sandbox: false,
     },
   });
+  mainWindow = window;
 
-  manager.onStatus((status) => mainWindow?.webContents.send(IPC.statusChanged, status));
-  manager.onLog((entry) => mainWindow?.webContents.send(IPC.logEntry, entry));
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  const sendToWindow = (channel: string, payload: unknown) => {
+    if (isQuitting || window.isDestroyed() || window.webContents.isDestroyed()) return;
+    window.webContents.send(channel, payload);
+  };
+  const unsubscribeStatus = manager.onStatus((status) => sendToWindow(IPC.statusChanged, status));
+  const unsubscribeLog = manager.onLog((entry) => sendToWindow(IPC.logEntry, entry));
+  window.once('closed', () => {
+    unsubscribeStatus();
+    unsubscribeLog();
+    if (mainWindow === window) mainWindow = undefined;
+  });
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
     if (isSentinelUrl(url)) return { action: 'allow' };
     void shell.openExternal(url);
     return { action: 'deny' };
   });
-  mainWindow.webContents.on('will-navigate', (event, url) => {
+  window.webContents.on('will-navigate', (event, url) => {
     if (isInternalAppUrl(url)) return;
     event.preventDefault();
     void shell.openExternal(url);
   });
-  await mainWindow.loadFile(rendererIndexPath());
+  await window.loadFile(rendererIndexPath());
 }
 
 async function showControlCenter(): Promise<void> {
@@ -151,33 +164,49 @@ function registerIpc(): void {
   ipcMain.handle(IPC.getLogs, () => manager.logs());
 }
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-app.on('before-quit', () => {
-  manager.shutdown();
-});
-
-app.whenReady()
-  .then(async () => {
-    registerIpc();
-    installMenu();
-    await createWindow();
-    void manager.initialize().catch((error) => {
-      const message = String(error?.stack || error);
-      console.error(message);
-      dialog.showErrorBox('Sentinel startup failed', message);
-    });
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        void createWindow();
-      }
-    });
-  })
-  .catch((error) => {
-    void shell.openExternal(`data:text/plain,${encodeURIComponent(String(error?.stack || error))}`);
-    app.quit();
+if (!singleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      void createWindow();
+      return;
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
   });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit();
+    }
+  });
+
+  app.on('before-quit', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    isQuitting = true;
+    void manager.shutdown().finally(() => app.exit(0));
+  });
+
+  app.whenReady()
+    .then(async () => {
+      registerIpc();
+      installMenu();
+      await createWindow();
+      void manager.initialize().catch((error) => {
+        const message = String(error?.stack || error);
+        console.error(message);
+        dialog.showErrorBox('Sentinel startup failed', message);
+      });
+      app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+          void createWindow();
+        }
+      });
+    })
+    .catch((error) => {
+      void shell.openExternal(`data:text/plain,${encodeURIComponent(String(error?.stack || error))}`);
+      app.quit();
+    });
+}

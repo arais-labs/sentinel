@@ -60,6 +60,8 @@ def test_runtime_live_view_payload(monkeypatch):
         assert payload["available"] is True
         assert "/vnc/" in payload["url"]
         assert _TEST_SESSION_ID in payload["url"]
+        assert "reconnect=1" in payload["url"]
+        assert "reconnect_delay=1000" in payload["url"]
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
@@ -162,26 +164,75 @@ def test_runtime_live_view_checks_provider_host(monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def _fake_connect(addr, timeout):
-        captured["addr"] = addr
-        captured["timeout"] = timeout
-
-        class _Sock:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-        return _Sock()
-
     monkeypatch.setattr("app.services.runtime.get_runtime", lambda: _Provider())
-    monkeypatch.setattr("socket.create_connection", _fake_connect)
 
     from app.services.runtime.runtime_live_view import is_runtime_available_for_session
+    import app.services.runtime.runtime_live_view as live_view
+
+    class _Response:
+        status = 200
+
+    class _Connection:
+        def __init__(self, host, port, timeout):
+            captured["host"] = host
+            captured["port"] = port
+            captured["timeout"] = timeout
+
+        def request(self, method, path):
+            captured["method"] = method
+            captured["path"] = path
+
+        def getresponse(self):
+            return _Response()
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(live_view, "HTTPConnection", _Connection)
 
     assert is_runtime_available_for_session(_TEST_SESSION_ID) is True
-    assert captured["addr"] == ("10.20.30.40", 16081)
+    assert captured["host"] == "10.20.30.40"
+    assert captured["port"] == 16081
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/vnc.html"
+    assert captured["closed"] is True
+
+
+def test_runtime_live_view_rejects_open_tcp_without_novnc_http(monkeypatch):
+    class _Provider:
+        def get_host(self, session_id):
+            assert session_id == _TEST_SESSION_ID
+            return "10.20.30.40"
+
+        def resolve_port(self, session_id, internal_port):
+            assert session_id == _TEST_SESSION_ID
+            assert internal_port == 6080
+            return 16081
+
+    monkeypatch.setattr("app.services.runtime.get_runtime", lambda: _Provider())
+
+    from app.services.runtime.runtime_live_view import is_runtime_available_for_session
+    import app.services.runtime.runtime_live_view as live_view
+
+    class _Response:
+        status = 503
+
+    class _Connection:
+        def __init__(self, host, port, timeout):
+            _ = host, port, timeout
+
+        def request(self, method, path):
+            _ = method, path
+
+        def getresponse(self):
+            return _Response()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(live_view, "HTTPConnection", _Connection)
+
+    assert is_runtime_available_for_session(_TEST_SESSION_ID) is False
 
 
 def test_runtime_instance_uses_client_field():

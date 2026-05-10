@@ -102,9 +102,38 @@ export class ProcessSupervisor extends EventEmitter {
     }, 5000).unref();
   }
 
-  stopAll(): void {
-    for (const name of Array.from(this.processes.keys()).reverse()) {
+  async stopAndWait(name: ServiceName, timeoutMs = 8000): Promise<void> {
+    const child = this.processes.get(name);
+    if (!child) {
+      const existing = this.services.get(name);
+      if (existing) {
+        this.setStatus({ ...existing, state: 'stopped', pid: undefined });
+      }
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      child.once('exit', finish);
+      child.once('error', finish);
       this.stop(name);
+      setTimeout(() => {
+        if (this.processes.get(name) === child) {
+          child.kill('SIGKILL');
+        }
+      }, Math.max(1000, timeoutMs - 1000)).unref();
+      setTimeout(finish, timeoutMs).unref();
+    });
+  }
+
+  async stopAll(): Promise<void> {
+    for (const name of Array.from(this.processes.keys()).reverse()) {
+      await this.stopAndWait(name);
     }
   }
 

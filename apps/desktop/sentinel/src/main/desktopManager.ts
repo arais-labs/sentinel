@@ -23,6 +23,11 @@ interface Ports {
   qemuCdp: number;
 }
 
+interface PostgresProcessInfo {
+  pid: number;
+  port: number;
+}
+
 const AUTH_USERNAME_KEY = 'sentinel.auth.username';
 const AUTH_PASSWORD_HASH_KEY = 'sentinel.auth.password_hash';
 const AUTH_PASSWORD_HASH_ROUNDS = 240_000;
@@ -199,14 +204,18 @@ export class DesktopManager {
   }
 
   async stopInstance(): Promise<DesktopStatus> {
+    const instance = this.activeInstance;
     await this.localServer.stop();
     this.supervisor.setVirtualStatus({
       name: 'frontend',
       state: 'stopped',
       exitedAt: new Date().toISOString(),
     });
-    this.supervisor.stop('backend');
-    this.supervisor.stop('qemuBridge');
+    await this.supervisor.stopAndWait('backend');
+    if (instance) {
+      await this.stopQemuVm(instance);
+    }
+    await this.supervisor.stopAndWait('qemuBridge');
     this.activeInstance = undefined;
     this.supervisor.appendManagerLog('Stopped active instance');
     return this.emitStatus();
@@ -372,9 +381,13 @@ export class DesktopManager {
     await shell.openPath(appSupportRoot());
   }
 
-  shutdown(): void {
-    void this.localServer.stop();
-    this.supervisor.stopAll();
+  async shutdown(): Promise<void> {
+    await this.localServer.stop();
+    if (this.activeInstance) {
+      await this.stopQemuVm(this.activeInstance);
+    }
+    await this.supervisor.stopAll();
+    await this.stopExistingPostgres();
   }
 
   private async startPostgres(): Promise<void> {
@@ -386,6 +399,20 @@ export class DesktopManager {
     if (!existsSync(path.join(dataDir, 'PG_VERSION'))) {
       await execFileText(initdbBin, ['-D', dataDir, '-U', 'sentinel', '--encoding=UTF8'], { env });
     }
+    const existingPostgres = await this.existingPostgresProcess();
+    if (existingPostgres !== undefined) {
+      this.ports!.postgres = existingPostgres.port;
+      this.supervisor.setVirtualStatus({
+        name: 'postgres',
+        state: 'running',
+        pid: existingPostgres.pid,
+        port: existingPostgres.port,
+        message: dataDir,
+        startedAt: new Date().toISOString(),
+      });
+      await this.waitForPostgres();
+      return;
+    }
     this.supervisor.start({
       name: 'postgres',
       command: postgresBin,
@@ -394,6 +421,49 @@ export class DesktopManager {
       port: this.ports!.postgres,
     });
     await this.waitForPostgres();
+  }
+
+  private async existingPostgresProcess(): Promise<PostgresProcessInfo | undefined> {
+    const pidPath = path.join(this.postgresDataDir(), 'postmaster.pid');
+    if (!existsSync(pidPath)) return undefined;
+    try {
+      const raw = await readFile(pidPath, 'utf8');
+      const lines = raw.split(/\r?\n/);
+      const [firstLine] = lines;
+      const pid = Number(firstLine);
+      if (!Number.isInteger(pid) || pid <= 0) return undefined;
+      process.kill(pid, 0);
+      const pidDataDir = lines[1]?.trim();
+      if (pidDataDir && path.resolve(pidDataDir) !== path.resolve(this.postgresDataDir())) {
+        return undefined;
+      }
+      const port = Number(lines[3]);
+      return {
+        pid,
+        port: Number.isInteger(port) && port > 0 ? port : this.ports!.postgres,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async stopExistingPostgres(): Promise<void> {
+    const info = await this.existingPostgresProcess();
+    if (info === undefined) return;
+    try {
+      process.kill(info.pid, 'SIGTERM');
+      for (let i = 0; i < 80; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        try {
+          process.kill(info.pid, 0);
+        } catch {
+          return;
+        }
+      }
+      process.kill(info.pid, 'SIGKILL');
+    } catch {
+      // Already stopped or not owned by this process.
+    }
   }
 
   private async startBackend(instance: string): Promise<void> {
@@ -424,6 +494,24 @@ export class DesktopManager {
       },
       port: this.ports!.qemuBridge,
     });
+  }
+
+  private async stopQemuVm(instance: string): Promise<void> {
+    if (!this.ports || !this.supervisor.isRunning('qemuBridge')) return;
+    const token = process.env.SENTINEL_DESKTOP_QEMU_BRIDGE_TOKEN || '';
+    if (!token) return;
+    try {
+      await fetch(`http://127.0.0.1:${this.ports.qemuBridge}/v1/qemu/stop`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Sentinel-Bridge-Token': token,
+        },
+        body: JSON.stringify({ run_root: path.join(instanceRoot(instance), 'qemu-run') }),
+      });
+    } catch (error) {
+      this.supervisor.appendManagerLog(`Could not stop QEMU VM for ${instance}: ${String((error as Error).message || error)}`);
+    }
   }
 
   private async backendEnv(instance: string): Promise<NodeJS.ProcessEnv> {
