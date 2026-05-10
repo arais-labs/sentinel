@@ -168,7 +168,6 @@ async def _resolve_runtime_provider_info(session_id: str) -> RuntimeProviderInfo
         provider_id = (settings.runtime_exec_backend or "runtime").strip() or "runtime"
         label = {
             "docker": "Docker",
-            "multipass": "Multipass",
             "qemu": "QEMU",
             "remote": "SSH",
         }.get(provider_id, provider_id.upper())

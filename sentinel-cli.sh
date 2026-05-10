@@ -201,8 +201,6 @@ instance_env_file() { echo "$INSTANCES_DIR/${1}/.env"; }
 instance_project_name() { echo "sentinel-${1}"; }
 instance_backup_dir() { echo "$INSTANCES_DIR/${1}/backups"; }
 instance_workspaces_dir() { echo "$INSTANCES_DIR/${1}/workspaces"; }
-instance_bridge_pid_file() { echo "$(instance_dir "$1")/multipass-bridge.pid"; }
-instance_bridge_log_file() { echo "$(instance_dir "$1")/multipass-bridge.log"; }
 instance_qemu_bridge_pid_file() { echo "$(instance_dir "$1")/qemu-bridge.pid"; }
 instance_qemu_bridge_log_file() { echo "$(instance_dir "$1")/qemu-bridge.log"; }
 instance_qemu_run_dir() { echo "$(instance_dir "$1")/qemu-run"; }
@@ -249,88 +247,6 @@ ensure_instance_structure() {
   mkdir -p "$(instance_workspaces_dir "$inst")"
 }
 
-multipass_is_ready() {
-  require_cmd multipass || return 1
-  multipass version >/dev/null 2>&1
-}
-
-print_multipass_manual_install_hint() {
-  local os_name="$1"
-  warn "Multipass could not be installed automatically."
-  case "$os_name" in
-    macos)
-      printf "Install it manually from Canonical's installer, then return and run Instance Config again.\n"
-      ;;
-    windows)
-      printf "Install it manually from Canonical's installer or a supported package manager, then return and run Instance Config again.\n"
-      ;;
-    linux)
-      printf "Install it manually following the official Multipass instructions, then return and run Instance Config again.\n"
-      ;;
-    *)
-      printf "Install Multipass manually, then return and run Instance Config again.\n"
-      ;;
-  esac
-  printf "Docs: https://documentation.ubuntu.com/multipass/latest/how-to-guides/install-multipass/\n"
-}
-
-attempt_multipass_install() {
-  local os_name="$1"
-  echo -n "$CURSOR_ON"
-  case "$os_name" in
-    macos)
-      if require_cmd brew; then
-        brew install --cask multipass
-      else
-        return 1
-      fi
-      ;;
-    windows)
-      if require_cmd winget; then
-        winget install -e --id Canonical.Multipass
-      else
-        return 1
-      fi
-      ;;
-    linux)
-      if require_cmd snap; then
-        sudo snap install multipass
-      else
-        return 1
-      fi
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-ensure_multipass_available_interactive() {
-  if multipass_is_ready; then
-    return 0
-  fi
-
-  local os_name
-  os_name="$(host_os)"
-  warn "Multipass is not currently available on this machine."
-  read -r -p "Attempt to install Multipass now? [y/N]: " confirm < /dev/tty
-  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    print_multipass_manual_install_hint "$os_name"
-    echo -n "$CURSOR_OFF"
-    return 1
-  fi
-
-  if attempt_multipass_install "$os_name" && multipass_is_ready; then
-    success "Multipass is installed and ready."
-    echo -n "$CURSOR_OFF"
-    return 0
-  fi
-
-  print_multipass_manual_install_hint "$os_name"
-  echo -n "$CURSOR_OFF"
-  return 1
-}
-
 current_instance_backend() {
   local inst="$1"
   local value
@@ -338,32 +254,33 @@ current_instance_backend() {
   echo "${value:-docker}"
 }
 
+is_supported_runtime_backend() {
+  case "${1:-docker}" in
+    docker|qemu|remote) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 backend_label() {
   case "${1:-docker}" in
     docker) echo "Docker" ;;
-    multipass) echo "Multipass" ;;
     qemu) echo "QEMU" ;;
     remote) echo "Custom SSH" ;;
-    *) echo "$1" ;;
+    *) echo "Unsupported ($1)" ;;
   esac
 }
 
-default_multipass_mount_mode() {
-  case "$(host_os)" in
-    windows) echo "transfer" ;;
-    *) echo "mount" ;;
-  esac
-}
-
-default_multipass_image_path() {
-  local arch image_dir candidate
-  arch="$(uname -m)"
-  image_dir="$ROOT_DIR/infra/multipass"
-  candidate="$image_dir/sentinel-runtime-base-${arch}.img"
-  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
-  candidate="$image_dir/sentinel-runtime-base.img"
-  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
-  echo ""
+ensure_supported_runtime_backend() {
+  local inst="$1"
+  local backend ef
+  backend="$(current_instance_backend "$inst")"
+  if is_supported_runtime_backend "$backend"; then
+    return 0
+  fi
+  ef="$(instance_env_file "$inst")"
+  error "Unsupported RUNTIME_EXEC_BACKEND='$backend' in $ef."
+  warn "Edit the instance runtime backend to one of: docker, qemu, remote."
+  return 1
 }
 
 default_qemu_image_path() {
@@ -388,23 +305,6 @@ default_qemu_key_path() {
   echo ""
 }
 
-default_multipass_bridge_port() {
-  local inst="$1"
-  local ef stack_port
-  ef="$(instance_env_file "$inst")"
-  stack_port="$(read_env_value "$ef" "STACK_PORT" || echo 4747)"
-  if [[ "$stack_port" =~ ^[0-9]+$ ]]; then
-    local port=$((stack_port + 40000))
-    if (( port > 65535 )); then
-      echo 47480
-      return 0
-    fi
-    echo "$port"
-    return 0
-  fi
-  echo 47480
-}
-
 default_qemu_bridge_port() {
   local inst="$1"
   local ef stack_port
@@ -422,19 +322,6 @@ default_qemu_bridge_port() {
   echo 47481
 }
 
-ensure_multipass_bridge_settings() {
-  local inst="$1"
-  local ef token port
-  ef="$(instance_env_file "$inst")"
-  token="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_TOKEN" || true)"
-  port="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_PORT" || true)"
-  [[ -z "$token" ]] && token="$(generate_secret 24)"
-  [[ -z "$port" ]] && port="$(default_multipass_bridge_port "$inst")"
-  upsert_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_TOKEN" "$token"
-  upsert_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_PORT" "$port"
-  upsert_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_URL" "http://host.docker.internal:${port}"
-}
-
 ensure_qemu_bridge_settings() {
   local inst="$1"
   local ef token port
@@ -448,16 +335,6 @@ ensure_qemu_bridge_settings() {
   upsert_env_value "$ef" "RUNTIME_QEMU_BRIDGE_URL" "http://host.docker.internal:${port}"
 }
 
-is_multipass_bridge_healthy() {
-  local inst="$1"
-  local ef token port
-  ef="$(instance_env_file "$inst")"
-  token="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_TOKEN" || true)"
-  port="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_PORT" || true)"
-  [[ -z "$token" || -z "$port" ]] && return 1
-  curl -fsS -H "X-Sentinel-Bridge-Token: $token" "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1
-}
-
 is_qemu_bridge_healthy() {
   local inst="$1"
   local ef token port
@@ -466,56 +343,6 @@ is_qemu_bridge_healthy() {
   port="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_PORT" || true)"
   [[ -z "$token" || -z "$port" ]] && return 1
   curl -fsS -H "X-Sentinel-Bridge-Token: $token" "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1
-}
-
-ensure_multipass_bridge_running() {
-  local inst="$1"
-  ensure_multipass_bridge_settings "$inst"
-  if is_multipass_bridge_healthy "$inst"; then
-    return 0
-  fi
-
-  local ef token port pid_file log_file
-  ef="$(instance_env_file "$inst")"
-  token="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_TOKEN" || true)"
-  port="$(read_env_value "$ef" "RUNTIME_MULTIPASS_BRIDGE_PORT" || true)"
-  pid_file="$(instance_bridge_pid_file "$inst")"
-  log_file="$(instance_bridge_log_file "$inst")"
-
-  mkdir -p "$(dirname "$pid_file")"
-  if [[ -f "$pid_file" ]]; then
-    local existing_pid
-    existing_pid="$(cat "$pid_file" 2>/dev/null || true)"
-    if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
-      if is_multipass_bridge_healthy "$inst"; then
-        return 0
-      fi
-      kill "$existing_pid" >/dev/null 2>&1 || true
-    fi
-    rm -f "$pid_file"
-  fi
-
-  if ! require_cmd python3; then
-    error "python3 is required to run the Multipass bridge."
-    return 1
-  fi
-
-  nohup python3 "$ROOT_DIR/scripts/multipass_bridge.py" \
-    --port "$port" \
-    --token "$token" \
-    >"$log_file" 2>&1 &
-  echo $! > "$pid_file"
-
-  for _ in {1..20}; do
-    if is_multipass_bridge_healthy "$inst"; then
-      success "Multipass bridge is running for '$inst' on port $port."
-      return 0
-    fi
-    sleep 0.25
-  done
-
-  error "Multipass bridge failed to start for '$inst'."
-  return 1
 }
 
 ensure_qemu_bridge_running() {
@@ -570,19 +397,6 @@ ensure_qemu_bridge_running() {
 
   error "QEMU bridge failed to start for '$inst'."
   return 1
-}
-
-stop_multipass_bridge() {
-  local inst="$1"
-  local pid_file
-  pid_file="$(instance_bridge_pid_file "$inst")"
-  [[ -f "$pid_file" ]] || return 0
-  local pid
-  pid="$(cat "$pid_file" 2>/dev/null || true)"
-  if [[ "$pid" =~ ^[0-9]+$ ]]; then
-    kill "$pid" >/dev/null 2>&1 || true
-  fi
-  rm -f "$pid_file"
 }
 
 stop_qemu_bridge() {
@@ -953,12 +767,10 @@ action_up() {
   [[ -z "$inst" ]] && return 0
 
   info "${ICON_START} Launching '$inst'${mode_label:+ (${mode_label})}..."
-  if [[ "$(current_instance_backend "$inst")" == "multipass" ]]; then
-    if ! ensure_multipass_bridge_running "$inst"; then
-      error "Cannot start '$inst' without a healthy Multipass bridge."
-      return 0
-    fi
-  elif [[ "$(current_instance_backend "$inst")" == "qemu" ]]; then
+  if ! ensure_supported_runtime_backend "$inst"; then
+    return 0
+  fi
+  if [[ "$(current_instance_backend "$inst")" == "qemu" ]]; then
     if ! ensure_qemu_bridge_running "$inst"; then
       error "Cannot start '$inst' without a healthy QEMU bridge."
       return 0
@@ -1097,7 +909,6 @@ action_instance_runtime_backend() {
   current_backend="$(current_instance_backend "$inst")"
   local options=(
     "Docker"
-    "Multipass"
     "QEMU"
     "Custom SSH"
     "⬅️  Back"
@@ -1118,24 +929,6 @@ action_instance_runtime_backend() {
         set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Docker${RESET} for runtimes."
         ;;
       1)
-        if ensure_multipass_available_interactive; then
-          local image_path
-          image_path="$(default_multipass_image_path)"
-          upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "multipass"
-          if [[ -n "$image_path" ]]; then
-            upsert_env_value "$ef" "RUNTIME_MULTIPASS_IMAGE" "$image_path"
-          fi
-          upsert_env_value "$ef" "RUNTIME_MULTIPASS_WORKSPACE_ROOT" "$(instance_workspaces_dir "$inst")"
-          upsert_env_value "$ef" "RUNTIME_MULTIPASS_MOUNT_MODE" "$(read_env_value "$ef" "RUNTIME_MULTIPASS_MOUNT_MODE" || default_multipass_mount_mode)"
-          invalidate_status_cache
-          if [[ -n "$image_path" ]]; then
-            set_menu_note "${GREEN}${inst}${RESET} now prefers ${BOLD}Multipass${RESET} with baked image ${BOLD}$(basename "$image_path")${RESET}."
-          else
-            set_menu_note "${GREEN}${inst}${RESET} now prefers ${BOLD}Multipass${RESET} for runtimes."
-          fi
-        fi
-        ;;
-      2)
         local qemu_image_path qemu_key_path
         qemu_image_path="$(default_qemu_image_path)"
         qemu_key_path="$(default_qemu_key_path)"
@@ -1152,7 +945,7 @@ action_instance_runtime_backend() {
           set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}QEMU${RESET} with baked image ${BOLD}$(basename "$qemu_image_path")${RESET}."
         fi
         ;;
-      3)
+      2)
         echo -n "$CURSOR_ON"
         local remote_host remote_port remote_user remote_key remote_workspace
         remote_host="$(prompt_default "Remote SSH Host" "$(read_env_value "$ef" "RUNTIME_SSH_HOST" || echo localhost)")"
@@ -1176,7 +969,7 @@ action_instance_runtime_backend() {
           set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Custom SSH${RESET} for runtimes."
         fi
         ;;
-      4)
+      3)
         return 0
         ;;
     esac
@@ -1260,7 +1053,6 @@ action_down() {
   
   info "${ICON_STOP} Stopping '$inst'..."
   if compose_instance "$inst" down; then
-    stop_multipass_bridge "$inst"
     stop_qemu_bridge "$inst"
     success "Stopped."
     invalidate_status_cache
@@ -1572,7 +1364,6 @@ action_delete() {
     if docker info >/dev/null 2>&1; then
       compose_instance "$inst" down -v --remove-orphans || true
     fi
-    stop_multipass_bridge "$inst"
     stop_qemu_bridge "$inst"
     rm -rf "$(instance_dir "$inst")"
     success "Deleted."

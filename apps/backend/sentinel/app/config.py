@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     session_auto_rename_context_messages: int = 24
     session_auto_rename_model_tier: str = "fast"
     # --- Runtime Execution ---
-    runtime_exec_backend: str = "docker"  # "docker", "multipass", "qemu", or "remote"
+    runtime_exec_backend: str = "docker"  # "docker", "qemu", or "remote"
     # Docker runtime
     runtime_image: str = "sentinel-runtime"
     runtime_docker_network: str = "sentinel_default"
@@ -109,15 +109,6 @@ class Settings(BaseSettings):
     runtime_cpu_limit: float = 2.0
     runtime_ssh_key_dir: str = "/data/runtime/ssh"
     runtime_workspaces_host_dir: str = "/data/runtime/workspaces"
-    # Multipass runtime
-    runtime_multipass_image: str | None = None
-    runtime_multipass_cpus: str | None = None
-    runtime_multipass_memory: str | None = None
-    runtime_multipass_disk: str | None = None
-    runtime_multipass_workspace_root: str | None = None
-    runtime_multipass_mount_mode: str = "mount"
-    runtime_multipass_bridge_url: str = "http://host.docker.internal:47480"
-    runtime_multipass_bridge_token: str | None = None
     # QEMU runtime
     runtime_qemu_image: str | None = None
     runtime_qemu_ssh_key_path: str | None = None

@@ -267,7 +267,7 @@ def test_serialize_forward_uses_runtime_published_host_port(monkeypatch):
 def test_serialize_forward_uses_provider_public_host(monkeypatch):
     runtime_session_id = uuid.uuid4()
     record = RuntimeForwardRecord(
-        forward_id="forward-multipass",
+        forward_id="forward-runtime",
         runtime_session_id=str(runtime_session_id),
         created_session_id=None,
         target_host="127.0.0.1",
