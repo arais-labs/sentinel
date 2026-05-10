@@ -630,6 +630,31 @@ ensure_instance_postgres_ready() {
   return 0
 }
 
+ensure_instance_ready_for_backup() {
+  local inst="$1"
+  if ensure_instance_postgres_ready "$inst"; then
+    return 0
+  fi
+
+  warn "Instance '$inst' is not running, so backup cannot read Postgres."
+  local confirm
+  printf "%s" "$CURSOR_ON" >&2
+  read -r -p "Start '$inst' now and continue backup? [y/N]: " confirm < /dev/tty
+  printf "%s" "$CURSOR_OFF" >&2
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      info "Backup aborted."
+      set_menu_note "${DIM}Backup aborted for ${inst}.${RESET}"
+      return 1
+      ;;
+  esac
+
+  action_up "$inst" >/dev/tty
+  load_instance_db_credentials "$inst" || return 1
+  ensure_instance_postgres_ready "$inst"
+}
+
 get_instance_backups() {
   local inst="$1"
   local dir
@@ -1380,7 +1405,7 @@ action_db_backup_create() {
   [[ -z "$inst" ]] && return 0
 
   load_instance_db_credentials "$inst" || return 0
-  ensure_instance_postgres_ready "$inst" || return 0
+  ensure_instance_ready_for_backup "$inst" || return 0
 
   local backup_dir ts backup_file temp_file tmp_dir checksum
   backup_dir="$(instance_backup_dir "$inst")"
