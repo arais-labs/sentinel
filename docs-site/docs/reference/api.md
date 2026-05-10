@@ -8,7 +8,7 @@ title: Module API Reference
 Agent module/control-plane interaction happens through this REST API.
 
 :::tip Start here
-Always begin with `GET /api/agent`. It returns the full guide for the current instance: modules, endpoints, permission rules, and usage context.
+Use `GET /api/modules` to discover the current module catalog and `GET /api/permissions` to inspect action policy.
 :::
 
 ---
@@ -24,8 +24,6 @@ Module/control-plane routes use the active Sentinel session cookie.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/agent` | Full instance guide with module capabilities |
-| `GET` | `/api/manifest` | Machine readable manifest |
 | `GET` | `/api/permissions` | List all permission actions and levels |
 | `GET` | `/api/approvals` | List approvals. Optional filter: `?status=pending|approved|rejected` |
 | `POST` | `/api/approvals` | Create approval record |
@@ -83,7 +81,6 @@ Returns `202` when approval is required, `200` with result when executed.
 | Module registry | `/api/modules` |
 | Module records | `/api/modules/{name}/records` |
 | Module actions | `/api/modules/{name}/action/{action_id}` |
-| Settings | `/api/settings` |
 
 ---
 

@@ -166,9 +166,6 @@ POST   /api/modules/import
 Related module/control-plane routes remain mounted under `/api`:
 
 - `/api/permissions`
-- `/api/settings`
-- `/api/manifest`
-- `/api/agent`
 
 ## Frontend
 

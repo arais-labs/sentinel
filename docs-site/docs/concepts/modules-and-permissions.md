@@ -86,21 +86,22 @@ Built-in task management shared between agents and operators:
 
 ## Discovering what is available
 
-Always start with:
+Start by discovering modules and permissions:
 
 ```
-GET /api/agent
+GET /api/modules
+GET /api/permissions
 ```
 
-This returns the full guide for the current instance: available modules, registered actions, permission rules, and usage notes. Agents call this first when entering an unfamiliar instance.
+`GET /api/modules` returns native and database-backed modules with their fields and actions. `GET /api/permissions` returns the effective policy for module actions.
 
 ---
 
 ## Key endpoints
 
 ```
-GET  /api/agent                          # Full instance guide — call this first
 GET  /api/modules                        # List all modules
+GET  /api/permissions                    # List effective module action policy
 GET  /api/modules/:name/records          # List records for a module, for example /api/modules/tasks/records
 POST /api/modules/:name/records          # Create a record in a DB-backed data module. Body is field JSON, for example {"title":"Follow up","status":"todo"}
 POST /api/modules/:name/action/:id       # Invoke a tool module action
