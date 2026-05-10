@@ -43,7 +43,7 @@ jobs:
         run: |
           cd apps/backend/sentinel
           python -m compileall app tests
-          python -m pytest tests/test_auth_flow.py tests/test_validation.py tests/test_memory.py tests/test_tools.py tests/test_onboarding.py tests/test_playwright.py -q
+          python -m pytest tests/test_auth_flow.py tests/test_validation.py tests/test_memory.py tests/test_tools.py tests/test_onboarding.py tests/test_playwright_runtime.py -q
 
   frontend-build:
     name: Frontend Build
