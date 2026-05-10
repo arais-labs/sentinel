@@ -418,6 +418,10 @@ export class DesktopManager {
       name: 'qemuBridge',
       command: python,
       args: [path.join(qemuResourcePath(), 'bridge.py'), '--host', '127.0.0.1', '--port', String(this.ports!.qemuBridge), '--token', token],
+      env: {
+        ...process.env,
+        PATH: commandSearchPath(),
+      },
       port: this.ports!.qemuBridge,
     });
   }
