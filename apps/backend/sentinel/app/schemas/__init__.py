@@ -2,7 +2,6 @@ from app.schemas.admin import (
     AuditLogListResponse,
     AuditLogResponse,
     ConfigResponse,
-    UpdateConfigRequest,
 )
 from app.schemas.auth import RefreshRequest, TokenPairResponse
 from app.schemas.compaction import CompactionResponse
@@ -76,6 +75,5 @@ __all__ = [
     "TriggerLogListResponse",
     "TriggerLogResponse",
     "TriggerResponse",
-    "UpdateConfigRequest",
     "UpdateTriggerRequest",
 ]

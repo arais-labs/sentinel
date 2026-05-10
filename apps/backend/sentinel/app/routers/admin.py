@@ -10,7 +10,7 @@ from app.config import settings
 from app.dependencies import get_db
 from app.middleware.auth import TokenPayload, require_admin
 from app.models import AuditLog
-from app.schemas.admin import AuditLogListResponse, AuditLogResponse, ConfigResponse, UpdateConfigRequest
+from app.schemas.admin import AuditLogListResponse, AuditLogResponse, ConfigResponse
 
 router = APIRouter()
 
@@ -57,29 +57,6 @@ async def get_config(
     user: TokenPayload = Depends(require_admin),
 ) -> ConfigResponse:
     _ = user
-    return ConfigResponse(
-        app_name=settings.app_name,
-        app_env=settings.app_env,
-        jwt_algorithm=settings.jwt_algorithm,
-        access_token_ttl_seconds=settings.access_token_ttl_seconds,
-        refresh_token_ttl_seconds=settings.refresh_token_ttl_seconds,
-        context_token_budget=settings.context_token_budget,
-        jwt_secret_key="***",
-    )
-
-
-@router.patch("/config")
-async def update_config(
-    payload: UpdateConfigRequest,
-    user: TokenPayload = Depends(require_admin),
-) -> ConfigResponse:
-    _ = user
-    if payload.access_token_ttl_seconds is not None:
-        settings.access_token_ttl_seconds = payload.access_token_ttl_seconds
-    if payload.refresh_token_ttl_seconds is not None:
-        settings.refresh_token_ttl_seconds = payload.refresh_token_ttl_seconds
-    if payload.context_token_budget is not None:
-        settings.context_token_budget = payload.context_token_budget
     return ConfigResponse(
         app_name=settings.app_name,
         app_env=settings.app_env,

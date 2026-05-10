@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class AuditLogResponse(BaseModel):
@@ -31,9 +31,3 @@ class ConfigResponse(BaseModel):
     refresh_token_ttl_seconds: int
     context_token_budget: int
     jwt_secret_key: str = "***"
-
-
-class UpdateConfigRequest(BaseModel):
-    access_token_ttl_seconds: int | None = Field(default=None, ge=1)
-    refresh_token_ttl_seconds: int | None = Field(default=None, ge=1)
-    context_token_budget: int | None = Field(default=None, ge=1)
