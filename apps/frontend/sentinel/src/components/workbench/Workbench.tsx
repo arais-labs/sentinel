@@ -12,7 +12,7 @@ import type {
   SessionRuntimeFileEntry, 
   SessionRuntimeGitDiffResponse 
 } from '../../types/api';
-import { DiffViewer } from './DiffViewer';
+import { DiffViewer, type DiffViewMode } from './DiffViewer';
 import { WorkbenchExplorerPane, type WorkbenchRepoChangesSection } from './WorkbenchExplorerPane';
 import { Markdown } from '../ui/Markdown';
 
@@ -92,6 +92,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   className = '',
 }) => {
   const [explorerVisible, setExplorerVisible] = useState(showExplorer);
+  const [diffViewMode, setDiffViewMode] = useState<DiffViewMode>('unified');
   
   const activeTab = tabs.find(t => t.path === activeTabPath) || tabs[0] || null;
 
@@ -251,6 +252,30 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                         <option key={ref} value={ref}>{ref}</option>
                       ))}
                     </select>
+                    <div className="flex items-center gap-1 rounded-lg border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)]">
+                      <button
+                        type="button"
+                        onClick={() => setDiffViewMode('unified')}
+                        className={`px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${
+                          diffViewMode === 'unified'
+                            ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)] shadow-sm'
+                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
+                        }`}
+                      >
+                        Unified
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDiffViewMode('split')}
+                        className={`px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${
+                          diffViewMode === 'split'
+                            ? 'bg-[color:var(--surface-0)] text-[color:var(--text-primary)] shadow-sm'
+                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
+                        }`}
+                      >
+                        Split
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -261,8 +286,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                 </div>
               </div>
 
-              {/* Viewer */}
-              <div className="flex-1 overflow-auto p-4 relative">
+              <div className="flex-1 min-h-0 relative">
                 {diffMode ? (
                   diffLoading ? (
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[color:var(--surface-0)]/50 backdrop-blur-[1px] z-10">
@@ -270,18 +294,18 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                       <span className="text-[11px] font-medium text-[color:var(--text-secondary)]">Loading Git Diff...</span>
                     </div>
                   ) : diffError ? (
-                    <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-6 text-center">
+                    <div className="m-4 rounded-xl border border-rose-500/30 bg-rose-500/5 p-6 text-center">
                       <p className="text-rose-500 text-[11px] font-medium">{diffError}</p>
-                      <button 
-                        onClick={() => setDiffMode(true)} 
+                      <button
+                        onClick={() => setDiffMode(true)}
                         className="mt-4 px-4 py-2 rounded-lg bg-rose-500/10 text-rose-500 text-[10px] font-bold uppercase tracking-widest hover:bg-rose-500/20 transition-all"
                       >
                         Retry Load
                       </button>
                     </div>
                   ) : diffContent ? (
-                    <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                      <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                    <div className="h-full flex flex-col animate-in fade-in slide-in-from-top-2 duration-300">
+                      <div className="px-4 py-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40">
                         <div className="flex items-center gap-2">
                           <GitBranch size={12} />
                           <span>Root: {diffContent.git_root || '.'}</span>
@@ -293,7 +317,9 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                           <span>{diffContent.max_bytes / 1024}KB Limit</span>
                         </div>
                       </div>
-                      <DiffViewer diff={diffContent.diff} />
+                      <div className="flex-1 min-h-0 overflow-auto">
+                        <DiffViewer diff={diffContent.diff} viewMode={diffViewMode} />
+                      </div>
                     </div>
                   ) : (
                     <div className="flex flex-col items-center justify-center h-full text-[color:var(--text-muted)] opacity-50">
@@ -302,7 +328,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                     </div>
                   )
                 ) : (
-                  <div className="animate-in fade-in duration-300 h-full">
+                  <div className="animate-in fade-in duration-300 h-full overflow-auto p-4">
                     <Markdown
                       content={toMarkdownCodeFence(
                         activeTab.content || '[empty file]',

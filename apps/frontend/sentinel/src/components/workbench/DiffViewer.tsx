@@ -1,114 +1,62 @@
-import React, { useMemo } from 'react';
-import { Minus, Plus } from 'lucide-react';
+import React from 'react';
+
+// `<diffs-container>` is registered transitively via PatchDiff →
+// useFileDiffInstance → components/FileDiff.js → components/web-components.js.
+// The package's `exports` field doesn't expose web-components.js, so no
+// explicit side-effect import is possible (or needed).
+import { PatchDiff } from '@pierre/diffs/react';
+
+export type DiffViewMode = 'unified' | 'split';
 
 interface DiffViewerProps {
   diff: string;
+  viewMode?: DiffViewMode;
   className?: string;
 }
 
-interface DiffLine {
-  type: 'addition' | 'deletion' | 'context' | 'header' | 'hunk';
-  content: string;
-  leftLineNumber?: number;
-  rightLineNumber?: number;
-}
-
-export const DiffViewer: React.FC<DiffViewerProps> = ({ diff, className = '' }) => {
-  const lines = useMemo(() => {
-    const allLines = diff.split('\n');
-    const processedLines: DiffLine[] = [];
-    let leftLine = 0;
-    let rightLine = 0;
-
-    allLines.forEach((line) => {
-      if (line.startsWith('---') || line.startsWith('+++')) {
-        processedLines.push({ type: 'header', content: line });
-      } else if (line.startsWith('@@')) {
-        processedLines.push({ type: 'hunk', content: line });
-        // Parse hunk header: @@ -1,4 +1,5 @@
-        const match = line.match(/@@ -(\d+),?\d* \+(\d+),?\d* @@/);
-        if (match) {
-          leftLine = parseInt(match[1], 10) - 1;
-          rightLine = parseInt(match[2], 10) - 1;
-        }
-      } else if (line.startsWith('+')) {
-        rightLine++;
-        processedLines.push({
-          type: 'addition',
-          content: line.slice(1),
-          rightLineNumber: rightLine,
-        });
-      } else if (line.startsWith('-')) {
-        leftLine++;
-        processedLines.push({
-          type: 'deletion',
-          content: line.slice(1),
-          leftLineNumber: leftLine,
-        });
-      } else {
-        leftLine++;
-        rightLine++;
-        processedLines.push({
-          type: 'context',
-          content: line.startsWith(' ') ? line.slice(1) : line,
-          leftLineNumber: leftLine,
-          rightLineNumber: rightLine,
-        });
-      }
-    });
-
-    return processedLines;
-  }, [diff]);
+export const DiffViewer: React.FC<DiffViewerProps> = ({
+  diff,
+  viewMode = 'unified',
+  className = '',
+}) => {
+  if (!diff || !diff.trim()) {
+    return (
+      <div className={`p-8 text-center text-[10px] uppercase tracking-widest text-[color:var(--text-muted)] ${className}`}>
+        No diff content to display.
+      </div>
+    );
+  }
 
   return (
-    <div className={`font-mono text-[12px] leading-relaxed overflow-auto bg-[color:var(--surface-0)] ${className}`}>
-      <table className="w-full border-collapse">
-        <tbody>
-          {lines.map((line, i) => {
-            let bgColor = '';
-            let textColor = 'text-[color:var(--text-secondary)]';
-            let marker = null;
-
-            if (line.type === 'addition') {
-              bgColor = 'bg-emerald-500/10 dark:bg-emerald-500/15';
-              textColor = 'text-emerald-600 dark:text-emerald-400';
-              marker = <Plus size={10} className="mt-1" />;
-            } else if (line.type === 'deletion') {
-              bgColor = 'bg-rose-500/10 dark:bg-rose-500/15';
-              textColor = 'text-rose-600 dark:text-rose-400';
-              marker = <Minus size={10} className="mt-1" />;
-            } else if (line.type === 'hunk') {
-              bgColor = 'bg-sky-500/5 dark:bg-sky-500/10';
-              textColor = 'text-sky-500/70';
-            } else if (line.type === 'header') {
-              bgColor = 'bg-[color:var(--surface-2)]';
-              textColor = 'text-[color:var(--text-muted)] font-bold';
-            }
-
-            return (
-              <tr key={i} className={`${bgColor} transition-colors hover:bg-white/5`}>
-                <td className="w-10 select-none border-r border-[color:var(--border-subtle)] px-2 text-right text-[10px] text-[color:var(--text-muted)] opacity-50">
-                  {line.leftLineNumber || ''}
-                </td>
-                <td className="w-10 select-none border-r border-[color:var(--border-subtle)] px-2 text-right text-[10px] text-[color:var(--text-muted)] opacity-50">
-                  {line.rightLineNumber || ''}
-                </td>
-                <td className="w-4 px-1 text-center opacity-50">
-                  {marker}
-                </td>
-                <td className={`whitespace-pre px-2 py-0.5 ${textColor}`}>
-                  {line.content}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {lines.length === 0 && (
-        <div className="p-8 text-center text-[color:var(--text-muted)] italic">
-          No diff content to display.
-        </div>
-      )}
+    <div
+      className={`pierre-diff-host h-full w-full ${className}`}
+      style={
+        {
+          '--diffs-light-bg': '#ffffff',
+          '--diffs-dark-bg': '#0b0d10',
+          '--diffs-light': '#1f2937',
+          '--diffs-dark': '#e5e7eb',
+          '--diffs-added-light': '#10b981',
+          '--diffs-added-dark': '#34d399',
+          '--diffs-deleted-light': '#f43f5e',
+          '--diffs-deleted-dark': '#fb7185',
+          '--diffs-modified-light': '#0ea5e9',
+          '--diffs-modified-dark': '#38bdf8',
+          '--diffs-font-family':
+            'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+          '--diffs-font-size': '12px',
+          '--diffs-line-height': '18px',
+        } as React.CSSProperties
+      }
+    >
+      <PatchDiff
+        patch={diff}
+        options={{
+          // Header is rendered by the Workbench toolbar.
+          disableFileHeader: true,
+          diffStyle: viewMode,
+        }}
+      />
     </div>
   );
 };
