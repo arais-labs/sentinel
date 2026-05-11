@@ -88,6 +88,30 @@ class AgentRunRegistry:
                 await self.clear(session_id, task)
         return True
 
+    async def cancel_all(self, *, timeout_seconds: float = 3.0) -> int:
+        """Cancel every active agent run and wait for them with a hard deadline.
+
+        Used by the FastAPI lifespan `finally` so an in-flight stream can't
+        wedge the whole reload. Returns the count of runs that were live at
+        cancel time. Any task that ignores cancellation past the deadline is
+        abandoned to process exit — acceptable because nothing on disk depends
+        on a clean turn boundary, and the next process owns a fresh registry.
+        """
+        async with self._lock:
+            live = [task for task in self._tasks.values() if not task.done()]
+        if not live:
+            return 0
+        for task in live:
+            task.cancel("server shutting down")
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*live, return_exceptions=True),
+                timeout=max(0.1, float(timeout_seconds)),
+            )
+        except asyncio.TimeoutError:
+            pass
+        return len(live)
+
     async def is_running(self, session_id: str) -> bool:
         async with self._lock:
             task = self._tasks.get(session_id)

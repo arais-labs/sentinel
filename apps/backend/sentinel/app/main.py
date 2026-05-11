@@ -1,7 +1,9 @@
 import asyncio
 import logging
 from collections import defaultdict, deque
+from collections.abc import Awaitable
 from contextlib import asynccontextmanager
+from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -44,7 +46,7 @@ from app.routers import (
     webhooks,
 )
 from app.routers.araios import api_router as araios_api_router
-from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter, runtime_event_to_sentinel_event
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.araios.runtime_services import configure_runtime_services
@@ -53,6 +55,11 @@ from app.services.llm.factory import build_tier_provider_from_settings
 from app.services.llm.ids import TierName
 from app.services.memory.backfill import run_memory_embedding_backfill
 from app.services.memory.search import MemorySearchService
+from app.services.runtime.terminal_manager import (
+    configure_terminal_completion_handler,
+    configure_terminal_event_broadcaster,
+    get_terminal_manager,
+)
 from app.services.runtime.session_runtime import (
     configure_runtime_job_completion_callback,
     run_session_runtime_janitor,
@@ -179,9 +186,21 @@ async def lifespan(app: FastAPI):
     available_tools = {tool.name for tool in registry.list_all()}
     ws_manager = ConnectionManager()
     run_registry = AgentRunRegistry()
+    # Let the TerminalManager broadcast terminal_opened/closed/busy events to
+    # any subscribers of a chat session's WS stream.
+    configure_terminal_event_broadcaster(ws_manager.broadcast)
     wakeup_pending: dict[str, deque[str]] = defaultdict(deque)
     wakeup_workers: set[str] = set()
     wakeup_lock = asyncio.Lock()
+    # Live handles for every spawned drainer. Tracking them lets the lifespan
+    # finally cancel any in-flight wakeup loop deterministically instead of
+    # letting uvicorn wait on orphaned tasks. Entries self-evict.
+    wakeup_drainer_tasks: set[asyncio.Task[None]] = set()
+
+    def _spawn_wakeup_drainer(session_id: object) -> None:
+        task = asyncio.create_task(_drain_main_agent_wakeups(session_id))
+        wakeup_drainer_tasks.add(task)
+        task.add_done_callback(wakeup_drainer_tasks.discard)
 
     provider = build_tier_provider_from_settings(settings)
     app.state.tool_registry = registry
@@ -299,7 +318,7 @@ async def lifespan(app: FastAPI):
                 wakeup_workers.add(session_key)
                 should_start_worker = True
         if should_start_worker:
-            asyncio.create_task(_drain_main_agent_wakeups(session_id))
+            _spawn_wakeup_drainer(session_id)
 
     async def _drain_main_agent_wakeups(session_id: object) -> None:
         session_key = str(session_id)
@@ -332,7 +351,7 @@ async def lifespan(app: FastAPI):
                 if should_restart:
                     wakeup_workers.add(session_key)
             if should_restart:
-                asyncio.create_task(_drain_main_agent_wakeups(session_id))
+                _spawn_wakeup_drainer(session_id)
 
     def _runtime_job_report_text(
         job: dict[str, object],
@@ -403,6 +422,12 @@ async def lifespan(app: FastAPI):
 
     run_registry.configure_idle_interjections_callback(_resume_pending_runtime_job_updates)
     configure_runtime_job_completion_callback(_handle_runtime_job_completed)
+    # Same hook reused for the new tmux-backed background runs: completion of
+    # a `runtime.user(background=true)` lands in `_handle_runtime_job_completed`,
+    # which queues an interjection + wakeup so the agent gets a fresh turn
+    # with the result. There is no separate notification channel for
+    # background runs — they share the runtime-job completion path.
+    configure_terminal_completion_handler(_handle_runtime_job_completed)
 
     async def _broadcast_sub_agent_completed(task) -> None:
         await ws_manager.broadcast_sub_agent_completed(
@@ -459,8 +484,9 @@ async def lifespan(app: FastAPI):
             available_tools=available_tools,
             memory_search_service=memory_search_service,
         )
-        tool_adapter = ToolAdapter(registry, executor, session_factory=AsyncSessionLocal)
-        app.state.agent_runtime_support = SentinelRuntimeSupport(provider, context_builder, tool_adapter)
+        app.state.agent_runtime_support = SentinelRuntimeSupport(
+            provider, context_builder, registry, executor,
+        )
         app.state.sub_agent_orchestrator = SubAgentOrchestrator(
             agent_runtime_support=app.state.agent_runtime_support,
             db_factory=AsyncSessionLocal,
@@ -492,19 +518,61 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Every await below is bounded. Cooperative tasks finish in well under
+        # a second; the caps only matter when something legitimately wedges
+        # (playwright.stop hanging on a dead CDP session, an asyncssh poll
+        # not honouring cancellation fast enough, etc.). Without bounds, a
+        # single stuck await pegs the whole uvicorn --reload cycle.
+        async def _bounded(name: str, coro: Awaitable[Any], timeout: float) -> None:
+            try:
+                await asyncio.wait_for(coro, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning("shutdown step %r exceeded %.1fs deadline; abandoning", name, timeout)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.warning("shutdown step %r raised", name, exc_info=True)
+
         configure_runtime_job_completion_callback(None)
+        configure_terminal_completion_handler(None)
         run_registry.configure_idle_interjections_callback(None)
         stop_event.set()
-        await cleanup_task
-        await runtime_janitor_task
+
+        # 1. Cancel any in-flight chat turns first so their streaming work
+        #    doesn't hold open downstream resources (provider HTTP, asyncssh).
+        cancelled_runs = await run_registry.cancel_all(timeout_seconds=3.0)
+        if cancelled_runs:
+            logger.info("shutdown: cancelled %d active agent run(s)", cancelled_runs)
+
+        # 2. Stop background terminal watchers so their asyncssh polls die.
+        await _bounded("terminal_manager.shutdown",
+                       get_terminal_manager().shutdown(timeout=3.0),
+                       timeout=4.0)
+
+        # 3. Cancel any pending wakeup drainers — they only do small work but
+        #    can be mid-await on a generation that we just cancelled above.
+        if wakeup_drainer_tasks:
+            for task in list(wakeup_drainer_tasks):
+                task.cancel()
+            await _bounded(
+                "wakeup_drainers",
+                asyncio.gather(*list(wakeup_drainer_tasks), return_exceptions=True),
+                timeout=2.0,
+            )
+
+        # 4. Cooperative loops (all use stop_event); bound just in case.
+        await _bounded("rate_limit_cleanup", cleanup_task, timeout=2.0)
+        await _bounded("runtime_janitor", runtime_janitor_task, timeout=2.0)
         if embedding_backfill_task is not None:
-            await embedding_backfill_task
+            await _bounded("embedding_backfill", embedding_backfill_task, timeout=2.0)
         if scheduler_task is not None:
-            await scheduler_task
+            await _bounded("trigger_scheduler", scheduler_task, timeout=3.0)
+
+        # 5. External resources — these are the historical hang sources.
         from app.services.telegram import stop_telegram_bridge
 
-        await stop_telegram_bridge(app.state)
-        await browser_pool.close_all()
+        await _bounded("telegram_bridge", stop_telegram_bridge(app.state), timeout=3.0)
+        await _bounded("browser_pool", browser_pool.close_all(), timeout=5.0)
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
