@@ -15,6 +15,7 @@ import {
   X,
   Trash2,
   Terminal,
+  Folder,
   Globe,
   ExternalLink,
   Zap,
@@ -36,6 +37,8 @@ import { AppShell } from '../components/AppShell';
 import { SessionMessageCard, buildToolArgumentsByCallId, ToolPayloadView, ToolPayloadCompactSummary } from '../components/session/SessionMessageCard';
 import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
 import { DesktopPreview } from '../components/session/DesktopPreview';
+import { TerminalPreview } from '../components/session/TerminalPreview';
+import { getTerminalLabel, summarizeCommand } from '../lib/terminalIdentity';
 import { SubAgentTaskModal } from '../components/SubAgentTaskModal';
 import { SpawnSubAgentModal } from '../components/SpawnSubAgentModal';
 import { Markdown } from '../components/ui/Markdown';
@@ -159,7 +162,25 @@ interface SessionDebugEvent {
   summary: string;
 }
 
-type RightRailTab = 'desktop' | 'sub_agents' | 'runtime' | 'sessions' | 'debug';
+// Top-level right-rail tabs. `runtime` is a composite tab that contains
+// three sub-views (Desktop / Terminals / Files) selected via an inner
+// segmented control — see `RuntimeView` below. The previous flat enum
+// (desktop / terminals / runtime / …) collapsed those three siblings into
+// one parent so the rail stays under three primary tabs.
+type RightRailTab = 'runtime' | 'sub_agents' | 'sessions' | 'debug';
+type RuntimeView = 'desktop' | 'terminals' | 'files';
+
+interface ActiveTerminal {
+  id: string;
+  /** Backend-supplied label, used only as a fallback for auto-allocated terminals. */
+  label: string | null;
+  createdBy: 'agent' | 'user';
+  createdAt: number;
+  auto: boolean;
+  busy: boolean;
+  /** Most recent command run in this terminal (for tooltip + rail header). */
+  lastCommand: string | null;
+}
 
 function buildRuntimeDiffBaseRefOptions(
   roots: SessionRuntimeGitRoot[],
@@ -370,11 +391,13 @@ function StreamToolCard({
   active,
   onResolveApproval,
   resolvingApprovalKey,
+  onOpenTerminal,
 }: {
   call: StreamingToolCall;
   active: boolean;
   onResolveApproval: (approval: ApprovalRef, decision: 'approve' | 'reject') => void;
   resolvingApprovalKey: string | null;
+  onOpenTerminal?: (terminalId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const isScreenshotCall = call.name.toLowerCase().includes('screenshot');
@@ -383,6 +406,13 @@ function StreamToolCard({
   const canResolveApproval = pendingApproval && approvalRef?.canResolve === true;
   const approvalLinkMissing = pendingApproval && !approvalRef;
   const approvalActionBusy = approvalRef ? resolvingApprovalKey === approvalKey(approvalRef) : false;
+  // When the runtime tool result carries a terminal id, surface a chip in the
+  // card header so the user can jump from "what did the agent run?" to "let
+  // me see/control that terminal" in one click.
+  const terminalIdFromMetadata =
+    typeof call.metadata?.terminal_id === 'string' && call.metadata.terminal_id.length > 0
+      ? (call.metadata.terminal_id as string)
+      : null;
 
   useEffect(() => {
     if (pendingApproval) setExpanded(true);
@@ -430,6 +460,20 @@ function StreamToolCard({
                     Action Required
                   </span>
                 )}
+                {terminalIdFromMetadata && onOpenTerminal ? (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenTerminal(terminalIdFromMetadata);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-sky-300 hover:bg-sky-500/20 transition-colors"
+                    title={`Open terminal ${terminalIdFromMetadata}`}
+                  >
+                    <Terminal size={9} />
+                    T:{terminalIdFromMetadata}
+                  </button>
+                ) : null}
               </div>
             </div>
           </div>
@@ -589,7 +633,69 @@ export function SessionsPage() {
 
   const [tasks, setTasks] = useState<SubAgentTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [rightRailTab, setRightRailTab] = useState<RightRailTab>('desktop');
+  const [rightRailTab, setRightRailTab] = useState<RightRailTab>('runtime');
+  // Selected sub-view inside the Runtime tab. Defaults to Desktop (the most
+  // recognizable "what is the agent doing" surface). Auto-promoted to
+  // `terminals` the first time a terminal opens — see the terminal_opened
+  // WS handler below for the rule.
+  const [runtimeView, setRuntimeView] = useState<RuntimeView>('desktop');
+  // Tracks the moment the user last manually picked a runtimeView. Used to
+  // suppress auto-focus when the user has just expressed an intent — we
+  // don't want the agent's activity stealing focus a half-second later.
+  const lastRuntimeViewIntentRef = useRef<number>(0);
+  // Refs to the three runtime sub-tab buttons + the strip container, so the
+  // sliding indicator can size to the *actual* active button instead of a
+  // calc'd third. When the rail is narrow and a button's content (icon +
+  // label + badge) overflows its grid cell, the cell-based indicator falls
+  // out of alignment — measuring offsetLeft/offsetWidth dodges that whole
+  // class of bug.
+  const runtimeTabRefs = useRef<Record<RuntimeView, HTMLButtonElement | null>>({
+    desktop: null,
+    terminals: null,
+    files: null,
+  });
+  const runtimeStripRef = useRef<HTMLDivElement | null>(null);
+  const [runtimeIndicator, setRuntimeIndicator] = useState<{ left: number; width: number } | null>(null);
+  // Centralised predicates so every conditional in the file reads the same
+  // way and a future rename only touches one line. The Runtime tab is a
+  // composite, so individual sub-views are gated on both rightRailTab AND
+  // runtimeView.
+  const isRuntimeTab = rightRailTab === 'runtime';
+  const showDesktopView = isRuntimeTab && runtimeView === 'desktop';
+  const showTerminalsView = isRuntimeTab && runtimeView === 'terminals';
+  const showFilesView = isRuntimeTab && runtimeView === 'files';
+  // Pills above the chat composer surface every tmux-backed terminal the
+  // agent (or the user) has opened in the current chat session. State is
+  // driven by `terminal_opened/closed/busy` WS events plus the initial
+  // `connected` payload that lists already-live terminals on page load.
+  const [activeTerminals, setActiveTerminals] = useState<ActiveTerminal[]>([]);
+  const [focusedTerminalId, setFocusedTerminalId] = useState<string | null>(null);
+
+  // Position the runtime-tabs sliding indicator under the active button.
+  // useLayoutEffect runs before paint, so the indicator never flashes at the
+  // wrong width. We re-measure on view change, on badge changes (since they
+  // mutate button widths), and on rail resize via ResizeObserver below.
+  useLayoutEffect(() => {
+    if (!isRuntimeTab) return;
+    const active = runtimeTabRefs.current[runtimeView];
+    if (!active) return;
+    setRuntimeIndicator({ left: active.offsetLeft, width: active.offsetWidth });
+  }, [isRuntimeTab, runtimeView, activeTerminals.length]);
+
+  useEffect(() => {
+    const strip = runtimeStripRef.current;
+    if (!strip || !isRuntimeTab) return;
+    // Strip width changes when the user resizes the right rail. Reread the
+    // active button's box and reapply. ResizeObserver fires once on attach
+    // too, so this also handles the initial mount cleanly.
+    const observer = new ResizeObserver(() => {
+      const active = runtimeTabRefs.current[runtimeView];
+      if (!active) return;
+      setRuntimeIndicator({ left: active.offsetLeft, width: active.offsetWidth });
+    });
+    observer.observe(strip);
+    return () => observer.disconnect();
+  }, [isRuntimeTab, runtimeView]);
   const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
   const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
 
@@ -680,7 +786,7 @@ export function SessionsPage() {
   const [resetMenuOpen, setResetMenuOpen] = useState(false);
   const resetMenuRef = useRef<HTMLDivElement>(null);
   const [isDesktopFullscreen, setIsDesktopFullscreen] = useState(false);
-  const [rightPanelWidth, setRightPanelWidth] = useState(340);
+  const [rightPanelWidth, setRightPanelWidth] = useState(400);
   const [isResizing, setIsResizing] = useState(false);
 
   useEffect(() => {
@@ -739,7 +845,7 @@ export function SessionsPage() {
 
   const handleDesktopFrameLoad = useCallback(() => {
     if (!shouldRestoreComposerFocusRef.current) return;
-    if (rightRailTab !== 'desktop' || isDesktopFullscreen) return;
+    if (!showDesktopView || isDesktopFullscreen) return;
 
     composerFocusTimerRefs.current.forEach((timer) => window.clearTimeout(timer));
     composerFocusTimerRefs.current = [];
@@ -763,7 +869,7 @@ export function SessionsPage() {
       const timer = window.setTimeout(restoreFocus, delay);
       composerFocusTimerRefs.current.push(timer);
     });
-  }, [isDesktopFullscreen, rightRailTab]);
+  }, [isDesktopFullscreen, showDesktopView]);
 
   const streamBusy =
     streaming.isThinking ||
@@ -827,10 +933,13 @@ export function SessionsPage() {
   );
   const rightRailTabs = useMemo<Array<{ id: RightRailTab; label: string }>>(
     () => {
+      // Three primary tabs: Runtime (composite — Desktop/Terminals/Files),
+      // Agents (sub-agent tasks), Sessions (history). The previous five-tab
+      // strip is unflattened here: Desktop/Terminal/Files moved into the
+      // Runtime sub-segmented control rendered below the tab strip.
       const tabs: Array<{ id: RightRailTab; label: string }> = [
-        { id: 'desktop', label: 'Desktop' },
+        { id: 'runtime', label: 'Runtime' },
         { id: 'sub_agents', label: 'Agents' },
-        { id: 'runtime', label: 'Files' },
         { id: 'sessions', label: 'Sessions' },
       ];
       if (SESSION_DEBUG_PANEL_ENABLED) {
@@ -1091,7 +1200,7 @@ export function SessionsPage() {
   }, [activeSessionId]);
 
   useEffect(() => {
-    if (!activeSessionId || rightRailTab !== 'desktop') return;
+    if (!activeSessionId || !showDesktopView) return;
     if (!runtimeBooting && liveView?.enabled && liveView.available) return;
 
     let cancelled = false;
@@ -1109,7 +1218,7 @@ export function SessionsPage() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [activeSessionId, rightRailTab, runtimeBooting, liveView?.enabled, liveView?.available]);
+  }, [activeSessionId, showDesktopView, runtimeBooting, liveView?.enabled, liveView?.available]);
 
   // Poll sessions every 30s to pick up unread changes
   useEffect(() => {
@@ -1174,6 +1283,8 @@ export function SessionsPage() {
     setWorkbenchDiffBaseRefByPath({});
     setWorkbenchGitRootsByPath({});
     setStreaming(defaultStreamingState);
+    setActiveTerminals([]);
+    setFocusedTerminalId(null);
     setHasMoreMessages(false);
     oldestServerMessageIdRef.current = null;
     loadingOlderRef.current = false;
@@ -1204,15 +1315,15 @@ export function SessionsPage() {
   }, [activeSessionId, hasActiveSubAgentTasks]);
 
   useEffect(() => {
-    if (!activeSessionId || rightRailTab !== 'runtime') return;
+    if (!activeSessionId || !showFilesView) return;
     void fetchRuntimeFiles(activeSessionId, runtimePath, {
       refreshGit: true,
       silent: false,
     });
-  }, [activeSessionId, rightRailTab]);
+  }, [activeSessionId, showFilesView]);
 
   useEffect(() => {
-    if (!activeSessionId || rightRailTab !== 'runtime') return;
+    if (!activeSessionId || !showFilesView) return;
     if (streaming.connection !== 'connected') return;
     const timer = window.setInterval(() => {
       void fetchRuntimeFiles(activeSessionId, runtimePath, {
@@ -1223,7 +1334,7 @@ export function SessionsPage() {
     return () => {
       window.clearInterval(timer);
     };
-  }, [activeSessionId, rightRailTab, runtimePath, streaming.connection]);
+  }, [activeSessionId, showFilesView, runtimePath, streaming.connection]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -1709,7 +1820,7 @@ export function SessionsPage() {
       if (sessionId !== activeSessionIdRef.current) return;
       setRuntimeFiles(payload);
       setRuntimePath(payload.path || '');
-      if (options?.refreshGit ?? rightRailTab === 'runtime') {
+      if (options?.refreshGit ?? showFilesView) {
         Object.keys(runtimeRepoChangesByRoot).forEach((rootPath) => {
           void fetchRuntimeChangedFilesForRepo(sessionId, rootPath);
         });
@@ -2334,7 +2445,89 @@ export function SessionsPage() {
           oldestServerMessageIdRef.current = next.length > 0 ? next[0].id : null;
           return next;
         });
+        if (Array.isArray(event.terminals)) {
+          // Initial pill population: server may have terminals alive across a
+          // reload or backend restart. We replace state entirely rather than
+          // merge so stale terminals from the previous session don't linger.
+          const incomingTerminals = event.terminals
+            .map((raw) => {
+              if (!raw || typeof raw !== 'object') return null;
+              const value = raw as Record<string, unknown>;
+              const id = typeof value.terminal_id === 'string' ? value.terminal_id : null;
+              if (!id) return null;
+              return {
+                id,
+                label: typeof value.label === 'string' ? value.label : null,
+                createdBy: value.created_by === 'user' ? 'user' : 'agent',
+                createdAt: typeof value.created_at === 'number' ? value.created_at : Date.now() / 1000,
+                auto: Boolean(value.auto),
+                busy: false,
+                lastCommand: typeof value.last_command === 'string' ? value.last_command : null,
+              } as ActiveTerminal;
+            })
+            .filter((item): item is ActiveTerminal => item !== null);
+          setActiveTerminals(incomingTerminals);
+        }
         break;
+      case 'terminal_opened': {
+        const id = typeof event.terminal_id === 'string' ? event.terminal_id : null;
+        if (!id) break;
+        const label = typeof event.label === 'string' ? event.label : null;
+        const createdBy = event.created_by === 'user' ? 'user' : 'agent';
+        const auto = Boolean(event.auto);
+        // Capture "was the pill row empty before this event?" before we mutate
+        // it. We auto-focus the Terminals sub-view only on the FIRST terminal
+        // of a session, so the user isn't yanked off Files/Desktop every time
+        // the agent spins up another shell.
+        let wasFirstTerminal = false;
+        setActiveTerminals((current) => {
+          if (current.some((t) => t.id === id)) {
+            return current.map((t) => (t.id === id ? { ...t, label: t.label || label } : t));
+          }
+          wasFirstTerminal = current.length === 0;
+          return [
+            ...current,
+            { id, label, createdBy, createdAt: Date.now() / 1000, auto, busy: false, lastCommand: null },
+          ];
+        });
+        // Auto-focus rule: only flip to the Terminals sub-view if we're
+        // already on the Runtime tab AND this is the first terminal AND the
+        // user hasn't manually picked a sub-view in the last 4s. Anything
+        // else would be surprise UI motion. Cross-tab activity (Agents /
+        // Sessions) never steals focus.
+        if (
+          wasFirstTerminal
+          && rightRailTab === 'runtime'
+          && Date.now() - lastRuntimeViewIntentRef.current > 4_000
+        ) {
+          setRuntimeView('terminals');
+        }
+        break;
+      }
+      case 'terminal_closed': {
+        const id = typeof event.terminal_id === 'string' ? event.terminal_id : null;
+        if (!id) break;
+        setActiveTerminals((current) => current.filter((t) => t.id !== id));
+        setFocusedTerminalId((current) => (current === id ? null : current));
+        break;
+      }
+      case 'terminal_busy': {
+        const id = typeof event.terminal_id === 'string' ? event.terminal_id : null;
+        if (!id) break;
+        const busy = Boolean(event.busy);
+        // The same event carries the most-recent command/cwd whenever the
+        // backend has them — that's how the pill tooltip + rail header stay
+        // in sync with what the terminal is actually doing.
+        const lastCommand = typeof event.last_command === 'string' ? event.last_command : undefined;
+        setActiveTerminals((current) =>
+          current.map((t) =>
+            t.id === id
+              ? { ...t, busy, lastCommand: lastCommand !== undefined ? lastCommand : t.lastCommand }
+              : t,
+          ),
+        );
+        break;
+      }
       case 'message_ack':
         setMessages((current) => {
           const messageId = (event.message_id as string | undefined)?.trim();
@@ -2580,7 +2773,7 @@ export function SessionsPage() {
             toolNameForRefresh === 'python' ||
             toolNameForRefresh === 'git'
           ) {
-            if (rightRailTab === 'runtime') {
+            if (showFilesView) {
               void fetchRuntimeFiles(sessionId, runtimePath);
             }
           }
@@ -2844,6 +3037,35 @@ export function SessionsPage() {
       toast.error('Failed to stop');
     }
     finally { setIsStopping(false); }
+  }
+
+  // Switch to the Runtime tab and pick a sub-view in one call. Used by
+  // anything that wants to focus a specific runtime surface — terminal
+  // pill clicks, "Open terminal" links inside tool cards, the segmented
+  // control buttons themselves. Recording the intent timestamp lets the
+  // auto-focus rule (see terminal_opened WS handler) know to back off
+  // when the user has just steered the view manually.
+  function openRuntimeView(view: RuntimeView) {
+    lastRuntimeViewIntentRef.current = Date.now();
+    setRightRailTab('runtime');
+    setRuntimeView(view);
+  }
+
+  // Optimistically drops the pill so the UI reacts immediately, then asks the
+  // backend to kill the tmux session. The authoritative `terminal_closed` WS
+  // event will also fire and is idempotent against the optimistic update.
+  async function closeTerminal(terminalId: string) {
+    if (!activeSessionId) return;
+    if (terminalId === '0') return; // protected by both ends, but belt-and-braces
+    setActiveTerminals((current) => current.filter((t) => t.id !== terminalId));
+    setFocusedTerminalId((current) => (current === terminalId ? null : current));
+    try {
+      await api.delete(
+        `/sessions/${activeSessionId}/terminals/${encodeURIComponent(terminalId)}`,
+      );
+    } catch {
+      toast.error(`Failed to close ${terminalId}`);
+    }
   }
 
   async function compactContext() {
@@ -3289,6 +3511,10 @@ export function SessionsPage() {
                           active={activeToolCallKeys.has(item.callKey)}
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
+                          onOpenTerminal={(tid) => {
+                            openRuntimeView('terminals');
+                            setFocusedTerminalId(tid);
+                          }}
                         />
                       );
                     })}
@@ -3302,6 +3528,10 @@ export function SessionsPage() {
                           active={false}
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
+                          onOpenTerminal={(tid) => {
+                            openRuntimeView('terminals');
+                            setFocusedTerminalId(tid);
+                          }}
                         />
                       ))}
                     {streaming.activeToolCalls
@@ -3313,6 +3543,10 @@ export function SessionsPage() {
                           active={true}
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
+                          onOpenTerminal={(tid) => {
+                            openRuntimeView('terminals');
+                            setFocusedTerminalId(tid);
+                          }}
                         />
                       ))}
 
@@ -3345,19 +3579,92 @@ export function SessionsPage() {
                         </div>
                     )}
 
-                    {streaming.agentIteration > 0 || streaming.isThinking || streaming.isStreaming || streaming.activeToolCalls.length > 0 ? (
-                      <div className="sticky bottom-2 z-20 flex justify-center pointer-events-none">
-                        <button
-                          type="button"
-                          onClick={stopCurrent}
-                          disabled={isStopping}
-                          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-rose-500/40 bg-[color:var(--surface-0)]/90 backdrop-blur px-4 h-9 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500 hover:text-white transition-all active:scale-95 shadow-xl disabled:opacity-50"
-                        >
-                          <Square size={12} fill="currentColor" />
-                          {isStopping ? 'Stopping...' : 'Stop Execution'}
-                        </button>
-                      </div>
-                    ) : null}
+                    {(() => {
+                      // Single sticky cluster: terminal pills stack on top,
+                      // Stop button sits just under them (closer to the composer
+                      // so it's the easier target when interrupting). When Stop
+                      // isn't visible the pills sit at the same `bottom-2`
+                      // anchor — no floating gap above the composer.
+                      const stopVisible =
+                        streaming.agentIteration > 0
+                        || streaming.isThinking
+                        || streaming.isStreaming
+                        || streaming.activeToolCalls.length > 0;
+                      if (!stopVisible && activeTerminals.length === 0) return null;
+                      return (
+                        <div className="sticky bottom-2 z-20 flex flex-col items-center gap-1.5 pointer-events-none px-2">
+                          {activeTerminals.length > 0 ? (
+                            <div className="flex flex-wrap items-center justify-center gap-1.5">
+                              {activeTerminals.map((terminal) => {
+                                const isFocused = focusedTerminalId === terminal.id && showTerminalsView;
+                                // Label is derived from terminal_id: '0' → "main",
+                                // 'auto-xxx' / 'bg-…' → first command summary, anything
+                                // else → the agent's chosen name verbatim. Stable
+                                // across backend restarts.
+                                const display = getTerminalLabel(terminal.id, terminal.lastCommand ?? terminal.label);
+                                const tooltip = terminal.lastCommand
+                                  ? `${display} — last: ${summarizeCommand(terminal.lastCommand)}`
+                                  : display;
+                                // Terminal '0' is the user's primary shared
+                                // shell — never offer to close it. Everything
+                                // else gets an ✕ on hover.
+                                const closable = terminal.id !== '0';
+                                const focusedClasses = isFocused
+                                  ? 'border-sky-500 bg-sky-500/20 text-sky-300'
+                                  : 'border-sky-500/30 bg-[color:var(--surface-0)]/90 text-sky-500 hover:bg-sky-500 hover:text-white';
+                                return (
+                                  <div
+                                    key={terminal.id}
+                                    className={`group pointer-events-auto inline-flex items-stretch rounded-full border backdrop-blur transition-all ${focusedClasses}`}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        openRuntimeView('terminals');
+                                        setFocusedTerminalId(terminal.id);
+                                      }}
+                                      className={`inline-flex items-center gap-1.5 ${closable ? 'pl-3 pr-2' : 'px-3'} h-7 text-[10px] font-bold uppercase tracking-wider active:scale-95`}
+                                      title={tooltip}
+                                    >
+                                      <Terminal size={11} />
+                                      <span className="max-w-[140px] truncate normal-case tracking-normal font-medium">
+                                        {display}
+                                      </span>
+                                      {terminal.busy ? <Loader2 size={9} className="animate-spin" /> : null}
+                                    </button>
+                                    {closable ? (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          void closeTerminal(terminal.id);
+                                        }}
+                                        className="inline-flex items-center justify-center pr-2.5 pl-1 h-7 opacity-60 hover:opacity-100 active:scale-90 rounded-r-full"
+                                        title={`Close ${display}`}
+                                        aria-label={`Close terminal ${display}`}
+                                      >
+                                        <X size={11} />
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                          {stopVisible ? (
+                            <button
+                              type="button"
+                              onClick={stopCurrent}
+                              disabled={isStopping}
+                              className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-rose-500/40 bg-[color:var(--surface-0)]/90 backdrop-blur px-4 h-9 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500 hover:text-white transition-all active:scale-95 shadow-xl disabled:opacity-50"
+                            >
+                              <Square size={12} fill="currentColor" />
+                              {isStopping ? 'Stopping...' : 'Stop Execution'}
+                            </button>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
 
                     {!isPinnedToBottom && (
                       <div className="sticky bottom-4 z-20 flex justify-end pointer-events-none px-4">
@@ -3454,7 +3761,13 @@ export function SessionsPage() {
             </div>
           </main>
 
-          {workbenchVisible ? (
+          {workbenchVisible && !isDesktopFullscreen ? (
+            // While the desktop fullscreen overlay is up, the Workbench panel
+            // would otherwise sit on top of it (its `relative z-30` ends up in
+            // a different stacking context than DesktopPreview's `fixed
+            // z-[1000]`, so the simple z compare doesn't win). Unmounting it
+            // for the duration of the fullscreen state is cleaner than
+            // wrestling with stacking contexts and avoids paint thrash.
             <>
               <div
                 className="order-4 relative hidden xl:block w-0 shrink-0"
@@ -3596,7 +3909,68 @@ export function SessionsPage() {
               </div>
             </div>
 
-            {rightRailTab === 'desktop' ? (
+            {/* Runtime sub-segmented control: Desktop / Terminals / Files.
+                Only rendered when the Runtime tab is active. Matches the
+                primary tab strip's pill styling so the two reads as a
+                hierarchy without screaming for attention. */}
+            {isRuntimeTab ? (
+              <div className="px-3 pb-2">
+                {/* Flex (not grid) layout: each pill sizes to content, so a
+                    label + icon + badge never overflow its cell. The sliding
+                    indicator is positioned by measured offsetLeft/Width via
+                    a useLayoutEffect above — that's what keeps it locked to
+                    the active button regardless of rail width or badge count.
+                    Buttons get `flex-1 min-w-0` so they share remaining
+                    space evenly when the strip is wider than the natural
+                    content; on narrow widths they shrink toward content. */}
+                <div
+                  ref={runtimeStripRef}
+                  className="relative flex items-stretch gap-1 rounded-full border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-2)]"
+                >
+                  {runtimeIndicator ? (
+                    <div
+                      aria-hidden
+                      className="pointer-events-none absolute top-1 bottom-1 rounded-full bg-[color:var(--surface-0)] shadow-sm transition-[left,width] duration-300 ease-out"
+                      style={{ left: runtimeIndicator.left, width: runtimeIndicator.width }}
+                    />
+                  ) : null}
+                  {([
+                    { id: 'desktop' as const, label: 'Desktop', Icon: Globe },
+                    { id: 'terminals' as const, label: 'Terminals', Icon: Terminal },
+                    { id: 'files' as const, label: 'Files', Icon: Folder },
+                  ]).map(({ id, label, Icon }) => {
+                    const active = runtimeView === id;
+                    const badge = id === 'terminals' && activeTerminals.length > 0
+                      ? activeTerminals.length
+                      : null;
+                    return (
+                      <button
+                        key={id}
+                        ref={(el) => { runtimeTabRefs.current[id] = el; }}
+                        type="button"
+                        onClick={() => openRuntimeView(id)}
+                        className={`relative z-10 flex-1 min-w-0 inline-flex items-center justify-center gap-1.5 h-7 px-2.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
+                          active
+                            ? 'text-[color:var(--text-primary)]'
+                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
+                        }`}
+                        title={label}
+                      >
+                        <Icon size={11} className="shrink-0" />
+                        <span className="truncate">{label}</span>
+                        {badge !== null ? (
+                          <span className="shrink-0 inline-flex items-center justify-center min-w-[16px] h-[15px] px-1 rounded-full bg-sky-500/20 text-sky-300 text-[9px] font-bold tracking-normal leading-none">
+                            {badge}
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {showDesktopView ? (
               <div className="flex-1 min-h-0 flex flex-col">
                 <div className={`relative flex items-center justify-between p-3 border-b border-[color:var(--border-subtle)] ${
                   isDesktopFullscreen ? 'z-10' : 'z-[110]'
@@ -3791,6 +4165,68 @@ export function SessionsPage() {
               </div>
             ) : null}
 
+            {showTerminalsView ? (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="relative flex items-center justify-between p-3 border-b border-[color:var(--border-subtle)] gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Terminal size={15} className="text-sky-500 shrink-0" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">
+                      Terminals
+                    </span>
+                  </div>
+                  {activeTerminals.length > 1 ? (
+                    <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar">
+                      {activeTerminals.map((terminal) => {
+                        const display = getTerminalLabel(terminal.id, terminal.lastCommand ?? terminal.label);
+                        const isFocused = (focusedTerminalId ?? activeTerminals[0]?.id) === terminal.id;
+                        return (
+                          <button
+                            key={terminal.id}
+                            type="button"
+                            onClick={() => setFocusedTerminalId(terminal.id)}
+                            className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2 h-6 text-[10px] font-medium transition-colors ${
+                              isFocused
+                                ? 'bg-sky-500/20 text-sky-300'
+                                : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                            }`}
+                            title={display}
+                          >
+                            <span className="max-w-[120px] truncate">{display}</span>
+                            {terminal.busy ? <Loader2 size={9} className="animate-spin" /> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="flex-1 min-h-0">
+                  {activeSessionId && (focusedTerminalId ?? activeTerminals[0]?.id) ? (
+                    // Keyed on the (session, terminal) pair so React tears down
+                    // and re-creates the xterm + WS when the user switches tabs;
+                    // sharing state across terminals would mix scrollback.
+                    <TerminalPreview
+                      key={`${activeSessionId}:${focusedTerminalId ?? activeTerminals[0].id}`}
+                      sessionId={activeSessionId}
+                      terminalId={focusedTerminalId ?? activeTerminals[0].id}
+                    />
+                  ) : (
+                    // Empty state mirrors the Agents tab's idle treatment —
+                    // muted icon block + short subtitle — so the runtime sub
+                    // views feel like a family even when empty.
+                    <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center text-[color:var(--text-muted)] opacity-60">
+                      <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
+                        <Terminal size={24} strokeWidth={1} />
+                      </div>
+                      <p className="text-[10px] font-medium uppercase tracking-widest">No terminals open</p>
+                      <p className="text-[10px] leading-relaxed max-w-[220px]">
+                        The agent will open one here when it runs a shell command.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
+
             {rightRailTab === 'sub_agents' ? (
               <div className="flex-1 min-h-0 flex flex-col">
                 <div className="flex-1 overflow-y-auto p-3 space-y-2.5 custom-scrollbar">
@@ -3844,7 +4280,7 @@ export function SessionsPage() {
               </div>
             ) : null}
 
-            {rightRailTab === 'runtime' ? (
+            {showFilesView ? (
               <div className="flex-1 min-h-0 flex flex-col">
                 <WorkbenchExplorerPane
                   showTitle={false}
