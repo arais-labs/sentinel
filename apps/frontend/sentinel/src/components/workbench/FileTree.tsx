@@ -100,7 +100,13 @@ export const FileTree: React.FC<FileTreeProps> = ({
               </span>
               {isDirectory && entry.is_git_root ? (
                 <div className="flex items-center gap-1 mt-0.5">
-                  <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/5 px-1.5 py-0.2 text-[8px] font-bold uppercase tracking-wider text-violet-500">
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.2 text-[8px] font-bold uppercase tracking-wider ${
+                      entry.git_detached_head
+                        ? 'border-amber-500/30 bg-amber-500/5 text-amber-400'
+                        : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[color:var(--text-muted)]'
+                    }`}
+                  >
                     <GitBranch size={9} />
                     {entry.git_detached_head ? 'detached' : entry.git_branch || 'repo'}
                   </span>

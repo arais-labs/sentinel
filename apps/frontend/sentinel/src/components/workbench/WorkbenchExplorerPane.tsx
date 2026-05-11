@@ -46,6 +46,23 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
     return status === '??' ? 'N' : status;
   }
 
+  function gitStatusTone(status: string | undefined): string {
+    const s = displayGitStatus(status);
+    switch (s) {
+      case 'M':
+        return 'text-amber-400';
+      case 'N':
+      case 'A':
+        return 'text-emerald-400';
+      case 'D':
+        return 'text-rose-400';
+      case 'R':
+        return 'text-sky-400';
+      default:
+        return 'text-[color:var(--text-muted)]';
+    }
+  }
+
   function renderGitTree(nodes: RuntimeGitChangedTreeNode[], depth = 0): JSX.Element[] {
     return nodes.map((node) => {
       if (node.kind === 'directory') {
@@ -59,15 +76,15 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
               style={{ paddingLeft: `${8 + depth * 12}px` }}
             >
               {expanded ? (
-                <ChevronDown size={12} className="shrink-0 text-violet-500/70" />
+                <ChevronDown size={12} className="shrink-0 text-[color:var(--text-muted)]" />
               ) : (
-                <ChevronRight size={12} className="shrink-0 text-violet-500/70" />
+                <ChevronRight size={12} className="shrink-0 text-[color:var(--text-muted)]" />
               )}
-              <Folder size={12} className="shrink-0 text-violet-600/80" />
-              <span className="truncate text-[10px] font-mono text-violet-700 dark:text-violet-200/90 flex-1">
+              <Folder size={12} className="shrink-0 text-[color:var(--text-muted)]" />
+              <span className="truncate text-[10px] font-mono text-[color:var(--text-secondary)] flex-1">
                 {node.name}
               </span>
-              <span className="shrink-0 text-[8px] font-bold text-violet-500/60">{node.fileCount}</span>
+              <span className="shrink-0 text-[8px] font-bold text-[color:var(--text-muted)]">{node.fileCount}</span>
             </button>
             {expanded ? renderGitTree(node.children, depth + 1) : null}
           </div>
@@ -79,16 +96,16 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
           key={`git-change:${node.fullPath}`}
           type="button"
           onClick={() => onGitFileClick(node.fullPath)}
-          className="group w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors hover:bg-violet-500/5 text-left"
+          className="group w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors hover:bg-[color:var(--surface-2)] text-left"
           style={{ paddingLeft: `${24 + depth * 12}px` }}
         >
-          <span className="w-8 shrink-0 text-[8px] font-black text-violet-500/70">
+          <span className={`w-8 shrink-0 text-[8px] font-black tracking-wider ${gitStatusTone(node.entry?.status)}`}>
             {displayGitStatus(node.entry?.status)}
           </span>
-          <span className="truncate text-[10px] font-mono text-violet-700 dark:text-violet-200/90 flex-1">
+          <span className="truncate text-[10px] font-mono text-[color:var(--text-primary)] flex-1">
             {node.name}
           </span>
-          <ChevronRight size={11} className="shrink-0 opacity-0 group-hover:opacity-100 text-violet-500/40" />
+          <ChevronRight size={11} className="shrink-0 opacity-0 group-hover:opacity-100 text-[color:var(--text-muted)]" />
         </button>
       );
     });
@@ -107,24 +124,26 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
       <div className="flex-1 overflow-y-auto p-2 space-y-4">
         <div className="space-y-2">
           <div className="px-2">
-            <span className="text-[9px] font-black uppercase tracking-[0.2em] text-violet-500">Repo Changes</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+              Repo Changes
+            </span>
           </div>
           {repoChangesSections.length > 0 ? (
             <div className="space-y-3">
               {repoChangesSections.map((section) => (
                 <div key={section.id} className="space-y-1">
                   <div className="flex items-center justify-between px-2">
-                    <span className="truncate text-[10px] font-mono text-violet-700 dark:text-violet-200/90">
+                    <span className="truncate text-[10px] font-mono text-[color:var(--text-secondary)]">
                       {section.title}
                     </span>
-                    {section.loading ? <Loader2 size={10} className="animate-spin text-violet-500" /> : null}
+                    {section.loading ? <Loader2 size={10} className="animate-spin text-[color:var(--text-muted)]" /> : null}
                   </div>
                   {section.tree.length > 0 ? (
                     <div className="space-y-0.5">
                       {renderGitTree(section.tree)}
                     </div>
                   ) : (
-                    <div className="px-2 py-1 text-[10px] text-violet-500/70">
+                    <div className="px-2 py-1 text-[10px] text-[color:var(--text-muted)]">
                       No repo changes.
                     </div>
                   )}
@@ -132,7 +151,7 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
               ))}
             </div>
           ) : (
-            <div className="px-2 py-1 text-[10px] text-violet-500/70">
+            <div className="px-2 py-1 text-[10px] text-[color:var(--text-muted)]">
               Expand a git repo folder to inspect its changes.
             </div>
           )}
