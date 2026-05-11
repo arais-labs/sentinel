@@ -61,6 +61,7 @@ apt-get install -y --no-install-recommends \
   ripgrep \
   socat \
   sudo \
+  tmux \
   tree \
   tzdata \
   websockify \
