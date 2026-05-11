@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Session
+from app.services.runtime.terminal_manager import get_terminal_manager
 
 logger = logging.getLogger(__name__)
 
@@ -921,6 +922,14 @@ async def cleanup_session_runtime(
     from app.config import settings
 
     session_key = str(session_id)
+
+    # Kill any tmux-backed terminals for this session BEFORE the runtime
+    # stops, so we get a chance to send `kill-session` over a live SSH
+    # connection rather than leaking tmux processes inside the guest.
+    try:
+        await get_terminal_manager().terminate(session_key)
+    except Exception:
+        logger.debug("Terminal cleanup skipped for session %s", session_key, exc_info=True)
 
     # Stop runtime container/connection if one is running for this session
     runtime_stopped = False
