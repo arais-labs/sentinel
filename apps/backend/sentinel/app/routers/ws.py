@@ -17,6 +17,8 @@ from app.dependencies import get_db
 from app.logging_context import reset_log_session, set_log_session
 from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
 from app.models import Message, ToolApproval
+from app.services.runtime import get_runtime
+from app.services.runtime.terminal_manager import get_terminal_manager
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.compaction import CompactionService
 from app.services.messages import normalize_generation_metadata, with_generation_metadata
@@ -112,12 +114,15 @@ async def stream_session(
         history = await load_history(db, id)
         unresolved_calls = []
 
+    terminals_payload = await _initial_terminal_descriptors(session_key)
+
     await websocket.send_json(
         {
             "type": "connected",
             "session_id": session_key,
             "history": history,
             "context_token_budget": int(settings.context_token_budget),
+            "terminals": terminals_payload,
         }
     )
 
@@ -454,3 +459,88 @@ def _apply_terminal_tool_result_update(
         metadata["approval"] = next_approval
     message.content = content
     message.metadata_json = metadata
+
+
+async def _initial_terminal_descriptors(session_key: str) -> list[dict[str, Any]]:
+    """Best-effort: tell the freshly-connected client which terminals are alive.
+
+    Tried in this order so we never block the WS handshake:
+      1. In-memory state from the TerminalManager singleton (fast path).
+      2. Rehydrate via `tmux list-sessions` if the runtime is already ensured.
+    Any failure here is silent — the client just sees an empty pill row until
+    the agent runs something.
+    """
+    manager = get_terminal_manager()
+    descriptors = manager.descriptors_for(session_key)
+    if descriptors:
+        return descriptors
+    try:
+        runtime = await get_runtime().ensure(session_key)
+    except Exception:
+        return descriptors
+    try:
+        await manager.rehydrate(runtime=runtime, session_id=session_key)
+    except Exception:
+        return manager.descriptors_for(session_key)
+    return manager.descriptors_for(session_key)
+
+
+@router.websocket("/{id}/terminals/{terminal_id}")
+async def stream_terminal(
+    websocket: WebSocket,
+    id: UUID,
+    terminal_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Bidirectional bridge between xterm.js and the tmux session in the guest VM.
+
+    Output side: tail the `pipe-pane` log over SSH and stream binary frames.
+    Input side: route WS messages to tmux send-keys (or `resize-window` for
+    JSON `{type:"resize"}` control frames). Cookie/query token auth identical
+    to the regular `/stream` endpoint so we don't open a credential side door.
+    """
+    token = websocket.query_params.get("token")
+    if not token:
+        token = websocket.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
+
+    try:
+        user = await decode_and_validate_token(token, db, expected_type="access")
+    except Exception:
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+
+    session = await get_owned_session(db, id, user.sub)
+    if session is None:
+        await websocket.close(code=4004, reason="Session not found")
+        return
+
+    try:
+        runtime = await get_runtime().ensure(str(id))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("terminal attach could not ensure runtime: %s", exc)
+        await websocket.close(code=4005, reason="Runtime not ready")
+        return
+
+    await websocket.accept()
+    logger.info("terminal WS attached session=%s terminal_id=%s", id, terminal_id)
+    try:
+        await get_terminal_manager().attach_ws(
+            runtime=runtime,
+            session_id=id,
+            terminal_id=terminal_id,
+            websocket=websocket,
+        )
+        logger.info("terminal WS attach_ws returned normally session=%s terminal_id=%s", id, terminal_id)
+    except WebSocketDisconnect:
+        logger.info("terminal WS disconnected by client session=%s terminal_id=%s", id, terminal_id)
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("terminal WS bridge crashed session=%s terminal_id=%s: %s", id, terminal_id, exc)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass

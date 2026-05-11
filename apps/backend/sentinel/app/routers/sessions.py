@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 from uuid import UUID
 
@@ -614,6 +615,45 @@ async def cleanup_runtime(
         _raise_http_for_session_error(exc)
         raise
     return SessionRuntimeCleanupResponse(session_id=session_id, **result)
+
+
+_TERMINAL_ID_HTTP_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+
+
+@router.delete("/{id}/terminals/{terminal_id}")
+async def close_terminal(
+    id: UUID,
+    terminal_id: str,
+    request: Request,
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    if not _TERMINAL_ID_HTTP_PATTERN.match(terminal_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="terminal_id must match [a-zA-Z0-9_-]{1,32}",
+        )
+    if terminal_id == "0":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Terminal '0' is the primary shell and cannot be closed.",
+        )
+    service = _resolve_session_service(request)
+    try:
+        session_id, tid, existed = await service.close_terminal(
+            db,
+            session_id=id,
+            terminal_id=terminal_id,
+            user_id=user.sub,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    return {
+        "session_id": str(session_id),
+        "terminal_id": tid,
+        "closed": existed,
+    }
 
 
 @router.delete("/{id}")

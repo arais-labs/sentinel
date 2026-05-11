@@ -29,6 +29,7 @@ from app.services.llm.generic.types import ImageContent, TextContent, UserMessag
 from app.services.llm.ids import TierName
 from app.services.memory import MemoryRepository, MemoryService
 from app.services.messages import normalize_generation_metadata, with_generation_metadata
+from app.services.runtime.terminal_manager import get_terminal_manager
 from app.services.runtime.session_runtime import (
     cleanup_session_runtime,
     get_session_runtime_snapshot,
@@ -524,6 +525,23 @@ class SessionService:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
         result = await cleanup_session_runtime(session.id)
         return session.id, result
+
+    async def close_terminal(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        terminal_id: str,
+        user_id: str,
+    ) -> tuple[UUID, str, bool]:
+        session = await self.get_session(db, session_id=session_id, user_id=user_id)
+        manager = get_terminal_manager()
+        existed = any(
+            rec.terminal_id == terminal_id
+            for rec in manager.list_terminals(session.id)
+        )
+        await manager.terminate(session.id, terminal_id=terminal_id)
+        return session.id, terminal_id, existed
 
     async def delete_session(
         self,
