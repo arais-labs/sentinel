@@ -204,6 +204,63 @@ def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
     git_module.AsyncSessionLocal = session_factory
     module_manager_module.AsyncSessionLocal = session_factory
     runtime_tool_module.get_runtime = lambda: _FakeRuntimeProvider()
+    # The new unified runtime model routes all `runtime.user` calls through
+    # TerminalManager → tmux pane in a real guest VM. In unit tests we don't
+    # have a guest, so we monkeypatch the singleton's run_command path to
+    # bypass tmux entirely and call the fake SSH client directly. This keeps
+    # the test surface focused on the tool-layer behavior (validation,
+    # approvals, schemas, result shape) without dragging in tmux mock plumbing.
+    from app.services.runtime import terminal_manager as _tm
+    from app.services.runtime.base import RuntimeExecResult as _RuntimeExecResult
+
+    async def _fake_terminal_run(
+        *,
+        runtime,
+        session_id,
+        terminal_id,
+        command,
+        timeout,
+        env=None,
+        cwd=None,
+        label_hint=None,
+        created_by="agent",
+        auto=False,
+    ):
+        _ = session_id, terminal_id, label_hint, created_by, auto
+        # Delegate straight to the fake SSH stub, which has pattern-matched
+        # responses for the canned commands used in tests.
+        return await runtime.client.run(
+            command,
+            cwd=cwd or runtime.workspace_path,
+            env=env or None,
+            timeout=timeout,
+            as_root=False,
+        )
+
+    _tm.get_terminal_manager().run_command = _fake_terminal_run  # type: ignore[method-assign]
+
+    async def _fake_terminal_run_background(
+        *,
+        runtime,
+        session_id,
+        terminal_id,
+        command,
+        timeout,
+        env=None,
+        cwd=None,
+        label_hint=None,
+        created_by="agent",
+        auto=False,
+    ):
+        _ = runtime, session_id, command, timeout, env, cwd, label_hint, created_by, auto
+        return {
+            "ok": True,
+            "background": True,
+            "terminal_id": terminal_id,
+            "started_at": "2026-05-11T00:00:00+00:00",
+        }
+
+    _tm.get_terminal_manager().run_command_background = _fake_terminal_run_background  # type: ignore[method-assign]
     reset_runtime_services()
     configure_runtime_services(app_state=app.state)
     registry = asyncio.run(build_runtime_registry(session_factory=session_factory))
@@ -416,7 +473,10 @@ def test_runtime_runs_command():
         app_main.init_db = old_init
 
 
-def test_runtime_detached_job_lifecycle():
+def test_runtime_background_returns_immediately_with_handle():
+    """`background=true` returns a terminal handle synchronously — the agent
+    doesn't wait for completion. Completion arrives later as a wakeup turn.
+    """
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
 
@@ -439,7 +499,7 @@ def test_runtime_detached_job_lifecycle():
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
             "/api/v1/sessions",
-            json={"title": "runtime-exec-detached"},
+            json={"title": "runtime-exec-background"},
             headers=headers,
         )
         assert created_session.status_code == 200
@@ -447,76 +507,27 @@ def test_runtime_detached_job_lifecycle():
 
         run = _execute_tool_for_test(
             "runtime",
-            _runtime_input(shell_command="sleep 30", detached=True),
+            _runtime_input(
+                shell_command="sleep 30",
+                background=True,
+                terminal_id="bg-test",
+            ),
             session_id=session_id,
         )
         assert run.status_code == 200
         payload = run.json()["result"]
         assert payload["ok"] is True
-        assert payload["detached"] is True
-        job_id = payload["job"]["id"]
-        if payload["privilege"] == "user":
-            assert str(payload["workspace"]).endswith("/workspace")
-            assert str(payload["cwd"]).endswith("/workspace")
-            assert str(payload["job"]["cwd"]).endswith("/workspace")
-            assert str(payload["job"].get("stdout_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
-            assert str(payload["job"].get("stderr_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
-            assert "/tmp/sentinel/session_runtime" not in json.dumps(payload["job"])
-
-        listed = _execute_tool_for_test("runtime", {"command": "jobs"}, session_id=session_id)
-        assert listed.status_code == 200
-        jobs = listed.json()["result"]["jobs"]
-        listed_job = next((item for item in jobs if item["id"] == job_id), None)
-        assert listed_job is not None
-        if payload["privilege"] == "user":
-            assert str(listed_job["cwd"]).endswith("/workspace")
-            assert str(listed_job.get("stdout_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
-            assert str(listed_job.get("stderr_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
-            assert "/tmp/sentinel/session_runtime" not in json.dumps(listed_job)
-
-        status = _execute_tool_for_test(
-            "runtime",
-            {"command": "job_status", "job_id": job_id},
-            session_id=session_id,
-        )
-        assert status.status_code == 200
-        status_job = status.json()["result"]["job"]
-        assert status_job["id"] == job_id
-        if payload["privilege"] == "user":
-            assert str(status_job["cwd"]).endswith("/workspace")
-            assert str(status_job.get("stdout_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
-            assert str(status_job.get("stderr_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
-            assert "/tmp/sentinel/session_runtime" not in json.dumps(status_job)
-
-        logs = _execute_tool_for_test(
-            "runtime",
-            {"command": "job_logs", "job_id": job_id},
-            session_id=session_id,
-        )
-        assert logs.status_code == 200
-        logs_result = logs.json()["result"]
-        assert "stdout_tail" in logs_result
-        if payload["privilege"] == "user":
-            logs_job = logs_result["job"]
-            assert str(logs_job["cwd"]).endswith("/workspace")
-            assert str(logs_job.get("stdout_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
-            assert str(logs_job.get("stderr_path", "")).startswith("/tmp/fake-runtime/workspace/.runtime/logs/")
-            assert "/tmp/sentinel/session_runtime" not in json.dumps(logs_job)
-
-        stopped = _execute_tool_for_test(
-            "runtime",
-            {"command": "job_stop", "job_id": job_id},
-            session_id=session_id,
-        )
-        assert stopped.status_code == 200
-        assert stopped.json()["result"]["job"]["status"] in {"cancelled", "completed", "failed"}
+        assert payload["background"] is True
+        assert payload["terminal_id"] == "bg-test"
+        assert "DO NOT poll" in payload["message"]
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()
         app_main.init_db = old_init
 
 
-def test_runtime_auto_promotes_long_running_command(monkeypatch):
+def test_runtime_background_auto_allocates_bg_terminal_id():
+    """Background without terminal_id auto-allocates `bg-<token>`."""
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
 
@@ -533,25 +544,13 @@ def test_runtime_auto_promotes_long_running_command(monkeypatch):
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
 
-    async def _fake_get_detached_runtime_job(session_id, *, job_id, include_internal=False):  # noqa: ARG001
-        return {
-            "id": job_id,
-            "status": "running",
-            "cwd": "/tmp/fake-runtime/workspace",
-            "stdout_path": "/tmp/fake-runtime/workspace/.runtime/logs/test.stdout.log",
-            "stderr_path": "/tmp/fake-runtime/workspace/.runtime/logs/test.stderr.log",
-        }
-
     try:
-        monkeypatch.setattr(runtime_tool_module, "_RUNTIME_EXEC_AUTO_PROMOTE_SECONDS", 1)
-        monkeypatch.setattr(runtime_tool_module, "get_detached_runtime_job", _fake_get_detached_runtime_job)
-
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
             "/api/v1/sessions",
-            json={"title": "runtime-auto-promote"},
+            json={"title": "runtime-bg-auto"},
             headers=headers,
         )
         assert created_session.status_code == 200
@@ -559,28 +558,24 @@ def test_runtime_auto_promotes_long_running_command(monkeypatch):
 
         run = _execute_tool_for_test(
             "runtime",
-            _runtime_input(
-                shell_command="echo start-long-background-test; sleep 120; echo done-long-background-test",
-                timeout_seconds=600,
-            ),
+            _runtime_input(shell_command="sleep 1", background=True),
             session_id=session_id,
         )
         assert run.status_code == 200
         payload = run.json()["result"]
-        assert payload["detached"] is True
-        assert payload["auto_promoted"] is True
-        assert payload["preemptively_backgrounded"] is True
-        assert payload["background_reason"] == "requested_timeout_exceeds_interactive_threshold"
-        assert payload["job"]["status"] == "running"
-        assert "requested timeout (600s)" in payload["message"]
-        assert "interactive threshold (1s)" in payload["message"]
+        assert payload["background"] is True
+        assert payload["terminal_id"].startswith("bg-")
+        assert payload["terminal_auto"] is True
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()
         app_main.init_db = old_init
 
 
-def test_runtime_auto_promote_keeps_detached_when_completion_is_half_baked(monkeypatch):
+def test_runtime_background_rejects_terminal_zero():
+    """background=true + terminal_id='0' must be refused — the user's main shell
+    is shared and a long-running command would clobber it.
+    """
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
 
@@ -597,35 +592,13 @@ def test_runtime_auto_promote_keeps_detached_when_completion_is_half_baked(monke
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
 
-    async def _fake_wait_for_detached_runtime_job_completion(*args, **kwargs):  # noqa: ARG001
-        return {
-            "job": {
-                "id": "job-half-baked",
-                "status": "completed",
-                "returncode": None,
-                "cwd": "/tmp/fake-runtime/workspace",
-                "stdout_path": "/tmp/fake-runtime/workspace/.runtime/logs/test.stdout.log",
-                "stderr_path": "/tmp/fake-runtime/workspace/.runtime/logs/test.stderr.log",
-            },
-            "logs": {
-                "stdout_tail": "partial output\n",
-                "stderr_tail": "",
-            },
-        }
-
     try:
-        monkeypatch.setattr(
-            runtime_tool_module,
-            "_wait_for_detached_runtime_job_completion",
-            _fake_wait_for_detached_runtime_job_completion,
-        )
-
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
             "/api/v1/sessions",
-            json={"title": "runtime-auto-promote-half-baked"},
+            json={"title": "runtime-bg-zero-reject"},
             headers=headers,
         )
         assert created_session.status_code == 200
@@ -633,25 +606,200 @@ def test_runtime_auto_promote_keeps_detached_when_completion_is_half_baked(monke
 
         run = _execute_tool_for_test(
             "runtime",
-            _runtime_input(
-                shell_command="echo start-long-test; sleep 35; echo done-long-test",
-                timeout_seconds=180,
-            ),
+            _runtime_input(shell_command="sleep 1", background=True, terminal_id="0"),
             session_id=session_id,
         )
-        assert run.status_code == 200
-        payload = run.json()["result"]
-        assert payload["detached"] is True
-        assert payload["auto_promoted"] is True
-        assert payload["job"]["id"] == "job-half-baked"
-        assert payload["job"]["returncode"] is None
+        assert run.status_code == 422
+        assert "terminal_id='0'" in run.json()["error"]["message"]
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()
         app_main.init_db = old_init
 
 
-def test_runtime_rejects_background_without_detached():
+def test_runtime_terminal_close_refuses_terminal_zero():
+    """Terminal '0' is the user's primary shared shell — closing it from the
+    agent would yank the user's main interactive context out from under them.
+    The handler must refuse before touching the manager.
+    """
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "terminal-close-zero"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = _execute_tool_for_test(
+            "runtime",
+            {"command": "terminal_close", "terminal_id": "0"},
+            session_id=session_id,
+        )
+        assert run.status_code == 422
+        message = run.json()["error"]["message"]
+        assert "terminal '0'" in message.lower() or "primary" in message.lower()
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_terminal_close_calls_manager_terminate():
+    """Closing a named terminal forwards to TerminalManager.terminate exactly
+    once with the right (session_id, terminal_id), and reports `closed` based
+    on whether the record existed before the call.
+    """
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    from app.services.runtime import terminal_manager as _tm
+
+    manager = _tm.get_terminal_manager()
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_terminate(session_id, *, terminal_id=None):
+        calls.append((str(session_id), str(terminal_id)))
+
+    # Make the "did it exist?" probe report a known terminal so the response
+    # carries closed=true. The handler reads from list_terminals; we substitute
+    # a minimal stub for that pair only.
+    class _FakeRecord:
+        def __init__(self, tid: str) -> None:
+            self.terminal_id = tid
+
+    original_list = manager.list_terminals
+    original_terminate = manager.terminate
+    manager.list_terminals = lambda _sid: [_FakeRecord("build")]  # type: ignore[method-assign]
+    manager.terminate = _fake_terminate  # type: ignore[method-assign]
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "terminal-close-named"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = _execute_tool_for_test(
+            "runtime",
+            {"command": "terminal_close", "terminal_id": "build"},
+            session_id=session_id,
+        )
+        assert run.status_code == 200
+        result = run.json()["result"]
+        assert result["terminal_id"] == "build"
+        assert result["closed"] is True
+        assert len(calls) == 1
+        assert calls[0][1] == "build"
+
+        # When the terminal isn't currently known, the call still succeeds but
+        # reports closed=false. Switch the stub to return no records and try
+        # again to lock that branch down.
+        manager.list_terminals = lambda _sid: []  # type: ignore[method-assign]
+        run2 = _execute_tool_for_test(
+            "runtime",
+            {"command": "terminal_close", "terminal_id": "ghost"},
+            session_id=session_id,
+        )
+        assert run2.status_code == 200
+        result2 = run2.json()["result"]
+        assert result2["closed"] is False
+    finally:
+        manager.list_terminals = original_list  # type: ignore[method-assign]
+        manager.terminate = original_terminate  # type: ignore[method-assign]
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_terminal_close_rejects_invalid_terminal_id():
+    """terminal_id must match the [a-zA-Z0-9_-]{1,32} pattern. The tool
+    validation layer should fail before we reach the manager.
+    """
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/sessions",
+            json={"title": "terminal-close-invalid"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = _execute_tool_for_test(
+            "runtime",
+            {"command": "terminal_close", "terminal_id": "../escape"},
+            session_id=session_id,
+        )
+        assert run.status_code == 422
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_rejects_shell_background_without_background_flag():
+    """A trailing `&` in shell_command should be refused unless background=true.
+
+    The unified model wants the agent to be EXPLICIT about background work
+    via the tool flag, not via shell trickery. The rejection message points
+    at the right escape hatch.
+    """
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
 
@@ -686,7 +834,7 @@ def test_runtime_rejects_background_without_detached():
             session_id=session_id,
         )
         assert run.status_code == 422
-        assert "detached=true" in run.json()["error"]["message"]
+        assert "background=true" in run.json()["error"]["message"]
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()
@@ -699,6 +847,57 @@ def test_runtime_background_detector_allows_fd_redirection():
     assert runtime_tool_module._command_requests_background_execution("which git python3 node npm curl docker 2>&1") is False
     assert runtime_tool_module._command_requests_background_execution("cat /etc/os-release && which git python3 node npm curl docker 2>&1") is False
     assert runtime_tool_module._command_requests_background_execution("command 1>&2") is False
+
+
+def test_runtime_background_detector_real_backgrounding():
+    # The actually-backgrounded shapes — every one of these has to keep being flagged.
+    assert runtime_tool_module._command_requests_background_execution("sleep 30 &") is True
+    assert runtime_tool_module._command_requests_background_execution("sleep 30 >/dev/null 2>&1 &") is True
+    assert runtime_tool_module._command_requests_background_execution("cmd1 & cmd2") is True
+    assert runtime_tool_module._command_requests_background_execution("nohup ./run.sh") is True
+    assert runtime_tool_module._command_requests_background_execution("./run.sh; disown") is True
+
+
+def test_runtime_background_detector_ignores_ampersand_in_quotes_and_heredocs():
+    # The three false-positive shapes reported by the user: `&` is inside a
+    # quoted string or heredoc body, so bash treats it as literal — we must too.
+
+    # Single-quoted ampersand inside a sentence
+    assert runtime_tool_module._command_requests_background_execution(
+        "echo 'AT&T plus bash quoting'"
+    ) is False
+
+    # Double-quoted Python -c containing & in a string literal
+    assert runtime_tool_module._command_requests_background_execution(
+        "python3 -c \"print('!@#$%^&*()')\""
+    ) is False
+
+    # `python3 << 'EOF' … EOF` heredoc body with & inside
+    heredoc = (
+        "python3 << 'EOF'\n"
+        "import sys\n"
+        "print('!@#%^&*()')\n"
+        "EOF"
+    )
+    assert runtime_tool_module._command_requests_background_execution(heredoc) is False
+
+    # `<<-EOF` indented heredoc form, & inside body
+    heredoc_dash = (
+        "python3 <<-EOF\n"
+        "\tprint('&')\n"
+        "\tEOF"
+    )
+    assert runtime_tool_module._command_requests_background_execution(heredoc_dash) is False
+
+    # `nohup` mentioned inside a quoted string is NOT a real nohup invocation
+    assert runtime_tool_module._command_requests_background_execution(
+        "echo 'the nohup pattern'"
+    ) is False
+
+    # Escaped \& outside quotes is not the operator either
+    assert runtime_tool_module._command_requests_background_execution(
+        "echo a \\& b"
+    ) is False
 
 
 def test_runtime_allows_inline_fd_redirection():

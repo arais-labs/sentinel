@@ -1,9 +1,19 @@
-"""Native module: runtime — shell command execution in the runtime container."""
+"""Native module: runtime — shell command execution in persistent tmux terminals.
+
+The whole module went through a unification: there is no separate "detached
+job" path anymore. Every command runs in a tmux pane via TerminalManager,
+and `background=true` is the difference between "wait for completion" and
+"return a handle now, notification fires the agent later".
+
+Legacy `runtime.jobs / job_status / job_logs / job_stop` are gone (hard
+cut). Their replacements are `runtime.terminal_list` and
+`runtime.terminal_read`, and `runtime.user(background=true)`.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import re
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,15 +22,13 @@ from app.services.runtime import get_runtime
 from app.services.runtime.base import RuntimeExecResult
 from app.services.runtime.session_runtime import (
     ensure_runtime_layout,
-    finalize_detached_runtime_job,
-    get_detached_runtime_job,
-    list_detached_runtime_jobs,
     mark_runtime_state,
-    read_detached_runtime_job_logs,
-    register_detached_runtime_job,
-    runtime_logs_dir,
     runtime_workspace_dir,
-    stop_detached_runtime_job,
+)
+from app.services.runtime.terminal_manager import (
+    TerminalBlockedError,
+    TerminalUnavailableError,
+    get_terminal_manager,
 )
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
@@ -31,18 +39,13 @@ from app.services.tools.runtime_context import require_runtime_session_id
 # ---------------------------------------------------------------------------
 
 _MAX_RUNTIME_EXEC_OUTPUT_CHARS = 50_000
-_RUNTIME_EXEC_STREAM_READ_BYTES = 65_536
-_RUNTIME_EXEC_STREAM_DRAIN_SECONDS = 2.0
-_RUNTIME_EXEC_TIMEOUT_KILL_WAIT_SECONDS = 3.0
-_RUNTIME_EXEC_AUTO_PROMOTE_SECONDS = 30
-# ---------------------------------------------------------------------------
-# Internal helpers (moved from builtin.py)
-# ---------------------------------------------------------------------------
+_TERMINAL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+_DEFAULT_TERMINAL_ID = "0"
 
 
-def _ssh_shell_quote(s: str) -> str:
-    """POSIX single-quoting for SSH commands."""
-    return "'" + s.replace("'", "'\\''") + "'"
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
 
 def _truncate_runtime_exec_text(value: str | None) -> str:
@@ -53,201 +56,117 @@ def _truncate_runtime_exec_text(value: str | None) -> str:
 
 
 def _command_requests_background_execution(command: str) -> bool:
-    normalized = command.strip().lower()
-    if not normalized:
+    r"""Return True iff the command tries to background the inline path.
+
+    Shell-syntax-aware scan: a `&` only counts as the background operator
+    when bash itself would treat it as one. We track single-quoted,
+    double-quoted, and heredoc state, and we skip `&&` / `>&` / `&>`.
+
+    Handled:
+      - single-quoted strings: literal until next `'`
+      - double-quoted strings: literal until next unescaped `"`
+      - heredocs (`<<DELIM`, `<<-DELIM`, `<<'DELIM'`, `<<"DELIM"`)
+      - escaped chars outside quotes (e.g. `\&`)
+      - logical AND (`&&`) and FD redirections (`2>&1`, `&>`, `>&`)
+    """
+    if not command or not command.strip():
         return False
-    if re.search(r"\b(?:nohup|disown)\b", normalized):
-        return True
-    for index, char in enumerate(normalized):
-        if char != "&":
+
+    n = len(command)
+    i = 0
+    unquoted: list[str] = []
+    heredoc_delim: str | None = None
+    heredoc_strip_tabs = False
+
+    while i < n:
+        c = command[i]
+
+        if heredoc_delim is not None:
+            if c == "\n":
+                line_end = command.find("\n", i + 1)
+                if line_end < 0:
+                    line_end = n
+                line = command[i + 1 : line_end]
+                checked = line.lstrip("\t") if heredoc_strip_tabs else line
+                if checked == heredoc_delim:
+                    heredoc_delim = None
+                    heredoc_strip_tabs = False
+                    i = line_end
+                    continue
+            i += 1
             continue
-        prev_char = normalized[index - 1] if index > 0 else ""
-        next_char = normalized[index + 1] if index + 1 < len(normalized) else ""
-        if prev_char == "&" or next_char == "&":
+
+        if c == "'":
+            j = command.find("'", i + 1)
+            if j < 0:
+                return False
+            i = j + 1
             continue
-        # Allow file-descriptor duplication like 2>&1 or >&2.
-        if prev_char == ">":
+
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if command[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if command[j] == '"':
+                    break
+                j += 1
+            if j >= n:
+                return False
+            i = j + 1
             continue
+
+        if c == "\\" and i + 1 < n:
+            unquoted.append(" ")
+            i += 2
+            continue
+
+        if c == "<" and i + 1 < n and command[i + 1] == "<":
+            j = i + 2
+            strip = False
+            if j < n and command[j] == "-":
+                strip = True
+                j += 1
+            quote = ""
+            if j < n and command[j] in ("'", '"'):
+                quote = command[j]
+                j += 1
+            delim_start = j
+            while j < n and (command[j].isalnum() or command[j] == "_"):
+                j += 1
+            delim = command[delim_start:j]
+            if quote and j < n and command[j] == quote:
+                j += 1
+            if delim:
+                heredoc_delim = delim
+                heredoc_strip_tabs = strip
+                unquoted.append("<<")
+                i = j
+                continue
+
+        if c == "&":
+            prev = command[i - 1] if i > 0 else ""
+            nxt = command[i + 1] if i + 1 < n else ""
+            if nxt == "&":
+                unquoted.append("&&")
+                i += 2
+                continue
+            if prev == "&":
+                i += 1
+                continue
+            if prev == ">" or nxt == ">":
+                unquoted.append("&")
+                i += 1
+                continue
+            return True
+
+        unquoted.append(c)
+        i += 1
+
+    if re.search(r"\b(?:nohup|disown)\b", "".join(unquoted).lower()):
         return True
     return False
-
-
-def _detached_job_has_terminal_result(job: dict[str, Any]) -> bool:
-    status = str(job.get("status") or "")
-    if status == "cancelled":
-        return True
-    if status not in {"completed", "failed"}:
-        return False
-    return isinstance(job.get("returncode"), int)
-
-
-async def _drain_runtime_exec_streams(
-    proc: asyncio.subprocess.Process,
-) -> tuple[bytes, bytes]:
-    stdout = await _drain_runtime_exec_stream(proc.stdout)
-    stderr = await _drain_runtime_exec_stream(proc.stderr)
-    return stdout, stderr
-
-
-async def _drain_runtime_exec_stream(
-    stream: asyncio.StreamReader | None,
-) -> bytes:
-    if stream is None:
-        return b""
-    chunks: list[bytes] = []
-    remaining = _RUNTIME_EXEC_STREAM_READ_BYTES
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _RUNTIME_EXEC_STREAM_DRAIN_SECONDS
-    while remaining > 0:
-        remaining_timeout = deadline - loop.time()
-        if remaining_timeout <= 0:
-            break
-        chunk_size = min(remaining, 8_192)
-        try:
-            chunk = await asyncio.wait_for(stream.read(chunk_size), timeout=remaining_timeout)
-        except TimeoutError:
-            break
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
-
-
-def _watch_detached_runtime_process(
-    *,
-    proc: asyncio.subprocess.Process,
-    session_id: UUID,
-    job_id: str,
-) -> None:
-    async def _watch() -> None:
-        try:
-            returncode = await proc.wait()
-            await finalize_detached_runtime_job(
-                session_id,
-                job_id=job_id,
-                returncode=returncode,
-            )
-        except Exception as exc:  # noqa: BLE001
-            await finalize_detached_runtime_job(
-                session_id,
-                job_id=job_id,
-                returncode=None,
-                error=str(exc),
-            )
-
-    asyncio.create_task(_watch())
-
-
-async def _start_detached_runtime_job_via_ssh(
-    *,
-    runtime,
-    session_id: UUID,
-    command_text: str,
-    privilege: str,
-    sandbox_workspace: str,
-    sandbox_cwd: str,
-    env: dict[str, str],
-) -> dict[str, Any]:
-    logs_dir_vm = f"{sandbox_workspace}/.runtime/logs"
-    log_token = uuid4().hex[:10]
-    stdout_vm_path = f"{logs_dir_vm}/{log_token}.stdout.log"
-    stderr_vm_path = f"{logs_dir_vm}/{log_token}.stderr.log"
-    exitcode_vm_path = f"{logs_dir_vm}/{log_token}.exitcode"
-
-    await runtime.client.run(
-        f"mkdir -p {logs_dir_vm}",
-        timeout=10,
-        cwd=sandbox_cwd,
-        env=env,
-        as_root=(privilege == "root"),
-    )
-
-    detached_command = (
-        f"{command_text}; "
-        f"code=$?; "
-        f"printf '%s' \"$code\" > {_ssh_shell_quote(exitcode_vm_path)}; "
-        f"exit \"$code\""
-    )
-
-    try:
-        pid = await runtime.client.run_detached(
-            detached_command,
-            stdout_path=stdout_vm_path,
-            stderr_path=stderr_vm_path,
-            cwd=sandbox_cwd,
-            env=env,
-            as_root=(privilege == "root"),
-        )
-    except TimeoutError as exc:
-        raise RuntimeError("Detached runtime launcher timed out before returning a pid") from exc
-
-    host_logs_dir = runtime_logs_dir(session_id)
-    host_logs_dir.mkdir(parents=True, exist_ok=True)
-    stdout_host = host_logs_dir / f"{log_token}.stdout.log"
-    stderr_host = host_logs_dir / f"{log_token}.stderr.log"
-    exitcode_host = host_logs_dir / f"{log_token}.exitcode"
-
-    job = await register_detached_runtime_job(
-        session_id,
-        command=command_text,
-        cwd=sandbox_cwd,
-        pid=pid,
-        stdout_path=stdout_vm_path,
-        stderr_path=stderr_vm_path,
-        host_stdout_path=stdout_host,
-        host_stderr_path=stderr_host,
-        exitcode_path=exitcode_vm_path,
-        host_exitcode_path=exitcode_host,
-    )
-    return {
-        "job": job,
-        "pid": pid,
-        "stdout_vm_path": stdout_vm_path,
-        "stderr_vm_path": stderr_vm_path,
-        "exitcode_vm_path": exitcode_vm_path,
-    }
-
-
-async def _wait_for_detached_runtime_job_completion(
-    *,
-    session_id: UUID,
-    job_id: str,
-    wait_seconds: int,
-) -> dict[str, Any] | None:
-    deadline = asyncio.get_running_loop().time() + max(1, wait_seconds)
-    while True:
-        job = await get_detached_runtime_job(session_id, job_id=job_id)
-        if job is None:
-            return None
-        if _detached_job_has_terminal_result(job):
-            logs = await read_detached_runtime_job_logs(
-                session_id,
-                job_id=job_id,
-                tail_bytes=_MAX_RUNTIME_EXEC_OUTPUT_CHARS,
-            )
-            return {
-                "job": job,
-                "logs": logs,
-            }
-        if asyncio.get_running_loop().time() >= deadline:
-            return None
-        await asyncio.sleep(0.5)
-
-
-async def _read_remote_runtime_log_tail(
-    runtime,
-    *,
-    path: str,
-    tail_bytes: int,
-) -> str:
-    quoted_path = _ssh_shell_quote(path)
-    script = f"test -f {quoted_path} && tail -c {int(tail_bytes)} {quoted_path} || true"
-    result = await runtime.client.run(
-        script,
-        timeout=10,
-    )
-    return result.stdout or ""
 
 
 async def _ensure_session_exists(session_id: UUID) -> None:
@@ -270,197 +189,263 @@ async def _execute_in_runtime(
     cwd_raw: str | None,
     env_payload: dict[str, Any],
     timeout_seconds: int,
-    detached: bool,
-    auto_promote: bool,
+    background: bool,
+    terminal_id: str,
+    terminal_auto: bool,
 ) -> dict[str, Any]:
-    """Execute a command in the runtime via the provider-neutral runtime client."""
-    runtime = await get_runtime().ensure(session_id)
+    """Run a command in the runtime — foreground (waits) or background (fire-and-forget).
 
+    Foreground (background=False, the default): routes through
+    ``TerminalManager.run_command`` and awaits completion before returning
+    the full ``{returncode, stdout, stderr}`` payload.
+
+    Background (background=True): routes through
+    ``TerminalManager.run_command_background`` which returns immediately
+    with a terminal handle; the agent gets a fresh wakeup turn carrying
+    the result when the command finishes.
+
+    Root commands (privilege='root') bypass the terminal entirely and run
+    via direct SSH — they're gated by approval and traditionally one-shot.
+    """
+    runtime = await get_runtime().ensure(session_id)
     sandbox_workspace = runtime.workspace_path
 
-    # Resolve cwd
+    # Resolve cwd. We track two things separately:
+    #   - sandbox_cwd: the "best guess" current directory for state tracking
+    #     and the result payload (always populated, defaults to the workspace).
+    #   - explicit_cwd: ONLY set when the agent passed a `cwd` parameter, in
+    #     which case it must be applied as a per-command override. Defaults
+    #     are never an override — the persistent shell already starts in the
+    #     workspace, so re-`cd`'ing every call would just clutter the pane.
     sandbox_cwd = sandbox_workspace
+    explicit_cwd: str | None = None
     if isinstance(cwd_raw, str) and cwd_raw.strip():
         requested = cwd_raw.strip()
         if Path(requested).is_absolute():
-            # Absolute path — must be under the remote workspace
             if not requested.startswith(sandbox_workspace):
-                raise ToolValidationError(f"Field 'cwd' must stay within session workspace ({sandbox_workspace})")
+                raise ToolValidationError(
+                    f"Field 'cwd' must stay within session workspace ({sandbox_workspace})"
+                )
             sandbox_cwd = requested
         else:
             sandbox_cwd = f"{sandbox_workspace}/{requested}"
+        explicit_cwd = sandbox_cwd
 
-    # Build env for the remote runtime
-    env: dict[str, str] = {
-        "HOME": sandbox_workspace,
-        "PWD": sandbox_cwd,
-        "TMPDIR": "/tmp",
-    }
+    # Env: only what the agent explicitly requested. Defaults (HOME, TERM,
+    # ...) are baked into the tmux session at creation time so we don't have
+    # to re-export them per command — keeping the pane readable.
+    explicit_env: dict[str, str] = {}
     for key, value in env_payload.items():
         if not isinstance(key, str) or not key.strip():
             raise ToolValidationError("Environment variable keys must be non-empty strings")
         if value is None:
-            env.pop(key, None)
             continue
         if not isinstance(value, (str, int, float, bool)):
             raise ToolValidationError(
                 f"Environment variable '{key}' must be string/number/boolean/null"
             )
-        env[key] = str(value)
+        explicit_env[key] = str(value)
 
-    command_result_details: dict[str, Any] | None = None
-    await mark_runtime_state(session_id, active=True, command=command_text, pid=None)
-
-    try:
-        if detached:
-            detached_data = await _start_detached_runtime_job_via_ssh(
-                runtime=runtime,
-                session_id=session_id,
-                command_text=command_text,
-                privilege=privilege,
-                sandbox_workspace=sandbox_workspace,
-                sandbox_cwd=sandbox_cwd,
-                env=env,
-            )
-            job = detached_data["job"]
-
-            await mark_runtime_state(session_id, active=False, command=command_text, pid=detached_data["pid"])
-            return {
-                "ok": True,
-                "detached": True,
-                "job": job,
-                "session_id": str(session_id),
-                "workspace": sandbox_workspace,
-                "cwd": sandbox_cwd,
-                "privilege": privilege,
-            }
-
-        if auto_promote:
-            detached_data = await _start_detached_runtime_job_via_ssh(
-                runtime=runtime,
-                session_id=session_id,
-                command_text=command_text,
-                privilege=privilege,
-                sandbox_workspace=sandbox_workspace,
-                sandbox_cwd=sandbox_cwd,
-                env=env,
-            )
-            completed = await _wait_for_detached_runtime_job_completion(
-                session_id=session_id,
-                job_id=str(detached_data["job"]["id"]),
-                wait_seconds=_RUNTIME_EXEC_AUTO_PROMOTE_SECONDS,
-            )
-            if completed is None:
-                command_result_details = {
-                    "ok": True,
-                    "detached": True,
-                    "auto_promoted": True,
-                    "preemptively_backgrounded": True,
-                    "background_reason": "requested_timeout_exceeds_interactive_threshold",
-                    "message": (
-                        "Started as a tracked background job because the requested "
-                        f"timeout ({timeout_seconds}s) exceeds the interactive "
-                        f"threshold ({_RUNTIME_EXEC_AUTO_PROMOTE_SECONDS}s)."
-                    ),
-                    "job": detached_data["job"],
-                    "privilege": privilege,
-                }
-                await mark_runtime_state(session_id, active=False, command=command_text, pid=detached_data["pid"])
-                return {
-                    **command_result_details,
-                    "session_id": str(session_id),
-                    "workspace": sandbox_workspace,
-                    "cwd": sandbox_cwd,
-                }
-
-            logs = completed.get("logs") or {}
-            job = completed["job"]
-            if not _detached_job_has_terminal_result(job):
-                command_result_details = {
-                    "ok": True,
-                    "detached": True,
-                    "auto_promoted": True,
-                    "preemptively_backgrounded": True,
-                    "background_reason": "requested_timeout_exceeds_interactive_threshold",
-                    "message": (
-                        "Started as a tracked background job because the requested "
-                        f"timeout ({timeout_seconds}s) exceeds the interactive "
-                        f"threshold ({_RUNTIME_EXEC_AUTO_PROMOTE_SECONDS}s)."
-                    ),
-                    "job": job,
-                    "privilege": privilege,
-                }
-                await mark_runtime_state(session_id, active=False, command=command_text, pid=detached_data["pid"])
-                return {
-                    **command_result_details,
-                    "session_id": str(session_id),
-                    "workspace": sandbox_workspace,
-                    "cwd": sandbox_cwd,
-                }
-            stdout_text = _truncate_runtime_exec_text(str(logs.get("stdout_tail") or ""))
-            stderr_text = _truncate_runtime_exec_text(str(logs.get("stderr_tail") or ""))
-            if not stdout_text:
-                stdout_text = _truncate_runtime_exec_text(
-                    await _read_remote_runtime_log_tail(
-                        runtime,
-                        path=str(detached_data["stdout_vm_path"]),
-                        tail_bytes=_MAX_RUNTIME_EXEC_OUTPUT_CHARS,
-                    )
+    # Root path: direct SSH, no terminal, full default env.
+    if privilege != "user":
+        env: dict[str, str] = {
+            "HOME": sandbox_workspace,
+            "PWD": sandbox_cwd,
+            "TMPDIR": "/tmp",
+            **explicit_env,
+        }
+        command_result_details: dict[str, Any] | None = None
+        await mark_runtime_state(session_id, active=True, command=command_text, pid=None)
+        try:
+            try:
+                result = await runtime.client.run(
+                    command_text,
+                    cwd=sandbox_cwd,
+                    env=env,
+                    timeout=timeout_seconds,
+                    as_root=True,
                 )
-            if not stderr_text:
-                stderr_text = _truncate_runtime_exec_text(
-                    await _read_remote_runtime_log_tail(
-                        runtime,
-                        path=str(detached_data["stderr_vm_path"]),
-                        tail_bytes=_MAX_RUNTIME_EXEC_OUTPUT_CHARS,
-                    )
+                timed_out = False
+                timeout_hint = None
+            except TimeoutError:
+                timed_out = True
+                timeout_hint = (
+                    f"Command timed out after {timeout_seconds}s. "
+                    "Use background=true for long-running commands."
                 )
-            ok = str(job.get("status")) == "completed"
+                result = RuntimeExecResult(exit_status=-1, stdout="", stderr="[timed out]")
+
             command_result_details = {
-                "ok": ok,
-                "detached": False,
-                "auto_promoted": True,
-                "preemptively_backgrounded": True,
-                "background_reason": "requested_timeout_exceeds_interactive_threshold",
-                "timed_out": False,
-                "returncode": job.get("returncode"),
-                "stdout": stdout_text,
-                "stderr": stderr_text,
-                "message": None,
+                "ok": not timed_out and result.exit_status == 0,
+                "timed_out": timed_out,
+                "returncode": result.exit_status,
+                "stdout": _truncate_runtime_exec_text(result.stdout),
+                "stderr": _truncate_runtime_exec_text(result.stderr),
+                "message": timeout_hint,
                 "privilege": privilege,
             }
-            await mark_runtime_state(session_id, active=False, command=command_text, pid=None)
             return {
                 **command_result_details,
                 "session_id": str(session_id),
                 "workspace": sandbox_workspace,
                 "cwd": sandbox_cwd,
             }
-
-        # Inline execution
-        timeout_hint: str | None = None
-        timed_out = False
-        try:
-            result = await runtime.client.run(
-                command_text,
-                cwd=sandbox_cwd,
-                env=env,
-                timeout=timeout_seconds,
-                as_root=(privilege == "root"),
+        finally:
+            await mark_runtime_state(
+                session_id,
+                active=False,
+                command=command_text,
+                pid=None,
+                action_details=command_result_details,
             )
+
+    # User path: through the terminal.
+    terminal_manager = get_terminal_manager()
+    existed_before = any(
+        rec.terminal_id == terminal_id
+        for rec in terminal_manager.list_terminals(session_id)
+    )
+
+    if background:
+        # Background fire-and-forget: spawn, return a handle, completion
+        # will fire a wakeup notification via the configured handler.
+        await mark_runtime_state(session_id, active=True, command=command_text, pid=None)
+        try:
+            try:
+                bg_handle = await terminal_manager.run_command_background(
+                    runtime=runtime,
+                    session_id=session_id,
+                    terminal_id=terminal_id,
+                    command=command_text,
+                    timeout=timeout_seconds,
+                    env=explicit_env or None,
+                    cwd=explicit_cwd,
+                    label_hint=command_text,
+                    created_by="agent",
+                    auto=terminal_auto,
+                )
+            except TerminalBlockedError as exc:
+                return {
+                    "ok": False,
+                    "background": True,
+                    "terminal_id": terminal_id,
+                    "terminal_auto": terminal_auto,
+                    "terminal_blocked": {
+                        "reason": exc.reason,
+                        "current_command": exc.current_command,
+                    },
+                    "message": (
+                        f"Cannot start background command in terminal {terminal_id!r}: "
+                        f"user has a foreground process running ({exc.current_command or 'unknown'}). "
+                        "Pick a different terminal_id."
+                    ),
+                    "session_id": str(session_id),
+                    "workspace": sandbox_workspace,
+                    "cwd": sandbox_cwd,
+                    "privilege": privilege,
+                }
+            except TerminalUnavailableError as exc:
+                return {
+                    "ok": False,
+                    "background": True,
+                    "terminal_id": terminal_id,
+                    "terminal_auto": terminal_auto,
+                    "message": (
+                        f"Terminal subsystem unavailable: {exc.reason}. "
+                        f"{exc.detail or ''}"
+                    ).strip(),
+                    "session_id": str(session_id),
+                    "workspace": sandbox_workspace,
+                    "cwd": sandbox_cwd,
+                    "privilege": privilege,
+                }
+            return {
+                **bg_handle,
+                "terminal_auto": terminal_auto,
+                "terminal_created": not existed_before,
+                "session_id": str(session_id),
+                "workspace": sandbox_workspace,
+                "cwd": sandbox_cwd,
+                "privilege": privilege,
+                "message": (
+                    f"Background job started in terminal {terminal_id!r}. "
+                    "Continue with other useful work in this turn, or end the turn. "
+                    "DO NOT poll runtime.terminal_read waiting for completion — "
+                    "you will receive a fresh agent turn with the result automatically."
+                ),
+            }
+        finally:
+            # mark_runtime_state for the FOREGROUND/background-spawn distinction
+            # is fine here: background spawn returns immediately, so we flip
+            # active back off. The actual completion is tracked by the watcher.
+            await mark_runtime_state(session_id, active=False, command=command_text, pid=None)
+
+    # Foreground: await full result.
+    command_result_details_fg: dict[str, Any] | None = None
+    await mark_runtime_state(session_id, active=True, command=command_text, pid=None)
+    timeout_hint: str | None = None
+    timed_out = False
+    terminal_blocked: dict[str, Any] | None = None
+    try:
+        try:
+            result = await terminal_manager.run_command(
+                runtime=runtime,
+                session_id=session_id,
+                terminal_id=terminal_id,
+                command=command_text,
+                timeout=timeout_seconds,
+                env=explicit_env or None,
+                cwd=explicit_cwd,
+                label_hint=command_text,
+                created_by="agent",
+                auto=terminal_auto,
+            )
+        except TerminalBlockedError as exc:
+            terminal_blocked = {
+                "reason": exc.reason,
+                "current_command": exc.current_command,
+            }
+            result = RuntimeExecResult(
+                exit_status=-1,
+                stdout="",
+                stderr=f"[terminal busy: {exc.current_command or 'foreground process'}]",
+            )
+        except TerminalUnavailableError as exc:
+            result = RuntimeExecResult(
+                exit_status=-1,
+                stdout="",
+                stderr=f"[terminal unavailable: {exc.reason}] {exc.detail or ''}".strip(),
+            )
+            timeout_hint = (
+                f"Terminal subsystem unavailable: {exc.reason}. "
+                f"{exc.detail or ''}"
+            ).strip()
         except TimeoutError:
             timed_out = True
             timeout_hint = (
                 f"Command timed out after {timeout_seconds}s. "
-                "Use detached=true for long-running/background commands."
+                "Use background=true for long-running commands."
             )
             result = RuntimeExecResult(exit_status=-1, stdout="", stderr="[timed out]")
+        else:
+            # `run_command` returns exit_status=-1 with a known stderr when the
+            # internal poll deadline hits; surface that as a clean timeout.
+            if result.exit_status == -1 and "did not finish within timeout" in (result.stderr or ""):
+                timed_out = True
+                timeout_hint = (
+                    f"Command timed out after {timeout_seconds}s. "
+                    "Use background=true for long-running commands."
+                )
 
         stdout_text = _truncate_runtime_exec_text(result.stdout)
         stderr_text = _truncate_runtime_exec_text(result.stderr)
-        ok = not timed_out and result.exit_status == 0
+        ok = (
+            not timed_out
+            and terminal_blocked is None
+            and result.exit_status == 0
+        )
 
-        command_result_details = {
+        command_result_details_fg = {
             "ok": ok,
             "timed_out": timed_out,
             "returncode": result.exit_status,
@@ -468,9 +453,14 @@ async def _execute_in_runtime(
             "stderr": stderr_text,
             "message": timeout_hint,
             "privilege": privilege,
+            "terminal_id": terminal_id,
+            "terminal_auto": terminal_auto,
+            "terminal_created": not existed_before and terminal_blocked is None,
         }
+        if terminal_blocked is not None:
+            command_result_details_fg["terminal_blocked"] = terminal_blocked
         return {
-            **command_result_details,
+            **command_result_details_fg,
             "session_id": str(session_id),
             "workspace": sandbox_workspace,
             "cwd": sandbox_cwd,
@@ -481,12 +471,23 @@ async def _execute_in_runtime(
             active=False,
             command=command_text,
             pid=None,
-            action_details=command_result_details,
+            action_details=command_result_details_fg,
         )
 
 
+def _validate_terminal_id(raw: Any) -> str:
+    if raw is None:
+        return _DEFAULT_TERMINAL_ID
+    if not isinstance(raw, str) or not raw.strip():
+        raise ToolValidationError("Field 'terminal_id' must be a non-empty string when provided")
+    value = raw.strip()
+    if not _TERMINAL_ID_PATTERN.match(value):
+        raise ToolValidationError("Field 'terminal_id' must match [a-zA-Z0-9_-]{1,32}")
+    return value
+
+
 # ---------------------------------------------------------------------------
-# Handler functions (module-level)
+# Handler functions
 # ---------------------------------------------------------------------------
 
 
@@ -504,7 +505,6 @@ async def _handle_run_with_privilege(
     command_text = shell_command.strip()
 
     timeout_seconds = payload.get("timeout_seconds", 300)
-    timeout_seconds_explicit = "timeout_seconds" in payload
     if (
         not isinstance(timeout_seconds, int)
         or isinstance(timeout_seconds, bool)
@@ -513,13 +513,14 @@ async def _handle_run_with_privilege(
         raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
     timeout_seconds = min(timeout_seconds, 1800)
 
-    detached = payload.get("detached", False)
-    if not isinstance(detached, bool):
-        raise ToolValidationError("Field 'detached' must be a boolean")
-    if not detached and _command_requests_background_execution(command_text):
+    background = payload.get("background", False)
+    if not isinstance(background, bool):
+        raise ToolValidationError("Field 'background' must be a boolean")
+    if not background and _command_requests_background_execution(command_text):
         raise ToolValidationError(
-            "Background shell execution is not allowed for inline runtime commands. "
-            "Use detached=true for long-running/background commands."
+            "Shell-level backgrounding (trailing &, nohup, disown) is not allowed "
+            "for foreground commands. Set background=true on the tool call instead — "
+            "the result will be delivered via a completion notification."
         )
 
     cwd_raw = payload.get("cwd")
@@ -531,6 +532,28 @@ async def _handle_run_with_privilege(
         env_payload = {}
     if not isinstance(env_payload, dict):
         raise ToolValidationError("Field 'env' must be an object")
+
+    terminal_id_raw = payload.get("terminal_id")
+    if terminal_id_raw is None:
+        if background and privilege == "user":
+            # Auto-allocate a bg-<token> id when the agent didn't pick one.
+            # Background can't share terminal '0' (the user's main shell)
+            # because long-running output would clobber it.
+            terminal_id = f"bg-{uuid4().hex[:8]}"
+        else:
+            terminal_id = _DEFAULT_TERMINAL_ID
+    else:
+        terminal_id = _validate_terminal_id(terminal_id_raw)
+
+    # Hard guardrail: background never gets to share the main shell.
+    if background and privilege == "user" and terminal_id == _DEFAULT_TERMINAL_ID:
+        raise ToolValidationError(
+            "background=true cannot use terminal_id='0' (the user's main shell). "
+            "Pick a descriptive named id ('build', 'tests', 'server'...) or omit "
+            "terminal_id to auto-allocate (bg-<token>)."
+        )
+
+    terminal_auto = terminal_id.startswith("auto-") or terminal_id.startswith("bg-")
 
     await _ensure_session_exists(session_id)
     await ensure_runtime_layout(session_id)
@@ -544,8 +567,9 @@ async def _handle_run_with_privilege(
         cwd_raw=cwd_raw,
         env_payload=env_payload,
         timeout_seconds=timeout_seconds,
-        detached=detached,
-        auto_promote=timeout_seconds_explicit and timeout_seconds > _RUNTIME_EXEC_AUTO_PROMOTE_SECONDS,
+        background=background,
+        terminal_id=terminal_id,
+        terminal_auto=terminal_auto,
     )
 
 
@@ -557,70 +581,74 @@ async def handle_run_root(payload: dict[str, Any], runtime: ToolRuntimeContext) 
     return await _handle_run_with_privilege(payload, runtime=runtime, privilege="root")
 
 
-async def handle_jobs_list(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+async def handle_terminal_list(
+    payload: dict[str, Any],
+    runtime: ToolRuntimeContext,
+) -> dict[str, Any]:
+    """Snapshot the active terminals for this chat session."""
+    _ = payload  # no parameters
     session_id = require_runtime_session_id(runtime)
-    include_completed = payload.get("include_completed", True)
-    if not isinstance(include_completed, bool):
-        raise ToolValidationError("Field 'include_completed' must be a boolean")
     await _ensure_session_exists(session_id)
-    jobs = await list_detached_runtime_jobs(session_id, include_completed=include_completed)
+    manager = get_terminal_manager()
     return {
         "session_id": str(session_id),
-        "jobs": jobs,
-        "total": len(jobs),
+        "terminals": manager.descriptors_for(session_id),
     }
 
 
-async def handle_job_status(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    job_id = payload.get("job_id")
-    if not isinstance(job_id, str) or not job_id.strip():
-        raise ToolValidationError("Field 'job_id' must be a non-empty string")
+async def handle_terminal_read(
+    payload: dict[str, Any],
+    runtime: ToolRuntimeContext,
+) -> dict[str, Any]:
+    """Return ANSI-stripped recent output from a specific terminal."""
     session_id = require_runtime_session_id(runtime)
-    await _ensure_session_exists(session_id)
-    job = await get_detached_runtime_job(session_id, job_id=job_id.strip())
-    if job is None:
-        raise ToolValidationError("Detached runtime job not found")
-    return {"session_id": str(session_id), "job": job}
-
-
-async def handle_job_logs(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    job_id = payload.get("job_id")
-    if not isinstance(job_id, str) or not job_id.strip():
-        raise ToolValidationError("Field 'job_id' must be a non-empty string")
-    session_id = require_runtime_session_id(runtime)
-    tail_bytes = payload.get("tail_bytes", 8000)
+    terminal_id = _validate_terminal_id(payload.get("terminal_id"))
+    tail_bytes_raw = payload.get("tail_bytes", 8000)
     if (
-        not isinstance(tail_bytes, int)
-        or isinstance(tail_bytes, bool)
-        or tail_bytes < 256
+        not isinstance(tail_bytes_raw, int)
+        or isinstance(tail_bytes_raw, bool)
+        or tail_bytes_raw < 256
     ):
         raise ToolValidationError("Field 'tail_bytes' must be an integer >= 256")
+
     await _ensure_session_exists(session_id)
-    data = await read_detached_runtime_job_logs(
-        session_id,
-        job_id=job_id.strip(),
-        tail_bytes=tail_bytes,
-    )
-    if data is None:
-        raise ToolValidationError("Detached runtime job not found")
-    return {"session_id": str(session_id), **data}
+    runtime_instance = await get_runtime().ensure(session_id)
+    manager = get_terminal_manager()
+    try:
+        output = await manager.read_pane_tail(
+            runtime=runtime_instance,
+            session_id=session_id,
+            terminal_id=terminal_id,
+            tail_bytes=tail_bytes_raw,
+        )
+    except ValueError as exc:
+        raise ToolValidationError(str(exc)) from exc
+    return {
+        "session_id": str(session_id),
+        "terminal_id": terminal_id,
+        "output": _truncate_runtime_exec_text(output),
+    }
 
 
-async def handle_job_stop(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    job_id = payload.get("job_id")
-    if not isinstance(job_id, str) or not job_id.strip():
-        raise ToolValidationError("Field 'job_id' must be a non-empty string")
+async def handle_terminal_close(
+    payload: dict[str, Any],
+    runtime: ToolRuntimeContext,
+) -> dict[str, Any]:
+    """Kill a tmux-backed terminal and remove its pill from the chat UI."""
     session_id = require_runtime_session_id(runtime)
-    force = payload.get("force", False)
-    if not isinstance(force, bool):
-        raise ToolValidationError("Field 'force' must be a boolean")
+    terminal_id = _validate_terminal_id(payload.get("terminal_id"))
+    if terminal_id == _DEFAULT_TERMINAL_ID:
+        raise ToolValidationError(
+            "Refusing to close terminal '0' — that's the user's primary shared "
+            "shell. Only close named or auto-allocated terminals."
+        )
+
     await _ensure_session_exists(session_id)
-    job = await stop_detached_runtime_job(
-        session_id,
-        job_id=job_id.strip(),
-        force=force,
-        reason="Stopped by runtime command=job_stop",
-    )
-    if job is None:
-        raise ToolValidationError("Detached runtime job not found")
-    return {"session_id": str(session_id), "job": job}
+    manager = get_terminal_manager()
+    existed = any(rec.terminal_id == terminal_id for rec in manager.list_terminals(session_id))
+    await manager.terminate(session_id, terminal_id=terminal_id)
+    return {
+        "session_id": str(session_id),
+        "terminal_id": terminal_id,
+        "closed": existed,
+    }
