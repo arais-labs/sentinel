@@ -29,7 +29,9 @@ def _new_session(db: FakeDB, user_id: str = "dev-admin") -> Session:
 
 
 def _support() -> SentinelRuntimeSupport:
-    return SentinelRuntimeSupport(provider=None, context_builder=None, tool_adapter=None)
+    return SentinelRuntimeSupport(
+        provider=None, context_builder=None, tool_registry=None, tool_executor=None,
+    )
 
 
 def test_runtime_context_snapshot_includes_conversation_history_layer():

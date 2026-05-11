@@ -272,8 +272,8 @@ class SentinelLoopRuntimeAdapter(Runtime):
         runtime = AgentRuntimeEngine(
             provider=provider_adapter,
             tool_registry=SentinelToolRegistryAdapter(
-                self._loop.tool_adapter.registry,
-                self._loop.tool_adapter.executor,
+                self._loop.tool_registry,
+                self._loop.tool_executor,
                 agent_mode=mode_definition.id,
                 session_id=self._session_id,
                 runtime_session_id=self._runtime_session_id,

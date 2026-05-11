@@ -5,6 +5,8 @@ from enum import StrEnum
 from typing import Any, Awaitable, Callable
 from uuid import UUID
 
+from app.services.llm.generic.types import ToolSchema
+
 
 @dataclass(slots=True)
 class ToolRuntimeContext:
@@ -100,3 +102,20 @@ class ToolRegistry:
     def is_allowed(self, name: str) -> bool:
         tool = self.get(name)
         return bool(tool and tool.enabled)
+
+    def list_schemas(self) -> list[ToolSchema]:
+        """Snapshot the enabled tools as the schema records the agent loop
+        feeds to the LLM. Living here (next to the registry it walks) means a
+        single source of truth — the previous home on ``ToolAdapter`` was
+        only used by ``SentinelRuntimeSupport`` and the rest of that class
+        had become dead code.
+        """
+        return [
+            ToolSchema(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters_schema,
+            )
+            for tool in self.list_all()
+            if tool.enabled
+        ]

@@ -15,7 +15,8 @@ from app.config import settings
 from app.models import Message, Session
 from app.services.agent.agent_modes import AgentMode
 from app.services.agent.context_builder import ContextBuilder
-from app.services.agent.tool_adapter import ToolAdapter
+from app.services.tools.executor import ToolExecutor
+from app.services.tools.registry import ToolRegistry
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import (
     AgentMessage,
@@ -84,11 +85,13 @@ class SentinelRuntimeSupport:
         self,
         provider: LLMProvider,
         context_builder: ContextBuilder,
-        tool_adapter: ToolAdapter,
+        tool_registry: ToolRegistry,
+        tool_executor: ToolExecutor,
     ) -> None:
         self.provider = provider
         self.context_builder = context_builder
-        self.tool_adapter = tool_adapter
+        self.tool_registry = tool_registry
+        self.tool_executor = tool_executor
 
     async def prepare_runtime_turn_context(
         self,
@@ -110,7 +113,7 @@ class SentinelRuntimeSupport:
             pending_user_message=pending_user_message,
             agent_mode=agent_mode,
         )
-        tools = self.tool_adapter.get_tool_schemas()
+        tools = self.tool_registry.list_schemas()
         return PreparedRuntimeTurnContext(
             messages=messages,
             tools=tools,

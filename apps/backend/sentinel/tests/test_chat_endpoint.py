@@ -8,7 +8,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.services.agent import PreparedRuntimeTurnContext, ToolAdapter
+from app.services.agent import PreparedRuntimeTurnContext
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AssistantMessage, TextContent, TokenUsage
 from app.services.tools.executor import ToolExecutor
@@ -51,7 +51,9 @@ class _FakeLoop:
     def __init__(self) -> None:
         self.calls = []
         self.provider = _FakeProvider()
-        self.tool_adapter = ToolAdapter(ToolRegistry(), ToolExecutor(ToolRegistry()))
+        registry = ToolRegistry()
+        self.tool_registry = registry
+        self.tool_executor = ToolExecutor(registry)
 
     async def prepare_runtime_turn_context(
         self,

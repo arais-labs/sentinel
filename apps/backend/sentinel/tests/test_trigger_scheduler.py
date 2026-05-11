@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.models import Session, SessionBinding, Trigger, TriggerLog
-from app.services.agent import PreparedRuntimeTurnContext, ToolAdapter
+from app.services.agent import PreparedRuntimeTurnContext
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, TextContent
 from app.services.sessions.agent_run_registry import AgentRunRegistry
@@ -43,7 +43,8 @@ class _RuntimeSupportStub:
         self.calls: list[dict] = []
         self.context_builder = SimpleNamespace(build=self._build_context)
         registry = ToolRegistry()
-        self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
+        self.tool_registry = registry
+        self.tool_executor = ToolExecutor(registry)
         self.provider = _StreamingProvider()
 
     async def prepare_runtime_turn_context(
@@ -62,7 +63,7 @@ class _RuntimeSupportStub:
         messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
         return PreparedRuntimeTurnContext(
             messages=messages,
-            tools=self.tool_adapter.get_tool_schemas(),
+            tools=self.tool_registry.list_schemas(),
             effective_system_prompt=system_prompt,
             runtime_context_snapshot=None,
         )
@@ -106,7 +107,8 @@ class _BlockingRuntimeSupportStub:
     def __init__(self) -> None:
         self.context_builder = SimpleNamespace(build=self._build_context)
         registry = ToolRegistry()
-        self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
+        self.tool_registry = registry
+        self.tool_executor = ToolExecutor(registry)
         self.provider = _BlockingProvider()
 
     async def prepare_runtime_turn_context(
@@ -125,7 +127,7 @@ class _BlockingRuntimeSupportStub:
         messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
         return PreparedRuntimeTurnContext(
             messages=messages,
-            tools=self.tool_adapter.get_tool_schemas(),
+            tools=self.tool_registry.list_schemas(),
             effective_system_prompt=system_prompt,
             runtime_context_snapshot=None,
         )

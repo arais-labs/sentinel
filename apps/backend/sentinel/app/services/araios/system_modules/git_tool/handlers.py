@@ -11,6 +11,8 @@ import os
 import shlex
 import stat
 import tempfile
+
+import httpx
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -163,6 +165,127 @@ def _normalize_command(command: str) -> str:
 def _command_hash(command: str) -> str:
     normalized = _normalize_command(command)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
+# ---------------------------------------------------------------------------
+# Account validation (pre-flight, per-command)
+# ---------------------------------------------------------------------------
+
+_ACCOUNT_PROBE_TIMEOUT_SECONDS = 5.0
+
+
+async def _validate_github_account(
+    *,
+    account: GitAccount,
+    token: str,
+    target_owner: str | None,
+) -> dict[str, Any] | None:
+    """Pre-flight probe a GitHub PAT. Returns None if healthy, or a
+    {name, host, reason, detail} warning with the raw GitHub response."""
+    host = (account.host or "").lower()
+    if host not in {"github.com", "api.github.com"}:
+        return None
+    if not token:
+        return {
+            "name": account.name,
+            "host": account.host,
+            "reason": "missing_token",
+            "detail": "Account has no token configured for this access mode.",
+        }
+
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    base = "https://api.github.com"
+    try:
+        async with httpx.AsyncClient(timeout=_ACCOUNT_PROBE_TIMEOUT_SECONDS) as client:
+            user_resp = await client.get(f"{base}/user", headers=headers)
+            if user_resp.status_code == 401:
+                return {
+                    "name": account.name,
+                    "host": account.host,
+                    "reason": "token_invalid",
+                    "detail": (user_resp.text or "401 Unauthorized")[:500],
+                }
+            if 400 <= user_resp.status_code < 500:
+                return {
+                    "name": account.name,
+                    "host": account.host,
+                    "reason": "probe_failed",
+                    "detail": f"HTTP {user_resp.status_code}: {(user_resp.text or '')[:300]}",
+                }
+
+            if not target_owner:
+                return None
+
+            # /users/<owner> resolves both Users and Orgs; 404 means the
+            # agent has the wrong slug.
+            owner_resp = await client.get(
+                f"{base}/users/{target_owner}", headers=headers,
+            )
+            if owner_resp.status_code == 404:
+                return {
+                    "name": account.name,
+                    "host": account.host,
+                    "reason": "owner_not_found",
+                    "detail": (
+                        f"GitHub has no user or organization named "
+                        f"'{target_owner}'. "
+                        + (owner_resp.text or "")[:300]
+                    ),
+                }
+            if owner_resp.status_code >= 400 and owner_resp.status_code != 403:
+                return {
+                    "name": account.name,
+                    "host": account.host,
+                    "reason": "probe_failed",
+                    "detail": f"HTTP {owner_resp.status_code}: {(owner_resp.text or '')[:300]}",
+                }
+
+            # Org repos probe surfaces SAML-SSO 403s that /user never sees.
+            owner_type: str | None = None
+            try:
+                owner_type = (owner_resp.json() or {}).get("type")
+            except Exception:  # noqa: BLE001
+                owner_type = None
+            if owner_type == "Organization":
+                org_resp = await client.get(
+                    f"{base}/orgs/{target_owner}/repos",
+                    params={"per_page": 1},
+                    headers=headers,
+                )
+                if org_resp.status_code == 403:
+                    return {
+                        "name": account.name,
+                        "host": account.host,
+                        "reason": "org_forbidden",
+                        "detail": (org_resp.text or "403 Forbidden")[:500],
+                    }
+    except httpx.RequestError as exc:
+        return {
+            "name": account.name,
+            "host": account.host,
+            "reason": "network_error",
+            "detail": str(exc)[:300],
+        }
+    return None
+
+
+def _attach_account_warning(
+    result: dict[str, Any],
+    warning: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Append a single account warning to the tool result if one was produced."""
+    if warning is None:
+        return result
+    existing = result.get("account_warnings")
+    if isinstance(existing, list):
+        existing.append(warning)
+    else:
+        result["account_warnings"] = [warning]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1033,6 +1156,10 @@ async def _execute_gh_command(
         missing_kind = "write token" if mode == "write" else "read token"
         raise ToolValidationError(f"Matching git account is missing required {missing_kind}")
 
+    account_warning = await _validate_github_account(
+        account=account, token=token, target_owner=owner,
+    )
+
     env = os.environ.copy()
     env["HOME"] = str(workspace_dir)
     env["PWD"] = str(run_dir)
@@ -1055,6 +1182,7 @@ async def _execute_gh_command(
         "host": account.host,
         "scope_pattern": account.scope_pattern,
     }
+    _attach_account_warning(result, account_warning)
     return result
 
 
@@ -1210,6 +1338,16 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
                 f"Add/update a Git account with matching host/scope and a {required_token}."
             )
 
+        probe_owner = (account.repo.path.split("/", 1)[0] or None) if account else None
+        probe_token = (
+            account.account.token_write if network_mode == "write" else account.account.token_read
+        ) or ""
+        account_warning = await _validate_github_account(
+            account=account.account,
+            token=probe_token.strip(),
+            target_owner=probe_owner,
+        )
+
         result = await _run_network_git(
             account=account,
             workspace_dir=workspace_dir,
@@ -1226,6 +1364,7 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
                 author_email=account.account.author_email,
                 timeout_seconds=min(60, timeout_seconds),
             )
+        _attach_account_warning(result, account_warning)
         return result
 
     if subcommand == "commit":

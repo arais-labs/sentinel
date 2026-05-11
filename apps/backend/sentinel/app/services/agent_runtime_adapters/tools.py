@@ -11,6 +11,7 @@ from app.sentral import (
     ToolRegistry as RuntimeToolRegistry,
 )
 from app.services.agent.agent_modes import AgentMode
+from app.services.agent.attachments import extract_attachments
 from app.services.agent_runtime_adapters.conversions import approval_payload_to_request
 from app.services.tools.approval.extractors import extract_approval_metadata_from_tool_result
 from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
@@ -21,6 +22,11 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - optional until secrets module lands
     async def resolve_secrets_in_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
+
+
+# Top-level keys stripped from tool results before they reach the model —
+# tools echo these for logging; the model already has them from turn scaffold.
+_RESULT_STRIP_TOP_LEVEL_FIELDS: frozenset[str] = frozenset({"session_id"})
 
 
 class SentinelToolRegistryAdapter(RuntimeToolRegistry):
@@ -121,9 +127,23 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
             )
             if approval is not None:
                 metadata["approval"] = approval
+
+            cleaned_content = result
+            if isinstance(result, (dict, list)):
+                attachments: list[dict[str, Any]] = []
+                cleaned_content = extract_attachments(result, attachments=attachments)
+                if attachments:
+                    metadata["attachments"] = attachments
+
+            if isinstance(cleaned_content, dict):
+                cleaned_content = {
+                    k: v for k, v in cleaned_content.items()
+                    if k not in _RESULT_STRIP_TOP_LEVEL_FIELDS
+                }
+
             return ToolExecutionResult(
                 status="ok",
-                content=result,
+                content=cleaned_content,
                 metadata=metadata,
             )
 

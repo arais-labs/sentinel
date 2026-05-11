@@ -4,7 +4,7 @@ import asyncio
 import json
 
 from app.models import Message, Session, SubAgentTask
-from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent, TokenUsage
 from app.services.sub_agents import SubAgentOrchestrator
@@ -84,7 +84,8 @@ def _build_base_runtime_support(
     return SentinelRuntimeSupport(
         provider,
         ContextBuilder(default_system_prompt="base"),
-        ToolAdapter(tool_registry, ToolExecutor(tool_registry)),
+        tool_registry,
+        ToolExecutor(tool_registry),
     )
 
 
@@ -238,7 +239,7 @@ def test_sub_agents_do_not_receive_delegate_tool_or_policy():
     orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), registry)
 
     scoped = orchestrator._scoped_runtime_support(task)
-    scoped_tools = {tool.name for tool in scoped.tool_adapter.get_tool_schemas()}
+    scoped_tools = {tool.name for tool in scoped.tool_registry.list_schemas()}
     assert "delegate" not in scoped_tools
     assert "delegate" not in getattr(scoped.context_builder, "_available_tools", set())
 

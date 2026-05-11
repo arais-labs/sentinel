@@ -8,7 +8,7 @@ from app.models import Memory, Message, Session
 from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
 from app.services.araios.system_modules.memory import handlers as memory_module
 from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
-from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent, TokenUsage
@@ -164,7 +164,8 @@ def test_runtime_support_can_call_memory_search_tool():
         loop=SentinelRuntimeSupport(
             provider,
             ContextBuilder(default_system_prompt="sys"),
-            ToolAdapter(registry, ToolExecutor(registry)),
+            registry,
+            ToolExecutor(registry),
         ),
         db=loop_db,
         session_id=session.id,

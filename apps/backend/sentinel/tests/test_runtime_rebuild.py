@@ -25,18 +25,12 @@ class _FakeContextBuilder:
         self.memory_search_service = memory_search_service
 
 
-class _FakeToolAdapter:
-    def __init__(self, tool_registry, tool_executor, session_factory):
-        self.tool_registry = tool_registry
-        self.tool_executor = tool_executor
-        self.session_factory = session_factory
-
-
 class _FakeRuntimeSupport:
-    def __init__(self, provider, context_builder, tool_adapter):
+    def __init__(self, provider, context_builder, tool_registry, tool_executor):
         self.provider = provider
         self.context_builder = context_builder
-        self.tool_adapter = tool_adapter
+        self.tool_registry = tool_registry
+        self.tool_executor = tool_executor
 
 
 def test_rebuild_agent_runtime_support_syncs_scheduler(monkeypatch):
@@ -48,7 +42,6 @@ def test_rebuild_agent_runtime_support_syncs_scheduler(monkeypatch):
         lambda _settings: object(),
     )
     monkeypatch.setattr(runtime_rebuild_module, "ContextBuilder", _FakeContextBuilder)
-    monkeypatch.setattr(runtime_rebuild_module, "ToolAdapter", _FakeToolAdapter)
     monkeypatch.setattr(runtime_rebuild_module, "SentinelRuntimeSupport", _FakeRuntimeSupport)
 
     scheduler = _FakeScheduler()

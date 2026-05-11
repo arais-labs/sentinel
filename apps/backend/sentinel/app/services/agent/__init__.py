@@ -10,9 +10,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from app.services.agent.context_builder import ContextBuilder
     from app.services.agent.runtime_support import PreparedRuntimeTurnContext, SentinelRuntimeSupport
-    from app.services.agent.tool_adapter import ToolAdapter
 
-__all__ = ["ContextBuilder", "ToolAdapter", "SentinelRuntimeSupport", "PreparedRuntimeTurnContext"]
+__all__ = ["ContextBuilder", "SentinelRuntimeSupport", "PreparedRuntimeTurnContext"]
 
 
 def __getattr__(name: str) -> Any:
@@ -20,10 +19,6 @@ def __getattr__(name: str) -> Any:
         from app.services.agent.context_builder import ContextBuilder
 
         return ContextBuilder
-    if name == "ToolAdapter":
-        from app.services.agent.tool_adapter import ToolAdapter
-
-        return ToolAdapter
     if name == "SentinelRuntimeSupport":
         from app.services.agent.runtime_support import SentinelRuntimeSupport
 

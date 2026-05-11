@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from app.sentral import TextBlock
-from app.services.agent import PreparedRuntimeTurnContext, ToolAdapter
+from app.services.agent import PreparedRuntimeTurnContext
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import (
     AgentEvent,
@@ -115,7 +115,8 @@ class _RuntimeSupportStub:
         self.provider = _FakeProvider()
         self.context_builder = SimpleNamespace(build=AsyncMock(return_value=[]))
         registry = ToolRegistry()
-        self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
+        self.tool_registry = registry
+        self.tool_executor = ToolExecutor(registry)
         self.persist_calls: list[dict] = []
 
     async def prepare_runtime_turn_context(
@@ -134,7 +135,7 @@ class _RuntimeSupportStub:
         messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
         return PreparedRuntimeTurnContext(
             messages=messages,
-            tools=self.tool_adapter.get_tool_schemas(),
+            tools=self.tool_registry.list_schemas(),
             effective_system_prompt=system_prompt,
             runtime_context_snapshot=None,
         )

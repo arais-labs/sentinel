@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock, TurnResult
 from app.models import Session, SubAgentTask
-from app.services.agent import ContextBuilder, SentinelRuntimeSupport, ToolAdapter
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 from app.services.araios.system_modules.browser import (
     BROWSER_TAB_MANAGEMENT_COMMANDS,
@@ -336,15 +336,11 @@ class SubAgentOrchestrator:
             available_tools=available_tools,
             memory_search_service=getattr(base_context, "_memory_search_service", None),
         )
-        tool_adapter = ToolAdapter(
-            scoped_registry,
-            ToolExecutor(scoped_registry),
-            session_factory=self._db_factory,
-        )
         return SentinelRuntimeSupport(
             self._agent_runtime_support.provider,
             context_builder,
-            tool_adapter,
+            scoped_registry,
+            ToolExecutor(scoped_registry),
         )
 
     def _tool_with_optional_tab_scope(

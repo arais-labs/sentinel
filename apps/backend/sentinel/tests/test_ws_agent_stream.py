@@ -11,7 +11,7 @@ from app.config import settings
 from app.dependencies import get_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.services.agent import PreparedRuntimeTurnContext, ToolAdapter
+from app.services.agent import PreparedRuntimeTurnContext
 from app.services.sessions.compaction import CompactionResult
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent
@@ -46,7 +46,8 @@ class _FakeLoop:
     def __init__(self, deltas_by_run: list[list[str]] | None = None) -> None:
         self.context_builder = SimpleNamespace(build=self._build_context)
         registry = ToolRegistry()
-        self.tool_adapter = ToolAdapter(registry, ToolExecutor(registry))
+        self.tool_registry = registry
+        self.tool_executor = ToolExecutor(registry)
         self.provider = _FakeProvider(deltas_by_run)
 
     async def prepare_runtime_turn_context(
@@ -65,7 +66,7 @@ class _FakeLoop:
         messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
         return PreparedRuntimeTurnContext(
             messages=messages,
-            tools=self.tool_adapter.get_tool_schemas(),
+            tools=self.tool_registry.list_schemas(),
             effective_system_prompt=system_prompt,
             runtime_context_snapshot=None,
         )
