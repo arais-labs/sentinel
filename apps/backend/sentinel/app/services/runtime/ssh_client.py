@@ -81,24 +81,54 @@ class SSHClient:
         env: dict[str, str] | None = None,
         as_root: bool = False,
     ) -> RuntimeExecResult:
-        conn = await self._ensure_conn()
         full_command = _build_shell_command(
             command,
             cwd=cwd,
             env=env,
             as_root=as_root,
         )
+        # The cached connection can go stale silently — the SSH server inside
+        # the guest VM idle-times-out long-lived sessions and asyncssh only
+        # surfaces it on the next operation. Retry once with a fresh conn so
+        # callers don't see spurious "guest unreachable" errors after a
+        # period of inactivity (page refresh, agent pause, etc.).
+        for attempt in (1, 2):
+            conn = await self._ensure_conn()
+            try:
+                result = await asyncio.wait_for(
+                    conn.run(full_command, check=False),
+                    timeout=timeout,
+                )
+                return RuntimeExecResult(
+                    exit_status=result.exit_status,
+                    stdout=result.stdout or "",
+                    stderr=result.stderr or "",
+                )
+            except (
+                asyncssh.ConnectionLost,
+                asyncssh.DisconnectError,
+                ConnectionResetError,
+                BrokenPipeError,
+                EOFError,
+            ) as exc:
+                if attempt == 1:
+                    logger.warning(
+                        "SSH connection lost mid-run, reconnecting: %s", exc
+                    )
+                    await self._reset_conn()
+                    continue
+                raise
+        # Unreachable — the loop either returns or raises, but keep mypy happy.
+        raise RuntimeError("SSH run exhausted retries")
 
-        result = await asyncio.wait_for(
-            conn.run(full_command, check=False),
-            timeout=timeout,
-        )
-
-        return RuntimeExecResult(
-            exit_status=result.exit_status,
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
-        )
+    async def _reset_conn(self) -> None:
+        async with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
     async def run_detached(
         self,
