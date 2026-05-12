@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -260,13 +261,21 @@ function FormFieldInput({ field, value, onChange, autoFocus = false }: { field: 
 
   if (field.type === 'textarea') {
     return (
-      <textarea
-        className={`${inputCls} min-h-[80px] py-2 resize-y`}
-        value={value ?? ''}
-        onChange={e => onChange(e.target.value)}
-        autoFocus={autoFocus}
-        rows={3}
-      />
+      <div className="relative">
+        <textarea
+          className={`${inputCls} min-h-[80px] py-2 resize-y`}
+          value={value ?? ''}
+          onChange={e => onChange(e.target.value)}
+          autoFocus={autoFocus}
+          rows={3}
+        />
+        <div className="absolute top-1.5 right-1.5">
+          <MarkdownPreviewButton
+            getContent={() => String(value ?? '')}
+            title={field.label || 'Preview'}
+          />
+        </div>
+      </div>
     );
   }
   if (field.type === 'select') {
@@ -364,6 +373,123 @@ function DynamicDetailPane({ config, record, saving, onPatch, onDelete, onAction
   );
 }
 
+function MarkdownFullscreenViewer({
+  title,
+  content,
+  onClose,
+}: {
+  title: string;
+  content: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return createPortal(
+    <div className="fixed inset-0 z-[1200] flex flex-col bg-[color:var(--surface-1)] animate-in fade-in duration-150">
+      <div className="px-4 py-3 border-b border-[color:var(--border-subtle)] flex items-center justify-between gap-3">
+        <div className="min-w-0 flex items-center gap-2">
+          <FileText size={14} className="text-sky-400 shrink-0" />
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+            Markdown Preview
+          </span>
+          {title ? (
+            <span className="text-xs font-bold text-[color:var(--text-primary)] truncate">
+              · {title}
+            </span>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close preview"
+          className="inline-flex items-center justify-center w-7 h-7 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-colors"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 overflow-auto px-6 py-6">
+        <div className="mx-auto max-w-3xl prose prose-invert prose-sm prose-headings:tracking-tight prose-pre:bg-[color:var(--surface-2)] prose-pre:border prose-pre:border-[color:var(--border-subtle)] prose-code:before:hidden prose-code:after:hidden prose-a:text-sky-400">
+          {content.trim() ? (
+            <ReactMarkdown>{content}</ReactMarkdown>
+          ) : (
+            <p className="text-[color:var(--text-muted)] italic">Empty content.</p>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function MarkdownPreviewButton({ getContent, title }: { getContent: () => string; title: string }) {
+  const [open, setOpen] = useState(false);
+  const [snapshot, setSnapshot] = useState('');
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setSnapshot(getContent());
+          setOpen(true);
+        }}
+        title="Preview as Markdown"
+        aria-label="Preview as Markdown"
+        className="inline-flex items-center gap-1 px-2 h-6 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-colors"
+      >
+        <FileText size={10} />
+        MD
+      </button>
+      {open ? (
+        <MarkdownFullscreenViewer
+          title={title}
+          content={snapshot}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function DetailTextareaWithPreview({
+  field,
+  value,
+  onBlur,
+  inputCls,
+  labelCls,
+}: {
+  field: any;
+  value: any;
+  onBlur: (v: any) => void;
+  inputCls: string;
+  labelCls: string;
+}) {
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className={`${labelCls} !mb-0`}>{field.label}</label>
+        <MarkdownPreviewButton
+          getContent={() => taRef.current?.value ?? String(value ?? '')}
+          title={field.label}
+        />
+      </div>
+      <textarea
+        ref={taRef}
+        className={`${inputCls} min-h-[80px] py-2 resize-y`}
+        defaultValue={value}
+        onBlur={e => onBlur(e.target.value)}
+        rows={3}
+      />
+    </div>
+  );
+}
+
 function DetailFieldView({ field, value, onBlur }: { field: any; value: any; onBlur: (v: any) => void }) {
   if (value == null || value === '') return null;
 
@@ -371,17 +497,7 @@ function DetailFieldView({ field, value, onBlur }: { field: any; value: any; onB
   const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs text-[color:var(--text-primary)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
 
   if (field.type === 'textarea') {
-    return (
-      <div>
-        <label className={labelCls}>{field.label}</label>
-        <textarea
-          className={`${inputCls} min-h-[80px] py-2 resize-y`}
-          defaultValue={value}
-          onBlur={e => onBlur(e.target.value)}
-          rows={3}
-        />
-      </div>
-    );
+    return <DetailTextareaWithPreview field={field} value={value} onBlur={onBlur} inputCls={inputCls} labelCls={labelCls} />;
   }
   if (field.type === 'select') {
     return (

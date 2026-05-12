@@ -25,6 +25,7 @@ from app.schemas.sessions import (
     MessageListResponse,
     MessageResponse,
     UpdateSessionRequest,
+    SessionListItemResponse,
     SessionListResponse,
     SessionContextUsageResponse,
     SessionRuntimeCleanupResponse,
@@ -294,7 +295,7 @@ async def list_sessions(
     )
     unread_flags = await service.compute_unread_flags(db, page.items)
     items = [
-        await _session_response(
+        await _session_list_item_response(
             item, service, main_session_id=main_session_id,
             has_unread=unread_flags.get(item.id, False),
         )
@@ -881,6 +882,27 @@ async def _session_response(
         title=session.title,
         initial_prompt=session.initial_prompt,
         latest_system_prompt=session.latest_system_prompt,
+        started_at=session.started_at,
+        is_running=is_running,
+        is_main=bool(main_session_id and session.id == main_session_id),
+        has_unread=has_unread,
+    )
+
+
+async def _session_list_item_response(
+    session: Session,
+    service: SessionService,
+    *,
+    main_session_id: UUID | None = None,
+    has_unread: bool = False,
+) -> SessionListItemResponse:
+    is_running = await service.is_session_running(session.id)
+    return SessionListItemResponse(
+        id=session.id,
+        user_id=session.user_id,
+        agent_id=session.agent_id,
+        parent_session_id=session.parent_session_id,
+        title=session.title,
         started_at=session.started_at,
         is_running=is_running,
         is_main=bool(main_session_id and session.id == main_session_id),

@@ -52,8 +52,20 @@ class SessionResponse(BaseModel):
     has_unread: bool = False
 
 
+class SessionListItemResponse(BaseModel):
+    id: UUID
+    user_id: str
+    agent_id: str | None = None
+    parent_session_id: UUID | None = None
+    title: str | None = None
+    started_at: datetime
+    is_running: bool = False
+    is_main: bool = False
+    has_unread: bool = False
+
+
 class SessionListResponse(BaseModel):
-    items: list[SessionResponse]
+    items: list[SessionListItemResponse]
     total: int
 
 

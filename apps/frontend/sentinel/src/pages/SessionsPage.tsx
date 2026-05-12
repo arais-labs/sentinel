@@ -4167,38 +4167,30 @@ export function SessionsPage() {
 
             {showTerminalsView ? (
               <div className="flex-1 min-h-0 flex flex-col">
-                <div className="relative flex items-center justify-between p-3 border-b border-[color:var(--border-subtle)] gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Terminal size={15} className="text-sky-500 shrink-0" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">
-                      Terminals
-                    </span>
+                {activeTerminals.length > 1 ? (
+                  <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar px-3 py-2 border-b border-[color:var(--border-subtle)]">
+                    {activeTerminals.map((terminal) => {
+                      const display = getTerminalLabel(terminal.id, terminal.lastCommand ?? terminal.label);
+                      const isFocused = (focusedTerminalId ?? activeTerminals[0]?.id) === terminal.id;
+                      return (
+                        <button
+                          key={terminal.id}
+                          type="button"
+                          onClick={() => setFocusedTerminalId(terminal.id)}
+                          className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2 h-6 text-[10px] font-medium transition-colors ${
+                            isFocused
+                              ? 'bg-sky-500/20 text-sky-300'
+                              : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                          }`}
+                          title={display}
+                        >
+                          <span className="max-w-[120px] truncate">{display}</span>
+                          {terminal.busy ? <Loader2 size={9} className="animate-spin" /> : null}
+                        </button>
+                      );
+                    })}
                   </div>
-                  {activeTerminals.length > 1 ? (
-                    <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar">
-                      {activeTerminals.map((terminal) => {
-                        const display = getTerminalLabel(terminal.id, terminal.lastCommand ?? terminal.label);
-                        const isFocused = (focusedTerminalId ?? activeTerminals[0]?.id) === terminal.id;
-                        return (
-                          <button
-                            key={terminal.id}
-                            type="button"
-                            onClick={() => setFocusedTerminalId(terminal.id)}
-                            className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2 h-6 text-[10px] font-medium transition-colors ${
-                              isFocused
-                                ? 'bg-sky-500/20 text-sky-300'
-                                : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
-                            }`}
-                            title={display}
-                          >
-                            <span className="max-w-[120px] truncate">{display}</span>
-                            {terminal.busy ? <Loader2 size={9} className="animate-spin" /> : null}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                </div>
+                ) : null}
                 <div className="flex-1 min-h-0">
                   {activeSessionId && (focusedTerminalId ?? activeTerminals[0]?.id) ? (
                     // Keyed on the (session, terminal) pair so React tears down

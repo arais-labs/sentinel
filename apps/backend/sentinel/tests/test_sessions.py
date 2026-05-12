@@ -109,15 +109,21 @@ def test_sessions_crud_and_ownership():
         for item in fake_db.storage[Session]:
             if str(item.id) == child_session_id:
                 item.parent_session_id = uuid.UUID(session1_id)
-                break
+            if str(item.id) == session1_id:
+                item.initial_prompt = "first prompt"
+                item.latest_system_prompt = "large system prompt" * 1000
 
         list_user1 = client.get("/api/v1/sessions", headers={"Authorization": f"Bearer {user1_token}"})
         assert list_user1.status_code == 200
-        ids_user1 = {item["id"] for item in list_user1.json()["items"]}
+        list_items_user1 = list_user1.json()["items"]
+        ids_user1 = {item["id"] for item in list_items_user1}
         assert session1_id in ids_user1
         assert session2_id in ids_user1
         assert child_session_id not in ids_user1
         assert session3_id not in ids_user1
+        listed_session1 = next(item for item in list_items_user1 if item["id"] == session1_id)
+        assert "initial_prompt" not in listed_session1
+        assert "latest_system_prompt" not in listed_session1
 
         forbidden_get = client.get(f"/api/v1/sessions/{session3_id}", headers={"Authorization": f"Bearer {user1_token}"})
         assert forbidden_get.status_code == 404
