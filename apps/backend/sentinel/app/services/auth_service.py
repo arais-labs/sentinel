@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 
@@ -28,12 +29,12 @@ def _hash_password(password: str, *, salt: str | None = None) -> str:
     return f"{salt_value}${digest.hex()}"
 
 
-def _verify_password(password: str, stored_hash: str) -> bool:
+async def _verify_password(password: str, stored_hash: str) -> bool:
     try:
         salt, _ = stored_hash.split("$", 1)
     except ValueError:
         return False
-    candidate = _hash_password(password, salt=salt)
+    candidate = await asyncio.to_thread(_hash_password, password, salt=salt)
     return secrets.compare_digest(candidate, stored_hash)
 
 
@@ -69,7 +70,7 @@ async def authenticate_user(
     if normalized != _normalize_username(stored_username):
         return None
 
-    if not _verify_password(password, stored_hash):
+    if not await _verify_password(password, stored_hash):
         return None
 
     return (stored_username, "admin")
@@ -90,12 +91,13 @@ async def change_user_password(
     normalized_username = _normalize_username(username)
     if normalized_username != _normalize_username(stored_username):
         return False
-    if not _verify_password(current_password, stored_hash):
+    if not await _verify_password(current_password, stored_hash):
         return False
 
+    new_hash = await asyncio.to_thread(_hash_password, new_password)
     await upsert_system_setting(
         db,
         key=_PASSWORD_HASH_KEY,
-        value=_hash_password(new_password),
+        value=new_hash,
     )
     return True

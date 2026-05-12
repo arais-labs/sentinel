@@ -89,6 +89,14 @@ async def lifespan(app: FastAPI):
     embedding_backfill_task: asyncio.Task | None = None
     await init_db()
 
+    # Seed default auth credentials on first run (no-op if already set).
+    async with AsyncSessionLocal() as _auth_db:
+        from app.services.auth_service import ensure_default_auth_settings
+        try:
+            await ensure_default_auth_settings(_auth_db)
+        except RuntimeError:
+            pass  # No env credentials configured; credentials must be set via CLI or reset-auth.
+
     # Load persisted API keys from DB — env vars take precedence
     async with AsyncSessionLocal() as _db:
         from sqlalchemy import select as _sel

@@ -74,6 +74,7 @@ export interface DesktopApi {
   restoreInstance(request: RestoreInstanceRequest): Promise<DesktopStatus>;
   buildQemuImage(): Promise<void>;
   validateQemuImage(): Promise<void>;
+  installQemu(): Promise<void>;
   openSentinel(): Promise<DesktopStatus>;
   showControlCenter(): Promise<void>;
   revealAppSupport(): Promise<void>;
@@ -95,6 +96,7 @@ export const IPC = {
   restoreInstance: 'desktop:restoreInstance',
   buildQemuImage: 'desktop:buildQemuImage',
   validateQemuImage: 'desktop:validateQemuImage',
+  installQemu: 'desktop:installQemu',
   openSentinel: 'desktop:openSentinel',
   showControlCenter: 'desktop:showControlCenter',
   revealAppSupport: 'desktop:revealAppSupport',

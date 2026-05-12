@@ -24,6 +24,7 @@ function render(status: DesktopStatus): void {
   el('supportPath').textContent = status.appSupportPath;
   el('qemuStatus').innerHTML = status.qemu.installed ? pill('Installed', 'ok') : pill('Missing', 'missing');
   el('qemuMessage').textContent = status.qemu.message || '';
+  el('qemuActions').style.display = status.qemu.installed ? 'none' : '';
   el('imageStatus').innerHTML = status.runtimeImage.present ? pill('Present', 'ok') : pill('Missing', 'missing');
   renderInstances(status.instances);
   renderServices(status.services);
@@ -183,6 +184,18 @@ el('refreshBtn').addEventListener('click', () => void refresh());
 el('openBtn').addEventListener('click', () => void api.openSentinel());
 el('revealBtn').addEventListener('click', () => void api.revealAppSupport());
 el('stopBtn').addEventListener('click', async () => render(await api.stopInstance()));
+el('installQemuBtn').addEventListener('click', async () => {
+  el<HTMLButtonElement>('installQemuBtn').disabled = true;
+  try {
+    await api.installQemu();
+    await refresh();
+  } catch (error) {
+    logs.push({ service: 'manager', line: String((error as Error).message || error), at: new Date().toISOString() });
+    renderLogs();
+  } finally {
+    el<HTMLButtonElement>('installQemuBtn').disabled = false;
+  }
+});
 el('buildImageBtn').addEventListener('click', async () => {
   await api.buildQemuImage();
   await refresh();

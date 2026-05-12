@@ -15,6 +15,7 @@ const api: DesktopApi = {
   restoreInstance: (request: RestoreInstanceRequest) => ipcRenderer.invoke(IPC.restoreInstance, request),
   buildQemuImage: () => ipcRenderer.invoke(IPC.buildQemuImage),
   validateQemuImage: () => ipcRenderer.invoke(IPC.validateQemuImage),
+  installQemu: () => ipcRenderer.invoke(IPC.installQemu),
   openSentinel: () => ipcRenderer.invoke(IPC.openSentinel),
   showControlCenter: () => ipcRenderer.invoke(IPC.showControlCenter),
   revealAppSupport: () => ipcRenderer.invoke(IPC.revealAppSupport),

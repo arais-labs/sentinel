@@ -52,22 +52,34 @@ interface MeResponse {
 }
 
 async function authRequest(path: string, body?: Record<string, unknown>) {
-  const response = await fetch(`${AUTH_BASE_URL}${path}`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 30_000);
+  try {
+    const response = await fetch(`${AUTH_BASE_URL}${path}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
+    });
 
-  const payload = (await response.json().catch(() => ({}))) as unknown;
+    const payload = (await response.json().catch(() => ({}))) as unknown;
 
-  if (!response.ok) {
-    throw new Error(parseAuthError(payload, 'Authentication failed'));
+    if (!response.ok) {
+      throw new Error(parseAuthError(payload, 'Authentication failed'));
+    }
+
+    return payload as TokenResponse;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Request timed out. Check your connection and retry.');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
   }
-
-  return payload as TokenResponse;
 }
 
 async function fetchMe(): Promise<MeResponse | null> {

@@ -108,7 +108,7 @@ export class DesktopManager {
         installed: Boolean(qemuSystemPath && qemuImgPath),
         qemuSystemPath,
         qemuImgPath,
-        message: qemuSystemPath && qemuImgPath ? 'QEMU detected' : 'Install QEMU with Homebrew: brew install qemu',
+        message: qemuSystemPath && qemuImgPath ? 'QEMU detected' : this.qemuMissingMessage(),
       },
       runtimeImage: {
         imagePath,
@@ -156,6 +156,12 @@ export class DesktopManager {
       RUNTIME_QEMU_RUN_ROOT: path.join(root, 'qemu-run'),
     };
     await this.writeInstanceEnv(name, values);
+    if (!this.ports) {
+      await this.initialize();
+    }
+    await this.startPostgres();
+    await this.ensureInstanceDatabase(name);
+    await this.upsertAuthSettings(values.POSTGRES_DB || this.instanceDatabaseName(name), username, password);
     this.supervisor.appendManagerLog(`Created instance ${name}`);
     return this.emitStatus();
   }
@@ -268,13 +274,7 @@ export class DesktopManager {
 
     await this.startPostgres();
     await this.ensureInstanceDatabase(this.sanitizeInstanceName(name));
-    try {
-      await this.upsertAuthSettings(env.POSTGRES_DB || this.instanceDatabaseName(this.sanitizeInstanceName(name)), normalizedUsername, normalizedPassword);
-    } catch (error) {
-      const message = String((error as Error).message || error);
-      if (!message.includes('system_settings')) throw error;
-      this.supervisor.appendManagerLog('Auth database settings table is not initialized yet; env seed was updated');
-    }
+    await this.upsertAuthSettings(env.POSTGRES_DB || this.instanceDatabaseName(this.sanitizeInstanceName(name)), normalizedUsername, normalizedPassword);
     this.supervisor.appendManagerLog(`Reset admin credentials for ${name}`);
     return this.emitStatus();
   }
@@ -355,6 +355,57 @@ export class DesktopManager {
     }
     this.supervisor.appendManagerLog(`Restored instance ${safe} from ${backupPath}`);
     return this.emitStatus();
+  }
+
+  private qemuMissingMessage(): string {
+    if (process.platform === 'darwin') return 'QEMU not found. Click Install to set it up via Homebrew.';
+    if (process.platform === 'linux') return 'QEMU not found. Click Install to set it up via your package manager.';
+    return 'QEMU not found. Install it from https://www.qemu.org/download/';
+  }
+
+  private async detectPackageManager(): Promise<string | null> {
+    for (const pm of ['brew', 'apt-get', 'dnf', 'yum', 'pacman', 'apk']) {
+      if (await commandExists(pm)) return pm;
+    }
+    return null;
+  }
+
+  async installQemu(): Promise<void> {
+    const pm = await this.detectPackageManager();
+    if (!pm) {
+      throw new Error('No supported package manager found. Install QEMU manually: https://www.qemu.org/download/');
+    }
+
+    const installMap: Record<string, [string, string[]]> = {
+      brew:    ['brew',    ['install', 'qemu']],
+      'apt-get': ['sudo', ['apt-get', 'install', '-y', 'qemu-utils', 'qemu-system-arm', 'qemu-efi-aarch64']],
+      dnf:     ['sudo',   ['dnf', 'install', '-y', 'qemu-img', 'qemu-system-aarch64', 'edk2-aarch64']],
+      yum:     ['sudo',   ['yum', 'install', '-y', 'qemu-img', 'qemu-system-aarch64', 'edk2-aarch64']],
+      pacman:  ['sudo',   ['pacman', '-S', '--noconfirm', 'qemu-base', 'edk2-armvirt']],
+      apk:     ['sudo',   ['apk', 'add', 'qemu', 'qemu-system-aarch64']],
+    };
+
+    const [cmd, args] = installMap[pm];
+    this.supervisor.appendManagerLog(`Installing QEMU via ${pm}...`);
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(cmd, args, {
+        env: { ...process.env, PATH: commandSearchPath(process.env.PATH || '') },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const attach = (stream: NodeJS.ReadableStream) => {
+        const rl = readline.createInterface({ input: stream });
+        rl.on('line', (line) => this.supervisor.appendManagerLog(line));
+      };
+      attach(child.stdout);
+      attach(child.stderr);
+      child.once('error', reject);
+      child.once('exit', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`QEMU installation failed (exit code ${code ?? 'signal'})`));
+      });
+    });
+    this.supervisor.appendManagerLog('QEMU installation completed.');
+    await this.emitStatus();
   }
 
   async buildQemuImage(): Promise<void> {
@@ -754,6 +805,11 @@ ALTER DATABASE ${oldName} RENAME TO ${newName};
   private async upsertAuthSettings(dbName: string, username: string, password: string): Promise<void> {
     const psql = await this.resolvePostgresBinary('psql');
     const sql = `
+CREATE TABLE IF NOT EXISTS system_settings (
+  key VARCHAR(100) PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 INSERT INTO system_settings(key, value)
 VALUES
   ('${AUTH_USERNAME_KEY}', :'username'),

@@ -216,6 +216,75 @@ host_os() {
   esac
 }
 
+detect_package_manager() {
+  if require_cmd brew; then echo "brew"; return 0; fi
+  if require_cmd apt-get; then echo "apt"; return 0; fi
+  if require_cmd dnf; then echo "dnf"; return 0; fi
+  if require_cmd yum; then echo "yum"; return 0; fi
+  if require_cmd pacman; then echo "pacman"; return 0; fi
+  if require_cmd apk; then echo "apk"; return 0; fi
+  echo "unknown"
+}
+
+install_qemu_auto() {
+  local pm
+  pm="$(detect_package_manager)"
+
+  warn "QEMU is not installed on this system."
+  if [[ "$pm" == "unknown" ]]; then
+    error "No supported package manager found. Install QEMU manually: https://www.qemu.org/download/"
+    return 1
+  fi
+
+  local confirm
+  printf "%s" "$CURSOR_ON" >&2
+  read -r -p "Install QEMU via ${pm}? [y/N]: " confirm < /dev/tty
+  printf "%s" "$CURSOR_OFF" >&2
+  case "$confirm" in
+    y|Y|yes|YES) ;;
+    *)
+      warn "QEMU installation cancelled."
+      return 1
+      ;;
+  esac
+
+  info "Installing QEMU via ${pm}..."
+  case "$pm" in
+    brew)
+      brew install qemu || { error "brew install qemu failed."; return 1; }
+      ;;
+    apt)
+      sudo apt-get update -qq && \
+        sudo apt-get install -y qemu-utils qemu-system-arm qemu-efi-aarch64 || {
+          error "apt-get install qemu failed."; return 1;
+        }
+      ;;
+    dnf)
+      sudo dnf install -y qemu-img qemu-system-aarch64 edk2-aarch64 || {
+        error "dnf install qemu failed."; return 1;
+      }
+      ;;
+    yum)
+      sudo yum install -y qemu-img qemu-system-aarch64 edk2-aarch64 || {
+        error "yum install qemu failed."; return 1;
+      }
+      ;;
+    pacman)
+      sudo pacman -S --noconfirm qemu-base edk2-armvirt || {
+        error "pacman install qemu failed."; return 1;
+      }
+      ;;
+    apk)
+      sudo apk add qemu qemu-system-aarch64 || {
+        error "apk add qemu failed."; return 1;
+      }
+      ;;
+  esac
+
+  success "QEMU installed successfully."
+  return 0
+}
+
 upsert_env_value() {
   local file="$1" key="$2" value="$3"
   mkdir -p "$(dirname "$file")"
@@ -326,6 +395,24 @@ qemu_firmware_ready() {
     [[ -z "$vars" ]] && vars="$(find "$root" -path '*/share/qemu/edk2-arm-vars.fd' 2>/dev/null | head -n 1)"
     [[ -n "$code" && -n "$vars" ]] && return 0
   done
+
+  local linux_code linux_vars
+  for linux_code in \
+      "/usr/share/AAVMF/AAVMF_CODE.fd" \
+      "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd" \
+      "/usr/share/edk2/aarch64/QEMU_EFI.fd" \
+      "/usr/share/edk2-ovmf/aarch64/OVMF_CODE.fd"; do
+    [[ -f "$linux_code" ]] && { code="$linux_code"; break; }
+  done
+  for linux_vars in \
+      "/usr/share/AAVMF/AAVMF_VARS.fd" \
+      "/usr/share/qemu-efi-aarch64/QEMU_VARS.fd" \
+      "/usr/share/edk2/aarch64/QEMU_VARS.fd" \
+      "/usr/share/edk2-ovmf/aarch64/OVMF_VARS.fd"; do
+    [[ -f "$linux_vars" ]] && { vars="$linux_vars"; break; }
+  done
+  [[ -n "$code" && -n "$vars" ]] && return 0
+
   return 1
 }
 
@@ -336,15 +423,30 @@ ensure_qemu_runtime_prerequisites() {
     require_cmd "$cmd" || missing+=("$cmd")
   done
 
+  local needs_qemu=false
+  for cmd in "${missing[@]+"${missing[@]}"}"; do
+    [[ "$cmd" == "qemu-img" || "$cmd" == "qemu-system-aarch64" ]] && needs_qemu=true
+  done
+
+  if [[ "$needs_qemu" == "true" ]]; then
+    install_qemu_auto || {
+      error "Missing QEMU runtime prerequisite(s): ${missing[*]+"${missing[*]}"}"
+      return 1
+    }
+    missing=()
+    for cmd in python3 qemu-img qemu-system-aarch64; do
+      require_cmd "$cmd" || missing+=("$cmd")
+    done
+  fi
+
   if [[ ${#missing[@]} -gt 0 ]]; then
     error "Missing QEMU runtime prerequisite(s): ${missing[*]}"
-    warn "On macOS, install QEMU with: brew install qemu"
     return 1
   fi
 
   if ! qemu_firmware_ready; then
     error "Could not locate QEMU aarch64 firmware files."
-    warn "Install or repair Homebrew QEMU with: brew install qemu"
+    warn "On macOS: brew install qemu  |  On Linux: install qemu-efi-aarch64 or edk2-aarch64"
     return 1
   fi
 
@@ -358,6 +460,22 @@ ensure_qemu_build_prerequisites() {
     require_cmd "$cmd" || missing+=("$cmd")
   done
 
+  local needs_qemu=false
+  for cmd in "${missing[@]+"${missing[@]}"}"; do
+    [[ "$cmd" == "qemu-img" || "$cmd" == "qemu-system-aarch64" ]] && needs_qemu=true
+  done
+
+  if [[ "$needs_qemu" == "true" ]]; then
+    install_qemu_auto || {
+      error "Missing QEMU build prerequisite(s): ${missing[*]+"${missing[*]}"}"
+      return 1
+    }
+    missing=()
+    for cmd in brew curl hdiutil qemu-img qemu-system-aarch64 ssh ssh-keygen python3 sha512sum; do
+      require_cmd "$cmd" || missing+=("$cmd")
+    done
+  fi
+
   if [[ ${#missing[@]} -gt 0 ]]; then
     error "Missing QEMU build prerequisite(s): ${missing[*]}"
     warn "On macOS, install the runtime prerequisites with: brew install qemu coreutils"
@@ -366,7 +484,7 @@ ensure_qemu_build_prerequisites() {
 
   if ! qemu_firmware_ready; then
     error "Could not locate QEMU aarch64 firmware files."
-    warn "Install or repair Homebrew QEMU with: brew install qemu"
+    warn "On macOS: brew install qemu  |  On Linux: install qemu-efi-aarch64 or edk2-aarch64"
     return 1
   fi
 

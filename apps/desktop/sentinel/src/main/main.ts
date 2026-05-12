@@ -158,6 +158,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.restoreInstance, (_event, request) => manager.restoreInstance(request));
   ipcMain.handle(IPC.buildQemuImage, () => manager.buildQemuImage());
   ipcMain.handle(IPC.validateQemuImage, () => manager.validateQemuImage());
+  ipcMain.handle(IPC.installQemu, () => manager.installQemu());
   ipcMain.handle(IPC.openSentinel, () => showSentinel());
   ipcMain.handle(IPC.showControlCenter, () => showControlCenter());
   ipcMain.handle(IPC.revealAppSupport, () => manager.revealAppSupport());
