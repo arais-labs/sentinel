@@ -102,6 +102,8 @@ services:
     ports:
       - "${STACK_PORT:-4747}:5173"
     volumes:
+      # TODO: split hot-reloaded source from container-owned node_modules so
+      # local macOS installs cannot shadow Linux-native optional dependencies.
       - ./apps/frontend/sentinel:/app
     depends_on:
       sentinel-backend:
