@@ -2,10 +2,10 @@
 
 Local-first workspace for building and validating a Sentinel runtime base image with QEMU.
 
-This backend is currently targeted at macOS on Apple Silicon with Homebrew QEMU. The scripts use:
+This backend is currently targeted at macOS on Apple Silicon with QEMU. The scripts use:
 - `qemu-system-aarch64`
 - Apple HVF acceleration
-- Homebrew QEMU firmware files
+- QEMU firmware files discovered from the QEMU binary path or explicit `SENTINEL_QEMU_EDK2_*` env vars
 - `hdiutil` for cloud-init ISO creation
 
 Linux support is not wired yet. The build and bridge scripts would need Linux firmware lookup, KVM acceleration, and ISO creation changes before this can be treated as cross-platform.
@@ -30,7 +30,6 @@ These output files are local build artifacts and are intentionally ignored by gi
 Prerequisites:
 - Homebrew
 - QEMU installed through Homebrew: `brew install qemu`
-- GNU coreutils for `sha512sum`: `brew install coreutils`
 - macOS command line tools for `ssh`, `ssh-keygen`, `curl`, and `python3`
 
 Manual commands:

@@ -53,11 +53,31 @@ need_cmd qemu-system-aarch64
 need_cmd ssh
 need_cmd ssh-keygen
 need_cmd python3
-need_cmd sha512sum
 
-QEMU_CELLAR="$(brew --prefix qemu)"
-EDK2_CODE="$(find "${QEMU_CELLAR%/opt/qemu}" /opt/homebrew/Cellar/qemu -path '*/share/qemu/edk2-aarch64-code.fd' 2>/dev/null | head -n 1)"
-EDK2_VARS="$(find "${QEMU_CELLAR%/opt/qemu}" /opt/homebrew/Cellar/qemu -path '*/share/qemu/edk2-arm-vars.fd' 2>/dev/null | head -n 1)"
+QEMU_SYSTEM_BIN="$(command -v qemu-system-aarch64)"
+QEMU_SYSTEM_REAL="$(python3 - "${QEMU_SYSTEM_BIN}" <<'PY'
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).resolve())
+PY
+)"
+QEMU_SHARE_CANDIDATES=(
+  "${SENTINEL_QEMU_SHARE_DIR:-}"
+  "${QEMU_DIR}/share/qemu"
+  "$(dirname "${QEMU_SYSTEM_REAL}")/../share/qemu"
+  "$(dirname "${QEMU_SYSTEM_REAL}")/../../share/qemu"
+)
+EDK2_CODE="${SENTINEL_QEMU_EDK2_CODE:-}"
+EDK2_VARS="${SENTINEL_QEMU_EDK2_VARS:-}"
+for candidate in "${QEMU_SHARE_CANDIDATES[@]}"; do
+  [[ -n "${candidate}" ]] || continue
+  if [[ -z "${EDK2_CODE}" && -f "${candidate}/edk2-aarch64-code.fd" ]]; then
+    EDK2_CODE="${candidate}/edk2-aarch64-code.fd"
+  fi
+  if [[ -z "${EDK2_VARS}" && -f "${candidate}/edk2-arm-vars.fd" ]]; then
+    EDK2_VARS="${candidate}/edk2-arm-vars.fd"
+  fi
+done
 if [[ -z "${EDK2_CODE}" || -z "${EDK2_VARS}" ]]; then
   echo "Could not locate QEMU aarch64 firmware files" >&2
   exit 1
@@ -75,7 +95,18 @@ if [[ -z "${EXPECTED_SHA}" ]]; then
   echo "Could not find checksum for ${BASE_IMAGE_NAME}" >&2
   exit 1
 fi
-ACTUAL_SHA="$(sha512sum "${BASE_IMAGE}" | awk '{print $1}')"
+ACTUAL_SHA="$(python3 - "${BASE_IMAGE}" <<'PY'
+from hashlib import sha512
+from pathlib import Path
+import sys
+
+h = sha512()
+with Path(sys.argv[1]).open("rb") as fh:
+    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+        h.update(chunk)
+print(h.hexdigest())
+PY
+)"
 if [[ "${EXPECTED_SHA}" != "${ACTUAL_SHA}" ]]; then
   echo "Checksum mismatch for ${BASE_IMAGE}" >&2
   echo "expected: ${EXPECTED_SHA}" >&2
