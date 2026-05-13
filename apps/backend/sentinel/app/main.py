@@ -169,10 +169,13 @@ async def lifespan(app: FastAPI):
     try:
         from app.services.runtime import get_runtime
         _rt = get_runtime()
+        app.state.runtime_provider = _rt
         if hasattr(_rt, "recover_existing"):
             _recovered = await _rt.recover_existing()
             if _recovered:
                 logger.info("Recovered %d existing runtime container(s)", _recovered)
+        if hasattr(_rt, "start_background_prepare"):
+            _rt.start_background_prepare()
     except Exception:
         logger.debug("Runtime container recovery skipped", exc_info=True)
 
@@ -567,6 +570,9 @@ async def lifespan(app: FastAPI):
             await _bounded("embedding_backfill", embedding_backfill_task, timeout=2.0)
         if scheduler_task is not None:
             await _bounded("trigger_scheduler", scheduler_task, timeout=3.0)
+        runtime_provider = getattr(app.state, "runtime_provider", None)
+        if runtime_provider is not None and hasattr(runtime_provider, "cancel_background_prepare"):
+            await _bounded("runtime_prepare", runtime_provider.cancel_background_prepare(), timeout=5.0)
 
         # 5. External resources — these are the historical hang sources.
         from app.services.telegram import stop_telegram_bridge

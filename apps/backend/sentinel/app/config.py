@@ -114,6 +114,7 @@ class Settings(BaseSettings):
     runtime_qemu_ssh_key_path: str | None = None
     runtime_qemu_cpus: int = 4
     runtime_qemu_memory_mb: int = 4096
+    runtime_qemu_control: Literal["bridge", "desktop"] | None = None
     runtime_qemu_bridge_url: str = "http://host.docker.internal:47481"
     runtime_qemu_bridge_token: str | None = None
     runtime_qemu_run_root: str = "/data/runtime/qemu"

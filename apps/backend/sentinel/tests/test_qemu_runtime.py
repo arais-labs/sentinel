@@ -10,6 +10,7 @@ from app.services.runtime.qemu import (
     QemuRuntimeProvider,
     build_qemu_profile,
 )
+from app.services.runtime.qemu.provider import qemu_control_mode
 
 
 def test_build_qemu_profile_defaults_to_runtime_workspace_root(monkeypatch, tmp_path) -> None:
@@ -79,7 +80,7 @@ def test_qemu_provider_bridge_health(monkeypatch, tmp_path) -> None:
             captured["headers"] = headers
             return _Response()
 
-    monkeypatch.setattr("app.services.runtime.qemu.httpx.AsyncClient", _Client)
+    monkeypatch.setattr("app.services.runtime.qemu.controls.bridge.httpx.AsyncClient", _Client)
 
     provider = QemuRuntimeProvider()
     payload = asyncio.run(provider.bridge_health())
@@ -87,6 +88,52 @@ def test_qemu_provider_bridge_health(monkeypatch, tmp_path) -> None:
     assert payload["ok"] is True
     assert captured["url"] == "http://bridge.test:47481/healthz"
     assert captured["headers"] == {"X-Sentinel-Bridge-Token": "secret-token"}
+
+
+def test_qemu_control_mode_defaults_to_desktop_only_in_desktop_app(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "runtime_qemu_control", None)
+
+    monkeypatch.setattr(settings, "app_env", "development")
+    assert qemu_control_mode() == "bridge"
+
+    monkeypatch.setattr(settings, "app_env", "desktop")
+    assert qemu_control_mode() == "desktop"
+
+    monkeypatch.setattr(settings, "runtime_qemu_control", "bridge")
+    assert qemu_control_mode() == "bridge"
+
+
+def test_qemu_provider_base_image_prepare_is_serialized(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "runtime_qemu_control", "bridge")
+    monkeypatch.setattr(settings, "runtime_qemu_image", str(tmp_path / "runtime.qcow2"))
+    monkeypatch.setattr(settings, "runtime_qemu_ssh_key_path", str(tmp_path / "runtime.id_ed25519"))
+    monkeypatch.setattr(settings, "runtime_qemu_workspace_root", str(tmp_path / "workspaces"))
+
+    provider = QemuRuntimeProvider()
+    calls = {"build": 0}
+    ready = False
+
+    class _FakeControl:
+        async def base_image_status(self, profile):
+            _ = profile
+            return {"state": "ready" if ready else "missing"}
+
+        async def ensure_base_image(self, profile):
+            _ = profile
+            nonlocal ready
+            calls["build"] += 1
+            await asyncio.sleep(0)
+            ready = True
+
+    provider._control = _FakeControl()  # type: ignore[assignment]
+
+    async def _run():
+        await asyncio.gather(provider._ensure_base_image(), provider._ensure_base_image())
+
+    asyncio.run(_run())
+
+    assert calls["build"] == 1
+    assert provider._base_image_status["state"] == "ready"
 
 
 def test_qemu_provider_restart_browser_uses_session_metadata(monkeypatch, tmp_path) -> None:
@@ -170,6 +217,9 @@ def test_qemu_provider_ensure_does_not_activate_visual_session(monkeypatch, tmp_
     async def _ensure_vm():
         return None
 
+    async def _ensure_base_image():
+        return None
+
     async def _ensure_ssh():
         return _FakeSSH()
 
@@ -194,6 +244,7 @@ def test_qemu_provider_ensure_does_not_activate_visual_session(monkeypatch, tmp_
         terminal_calls.append(str(session_id))
 
     monkeypatch.setattr(provider, "bridge_health", _bridge_health)
+    monkeypatch.setattr(provider, "_ensure_base_image", _ensure_base_image)
     monkeypatch.setattr(provider, "_ensure_vm", _ensure_vm)
     monkeypatch.setattr(provider, "_ensure_ssh", _ensure_ssh)
     monkeypatch.setattr(provider, "_ensure_workspace_share_mount", _ensure_workspace_share_mount)
@@ -251,6 +302,9 @@ def test_qemu_provider_activate_session_switches_visual_session_once(monkeypatch
     async def _ensure_vm():
         return None
 
+    async def _ensure_base_image():
+        return None
+
     async def _ensure_ssh():
         return _FakeSSH()
 
@@ -275,6 +329,7 @@ def test_qemu_provider_activate_session_switches_visual_session_once(monkeypatch
         terminal_calls.append(str(session_id))
 
     monkeypatch.setattr(provider, "bridge_health", _bridge_health)
+    monkeypatch.setattr(provider, "_ensure_base_image", _ensure_base_image)
     monkeypatch.setattr(provider, "_ensure_vm", _ensure_vm)
     monkeypatch.setattr(provider, "_ensure_ssh", _ensure_ssh)
     monkeypatch.setattr(provider, "_ensure_workspace_share_mount", _ensure_workspace_share_mount)
