@@ -3,8 +3,6 @@ import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 
 const DEFAULT_COMMAND_PATHS = [
-  '/opt/homebrew/bin',
-  '/usr/local/bin',
   '/usr/bin',
   '/bin',
   '/usr/sbin',

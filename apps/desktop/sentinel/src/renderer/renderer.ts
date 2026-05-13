@@ -169,7 +169,12 @@ el<HTMLFormElement>('restoreForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const name = el<HTMLInputElement>('restoreName').value;
   const backupPath = el<HTMLInputElement>('restorePath').value;
-  render(await api.restoreInstance({ name, backupPath }));
+  try {
+    render(await api.restoreInstance({ name, backupPath }));
+  } catch (error) {
+    logs.push({ service: 'manager', line: String((error as Error).message || error), at: new Date().toISOString() });
+    renderLogs();
+  }
 });
 
 document.addEventListener('click', (event) => {
@@ -183,14 +188,6 @@ el('refreshBtn').addEventListener('click', () => void refresh());
 el('openBtn').addEventListener('click', () => void api.openSentinel());
 el('revealBtn').addEventListener('click', () => void api.revealAppSupport());
 el('stopBtn').addEventListener('click', async () => render(await api.stopInstance()));
-el('buildImageBtn').addEventListener('click', async () => {
-  await api.buildQemuImage();
-  await refresh();
-});
-el('validateImageBtn').addEventListener('click', async () => {
-  await api.validateQemuImage();
-  await refresh();
-});
 
 api.onStatus(render);
 api.onLog((entry: LogEntry) => {

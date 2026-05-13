@@ -1,4 +1,4 @@
-export type ServiceName = 'postgres' | 'backend' | 'qemuBridge' | 'frontend';
+export type ServiceName = 'postgres' | 'backend' | 'frontend';
 
 export type ServiceState = 'stopped' | 'starting' | 'running' | 'stopping' | 'failed';
 
@@ -72,8 +72,6 @@ export interface DesktopApi {
   resetAuth(name: string, username: string, password: string): Promise<DesktopStatus>;
   backupInstance(name: string): Promise<string>;
   restoreInstance(request: RestoreInstanceRequest): Promise<DesktopStatus>;
-  buildQemuImage(): Promise<void>;
-  validateQemuImage(): Promise<void>;
   openSentinel(): Promise<DesktopStatus>;
   showControlCenter(): Promise<void>;
   revealAppSupport(): Promise<void>;
@@ -93,8 +91,6 @@ export const IPC = {
   resetAuth: 'desktop:resetAuth',
   backupInstance: 'desktop:backupInstance',
   restoreInstance: 'desktop:restoreInstance',
-  buildQemuImage: 'desktop:buildQemuImage',
-  validateQemuImage: 'desktop:validateQemuImage',
   openSentinel: 'desktop:openSentinel',
   showControlCenter: 'desktop:showControlCenter',
   revealAppSupport: 'desktop:revealAppSupport',

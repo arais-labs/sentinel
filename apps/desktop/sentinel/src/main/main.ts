@@ -12,6 +12,7 @@ const manager = new DesktopManager();
 let activeSentinelOrigin: string | undefined;
 let isQuitting = false;
 const singleInstanceLock = app.requestSingleInstanceLock();
+app.setAppLogsPath();
 
 function rendererIndexPath(): string {
   return path.resolve(__dirname, '../../src/renderer/index.html');
@@ -156,8 +157,6 @@ function registerIpc(): void {
   ipcMain.handle(IPC.resetAuth, (_event, name, username, password) => manager.resetAuth(name, username, password));
   ipcMain.handle(IPC.backupInstance, (_event, name) => manager.backupInstance(name));
   ipcMain.handle(IPC.restoreInstance, (_event, request) => manager.restoreInstance(request));
-  ipcMain.handle(IPC.buildQemuImage, () => manager.buildQemuImage());
-  ipcMain.handle(IPC.validateQemuImage, () => manager.validateQemuImage());
   ipcMain.handle(IPC.openSentinel, () => showSentinel());
   ipcMain.handle(IPC.showControlCenter, () => showControlCenter());
   ipcMain.handle(IPC.revealAppSupport, () => manager.revealAppSupport());

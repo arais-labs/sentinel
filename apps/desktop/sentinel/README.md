@@ -8,67 +8,51 @@ Electron management shell for local Sentinel instances.
 - Unsigned development DMG.
 - No Docker dependency for the desktop app.
 - FastAPI backend runs as a managed local child process.
-- Postgres + pgvector are expected as bundled resources in packaged builds.
-- QEMU is detected from the host and guided through Homebrew installation.
-- QEMU runtime image is built locally for now.
+- Postgres + pgvector are bundled into packaged builds.
+- QEMU is bundled into packaged builds.
+- QEMU runtime image provisioning is owned by the backend in desktop mode.
 - `sentinel-cli.sh` remains supported and unchanged for terminal workflows.
 
-## Development
+## Verification
 
 From this directory:
 
 ```bash
-npm install
-npm run build
-npm run dev
+npm run desktop:verify
 ```
 
-The dev app expects:
+This type-checks the Electron main, preload, renderer, and shared IPC code.
 
-- existing frontend build at `apps/frontend/sentinel/dist`
-- backend Python dependencies available to `python3`
-- Postgres binaries available on `PATH`
-- QEMU installed through Homebrew for runtime features
+## Desktop Distribution Build
 
-Build the frontend first if needed:
+Desktop packaging is target-driven. The product is the DMG; native runtime files
+are internal build inputs.
+
+Runtime versions are pinned in `runtime.lock.json`. Build the desktop
+distribution with:
 
 ```bash
-cd ../../frontend/sentinel
-npm install
-npm run build
+npm run desktop:build -- --target macos-arm64
 ```
 
-## Runtime Artifacts
+If `--target` is omitted, the build uses the current platform.
 
-Desktop packaging is artifact-driven. The DMG build does not copy random local
-Homebrew or virtualenv state. It only consumes tarballs listed in a manifest and
-verified by SHA256.
+The build writes disposable intermediate files under:
 
-For local development, build those tarballs explicitly:
-
-```bash
-npm run artifacts:local
+```text
+apps/desktop/sentinel/build/<target>/
 ```
 
-This writes artifacts under `.desktop-artifacts/` and writes
-`resources/runtime-manifest.local.json` with file URLs and checksums.
-The local artifact builder requires `uv`, Postgres, and the Postgres `pgvector`
-server extension. It normalizes archive ownership and rejects artifacts that
-contain local home/repo/user strings.
+The final DMG is written under:
 
-Release builds should provide `SENTINEL_DESKTOP_RUNTIME_MANIFEST` pointing to a
-hosted manifest with HTTPS artifact URLs and checksums.
-
-## Packaging
-
-```bash
-npm run dist:mac
+```text
+apps/desktop/sentinel/dist/
 ```
 
-For a shell-only dev DMG without runtime resources:
+Clean generated desktop build outputs with:
 
 ```bash
-npm run dist:mac:shell
+npm run desktop:clean
 ```
 
 The packaged app stores mutable data under Electron's app support directory:

@@ -1,27 +1,30 @@
 import { app, shell } from 'electron';
-import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { createHash, pbkdf2Sync, randomBytes, randomUUID } from 'node:crypto';
-import readline from 'node:readline';
+import { createHash, pbkdf2Sync, randomBytes } from 'node:crypto';
 import type { CreateInstanceRequest, DesktopStatus, InstanceSummary, LogEntry, RestoreInstanceRequest } from '../shared/ipc.js';
-import { appSupportRoot, backendPath, frontendDistPath, instanceEnvPath, instanceRoot, qemuResourcePath } from './paths.js';
+import { appSupportRoot, backendPath, frontendDistPath, instanceEnvPath, instanceRoot } from './paths.js';
 import { findFreePort } from './ports.js';
-import { commandExists, commandSearchPath, execFileText } from './shell.js';
+import { commandExists, execFileText } from './shell.js';
 import { parseEnv, randomSecret, readEnvFile, serializeEnv, writeEnvFile } from './env.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { LocalServer } from './localServer.js';
-
-interface Ports {
-  app: number;
-  backend: number;
-  postgres: number;
-  qemuBridge: number;
-  qemuSsh: number;
-  qemuVnc: number;
-  qemuCdp: number;
-}
+import {
+  DESKTOP_POSTGRES_PASSWORD,
+  type DesktopPorts,
+  buildBackendEnv,
+  instancesRoot,
+  postgresDataDir,
+  postgresBinaryPath,
+  pythonBinaryPath,
+  qemuBinaryPath,
+  runtimeCommandPath,
+  runtimeImagePath,
+  runtimeKeyPath,
+  runtimeOutputDir,
+} from './runtimeConfig.js';
+import { DailyLogWriter } from './logWriter.js';
 
 interface PostgresProcessInfo {
   pid: number;
@@ -47,27 +50,27 @@ interface BackupManifest {
 export class DesktopManager {
   private readonly supervisor = new ProcessSupervisor();
   private readonly localServer = new LocalServer();
+  private logWriter?: DailyLogWriter;
   private activeInstance?: string;
-  private ports?: Ports;
+  private ports?: DesktopPorts;
   private statusListeners = new Set<(status: DesktopStatus) => void>();
   private logListeners = new Set<(entry: LogEntry) => void>();
 
   constructor() {
     this.supervisor.on('status', () => void this.emitStatus());
     this.supervisor.on('log', (entry: LogEntry) => {
+      this.logWriter?.write(entry, this.activeInstance);
       for (const listener of this.logListeners) listener(entry);
     });
   }
 
   async initialize(): Promise<void> {
-    await mkdir(this.instancesRoot(), { recursive: true });
-    await mkdir(this.runtimeOutputDir(), { recursive: true });
-    await mkdir(this.runtimeCacheDir(), { recursive: true });
-    await mkdir(this.runtimeBuildDir(), { recursive: true });
-    await mkdir(this.runtimeRunDir(), { recursive: true });
-    await mkdir(this.postgresDataDir(), { recursive: true });
-    await this.migrateLegacyRuntimeOutput();
+    this.logWriter = new DailyLogWriter(app.getPath('logs'));
+    await mkdir(instancesRoot(), { recursive: true });
+    await mkdir(runtimeOutputDir(), { recursive: true });
+    await mkdir(postgresDataDir(), { recursive: true });
     await this.reapOrphanedRuntimeProcesses();
+    this.supervisor.appendManagerLog(`Desktop logs: ${app.getPath('logs')}`);
     // Default ports are offset from the dev-compose stack (which uses 5050/2227/
     // 16081/19224) so that running both surfaces side by side does not collide.
     // findFreePort still shifts further if any default is already taken.
@@ -75,7 +78,6 @@ export class DesktopManager {
       app: await findFreePort(5070),
       backend: await findFreePort(18020),
       postgres: await findFreePort(15452),
-      qemuBridge: await findFreePort(47481),
       qemuSsh: await findFreePort(2247),
       qemuVnc: await findFreePort(16101),
       qemuCdp: await findFreePort(19244),
@@ -95,20 +97,23 @@ export class DesktopManager {
   }
 
   async getStatus(): Promise<DesktopStatus> {
-    const qemuSystemPath = await commandExists('qemu-system-aarch64');
-    const qemuImgPath = await commandExists('qemu-img');
-    const imagePath = this.runtimeImagePath();
-    const keyPath = this.runtimeKeyPath();
+    const qemuSystemPath = await this.resolveQemuStatusPath('qemu-system-aarch64');
+    const qemuImgPath = await this.resolveQemuStatusPath('qemu-img');
+    const qemuPresent = Boolean(qemuSystemPath && qemuImgPath);
+    const imagePath = runtimeImagePath();
+    const keyPath = runtimeKeyPath();
     const instances = await this.listInstances();
     return {
       appUrl: this.activeInstance && this.ports ? `http://127.0.0.1:${this.ports.app}/` : undefined,
       appSupportPath: appSupportRoot(),
       activeInstance: this.activeInstance,
       qemu: {
-        installed: Boolean(qemuSystemPath && qemuImgPath),
-        qemuSystemPath,
-        qemuImgPath,
-        message: qemuSystemPath && qemuImgPath ? 'QEMU detected' : 'Install QEMU with Homebrew: brew install qemu',
+        installed: qemuPresent,
+        qemuSystemPath: qemuSystemPath || qemuBinaryPath('qemu-system-aarch64'),
+        qemuImgPath: qemuImgPath || qemuBinaryPath('qemu-img'),
+        message: qemuPresent
+          ? app.isPackaged ? 'Bundled QEMU runtime present' : 'QEMU detected on PATH'
+          : app.isPackaged ? 'Bundled QEMU runtime missing. Rebuild the desktop package.' : 'QEMU is not available on PATH',
       },
       runtimeImage: {
         imagePath,
@@ -150,8 +155,8 @@ export class DesktopManager {
       SENTINEL_AUTH_PASSWORD: password,
       RUNTIME_EXEC_BACKEND: 'qemu',
       RUNTIME_WORKSPACES_HOST_DIR: path.join(root, 'workspaces'),
-      RUNTIME_QEMU_IMAGE: this.runtimeImagePath(),
-      RUNTIME_QEMU_SSH_KEY_PATH: this.runtimeKeyPath(),
+      RUNTIME_QEMU_IMAGE: runtimeImagePath(),
+      RUNTIME_QEMU_SSH_KEY_PATH: runtimeKeyPath(),
       RUNTIME_QEMU_WORKSPACE_ROOT: path.join(root, 'workspaces'),
       RUNTIME_QEMU_RUN_ROOT: path.join(root, 'qemu-run'),
     };
@@ -181,13 +186,8 @@ export class DesktopManager {
     if (!this.ports) {
       await this.initialize();
     }
-    if (!existsSync(this.runtimeImagePath()) || !existsSync(this.runtimeKeyPath())) {
-      throw new Error('QEMU runtime image is missing. Build the QEMU image before starting the instance.');
-    }
-
     await this.startPostgres();
     await this.ensureInstanceDatabase(instance);
-    await this.startQemuBridge();
     await this.startBackend(instance);
     await this.waitForBackend();
     await this.localServer.start({
@@ -219,7 +219,6 @@ export class DesktopManager {
     if (instance) {
       await this.stopQemuVm(instance);
     }
-    await this.supervisor.stopAndWait('qemuBridge');
     this.activeInstance = undefined;
     this.supervisor.appendManagerLog('Stopped active instance');
     return this.emitStatus();
@@ -334,7 +333,7 @@ export class DesktopManager {
         ...env,
         POSTGRES_DB: dbName,
         POSTGRES_USER: 'sentinel',
-        POSTGRES_PASSWORD: this.desktopPostgresPassword(),
+        POSTGRES_PASSWORD: DESKTOP_POSTGRES_PASSWORD,
       });
       await this.startPostgres();
       if (await this.databaseExists(dbName)) {
@@ -357,31 +356,6 @@ export class DesktopManager {
     return this.emitStatus();
   }
 
-  async buildQemuImage(): Promise<void> {
-    await mkdir(this.runtimeOutputDir(), { recursive: true });
-    await mkdir(this.runtimeCacheDir(), { recursive: true });
-    await mkdir(this.runtimeBuildDir(), { recursive: true });
-    await mkdir(this.runtimeRunDir(), { recursive: true });
-    await this.runScript('manager', path.join(qemuResourcePath(), 'build-base-image.sh'), [], {
-      SENTINEL_QEMU_OUTPUT_IMAGE_NAME: path.basename(this.runtimeImagePath()),
-      SENTINEL_QEMU_OUTPUT_DIR: this.runtimeOutputDir(),
-      SENTINEL_QEMU_CACHE_DIR: this.runtimeCacheDir(),
-      SENTINEL_QEMU_BUILD_ROOT: this.runtimeBuildDir(),
-      SENTINEL_QEMU_RUN_DIR: this.runtimeRunDir(),
-    });
-    await this.emitStatus();
-  }
-
-  async validateQemuImage(): Promise<void> {
-    await mkdir(this.runtimeValidateRunDir(), { recursive: true });
-    await this.runScript('manager', path.join(qemuResourcePath(), 'validate-base-image.sh'), [], {
-      SENTINEL_QEMU_VALIDATE_IMAGE: this.runtimeImagePath(),
-      SENTINEL_QEMU_VALIDATE_KEY: this.runtimeKeyPath(),
-      SENTINEL_QEMU_VALIDATE_RUN_DIR: this.runtimeValidateRunDir(),
-    });
-    await this.emitStatus();
-  }
-
   async revealAppSupport(): Promise<void> {
     await shell.openPath(appSupportRoot());
   }
@@ -393,13 +367,14 @@ export class DesktopManager {
     }
     await this.supervisor.stopAll();
     await this.stopExistingPostgres();
+    await this.logWriter?.flush();
   }
 
   private async startPostgres(): Promise<void> {
     if (this.supervisor.isRunning('postgres')) return;
     const postgresBin = await this.resolvePostgresBinary('postgres');
     const initdbBin = await this.resolvePostgresBinary('initdb');
-    const dataDir = this.postgresDataDir();
+    const dataDir = postgresDataDir();
     const env = this.postgresEnv();
     if (!existsSync(path.join(dataDir, 'PG_VERSION'))) {
       await execFileText(initdbBin, ['-D', dataDir, '-U', 'sentinel', '--encoding=UTF8'], { env });
@@ -429,7 +404,7 @@ export class DesktopManager {
   }
 
   private async existingPostgresProcess(): Promise<PostgresProcessInfo | undefined> {
-    const pidPath = path.join(this.postgresDataDir(), 'postmaster.pid');
+    const pidPath = path.join(postgresDataDir(), 'postmaster.pid');
     if (!existsSync(pidPath)) return undefined;
     try {
       const raw = await readFile(pidPath, 'utf8');
@@ -439,7 +414,7 @@ export class DesktopManager {
       if (!Number.isInteger(pid) || pid <= 0) return undefined;
       process.kill(pid, 0);
       const pidDataDir = lines[1]?.trim();
-      if (pidDataDir && path.resolve(pidDataDir) !== path.resolve(this.postgresDataDir())) {
+      if (pidDataDir && path.resolve(pidDataDir) !== path.resolve(postgresDataDir())) {
         return undefined;
       }
       const port = Number(lines[3]);
@@ -484,36 +459,29 @@ export class DesktopManager {
     });
   }
 
-  private async startQemuBridge(): Promise<void> {
-    if (this.supervisor.isRunning('qemuBridge')) return;
-    const python = (await commandExists('python3')) || 'python3';
-    const token = randomUUID();
-    process.env.SENTINEL_DESKTOP_QEMU_BRIDGE_TOKEN = token;
-    await this.supervisor.start({
-      name: 'qemuBridge',
-      command: python,
-      args: [path.join(qemuResourcePath(), 'bridge.py'), '--host', '127.0.0.1', '--port', String(this.ports!.qemuBridge), '--token', token],
-      env: {
-        ...process.env,
-        PATH: commandSearchPath(),
-      },
-      port: this.ports!.qemuBridge,
-    });
-  }
-
   private async stopQemuVm(instance: string): Promise<void> {
-    if (!this.ports || !this.supervisor.isRunning('qemuBridge')) return;
-    const token = process.env.SENTINEL_DESKTOP_QEMU_BRIDGE_TOKEN || '';
-    if (!token) return;
+    const pidFile = path.join(instanceRoot(instance), 'qemu-run', 'vm.pid');
+    if (!existsSync(pidFile)) return;
     try {
-      await fetch(`http://127.0.0.1:${this.ports.qemuBridge}/v1/qemu/stop`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Sentinel-Bridge-Token': token,
-        },
-        body: JSON.stringify({ run_root: path.join(instanceRoot(instance), 'qemu-run') }),
-      });
+      const pid = Number((await readFile(pidFile, 'utf8')).trim());
+      if (Number.isInteger(pid) && pid > 0) {
+        try {
+          process.kill(pid, 'SIGTERM');
+          for (let i = 0; i < 80; i += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            try {
+              process.kill(pid, 0);
+            } catch {
+              await rm(pidFile, { force: true });
+              return;
+            }
+          }
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Already stopped or not owned by this process.
+        }
+      }
+      await rm(pidFile, { force: true });
     } catch (error) {
       this.supervisor.appendManagerLog(`Could not stop QEMU VM for ${instance}: ${String((error as Error).message || error)}`);
     }
@@ -522,38 +490,12 @@ export class DesktopManager {
   private async backendEnv(instance: string): Promise<NodeJS.ProcessEnv> {
     const envPath = instanceEnvPath(instance);
     const values = await readEnvFile(envPath);
-    const password = values.POSTGRES_PASSWORD || 'sentinel';
-    const db = values.POSTGRES_DB || 'sentinel';
-    const user = values.POSTGRES_USER || 'sentinel';
-    return {
-      ...process.env,
-      ...values,
-      PATH: commandSearchPath(values.PATH || process.env.PATH || ''),
-      LANG: values.LANG || process.env.LANG || 'C',
-      LC_ALL: values.LC_ALL || process.env.LC_ALL || 'C',
-      APP_ENV: 'desktop',
-      DATABASE_URL: `postgresql+asyncpg://${user}:${password}@127.0.0.1:${this.ports!.postgres}/${db}`,
-      RUNTIME_EXEC_BACKEND: 'qemu',
-      RUNTIME_QEMU_IMAGE: this.runtimeImagePath(),
-      RUNTIME_QEMU_SSH_KEY_PATH: this.runtimeKeyPath(),
-      RUNTIME_QEMU_WORKSPACE_ROOT: path.join(instanceRoot(instance), 'workspaces'),
-      RUNTIME_QEMU_RUN_ROOT: path.join(instanceRoot(instance), 'qemu-run'),
-      RUNTIME_QEMU_BRIDGE_URL: `http://127.0.0.1:${this.ports!.qemuBridge}`,
-      RUNTIME_QEMU_BRIDGE_TOKEN: process.env.SENTINEL_DESKTOP_QEMU_BRIDGE_TOKEN || '',
-      RUNTIME_QEMU_HOST: '127.0.0.1',
-      RUNTIME_QEMU_PUBLIC_HOST: '127.0.0.1',
-      RUNTIME_QEMU_SSH_PORT: String(this.ports!.qemuSsh),
-      RUNTIME_QEMU_VNC_PORT: String(this.ports!.qemuVnc),
-      RUNTIME_QEMU_CDP_PORT: String(this.ports!.qemuCdp),
-      RUNTIME_WORKSPACES_HOST_DIR: path.join(instanceRoot(instance), 'workspaces'),
-      AUTH_COOKIE_SECURE: 'false',
-      AUTH_COOKIE_SAMESITE: 'lax',
-    };
+    return buildBackendEnv(instance, values, this.ports!);
   }
 
   private async listInstances(): Promise<InstanceSummary[]> {
-    await mkdir(this.instancesRoot(), { recursive: true });
-    const entries = await readdir(this.instancesRoot(), { withFileTypes: true });
+    await mkdir(instancesRoot(), { recursive: true });
+    const entries = await readdir(instancesRoot(), { withFileTypes: true });
     const result: InstanceSummary[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
@@ -580,50 +522,32 @@ export class DesktopManager {
     return status;
   }
 
-  private async runScript(service: 'manager', script: string, args: string[] = [], env: NodeJS.ProcessEnv = {}): Promise<void> {
-    this.supervisor.appendManagerLog(`Running ${script} ${args.join(' ')}`);
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(script, args, {
-        cwd: qemuResourcePath(),
-        env: {
-          ...process.env,
-          ...env,
-          PATH: commandSearchPath(env.PATH || process.env.PATH || ''),
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      const attach = (stream: NodeJS.ReadableStream) => {
-        const rl = readline.createInterface({ input: stream });
-        rl.on('line', (line) => this.supervisor.appendManagerLog(line));
-      };
-      attach(child.stdout);
-      attach(child.stderr);
-      child.once('error', reject);
-      child.once('exit', (code) => {
-        if (code === 0) {
-          resolve();
-          return;
-        }
-        reject(new Error(`${script} exited with code ${code ?? 'signal'}`));
-      });
-    });
-    this.supervisor.appendManagerLog(`Completed ${script}`);
-  }
-
   private async resolvePostgresBinary(name: string): Promise<string> {
-    const bundled = path.join(process.resourcesPath || '', 'postgres/bin', name);
+    const bundled = postgresBinaryPath(name);
     if (existsSync(bundled)) return bundled;
+    if (app.isPackaged) {
+      throw new Error(`Missing bundled Postgres binary '${name}'. Rebuild the desktop package.`);
+    }
     const fromPath = await commandExists(name);
     if (fromPath) return fromPath;
-    throw new Error(`Missing Postgres binary '${name}'. Packaged builds must include resources/postgres/bin/${name}.`);
+    throw new Error(`Missing Postgres binary '${name}'.`);
   }
 
   private async resolvePythonBinary(): Promise<string> {
-    const bundled = path.join(process.resourcesPath || '', 'python/bin/python3');
+    const bundled = pythonBinaryPath();
     if (existsSync(bundled)) return bundled;
+    if (app.isPackaged) {
+      throw new Error('Missing bundled Python runtime. Rebuild the desktop package.');
+    }
     const fromPath = await commandExists('python3');
     if (fromPath) return fromPath;
-    throw new Error('Missing Python runtime. Packaged builds must include resources/python/bin/python3.');
+    throw new Error('Missing Python runtime.');
+  }
+
+  private async resolveQemuStatusPath(name: string): Promise<string | undefined> {
+    const bundled = qemuBinaryPath(name);
+    if (app.isPackaged) return existsSync(bundled) ? bundled : undefined;
+    return commandExists(name);
   }
 
   private async waitForPostgres(): Promise<void> {
@@ -744,7 +668,7 @@ ALTER DATABASE ${oldName} RENAME TO ${newName};
   private postgresEnv(): NodeJS.ProcessEnv {
     return {
       ...process.env,
-      PATH: commandSearchPath(),
+      PATH: runtimeCommandPath(),
       LANG: 'C',
       LC_ALL: 'C',
       LC_CTYPE: 'C',
@@ -811,13 +735,11 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
     //   1. recorded vm.pid files under instances/*/qemu-run/ and SIGTERM any
     //      live PID (this Electron just started, so anything still alive must
     //      be from a prior run).
-    //   2. bridge.py processes with our resources path whose parent is launchd.
     await this.reapOrphanedQemuVms();
-    await this.reapOrphanedBridges();
   }
 
   private async reapOrphanedQemuVms(): Promise<void> {
-    const root = this.instancesRoot();
+    const root = instancesRoot();
     if (!existsSync(root)) return;
     let entries;
     try {
@@ -850,51 +772,6 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
     }
   }
 
-  private async reapOrphanedBridges(): Promise<void> {
-    const bridgePath = path.join(qemuResourcePath(), 'bridge.py');
-    if (!existsSync(bridgePath)) return;
-    let listing: string;
-    try {
-      listing = await execFileText('ps', ['-eo', 'pid,ppid,command']);
-    } catch {
-      return;
-    }
-    for (const line of listing.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const match = trimmed.match(/^(\d+)\s+(\d+)\s+(.*)$/);
-      if (!match) continue;
-      const pid = Number(match[1]);
-      const ppid = Number(match[2]);
-      const command = match[3] ?? '';
-      if (ppid !== 1) continue;
-      if (!command.includes(bridgePath)) continue;
-      if (pid === process.pid) continue;
-      try {
-        process.kill(pid, 'SIGTERM');
-        this.supervisor.appendManagerLog(`Reaped orphaned QEMU bridge pid=${pid}`);
-      } catch {
-        // Already gone.
-      }
-    }
-  }
-
-  private async migrateLegacyRuntimeOutput(): Promise<void> {
-    const files = [
-      'sentinel-runtime-base-arm64.qcow2',
-      'sentinel-runtime-base-arm64.id_ed25519',
-      'sentinel-runtime-base-arm64.id_ed25519.pub',
-    ];
-    for (const file of files) {
-      const currentPath = path.join(this.runtimeOutputDir(), file);
-      const legacyPath = path.join(this.legacyRuntimeOutputDir(), file);
-      if (existsSync(currentPath) || !existsSync(legacyPath)) continue;
-      await mkdir(this.runtimeOutputDir(), { recursive: true });
-      await copyFile(legacyPath, currentPath);
-      this.supervisor.appendManagerLog(`Migrated QEMU artifact ${file}`);
-    }
-  }
-
   private sanitizeInstanceName(name: string): string {
     return name.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
   }
@@ -922,8 +799,8 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
       JWT_ALGORITHM: values.JWT_ALGORITHM || 'HS256',
       RUNTIME_EXEC_BACKEND: 'qemu',
       RUNTIME_WORKSPACES_HOST_DIR: path.join(root, 'workspaces'),
-      RUNTIME_QEMU_IMAGE: this.runtimeImagePath(),
-      RUNTIME_QEMU_SSH_KEY_PATH: this.runtimeKeyPath(),
+      RUNTIME_QEMU_IMAGE: runtimeImagePath(),
+      RUNTIME_QEMU_SSH_KEY_PATH: runtimeKeyPath(),
       RUNTIME_QEMU_WORKSPACE_ROOT: path.join(root, 'workspaces'),
       RUNTIME_QEMU_RUN_ROOT: path.join(root, 'qemu-run'),
     };
@@ -933,56 +810,11 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
   private normalizeRestoredInstanceEnv(values: Record<string, string>): Record<string, string> {
     const env = { ...values };
     for (const key of Object.keys(env)) {
-      if (key.startsWith('RUNTIME_MULTIPASS_')) delete env[key];
       if (key === 'RUNTIME_QEMU_BRIDGE_PORT' || key === 'RUNTIME_QEMU_BRIDGE_TOKEN' || key === 'RUNTIME_QEMU_BRIDGE_URL') delete env[key];
     }
     delete env.DATABASE_URL;
     delete env.POSTGRES_USER;
     delete env.POSTGRES_PASSWORD;
     return env;
-  }
-
-  private desktopPostgresPassword(): string {
-    return 'sentinel';
-  }
-
-  private instancesRoot(): string {
-    return path.join(appSupportRoot(), 'instances');
-  }
-
-  private runtimeOutputDir(): string {
-    return path.join(appSupportRoot(), 'qemu/output');
-  }
-
-  private legacyRuntimeOutputDir(): string {
-    return path.join(appSupportRoot(), 'runtime/qemu/output');
-  }
-
-  private runtimeCacheDir(): string {
-    return path.join(appSupportRoot(), 'qemu/cache');
-  }
-
-  private runtimeBuildDir(): string {
-    return path.join(appSupportRoot(), 'qemu/build');
-  }
-
-  private runtimeRunDir(): string {
-    return path.join(appSupportRoot(), 'qemu/run');
-  }
-
-  private runtimeValidateRunDir(): string {
-    return path.join(this.runtimeRunDir(), 'validate');
-  }
-
-  private runtimeImagePath(): string {
-    return path.join(this.runtimeOutputDir(), 'sentinel-runtime-base-arm64.qcow2');
-  }
-
-  private runtimeKeyPath(): string {
-    return path.join(this.runtimeOutputDir(), 'sentinel-runtime-base-arm64.id_ed25519');
-  }
-
-  private postgresDataDir(): string {
-    return path.join(appSupportRoot(), 'postgres/data');
   }
 }

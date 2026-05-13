@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "platforms": {
+    "macos-arm64": {
+      "python": {
+        "version": "3.12.13",
+        "sourceUrl": "https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tgz",
+        "sourceSha256": "0816c4761c97ecdb3f50a3924de0a93fd78cb63ee8e6c04201ddfaedca500b0b"
+      },
+      "postgres": {
+        "version": "17.9",
+        "sourceUrl": "https://ftp.postgresql.org/pub/source/v17.9/postgresql-17.9.tar.gz",
+        "sourceSha256": "70eaebacf5344a0951075a666369d95d25ae4485ad0d6d3df652065277f4943c"
+      },
+      "pgvector": {
+        "version": "0.8.2",
+        "repository": "https://github.com/pgvector/pgvector.git",
+        "tag": "v0.8.2",
+        "commitPrefix": "cab9da7"
+      },
+      "qemu": {
+        "version": "11.0.0",
+        "sourceUrl": "https://download.qemu.org/qemu-11.0.0.tar.xz",
+        "sourceSha256": "c04ca36012653f32d11c674d370cf52a710e7d3f18c2d8b63e4932052a4854d6"
+      }
+    }
+  }
+}
