@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.config import settings
 from app.services.instance_runtime_context import InstanceRuntimeContext
 from app.services.runtime.runtime_rebuild import RuntimeRebuildService
 
@@ -104,6 +105,7 @@ async def test_rebuild_request_runtime_support_rebuilds_instance_context(monkeyp
     context = InstanceRuntimeContext(
         name="main",
         database_name="sentinel_main_0d6e4079",
+        instance_settings=settings,
         session_factory=object(),
         tool_registry=object(),
         tool_executor=object(),

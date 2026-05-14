@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
 from app.services.runtime import get_runtime
+from app.services.runtime.base import RuntimeServiceEndpoint
 
 logger = logging.getLogger(__name__)
 
@@ -21,18 +22,16 @@ router = APIRouter()
 _NOVNC_PORT = 6080
 
 
-def _get_runtime_host(session_id: str) -> str | None:
+def _get_runtime_vnc_endpoint(session_id: str):
     provider = get_runtime()
-    return provider.get_host(session_id)
-
-
-def _get_runtime_vnc_port(session_id: str) -> int:
-    provider = get_runtime()
-    try:
-        port = provider.resolve_port(session_id, _NOVNC_PORT)
-    except Exception:
-        port = None
-    return int(port or _NOVNC_PORT)
+    if hasattr(provider, "get_internal_endpoint"):
+        endpoint = provider.get_internal_endpoint(session_id, _NOVNC_PORT)
+        if endpoint is not None:
+            return endpoint
+    host = provider.get_host(session_id)
+    if not host:
+        return None
+    return RuntimeServiceEndpoint(host=host, port=_NOVNC_PORT)
 
 
 @router.api_route(
@@ -41,10 +40,9 @@ def _get_runtime_vnc_port(session_id: str) -> int:
     include_in_schema=False,
 )
 async def vnc_http_proxy(request: Request, session_id: str, path: str = "") -> Response:
-    host = _get_runtime_host(session_id)
-    if not host:
+    endpoint = _get_runtime_vnc_endpoint(session_id)
+    if endpoint is None:
         return Response(content="Runtime not found", status_code=404)
-    port = _get_runtime_vnc_port(session_id)
 
     if path == "websockify":
         return Response(
@@ -57,7 +55,7 @@ async def vnc_http_proxy(request: Request, session_id: str, path: str = "") -> R
         payload = json.dumps({"name": "novnc-proxy", "version": "0.0.0"})
         return Response(content="" if request.method == "HEAD" else payload, status_code=200, media_type="application/json")
 
-    upstream = f"http://{host}:{port}/{path}"
+    upstream = f"http://{endpoint.host}:{endpoint.port}/{path}"
     qs = str(request.url.query)
     if qs:
         upstream += f"?{qs}"
@@ -67,7 +65,7 @@ async def vnc_http_proxy(request: Request, session_id: str, path: str = "") -> R
             resp = await client.request(
                 request.method,
                 upstream,
-                headers={"Host": f"{host}:{port}"},
+                headers={"Host": f"{endpoint.host}:{endpoint.port}"},
             )
     except httpx.HTTPError as exc:
         logger.warning("VNC HTTP proxy failed: session=%s path=%s upstream=%s error=%s", session_id, path, upstream, exc)
@@ -90,11 +88,9 @@ async def vnc_http_proxy(request: Request, session_id: str, path: str = "") -> R
 
 @router.websocket("/vnc/{session_id}/websockify")
 async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
-    host = _get_runtime_host(session_id)
-    port = _get_runtime_vnc_port(session_id)
-    logger.warning("VNC WS proxy: session=%s host=%s", session_id, host)
+    endpoint = _get_runtime_vnc_endpoint(session_id)
 
-    if not host:
+    if endpoint is None:
         await websocket.close(code=4004, reason="Runtime container not found")
         return
 
@@ -104,12 +100,10 @@ async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
         if protocol.strip()
     ]
     await websocket.accept(subprotocol="binary" if "binary" in requested_protocols else None)
-    logger.warning("VNC WS proxy: accepted client websocket")
 
     upstream_ws = None
     try:
-        upstream_url = f"ws://{host}:{port}/websockify"
-        logger.warning("VNC WS proxy: connecting to upstream %s", upstream_url)
+        upstream_url = f"ws://{endpoint.host}:{endpoint.port}/websockify"
 
         upstream_ws = await asyncio.wait_for(
             websockets.connect(
@@ -120,7 +114,6 @@ async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
             ),
             timeout=15,
         )
-        logger.warning("VNC WS proxy: upstream connected, subprotocol=%s", upstream_ws.subprotocol)
 
         async def _client_to_upstream() -> None:
             try:
@@ -130,7 +123,7 @@ async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
             except asyncio.CancelledError:
                 raise
             except WebSocketDisconnect:
-                logger.warning("VNC WS proxy: client disconnected")
+                logger.debug("VNC WS proxy client disconnected")
             except Exception as e:
                 logger.warning("VNC WS proxy: client_to_upstream error: %s", e)
 
@@ -144,7 +137,7 @@ async def vnc_ws_proxy(websocket: WebSocket, session_id: str) -> None:
             except asyncio.CancelledError:
                 raise
             except WebSocketDisconnect:
-                logger.warning("VNC WS proxy: upstream disconnected")
+                logger.debug("VNC WS proxy upstream disconnected")
             except Exception as e:
                 logger.warning("VNC WS proxy: upstream_to_client error: %s", e)
 

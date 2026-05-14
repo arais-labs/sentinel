@@ -4,6 +4,7 @@ import os
 import re
 import tempfile
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 import jwt
@@ -11,7 +12,9 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
+os.environ.setdefault("SESSION_RUNTIME_BASE_DIR", "/tmp/sentinel-test-session-runtime")
 
+from app.config import settings
 from app.dependencies import get_db, get_manager_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
@@ -26,7 +29,9 @@ from app.services.instance_runtime_context import (
     InstanceRuntimeContext,
     instance_runtime_context_registry,
 )
+from app.services.runtime import session_runtime as session_runtime_module
 from app.services.runtime.base import RuntimeExecResult
+from app.services.runtime.base import RuntimeTerminalSession
 from app.services.tools import ToolExecutor
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
 from app.services.araios.system_modules.shared import validate_public_hostname as _validate_public_hostname
@@ -167,6 +172,12 @@ class _FakeRuntimeInstance:
         self.workspace_path = workspace_path
         self.client = _FakeRuntimeSSH()
         self.host = "127.0.0.1"
+        self.metadata = {"provider": "fake"}
+        self.terminal = RuntimeTerminalSession(
+            ssh=self.client,
+            session_user="sentinel",
+            workspace_path=workspace_path,
+        )
 
 
 class _FakeRuntimeProvider:
@@ -203,11 +214,18 @@ def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
     previous_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
     previous_db_factory = getattr(app.state, "db_factory", None)
     previous_get_runtime = runtime_tool_module.get_runtime
+    previous_runtime_base_dir = session_runtime_module._RUNTIME_BASE_DIR
+    from app.services.runtime import terminal_manager as _tm
+
+    terminal_manager = _tm.get_terminal_manager()
+    previous_terminal_run_command = terminal_manager.run_command
+    previous_terminal_run_command_background = terminal_manager.run_command_background
     session_factory = _FakeSessionFactory(fake_db)
     runtime_tool_module.AsyncSessionLocal = session_factory
     git_module.AsyncSessionLocal = session_factory
     module_manager_module.AsyncSessionLocal = session_factory
     runtime_tool_module.get_runtime = lambda: _FakeRuntimeProvider()
+    session_runtime_module._RUNTIME_BASE_DIR = Path(os.environ["SESSION_RUNTIME_BASE_DIR"]).expanduser()
     # The new unified runtime model routes all `runtime.user` calls through
     # TerminalManager → tmux pane in a real guest VM. In unit tests we don't
     # have a guest, so we monkeypatch the singleton's run_command path to
@@ -232,16 +250,16 @@ def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
     ):
         _ = session_id, terminal_id, label_hint, created_by, auto
         # Delegate straight to the fake SSH stub, which has pattern-matched
-        # responses for the canned commands used in tests.
-        return await runtime.client.run(
+    # responses for the canned commands used in tests.
+        return await runtime.terminal.ssh.run(
             command,
-            cwd=cwd or runtime.workspace_path,
+            cwd=cwd or runtime.terminal.workspace_path,
             env=env or None,
             timeout=timeout,
             as_root=False,
         )
 
-    _tm.get_terminal_manager().run_command = _fake_terminal_run  # type: ignore[method-assign]
+    terminal_manager.run_command = _fake_terminal_run  # type: ignore[method-assign]
 
     async def _fake_terminal_run_background(
         *,
@@ -264,7 +282,7 @@ def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
             "started_at": "2026-05-11T00:00:00+00:00",
         }
 
-    _tm.get_terminal_manager().run_command_background = _fake_terminal_run_background  # type: ignore[method-assign]
+    terminal_manager.run_command_background = _fake_terminal_run_background  # type: ignore[method-assign]
     reset_runtime_services()
     configure_runtime_services(app_state=app.state)
     registry = asyncio.run(build_runtime_registry(session_factory=session_factory))
@@ -275,13 +293,28 @@ def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
         previous_get_runtime,
         previous_agent_runtime_support,
         previous_db_factory,
+        previous_runtime_base_dir,
+        terminal_manager,
+        previous_terminal_run_command,
+        previous_terminal_run_command_background,
     )
 
 
 def _restore_app_tool_runtime(previous_registry, previous_executor, previous_runtime_state) -> None:
-    previous_get_runtime, previous_agent_runtime_support, previous_db_factory = previous_runtime_state
+    (
+        previous_get_runtime,
+        previous_agent_runtime_support,
+        previous_db_factory,
+        previous_runtime_base_dir,
+        terminal_manager,
+        previous_terminal_run_command,
+        previous_terminal_run_command_background,
+    ) = previous_runtime_state
     reset_runtime_services()
     runtime_tool_module.get_runtime = previous_get_runtime
+    session_runtime_module._RUNTIME_BASE_DIR = previous_runtime_base_dir
+    terminal_manager.run_command = previous_terminal_run_command  # type: ignore[method-assign]
+    terminal_manager.run_command_background = previous_terminal_run_command_background  # type: ignore[method-assign]
     app.state.tool_registry = previous_registry
     app.state.tool_executor = previous_executor
     app.state.agent_runtime_support = previous_agent_runtime_support
@@ -458,7 +491,7 @@ def test_runtime_runs_command():
             _runtime_input(shell_command="echo hello"),
             session_id=session_id,
         )
-        assert run.status_code == 200
+        assert run.status_code == 200, run.json()
         payload = run.json()["result"]
         assert payload["ok"] is True
         assert "hello" in payload["stdout"]
@@ -1338,6 +1371,7 @@ def test_module_manager_create_refreshes_instance_runtime_context():
     context = InstanceRuntimeContext(
         name="main",
         database_name="sentinel_main_0d6e4079",
+        instance_settings=settings,
         session_factory=app.state.db_session_factory,
         tool_registry=app.state.tool_registry,
         tool_executor=app.state.tool_executor,

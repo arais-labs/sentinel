@@ -58,9 +58,11 @@ async def set_api_keys(
 @router.get("/api-keys/status")
 async def get_api_keys_status(
     _: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict:
-    status = settings_service.get_api_keys_status()
+    instance_settings = await settings_service.build_instance_settings(db)
+    status = settings_service.get_api_keys_status(instance_settings)
     providers = {
         provider.value: {
             "configured": item.configured,

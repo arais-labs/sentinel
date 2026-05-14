@@ -1,4 +1,4 @@
-"""Persistent tmux-backed terminals routed through the QEMU runtime.
+"""Persistent tmux-backed terminals routed through SSH-backed runtimes.
 
 Every agent runtime.user command lands inside a named tmux session in the
 guest VM. The same session is exposed to the human user over a WebSocket so
@@ -33,7 +33,7 @@ from uuid import UUID, uuid4
 from fastapi import WebSocketDisconnect
 
 from app.services.runtime import get_runtime
-from app.services.runtime.base import RuntimeExecResult
+from app.services.runtime.base import RuntimeExecResult, RuntimeTerminalSession
 
 
 # Minimal rcfile written into every terminal's workspace and sourced by the
@@ -585,13 +585,6 @@ class TerminalManager:
         attachment_key = (session_key, terminal_id)
         self._attachments[attachment_key].add(websocket)
 
-        try:
-            conn = await ssh._ensure_conn()  # type: ignore[attr-defined]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("attach_ws could not acquire SSH conn: %s", exc)
-            self._attachments[attachment_key].discard(websocket)
-            return
-
         attach_cmd = (
             f"sudo -u {_q(record.session_user)} "
             f"tmux attach-session -t {_q(record.tmux_name)}"
@@ -603,7 +596,7 @@ class TerminalManager:
             # because terminal escape sequences and 8-bit UTF-8 must pass
             # through unmolested. `term_size` is just the initial size; the
             # client sends a real resize control frame on connect.
-            process = await conn.create_process(
+            process = await ssh.create_process(
                 attach_cmd,
                 term_type="xterm-256color",
                 term_size=(80, 24),
@@ -856,26 +849,35 @@ class TerminalManager:
             )
         return candidate
 
+    def _terminal_session(self, runtime: RuntimeInstance) -> RuntimeTerminalSession:
+        terminal = getattr(runtime, "terminal", None)
+        if terminal is None:
+            provider = str(getattr(runtime, "metadata", {}).get("provider") or "unknown")
+            raise TerminalUnavailableError(
+                "terminal_not_supported",
+                detail=f"Runtime provider '{provider}' does not expose an SSH/tmux terminal session.",
+            )
+        return terminal
+
     def _extract_ssh(self, runtime: RuntimeInstance) -> SSHClient:
-        client = getattr(runtime, "client", None)
-        if client is None:
-            raise RuntimeError("Runtime instance is missing a session client")
-        ssh = getattr(client, "_ssh", None)
-        if ssh is None:
-            raise RuntimeError("Runtime session client is not SSH-backed; tmux terminals require SSH")
-        return ssh
+        return self._terminal_session(runtime).ssh  # type: ignore[return-value]
 
     def _session_user(self, runtime: RuntimeInstance) -> str:
-        client = getattr(runtime, "client", None)
-        user = getattr(client, "_session_user", None) if client is not None else None
+        user = self._terminal_session(runtime).session_user
         if not isinstance(user, str) or not user:
-            raise RuntimeError("Runtime session client is missing _session_user")
+            raise TerminalUnavailableError(
+                "terminal_session_invalid",
+                detail="Runtime terminal session is missing a session user.",
+            )
         return user
 
     def _workspace(self, runtime: RuntimeInstance) -> str:
-        path = getattr(runtime, "workspace_path", None)
+        path = self._terminal_session(runtime).workspace_path
         if not isinstance(path, str) or not path:
-            raise RuntimeError("Runtime instance is missing workspace_path")
+            raise TerminalUnavailableError(
+                "terminal_session_invalid",
+                detail="Runtime terminal session is missing a workspace path.",
+            )
         return path.rstrip("/")
 
     def _tmux_prefix(self, session_key: str) -> str:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
@@ -9,7 +8,7 @@ import pytest
 
 from app.services.llm.generic.types import ToolCallContent
 from app.services.runtime import terminal_manager as tm_module
-from app.services.runtime.base import RuntimeExecResult, RuntimeInstance
+from app.services.runtime.base import RuntimeExecResult, RuntimeInstance, RuntimeTerminalSession
 from app.services.runtime.terminal_manager import (
     TerminalBlockedError,
     TerminalManager,
@@ -17,16 +16,22 @@ from app.services.runtime.terminal_manager import (
 )
 
 
-@dataclass
-class _SessionClientStub:
-    """Minimal duck-typed stand-in for QemuSessionClient.
+class _CommandClientStub:
+    """Runtime command client placeholder; TerminalManager uses runtime.terminal."""
 
-    TerminalManager only ever inspects `client._ssh` and `client._session_user`,
-    so we expose those attributes directly without dragging in real SSH wiring.
-    """
+    async def wait_ready(self, *, timeout: int = 60) -> None:
+        _ = timeout
 
-    _ssh: Any
-    _session_user: str = "ssn-test"
+    async def run(self, command: str, *, timeout: int = 300, cwd=None, env=None, as_root: bool = False):
+        _ = command, timeout, cwd, env, as_root
+        return RuntimeExecResult(exit_status=0, stdout="", stderr="")
+
+    async def run_detached(self, command: str, *, stdout_path: str, stderr_path: str, cwd=None, env=None, as_root: bool = False):
+        _ = command, stdout_path, stderr_path, cwd, env, as_root
+        return 123
+
+    async def close(self) -> None:
+        return None
 
 
 class _SSHStub:
@@ -59,7 +64,22 @@ class _SSHStub:
 def _make_runtime(ssh: _SSHStub, *, session_user: str = "ssn-test", workspace: str = "/srv/workspace") -> RuntimeInstance:
     return RuntimeInstance(
         session_id="sess",
-        client=_SessionClientStub(_ssh=ssh, _session_user=session_user),
+        client=_CommandClientStub(),
+        workspace_path=workspace,
+        host="127.0.0.1",
+        terminal=RuntimeTerminalSession(
+            ssh=ssh,
+            session_user=session_user,
+            workspace_path=workspace,
+        ),
+        metadata={"provider": "stub"},
+    )
+
+
+def _make_runtime_without_terminal(ssh: _SSHStub, *, workspace: str = "/srv/workspace") -> RuntimeInstance:
+    return RuntimeInstance(
+        session_id="sess",
+        client=_CommandClientStub(),
         workspace_path=workspace,
         host="127.0.0.1",
         metadata={"provider": "stub"},
@@ -261,6 +281,25 @@ async def test_run_command_fails_loud_when_tmux_missing():
     # The probe should be the only command issued — we must NOT proceed to
     # prep / new-session etc. when tmux is missing.
     assert len(ssh.commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_command_fails_loud_when_runtime_has_no_terminal_capability():
+    from app.services.runtime.terminal_manager import TerminalUnavailableError
+
+    manager = TerminalManager()
+    runtime = _make_runtime_without_terminal(_SSHStub())
+
+    with pytest.raises(TerminalUnavailableError) as info:
+        await manager.run_command(
+            runtime=runtime,
+            session_id="sess",
+            terminal_id="0",
+            command="ls",
+            timeout=5,
+        )
+    assert info.value.reason == "terminal_not_supported"
+    assert "does not expose an SSH/tmux terminal session" in (info.value.detail or "")
 
 
 @pytest.mark.asyncio

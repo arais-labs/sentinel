@@ -177,6 +177,22 @@ class SSHClient:
         pid_str = (pid_line or "").strip()
         return int(pid_str)
 
+    async def create_process(
+        self,
+        command: str,
+        *,
+        term_type: str = "xterm-256color",
+        term_size: tuple[int, int] = (80, 24),
+        encoding: str | None = None,
+    ):
+        conn = await self._ensure_conn()
+        return await conn.create_process(
+            command,
+            term_type=term_type,
+            term_size=term_size,
+            encoding=encoding,
+        )
+
     async def close(self) -> None:
         if self._conn is not None:
             self._conn.close()

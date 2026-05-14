@@ -4,9 +4,11 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import Settings, settings
+from app.models.system import SystemSetting
 from app.services.llm.ids import ProviderChoice, parse_provider_choice
 from app.services.llm.providers.gemini_oauth import GeminiOAuthCredentials
 from app.services.settings.system_settings import (
@@ -29,6 +31,33 @@ class ApiKeysStatus:
 
 
 class SettingsService:
+    PERSISTED_SETTINGS: tuple[str, ...] = (
+        "anthropic_api_key",
+        "anthropic_oauth_token",
+        "openai_api_key",
+        "openai_oauth_token",
+        "gemini_api_key",
+        "gemini_oauth_credentials",
+        "primary_provider",
+        "default_system_prompt",
+        "telegram_bot_token",
+        "telegram_owner_user_id",
+        "telegram_owner_chat_id",
+        "telegram_owner_telegram_user_id",
+        "telegram_pairing_code_hash",
+        "telegram_pairing_code_expires_at",
+    )
+
+    async def build_instance_settings(self, db: AsyncSession) -> Settings:
+        instance_settings = settings.model_copy(deep=True)
+        result = await db.execute(
+            select(SystemSetting).where(SystemSetting.key.in_(self.PERSISTED_SETTINGS))
+        )
+        for row in result.scalars().all():
+            if hasattr(instance_settings, row.key):
+                setattr(instance_settings, row.key, row.value)
+        return instance_settings
+
     async def set_api_keys(
         self,
         db: AsyncSession,
@@ -42,50 +71,45 @@ class SettingsService:
     ) -> None:
         await self._persist_if_present(
             db,
-            setting_attr="anthropic_api_key",
             setting_key="anthropic_api_key",
             value=anthropic_api_key,
         )
         await self._persist_if_present(
             db,
-            setting_attr="anthropic_oauth_token",
             setting_key="anthropic_oauth_token",
             value=anthropic_oauth_token,
         )
         await self._persist_if_present(
             db,
-            setting_attr="openai_api_key",
             setting_key="openai_api_key",
             value=openai_api_key,
         )
         await self._persist_if_present(
             db,
-            setting_attr="openai_oauth_token",
             setting_key="openai_oauth_token",
             value=openai_oauth_token,
         )
         await self._persist_if_present(
             db,
-            setting_attr="gemini_api_key",
             setting_key="gemini_api_key",
             value=gemini_api_key,
         )
         normalized_gemini_oauth = self._normalize_gemini_oauth_credentials(gemini_oauth_credentials)
         await self._persist_if_present(
             db,
-            setting_attr="gemini_oauth_credentials",
             setting_key="gemini_oauth_credentials",
             value=normalized_gemini_oauth,
         )
 
-    def get_api_keys_status(self) -> ApiKeysStatus:
-        anthropic_key = settings.anthropic_api_key
-        anthropic_oauth = settings.anthropic_oauth_token
-        openai_key = settings.openai_api_key
-        openai_oauth = settings.openai_oauth_token
-        gemini_key = settings.gemini_api_key
-        gemini_oauth = settings.gemini_oauth_credentials
-        primary_provider = parse_provider_choice(settings.primary_provider) or ProviderChoice.ANTHROPIC
+    def get_api_keys_status(self, instance_settings: Settings | None = None) -> ApiKeysStatus:
+        settings_source = instance_settings or settings
+        anthropic_key = settings_source.anthropic_api_key
+        anthropic_oauth = settings_source.anthropic_oauth_token
+        openai_key = settings_source.openai_api_key
+        openai_oauth = settings_source.openai_oauth_token
+        gemini_key = settings_source.gemini_api_key
+        gemini_oauth = settings_source.gemini_oauth_credentials
+        primary_provider = parse_provider_choice(settings_source.primary_provider) or ProviderChoice.ANTHROPIC
 
         return ApiKeysStatus(
             primary_provider=primary_provider,
@@ -110,20 +134,14 @@ class SettingsService:
 
     async def delete_api_keys(self, db: AsyncSession, *, provider: ProviderChoice) -> None:
         if provider == ProviderChoice.ANTHROPIC:
-            settings.anthropic_api_key = None
-            settings.anthropic_oauth_token = None
             await delete_system_setting(db, key="anthropic_api_key")
             await delete_system_setting(db, key="anthropic_oauth_token")
             return
         if provider == ProviderChoice.OPENAI:
-            settings.openai_api_key = None
-            settings.openai_oauth_token = None
             await delete_system_setting(db, key="openai_api_key")
             await delete_system_setting(db, key="openai_oauth_token")
             return
         if provider == ProviderChoice.GEMINI:
-            settings.gemini_api_key = None
-            settings.gemini_oauth_credentials = None
             await delete_system_setting(db, key="gemini_api_key")
             await delete_system_setting(db, key="gemini_oauth_credentials")
 
@@ -133,21 +151,18 @@ class SettingsService:
         *,
         provider: ProviderChoice,
     ) -> None:
-        settings.primary_provider = provider.value
         await upsert_system_setting(db, key="primary_provider", value=provider.value)
 
     @staticmethod
     async def _persist_if_present(
         db: AsyncSession,
         *,
-        setting_attr: str,
         setting_key: str,
         value: str | None,
     ) -> None:
         normalized = SettingsService._strip_or_none(value)
         if normalized is None:
             return
-        setattr(settings, setting_attr, normalized)
         await upsert_system_setting(db, key=setting_key, value=normalized)
 
     @staticmethod

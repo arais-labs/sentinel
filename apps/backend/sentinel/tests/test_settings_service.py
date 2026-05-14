@@ -6,10 +6,61 @@ import pytest
 from fastapi import HTTPException
 
 from app.config import settings
+from app.models.system import SystemSetting
 from app.services.llm.factory import _build_enabled_providers
 from app.services.llm.ids import ProviderChoice
 from app.services.llm.providers.gemini_oauth import GeminiOAuthProvider
 from app.services.settings.settings_service import SettingsService
+
+
+class _ScalarResult:
+    def __init__(self, rows: list[SystemSetting]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[SystemSetting]:
+        return self._rows
+
+
+class _ExecuteResult:
+    def __init__(self, rows: list[SystemSetting]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _ScalarResult:
+        return _ScalarResult(self._rows)
+
+
+class _FakeSettingsDb:
+    def __init__(self, rows: list[SystemSetting]) -> None:
+        self._rows = rows
+
+    async def execute(self, _stmt):
+        return _ExecuteResult(self._rows)
+
+
+@pytest.mark.asyncio
+async def test_build_instance_settings_restores_provider_keys_without_global_mutation() -> None:
+    service = SettingsService()
+    old_values = (
+        settings.openai_api_key,
+        settings.primary_provider,
+    )
+    try:
+        settings.openai_api_key = None
+        settings.primary_provider = ProviderChoice.ANTHROPIC
+        instance_settings = await service.build_instance_settings(
+            _FakeSettingsDb(
+                [
+                    SystemSetting(key="openai_api_key", value="sk-test"),
+                    SystemSetting(key="primary_provider", value="openai"),
+                ]
+            )
+        )
+        assert instance_settings.openai_api_key == "sk-test"
+        assert instance_settings.primary_provider == "openai"
+        assert settings.openai_api_key is None
+        assert settings.primary_provider == ProviderChoice.ANTHROPIC
+    finally:
+        settings.openai_api_key, settings.primary_provider = old_values
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,13 @@ from pathlib import Path
 from uuid import UUID
 
 from app.config import settings
-from app.services.runtime.base import RuntimeInstance, RuntimeProviderInfo, RuntimeProviderInfoItem
+from app.services.runtime.base import (
+    RuntimeInstance,
+    RuntimeProviderInfo,
+    RuntimeProviderInfoItem,
+    RuntimeServiceEndpoint,
+    RuntimeTerminalSession,
+)
 from app.services.runtime.playwright_runtime import (
     DEFAULT_BROWSER_LOCALE,
     DEFAULT_BROWSER_TIMEZONE_ID,
@@ -92,11 +98,23 @@ class DockerRuntimeProvider:
         existing = await self._inspect_running_container(container_name)
         if existing:
             container_id, ip = existing
-            logger.info(
-                "Reconnecting to existing runtime container %s (%s) for session %s",
-                container_name, ip, key,
-            )
+            if await self._container_uses_current_image(container_id):
+                logger.info(
+                    "Reconnecting to existing runtime container %s (%s) for session %s",
+                    container_name, ip, key,
+                )
+            else:
+                logger.info(
+                    "Removing stale runtime container %s for session %s because image %s changed",
+                    container_name,
+                    key,
+                    self._image,
+                )
+                existing = None
         else:
+            existing = None
+
+        if existing is None:
             await self._remove_container(container_name)
 
             pub_key = (self._ssh_key_dir / "id_ed25519.pub").read_text().strip()
@@ -185,6 +203,11 @@ class DockerRuntimeProvider:
             client=ssh,
             workspace_path=CONTAINER_WORKSPACE,
             host=ip,
+            terminal=RuntimeTerminalSession(
+                ssh=ssh,
+                session_user="sentinel",
+                workspace_path=CONTAINER_WORKSPACE,
+            ),
         )
         self._instances[key] = _DockerInstance(
             container_id=container_id,
@@ -292,6 +315,14 @@ class DockerRuntimeProvider:
             container_id: str = info.get("ID", "")
             if not name.startswith(_NAME_PREFIX) or not container_id:
                 continue
+            if not await self._container_uses_current_image(container_id):
+                logger.info(
+                    "Removing stale recovered runtime container %s because image %s changed",
+                    name,
+                    self._image,
+                )
+                await self._remove_container(name)
+                continue
 
             # Derive session_id prefix from container name
             session_prefix = name[len(_NAME_PREFIX):]
@@ -334,6 +365,11 @@ class DockerRuntimeProvider:
                 client=ssh,
                 workspace_path=CONTAINER_WORKSPACE,
                 host=ip,
+                terminal=RuntimeTerminalSession(
+                    ssh=ssh,
+                    session_user="sentinel",
+                    workspace_path=CONTAINER_WORKSPACE,
+                ),
             )
             self._instances[full_key] = _DockerInstance(
                 container_id=container_id,
@@ -407,6 +443,21 @@ class DockerRuntimeProvider:
             except ValueError:
                 continue
         return None
+
+    def get_internal_endpoint(self, session_id: UUID | str, internal_port: int) -> RuntimeServiceEndpoint | None:
+        host = self.get_host(session_id)
+        if not host:
+            return None
+        return RuntimeServiceEndpoint(host=host, port=int(internal_port))
+
+    def get_public_endpoint(self, session_id: UUID | str, internal_port: int) -> RuntimeServiceEndpoint | None:
+        port = self.resolve_port(session_id, internal_port)
+        if not port:
+            return None
+        host = self.get_public_host(session_id)
+        if not host:
+            return None
+        return RuntimeServiceEndpoint(host=host, port=int(port))
 
     async def restart_browser(self, session_id: UUID | str, runtime: RuntimeInstance) -> None:
         _ = session_id
@@ -488,6 +539,34 @@ class DockerRuntimeProvider:
         except Exception:
             return None
         return container_id, ip
+
+    async def _container_uses_current_image(self, container_id: str) -> bool:
+        current_image_id = await self._current_image_id()
+        if not current_image_id:
+            logger.debug("Could not resolve current runtime image id for %s", self._image)
+            return True
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["docker", "inspect", "--format", "{{.Image}}", container_id],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+        container_image_id = (result.stdout or "").strip()
+        return container_image_id == current_image_id
+
+    async def _current_image_id(self) -> str | None:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["docker", "image", "inspect", "--format", "{{.Id}}", self._image],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        image_id = (result.stdout or "").strip()
+        return image_id or None
 
     async def _resolve_full_session_id(self, prefix: str) -> str | None:
         """Try to find the full UUID for a session prefix from the database."""

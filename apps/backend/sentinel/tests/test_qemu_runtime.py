@@ -262,6 +262,9 @@ def test_qemu_provider_ensure_does_not_activate_visual_session(monkeypatch, tmp_
     assert terminal_calls == []
     assert first.metadata["python_venv_root"] == "/srv/sentinel/sessions/session-a/venvs"
     assert third.metadata["python_venv_root"] == "/srv/sentinel/sessions/session-b/venvs"
+    assert first.terminal is not None
+    assert first.terminal.session_user == "ssn-session-a"
+    assert first.terminal.workspace_path == "/srv/sentinel/sessions/session-a/workspace"
 
 
 def test_qemu_provider_activate_session_switches_visual_session_once(monkeypatch, tmp_path) -> None:

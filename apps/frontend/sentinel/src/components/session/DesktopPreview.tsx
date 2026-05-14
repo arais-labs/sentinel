@@ -66,7 +66,6 @@ export const DesktopPreview = memo(({
     if (!url) return null;
     const normalized = url
       .replace(/["']/g, '')
-      .replace('localhost', '127.0.0.1')
       .trim();
     try {
       const parsed = new URL(normalized);
@@ -209,7 +208,7 @@ export const DesktopPreview = memo(({
       />
       <div
         ref={panelRef}
-        className={`${isFloatingPanel ? 'fixed z-[1000]' : 'absolute inset-0'} overflow-hidden bg-black flex flex-col`}
+        className={`${isFloatingPanel ? 'fixed z-[20000]' : 'absolute inset-0'} overflow-hidden bg-black flex flex-col`}
         onPointerDownCapture={onInteract}
         onMouseDown={isFloatingPanel ? (event) => event.stopPropagation() : undefined}
         style={
@@ -300,7 +299,7 @@ export const DesktopPreview = memo(({
         </div>
       </div>
       <div
-        className={`fixed inset-0 ${isFullscreen ? 'z-[990]' : 'z-[40]'} bg-black/80 backdrop-blur-md transition-opacity duration-300 ease-out ${
+        className={`fixed inset-0 ${isFullscreen ? 'z-[19990]' : 'z-[40]'} bg-black/80 backdrop-blur-md transition-opacity duration-300 ease-out ${
           isFullscreen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
         }`}
         onClick={isFullscreen ? onClose : undefined}

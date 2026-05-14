@@ -11,6 +11,8 @@ from app.services.runtime.base import (
     RuntimeInstance,
     RuntimeProviderInfo,
     RuntimeProviderInfoItem,
+    RuntimeServiceEndpoint,
+    RuntimeTerminalSession,
 )
 from app.services.runtime.qemu.controls import BridgeQemuControl, DesktopQemuControl, QemuBridgeError, QemuControl
 from app.services.runtime.qemu.profile import QemuProfile, build_qemu_profile
@@ -200,6 +202,11 @@ class QemuRuntimeProvider:
                 ),
                 workspace_path=session_env["SESSION_WORKSPACE"],
                 host=self._profile.host,
+                terminal=RuntimeTerminalSession(
+                    ssh=ssh,
+                    session_user=session_env["SESSION_USER"],
+                    workspace_path=session_env["SESSION_WORKSPACE"],
+                ),
                 metadata={
                     "provider": "qemu",
                     "session_user": session_env["SESSION_USER"],
@@ -342,6 +349,20 @@ class QemuRuntimeProvider:
             9223: self._profile.cdp_port,
         }
         return port_map.get(int(internal_port))
+
+    def get_internal_endpoint(self, session_id: UUID | str, internal_port: int) -> RuntimeServiceEndpoint | None:
+        host = self.get_host(session_id)
+        port = self.resolve_port(session_id, internal_port)
+        if not host or not port:
+            return None
+        return RuntimeServiceEndpoint(host=host, port=int(port))
+
+    def get_public_endpoint(self, session_id: UUID | str, internal_port: int) -> RuntimeServiceEndpoint | None:
+        host = self.get_public_host(session_id)
+        port = self.resolve_port(session_id, internal_port)
+        if not host or not port:
+            return None
+        return RuntimeServiceEndpoint(host=host, port=int(port))
 
     async def restart_terminal(self, session_id: UUID | str, runtime: RuntimeInstance) -> None:
         session_user = str(runtime.metadata.get("session_user") or "sentinel")

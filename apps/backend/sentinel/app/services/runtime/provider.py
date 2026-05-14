@@ -5,7 +5,13 @@ from pathlib import Path
 from uuid import UUID
 
 from app.config import settings
-from app.services.runtime.base import RuntimeInstance, RuntimeProviderInfo, RuntimeProviderInfoItem
+from app.services.runtime.base import (
+    RuntimeInstance,
+    RuntimeProviderInfo,
+    RuntimeProviderInfoItem,
+    RuntimeServiceEndpoint,
+    RuntimeTerminalSession,
+)
 from app.services.runtime.ssh_client import SSHClient
 
 logger = logging.getLogger(__name__)
@@ -78,6 +84,11 @@ class RemoteRuntimeProvider:
             client=ssh,
             workspace_path=workspace,
             host=self._host,
+            terminal=RuntimeTerminalSession(
+                ssh=ssh,
+                session_user=self._user,
+                workspace_path=workspace,
+            ),
         )
         self._instances[key] = instance
         logger.info("SSH runtime ready for session %s at %s:%d", key, self._host, self._port)
@@ -156,6 +167,18 @@ class RemoteRuntimeProvider:
     def resolve_port(self, session_id: UUID | str, internal_port: int) -> int | None:
         _ = session_id
         return int(internal_port)
+
+    def get_internal_endpoint(self, session_id: UUID | str, internal_port: int) -> RuntimeServiceEndpoint | None:
+        host = self.get_host(session_id)
+        if not host:
+            return None
+        return RuntimeServiceEndpoint(host=host, port=int(internal_port))
+
+    def get_public_endpoint(self, session_id: UUID | str, internal_port: int) -> RuntimeServiceEndpoint | None:
+        host = self.get_public_host(session_id)
+        if not host:
+            return None
+        return RuntimeServiceEndpoint(host=host, port=int(internal_port))
 
     async def restart_browser(self, session_id: UUID | str, runtime: RuntimeInstance) -> None:
         _ = session_id

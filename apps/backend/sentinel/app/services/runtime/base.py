@@ -28,6 +28,12 @@ class RuntimeProviderInfo:
     items: list[RuntimeProviderInfoItem] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class RuntimeServiceEndpoint:
+    host: str
+    port: int
+
+
 class RuntimeCommandClient(Protocol):
     async def wait_ready(self, *, timeout: int = 60) -> None: ...
 
@@ -55,12 +61,41 @@ class RuntimeCommandClient(Protocol):
     async def close(self) -> None: ...
 
 
+class RuntimeTerminalConnection(Protocol):
+    async def run(
+        self,
+        command: str,
+        *,
+        timeout: int = 300,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        as_root: bool = False,
+    ) -> RuntimeExecResult: ...
+
+    async def create_process(
+        self,
+        command: str,
+        *,
+        term_type: str = "xterm-256color",
+        term_size: tuple[int, int] = (80, 24),
+        encoding: str | None = None,
+    ) -> Any: ...
+
+
+@dataclass(slots=True)
+class RuntimeTerminalSession:
+    ssh: RuntimeTerminalConnection
+    session_user: str
+    workspace_path: str
+
+
 @dataclass(slots=True)
 class RuntimeInstance:
     session_id: str
     client: RuntimeCommandClient
     workspace_path: str
     host: str
+    terminal: RuntimeTerminalSession | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -88,5 +123,9 @@ class RuntimeProvider(Protocol):
     def get_public_host(self, session_id: UUID | str) -> str | None: ...
 
     def resolve_port(self, session_id: UUID | str, internal_port: int) -> int | None: ...
+
+    def get_internal_endpoint(self, session_id: UUID | str, internal_port: int) -> RuntimeServiceEndpoint | None: ...
+
+    def get_public_endpoint(self, session_id: UUID | str, internal_port: int) -> RuntimeServiceEndpoint | None: ...
 
     async def restart_browser(self, session_id: UUID | str, runtime: RuntimeInstance) -> None: ...

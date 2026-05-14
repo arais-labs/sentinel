@@ -6,10 +6,10 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
-from app.dependencies import get_db
+from app.dependencies import get_db, get_manager_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.services.runtime.base import RuntimeInstance
+from app.services.runtime.base import RuntimeInstance, RuntimeServiceEndpoint
 from app.services.runtime import session_runtime
 from app.services.browser.pool import BrowserPool
 from tests.fake_db import FakeDB
@@ -19,7 +19,7 @@ _TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
 
 def test_runtime_live_view_requires_auth():
     client = TestClient(app)
-    response = client.get("/api/v1/runtime/live-view", params={"session_id": _TEST_SESSION_ID})
+    response = client.get("/api/v1/instances/main/runtime/live-view", params={"session_id": _TEST_SESSION_ID})
     assert response.status_code == 401
 
 
@@ -38,6 +38,7 @@ def test_runtime_live_view_payload(monkeypatch):
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     monkeypatch.setattr(
         "app.routers.runtime.is_runtime_available_for_session",
@@ -50,7 +51,7 @@ def test_runtime_live_view_payload(monkeypatch):
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.get(
-            "/api/v1/runtime/live-view",
+            "/api/v1/instances/main/runtime/live-view",
             headers=headers,
             params={"session_id": _TEST_SESSION_ID},
         )
@@ -82,6 +83,7 @@ def test_runtime_live_view_uses_origin_header(monkeypatch):
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     monkeypatch.setattr(
         "app.routers.runtime.is_runtime_available_for_session",
@@ -97,7 +99,7 @@ def test_runtime_live_view_uses_origin_header(monkeypatch):
         }
 
         response = client.get(
-            "/api/v1/runtime/live-view",
+            "/api/v1/instances/main/runtime/live-view",
             headers=headers,
             params={"session_id": _TEST_SESSION_ID},
         )
@@ -124,6 +126,7 @@ def test_runtime_live_view_uses_referer_when_origin_missing(monkeypatch):
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     monkeypatch.setattr(
         "app.routers.runtime.is_runtime_available_for_session",
@@ -139,7 +142,7 @@ def test_runtime_live_view_uses_referer_when_origin_missing(monkeypatch):
         }
 
         response = client.get(
-            "/api/v1/runtime/live-view",
+            "/api/v1/instances/main/runtime/live-view",
             headers=headers,
             params={"session_id": _TEST_SESSION_ID},
         )
@@ -153,14 +156,10 @@ def test_runtime_live_view_uses_referer_when_origin_missing(monkeypatch):
 
 def test_runtime_live_view_checks_provider_host(monkeypatch):
     class _Provider:
-        def get_host(self, session_id):
-            assert session_id == _TEST_SESSION_ID
-            return "10.20.30.40"
-
-        def resolve_port(self, session_id, internal_port):
+        def get_internal_endpoint(self, session_id, internal_port):
             assert session_id == _TEST_SESSION_ID
             assert internal_port == 6080
-            return 16081
+            return RuntimeServiceEndpoint(host="10.20.30.40", port=6080)
 
     captured: dict[str, object] = {}
 
@@ -192,7 +191,7 @@ def test_runtime_live_view_checks_provider_host(monkeypatch):
 
     assert is_runtime_available_for_session(_TEST_SESSION_ID) is True
     assert captured["host"] == "10.20.30.40"
-    assert captured["port"] == 16081
+    assert captured["port"] == 6080
     assert captured["method"] == "GET"
     assert captured["path"] == "/vnc.html"
     assert captured["closed"] is True
@@ -200,14 +199,10 @@ def test_runtime_live_view_checks_provider_host(monkeypatch):
 
 def test_runtime_live_view_rejects_open_tcp_without_novnc_http(monkeypatch):
     class _Provider:
-        def get_host(self, session_id):
-            assert session_id == _TEST_SESSION_ID
-            return "10.20.30.40"
-
-        def resolve_port(self, session_id, internal_port):
+        def get_internal_endpoint(self, session_id, internal_port):
             assert session_id == _TEST_SESSION_ID
             assert internal_port == 6080
-            return 16081
+            return RuntimeServiceEndpoint(host="10.20.30.40", port=6080)
 
     monkeypatch.setattr("app.services.runtime.get_runtime", lambda: _Provider())
 
@@ -261,6 +256,42 @@ def test_runtime_instance_uses_client_field():
     assert hasattr(instance.client, "run")
 
 
+def test_remote_runtime_exposes_terminal_capability(monkeypatch):
+    from app.config import settings
+    from app.services.runtime.provider import RemoteRuntimeProvider
+    from app.services.runtime.base import RuntimeExecResult
+
+    class _SSHClient:
+        async def wait_ready(self, *, timeout=60):
+            return None
+
+        async def run(self, command: str, *, timeout: int = 300, cwd=None, env=None, as_root: bool = False):
+            _ = command, timeout, cwd, env, as_root
+            return RuntimeExecResult(exit_status=0, stdout="", stderr="")
+
+        async def run_detached(self, command: str, *, stdout_path: str, stderr_path: str, cwd=None, env=None, as_root: bool = False):
+            _ = command, stdout_path, stderr_path, cwd, env, as_root
+            return 123
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(settings, "runtime_ssh_host", "runtime.local")
+    monkeypatch.setattr(settings, "runtime_ssh_port", 22)
+    monkeypatch.setattr(settings, "runtime_ssh_user", "sentinel")
+    monkeypatch.setattr(settings, "runtime_ssh_key_path", "")
+    monkeypatch.setattr(settings, "runtime_ssh_workspace", "/home/sentinel/workspace")
+    monkeypatch.setattr("app.services.runtime.provider.SSHClient", lambda **kwargs: _SSHClient())
+
+    provider = RemoteRuntimeProvider()
+    runtime = asyncio.run(provider.ensure("session-123"))
+
+    assert runtime.terminal is not None
+    assert runtime.terminal.ssh is runtime.client
+    assert runtime.terminal.session_user == "sentinel"
+    assert runtime.terminal.workspace_path == "/home/sentinel/workspace/session-123"
+
+
 def test_runtime_reset_browser_endpoint(monkeypatch):
     fake_db = FakeDB()
 
@@ -286,6 +317,7 @@ def test_runtime_reset_browser_endpoint(monkeypatch):
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
     monkeypatch.setattr(
         "app.routers.runtime._resolve_browser_pool", lambda request: _StubPool()
     )
@@ -296,7 +328,7 @@ def test_runtime_reset_browser_endpoint(monkeypatch):
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.post(
-            "/api/v1/runtime/reset",
+            "/api/v1/instances/main/runtime/reset",
             headers=headers,
             params={"session_id": _TEST_SESSION_ID},
         )
@@ -348,6 +380,7 @@ def test_runtime_activate_session_endpoint(monkeypatch):
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
     monkeypatch.setattr("app.routers.runtime._resolve_browser_pool", lambda request: pool)
     monkeypatch.setattr("app.services.runtime.get_runtime", lambda: provider)
 
@@ -357,7 +390,7 @@ def test_runtime_activate_session_endpoint(monkeypatch):
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.post(
-            "/api/v1/runtime/activate-session",
+            "/api/v1/instances/main/runtime/activate-session",
             headers=headers,
             params={"session_id": _TEST_SESSION_ID},
         )
@@ -398,6 +431,7 @@ def test_runtime_live_view_does_not_activate_session(monkeypatch):
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
     monkeypatch.setattr("app.services.runtime.get_runtime", lambda: provider)
     monkeypatch.setattr("app.routers.runtime.is_runtime_available_for_session", lambda session_id: True)
 
@@ -407,7 +441,7 @@ def test_runtime_live_view_does_not_activate_session(monkeypatch):
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.get(
-            "/api/v1/runtime/live-view",
+            "/api/v1/instances/main/runtime/live-view",
             headers=headers,
             params={"session_id": _TEST_SESSION_ID},
         )
@@ -418,7 +452,7 @@ def test_runtime_live_view_does_not_activate_session(monkeypatch):
         app_main.init_db = old_init
 
 
-def test_browser_pool_uses_provider_resolved_cdp_port(monkeypatch):
+def test_browser_pool_uses_provider_internal_cdp_endpoint(monkeypatch):
     class _Provider:
         async def ensure(self, session_id):
             return RuntimeInstance(
@@ -428,19 +462,16 @@ def test_browser_pool_uses_provider_resolved_cdp_port(monkeypatch):
                 host="10.20.30.40",
             )
 
-        def get_host(self, session_id):
-            return "10.20.30.40"
-
-        def resolve_port(self, session_id, internal_port):
+        def get_internal_endpoint(self, session_id, internal_port):
             assert internal_port == 9223
-            return 19224
+            return RuntimeServiceEndpoint(host="10.20.30.40", port=9223)
 
     monkeypatch.setattr("app.services.runtime.get_runtime", lambda: _Provider())
 
     pool = BrowserPool()
     endpoint, _, _ = asyncio.run(pool._build_runtime_context(_TEST_SESSION_ID))
 
-    assert endpoint == "http://10.20.30.40:19224"
+    assert endpoint == "http://10.20.30.40:9223"
 
 
 def test_browser_pool_resolves_hostname_for_cdp(monkeypatch):
@@ -453,12 +484,9 @@ def test_browser_pool_resolves_hostname_for_cdp(monkeypatch):
                 host="host.docker.internal",
             )
 
-        def get_host(self, session_id):
-            return "host.docker.internal"
-
-        def resolve_port(self, session_id, internal_port):
+        def get_internal_endpoint(self, session_id, internal_port):
             assert internal_port == 9223
-            return 19224
+            return RuntimeServiceEndpoint(host="host.docker.internal", port=19224)
 
     monkeypatch.setattr("app.services.runtime.get_runtime", lambda: _Provider())
     monkeypatch.setattr("app.services.browser.pool.socket.gethostbyname", lambda host: "192.168.65.254")
@@ -520,6 +548,7 @@ def test_runtime_reset_falls_back_when_browser_pool_reset_fails(monkeypatch):
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
     monkeypatch.setattr(
         "app.routers.runtime._resolve_browser_pool", lambda request: _FailingPool()
     )
@@ -531,7 +560,7 @@ def test_runtime_reset_falls_back_when_browser_pool_reset_fails(monkeypatch):
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.post(
-            "/api/v1/runtime/reset",
+            "/api/v1/instances/main/runtime/reset",
             headers=headers,
             params={"session_id": _TEST_SESSION_ID},
         )

@@ -14,6 +14,7 @@ import socket
 from uuid import UUID
 
 from app.services.browser.manager import BrowserManager
+from app.services.runtime.base import RuntimeServiceEndpoint
 
 logger = logging.getLogger(__name__)
 _CDP_PORT = 9223
@@ -50,18 +51,14 @@ class BrowserPool:
         provider = get_runtime()
         runtime = await provider.ensure(session_id)
 
-        ip: str | None = None
-        if hasattr(provider, "get_host"):
-            ip = provider.get_host(session_id)
-        if not ip:
-            ip = runtime.host
-        ip = self._normalize_cdp_host(str(ip or ""))
-        port = _CDP_PORT
-        if hasattr(provider, "resolve_port"):
-            resolved_port = provider.resolve_port(session_id, _CDP_PORT)
-            if resolved_port:
-                port = int(resolved_port)
-        return f"http://{ip}:{port}", runtime, provider
+        endpoint = None
+        if hasattr(provider, "get_internal_endpoint"):
+            endpoint = provider.get_internal_endpoint(session_id, _CDP_PORT)
+        if endpoint is None:
+            host: str | None = provider.get_host(session_id) if hasattr(provider, "get_host") else None
+            endpoint = RuntimeServiceEndpoint(host=host or runtime.host, port=_CDP_PORT)
+        host = self._normalize_cdp_host(str(endpoint.host or ""))
+        return f"http://{host}:{int(endpoint.port)}", runtime, provider
 
     async def _connect_manager(self, key: str, cdp_endpoint: str) -> BrowserManager:
         last_error: Exception | None = None

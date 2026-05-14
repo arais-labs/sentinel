@@ -6,6 +6,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from fastapi import Request
 
 from app.config import settings
+from app.services.runtime.base import RuntimeServiceEndpoint
 
 
 def is_runtime_available_for_session(session_id: str) -> bool:
@@ -15,14 +16,11 @@ def is_runtime_available_for_session(session_id: str) -> bool:
     try:
         from app.services.runtime import get_runtime
         provider = get_runtime()
-        host = provider.get_host(session_id)
-        if not host:
+        endpoint = _internal_endpoint(provider, session_id, int(settings.runtime_live_port))
+        if endpoint is None:
             return False
-        port = provider.resolve_port(session_id, settings.runtime_live_port)
-        if not port:
-            port = int(settings.runtime_live_port)
         timeout = max(settings.runtime_live_probe_timeout_ms, 50) / 1000.0
-        connection = HTTPConnection(host, int(port), timeout=timeout)
+        connection = HTTPConnection(endpoint.host, int(endpoint.port), timeout=timeout)
         try:
             connection.request("GET", "/vnc.html")
             response = connection.getresponse()
@@ -94,3 +92,14 @@ def _normalize_resize_mode(value: str | None) -> str:
     if raw in {"local", "fit"}:
         return "scale"
     return "scale"
+
+
+def _internal_endpoint(provider, session_id: str, internal_port: int):
+    if hasattr(provider, "get_internal_endpoint"):
+        endpoint = provider.get_internal_endpoint(session_id, internal_port)
+        if endpoint is not None:
+            return endpoint
+    host = provider.get_host(session_id)
+    if not host:
+        return None
+    return RuntimeServiceEndpoint(host=host, port=int(internal_port))
