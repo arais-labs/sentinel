@@ -7,8 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.database import AsyncSessionLocal
-from app.dependencies import get_db
+from app.dependencies import get_db, get_request_db_factory, get_request_instance_runtime_context
 from app.models.araios import (
     AraiosModule,
     AraiosModuleRecord,
@@ -21,7 +20,7 @@ from app.services.araios.dynamic_modules import (
     sync_dynamic_module_permissions,
 )
 from app.services.araios.executor import execute_action
-from app.services.tools.runtime_registry import rebuild_runtime_registry
+from app.services.instance_runtime_context import instance_runtime_context_registry
 
 router = APIRouter()
 
@@ -237,8 +236,7 @@ async def _create_dynamic_module(
         actions=actions,
         permissions=permissions,
     )
-    session_factory = getattr(request.app.state, "db_session_factory", AsyncSessionLocal)
-    await rebuild_runtime_registry(app_state=request.app.state, session_factory=session_factory)
+    await _rebuild_current_instance_runtime(request)
     return mod, permission_levels, imported_records
 
 
@@ -488,8 +486,7 @@ async def update_module(
         actions=normalize_dynamic_module_actions(list(mod.actions or [])),
         permissions=permissions,
     )
-    session_factory = getattr(request.app.state, "db_session_factory", AsyncSessionLocal)
-    await rebuild_runtime_registry(app_state=request.app.state, session_factory=session_factory)
+    await _rebuild_current_instance_runtime(request)
     return _serialize_module(mod)
 
 
@@ -506,9 +503,29 @@ async def delete_module(
     await db.delete(mod)
     await db.commit()
     await delete_dynamic_module_permissions(db, module_name=name)
-    session_factory = getattr(request.app.state, "db_session_factory", AsyncSessionLocal)
-    await rebuild_runtime_registry(app_state=request.app.state, session_factory=session_factory)
+    await _rebuild_current_instance_runtime(request)
     return {"ok": True}
+
+
+async def _rebuild_current_instance_runtime(request: Request) -> None:
+    from app.models.manager import SentinelInstance
+
+    try:
+        context = get_request_instance_runtime_context(request)
+    except RuntimeError:
+        return
+    instance = SentinelInstance(
+        name=context.name,
+        database_name=context.database_name,
+        workspace_root="",
+        runtime_backend="docker",
+        runtime_config_json={},
+    )
+    await instance_runtime_context_registry.rebuild(
+        app_state=request.app.state,
+        instance=instance,
+        session_factory=get_request_db_factory(request),
+    )
 
 
 # ── Record CRUD ──

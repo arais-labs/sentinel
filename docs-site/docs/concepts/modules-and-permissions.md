@@ -8,7 +8,7 @@ title: Modules and Permissions
 Sentinel includes a module control plane for custom tools, persistent data stores,
 permissions, human approval gates, and agent coordination.
 
-Agents interact with modules through the `/api/*` module REST API. Every action is auditable.
+Agents interact with modules through the instance-scoped module REST API. Every action is auditable.
 
 ---
 
@@ -89,22 +89,24 @@ Built-in task management shared between agents and operators:
 Start by discovering modules and permissions:
 
 ```
-GET /api/modules
-GET /api/permissions
+GET /api/instances/{instance_name}/modules
+GET /api/instances/{instance_name}/permissions
 ```
 
-`GET /api/modules` returns native and database-backed modules with their fields and actions. `GET /api/permissions` returns the effective policy for module actions.
+The modules endpoint returns native and database-backed modules with their fields
+and actions. The permissions endpoint returns the effective policy for module
+actions.
 
 ---
 
 ## Key endpoints
 
 ```
-GET  /api/modules                        # List all modules
-GET  /api/permissions                    # List effective module action policy
-GET  /api/modules/:name/records          # List records for a module, for example /api/modules/tasks/records
-POST /api/modules/:name/records          # Create a record in a DB-backed data module. Body is field JSON, for example {"title":"Follow up","status":"todo"}
-POST /api/modules/:name/action/:id       # Invoke a tool module action
-GET  /api/approvals?status=pending       # Check pending approvals
-POST /api/approvals/:id/approve or /reject # Resolve an approval (admin only)
+GET  /api/instances/{instance_name}/modules
+GET  /api/instances/{instance_name}/permissions
+GET  /api/instances/{instance_name}/modules/:name/records
+POST /api/instances/{instance_name}/modules/:name/records
+POST /api/instances/{instance_name}/modules/:name/action/:id
+GET  /api/v1/instances/{instance_name}/approvals?status=pending
+POST /api/v1/instances/{instance_name}/approvals/:id/approve or /reject
 ```

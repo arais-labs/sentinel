@@ -6,26 +6,16 @@ function dateKey(iso: string): string {
   return iso.slice(0, 10);
 }
 
-function sanitizeFileSegment(value: string): string {
-  return value.trim().replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'unknown';
-}
-
 export class DailyLogWriter {
   private queue = Promise.resolve();
 
   constructor(private readonly logRoot: string) {}
 
-  write(entry: LogEntry, instance?: string): void {
-    const payload = `${JSON.stringify({ ...entry, instance: instance || undefined })}\n`;
+  write(entry: LogEntry): void {
+    const payload = `${JSON.stringify(entry)}\n`;
     this.queue = this.queue
       .then(async () => {
         await this.append(path.join(this.logRoot, `desktop-${dateKey(entry.at)}.log`), payload);
-        if (instance) {
-          await this.append(
-            path.join(this.logRoot, 'instances', `${sanitizeFileSegment(instance)}-${dateKey(entry.at)}.log`),
-            payload,
-          );
-        }
       })
       .catch((error) => {
         console.error(`Failed to persist Sentinel desktop log: ${String(error?.message || error)}`);

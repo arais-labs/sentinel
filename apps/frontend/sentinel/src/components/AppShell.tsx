@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 
 import { APP_VERSION } from '../lib/env';
+import { instanceRouteFromPath } from '../lib/routes';
 import { useThemeStore } from '../store/theme-store';
 import { Logo } from './ui/Logo';
 
@@ -33,22 +34,22 @@ interface AppShellProps extends PropsWithChildren {
 
 interface NavItem {
   label: string;
-  path: string;
+  route: string;
   icon: typeof LayoutDashboard;
 }
 
 const navItems: NavItem[] = [
-  { label: 'Sessions', path: '/sessions', icon: LayoutDashboard },
-  { label: 'Session Logs', path: '/logs', icon: Activity },
-  { label: 'Memory', path: '/memory', icon: Database },
-  { label: 'Triggers', path: '/triggers', icon: Zap },
-  { label: 'Modules', path: '/modules', icon: LayoutGrid },
-  { label: 'Approvals', path: '/approvals', icon: CheckCircle },
-  { label: 'Permissions', path: '/permissions', icon: Lock },
-  { label: 'Git', path: '/git', icon: GitBranch },
-  { label: 'Telegram', path: '/telegram', icon: Send },
-  { label: 'Showcase', path: '/showcase', icon: MonitorPlay },
-  { label: 'Settings', path: '/settings', icon: Settings },
+  { label: 'Sessions', route: 'sessions', icon: LayoutDashboard },
+  { label: 'Session Logs', route: 'logs', icon: Activity },
+  { label: 'Memory', route: 'memory', icon: Database },
+  { label: 'Triggers', route: 'triggers', icon: Zap },
+  { label: 'Modules', route: 'modules', icon: LayoutGrid },
+  { label: 'Approvals', route: 'approvals', icon: CheckCircle },
+  { label: 'Permissions', route: 'permissions', icon: Lock },
+  { label: 'Git', route: 'git', icon: GitBranch },
+  { label: 'Telegram', route: 'telegram', icon: Send },
+  { label: 'Showcase', route: 'showcase', icon: MonitorPlay },
+  { label: 'Settings', route: 'settings', icon: Settings },
 ];
 
 function isActive(pathname: string, candidate: string) {
@@ -70,15 +71,18 @@ export function AppShell({
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const instanceMatch = location.pathname.match(/^\/instances\/([^/]+)/);
+  const hasInstanceScope = Boolean(instanceMatch?.[1]);
 
   const renderNav = (items: NavItem[], onNavigate?: () => void) => (
     <nav className="flex-1 overflow-y-auto overflow-x-hidden py-4 px-2 space-y-1">
       {items.map((item) => {
-        const active = isActive(location.pathname, item.path);
+        const itemPath = instanceRouteFromPath(location.pathname, item.route);
+        const active = isActive(location.pathname, itemPath);
         return (
           <button
-            key={item.path}
-            onClick={() => { navigate(item.path); onNavigate?.(); }}
+            key={item.route}
+            onClick={() => { navigate(itemPath); onNavigate?.(); }}
             className={`group flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
               active
                 ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
@@ -123,7 +127,7 @@ export function AppShell({
           </div>
         </div>
 
-        {renderNav(navItems)}
+        {hasInstanceScope ? renderNav(navItems) : <div className="flex-1" />}
 
         <div className="p-2 border-t border-[color:var(--border-subtle)]">
            <button
@@ -191,7 +195,7 @@ export function AppShell({
                 <X size={20} />
               </button>
             </div>
-            {renderNav(navItems, () => setIsMobileMenuOpen(false))}
+            {hasInstanceScope ? renderNav(navItems, () => setIsMobileMenuOpen(false)) : <div className="flex-1" />}
             <div className="p-4 border-t border-[color:var(--border-subtle)]">
               <button
                 onClick={toggleTheme}

@@ -180,7 +180,7 @@ async def handle_spawn(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
         await db.refresh(task)
         task_id = task.id
 
-    orchestrator = get_sub_agent_orchestrator()
+    orchestrator = runtime.sub_agent_orchestrator or get_sub_agent_orchestrator()
     if orchestrator is None:
         raise ToolValidationError("Sub-agent orchestrator is not configured")
     orchestrator.start_task(task_id)
@@ -333,7 +333,7 @@ async def handle_cancel(payload: dict[str, Any], runtime: ToolRuntimeContext) ->
         await db.refresh(task)
 
     cancel_signal_sent = False
-    orchestrator = get_sub_agent_orchestrator()
+    orchestrator = runtime.sub_agent_orchestrator or get_sub_agent_orchestrator()
     if orchestrator is not None and hasattr(orchestrator, "cancel_task"):
         with contextlib.suppress(Exception):
             cancel_signal_sent = bool(orchestrator.cancel_task(tid))

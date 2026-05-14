@@ -5,17 +5,13 @@ title: Installation
 
 # Installation and CLI workflow
 
-This guide explains the real lifecycle implemented by `sentinel-cli.sh`.
-
----
+This guide describes the current shared-stack lifecycle implemented by `sentinel-cli.sh`.
 
 ## Requirements
 
 - Docker available and running
-- bash shell with interactive TTY
+- bash shell with an interactive TTY
 - git
-
----
 
 ## CLI entrypoint
 
@@ -23,101 +19,41 @@ This guide explains the real lifecycle implemented by `sentinel-cli.sh`.
 bash ./sentinel-cli.sh
 ```
 
-The CLI is stateful and manages instance configs under:
+The CLI starts one shared Compose stack. Instances are registered through the backend manager API and are stored in the manager database, not in generated config files.
 
-- `.instances/<instance>.env`
+The CLI defaults to production mode and uses `docker-compose.yml`. Create a
+root `.env` from `.env.example` before starting the default stack:
 
-Each instance maps to an isolated compose project:
+```bash
+cp .env.example .env
+```
 
-- project name format: `sentinel-<instance>`
+Then replace the placeholder values for `SENTINEL_POSTGRES_PASSWORD`,
+`SENTINEL_JWT_SECRET_KEY`, and `SENTINEL_AUTH_PASSWORD`.
 
----
+For local development defaults, use explicit dev mode:
+
+```bash
+bash ./sentinel-cli.sh --dev
+```
 
 ## Main menu actions
 
 | Action | What it does |
 |---|---|
-| New/Edit Instance | Creates or updates `.instances/<instance>.env` then starts instance |
-| Start Instance | Starts selected instance with compose |
-| Stop Instance | Stops selected instance |
-| Reset Auth (Managed Instance) | Rewrites auth username and password hashes in DB |
-| Global Status | Shows running service count per instance |
-| Tail Logs | `docker compose logs -f` for selected instance |
-| Delete Instance | `down -v --remove-orphans` plus remove env file |
-| Advanced Mode | Dev mode compose start and custom DB auth management |
+| Start Stack | Starts the shared Docker Compose stack |
+| Stop Stack | Stops the shared Docker Compose stack |
+| Restart Stack | Restarts the shared stack |
+| Instances | Lists, creates, renames, or deletes manager DB instances |
+| Status | Shows stack health and registered instances |
+| Logs | Tails Compose logs |
 
----
+## Instance creation flow
 
-## New instance creation flow
+Creating an instance asks for an instance name and optional display name. The backend creates a logical Postgres database for that instance and initializes the app schema there.
 
-When you choose **New/Edit Instance**, CLI prompts for:
-
-- instance name
-- gateway port
-- db name
-- db user
-- db password
-- JWT secret
-- admin username
-- admin password
-
-Then it writes `.instances/<instance>.env` and starts stack.
-
----
-
-## What happens on Start Instance
-
-`action_up` does the following in order:
-
-1. `docker compose up --build -d`
-2. attempts auth credential seeding in DB
-3. seeds instance URL settings
-4. prints onboarding instructions
-
-If auth seed fails, CLI tells you to use Reset Auth.
-
----
+The CLI does not ask for extra ports, generated database credentials, JWT secrets, or generated runtime configuration files.
 
 ## Auth details
 
-For managed instances, auth reset writes password hash into `system_settings` table keys:
-
-- `sentinel.auth.username`
-- `sentinel.auth.password_hash`
-## Dev mode in Advanced Mode
-
-Advanced mode start uses `docker-compose.dev.yml` and shares Postgres volume name with project.
-
-Use this for local development where you need dev compose behavior.
-
----
-
-## Common operations
-
-### Start existing instance
-
-1. Run CLI
-2. Select **Start Instance**
-3. Pick instance
-
-### Rotate credentials
-
-1. Run CLI
-2. Select **Reset Auth (Managed Instance)**
-3. Choose target app and set new username and password
-
-### Delete instance fully
-
-1. Run CLI
-2. Select **Delete Instance**
-3. Type `DELETE`
-
-This removes containers, volumes, and instance env file.
-
----
-
-## Troubleshooting quick checks
-
-- Docker not running -> CLI will fail readiness check
-- Port already in use -> CLI warns during create
-- Login fails after start -> run Reset Auth action
+Login is global. Auth settings and token revocation live in the manager database so users can authenticate before selecting an instance. The default username is `admin` unless `SENTINEL_AUTH_USERNAME` is set.

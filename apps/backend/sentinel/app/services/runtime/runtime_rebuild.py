@@ -10,6 +10,21 @@ from app.services.llm.factory import build_tier_provider_from_settings
 class RuntimeRebuildService:
     """Rebuild runtime singletons that depend on mutable settings."""
 
+    async def rebuild_request_runtime_support(self, request: Any) -> None:
+        from app.services.instance_runtime_context import (
+            InstanceRuntimeContext,
+            instance_runtime_context_registry,
+        )
+
+        context = getattr(request.state, "instance_runtime_context", None)
+        if isinstance(context, InstanceRuntimeContext):
+            await instance_runtime_context_registry.rebuild_context(
+                app_state=request.app.state,
+                context=context,
+            )
+            return
+        self.rebuild_agent_runtime_support(request.app.state)
+
     def rebuild_agent_runtime_support(self, app_state: Any) -> None:
         provider = build_tier_provider_from_settings(settings)
         app_state.llm_provider = provider

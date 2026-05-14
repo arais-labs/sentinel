@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.database import AsyncSessionLocal
+from app.database.database import AsyncSessionLocal, _current_session_factory
 from app.models.araios import (
     AraiosModule,
     AraiosModuleRecord,
@@ -90,6 +90,32 @@ async def _require_module_exists(
     if not mod:
         raise ValueError(f"Module '{module_name}' not found")
     return mod
+
+
+def _active_session_factory(app_state: Any) -> Any:
+    return (
+        _current_session_factory.get()
+        or getattr(app_state, "db_session_factory", None)
+        or AsyncSessionLocal
+    )
+
+
+async def _refresh_current_runtime_after_module_change(app_state: Any | None) -> None:
+    if app_state is None:
+        return
+    session_factory = _active_session_factory(app_state)
+    from app.services.instance_runtime_context import instance_runtime_context_registry
+
+    context = instance_runtime_context_registry.find_by_session_factory(session_factory)
+    if context is not None:
+        await instance_runtime_context_registry.rebuild_context(
+            app_state=app_state,
+            context=context,
+        )
+        return
+
+    if getattr(app_state, "tool_registry", None) is not None:
+        await rebuild_runtime_registry(app_state=app_state, session_factory=session_factory)
 
 
 # ---------------------------------------------------------------------------
@@ -230,9 +256,7 @@ async def handle_create_module(payload: dict[str, Any]) -> dict[str, Any]:
             actions=actions,
             permissions=permissions,
         )
-    if app_state is not None:
-        session_factory = getattr(app_state, "db_session_factory", AsyncSessionLocal)
-        await rebuild_runtime_registry(app_state=app_state, session_factory=session_factory)
+    await _refresh_current_runtime_after_module_change(app_state)
     return {
         "ok": True,
         "module": name,
@@ -262,9 +286,7 @@ async def handle_delete_module(payload: dict[str, Any]) -> dict[str, Any]:
         await db.commit()
         await delete_dynamic_module_permissions(db, module_name=name)
     app_state = get_app_state()
-    if app_state is not None:
-        session_factory = getattr(app_state, "db_session_factory", AsyncSessionLocal)
-        await rebuild_runtime_registry(app_state=app_state, session_factory=session_factory)
+    await _refresh_current_runtime_after_module_change(app_state)
     return {"ok": True, "message": f"Module '{name}' deleted"}
 
 

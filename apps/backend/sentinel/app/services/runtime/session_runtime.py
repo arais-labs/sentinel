@@ -21,13 +21,14 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import settings
 from app.models import Session
 from app.services.runtime.terminal_manager import get_terminal_manager
 
 logger = logging.getLogger(__name__)
 
 _RUNTIME_BASE_DIR = Path(
-    os.environ.get("SESSION_RUNTIME_BASE_DIR", "/tmp/sentinel/session_runtime")
+    settings.session_runtime_base_dir or "/tmp/sentinel/session_runtime"
 ).expanduser()
 _RUNTIME_META_FILENAME = ".runtime_meta.json"
 _RUNTIME_ACTIONS_FILENAME = ".runtime_actions.jsonl"
@@ -919,8 +920,6 @@ async def read_detached_runtime_job_logs(
 async def cleanup_session_runtime(
     session_id: UUID | str,
 ) -> dict[str, bool]:
-    from app.config import settings
-
     session_key = str(session_id)
 
     # Kill any tmux-backed terminals for this session BEFORE the runtime
@@ -940,11 +939,6 @@ async def cleanup_session_runtime(
         logger.debug("Runtime stop skipped for session %s", session_key, exc_info=True)
 
     runtime_removed = await _remove_runtime_root(runtime_root_dir(session_key))
-
-    # Remove the persistent workspace volume directory for this session
-    ws_dir = Path(settings.runtime_workspaces_host_dir) / session_key
-    if ws_dir.exists():
-        await asyncio.to_thread(shutil.rmtree, ws_dir, True)
 
     return {"runtime_removed": runtime_removed, "runtime_stopped": runtime_stopped}
 
@@ -968,8 +962,6 @@ async def sweep_session_runtimes(
     removed_idle = 0
     removed_stale_active = 0
 
-    from app.config import settings
-
     for root in _list_runtime_dirs(_RUNTIME_BASE_DIR):
         session_key = root.name
         session = existing_sessions.get(session_key)
@@ -977,10 +969,6 @@ async def sweep_session_runtimes(
             if await _remove_runtime_root(root):
                 removed += 1
                 removed_orphans += 1
-            # Also clean up orphaned workspace volume dir
-            ws_dir = Path(settings.runtime_workspaces_host_dir) / session_key
-            if ws_dir.exists():
-                await asyncio.to_thread(shutil.rmtree, ws_dir, True)
 
     return {
         "removed": removed,

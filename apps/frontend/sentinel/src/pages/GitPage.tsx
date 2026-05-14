@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import {
   GitBranch,
   Plus,
@@ -13,6 +13,7 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api } from '../lib/api';
 import { formatCompactDate } from '../lib/format';
+import { instanceRouteFromPath } from '../lib/routes';
 import { useAuthStore } from '../store/auth-store';
 import type {
   GitAccount,
@@ -40,6 +41,7 @@ const EMPTY_FORM: GitAccountForm = {
 };
 
 export function GitPage() {
+  const location = useLocation();
   const role = useAuthStore((state) => state.role);
   const [accounts, setAccounts] = useState<GitAccount[]>([]);
   const [loading, setLoading] = useState(true);
@@ -67,7 +69,7 @@ export function GitPage() {
   }, [loadAll]);
 
   if (role !== 'admin') {
-    return <Navigate to="/settings" replace />;
+    return <Navigate to={instanceRouteFromPath(location.pathname, 'settings')} replace />;
   }
 
   async function refreshAll() {

@@ -14,10 +14,12 @@ from app.logging_context import configure_logging
 configure_logging()
 logger = logging.getLogger(__name__)
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select
 
 from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
 from app.config import settings
 from app.database import AsyncSessionLocal, init_db
+from app.database.instance_sessions import instance_session_registry
 from app.middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
@@ -31,6 +33,7 @@ from app.routers import (
     auth,
     git as git_router,
     health,
+    instances,
     memory,
     models,
     onboarding,
@@ -46,14 +49,12 @@ from app.routers import (
     webhooks,
 )
 from app.routers.araios import api_router as araios_api_router
-from app.services.agent import ContextBuilder, SentinelRuntimeSupport
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter, runtime_event_to_sentinel_event
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.araios.runtime_services import configure_runtime_services
 from app.services.memory.embeddings import EmbeddingService
 from app.services.llm.factory import build_tier_provider_from_settings
 from app.services.llm.ids import TierName
-from app.services.memory.backfill import run_memory_embedding_backfill
 from app.services.memory.search import MemorySearchService
 from app.services.runtime.terminal_manager import (
     configure_terminal_completion_handler,
@@ -62,19 +63,14 @@ from app.services.runtime.terminal_manager import (
 )
 from app.services.runtime.session_runtime import (
     configure_runtime_job_completion_callback,
-    run_session_runtime_janitor,
 )
 from app.services.sessions.session_naming import SessionNamingService
-from app.services.sub_agents import SubAgentOrchestrator
-from app.services.tools import ToolExecutor
 from app.services.tools.approval import ApprovalService
-from app.services.tools.approval.approval_waiters import (
-    build_tool_db_approval_result_recorder,
-    build_tool_db_approval_waiter,
+from app.models.manager import SentinelInstance
+from app.services.instance_runtime_context import (
+    instance_runtime_context_registry,
 )
-from app.services.tools.runtime_registry import build_runtime_registry
 from app.services.browser.pool import BrowserPool
-from app.services.triggers.trigger_scheduler import TriggerScheduler
 from app.services.ws.ws_manager import ConnectionManager
 
 
@@ -82,17 +78,16 @@ from app.services.ws.ws_manager import ConnectionManager
 async def lifespan(app: FastAPI):
     stop_event = asyncio.Event()
     cleanup_task = asyncio.create_task(RateLimitMiddleware.cleanup_loop(stop_event))
-    runtime_janitor_task = asyncio.create_task(
-        run_session_runtime_janitor(stop_event=stop_event, db_factory=AsyncSessionLocal)
-    )
-    scheduler_task: asyncio.Task | None = None
-    embedding_backfill_task: asyncio.Task | None = None
     await init_db()
+    async with AsyncSessionLocal() as _auth_db:
+        from app.services.auth_service import ensure_default_auth_settings
 
-    # Load persisted API keys from DB — env vars take precedence
+        await ensure_default_auth_settings(_auth_db)
+
+    # Load global persisted settings from the manager DB. Per-instance app
+    # settings are loaded through instance-scoped routes after routing lands.
     async with AsyncSessionLocal() as _db:
-        from sqlalchemy import select as _sel
-        from app.models.system import SystemSetting as _SS
+        from app.models.manager import ManagerSetting as _MS
 
         # Keys that should only load from DB when the env var is empty/None
         _key_map = {
@@ -116,27 +111,15 @@ async def lifespan(app: FastAPI):
         }
         for _db_key, _settings_attr in _key_map.items():
             if not getattr(settings, _settings_attr, None):
-                _r = await _db.execute(_sel(_SS).where(_SS.key == _db_key))
+                _r = await _db.execute(select(_MS).where(_MS.key == _db_key))
                 _s = _r.scalars().first()
                 if _s:
                     setattr(settings, _settings_attr, _s.value)
         for _db_key, _settings_attr in _always_load.items():
-            _r = await _db.execute(_sel(_SS).where(_SS.key == _db_key))
+            _r = await _db.execute(select(_MS).where(_MS.key == _db_key))
             _s = _r.scalars().first()
             if _s:
                 setattr(settings, _settings_attr, _s.value)
-
-    # Seed default module permissions.
-    async with AsyncSessionLocal() as _araios_db:
-        from app.models.araios import AraiosPermission
-        from app.services.araios.permissions import combined_agent_permissions
-
-        _existing_result = await _araios_db.execute(_sel(AraiosPermission))
-        _existing_actions = {p.action for p in _existing_result.scalars().all()}
-        for _action, _level in combined_agent_permissions().items():
-            if _action not in _existing_actions:
-                _araios_db.add(AraiosPermission(action=_action, level=_level))
-        await _araios_db.commit()
 
     embedding_key = settings.embedding_api_key or settings.openai_api_key
     embedding_service = None
@@ -146,18 +129,12 @@ async def lifespan(app: FastAPI):
             model=settings.embedding_model,
             base_url=settings.embedding_base_url,
         )
-        if settings.memory_embedding_backfill_on_start:
-            embedding_backfill_task = asyncio.create_task(
-                run_memory_embedding_backfill(
-                    stop_event=stop_event,
-                    db_factory=AsyncSessionLocal,
-                    embedding_service=embedding_service,
-                    batch_size=settings.memory_embedding_backfill_batch_size,
-                    max_rows=settings.memory_embedding_backfill_max_rows,
-                )
-            )
     memory_search_service = MemorySearchService(embedding_service)
     browser_pool = BrowserPool()
+    ws_manager = ConnectionManager()
+    run_registry = AgentRunRegistry()
+    app.state.instance_stop_event = stop_event
+    app.state.instance_runtime_context_registry = instance_runtime_context_registry
     configure_runtime_services(
         embedding_service=embedding_service,
         memory_search_service=memory_search_service,
@@ -179,16 +156,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("Runtime container recovery skipped", exc_info=True)
 
-    registry = await build_runtime_registry(session_factory=AsyncSessionLocal)
-    executor = ToolExecutor(
-        registry,
-        approval_waiter=build_tool_db_approval_waiter(session_factory=AsyncSessionLocal),
-        approval_result_recorder=build_tool_db_approval_result_recorder(session_factory=AsyncSessionLocal),
-    )
-
-    available_tools = {tool.name for tool in registry.list_all()}
-    ws_manager = ConnectionManager()
-    run_registry = AgentRunRegistry()
     # Let the TerminalManager broadcast terminal_opened/closed/busy events to
     # any subscribers of a chat session's WS stream.
     configure_terminal_event_broadcaster(ws_manager.broadcast)
@@ -206,10 +173,7 @@ async def lifespan(app: FastAPI):
         task.add_done_callback(wakeup_drainer_tasks.discard)
 
     provider = build_tier_provider_from_settings(settings)
-    app.state.tool_registry = registry
-    app.state.tool_executor = executor
-    app.state.db_session_factory = AsyncSessionLocal
-    app.state.approval_service = ApprovalService(session_factory=AsyncSessionLocal)
+    app.state.approval_service = ApprovalService()
     app.state.embedding_service = embedding_service
     app.state.memory_search_service = memory_search_service
     app.state.browser_pool = browser_pool
@@ -218,19 +182,38 @@ async def lifespan(app: FastAPI):
     app.state.llm_provider = provider
     app.state.agent_runtime_support = None
 
-    async def _wakeup_main_agent(session_id: object, prompt: str) -> bool:
-        """Server-initiated agent turn triggered by queued background updates.
-
-        Returns True when one queued wakeup item is consumed, False when it
-        should be retried later (for example while another run is active).
-        """
+    async def _resolve_runtime_context_for_session(session_id: object):
         from uuid import UUID as _UUID
 
         from sqlalchemy import select as _select
 
         from app.models import Session as SessionModel
 
-        agent_runtime_support = app.state.agent_runtime_support
+        try:
+            sid = session_id if isinstance(session_id, _UUID) else _UUID(str(session_id))
+        except (TypeError, ValueError):
+            return None, None
+        for context in instance_runtime_context_registry.all():
+            async with context.session_factory() as db:
+                result = await db.execute(_select(SessionModel.id).where(SessionModel.id == sid))
+                if result.scalar_one_or_none() is not None:
+                    return context, sid
+        return None, sid
+
+    async def _wakeup_main_agent(session_id: object, prompt: str) -> bool:
+        """Server-initiated agent turn triggered by queued background updates.
+
+        Returns True when one queued wakeup item is consumed, False when it
+        should be retried later (for example while another run is active).
+        """
+        from sqlalchemy import select as _select
+
+        from app.models import Session as SessionModel
+
+        instance_context, sid = await _resolve_runtime_context_for_session(session_id)
+        if instance_context is None or sid is None:
+            return True
+        agent_runtime_support = instance_context.agent_runtime_support
         if agent_runtime_support is None:
             return True
 
@@ -239,8 +222,7 @@ async def lifespan(app: FastAPI):
         if await run_registry.is_running(session_key):
             return False
 
-        async with AsyncSessionLocal() as db:
-            sid = session_id if isinstance(session_id, _UUID) else _UUID(str(session_id))
+        async with instance_context.session_factory() as db:
             result = await db.execute(_select(SessionModel).where(SessionModel.id == sid))
             session = result.scalars().first()
             if session is None:
@@ -307,6 +289,7 @@ async def lifespan(app: FastAPI):
                     await SessionNamingService(
                         provider=agent_runtime_support.provider,
                         ws_manager=ws_manager,
+                        db_factory=instance_context.session_factory,
                     ).maybe_auto_rename(session_id=sid)
                 except Exception:  # noqa: BLE001
                     pass
@@ -452,7 +435,10 @@ async def lifespan(app: FastAPI):
         try:
             from app.models import Message as MsgModel
 
-            async with AsyncSessionLocal() as db:
+            instance_context, _sid = await _resolve_runtime_context_for_session(task.session_id)
+            if instance_context is None:
+                return
+            async with instance_context.session_factory() as db:
                 msg = MsgModel(
                     session_id=task.session_id,
                     role="system",
@@ -471,41 +457,18 @@ async def lifespan(app: FastAPI):
             ),
         )
 
-    app.state.sub_agent_orchestrator = SubAgentOrchestrator(
-        agent_runtime_support=None,
-        db_factory=AsyncSessionLocal,
-        base_tool_registry=registry,
-        on_task_completed=_broadcast_sub_agent_completed,
-    )
-    configure_runtime_services(
-        sub_agent_orchestrator=app.state.sub_agent_orchestrator,
-        ws_manager=ws_manager,
-    )
-    if provider is not None:
-        context_builder = ContextBuilder(
-            default_system_prompt=settings.default_system_prompt,
-            available_tools=available_tools,
-            memory_search_service=memory_search_service,
-        )
-        app.state.agent_runtime_support = SentinelRuntimeSupport(
-            provider, context_builder, registry, executor,
-        )
-        app.state.sub_agent_orchestrator = SubAgentOrchestrator(
-            agent_runtime_support=app.state.agent_runtime_support,
-            db_factory=AsyncSessionLocal,
-            base_tool_registry=registry,
-            on_task_completed=_broadcast_sub_agent_completed,
-        )
-        configure_runtime_services(sub_agent_orchestrator=app.state.sub_agent_orchestrator)
+    app.state.sub_agent_completed_callback = _broadcast_sub_agent_completed
+    configure_runtime_services(ws_manager=ws_manager)
 
-    app.state.trigger_scheduler = TriggerScheduler(
-        agent_runtime_support=app.state.agent_runtime_support,
-        tool_executor=executor,
-        ws_manager=ws_manager,
-        run_registry=app.state.agent_run_registry,
-        db_factory=AsyncSessionLocal,
-    )
-    scheduler_task = asyncio.create_task(app.state.trigger_scheduler.start(stop_event))
+    async with AsyncSessionLocal() as manager_db:
+        result = await manager_db.execute(select(SentinelInstance).order_by(SentinelInstance.name))
+        for instance in result.scalars().all():
+            session_factory = instance_session_registry.session_factory(instance.database_name)
+            await instance_runtime_context_registry.get_or_create(
+                app_state=app.state,
+                instance=instance,
+                session_factory=session_factory,
+            )
 
     # --- Telegram bridge ---
     telegram_stop_event = asyncio.Event()
@@ -565,11 +528,7 @@ async def lifespan(app: FastAPI):
 
         # 4. Cooperative loops (all use stop_event); bound just in case.
         await _bounded("rate_limit_cleanup", cleanup_task, timeout=2.0)
-        await _bounded("runtime_janitor", runtime_janitor_task, timeout=2.0)
-        if embedding_backfill_task is not None:
-            await _bounded("embedding_backfill", embedding_backfill_task, timeout=2.0)
-        if scheduler_task is not None:
-            await _bounded("trigger_scheduler", scheduler_task, timeout=3.0)
+        await _bounded("instance_contexts", instance_runtime_context_registry.stop_all(), timeout=5.0)
         runtime_provider = getattr(app.state, "runtime_provider", None)
         if runtime_provider is not None and hasattr(runtime_provider, "cancel_background_prepare"):
             await _bounded("runtime_prepare", runtime_provider.cancel_background_prepare(), timeout=5.0)
@@ -579,6 +538,7 @@ async def lifespan(app: FastAPI):
 
         await _bounded("telegram_bridge", stop_telegram_bridge(app.state), timeout=3.0)
         await _bounded("browser_pool", browser_pool.close_all(), timeout=5.0)
+        await _bounded("instance_db_engines", instance_session_registry.dispose_all(), timeout=3.0)
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
@@ -586,7 +546,7 @@ app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 app.state.llm_provider = None
 app.state.ws_manager = ConnectionManager()
 app.state.agent_run_registry = AgentRunRegistry()
-app.state.approval_service = ApprovalService(session_factory=AsyncSessionLocal)
+app.state.approval_service = ApprovalService()
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
@@ -601,23 +561,25 @@ register_error_handlers(app)
 
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
-app.include_router(sessions.router, prefix="/api/v1/sessions", tags=["sessions"])
-app.include_router(sessions_compaction.router, prefix="/api/v1/sessions", tags=["sessions"])
-app.include_router(memory.router, prefix="/api/v1/memory", tags=["memory"])
-app.include_router(sub_agents.router, prefix="/api/v1/sessions", tags=["sub-agents"])
-app.include_router(triggers.router, prefix="/api/v1/triggers", tags=["triggers"])
-app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
-app.include_router(git_router.router, prefix="/api/v1/git", tags=["git"])
-app.include_router(approvals_router.router, prefix="/api/v1/approvals", tags=["approvals"])
-app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
-app.include_router(models.router, prefix="/api/v1/models", tags=["models"])
-app.include_router(agent_modes_router.router, prefix="/api/v1/agent-modes", tags=["agent-modes"])
-app.include_router(onboarding.router, prefix="/api/v1/onboarding", tags=["onboarding"])
-app.include_router(settings_router.router, prefix="/api/v1/settings", tags=["settings"])
-app.include_router(runtime.router, prefix="/api/v1/runtime", tags=["runtime"])
-app.include_router(telegram.router, prefix="/api/v1/telegram", tags=["telegram"])
+app.include_router(instances.router, prefix="/api/v1/instances", tags=["instances"])
+_instance_api_prefix = "/api/v1/instances/{instance_name}"
+app.include_router(sessions.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"])
+app.include_router(sessions_compaction.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"])
+app.include_router(memory.router, prefix=f"{_instance_api_prefix}/memory", tags=["memory"])
+app.include_router(sub_agents.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sub-agents"])
+app.include_router(triggers.router, prefix=f"{_instance_api_prefix}/triggers", tags=["triggers"])
+app.include_router(webhooks.router, prefix=f"{_instance_api_prefix}/webhooks", tags=["webhooks"])
+app.include_router(git_router.router, prefix=f"{_instance_api_prefix}/git", tags=["git"])
+app.include_router(approvals_router.router, prefix=f"{_instance_api_prefix}/approvals", tags=["approvals"])
+app.include_router(admin.router, prefix=f"{_instance_api_prefix}/admin", tags=["admin"])
+app.include_router(models.router, prefix=f"{_instance_api_prefix}/models", tags=["models"])
+app.include_router(agent_modes_router.router, prefix=f"{_instance_api_prefix}/agent-modes", tags=["agent-modes"])
+app.include_router(onboarding.router, prefix=f"{_instance_api_prefix}/onboarding", tags=["onboarding"])
+app.include_router(settings_router.router, prefix=f"{_instance_api_prefix}/settings", tags=["settings"])
+app.include_router(runtime.router, prefix=f"{_instance_api_prefix}/runtime", tags=["runtime"])
+app.include_router(telegram.router, prefix=f"{_instance_api_prefix}/telegram", tags=["telegram"])
 app.include_router(vnc_proxy.router, tags=["vnc"])
-app.include_router(ws.router, prefix="/ws/sessions", tags=["ws"])
+app.include_router(ws.router, prefix="/ws/instances/{instance_name}/sessions", tags=["ws"])
 
 # Module/control-plane routes used by the Sentinel modules surface.
-app.include_router(araios_api_router, prefix="/api", tags=["modules"])
+app.include_router(araios_api_router, prefix="/api/instances/{instance_name}", tags=["modules"])

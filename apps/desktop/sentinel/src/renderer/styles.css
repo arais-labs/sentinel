@@ -299,28 +299,6 @@ input::placeholder {
   letter-spacing: 0.05em;
 }
 
-.create-form,
-.restore-form {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.create-form input,
-.restore-form input {
-  min-width: 220px;
-}
-
-.restore-form {
-  margin-top: 8px;
-}
-
-.restore-form #restorePath {
-  min-width: 360px;
-}
-
-.instances,
 .services {
   padding: 0;
   display: flex;
@@ -434,85 +412,6 @@ input::placeholder {
   line-height: 1.6;
   overflow: auto;
   border-top: 1px solid var(--border-subtle);
-}
-
-.modal.hidden {
-  display: none;
-}
-
-.modal {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: grid;
-  place-items: center;
-}
-
-.modal-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.72);
-  backdrop-filter: blur(10px);
-}
-
-.modal-card {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  gap: 16px;
-  width: min(420px, calc(100vw - 40px));
-  padding: 22px;
-  border: 1px solid var(--border-strong);
-  border-radius: 18px;
-  background: linear-gradient(180deg, #111113 0%, #09090b 100%);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
-}
-
-.modal-card h2 {
-  margin: 4px 0 0;
-  font-size: 22px;
-  letter-spacing: -0.03em;
-}
-
-.modal-card p {
-  margin: 8px 0 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.modal-eyebrow {
-  margin: 0 !important;
-  color: var(--text-muted) !important;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px !important;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.modal-card label {
-  display: grid;
-  gap: 7px;
-}
-
-.modal-card label span {
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.modal-card input {
-  width: 100%;
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 2px;
 }
 
 ::-webkit-scrollbar {

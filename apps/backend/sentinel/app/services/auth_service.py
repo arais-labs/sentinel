@@ -6,7 +6,7 @@ import secrets
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.services.settings.system_settings import get_system_setting, upsert_system_setting
+from app.services.settings.manager_settings import get_manager_setting, upsert_manager_setting
 
 _USERNAME_KEY = "sentinel.auth.username"
 _PASSWORD_HASH_KEY = "sentinel.auth.password_hash"
@@ -38,20 +38,17 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
 
 async def ensure_default_auth_settings(db: AsyncSession) -> None:
-    username = await get_system_setting(db, key=_USERNAME_KEY)
-    password_hash = await get_system_setting(db, key=_PASSWORD_HASH_KEY)
-    if username and password_hash:
-        return
+    username = await get_manager_setting(db, key=_USERNAME_KEY)
+    password_hash = await get_manager_setting(db, key=_PASSWORD_HASH_KEY)
 
     seed_username = _normalize_username(settings.sentinel_auth_username)
     seed_password = settings.sentinel_auth_password.strip()
-    if not seed_username or not seed_password:
-        raise RuntimeError("Sentinel auth credentials are not configured")
+    # Settings enforces min_length=1 on both fields, so they're non-empty here.
 
-    if not username:
-        await upsert_system_setting(db, key=_USERNAME_KEY, value=seed_username)
-    if not password_hash:
-        await upsert_system_setting(db, key=_PASSWORD_HASH_KEY, value=_hash_password(seed_password))
+    if not username or _normalize_username(username) != seed_username:
+        await upsert_manager_setting(db, key=_USERNAME_KEY, value=seed_username)
+    if not password_hash or not _verify_password(seed_password, password_hash):
+        await upsert_manager_setting(db, key=_PASSWORD_HASH_KEY, value=_hash_password(seed_password))
 
 
 async def authenticate_user(
@@ -60,8 +57,8 @@ async def authenticate_user(
     username: str,
     password: str,
 ) -> tuple[str, str] | None:
-    stored_username = await get_system_setting(db, key=_USERNAME_KEY)
-    stored_hash = await get_system_setting(db, key=_PASSWORD_HASH_KEY)
+    stored_username = await get_manager_setting(db, key=_USERNAME_KEY)
+    stored_hash = await get_manager_setting(db, key=_PASSWORD_HASH_KEY)
     if not stored_username or not stored_hash:
         return None
 
@@ -82,8 +79,8 @@ async def change_user_password(
     current_password: str,
     new_password: str,
 ) -> bool:
-    stored_username = await get_system_setting(db, key=_USERNAME_KEY)
-    stored_hash = await get_system_setting(db, key=_PASSWORD_HASH_KEY)
+    stored_username = await get_manager_setting(db, key=_USERNAME_KEY)
+    stored_hash = await get_manager_setting(db, key=_PASSWORD_HASH_KEY)
     if not stored_username or not stored_hash:
         return False
 
@@ -93,7 +90,7 @@ async def change_user_password(
     if not _verify_password(current_password, stored_hash):
         return False
 
-    await upsert_system_setting(
+    await upsert_manager_setting(
         db,
         key=_PASSWORD_HASH_KEY,
         value=_hash_password(new_password),

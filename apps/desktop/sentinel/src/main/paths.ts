@@ -47,11 +47,3 @@ export function qemuResourcePath(): string {
   }
   return path.join(resourceRoot(), 'runtime/qemu');
 }
-
-export function instanceRoot(name: string): string {
-  return path.join(appSupportRoot(), 'instances', name);
-}
-
-export function instanceEnvPath(name: string): string {
-  return path.join(instanceRoot(name), '.env');
-}

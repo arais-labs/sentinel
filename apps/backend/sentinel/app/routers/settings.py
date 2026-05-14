@@ -51,7 +51,7 @@ async def set_api_keys(
         gemini_api_key=payload.gemini_api_key,
         gemini_oauth_credentials=payload.gemini_oauth_credentials,
     )
-    runtime_rebuild_service.rebuild_agent_runtime_support(request.app.state)
+    await runtime_rebuild_service.rebuild_request_runtime_support(request)
     return {"success": True}
 
 
@@ -89,7 +89,7 @@ async def delete_api_keys(
     runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
 ) -> dict[str, bool]:
     await settings_service.delete_api_keys(db, provider=payload.provider)
-    runtime_rebuild_service.rebuild_agent_runtime_support(request.app.state)
+    await runtime_rebuild_service.rebuild_request_runtime_support(request)
     return {"success": True}
 
 
@@ -107,7 +107,7 @@ async def set_primary_provider(
     runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
 ) -> dict[str, str | bool]:
     await settings_service.set_primary_provider(db, provider=payload.provider)
-    runtime_rebuild_service.rebuild_agent_runtime_support(request.app.state)
+    await runtime_rebuild_service.rebuild_request_runtime_support(request)
     return {"success": True, "primary_provider": payload.provider.value}
 
 

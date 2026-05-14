@@ -97,19 +97,16 @@ class DockerRuntimeProvider:
                 container_name, ip, key,
             )
         else:
-            # Remove any stale stopped container with the same name
-            await asyncio.to_thread(
-                subprocess.run,
-                ["docker", "rm", "-f", container_name],
-                capture_output=True,
-            )
+            await self._remove_container(container_name)
 
             pub_key = (self._ssh_key_dir / "id_ed25519.pub").read_text().strip()
 
-            # Create per-session workspace directory on the host so it persists
-            # across container restarts. The path is bind-mounted into the container.
+            # Create through the backend-visible mount, but bind the host path
+            # into the runtime container. In Docker Compose these are different
+            # strings for the same directory.
+            backend_ws = Path(settings.session_runtime_base_dir) / key / "workspace"
             host_ws = Path(settings.runtime_workspaces_host_dir) / key / "workspace"
-            host_ws.mkdir(parents=True, exist_ok=True)
+            backend_ws.mkdir(parents=True, exist_ok=True)
 
             # Launch container
             compose_project = _compose_project_from_network(self._network)
@@ -149,8 +146,25 @@ class DockerRuntimeProvider:
                 )
             cmd.append(self._image)
             result = await asyncio.to_thread(
-                subprocess.run, cmd, capture_output=True, text=True, check=True,
+                subprocess.run, cmd, capture_output=True, text=True,
             )
+            if result.returncode != 0:
+                await self._remove_container(container_name)
+                detail = (result.stderr or result.stdout or "docker run failed without output").strip()
+                logger.error(
+                    "Docker runtime launch failed for %s with exit %s; image=%s network=%s workspace=%s stdout=%r stderr=%r",
+                    container_name,
+                    result.returncode,
+                    self._image,
+                    self._network,
+                    host_ws,
+                    (result.stdout or "").strip(),
+                    (result.stderr or "").strip(),
+                )
+                raise RuntimeError(
+                    f"Docker runtime launch failed for {container_name} "
+                    f"(exit {result.returncode}): {detail}"
+                )
             container_id = result.stdout.strip()
             logger.info("Launched runtime container %s for session %s", container_name, key)
 
@@ -432,6 +446,13 @@ class DockerRuntimeProvider:
             capture_output=True,
         )
         key_path.chmod(0o600)
+
+    async def _remove_container(self, container_name: str) -> None:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["docker", "rm", "-f", container_name],
+            capture_output=True,
+        )
 
     async def _get_container_ip(self, container_id: str) -> str:
         # Use `index` to handle network names with special characters (hyphens)

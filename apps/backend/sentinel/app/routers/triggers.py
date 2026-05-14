@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
+from app.dependencies import get_db, get_request_instance_runtime_context
 from app.middleware.audit import log_audit
 from app.middleware.auth import TokenPayload, require_auth
 from app.models import Trigger, TriggerLog
@@ -167,15 +167,7 @@ async def fire_trigger(
     db: AsyncSession = Depends(get_db),
 ) -> FireTriggerResponse:
     trigger = await _get_trigger_or_404(db, id, user.sub)
-    scheduler: TriggerScheduler | None = getattr(request.app.state, "trigger_scheduler", None)
-    if scheduler is None:
-        scheduler = TriggerScheduler(
-            agent_runtime_support=getattr(request.app.state, "agent_runtime_support", None),
-            tool_executor=getattr(request.app.state, "tool_executor", None),
-            ws_manager=getattr(request.app.state, "ws_manager", None),
-            run_registry=getattr(request.app.state, "agent_run_registry", None),
-            db_factory=None,
-        )
+    scheduler = get_request_instance_runtime_context(request).trigger_scheduler
     outcome = await scheduler.fire_now_nonblocking(
         db,
         trigger_id=trigger.id,

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { appSupportRoot, instanceRoot, qemuResourcePath, resourceRoot } from './paths.js';
+import { appSupportRoot, qemuResourcePath, resourceRoot } from './paths.js';
 import { commandSearchPath } from './shell.js';
 
 export interface DesktopPorts {
@@ -9,12 +9,6 @@ export interface DesktopPorts {
   qemuSsh: number;
   qemuVnc: number;
   qemuCdp: number;
-}
-
-export const DESKTOP_POSTGRES_PASSWORD = 'sentinel';
-
-export function instancesRoot(): string {
-  return path.join(appSupportRoot(), 'instances');
 }
 
 export function runtimeOutputDir(): string {
@@ -33,6 +27,14 @@ export function postgresDataDir(): string {
   return path.join(appSupportRoot(), 'postgres/data');
 }
 
+export function desktopWorkspaceRoot(): string {
+  return path.join(appSupportRoot(), 'workspaces');
+}
+
+export function qemuRunRoot(): string {
+  return path.join(appSupportRoot(), 'qemu/run');
+}
+
 export function postgresBinaryPath(name: string): string {
   return path.join(resourceRoot(), 'postgres/bin', name);
 }
@@ -49,36 +51,35 @@ export function runtimeCommandPath(pathValue = process.env.PATH || ''): string {
   return commandSearchPath(`${path.join(resourceRoot(), 'postgres/bin')}:${path.join(resourceRoot(), 'python/bin')}:${path.join(qemuResourcePath(), 'bin')}:${pathValue}`);
 }
 
-export function buildBackendEnv(
-  instance: string,
-  values: Record<string, string>,
-  ports: DesktopPorts,
-): NodeJS.ProcessEnv {
-  const password = values.POSTGRES_PASSWORD || DESKTOP_POSTGRES_PASSWORD;
-  const db = values.POSTGRES_DB || 'sentinel';
-  const user = values.POSTGRES_USER || 'sentinel';
+export function buildBackendEnv(ports: DesktopPorts): NodeJS.ProcessEnv {
   return {
-    ...process.env,
-    ...values,
-    PATH: runtimeCommandPath(values.PATH || process.env.PATH || ''),
+    PATH: runtimeCommandPath(''),
     PYTHONHOME: path.join(resourceRoot(), 'python'),
     PYTHONNOUSERSITE: '1',
-    LANG: values.LANG || process.env.LANG || 'C',
-    LC_ALL: values.LC_ALL || process.env.LC_ALL || 'C',
+    LANG: 'C',
+    LC_ALL: 'C',
+    LC_CTYPE: 'C',
     APP_ENV: 'desktop',
-    DATABASE_URL: `postgresql+asyncpg://${user}:${password}@127.0.0.1:${ports.postgres}/${db}`,
+    DATABASE_HOST: '127.0.0.1',
+    DATABASE_PORT: String(ports.postgres),
+    DATABASE_USER: 'sentinel',
+    DATABASE_PASSWORD: 'sentinel',
+    DATABASE_MAINTENANCE_NAME: 'postgres',
+    DATABASE_MANAGER_NAME: 'sentinel_manager',
+    INSTANCE_WORKSPACE_ROOT: desktopWorkspaceRoot(),
+    SESSION_RUNTIME_BASE_DIR: desktopWorkspaceRoot(),
     RUNTIME_EXEC_BACKEND: 'qemu',
     RUNTIME_QEMU_CONTROL: 'desktop',
     RUNTIME_QEMU_IMAGE: runtimeImagePath(),
     RUNTIME_QEMU_SSH_KEY_PATH: runtimeKeyPath(),
-    RUNTIME_QEMU_WORKSPACE_ROOT: path.join(instanceRoot(instance), 'workspaces'),
-    RUNTIME_QEMU_RUN_ROOT: path.join(instanceRoot(instance), 'qemu-run'),
+    RUNTIME_QEMU_WORKSPACE_ROOT: desktopWorkspaceRoot(),
+    RUNTIME_QEMU_RUN_ROOT: qemuRunRoot(),
     RUNTIME_QEMU_HOST: '127.0.0.1',
     RUNTIME_QEMU_PUBLIC_HOST: '127.0.0.1',
     RUNTIME_QEMU_SSH_PORT: String(ports.qemuSsh),
     RUNTIME_QEMU_VNC_PORT: String(ports.qemuVnc),
     RUNTIME_QEMU_CDP_PORT: String(ports.qemuCdp),
-    RUNTIME_WORKSPACES_HOST_DIR: path.join(instanceRoot(instance), 'workspaces'),
+    RUNTIME_WORKSPACES_HOST_DIR: desktopWorkspaceRoot(),
     AUTH_COOKIE_SECURE: 'false',
     AUTH_COOKIE_SAMESITE: 'lax',
   };

@@ -1,14 +1,16 @@
+name: sentinel
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-arai_stack}
-      POSTGRES_USER: ${POSTGRES_USER:-arai_stack}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arai_stack}
+      POSTGRES_DB: sentinel_manager
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
     volumes:
       - pgdata_dev:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arai_stack} -d ${POSTGRES_DB:-arai_stack}"]
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel_manager"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -31,57 +33,23 @@ services:
       - seccomp=unconfined
     environment:
       APP_ENV: development
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arai_stack}:${POSTGRES_PASSWORD:-arai_stack}@postgres:5432/${POSTGRES_DB:-arai_stack}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-3600}
-      REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-604800}
-      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
-      AUTH_COOKIE_SAMESITE: ${AUTH_COOKIE_SAMESITE:-lax}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      RUNTIME_LIVE_VIEW_ENABLED: "true"
-      BROWSER_LIVE_VIEW_ENABLED: "true"
-      BROWSER_LIVE_RESOLUTION: "1920x1080x24"
-      BROWSER_VIEWPORT_WIDTH: "1920"
-      BROWSER_VIEWPORT_HEIGHT: "1080"
-      BROWSER_WINDOW_WIDTH: "1920"
-      BROWSER_WINDOW_HEIGHT: "1080"
-      BROWSER_DEVICE_SCALE_FACTOR: "1"
-      RUNTIME_EXEC_BACKEND: ${RUNTIME_EXEC_BACKEND:-docker}
-      RUNTIME_IMAGE: sentinel-runtime
-      RUNTIME_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-sentinel}_default
-      RUNTIME_MEMORY_LIMIT: ${RUNTIME_MEMORY_LIMIT:-2g}
-      RUNTIME_CPU_LIMIT: ${RUNTIME_CPU_LIMIT:-2}
-      RUNTIME_SSH_KEY_DIR: /data/runtime/ssh
-      RUNTIME_SSH_HOST: ${RUNTIME_SSH_HOST:-}
-      RUNTIME_SSH_PORT: ${RUNTIME_SSH_PORT:-22}
-      RUNTIME_SSH_USER: ${RUNTIME_SSH_USER:-sentinel}
-      RUNTIME_SSH_KEY_PATH: ${RUNTIME_SSH_KEY_PATH:-}
-      RUNTIME_SSH_WORKSPACE: ${RUNTIME_SSH_WORKSPACE:-/home/sentinel/workspace}
-      RUNTIME_WORKSPACES_HOST_DIR: ${RUNTIME_WORKSPACES_HOST_DIR:-/data/runtime/workspaces}
-      RUNTIME_QEMU_IMAGE: ${RUNTIME_QEMU_IMAGE:-}
-      RUNTIME_QEMU_SSH_KEY_PATH: ${RUNTIME_QEMU_SSH_KEY_PATH:-}
-      RUNTIME_QEMU_CPUS: ${RUNTIME_QEMU_CPUS:-4}
-      RUNTIME_QEMU_MEMORY_MB: ${RUNTIME_QEMU_MEMORY_MB:-4096}
-      RUNTIME_QEMU_BRIDGE_URL: ${RUNTIME_QEMU_BRIDGE_URL:-http://host.docker.internal:47481}
-      RUNTIME_QEMU_BRIDGE_TOKEN: ${RUNTIME_QEMU_BRIDGE_TOKEN:-}
-      RUNTIME_QEMU_RUN_ROOT: ${RUNTIME_QEMU_RUN_ROOT:-/data/runtime/qemu}
-      RUNTIME_QEMU_WORKSPACE_ROOT: ${RUNTIME_QEMU_WORKSPACE_ROOT:-}
-      RUNTIME_QEMU_SSH_PORT: ${RUNTIME_QEMU_SSH_PORT:-2227}
-      RUNTIME_QEMU_VNC_PORT: ${RUNTIME_QEMU_VNC_PORT:-16081}
-      RUNTIME_QEMU_CDP_PORT: ${RUNTIME_QEMU_CDP_PORT:-19224}
-      RUNTIME_QEMU_HOST: ${RUNTIME_QEMU_HOST:-host.docker.internal}
-      RUNTIME_QEMU_PUBLIC_HOST: ${RUNTIME_QEMU_PUBLIC_HOST:-localhost}
-      RUNTIME_QEMU_SHARE_TAG: ${RUNTIME_QEMU_SHARE_TAG:-sentinel-host-workspaces}
-      RUNTIME_QEMU_SHARE_MOUNT: ${RUNTIME_QEMU_SHARE_MOUNT:-/mnt/sentinel-host-workspaces}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_USER: sentinel
+      DATABASE_PASSWORD: sentinel
+      DATABASE_MAINTENANCE_NAME: postgres
+      DATABASE_MANAGER_NAME: sentinel_manager
+      JWT_SECRET_KEY: ${SENTINEL_JWT_SECRET_KEY:?Set SENTINEL_JWT_SECRET_KEY in .env to a long random value}
+      SENTINEL_AUTH_USERNAME: ${SENTINEL_AUTH_USERNAME:?Set SENTINEL_AUTH_USERNAME in .env or the shell}
+      SENTINEL_AUTH_PASSWORD: ${SENTINEL_AUTH_PASSWORD:?Set SENTINEL_AUTH_PASSWORD in .env or the shell}
+      RUNTIME_DOCKER_NETWORK: sentinel_default
       SESSION_RUNTIME_BASE_DIR: /data/runtime/workspaces
+      RUNTIME_WORKSPACES_HOST_DIR: ${SENTINEL_RUNTIME_WORKSPACES_DIR:?Run ./sentinel-cli.sh --dev or set SENTINEL_RUNTIME_WORKSPACES_DIR}
       UVICORN_RELOAD: "true"
     volumes:
       - ./apps/backend/sentinel:/app
       - sentinel-runtime-ssh-dev:/data/runtime/ssh
-      - ${RUNTIME_WORKSPACES_HOST_DIR:-/data/runtime/workspaces}:/data/runtime/workspaces
+      - ${SENTINEL_RUNTIME_WORKSPACES_DIR:?Run ./sentinel-cli.sh --dev or set SENTINEL_RUNTIME_WORKSPACES_DIR}:/data/runtime/workspaces
       - ./infra/runtime/qemu/output:/data/runtime/qemu-output:ro
       - /var/run/docker.sock:/var/run/docker.sock
     extra_hosts:
@@ -98,7 +66,7 @@ services:
       VITE_BASE_PATH: /
       VITE_ROUTER_BASENAME: /
       VITE_SENTINEL_API_BASE_URL: /api/v1
-      VITE_SESSION_DEBUG_PANEL: ${VITE_SESSION_DEBUG_PANEL:-false}
+      VITE_SESSION_DEBUG_PANEL: "false"
     ports:
       - "${STACK_PORT:-4747}:5173"
     volumes:
@@ -112,3 +80,7 @@ services:
 volumes:
   pgdata_dev:
   sentinel-runtime-ssh-dev:
+
+networks:
+  default:
+    name: sentinel_default

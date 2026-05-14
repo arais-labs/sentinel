@@ -13,8 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import CHAT_DEFAULT_ITERATIONS
-from app.database import AsyncSessionLocal
-from app.dependencies import get_db
+from app.dependencies import get_db, get_request_db_factory, get_request_instance_runtime_context
 from app.middleware.auth import TokenPayload, require_auth
 from app.models import Message, Session
 from app.schemas.sessions import (
@@ -108,10 +107,14 @@ def _resolve_session_service(request: Request) -> SessionService:
     if not isinstance(run_registry, AgentRunRegistry):
         run_registry = AgentRunRegistry()
         request.app.state.agent_run_registry = run_registry
+    try:
+        agent_runtime_support = get_request_instance_runtime_context(request).agent_runtime_support
+    except RuntimeError:
+        agent_runtime_support = None
     return SessionService(
         run_registry=run_registry,
-        agent_runtime_support=getattr(request.app.state, "agent_runtime_support", None),
-        db_factory=getattr(request.app.state, "db_factory", AsyncSessionLocal),
+        agent_runtime_support=agent_runtime_support,
+        db_factory=get_request_db_factory(request),
     )
 
 
@@ -765,7 +768,10 @@ async def retry_message(
         )
 
     manager = getattr(request.app.state, "ws_manager", None)
-    agent_runtime_support = getattr(request.app.state, "agent_runtime_support", None)
+    try:
+        agent_runtime_support = get_request_instance_runtime_context(request).agent_runtime_support
+    except RuntimeError:
+        agent_runtime_support = None
     if manager is None or agent_runtime_support is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -786,7 +792,7 @@ async def retry_message(
         message.metadata_json = metadata
         await db.commit()
 
-    db_factory = getattr(request.app.state, "db_factory", AsyncSessionLocal)
+    db_factory = get_request_db_factory(request)
     asyncio.create_task(
         _retry_existing_user_message_run(
             db_factory=db_factory,

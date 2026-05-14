@@ -12,9 +12,12 @@ Thanks for contributing to Sentinel by ARAIS.
 ## Development Setup
 
 ```bash
-cp .env.example .env
 docker compose -f docker-compose.dev.yml up --build
 ```
+
+The development compose file uses local-only defaults. The production-shaped
+`docker-compose.yml` requires explicit `SENTINEL_POSTGRES_PASSWORD`,
+`SENTINEL_JWT_SECRET_KEY`, and `SENTINEL_AUTH_PASSWORD` values.
 
 Install Python formatting tooling:
 
@@ -35,6 +38,20 @@ bash scripts/install-git-hooks.sh
 3. New env vars, endpoints, or UI flows are documented.
 4. Commit messages are clear and include DCO sign-off.
 5. For approval-gated flows, verify create -> stream -> refresh/rehydrate -> approve/reject.
+
+## CLI and Compose Checks
+
+For CLI, Compose, or documentation cleanup, run:
+
+```bash
+bash -n sentinel-cli.sh
+SENTINEL_POSTGRES_PASSWORD=test-postgres-password \
+  SENTINEL_JWT_SECRET_KEY=test-jwt-secret-at-least-local-config \
+  SENTINEL_AUTH_PASSWORD=test-admin-password \
+  docker compose config -q
+docker compose -f docker-compose.dev.yml config -q
+git diff --check
+```
 
 ## Git Hook Policy
 

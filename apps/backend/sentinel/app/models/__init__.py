@@ -13,7 +13,6 @@ from app.models.sessions import Message, Session
 from app.models.sub_agents import SubAgentTask
 from app.models.system import SystemSetting
 from app.models.tool_approvals import ToolApproval
-from app.models.tokens import RevokedToken
 from app.models.triggers import Trigger, TriggerLog
 
 __all__ = [
@@ -26,7 +25,6 @@ __all__ = [
     "GitAccount",
     "Memory",
     "Message",
-    "RevokedToken",
     "Session",
     "SessionBinding",
     "SessionSummary",

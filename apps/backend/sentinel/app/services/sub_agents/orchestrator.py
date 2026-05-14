@@ -340,7 +340,11 @@ class SubAgentOrchestrator:
             self._agent_runtime_support.provider,
             context_builder,
             scoped_registry,
-            ToolExecutor(scoped_registry),
+            ToolExecutor(
+                scoped_registry,
+                db_session_factory=self._db_factory,
+                sub_agent_orchestrator=self,
+            ),
         )
 
     def _tool_with_optional_tab_scope(

@@ -2,8 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.dependencies import get_db
-from app.middleware.audit import log_audit
+from app.dependencies import get_manager_db
 from app.middleware.auth import (
     Identity,
     ACCESS_TOKEN_COOKIE_NAME,
@@ -58,9 +57,8 @@ def _clear_auth_cookies(response: Response) -> None:
 @router.post("/login", response_model=TokenPairResponse)
 async def login(
     payload: LoginRequest,
-    request: Request,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_manager_db),
 ) -> TokenPairResponse:
     auth = await authenticate_user(
         db,
@@ -76,14 +74,6 @@ async def login(
     _set_auth_cookies(response, access_token=access_token, refresh_token=refresh_token)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
-    await log_audit(
-        db,
-        user_id=identity.user_id,
-        action="auth.login",
-        status_code=200,
-        ip_address=request.client.host if request.client else None,
-        request_id=getattr(request.state, "request_id", None),
-    )
     return TokenPairResponse(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -91,12 +81,13 @@ async def login(
         expires_in=settings.access_token_ttl_seconds,
     )
 
+
 @router.post("/refresh", response_model=TokenPairResponse)
 async def refresh_session_token(
     request: Request,
     response: Response,
     payload: RefreshRequest | None = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_manager_db),
 ) -> TokenPairResponse:
     token = ""
     if payload is not None:
@@ -125,7 +116,7 @@ async def refresh_session_token(
 async def change_password(
     payload: ChangePasswordRequest,
     user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_manager_db),
 ) -> dict[str, bool]:
     changed = await change_user_password(
         db,
@@ -151,7 +142,7 @@ async def delete_session(
     request: Request,
     response: Response,
     user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_manager_db),
 ) -> dict[str, str]:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
@@ -168,12 +159,4 @@ async def delete_session(
         except Exception:
             pass
     _clear_auth_cookies(response)
-    await log_audit(
-        db,
-        user_id=user.sub,
-        action="auth.logout",
-        status_code=200,
-        ip_address=request.client.host if request.client else None,
-        request_id=getattr(request.state, "request_id", None),
-    )
     return {"status": "revoked"}

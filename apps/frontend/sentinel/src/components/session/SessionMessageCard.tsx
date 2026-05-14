@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 
 import { JsonBlock } from '../ui/JsonBlock';
 import { Markdown } from '../ui/Markdown';
+import { HtmlContent, looksLikeHtmlContent } from '../ui/HtmlContent';
 import { approvalKey, approvalRefFromMetadata, isWaitingApproval, type ApprovalRef } from '../../lib/approvals';
 import { formatCompactDate } from '../../lib/format';
 import {
@@ -17,6 +18,13 @@ import type { Message, MessageAttachment } from '../../types/api';
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function shouldRenderAssistantHtml(message: Message, content: string): boolean {
+  if (message.role !== 'assistant') return false;
+  const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+  const explicitFormat = String(metadata.render_format ?? metadata.response_format ?? '').trim().toLowerCase();
+  return explicitFormat === 'html' || looksLikeHtmlContent(content);
 }
 
 function serializeToolArguments(value: unknown): string {
@@ -844,6 +852,7 @@ export const SessionMessageCard = memo(({
   const renderedAssistantContent = isTelegramGroupResponse
     ? (message.content ?? '').replace(/^TG Group Response[^\n]*\n?/i, '').trimStart()
     : message.content;
+  const renderAssistantHtml = shouldRenderAssistantHtml(message, renderedAssistantContent ?? '');
   const userAttachments = isUser ? extractImageAttachments(message.metadata) : [];
   const attachments = (message.metadata?.attachments as Array<{ base64: string }> | undefined) ?? [];
   const screenshotBase64 = isToolResult ? (attachments.find((a) => a.base64)?.base64 ?? null) : null;
@@ -904,7 +913,9 @@ export const SessionMessageCard = memo(({
 
   const cardWidthClass = isToolResult
     ? (toolExpanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]')
-    : 'max-w-[90%]';
+    : renderAssistantHtml
+      ? 'w-full max-w-[90%]'
+      : 'max-w-[90%]';
   const showRetry = isUser && Boolean(onRetryMessage) && Boolean(retryError);
 
   return (
@@ -928,6 +939,8 @@ export const SessionMessageCard = memo(({
               ? pendingApproval
                 ? 'bg-rose-500/8 border-rose-500/30 rounded-tl-none shadow-md ring-1 ring-rose-500/20'
                 : `bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] shadow-sm rounded-tl-none ${toolExpanded ? '' : 'cursor-pointer hover:border-sky-500/30 hover:bg-sky-500/[0.03]'}`
+              : renderAssistantHtml
+                ? 'bg-transparent border-transparent rounded-tl-none shadow-none px-0 py-0'
               : isTelegramGroupResponse
                 ? 'bg-emerald-500/8 border-emerald-500/25 rounded-tl-none font-medium'
                 : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] rounded-tl-none font-medium'
@@ -1097,7 +1110,11 @@ export const SessionMessageCard = memo(({
                 </span>
               </div>
             ) : null}
-            <Markdown content={renderedAssistantContent} invert={isUser} />
+            {renderAssistantHtml ? (
+              <HtmlContent content={renderedAssistantContent ?? ''} />
+            ) : (
+              <Markdown content={renderedAssistantContent} invert={isUser} />
+            )}
             {showRetry ? (
               <div className="flex justify-end pt-1">
                 <button

@@ -101,10 +101,10 @@ Only users with the `admin` role can resolve approvals. The `agent` role cannot.
 ## Filtering approvals
 
 ```
-GET /api/approvals?status=pending
-GET /api/approvals?status=approved
-GET /api/approvals?provider=araios
-GET /api/approvals?session_id=<uuid>
+GET /api/v1/instances/{instance_name}/approvals?status=pending
+GET /api/v1/instances/{instance_name}/approvals?status=approved
+GET /api/v1/instances/{instance_name}/approvals?provider=araios
+GET /api/v1/instances/{instance_name}/approvals?session_id=<uuid>
 ```
 
 ---

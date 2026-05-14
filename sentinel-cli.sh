@@ -1,66 +1,593 @@
 #!/usr/bin/env bash
-set -uo pipefail
+# Sentinel CLI — control stack lifecycle and manage instances.
+# Interactive when launched without args; scriptable via subcommands.
 
-# Sentinel Stack CLI - Smooth Transition Edition
-# Fixes the buffer-skip glitch and ensures onboarding info is readable.
+set -u
+set -o pipefail
+# -e intentionally omitted: interactive paths surface errors via menu notes
+# instead of exiting. One-shot subcommands check exit codes explicitly.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$ROOT_DIR"
+cd "$ROOT_DIR" || { printf 'Failed to enter %s\n' "$ROOT_DIR" >&2; exit 1; }
 
-INSTANCES_DIR="$ROOT_DIR/.instances"
-BACKUP_FORMAT="sentinel.instance.backup"
-BACKUP_VERSION="1"
-mkdir -p "$INSTANCES_DIR"
-TMP_PICK="/tmp/sentinel_pick_$(id -u)"
-STATUS_CACHE_TS=0
-STATUS_CACHE_TEXT=""
-MENU_NOTE=""
+load_root_env() {
+  local force="${1:-false}"
+  local env_file="$ROOT_DIR/.env"
+  [[ -f "$env_file" ]] || return 0
 
-# Colors and Styling
+  local line key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    if [[ "$force" == "true" || -z "${!key+x}" ]]; then
+      export "$key=$value"
+    fi
+  done < "$env_file"
+}
+
+load_root_env
+
+# === Configuration ===
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-sentinel}"
+SENTINEL_MODE="${SENTINEL_MODE:-prod}"
+SENTINEL_COMPOSE_FILE="${SENTINEL_COMPOSE_FILE:-}"
+COMPOSE_FILE=""
+STACK_PORT="${STACK_PORT:-4747}"
+STACK_URL="${SENTINEL_URL:-http://localhost:${STACK_PORT}}"
+API_BASE="${STACK_URL%/}/api/v1"
+HEALTH_READY_URL="${STACK_URL%/}/health/ready"
+READY_TIMEOUT="${SENTINEL_READY_TIMEOUT:-60}"
+CACHE_TTL="${SENTINEL_STATUS_TTL:-5}"
+SENTINEL_RUNTIME_WORKSPACES_DIR="${SENTINEL_RUNTIME_WORKSPACES_DIR:-}"
+SENTINEL_AUTH_USERNAME="${SENTINEL_AUTH_USERNAME:-}"
+SENTINEL_AUTH_PASSWORD="${SENTINEL_AUTH_PASSWORD:-}"
+
+# === Terminal capabilities ===
 if [[ -t 1 ]]; then
-  BOLD="$(printf '\033[1m')"
-  DIM="$(printf '\033[2m')"
-  RED="$(printf '\033[31m')"
-  GREEN="$(printf '\033[32m')"
-  YELLOW="$(printf '\033[33m')"
-  BLUE="$(printf '\033[34m')"
-  MAGENTA="$(printf '\033[35m')"
-  CYAN="$(printf '\033[36m')"
-  BG_BLUE="$(printf '\033[44m')"
-  RESET="$(printf '\033[0m')"
-  CURSOR_OFF="$(tput civis)"
-  CURSOR_ON="$(tput cnorm)"
-  CLEAR_SCREEN="$(tput clear)"
-  GOTO_TOP="$(tput cup 0 0)"
-  CLEAR_LINE="$(printf '\033[K')"
+  TTY_OUT=1
+  BOLD=$'\033[1m'
+  DIM=$'\033[2m'
+  RED=$'\033[31m'
+  GREEN=$'\033[32m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  CYAN=$'\033[36m'
+  BG_BLUE=$'\033[44m'
+  RESET=$'\033[0m'
+  CLEAR_SCREEN=$'\033[2J\033[H'
+  GOTO_TOP=$'\033[H'
+  CLEAR_TO_END=$'\033[J'
+  CLEAR_LINE=$'\033[K'
+  CURSOR_OFF=$'\033[?25l'
+  CURSOR_ON=$'\033[?25h'
 else
-  BOLD="" DIM="" RED="" GREEN="" YELLOW="" BLUE="" MAGENTA="" CYAN="" BG_BLUE="" RESET="" CURSOR_OFF="" CURSOR_ON="" CLEAR_SCREEN="" GOTO_TOP="" CLEAR_LINE=""
+  TTY_OUT=0
+  BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BG_BLUE=""; RESET=""
+  CLEAR_SCREEN=""; GOTO_TOP=""; CLEAR_TO_END=""; CLEAR_LINE=""; CURSOR_OFF=""; CURSOR_ON=""
 fi
 
-# Icons
-ICON_INFO="ℹ️"
-ICON_SUCCESS="✅"
-ICON_WARN="⚠️"
-ICON_ERROR="❌"
-ICON_START="🚀"
-ICON_STOP="🛑"
-ICON_RESTART="🔄"
-ICON_DELETE="🗑️"
-ICON_LIST="📋"
-ICON_CONFIG="⚙️"
+# === Globals ===
+TMP_DIR=""
+MENU_NOTE=""
+STATUS_CACHE_TS=0
+STATUS_CACHE_TEXT=""
+HEADER_CACHE=""
+HAVE_CURL=""
+HAVE_DOCKER=""
+HAVE_PYTHON=""
+CURSOR_HIDDEN=0
+LAST_ERROR=""        # Multi-line error panel shown in the next menu frame.
+ERROR_TAIL_LINES="${SENTINEL_ERROR_TAIL_LINES:-15}"
 
-print_header_content() {
-  printf "${CYAN}${BOLD}${CLEAR_LINE}\n"
-  printf "   _____            _   _             _ ${CLEAR_LINE}\n"
-  printf "  / ____|          | | (_)           | |${CLEAR_LINE}\n"
-  printf " | (___   ___ _ __ | |_ _ _ __   ___| |${CLEAR_LINE}\n"
-  printf "  \___ \ / _ \ '_ \| __| | '_ \ / _ \ |${CLEAR_LINE}\n"
-  printf "  ____) |  __/ | | | |_| | | | |  __/ |${CLEAR_LINE}\n"
-  printf " |_____/ \___|_| |_|\__|_|_| |_|\___|_|${CLEAR_LINE}\n"
-  printf "                                        ${CLEAR_LINE}\n"
-  printf "${BLUE}    S T A C K   C O N T R O L   C E N T E R${RESET}${CLEAR_LINE}\n"
-  printf "${DIM}    Arrows ⬆️ ⬇️  to navigate • Enter ↵  to select${RESET}${CLEAR_LINE}\n"
-  printf "${CLEAR_LINE}\n"
+# === Icons (Unicode geometric — opinionated, no fallback) ===
+# These render in any UTF-8 terminal without requiring a Nerd Font.
+ICON_DOCKER="⬢"
+ICON_API="◉"
+ICON_STACK="▣"
+ICON_UI="◧"
+ICON_OK="✓"
+ICON_INFO="ⓘ"
+ICON_WARN="⚠"
+ICON_ERROR="✗"
+ICON_START="▶"
+ICON_STOP="■"
+ICON_RESTART="↻"
+ICON_RESET="!"
+ICON_INSTANCES="⬡"
+ICON_STATUS="ⓘ"
+ICON_LOGS="≡"
+ICON_REFRESH="⟳"
+ICON_EXIT="⏻"
+ICON_BACK="←"
+ICON_LIST="☰"
+ICON_CREATE="+"
+ICON_RENAME="✎"
+ICON_DELETE="✗"
+ICON_SELECTED="❯"
+
+# === Cleanup ===
+restore_terminal() {
+  if [[ $TTY_OUT -eq 1 && $CURSOR_HIDDEN -eq 1 ]]; then
+    printf '%s' "$CURSOR_ON"
+    CURSOR_HIDDEN=0
+  fi
+}
+
+cleanup() {
+  local code=$?
+  restore_terminal
+  if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
+    rm -rf "$TMP_DIR" 2>/dev/null || true
+  fi
+  return $code
+}
+
+on_int() {
+  cleanup
+  printf '\n' >&2
+  exit 130
+}
+
+on_term() {
+  cleanup
+  exit 143
+}
+
+trap cleanup EXIT
+trap on_int INT
+trap on_term TERM
+
+ensure_tmp_dir() {
+  [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]] && return 0
+  TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sentinel-cli.XXXXXX" 2>/dev/null)" || {
+    printf 'Failed to create temp directory\n' >&2
+    return 1
+  }
+}
+
+hide_cursor() {
+  [[ $TTY_OUT -eq 1 && $CURSOR_HIDDEN -eq 0 ]] || return 0
+  printf '%s' "$CURSOR_OFF"
+  CURSOR_HIDDEN=1
+}
+
+show_cursor() {
+  [[ $TTY_OUT -eq 1 && $CURSOR_HIDDEN -eq 1 ]] || return 0
+  printf '%s' "$CURSOR_ON"
+  CURSOR_HIDDEN=0
+}
+
+# === Tool detection ===
+detect_tools() {
+  command -v curl >/dev/null 2>&1 && HAVE_CURL=1
+  command -v docker >/dev/null 2>&1 && HAVE_DOCKER=1
+  command -v python3 >/dev/null 2>&1 && HAVE_PYTHON=1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+# === Logging (one-shot output) ===
+info() { printf '%s[INFO]%s %s\n' "$BLUE" "$RESET" "$*"; }
+ok() { printf '%s[OK]%s %s\n' "$GREEN" "$RESET" "$*"; }
+warn() { printf '%s[WARN]%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
+err() { printf '%s[ERROR]%s %s\n' "$RED" "$RESET" "$*" >&2; }
+die() { err "$*"; exit 1; }
+
+# === Menu notes (soft errors for interactive paths) ===
+ui_note_ok() { MENU_NOTE="${GREEN}${BOLD}${ICON_OK}${RESET}  $*"; }
+ui_note_info() { MENU_NOTE="${BLUE}${BOLD}${ICON_INFO}${RESET}  $*"; }
+ui_note_warn() { MENU_NOTE="${YELLOW}${BOLD}${ICON_WARN}${RESET}  $*"; }
+ui_note_error() { MENU_NOTE="${RED}${BOLD}${ICON_ERROR}${RESET}  $*"; }
+ui_note_clear() { MENU_NOTE=""; }
+
+# === Error panel (multi-line, rendered into the next menu frame) ===
+ui_clear_error() { LAST_ERROR=""; }
+
+# ui_set_error_from_file <title> <path> [max_lines]
+ui_set_error_from_file() {
+  local title="$1"
+  local file="$2"
+  local max="${3:-$ERROR_TAIL_LINES}"
+  local panel="${RED}${BOLD}${ICON_ERROR}  ${title}${RESET}${CLEAR_LINE}"$'\n'
+  panel+="${DIM}┌─ last ${max} line(s) ─────────────────────────────${RESET}${CLEAR_LINE}"$'\n'
+  if [[ -s "$file" ]]; then
+    local line
+    # tail keeps the most relevant context for the failure.
+    while IFS= read -r line; do
+      panel+="${DIM}│${RESET} ${line}${CLEAR_LINE}"$'\n'
+    done < <(tail -n "$max" "$file" 2>/dev/null)
+  else
+    panel+="${DIM}│ (no output captured)${RESET}${CLEAR_LINE}"$'\n'
+  fi
+  panel+="${DIM}└──────────────────────────────────────────────────${RESET}${CLEAR_LINE}"$'\n'
+  panel+="${CLEAR_LINE}"$'\n'
+  LAST_ERROR="$panel"
+}
+
+# ui_set_error_text <title> <text>  (text is treated as a single block)
+ui_set_error_text() {
+  local title="$1"
+  local text="$2"
+  local panel="${RED}${BOLD}${ICON_ERROR}  ${title}${RESET}${CLEAR_LINE}"$'\n'
+  panel+="${DIM}┌──────────────────────────────────────────────────${RESET}${CLEAR_LINE}"$'\n'
+  local line
+  while IFS= read -r line; do
+    panel+="${DIM}│${RESET} ${line}${CLEAR_LINE}"$'\n'
+  done <<< "$text"
+  panel+="${DIM}└──────────────────────────────────────────────────${RESET}${CLEAR_LINE}"$'\n'
+  panel+="${CLEAR_LINE}"$'\n'
+  LAST_ERROR="$panel"
+}
+
+build_error_panel() {
+  [[ -n "$LAST_ERROR" ]] || return 0
+  printf '%s' "$LAST_ERROR"
+}
+
+usage() {
+  cat <<'EOF'
+Sentinel CLI
+
+Usage:
+  ./sentinel-cli.sh
+  ./sentinel-cli.sh --dev
+  ./sentinel-cli.sh up
+  ./sentinel-cli.sh --dev up
+  ./sentinel-cli.sh down
+  ./sentinel-cli.sh restart
+  ./sentinel-cli.sh reset [--yes] [--prod-confirm]
+  ./sentinel-cli.sh logs [service]
+  ./sentinel-cli.sh status
+  ./sentinel-cli.sh instances list
+  ./sentinel-cli.sh instances create <name> [display-name]
+  ./sentinel-cli.sh instances rename <old-name> <new-name>
+  ./sentinel-cli.sh instances delete <name>
+
+Configuration:
+  Root .env is the source of truth for stack credentials, workspace path,
+  COMPOSE_PROJECT_NAME, and STACK_PORT. The CLI creates or reconciles it on
+  startup before showing the menu or running commands.
+
+  COMPOSE_PROJECT_NAME       Compose project name (default: sentinel).
+                             Runtime Docker network remains sentinel_default.
+  SENTINEL_RUNTIME_WORKSPACES_DIR
+                             Absolute host directory for runtime session
+                             workspaces. Required in prod. Dev defaults to
+                             .sentinel/runtime/workspaces under this checkout.
+  SENTINEL_AUTH_USERNAME     App admin username from root .env.
+                             Required in both modes; prod rejects defaults.
+  SENTINEL_AUTH_PASSWORD     App admin password from root .env.
+                             Required in both modes; prod rejects defaults.
+  STACK_PORT                 Published frontend/API port (default: 4747).
+
+Launch/debug overrides:
+  SENTINEL_MODE              prod or dev (default: prod).
+                             Use --dev for local development mode.
+  SENTINEL_COMPOSE_FILE      Expert override for CLI stack controls.
+                             Defaults to docker-compose.yml in prod mode and
+                             docker-compose.dev.yml in dev mode.
+  SENTINEL_URL               API root URL (default: http://localhost:$STACK_PORT).
+  SENTINEL_TOKEN             Bearer token for non-interactive API calls.
+  SENTINEL_READY_TIMEOUT     Seconds to wait for backend readiness (default: 60).
+  SENTINEL_STATUS_TTL        Status cache TTL in seconds (default: 2).
+
+Interactive keys:
+  ↑/↓ or j/k     Navigate          Enter / Space    Select
+  1–9            Jump to option    q or Esc         Back / cancel
+
+Main-menu letter shortcuts (jump + select in one keystroke):
+  u  Start Stack   d  Stop Stack   r  Restart Stack   x  Reset Stack
+  i  Instances     s  Status       l  Logs            f  Refresh     e  Exit
+
+Instances submenu shortcuts:
+  l  List   c  Create   r  Rename   d  Delete   b  Back
+EOF
+}
+
+# === Status probes ===
+backend_ready() {
+  [[ -n "$HAVE_CURL" ]] || return 1
+  curl -fsS --max-time 1 "${HEALTH_READY_URL}" >/dev/null 2>&1
+}
+
+docker_ready() {
+  [[ -n "$HAVE_DOCKER" ]] || return 1
+  docker info >/dev/null 2>&1
+}
+
+resolve_compose_file() {
+  case "$SENTINEL_MODE" in
+    prod|production)
+      SENTINEL_MODE="prod"
+      COMPOSE_FILE="${SENTINEL_COMPOSE_FILE:-docker-compose.yml}"
+      ;;
+    dev|development)
+      SENTINEL_MODE="dev"
+      COMPOSE_FILE="${SENTINEL_COMPOSE_FILE:-docker-compose.dev.yml}"
+      ;;
+    *)
+      die "Invalid SENTINEL_MODE '${SENTINEL_MODE}'. Use prod or dev."
+      ;;
+  esac
+}
+
+is_absolute_path() {
+  [[ "$1" == /* ]]
+}
+
+resolve_runtime_workspace_dir() {
+  if [[ -z "$SENTINEL_RUNTIME_WORKSPACES_DIR" && "$SENTINEL_MODE" == "dev" ]]; then
+    SENTINEL_RUNTIME_WORKSPACES_DIR="$ROOT_DIR/.sentinel/runtime/workspaces"
+  fi
+  export SENTINEL_RUNTIME_WORKSPACES_DIR
+}
+
+resolve_auth_config() {
+  export SENTINEL_AUTH_USERNAME SENTINEL_AUTH_PASSWORD
+}
+
+ensure_runtime_workspace_config() {
+  resolve_runtime_workspace_dir
+  if [[ -z "$SENTINEL_RUNTIME_WORKSPACES_DIR" ]]; then
+    err "SENTINEL_RUNTIME_WORKSPACES_DIR is required in prod mode."
+    err "Set it to an absolute host path in .env before using docker-compose.yml."
+    return 1
+  fi
+  if ! is_absolute_path "$SENTINEL_RUNTIME_WORKSPACES_DIR"; then
+    err "SENTINEL_RUNTIME_WORKSPACES_DIR must be an absolute host path: ${SENTINEL_RUNTIME_WORKSPACES_DIR}"
+    return 1
+  fi
+}
+
+is_placeholder_value() {
+  local value="$1"
+  [[ -z "$value" || "$value" == replace-with-* || "$value" == CHANGE_ME* ]]
+}
+
+validate_prod_required_value() {
+  local key="$1"
+  local description="$2"
+  local value="${!key:-}"
+  if is_placeholder_value "$value"; then
+    err "${key} must be set to a real ${description} before using prod mode."
+    return 1
+  fi
+}
+
+validate_auth_config() {
+  resolve_auth_config
+  if [[ -z "$SENTINEL_AUTH_USERNAME" || -z "$SENTINEL_AUTH_PASSWORD" ]]; then
+    err "SENTINEL_AUTH_USERNAME and SENTINEL_AUTH_PASSWORD must be set in root .env."
+    return 1
+  fi
+}
+
+refresh_urls() {
+  STACK_URL="${SENTINEL_URL:-http://localhost:${STACK_PORT}}"
+  API_BASE="${STACK_URL%/}/api/v1"
+  HEALTH_READY_URL="${STACK_URL%/}/health/ready"
+}
+
+generate_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
+  else
+    printf 'sentinel-%s-%s\n' "$(date +%s)" "$RANDOM"
+  fi
+}
+
+is_weak_prod_value() {
+  case "$1" in
+    admin|sentinel|test|secret|password|changeme|change-me)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+root_env_has_key() {
+  local key="$1"
+  [[ -f "$ROOT_DIR/.env" ]] || return 1
+  grep -Eq "^[[:space:]]*${key}=" "$ROOT_DIR/.env"
+}
+
+env_value_invalid() {
+  local key="$1"
+  local value="${!key:-}"
+  [[ -n "$value" ]] || return 0
+  is_placeholder_value "$value" && return 0
+  case "$key" in
+    STACK_PORT)
+      [[ "$value" =~ ^[0-9]+$ ]] || return 0
+      ;;
+    SENTINEL_RUNTIME_WORKSPACES_DIR)
+      is_absolute_path "$value" || return 0
+      ;;
+  esac
+  if [[ "$SENTINEL_MODE" == "prod" ]]; then
+    case "$key" in
+      SENTINEL_POSTGRES_PASSWORD|SENTINEL_AUTH_PASSWORD)
+        is_weak_prod_value "$value" && return 0
+        (( ${#value} >= 12 )) || return 0
+        ;;
+      SENTINEL_JWT_SECRET_KEY)
+        is_weak_prod_value "$value" && return 0
+        (( ${#value} >= 32 )) || return 0
+        ;;
+      SENTINEL_AUTH_USERNAME)
+        [[ "$value" != "admin" ]] || return 0
+        ;;
+    esac
+  fi
+  return 1
+}
+
+env_value_or_default() {
+  local key="$1"
+  local default="$2"
+  if root_env_has_key "$key" && [[ -n "${!key:-}" ]] && ! env_value_invalid "$key"; then
+    printf '%s' "${!key}"
+  else
+    printf '%s' "$default"
+  fi
+}
+
+collect_env_errors() {
+  ENV_ERRORS=""
+  local key value
+  for key in \
+    COMPOSE_PROJECT_NAME \
+    STACK_PORT \
+    SENTINEL_POSTGRES_PASSWORD \
+    SENTINEL_JWT_SECRET_KEY \
+    SENTINEL_AUTH_USERNAME \
+    SENTINEL_AUTH_PASSWORD \
+    SENTINEL_RUNTIME_WORKSPACES_DIR
+  do
+    value="${!key:-}"
+    if ! root_env_has_key "$key"; then
+      ENV_ERRORS+="${key} is missing from .env"$'\n'
+    elif [[ -z "$value" ]]; then
+      ENV_ERRORS+="${key} is missing"$'\n'
+    elif env_value_invalid "$key"; then
+      ENV_ERRORS+="${key} is invalid for ${SENTINEL_MODE} mode"$'\n'
+    fi
+  done
+  [[ -z "$ENV_ERRORS" ]]
+}
+
+reload_env_config() {
+  unset COMPOSE_PROJECT_NAME STACK_PORT SENTINEL_POSTGRES_PASSWORD SENTINEL_JWT_SECRET_KEY
+  unset SENTINEL_AUTH_USERNAME SENTINEL_AUTH_PASSWORD SENTINEL_RUNTIME_WORKSPACES_DIR
+  load_root_env true
+  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-sentinel}"
+  STACK_PORT="${STACK_PORT:-4747}"
+  SENTINEL_RUNTIME_WORKSPACES_DIR="${SENTINEL_RUNTIME_WORKSPACES_DIR:-}"
+  SENTINEL_AUTH_USERNAME="${SENTINEL_AUTH_USERNAME:-}"
+  SENTINEL_AUTH_PASSWORD="${SENTINEL_AUTH_PASSWORD:-}"
+  resolve_runtime_workspace_dir
+  resolve_auth_config
+  refresh_urls
+}
+
+validate_prod_stack_config() {
+  [[ "$SENTINEL_MODE" == "prod" ]] || return 0
+  validate_prod_required_value "SENTINEL_POSTGRES_PASSWORD" "database password" || return 1
+  validate_prod_required_value "SENTINEL_JWT_SECRET_KEY" "JWT secret" || return 1
+  if is_placeholder_value "$SENTINEL_AUTH_USERNAME" || [[ "$SENTINEL_AUTH_USERNAME" == "admin" ]]; then
+    err "SENTINEL_AUTH_USERNAME must be changed from the default before using prod mode."
+    return 1
+  fi
+  if is_placeholder_value "$SENTINEL_AUTH_PASSWORD" || [[ "$SENTINEL_AUTH_PASSWORD" == "admin" ]]; then
+    err "SENTINEL_AUTH_PASSWORD must be changed from the default before using prod mode."
+    return 1
+  fi
+}
+
+prepare_runtime_workspace_dir() {
+  ensure_runtime_workspace_config || return 1
+  if ! mkdir -p "$SENTINEL_RUNTIME_WORKSPACES_DIR"; then
+    err "Failed to create runtime workspace directory: ${SENTINEL_RUNTIME_WORKSPACES_DIR}"
+    return 1
+  fi
+}
+
+prepare_stack_config() {
+  ensure_cli_env_ready || return 1
+  prepare_runtime_workspace_dir || return 1
+  validate_auth_config || return 1
+  validate_prod_stack_config || return 1
+}
+
+write_dev_env_defaults() {
+  upsert_root_env_value "COMPOSE_PROJECT_NAME" "$(env_value_or_default "COMPOSE_PROJECT_NAME" "sentinel")" || return 1
+  upsert_root_env_value "STACK_PORT" "$(env_value_or_default "STACK_PORT" "4747")" || return 1
+  upsert_root_env_value "SENTINEL_POSTGRES_PASSWORD" "$(env_value_or_default "SENTINEL_POSTGRES_PASSWORD" "sentinel")" || return 1
+  upsert_root_env_value "SENTINEL_JWT_SECRET_KEY" "$(env_value_or_default "SENTINEL_JWT_SECRET_KEY" "sentinel-local-dev-secret-change-me")" || return 1
+  upsert_root_env_value "SENTINEL_AUTH_USERNAME" "$(env_value_or_default "SENTINEL_AUTH_USERNAME" "admin")" || return 1
+  upsert_root_env_value "SENTINEL_AUTH_PASSWORD" "$(env_value_or_default "SENTINEL_AUTH_PASSWORD" "admin")" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_WORKSPACES_DIR" "$(env_value_or_default "SENTINEL_RUNTIME_WORKSPACES_DIR" "$ROOT_DIR/.sentinel/runtime/workspaces")" || return 1
+}
+
+write_prod_env_interactive() {
+  local compose_project stack_port db_password jwt_secret auth_username auth_password workspace_dir
+  compose_project="$(prompt_default "Compose project name" "$(env_value_or_default "COMPOSE_PROJECT_NAME" "sentinel")")"
+  stack_port="$(prompt_default "Stack port" "$(env_value_or_default "STACK_PORT" "4747")")"
+  db_password="$(prompt_default "Database password" "$(env_value_or_default "SENTINEL_POSTGRES_PASSWORD" "$(generate_secret)")")"
+  jwt_secret="$(prompt_default "JWT secret" "$(env_value_or_default "SENTINEL_JWT_SECRET_KEY" "$(generate_secret)")")"
+  auth_username="$(prompt_default "Admin username" "$(env_value_or_default "SENTINEL_AUTH_USERNAME" "sentinel-admin")")"
+  auth_password="$(prompt_default "Admin password" "$(env_value_or_default "SENTINEL_AUTH_PASSWORD" "$(generate_secret)")")"
+  workspace_dir="$(prompt_default "Runtime workspaces directory" "$(env_value_or_default "SENTINEL_RUNTIME_WORKSPACES_DIR" "$ROOT_DIR/.sentinel/runtime/workspaces")")"
+
+  upsert_root_env_value "COMPOSE_PROJECT_NAME" "$compose_project" || return 1
+  upsert_root_env_value "STACK_PORT" "$stack_port" || return 1
+  upsert_root_env_value "SENTINEL_POSTGRES_PASSWORD" "$db_password" || return 1
+  upsert_root_env_value "SENTINEL_JWT_SECRET_KEY" "$jwt_secret" || return 1
+  upsert_root_env_value "SENTINEL_AUTH_USERNAME" "$auth_username" || return 1
+  upsert_root_env_value "SENTINEL_AUTH_PASSWORD" "$auth_password" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_WORKSPACES_DIR" "$workspace_dir" || return 1
+}
+
+print_env_errors() {
+  local line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && err "$line"
+  done <<< "$ENV_ERRORS"
+}
+
+ensure_cli_env_ready() {
+  reload_env_config
+  if collect_env_errors; then
+    return 0
+  fi
+
+  warn "Sentinel .env is not ready for ${SENTINEL_MODE} mode."
+  print_env_errors
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    err "Run ./sentinel-cli.sh${SENTINEL_MODE:+ --${SENTINEL_MODE}} in an interactive terminal to set up .env."
+    return 1
+  fi
+
+  if [[ "$SENTINEL_MODE" == "dev" ]]; then
+    if ! confirm_phrase "Write dev defaults to .env? [y/N]: " "y"; then
+      err ".env setup aborted."
+      return 1
+    fi
+    write_dev_env_defaults || return 1
+  else
+    warn "Prod setup will write generated values to .env. Review or override each prompt."
+    write_prod_env_interactive || return 1
+  fi
+
+  reload_env_config
+  if ! collect_env_errors; then
+    err ".env is still not valid for ${SENTINEL_MODE} mode."
+    print_env_errors
+    return 1
+  fi
+  ok ".env is ready for ${SENTINEL_MODE} mode."
+}
+
+compose() {
+  ensure_runtime_workspace_config || return 1
+  resolve_auth_config
+  docker compose --project-name "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" "$@"
 }
 
 invalidate_status_cache() {
@@ -68,1656 +595,1157 @@ invalidate_status_cache() {
   STATUS_CACHE_TEXT=""
 }
 
-set_menu_note() {
-  MENU_NOTE="${1:-}"
+# === Rendering ===
+# Header is fully static; precompute once to avoid per-frame work.
+build_header() {
+  if [[ -n "$HEADER_CACHE" ]]; then
+    printf '%s' "$HEADER_CACHE"
+    return 0
+  fi
+  local C="${CYAN}${BOLD}"
+  local R="${RESET}"
+  local CL="${CLEAR_LINE}"
+  local buf=""
+  # Breathing room above the wordmark.
+  buf+="${CL}"$'\n'
+  buf+="${C}  ███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗     ${R}${CL}"$'\n'
+  buf+="${C}  ██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║     ${R}${CL}"$'\n'
+  buf+="${C}  ███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║     ${R}${CL}"$'\n'
+  buf+="${C}  ╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ██║     ${R}${CL}"$'\n'
+  buf+="${C}  ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗${R}${CL}"$'\n'
+  buf+="${C}  ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝${R}${CL}"$'\n'
+  buf+="  ${BOLD}Stack Control Center${R}  ${DIM}·  manage instances, runtime, and logs${R}${CL}"$'\n'
+  buf+="${CL}"$'\n'
+  HEADER_CACHE="$buf"
+  printf '%s' "$HEADER_CACHE"
 }
 
-print_menu_note() {
-  [[ -n "$MENU_NOTE" ]] || return 0
-  printf "%b${CLEAR_LINE}\n" "$MENU_NOTE"
-  printf "${CLEAR_LINE}\n"
-}
-
-build_status_header() {
+build_status() {
   local now
-  now="$(date +%s)"
-  if [[ -n "$STATUS_CACHE_TEXT" ]] && (( now - STATUS_CACHE_TS < 2 )); then
-    printf "%b" "$STATUS_CACHE_TEXT"
+  now="$(date +%s 2>/dev/null || printf '0')"
+  if [[ -n "$STATUS_CACHE_TEXT" ]] && (( now - STATUS_CACHE_TS < CACHE_TTL )); then
+    printf '%s' "$STATUS_CACHE_TEXT"
     return 0
   fi
 
-  local docker_summary docker_ok="false"
-  if ! require_cmd docker; then
-    docker_summary="${RED}Docker missing${RESET}"
-  elif docker info >/dev/null 2>&1; then
-    docker_ok="true"
-    docker_summary="${GREEN}Docker running${RESET}"
+  local docker_state api_state svcs running docker_up=0
+  if [[ -z "$HAVE_DOCKER" ]]; then
+    docker_state="${RED}missing${RESET}"
+  elif docker_ready; then
+    docker_up=1
+    svcs="$(compose ps --services --status running 2>/dev/null \
+            || compose ps --services --filter status=running 2>/dev/null \
+            || true)"
+    if [[ -n "$svcs" ]]; then
+      running="$(printf '%s\n' "$svcs" | grep -c . 2>/dev/null || true)"
+    else
+      running="0"
+    fi
+    docker_state="${GREEN}running${RESET} ${DIM}(${running} svc)${RESET}"
   else
-    docker_summary="${YELLOW}Docker unavailable${RESET}"
+    docker_state="${YELLOW}unavailable${RESET}"
   fi
 
-  local instances=()
-  while IFS= read -r line; do [[ -n "$line" ]] && instances+=("$line"); done < <(get_instances)
-
-  local summary
-  summary="${DIM}Status${RESET}  ${docker_summary}"
-  if [[ ${#instances[@]} -eq 0 ]]; then
-    summary+=$'\n'"${DIM}Instances${RESET}  none yet"
+  # Perf: skip the 1s curl timeout when docker is clearly down — the API
+  # cannot be reachable in that case (compose stack isn't running).
+  local api_up=0
+  if (( docker_up )) && backend_ready; then
+    api_up=1
+    api_state="${GREEN}ready${RESET} ${DIM}${HEALTH_READY_URL}${RESET}"
   else
-    local inst
-    for inst in "${instances[@]}"; do
-      local backend port state running
-      backend="$(backend_label "$(current_instance_backend "$inst")")"
-      port="$(read_env_value "$(instance_env_file "$inst")" "STACK_PORT" || echo "4747")"
-      state="${DIM}stopped${RESET}"
-      if [[ "$docker_ok" == "true" ]]; then
-        running="$(count_running_instance_services "$inst")"
-        if [[ "$running" =~ ^[0-9]+$ ]] && (( running > 0 )); then
-          state="${GREEN}running:${running}${RESET}"
-        fi
-      else
-        state="${YELLOW}docker-off${RESET}"
-      fi
-      summary+=$'\n'"${DIM}Instance${RESET}  ${BOLD}${inst}${RESET} • ${backend} • :${port} • ${state}"
-    done
+    api_state="${YELLOW}offline${RESET} ${DIM}${HEALTH_READY_URL}${RESET}"
   fi
-  summary+=$'\n'"${CLEAR_LINE}"
 
+  # Frontend UI URL — bright and clickable when the API is up, dim otherwise.
+  local ui_state
+  if (( api_up )); then
+    ui_state="${BOLD}${CYAN}${STACK_URL}${RESET}"
+  else
+    ui_state="${DIM}${STACK_URL}${RESET}"
+  fi
+
+  local buf=""
+  buf+="  ${CYAN}${ICON_DOCKER}${RESET}  ${DIM}Docker${RESET}  ${docker_state}${CLEAR_LINE}"$'\n'
+  buf+="  ${CYAN}${ICON_API}${RESET}  ${DIM}API${RESET}     ${api_state}${CLEAR_LINE}"$'\n'
+  buf+="  ${CYAN}${ICON_UI}${RESET}  ${DIM}UI${RESET}      ${ui_state}${CLEAR_LINE}"$'\n'
+  buf+="  ${CYAN}${ICON_STACK}${RESET}  ${DIM}Stack${RESET}   ${COMPOSE_PROJECT_NAME} on :${STACK_PORT} ${DIM}(${SENTINEL_MODE}, ${COMPOSE_FILE})${RESET}${CLEAR_LINE}"$'\n'
+  buf+="${CLEAR_LINE}"$'\n'
+  STATUS_CACHE_TEXT="$buf"
   STATUS_CACHE_TS="$now"
-  STATUS_CACHE_TEXT="$summary"
-  printf "%b" "$STATUS_CACHE_TEXT"
+  printf '%s' "$STATUS_CACHE_TEXT"
 }
 
-count_running_instance_services() {
-  local inst="$1"
-  docker ps \
-    --filter "label=com.docker.compose.project=$(instance_project_name "$inst")" \
-    --format '{{.ID}}' 2>/dev/null | awk 'NF { count++ } END { print count + 0 }'
+build_note() {
+  [[ -n "$MENU_NOTE" ]] || return 0
+  printf '%s%s\n%s\n' "$MENU_NOTE" "$CLEAR_LINE" "$CLEAR_LINE"
 }
 
-info() { echo -e "${BLUE}${ICON_INFO} [INFO]${RESET} $*"; }
-success() { echo -e "${GREEN}${ICON_SUCCESS} [OK]${RESET} $*"; }
-warn() { echo -e "${YELLOW}${ICON_WARN} [WARN]${RESET} $*"; }
-error() { echo -e "${RED}${ICON_ERROR} [ERROR]${RESET} $*"; }
-
-require_cmd() { command -v "$1" >/dev/null 2>&1; }
-
-get_instances() {
-  local dirs
-  shopt -s nullglob
-  dirs=("$INSTANCES_DIR"/*/.)
-  shopt -u nullglob
-  [[ ${#dirs[@]} -eq 0 ]] && return 0
-  local dir
-  for dir in "${dirs[@]}"; do
-    local name
-    name="$(basename "$(dirname "$dir")")"
-    [[ -f "$INSTANCES_DIR/$name/.env" ]] && echo "$name"
-  done
-}
-
-check_port_occupied() {
-  local port="$1"
-  if require_cmd lsof; then
-    lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 && return 0
-  elif require_cmd nc; then
-    nc -z localhost "$port" >/dev/null 2>&1 && return 0
-  fi
-  return 1
-}
-
-ensure_docker_ready() {
-  if ! require_cmd docker; then error "Docker not found."; return 1; fi
-  if ! docker info >/dev/null 2>&1; then error "Docker not running."; return 1; fi
-  return 0
-}
-
-generate_secret() {
-  local bytes="${1:-32}"
-  if require_cmd openssl; then openssl rand -hex "$bytes"
-  elif require_cmd python3; then python3 -c "import secrets; print(secrets.token_hex($bytes))"
-  else echo "sec-$(date +%s)-${RANDOM}"; fi
-}
-
-read_env_value() {
-  local file="$1" key="$2"
-  [[ -f "$file" ]] || return 1
-  awk -F= -v k="$key" '$1 == k {print substr($0, index($0, "=") + 1)}' "$file" | tail -n 1
-}
-
-prompt_default() {
-  local label="$1" default="$2" value
-  printf "%s" "$CURSOR_ON" >&2
-  # Use /dev/tty for input to avoid capture
-  read -r -p "${BOLD}${label}${RESET} [${DIM}${default}${RESET}]: " value < /dev/tty
-  printf "%s" "$CURSOR_OFF" >&2
-  echo "${value:-$default}"
-}
-
-sanitize_instance_name() {
-  echo "${1:-main}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g'
-}
-
-instance_dir() { echo "$INSTANCES_DIR/${1}"; }
-instance_env_file() { echo "$INSTANCES_DIR/${1}/.env"; }
-instance_project_name() { echo "sentinel-${1}"; }
-instance_backup_dir() { echo "$INSTANCES_DIR/${1}/backups"; }
-instance_workspaces_dir() { echo "$INSTANCES_DIR/${1}/workspaces"; }
-instance_qemu_bridge_pid_file() { echo "$(instance_dir "$1")/qemu-bridge.pid"; }
-instance_qemu_bridge_log_file() { echo "$(instance_dir "$1")/qemu-bridge.log"; }
-instance_qemu_run_dir() { echo "$(instance_dir "$1")/qemu-run"; }
-
-host_os() {
-  case "$(uname -s)" in
-    Darwin) echo "macos" ;;
-    Linux) echo "linux" ;;
-    MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
-    *) echo "unknown" ;;
-  esac
-}
-
-upsert_env_value() {
-  local file="$1" key="$2" value="$3"
-  mkdir -p "$(dirname "$file")"
-  touch "$file"
-  if grep -q "^${key}=" "$file" 2>/dev/null; then
-    local tmp
-    tmp="$(mktemp)"
-    awk -v key="$key" -v value="$value" '
-      BEGIN { replaced = 0 }
-      $0 ~ ("^" key "=") {
-        print key "=" value
-        replaced = 1
-        next
-      }
-      { print }
-      END {
-        if (!replaced) {
-          print key "=" value
-        }
-      }
-    ' "$file" > "$tmp" && mv "$tmp" "$file"
-  else
-    printf "%s=%s\n" "$key" "$value" >> "$file"
-  fi
-}
-
-ensure_instance_structure() {
-  local inst="$1"
-  mkdir -p "$(instance_dir "$inst")"
-  mkdir -p "$(instance_backup_dir "$inst")"
-  mkdir -p "$(instance_workspaces_dir "$inst")"
-}
-
-current_instance_backend() {
-  local inst="$1"
-  local value
-  value="$(read_env_value "$(instance_env_file "$inst")" "RUNTIME_EXEC_BACKEND" || true)"
-  echo "${value:-docker}"
-}
-
-is_supported_runtime_backend() {
-  case "${1:-docker}" in
-    docker|qemu|remote) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-backend_label() {
-  case "${1:-docker}" in
-    docker) echo "Docker" ;;
-    qemu) echo "QEMU" ;;
-    remote) echo "Custom SSH" ;;
-    *) echo "Unsupported ($1)" ;;
-  esac
-}
-
-ensure_supported_runtime_backend() {
-  local inst="$1"
-  local backend ef
-  backend="$(current_instance_backend "$inst")"
-  if is_supported_runtime_backend "$backend"; then
-    return 0
-  fi
-  ef="$(instance_env_file "$inst")"
-  error "Unsupported RUNTIME_EXEC_BACKEND='$backend' in $ef."
-  warn "Edit the instance runtime backend to one of: docker, qemu, remote."
-  return 1
-}
-
-default_qemu_image_path() {
-  local arch image_dir candidate
-  arch="$(uname -m)"
-  image_dir="$(qemu_output_dir)"
-  candidate="$image_dir/sentinel-runtime-base-${arch}.qcow2"
-  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
-  candidate="$image_dir/sentinel-runtime-base.qcow2"
-  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
-  candidate="$image_dir/sentinel-runtime-base-arm64.qcow2"
-  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
-  echo ""
-}
-
-qemu_runtime_dir() { echo "$ROOT_DIR/infra/runtime/qemu"; }
-qemu_output_dir() { echo "$(qemu_runtime_dir)/output"; }
-
-default_qemu_key_path() {
-  local image_path
-  image_path="$(default_qemu_image_path)"
-  [[ -n "$image_path" ]] || { echo ""; return 0; }
-  local candidate="${image_path%.qcow2}.id_ed25519"
-  [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
-  echo ""
-}
-
-qemu_firmware_ready() {
-  local candidates=()
-  if require_cmd brew; then
-    local prefix
-    prefix="$(brew --prefix qemu 2>/dev/null || true)"
-    [[ -n "$prefix" ]] && candidates+=("$prefix" "${prefix%/opt/qemu}")
-  fi
-  candidates+=("/opt/homebrew/Cellar/qemu" "/usr/local/Cellar/qemu")
-
-  local code="" vars="" root
-  for root in "${candidates[@]}"; do
-    [[ -d "$root" ]] || continue
-    [[ -z "$code" ]] && code="$(find "$root" -path '*/share/qemu/edk2-aarch64-code.fd' 2>/dev/null | head -n 1)"
-    [[ -z "$vars" ]] && vars="$(find "$root" -path '*/share/qemu/edk2-arm-vars.fd' 2>/dev/null | head -n 1)"
-    [[ -n "$code" && -n "$vars" ]] && return 0
-  done
-  return 1
-}
-
-ensure_qemu_runtime_prerequisites() {
-  local missing=()
-  local cmd
-  for cmd in python3 qemu-img qemu-system-aarch64; do
-    require_cmd "$cmd" || missing+=("$cmd")
-  done
-
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    error "Missing QEMU runtime prerequisite(s): ${missing[*]}"
-    warn "On macOS, install QEMU with: brew install qemu"
-    return 1
-  fi
-
-  if ! qemu_firmware_ready; then
-    error "Could not locate QEMU aarch64 firmware files."
-    warn "Install or repair Homebrew QEMU with: brew install qemu"
-    return 1
-  fi
-
-  return 0
-}
-
-ensure_qemu_build_prerequisites() {
-  local missing=()
-  local cmd
-  for cmd in brew curl hdiutil qemu-img qemu-system-aarch64 ssh ssh-keygen python3 sha512sum; do
-    require_cmd "$cmd" || missing+=("$cmd")
-  done
-
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    error "Missing QEMU build prerequisite(s): ${missing[*]}"
-    warn "On macOS, install the runtime prerequisites with: brew install qemu coreutils"
-    return 1
-  fi
-
-  if ! qemu_firmware_ready; then
-    error "Could not locate QEMU aarch64 firmware files."
-    warn "Install or repair Homebrew QEMU with: brew install qemu"
-    return 1
-  fi
-
-  return 0
-}
-
-build_qemu_artifacts_interactive() {
-  local runtime_dir output_dir confirm
-  runtime_dir="$(qemu_runtime_dir)"
-  output_dir="$(qemu_output_dir)"
-
-  warn "QEMU baked image or SSH key is missing under $output_dir."
-  ensure_qemu_build_prerequisites || return 1
-
-  printf "%s" "$CURSOR_ON" >&2
-  read -r -p "Build and validate the QEMU base image now? [y/N]: " confirm < /dev/tty
-  printf "%s" "$CURSOR_OFF" >&2
-  case "$confirm" in
-    y|Y|yes|YES) ;;
-    *)
-      warn "QEMU setup cancelled."
-      return 1
-      ;;
-  esac
-
-  pause_for_qemu_failure() {
-    printf "%s" "$CURSOR_ON" >&2
-    read -r -p "Press Enter to return to the runtime backend menu..." _ < /dev/tty
-    printf "%s" "$CURSOR_OFF" >&2
-  }
-
-  info "Building QEMU base image. This can take several minutes."
-  "$runtime_dir/build-base-image.sh" || {
-    error "QEMU base image build failed."
-    pause_for_qemu_failure
-    return 1
-  }
-
-  info "Validating QEMU base image."
-  "$runtime_dir/validate-base-image.sh" || {
-    error "QEMU base image validation failed."
-    pause_for_qemu_failure
-    return 1
-  }
-
-  return 0
-}
-
-configure_qemu_backend() {
-  local inst="$1" ef="$2"
-  local qemu_image_path qemu_key_path
-
-  ensure_qemu_runtime_prerequisites || {
-    set_menu_note "${YELLOW}QEMU was not enabled because local runtime prerequisites are missing.${RESET}"
-    return 1
-  }
-
-  qemu_image_path="$(default_qemu_image_path)"
-  qemu_key_path="$(default_qemu_key_path)"
-  if [[ -z "$qemu_image_path" || -z "$qemu_key_path" ]]; then
-    if ! build_qemu_artifacts_interactive; then
-      set_menu_note "${YELLOW}QEMU was not enabled. Build a base image under ${BOLD}./infra/runtime/qemu/output${RESET}${YELLOW}, then select QEMU again.${RESET}"
-      return 1
-    fi
-    qemu_image_path="$(default_qemu_image_path)"
-    qemu_key_path="$(default_qemu_key_path)"
-  fi
-
-  if [[ -z "$qemu_image_path" || -z "$qemu_key_path" ]]; then
-    error "QEMU build completed, but expected image/key artifacts are still missing."
-    set_menu_note "${RED}QEMU was not enabled because image/key artifacts could not be found.${RESET}"
-    return 1
-  fi
-
-  upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "qemu"
-  upsert_env_value "$ef" "RUNTIME_QEMU_IMAGE" "$qemu_image_path"
-  upsert_env_value "$ef" "RUNTIME_QEMU_SSH_KEY_PATH" "/data/runtime/qemu-output/$(basename "$qemu_key_path")"
-  upsert_env_value "$ef" "RUNTIME_QEMU_WORKSPACE_ROOT" "$(instance_workspaces_dir "$inst")"
-  upsert_env_value "$ef" "RUNTIME_QEMU_RUN_ROOT" "$(instance_qemu_run_dir "$inst")"
-  invalidate_status_cache
-  set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}QEMU${RESET} with baked image ${BOLD}$(basename "$qemu_image_path")${RESET}."
-  return 0
-}
-
-default_qemu_bridge_port() {
-  local inst="$1"
-  local ef stack_port
-  ef="$(instance_env_file "$inst")"
-  stack_port="$(read_env_value "$ef" "STACK_PORT" || echo 4747)"
-  if [[ "$stack_port" =~ ^[0-9]+$ ]]; then
-    local port=$((stack_port + 40001))
-    if (( port > 65535 )); then
-      echo 47481
-      return 0
-    fi
-    echo "$port"
-    return 0
-  fi
-  echo 47481
-}
-
-ensure_qemu_bridge_settings() {
-  local inst="$1"
-  local ef token port
-  ef="$(instance_env_file "$inst")"
-  token="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_TOKEN" || true)"
-  port="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_PORT" || true)"
-  [[ -z "$token" ]] && token="$(generate_secret 24)"
-  [[ -z "$port" ]] && port="$(default_qemu_bridge_port "$inst")"
-  upsert_env_value "$ef" "RUNTIME_QEMU_BRIDGE_TOKEN" "$token"
-  upsert_env_value "$ef" "RUNTIME_QEMU_BRIDGE_PORT" "$port"
-  upsert_env_value "$ef" "RUNTIME_QEMU_BRIDGE_URL" "http://host.docker.internal:${port}"
-}
-
-is_qemu_bridge_healthy() {
-  local inst="$1"
-  local ef token port
-  ef="$(instance_env_file "$inst")"
-  token="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_TOKEN" || true)"
-  port="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_PORT" || true)"
-  [[ -z "$token" || -z "$port" ]] && return 1
-  curl -fsS -H "X-Sentinel-Bridge-Token: $token" "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1
-}
-
-ensure_qemu_bridge_running() {
-  local inst="$1"
-  ensure_qemu_bridge_settings "$inst"
-  if is_qemu_bridge_healthy "$inst"; then
-    return 0
-  fi
-
-  local ef token port pid_file log_file
-  ef="$(instance_env_file "$inst")"
-  token="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_TOKEN" || true)"
-  port="$(read_env_value "$ef" "RUNTIME_QEMU_BRIDGE_PORT" || true)"
-  pid_file="$(instance_qemu_bridge_pid_file "$inst")"
-  log_file="$(instance_qemu_bridge_log_file "$inst")"
-
-  mkdir -p "$(dirname "$pid_file")"
-  if [[ -f "$pid_file" ]]; then
-    local existing_pid
-    existing_pid="$(cat "$pid_file" 2>/dev/null || true)"
-    if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
-      if is_qemu_bridge_healthy "$inst"; then
-        return 0
-      fi
-      kill "$existing_pid" >/dev/null 2>&1 || true
-    fi
-    rm -f "$pid_file"
-  fi
-
-  if ! require_cmd python3; then
-    error "python3 is required to run the QEMU bridge."
-    return 1
-  fi
-  if ! require_cmd qemu-system-aarch64 || ! require_cmd qemu-img; then
-    error "QEMU is required for the QEMU runtime backend."
-    return 1
-  fi
-
-  nohup python3 "$ROOT_DIR/infra/runtime/qemu/bridge.py" \
-    --port "$port" \
-    --token "$token" \
-    >"$log_file" 2>&1 &
-  echo $! > "$pid_file"
-
-  for _ in {1..20}; do
-    if is_qemu_bridge_healthy "$inst"; then
-      success "QEMU bridge is running for '$inst' on port $port."
-      return 0
-    fi
-    sleep 0.25
-  done
-
-  error "QEMU bridge failed to start for '$inst'."
-  return 1
-}
-
-stop_qemu_bridge() {
-  local inst="$1"
-  local pid_file
-  pid_file="$(instance_qemu_bridge_pid_file "$inst")"
-  [[ -f "$pid_file" ]] || return 0
-  local pid
-  pid="$(cat "$pid_file" 2>/dev/null || true)"
-  if [[ "$pid" =~ ^[0-9]+$ ]]; then
-    kill "$pid" >/dev/null 2>&1 || true
-  fi
-  rm -f "$pid_file"
-}
-
-write_instance_defaults() {
-  local inst="$1"
-  local ef
-  ef="$(instance_env_file "$inst")"
-  ensure_instance_structure "$inst"
-
-  local stack_port postgres_db postgres_user postgres_password jwt_secret jwt_algorithm runtime_backend
-  stack_port="$(read_env_value "$ef" "STACK_PORT" || true)"
-  postgres_db="$(read_env_value "$ef" "POSTGRES_DB" || true)"
-  postgres_user="$(read_env_value "$ef" "POSTGRES_USER" || true)"
-  postgres_password="$(read_env_value "$ef" "POSTGRES_PASSWORD" || true)"
-  jwt_secret="$(read_env_value "$ef" "JWT_SECRET_KEY" || true)"
-  jwt_algorithm="$(read_env_value "$ef" "JWT_ALGORITHM" || true)"
-  runtime_backend="$(read_env_value "$ef" "RUNTIME_EXEC_BACKEND" || true)"
-
-  upsert_env_value "$ef" "STACK_PORT" "${stack_port:-4747}"
-  upsert_env_value "$ef" "POSTGRES_DB" "${postgres_db:-arai_stack}"
-  upsert_env_value "$ef" "POSTGRES_USER" "${postgres_user:-arai_stack}"
-  upsert_env_value "$ef" "POSTGRES_PASSWORD" "${postgres_password:-$(generate_secret 12)}"
-  upsert_env_value "$ef" "JWT_SECRET_KEY" "${jwt_secret:-$(generate_secret 32)}"
-  upsert_env_value "$ef" "JWT_ALGORITHM" "${jwt_algorithm:-HS256}"
-  upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "${runtime_backend:-docker}"
-  upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
-}
-
-sql_quote_identifier() {
-  local value="$1"
-  value="${value//\"/\"\"}"
-  printf "\"%s\"" "$value"
-}
-
-file_sha256() {
-  local file="$1"
-  if require_cmd shasum; then
-    shasum -a 256 "$file" | awk '{print $1}'
-  elif require_cmd openssl; then
-    openssl dgst -sha256 "$file" | awk '{print $NF}'
-  else
-    echo ""
-  fi
-}
-
-load_instance_db_credentials() {
-  local inst="$1"
-  local ef
-  ef="$(instance_env_file "$inst")"
-  DB_NAME="$(read_env_value "$ef" "POSTGRES_DB" || true)"
-  DB_USER="$(read_env_value "$ef" "POSTGRES_USER" || true)"
-  DB_PASSWORD="$(read_env_value "$ef" "POSTGRES_PASSWORD" || true)"
-
-  if [[ -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASSWORD" ]]; then
-    error "Missing DB credentials in '$ef'."
-    return 1
-  fi
-  return 0
-}
-
-ensure_instance_postgres_ready() {
-  local inst="$1"
-  if ! compose_instance "$inst" ps --services --status running 2>/dev/null | grep -q '^postgres$'; then
-    error "Postgres for '$inst' is not running."
-    return 1
-  fi
-
-  if ! compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
-    psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
-    error "Cannot connect to Postgres for '$inst'."
-    return 1
-  fi
-  return 0
-}
-
-ensure_instance_ready_for_backup() {
-  local inst="$1"
-  if ensure_instance_postgres_ready "$inst"; then
-    return 0
-  fi
-
-  warn "Instance '$inst' is not running, so backup cannot read Postgres."
-  local confirm
-  printf "%s" "$CURSOR_ON" >&2
-  read -r -p "Start '$inst' now and continue backup? [y/N]: " confirm < /dev/tty
-  printf "%s" "$CURSOR_OFF" >&2
-  case "$confirm" in
-    y|Y|yes|YES) ;;
-    *)
-      info "Backup aborted."
-      set_menu_note "${DIM}Backup aborted for ${inst}.${RESET}"
-      return 1
-      ;;
-  esac
-
-  action_up "$inst" >/dev/tty
-  load_instance_db_credentials "$inst" || return 1
-  ensure_instance_postgres_ready "$inst"
-}
-
-get_instance_backups() {
-  local inst="$1"
-  local dir
-  dir="$(instance_backup_dir "$inst")"
-  [[ -d "$dir" ]] || return 0
-  find "$dir" -maxdepth 1 -type f -name "*.sentinel-backup.tar.gz" | sort -r
-}
-
-get_all_instance_backups() {
-  [[ -d "$INSTANCES_DIR" ]] || return 0
-  find "$INSTANCES_DIR" -path "*/backups/*.sentinel-backup.tar.gz" -type f | sort -r
-}
-
-pick_backup_interactive() {
-  local inst="${1:-}"
-  local title="$2"
-  local backups=()
-  if [[ -n "$inst" ]]; then
-    while IFS= read -r file; do [[ -n "$file" ]] && backups+=("$file"); done < <(get_instance_backups "$inst")
-  else
-    while IFS= read -r file; do [[ -n "$file" ]] && backups+=("$file"); done < <(get_all_instance_backups)
-  fi
-
-  if [[ ${#backups[@]} -eq 0 ]]; then
-    warn "No Sentinel instance backups found."
-    return 1
-  fi
-
-  local options=()
-  local file
-  for file in "${backups[@]}"; do
-    options+=("$(basename "$(dirname "$(dirname "$file")")") / $(basename "$file")")
-  done
-  options+=("⬅️  Go Back")
-
-  select_option "$title" "${options[@]}"
-  local idx=$?
-  if [[ $idx -eq ${#backups[@]} ]]; then
-    return 1
-  fi
-
-  echo "${backups[$idx]}" > "$TMP_PICK"
-  return 0
-}
-
-verify_backup_checksum() {
-  local backup_file="$1"
-  local checksum_file="${backup_file}.sha256"
-  [[ -f "$checksum_file" ]] || return 0
-
-  local expected actual
-  expected="$(awk '{print $1}' "$checksum_file" | head -n 1)"
-  actual="$(file_sha256 "$backup_file")"
-
-  if [[ -z "$expected" || -z "$actual" || "$expected" != "$actual" ]]; then
-    error "Checksum mismatch for $(basename "$backup_file")."
-    return 1
-  fi
-  return 0
-}
-
-write_backup_manifest() {
-  local inst="$1" db_name="$2" workspaces_included="$3" output="$4"
-  if ! require_cmd python3; then
-    error "python3 is required to write backup manifests."
-    return 1
-  fi
-  BACKUP_FORMAT="$BACKUP_FORMAT" BACKUP_VERSION="$BACKUP_VERSION" BACKUP_INSTANCE="$inst" BACKUP_DATABASE="$db_name" BACKUP_WORKSPACES_INCLUDED="$workspaces_included" python3 - "$output" <<'PY'
-import json
-import os
-import sys
-from datetime import datetime, timezone
-
-target = sys.argv[1]
-document = {
-    "format": os.environ["BACKUP_FORMAT"],
-    "version": int(os.environ["BACKUP_VERSION"]),
-    "instanceName": os.environ["BACKUP_INSTANCE"],
-    "databaseName": os.environ["BACKUP_DATABASE"],
-    "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    "source": "cli",
-    "workspacesIncluded": os.environ["BACKUP_WORKSPACES_INCLUDED"] == "true",
-}
-with open(target, "w", encoding="utf-8") as handle:
-    json.dump(document, handle, indent=2)
-    handle.write("\n")
-PY
-}
-
-read_backup_manifest_field() {
-  local backup_root="$1" field="$2"
-  python3 - "$backup_root/sentinel-backup.json" "$field" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    document = json.load(handle)
-value = document.get(sys.argv[2], "")
-print(value)
-PY
-}
-
-validate_extracted_backup() {
-  local backup_root="$1"
-  if [[ ! -f "$backup_root/sentinel-backup.json" || ! -f "$backup_root/instance.env" || ! -f "$backup_root/database.sql" || ! -d "$backup_root/workspaces" ]]; then
-    error "Backup is missing sentinel-backup.json, instance.env, database.sql, or workspaces/."
-    return 1
-  fi
-  local format version
-  format="$(read_backup_manifest_field "$backup_root" "format" 2>/dev/null || true)"
-  version="$(read_backup_manifest_field "$backup_root" "version" 2>/dev/null || true)"
-  if [[ "$format" != "$BACKUP_FORMAT" || "$version" != "$BACKUP_VERSION" ]]; then
-    error "Unsupported Sentinel backup format."
-    return 1
-  fi
-  return 0
-}
-
-prompt_backup_workspaces() {
-  local inst="$1"
-  local size="unknown"
-  if [[ -d "$(instance_workspaces_dir "$inst")" ]]; then
-    size="$(du -sh "$(instance_workspaces_dir "$inst")" 2>/dev/null | awk '{print $1}')"
-  fi
-  warn "Workspaces for '$inst' are ${size}. Including them can make the backup slow and large."
-  local confirm
-  printf "%s" "$CURSOR_ON" >&2
-  read -r -p "Include workspaces in this backup? [y/N]: " confirm < /dev/tty
-  printf "%s" "$CURSOR_OFF" >&2
-  case "$confirm" in
-    y|Y|yes|YES) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
+# select_option title opts... -> returns index via $?, or 255 for cancel.
+#
+# Optional globals for callers:
+#   MENU_KEY        sticky-position key; cursor starts where you left off
+#   SHORTCUT_KEYS   string of single-char shortcuts, one per option
+#                   (e.g. "udris" -> press 'u' to select option 0)
+#
+# Performance: the static frame (header + status + note) is computed once on
+# entry. Navigation only redraws menu rows + footer — no subshell forks,
+# no docker/curl per keystroke.
 select_option() {
   local title="$1"
   shift
   local options=("$@")
-  local current=0
-  local last=$(( ${#options[@]} - 1 ))
-  local key
+  local n=${#options[@]}
+  (( n > 0 )) || return 255
+  local last=$(( n - 1 ))
+  local key seq idx
 
-  echo -n "$CURSOR_OFF"
+  # Sticky cursor: restore last position for this menu key.
+  local current=0
+  if [[ -n "${MENU_KEY:-}" ]]; then
+    local pos_var="MENU_POS_${MENU_KEY}"
+    current="${!pos_var:-0}"
+    (( current >= 0 && current <= last )) || current=0
+  fi
+
+  hide_cursor
+
+  # Snapshot the static portion of the frame once. This is the expensive bit
+  # (docker info, compose ps, curl health probe) — keep it out of the key loop.
+  local static_block
+  static_block="$(build_header)$(build_status)$(build_note)$(build_error_panel)"
+
+  # First paint: jump to top and redraw in place. Per-line CLEAR_LINE plus
+  # the frame-trailing CLEAR_TO_END wipe stale content without the visible
+  # flash that CLEAR_SCREEN (`\033[2J`) causes on some terminals.
+  printf '%s%s' "$GOTO_TOP" "$static_block"
+
+  local first_paint=1
+  local shortcut_hint=""
+  if [[ -n "${SHORTCUT_KEYS:-}" ]]; then
+    shortcut_hint="  ${CYAN}a-z${RESET}${DIM} quick"
+  fi
+  local footer="${CLEAR_LINE}"$'\n'
+  footer+="${DIM}${CYAN}↑↓${RESET}${DIM}/${CYAN}jk${RESET}${DIM} navigate  ${CYAN}⏎${RESET}${DIM} select  ${CYAN}1-9${RESET}${DIM} jump${shortcut_hint}${DIM}  ${CYAN}q${RESET}${DIM} back  ${CYAN}^C${RESET}${DIM} exit${RESET}${CLEAR_LINE}"
+  footer+="$CLEAR_TO_END"
+
+  # Save cursor position helper — write the menu's chosen index into the
+  # sticky-position slot keyed by MENU_KEY.
+  _persist_position() {
+    [[ -n "${MENU_KEY:-}" ]] || return 0
+    printf -v "MENU_POS_${MENU_KEY}" '%d' "$1"
+  }
+
   while true; do
-    echo -n "$GOTO_TOP"
-    print_header_content
-    build_status_header
-    print_menu_note
-    printf "${BOLD}%s${RESET}${CLEAR_LINE}\n" "$title"
+    # Build only the dynamic portion (menu rows + footer).
+    local buf
+    if (( first_paint )); then
+      # First frame: cursor sits immediately after static_block. Append rows.
+      buf=""
+      first_paint=0
+    else
+      # Subsequent frames: jump to top, reprint static (cheap string), redraw.
+      buf="${GOTO_TOP}${static_block}"
+    fi
+    buf+="${BOLD}${title}${RESET}${CLEAR_LINE}"$'\n'
+    local i
     for i in "${!options[@]}"; do
       if [[ $i -eq $current ]]; then
-        printf "${CLEAR_LINE}  ${BG_BLUE}${BOLD} ❯ %-30s ${RESET}\n" "${options[$i]}"
+        buf+=" ${CYAN}${BOLD}${ICON_SELECTED}${RESET} ${BG_BLUE}${BOLD} ${options[$i]} ${RESET}${CLEAR_LINE}"$'\n'
       else
-        printf "${CLEAR_LINE}    %-30s \n" "${options[$i]}"
+        buf+="    ${options[$i]}${CLEAR_LINE}"$'\n'
       fi
     done
-    printf "${CLEAR_LINE}\n"
+    buf+="$footer"
+    printf '%s' "$buf"
 
-    read -rsn1 key < /dev/tty
-    if [[ $key == $'\e' ]]; then
-      read -rsn2 key < /dev/tty
-      if [[ $key == "[A" ]]; then ((current--)); [[ $current -lt 0 ]] && current=$last
-      elif [[ $key == "[B" ]]; then ((current++)); [[ $current -gt $last ]] && current=0; fi
-    elif [[ $key == "" ]]; then echo -n "$CURSOR_ON"; return "$current"; fi
+    if ! IFS= read -rsn1 key < /dev/tty; then
+      show_cursor
+      _persist_position "$current"
+      return 255
+    fi
+
+    case "$key" in
+      $'\e')
+        # Could be arrow keys, function keys, or bare Esc.
+        seq=""
+        IFS= read -rsn2 -t 1 seq < /dev/tty 2>/dev/null || seq=""
+        if [[ -z "$seq" ]]; then
+          show_cursor
+          _persist_position "$current"
+          return 255
+        fi
+        case "$seq" in
+          "[A") current=$(( current == 0 ? last : current - 1 )) ;;
+          "[B") current=$(( current == last ? 0 : current + 1 )) ;;
+          "[H"|"OH") current=0 ;;
+          "[F"|"OF") current=$last ;;
+          "[5"|"[6")
+            IFS= read -rsn1 -t 1 _trail < /dev/tty 2>/dev/null || true
+            if [[ "$seq" == "[5" ]]; then current=0; else current=$last; fi
+            ;;
+        esac
+        ;;
+      "k") current=$(( current == 0 ? last : current - 1 )) ;;
+      "j") current=$(( current == last ? 0 : current + 1 )) ;;
+      "g") current=0 ;;
+      "G") current=$last ;;
+      "q"|"Q")
+        show_cursor
+        _persist_position "$current"
+        return 255
+        ;;
+      ""|" ")
+        # Enter (empty key) or Space selects.
+        show_cursor
+        _persist_position "$current"
+        return "$current"
+        ;;
+      [1-9])
+        idx=$(( key - 1 ))
+        if (( idx <= last )); then
+          current=$idx
+          show_cursor
+          _persist_position "$current"
+          return "$current"
+        fi
+        ;;
+      [a-zA-Z])
+        # Letter shortcut: find this char in SHORTCUT_KEYS, jump+select.
+        if [[ -n "${SHORTCUT_KEYS:-}" ]]; then
+          local pos
+          for (( pos=0; pos < ${#SHORTCUT_KEYS}; pos++ )); do
+            if [[ "${SHORTCUT_KEYS:pos:1}" == "$key" ]] && (( pos <= last )); then
+              current=$pos
+              show_cursor
+              _persist_position "$current"
+              return "$current"
+            fi
+          done
+        fi
+        ;;
+    esac
   done
 }
 
-pick_instance_interactive() {
-  local instances=()
-  while IFS= read -r line; do [[ -n "$line" ]] && instances+=("$line"); done < <(get_instances)
-  
-  if [[ ${#instances[@]} -eq 0 ]]; then
-    warn "No instances found."
-    return 1
+# === Prompts ===
+prompt_default() {
+  local label="$1"
+  local default="${2:-}"
+  local value
+  show_cursor
+  if [[ -n "$default" ]]; then
+    printf '%s [%s]: ' "$label" "$default" > /dev/tty
+    IFS= read -r value < /dev/tty || value=""
+    value="${value:-$default}"
+  else
+    printf '%s: ' "$label" > /dev/tty
+    IFS= read -r value < /dev/tty || value=""
   fi
-  
-  if [[ ${#instances[@]} -eq 1 ]]; then
-    echo "${instances[0]}" > "$TMP_PICK"
-    return 0
-  fi
-
-  local options=("${instances[@]}" "⬅️  Go Back")
-  select_option "CHOOSE INSTANCE" "${options[@]}"
-  local idx=$?
-  
-  if [[ $idx -eq ${#instances[@]} ]]; then
-    return 1
-  fi
-  
-  echo "${instances[$idx]}" > "$TMP_PICK"
-  return 0
+  printf '%s' "$value"
 }
 
-compose_instance() {
-  local inst="$1"
-  shift
-  docker compose --project-name "$(instance_project_name "$inst")" --env-file "$(instance_env_file "$inst")" "$@"
+confirm_phrase() {
+  local prompt="$1"
+  local expected="$2"
+  local value
+  show_cursor
+  printf '%s' "$prompt" > /dev/tty
+  IFS= read -r value < /dev/tty || value=""
+  [[ "$value" == "$expected" ]]
 }
 
-compose_instance_dev() {
-  local inst="$1"
-  shift
-  local project_name
-  project_name="$(instance_project_name "$inst")"
-  local shared_pg_volume="${project_name}_pgdata"
-
-  docker compose \
-    -f docker-compose.dev.yml \
-    -f <(cat <<EOF
-volumes:
-  pgdata_dev:
-    name: ${shared_pg_volume}
-EOF
-) \
-    --project-name "$project_name" \
-    --env-file "$(instance_env_file "$inst")" \
-    "$@"
+press_enter_to_return() {
+  show_cursor
+  IFS= read -r -p "Press Enter to return... " _ < /dev/tty 2>/dev/null || true
 }
 
-trim_lower() {
-  echo "$1" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | tr '[:upper:]' '[:lower:]'
+# === Wait / spinner ===
+wait_backend() {
+  [[ -n "$HAVE_CURL" ]] || { warn "curl not available; cannot probe backend"; return 1; }
+  local waited=0
+  while (( waited < READY_TIMEOUT )); do
+    if backend_ready; then
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
 }
 
-hash_auth_secret() {
-  local plain="$1"
-  if ! require_cmd python3; then
-    error "python3 is required for password hashing."
-    return 1
+# Same as wait_backend, but with a spinner in interactive mode.
+wait_backend_spinner() {
+  [[ -n "$HAVE_CURL" ]] || { warn "curl not available; cannot probe backend"; return 1; }
+  if [[ $TTY_OUT -ne 1 ]]; then
+    wait_backend
+    return $?
   fi
-  AUTH_PASSWORD="$plain" python3 - <<'PY'
-import hashlib
-import os
-import secrets
+  local frames='|/-\'
+  local i=0 waited=0 start
+  start="$(date +%s 2>/dev/null || printf '0')"
+  hide_cursor
+  while (( waited < READY_TIMEOUT )); do
+    if backend_ready; then
+      printf '\r%s' "$CLEAR_LINE"
+      show_cursor
+      return 0
+    fi
+    printf '\r  %s%s%s Waiting for backend (%ds / %ds)...%s' \
+      "$CYAN" "${frames:i:1}" "$RESET" "$waited" "$READY_TIMEOUT" "$CLEAR_LINE"
+    sleep 0.2
+    i=$(( (i + 1) % ${#frames} ))
+    waited=$(( $(date +%s 2>/dev/null || printf '0') - start ))
+  done
+  printf '\r%s' "$CLEAR_LINE"
+  show_cursor
+  return 1
+}
 
-password = os.environ["AUTH_PASSWORD"]
-salt = secrets.token_hex(16)
-digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 240_000)
-print(f"{salt}${digest.hex()}")
+# === JSON helpers (python3 keeps us off jq) ===
+require_python() {
+  [[ -n "$HAVE_PYTHON" ]] || { err "python3 is required for API calls"; return 1; }
+}
+
+json_login_body() {
+  require_python || return 1
+  python3 -c 'import json,sys; print(json.dumps({"username":sys.argv[1],"password":sys.argv[2]}))' \
+    "$1" "$2"
+}
+
+json_instance_create_body() {
+  require_python || return 1
+  python3 - "$1" "${2:-}" <<'PY'
+import json, sys
+payload = {"name": sys.argv[1]}
+if sys.argv[2]:
+    payload["display_name"] = sys.argv[2]
+print(json.dumps(payload))
 PY
 }
 
-sql_quote_literal() {
-  local value="$1"
-  value="${value//\'/\'\'}"
-  printf "'%s'" "$value"
+json_instance_rename_body() {
+  require_python || return 1
+  python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1]}))' "$1"
 }
 
-auth_sql() {
-  local auth_user_lit="$1"
-  local auth_hash_lit="$2"
-  local sql=""
-  sql+="WITH up AS (UPDATE system_settings SET value = ${auth_user_lit} WHERE key = 'sentinel.auth.username' RETURNING 1) "
-  sql+="INSERT INTO system_settings(key, value) SELECT 'sentinel.auth.username', ${auth_user_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
-  sql+="WITH up AS (UPDATE system_settings SET value = ${auth_hash_lit} WHERE key = 'sentinel.auth.password_hash' RETURNING 1) "
-  sql+="INSERT INTO system_settings(key, value) SELECT 'sentinel.auth.password_hash', ${auth_hash_lit} WHERE NOT EXISTS (SELECT 1 FROM up); "
-  echo "$sql"
+parse_access_token() {
+  require_python || return 1
+  python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("access_token", ""))
+except Exception:
+    print("")
+'
 }
 
-apply_auth_managed_instance() {
-  local inst="$1"
-  local username_raw="$2"
-  local password_raw="$3"
-  local compose_runner="${4:-compose_instance}"
-  local ef="$(instance_env_file "$inst")"
-  local db_name="$(read_env_value "$ef" "POSTGRES_DB" || true)"
-  local db_user="$(read_env_value "$ef" "POSTGRES_USER" || true)"
-  local db_password="$(read_env_value "$ef" "POSTGRES_PASSWORD" || true)"
-
-  if [[ -z "$db_name" || -z "$db_user" || -z "$db_password" ]]; then
-    error "Missing DB credentials in '$ef'."
-    return 1
-  fi
-
-  local username="$(trim_lower "$username_raw")"
-  local password="$(echo "$password_raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-  if [[ -z "$username" || -z "$password" ]]; then
-    error "Username/password cannot be empty."
-    return 1
-  fi
-
-  local password_hash
-  password_hash="$(hash_auth_secret "$password")" || return 1
-  local auth_user_lit auth_hash_lit
-  auth_user_lit="$(sql_quote_literal "$username")"
-  auth_hash_lit="$(sql_quote_literal "$password_hash")"
-  local sql
-  sql="$(auth_sql "$auth_user_lit" "$auth_hash_lit")"
-
-  local last_error=""
-  for _ in {1..30}; do
-    local output
-    if output="$(
-      "$compose_runner" "$inst" exec -T postgres env PGPASSWORD="$db_password" \
-        psql -X -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" -c "$sql" 2>&1
-    )"; then
-      success "Auth credentials updated in DB."
-      return 0
-    fi
-    last_error="$(echo "$output" | tail -n 3 | tr '\n' ' ')"
-    sleep 1
-  done
-
-  error "Could not update auth credentials for '$inst'. Ensure DB is up and schema is initialized."
-  [[ -n "$last_error" ]] && warn "Last DB error: $last_error"
-  return 1
+parse_error_detail() {
+  require_python || { cat; return 0; }
+  python3 -c '
+import json, sys
+raw = sys.stdin.read().strip()
+if not raw:
+    print("")
+    raise SystemExit(0)
+try:
+    data = json.loads(raw)
+except Exception:
+    print(raw[:500])
+    raise SystemExit(0)
+if isinstance(data, dict):
+    detail = data.get("detail") or data.get("message") or data.get("error")
+    if isinstance(detail, list):
+        print("; ".join(str(d) for d in detail))
+    elif detail is not None:
+        print(detail)
+    else:
+        print(json.dumps(data)[:500])
+else:
+    print(json.dumps(data)[:500])
+'
 }
 
-apply_auth_custom_instance() {
-  local pg_host="$1"
-  local pg_port="$2"
-  local pg_db="$3"
-  local pg_user="$4"
-  local pg_password="$5"
-  local pg_sslmode="$6"
-  local username_raw="$7"
-  local password_raw="$8"
-
-  local username="$(trim_lower "$username_raw")"
-  local password="$(echo "$password_raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-  if [[ -z "$username" || -z "$password" ]]; then
-    error "Username/password cannot be empty."
-    return 1
-  fi
-
-  local password_hash
-  password_hash="$(hash_auth_secret "$password")" || return 1
-  local auth_user_lit auth_hash_lit
-  auth_user_lit="$(sql_quote_literal "$username")"
-  auth_hash_lit="$(sql_quote_literal "$password_hash")"
-  local sql
-  sql="$(auth_sql "$auth_user_lit" "$auth_hash_lit")"
-
-  local host="$pg_host"
-  if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
-    host="host.docker.internal"
-  fi
-
-  if docker run --rm --add-host host.docker.internal:host-gateway -e PGPASSWORD="$pg_password" \
-    postgres:16-alpine psql -X -v ON_ERROR_STOP=1 \
-    "host=$host port=$pg_port dbname=$pg_db user=$pg_user sslmode=$pg_sslmode" \
-    -c "$sql" >/dev/null; then
-    success "Auth credentials updated in DB."
-    return 0
-  fi
-
-  error "Could not update custom instance credentials. Verify DB connectivity and schema."
-  return 1
+format_instances() {
+  require_python || { cat; return 0; }
+  python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    print("Failed to parse instance list.")
+    raise SystemExit(1)
+if not rows:
+    print("No instances.")
+    raise SystemExit(0)
+for row in rows:
+    parts = [row.get("name", "?")]
+    for key in ("display_name", "database_name", "runtime_backend", "workspace_root"):
+        value = row.get(key)
+        if value:
+            parts.append(f"{key}={value}")
+    print("  " + "  ".join(parts))
+'
 }
 
-action_up() {
-  ensure_docker_ready || return 0
-  local inst="${1:-}"
-  local seed_user="${2:-}"
-  local seed_password="${3:-}"
-  local compose_runner="${4:-compose_instance}"
-  local mode_label="${5:-}"
-  if [[ -z "$inst" ]]; then
-    rm -f "$TMP_PICK"
-    if pick_instance_interactive; then
-      inst=$(cat "$TMP_PICK")
-    fi
-  fi
-  [[ -z "$inst" ]] && return 0
+format_instance() {
+  require_python || { cat; return 0; }
+  python3 -c '
+import json, sys
+try:
+    row = json.load(sys.stdin)
+except Exception:
+    print("Failed to parse instance.")
+    raise SystemExit(1)
+for key in ("name", "display_name", "database_name", "workspace_root", "runtime_backend"):
+    value = row.get(key)
+    if value is not None:
+        print(f"{key}: {value}")
+'
+}
 
-  info "${ICON_START} Launching '$inst'${mode_label:+ (${mode_label})}..."
-  if ! ensure_supported_runtime_backend "$inst"; then
-    return 0
-  fi
-  if [[ "$(current_instance_backend "$inst")" == "qemu" ]]; then
-    if ! ensure_qemu_bridge_running "$inst"; then
-      error "Cannot start '$inst' without a healthy QEMU bridge."
-      return 0
-    fi
-  fi
-  "$compose_runner" "$inst" build sentinel-runtime 2>/dev/null || true
-  if "$compose_runner" "$inst" up --build -d; then
-    success "'$inst' is running."
-    invalidate_status_cache
-    local seed_status="not_requested"
-    if [[ -n "$seed_user" && -n "$seed_password" ]]; then
-      info "Initializing auth credentials in DB..."
-      if apply_auth_managed_instance "$inst" "$seed_user" "$seed_password" "$compose_runner"; then
-        seed_status="ok"
-      else
-        seed_status="failed"
-      fi
-    fi
+extract_instance_names() {
+  require_python || return 1
+  python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+for row in rows:
+    name = row.get("name")
+    if name:
+        print(name)
+'
+}
 
-    local ef="$(instance_env_file "$inst")"
-    local p="$(read_env_value "$ef" "STACK_PORT" || echo "4747")"
+# === Auth & API ===
+login_with_credentials() {
+  local username="$1"
+  local password="$2"
+  local body response
+  [[ -n "$HAVE_CURL" ]] || return 1
+  body="$(json_login_body "$username" "$password")" || return 1
+  response="$(curl -fsS --max-time 5 -X POST "${API_BASE}/auth/login" \
+    -H "Content-Type: application/json" \
+    --data "$body" 2>/dev/null)" || return 1
+  printf '%s' "$response" | parse_access_token
+}
 
-    printf "\n${CYAN}${BOLD}🚀  S T A C K   R E A D Y${RESET}\n"
-    printf "${DIM}---------------------------------------${RESET}\n"
-    printf "1. Open Sentinel: ${MAGENTA}http://localhost:$p/${RESET}\n"
-    if [[ -n "$seed_user" && "$seed_status" == "ok" ]]; then
-      printf "2. Log in with your admin credentials.\n"
-      printf "   👤 Username: ${YELLOW}${BOLD}%s${RESET}\n" "$(trim_lower "$seed_user")"
-    elif [[ -n "$seed_user" && "$seed_status" == "failed" ]]; then
-      printf "2. Auth initialization failed; use existing credentials or run ${BOLD}Instance Config → Reset Auth${RESET}.\n"
-    else
-      printf "2. Log in with your existing credentials.\n"
-    fi
-    printf "${DIM}---------------------------------------${RESET}\n"
+prompt_login() {
+  [[ -t 0 ]] || return 1
+  local username password token
+  show_cursor
+  IFS= read -r -p "Admin username: " username < /dev/tty || return 1
+  IFS= read -r -s -p "Admin password: " password < /dev/tty || return 1
+  printf '\n' >&2
+  token="$(login_with_credentials "$username" "$password" || true)"
+  [[ -n "$token" ]] || return 1
+  printf '%s' "$token"
+}
 
-    local ready_note
-    ready_note="${GREEN}${inst}${RESET} running at ${BOLD}http://localhost:${p}/${RESET}"
-    if [[ -n "$seed_user" && "$seed_status" == "ok" ]]; then
-      ready_note+=$'\n'"Admin: ${BOLD}$(trim_lower "$seed_user")${RESET}"
-    elif [[ -n "$seed_user" && "$seed_status" == "failed" ]]; then
-      ready_note+=$'\n'"${YELLOW}Auth initialization failed.${RESET} Use ${BOLD}Instance Config → Reset Auth${RESET}."
-    fi
-    set_menu_note "$ready_note"
+upsert_root_env_value() {
+  local key="$1"
+  local value="$2"
+  local env_file="$ROOT_DIR/.env"
+  local tmp_file
+  ensure_tmp_dir || return 1
+  tmp_file="$TMP_DIR/root-env"
+  if [[ -f "$env_file" ]]; then
+    python3 - "$env_file" "$tmp_file" "$key" "$value" <<'PY'
+from pathlib import Path
+import sys
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+key = sys.argv[3]
+value = sys.argv[4]
+lines = src.read_text(encoding="utf-8").splitlines()
+prefix = f"{key}="
+written = False
+out = []
+for line in lines:
+    if line.startswith(prefix):
+        out.append(f"{key}={value}")
+        written = True
+    else:
+        out.append(line)
+if not written:
+    out.append(f"{key}={value}")
+dst.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
   else
-    error "Failed to start '$inst'."
-    set_menu_note "${RED}Failed to start '${inst}'.${RESET}"
+    {
+      printf '%s=%s\n' "$key" "$value"
+    } > "$tmp_file"
   fi
-  return 0
+  mv "$tmp_file" "$env_file"
 }
 
-action_create() {
-  local inst="${1:-}"
-  echo -n "$CURSOR_ON"
-
-  if [[ -z "$inst" ]]; then
-    local suggested_name="main"
-    local raw_name
-    raw_name="$(prompt_default "Instance Name" "$suggested_name")"
-    inst="$(sanitize_instance_name "$raw_name")"
-  fi
-
-  if [[ -z "$inst" ]]; then
-    warn "Instance name cannot be empty."
-    set_menu_note "${YELLOW}Instance name cannot be empty.${RESET}"
-    return 0
-  fi
-
-  local ef
-  ef="$(instance_env_file "$inst")"
-  if [[ -f "$ef" ]]; then
-    warn "Instance '$inst' already exists. Use Instance Config to edit it."
-    set_menu_note "${YELLOW}Instance '${inst}' already exists.${RESET} Use ${BOLD}Instance Config${RESET} to edit it."
-    echo -n "$CURSOR_OFF"
-    return 0
-  fi
-
-  write_instance_defaults "$inst"
-
-  local stack_port postgres_db postgres_user postgres_password
-  stack_port="$(prompt_default "Stack Port" "$(read_env_value "$ef" "STACK_PORT" || echo 4747)")"
-  postgres_db="$(prompt_default "Postgres DB Name" "$(read_env_value "$ef" "POSTGRES_DB" || echo arai_stack)")"
-  postgres_user="$(prompt_default "Postgres User" "$(read_env_value "$ef" "POSTGRES_USER" || echo arai_stack)")"
-  postgres_password="$(prompt_default "Postgres Password" "$(read_env_value "$ef" "POSTGRES_PASSWORD" || generate_secret 12)")"
-
-  upsert_env_value "$ef" "STACK_PORT" "$stack_port"
-  upsert_env_value "$ef" "POSTGRES_DB" "$postgres_db"
-  upsert_env_value "$ef" "POSTGRES_USER" "$postgres_user"
-  upsert_env_value "$ef" "POSTGRES_PASSWORD" "$postgres_password"
-  upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
-
-  select_runtime_backend_once "$inst"
-
-  success "Instance '$inst' created."
-  info "Current runtime backend: $(backend_label "$(current_instance_backend "$inst")")"
-  invalidate_status_cache
-  set_menu_note "${GREEN}Instance '${inst}' created.${RESET} Runtime backend: ${BOLD}$(backend_label "$(current_instance_backend "$inst")")${RESET}"
-  echo -n "$CURSOR_OFF"
-  return 0
-}
-
-action_edit_instance() {
-  local inst="$1"
-  [[ -z "$inst" ]] && return 0
-
-  local ef
-  ef="$(instance_env_file "$inst")"
-  write_instance_defaults "$inst"
-
-  echo -n "$CURSOR_ON"
-  local stack_port postgres_db postgres_user postgres_password
-  stack_port="$(prompt_default "Stack Port" "$(read_env_value "$ef" "STACK_PORT" || echo 4747)")"
-  postgres_db="$(prompt_default "Postgres DB Name" "$(read_env_value "$ef" "POSTGRES_DB" || echo arai_stack)")"
-  postgres_user="$(prompt_default "Postgres User" "$(read_env_value "$ef" "POSTGRES_USER" || echo arai_stack)")"
-  postgres_password="$(prompt_default "Postgres Password" "$(read_env_value "$ef" "POSTGRES_PASSWORD" || generate_secret 12)")"
-
-  upsert_env_value "$ef" "STACK_PORT" "$stack_port"
-  upsert_env_value "$ef" "POSTGRES_DB" "$postgres_db"
-  upsert_env_value "$ef" "POSTGRES_USER" "$postgres_user"
-  upsert_env_value "$ef" "POSTGRES_PASSWORD" "$postgres_password"
-  upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
-
-  success "Instance '$inst' updated."
-  invalidate_status_cache
-  set_menu_note "${GREEN}Instance '${inst}' updated.${RESET} Port ${BOLD}${stack_port}${RESET} • Backend ${BOLD}$(backend_label "$(current_instance_backend "$inst")")${RESET}"
-  echo -n "$CURSOR_OFF"
-  return 0
-}
-
-configure_runtime_backend_choice() {
-  local inst="$1"
-  local choice="$2"
-  local ef
-  ef="$(instance_env_file "$inst")"
-
+prompt_auth_recovery() {
+  [[ -t 0 ]] || return 1
+  show_cursor
+  printf '\n%sThe credentials in .env were rejected by the API.%s\n' "$YELLOW" "$RESET" > /dev/tty
+  printf '  1) Restart stack to sync DB auth to current .env\n' > /dev/tty
+  printf '  2) Enter current app credentials and update .env\n' > /dev/tty
+  local choice username password token
+  printf 'Choose [1/2]: ' > /dev/tty
+  IFS= read -r choice < /dev/tty || return 1
   case "$choice" in
-    0)
-      upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "docker"
-      upsert_env_value "$ef" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
-      invalidate_status_cache
-      set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Docker${RESET} for runtimes."
-      return 0
-      ;;
     1)
-      configure_qemu_backend "$inst" "$ef"
-      return $?
+      stack_restart >/dev/null || return 1
+      login_with_credentials "$SENTINEL_AUTH_USERNAME" "$SENTINEL_AUTH_PASSWORD"
       ;;
     2)
-      echo -n "$CURSOR_ON"
-      local remote_host remote_port remote_user remote_key remote_workspace
-      remote_host="$(prompt_default "Remote SSH Host" "$(read_env_value "$ef" "RUNTIME_SSH_HOST" || echo localhost)")"
-      remote_port="$(prompt_default "Remote SSH Port" "$(read_env_value "$ef" "RUNTIME_SSH_PORT" || echo 22)")"
-      remote_user="$(prompt_default "Remote SSH User" "$(read_env_value "$ef" "RUNTIME_SSH_USER" || echo sentinel)")"
-      remote_key="$(prompt_default "Remote SSH Key Path" "$(read_env_value "$ef" "RUNTIME_SSH_KEY_PATH" || true)")"
-      remote_workspace="$(prompt_default "Remote Workspace Path" "$(read_env_value "$ef" "RUNTIME_SSH_WORKSPACE" || echo /home/sentinel/workspace)")"
-      echo -n "$CURSOR_OFF"
+      printf 'Current admin username: ' > /dev/tty
+      IFS= read -r username < /dev/tty || return 1
+      printf 'Current admin password: ' > /dev/tty
+      IFS= read -r -s password < /dev/tty || return 1
+      printf '\n' > /dev/tty
+      token="$(login_with_credentials "$username" "$password" || true)"
+      [[ -n "$token" ]] || return 1
+      upsert_root_env_value "SENTINEL_AUTH_USERNAME" "$username" || return 1
+      upsert_root_env_value "SENTINEL_AUTH_PASSWORD" "$password" || return 1
+      SENTINEL_AUTH_USERNAME="$username"
+      SENTINEL_AUTH_PASSWORD="$password"
+      export SENTINEL_AUTH_USERNAME SENTINEL_AUTH_PASSWORD
+      printf '%s' "$token"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
 
-      if [[ -z "$remote_host" ]]; then
-        warn "Remote SSH host cannot be empty."
-        set_menu_note "${YELLOW}Remote SSH host cannot be empty.${RESET}"
+auth_token() {
+  local token
+  if [[ -n "${SENTINEL_TOKEN:-}" ]]; then
+    printf '%s' "$SENTINEL_TOKEN"
+    return 0
+  fi
+  ensure_cli_env_ready || return 1
+  if [[ -n "$SENTINEL_AUTH_USERNAME" && -n "$SENTINEL_AUTH_PASSWORD" ]]; then
+    token="$(login_with_credentials "$SENTINEL_AUTH_USERNAME" "$SENTINEL_AUTH_PASSWORD" 2>/dev/null || true)"
+    if [[ -n "$token" ]]; then
+      printf '%s' "$token"
+      return 0
+    fi
+    token="$(prompt_auth_recovery || true)"
+    if [[ -n "$token" ]]; then
+      printf '%s' "$token"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# api_request_interactive: like api_request but on failure stashes the
+# captured stderr into the menu error panel instead of scrolling it past.
+api_request_interactive() {
+  ensure_tmp_dir || return 1
+  local errf="$TMP_DIR/last_api.err"
+  : > "$errf"
+  local out
+  if out="$(api_request "$@" 2>"$errf")"; then
+    printf '%s' "$out"
+    return 0
+  fi
+  local code=$?
+  ui_set_error_from_file "API $1 $2 failed" "$errf" 8
+  return $code
+}
+
+# api_request METHOD PATH [BODY]
+# On success: writes response body to stdout, returns 0.
+# On failure: writes formatted error to stderr, returns 1.
+api_request() {
+  local method="$1"
+  local path="$2"
+  local body="${3:-}"
+  local token http_code detail
+  [[ -n "$HAVE_CURL" ]] || { err "curl is required for API calls"; return 1; }
+  ensure_tmp_dir || return 1
+
+  token="$(auth_token)" || { err "Could not authenticate with Sentinel."; return 1; }
+
+  local body_file="$TMP_DIR/api_body.$$"
+  local args=( -sS --max-time 15 -o "$body_file" -w '%{http_code}'
+    -X "$method" "${API_BASE}${path}"
+    -H "Authorization: Bearer ${token}" )
+  if [[ -n "$body" ]]; then
+    args+=( -H "Content-Type: application/json" --data "$body" )
+  fi
+
+  if ! http_code="$(curl "${args[@]}" 2>/dev/null)"; then
+    err "Network error calling ${method} ${path}"
+    rm -f "$body_file" 2>/dev/null || true
+    return 1
+  fi
+
+  if [[ -z "$http_code" ]] || (( http_code < 200 )) || (( http_code >= 300 )); then
+    detail="$(parse_error_detail < "$body_file" 2>/dev/null || true)"
+    err "API ${method} ${path} → ${http_code:-no-status}${detail:+: ${detail}}"
+    rm -f "$body_file" 2>/dev/null || true
+    return 1
+  fi
+
+  cat "$body_file"
+  rm -f "$body_file" 2>/dev/null || true
+}
+
+# === Instance picker ===
+pick_instance_name() {
+  ensure_tmp_dir || return 1
+  local response
+  response="$(api_request GET "/instances" 2>/dev/null)" || {
+    ui_note_error "Could not load instances. Is the stack running?"
+    return 1
+  }
+
+  local list_file="$TMP_DIR/instances"
+  if ! printf '%s' "$response" | extract_instance_names >"$list_file" 2>/dev/null; then
+    ui_note_error "Could not parse instance list."
+    return 1
+  fi
+
+  local instances=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && instances+=("$line")
+  done < "$list_file"
+
+  if [[ ${#instances[@]} -eq 0 ]]; then
+    ui_note_warn "No instances exist yet. Create one first."
+    return 1
+  fi
+
+  if [[ ${#instances[@]} -eq 1 ]]; then
+    printf '%s' "${instances[0]}" > "$TMP_DIR/pick"
+    return 0
+  fi
+
+  local options=("${instances[@]}" "Back")
+  select_option "Choose Instance" "${options[@]}"
+  local idx=$?
+  if (( idx == 255 )) || (( idx == ${#instances[@]} )); then
+    return 1
+  fi
+  printf '%s' "${instances[$idx]}" > "$TMP_DIR/pick"
+}
+
+# === Stack commands (one-shot safe) ===
+require_stack_api() {
+  if backend_ready; then
+    return 0
+  fi
+  ui_note_error "Sentinel API not reachable at ${HEALTH_READY_URL}. Start the stack first."
+  return 1
+}
+
+ensure_stack_api() {
+  backend_ready || die "Sentinel API is not reachable at ${API_BASE}. Start the stack first."
+}
+
+# run_compose_captured <title> -- <compose-args...>
+# Streams compose output live AND tees it to a log file. On failure, stashes
+# the tail of the log into LAST_ERROR so the next menu frame can display it.
+# Returns the underlying compose exit code.
+run_compose_captured() {
+  local title="$1"; shift
+  [[ "${1:-}" == "--" ]] && shift
+  if [[ -z "$HAVE_DOCKER" ]]; then
+    ui_set_error_text "$title" "docker is not installed or not in PATH."
+    err "docker is not installed."
+    return 127
+  fi
+  ensure_tmp_dir || { err "Cannot create temp dir for capture"; return 1; }
+  local log="$TMP_DIR/last_compose.log"
+  : > "$log"
+  # 2>&1 merges stderr; tee streams to terminal and saves to log.
+  # pipefail (set at top) makes the pipeline reflect compose's exit status.
+  compose "$@" 2>&1 | tee "$log"
+  local code=${PIPESTATUS[0]}
+  if (( code != 0 )); then
+    ui_set_error_from_file "$title (exit ${code})" "$log"
+  fi
+  return $code
+}
+
+stack_up() {
+  ui_clear_error
+  if [[ -z "$HAVE_DOCKER" ]]; then
+    ui_note_error "docker is not installed."
+    err "docker is not installed."
+    return 1
+  fi
+  if ! prepare_stack_config; then
+    ui_note_error "stack configuration is not ready."
+    return 1
+  fi
+  info "Starting Sentinel shared stack (${COMPOSE_PROJECT_NAME})..."
+  if ! run_compose_captured "docker compose up failed" -- up --build -d; then
+    invalidate_status_cache
+    ui_note_error "docker compose up failed — details below."
+    return 1
+  fi
+  invalidate_status_cache
+  if wait_backend_spinner; then
+    ok "Sentinel is ready at ${STACK_URL}"
+    ui_note_ok "Sentinel ready at ${BOLD}${STACK_URL}${RESET}"
+    return 0
+  fi
+  warn "Stack started, but the API did not become ready within ${READY_TIMEOUT}s."
+  ui_note_warn "Stack started, but API readiness timed out after ${READY_TIMEOUT}s."
+  return 1
+}
+
+stack_down() {
+  ui_clear_error
+  if [[ -z "$HAVE_DOCKER" ]]; then
+    ui_note_error "docker is not installed."
+    err "docker is not installed."
+    return 1
+  fi
+  if ! run_compose_captured "docker compose down failed" -- down; then
+    invalidate_status_cache
+    ui_note_error "docker compose down failed — details below."
+    return 1
+  fi
+  invalidate_status_cache
+  ui_note_ok "Sentinel stack stopped."
+}
+
+stack_restart() {
+  stack_down || true
+  stack_up
+}
+
+remove_runtime_containers() {
+  local ids=() id
+  while IFS= read -r id; do
+    [[ -n "$id" ]] && ids+=("$id")
+  done < <(
+    docker ps -a -q \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=sentinel-runtime" 2>/dev/null
+  )
+  if [[ ${#ids[@]} -eq 0 ]]; then
+    return 0
+  fi
+  docker rm -f "${ids[@]}"
+}
+
+confirm_stack_reset() {
+  local assume_yes="$1"
+  local prod_confirm="$2"
+  local phrase expected
+  if [[ "$SENTINEL_MODE" == "prod" ]]; then
+    if [[ "$assume_yes" == "true" ]]; then
+      [[ "$prod_confirm" == "true" ]] || {
+        err "Prod reset requires --yes --prod-confirm."
         return 1
-      fi
+      }
+      return 0
+    fi
+    warn "This will delete the prod stack database and compose volumes for '${COMPOSE_PROJECT_NAME}'."
+    warn "It keeps .env and runtime workspaces at ${SENTINEL_RUNTIME_WORKSPACES_DIR:-<unset>}."
+    expected="RESET SENTINEL PROD"
+  else
+    [[ "$assume_yes" == "true" ]] && return 0
+    warn "This will delete the dev stack database and compose volumes for '${COMPOSE_PROJECT_NAME}'."
+    warn "It keeps .env and runtime workspaces at ${SENTINEL_RUNTIME_WORKSPACES_DIR:-<unset>}."
+    expected="RESET"
+  fi
+  show_cursor
+  IFS= read -r -p "Type ${expected} to confirm: " phrase < /dev/tty || return 1
+  [[ "$phrase" == "$expected" ]]
+}
 
-      upsert_env_value "$ef" "RUNTIME_EXEC_BACKEND" "remote"
-      upsert_env_value "$ef" "RUNTIME_SSH_HOST" "$remote_host"
-      upsert_env_value "$ef" "RUNTIME_SSH_PORT" "$remote_port"
-      upsert_env_value "$ef" "RUNTIME_SSH_USER" "$remote_user"
-      upsert_env_value "$ef" "RUNTIME_SSH_KEY_PATH" "$remote_key"
-      upsert_env_value "$ef" "RUNTIME_SSH_WORKSPACE" "$remote_workspace"
+stack_reset() {
+  ui_clear_error
+  local assume_yes=false
+  local prod_confirm=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes|-y)
+        assume_yes=true
+        shift
+        ;;
+      --prod-confirm)
+        prod_confirm=true
+        shift
+        ;;
+      *)
+        err "Unknown reset option: $1"
+        return 1
+        ;;
+    esac
+  done
+  if [[ -z "$HAVE_DOCKER" ]]; then
+    ui_note_error "docker is not installed."
+    err "docker is not installed."
+    return 1
+  fi
+  ensure_runtime_workspace_config || return 1
+  if ! confirm_stack_reset "$assume_yes" "$prod_confirm"; then
+    ui_note_warn "Reset aborted."
+    return 1
+  fi
+  info "Resetting Sentinel stack (${COMPOSE_PROJECT_NAME})..."
+  if ! run_compose_captured "docker compose reset failed" -- down -v --remove-orphans; then
+    invalidate_status_cache
+    ui_note_error "docker compose reset failed — details below."
+    return 1
+  fi
+  if ! remove_runtime_containers; then
+    ui_note_error "Failed to remove runtime containers."
+    return 1
+  fi
+  invalidate_status_cache
+  ok "Sentinel stack reset. .env and runtime workspaces were preserved."
+  ui_note_ok "Stack reset complete. .env and runtime workspaces were preserved."
+}
+
+stack_logs() {
+  if [[ -z "$HAVE_DOCKER" ]]; then
+    err "docker is not installed."
+    return 1
+  fi
+  if [[ $# -gt 0 ]]; then
+    compose logs -f "$@"
+  else
+    compose logs -f
+  fi
+}
+
+stack_status() {
+  if [[ -z "$HAVE_DOCKER" ]]; then
+    err "docker is not installed."
+    return 1
+  fi
+  compose ps || true
+  if backend_ready; then
+    printf '\n%sBackend ready at %s%s\n' "$GREEN" "$HEALTH_READY_URL" "$RESET"
+    printf '%sAPI base: %s%s\n\n' "$DIM" "$API_BASE" "$RESET"
+    printf '%sInstances%s\n' "$BOLD" "$RESET"
+    api_request GET "/instances" 2>/dev/null | format_instances || true
+  else
+    printf '\n%sBackend not ready at %s%s\n' "$YELLOW" "$HEALTH_READY_URL" "$RESET"
+  fi
+}
+
+# === Instance commands (one-shot) ===
+instances_list() {
+  ensure_stack_api
+  api_request GET "/instances" | format_instances
+}
+
+instances_create() {
+  local name="${1:-}"
+  local display="${2:-}"
+  [[ -n "$name" ]] || die "Usage: ./sentinel-cli.sh instances create <name> [display-name]"
+  ensure_stack_api
+  api_request POST "/instances" "$(json_instance_create_body "$name" "$display")" | format_instance
+}
+
+instances_rename() {
+  local old_name="${1:-}"
+  local new_name="${2:-}"
+  [[ -n "$old_name" && -n "$new_name" ]] \
+    || die "Usage: ./sentinel-cli.sh instances rename <old-name> <new-name>"
+  ensure_stack_api
+  api_request POST "/instances/${old_name}/rename" "$(json_instance_rename_body "$new_name")" \
+    | format_instance
+}
+
+instances_delete() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "Usage: ./sentinel-cli.sh instances delete <name>"
+  ensure_stack_api
+  api_request DELETE "/instances/${name}" >/dev/null
+  ok "Deleted instance: ${name}"
+}
+
+# === Interactive instance flows ===
+validate_instance_name() {
+  local name="$1"
+  [[ -n "$name" ]] || { ui_note_error "Instance name cannot be empty."; return 1; }
+  if ! printf '%s' "$name" | grep -Eq '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$'; then
+    ui_note_error "Invalid name '${name}'. Use letters, digits, _ or - (max 63 chars)."
+    return 1
+  fi
+}
+
+interactive_instances_list() {
+  ui_clear_error
+  require_stack_api || return 0
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sInstances%s\n\n' "$CYAN" "$ICON_INSTANCES" "$RESET" "$BOLD" "$RESET"
+  local resp
+  if resp="$(api_request_interactive GET "/instances")"; then
+    printf '%s\n' "$resp" | format_instances
+  else
+    ui_note_error "Failed to list instances — details below."
+  fi
+  printf '\n'
+  press_enter_to_return
+}
+
+interactive_instances_create() {
+  ui_clear_error
+  require_stack_api || return 0
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sCreate Instance%s\n\n' "$GREEN" "$ICON_CREATE" "$RESET" "$BOLD" "$RESET"
+  local name display body resp
+  name="$(prompt_default "Instance name" "main")"
+  validate_instance_name "$name" || return 0
+  display="$(prompt_default "Display name (optional)" "")"
+  printf '\n'
+  body="$(json_instance_create_body "$name" "$display")" || {
+    ui_note_error "Failed to build request body (python3 missing?)."
+    press_enter_to_return
+    return 0
+  }
+  if resp="$(api_request_interactive POST "/instances" "$body")"; then
+    printf '%s\n' "$resp" | format_instance
+    invalidate_status_cache
+    ui_note_ok "Created instance ${BOLD}${name}${RESET}"
+  else
+    ui_note_error "Failed to create instance ${name} — details below."
+  fi
+  press_enter_to_return
+}
+
+interactive_instances_rename() {
+  ui_clear_error
+  require_stack_api || return 0
+  pick_instance_name || return 0
+  local old_name new_name body resp
+  old_name="$(cat "$TMP_DIR/pick" 2>/dev/null)"
+  [[ -n "$old_name" ]] || return 0
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sRename Instance%s\n\n' "$CYAN" "$ICON_RENAME" "$RESET" "$BOLD" "$RESET"
+  new_name="$(prompt_default "New name for ${old_name}" "$old_name")"
+  if [[ "$new_name" == "$old_name" ]]; then
+    ui_note_info "Rename skipped (unchanged)."
+    return 0
+  fi
+  validate_instance_name "$new_name" || return 0
+  printf '\n'
+  body="$(json_instance_rename_body "$new_name")" || {
+    ui_note_error "Failed to build request body (python3 missing?)."
+    press_enter_to_return
+    return 0
+  }
+  if resp="$(api_request_interactive POST "/instances/${old_name}/rename" "$body")"; then
+    printf '%s\n' "$resp" | format_instance
+    invalidate_status_cache
+    ui_note_ok "Renamed ${BOLD}${old_name}${RESET} → ${BOLD}${new_name}${RESET}"
+  else
+    ui_note_error "Failed to rename ${old_name} — details below."
+  fi
+  press_enter_to_return
+}
+
+interactive_instances_delete() {
+  ui_clear_error
+  require_stack_api || return 0
+  pick_instance_name || return 0
+  local name
+  name="$(cat "$TMP_DIR/pick" 2>/dev/null)"
+  [[ -n "$name" ]] || return 0
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sDelete Instance%s\n\n' "$RED" "$ICON_DELETE" "$RESET" "$BOLD" "$RESET"
+  warn "This deletes the manager registry row and drops the instance database for '${name}'."
+  printf '\n'
+  if confirm_phrase "Type DELETE to confirm: " "DELETE"; then
+    printf '\n'
+    if api_request_interactive DELETE "/instances/${name}" >/dev/null; then
       invalidate_status_cache
-      set_menu_note "${GREEN}${inst}${RESET} now uses ${BOLD}Custom SSH${RESET} for runtimes."
+      ui_note_ok "Deleted instance ${BOLD}${name}${RESET}"
+    else
+      ui_note_error "Failed to delete ${name} — details below."
+    fi
+  else
+    ui_note_info "Delete aborted for ${name}."
+  fi
+}
+
+instances_menu() {
+  local options=(
+    "${ICON_LIST}  List Instances"
+    "${ICON_CREATE}  Create Instance"
+    "${ICON_RENAME}  Rename Instance"
+    "${ICON_DELETE}  Delete Instance"
+    "${ICON_BACK}  Back"
+  )
+  while true; do
+    MENU_KEY="instances" SHORTCUT_KEYS="lcrdb" \
+      select_option "Instances" "${options[@]}"
+    local choice=$?
+    case "$choice" in
+      0) interactive_instances_list ;;
+      1) interactive_instances_create ;;
+      2) interactive_instances_rename ;;
+      3) interactive_instances_delete ;;
+      4|255) return 0 ;;
+    esac
+    # Instance ops don't change docker state — no need to flush status cache.
+  done
+}
+
+# === Other interactive screens ===
+interactive_status() {
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sStack Status%s\n\n' "$CYAN" "$ICON_STATUS" "$RESET" "$BOLD" "$RESET"
+  stack_status
+  printf '\n'
+  press_enter_to_return
+}
+
+interactive_logs() {
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sLive Logs%s\n\n' "$CYAN" "$ICON_LOGS" "$RESET" "$BOLD" "$RESET"
+  local service
+  service="$(prompt_default "Service filter (blank for all)" "")"
+  printf '\n%s(Ctrl+C to stop streaming)%s\n\n' "$DIM" "$RESET"
+  # Catch Ctrl+C locally so we return to the menu instead of exiting.
+  local saved_int
+  saved_int="$(trap -p INT)"
+  trap 'true' INT
+  if [[ -n "$service" ]]; then
+    stack_logs "$service" || true
+  else
+    stack_logs || true
+  fi
+  eval "${saved_int:-trap on_int INT}"
+  printf '\n'
+  ui_note_info "Returned from logs."
+}
+
+interactive_start() {
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sStarting Stack%s\n\n' "$GREEN" "$ICON_START" "$RESET" "$BOLD" "$RESET"
+  stack_up || true
+}
+
+interactive_stop() {
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sStopping Stack%s\n\n' "$YELLOW" "$ICON_STOP" "$RESET" "$BOLD" "$RESET"
+  stack_down || true
+}
+
+interactive_restart() {
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sRestarting Stack%s\n\n' "$CYAN" "$ICON_RESTART" "$RESET" "$BOLD" "$RESET"
+  stack_restart || true
+}
+
+interactive_reset() {
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sReset Stack%s\n\n' "$RED" "$ICON_RESET" "$RESET" "$BOLD" "$RESET"
+  stack_reset || true
+}
+
+# === Main menu ===
+menu_loop() {
+  [[ -t 0 && -t 1 ]] || die "Interactive mode requires a TTY. Use --help for commands."
+  detect_tools
+  if [[ -z "$HAVE_DOCKER" ]]; then
+    ui_note_warn "docker not found in PATH — stack controls will not work."
+  fi
+  local options=(
+    "${ICON_START}  Start Stack"
+    "${ICON_STOP}  Stop Stack"
+    "${ICON_RESTART}  Restart Stack"
+    "${ICON_RESET}  Reset Stack"
+    "${ICON_INSTANCES}  Instances"
+    "${ICON_STATUS}  Status"
+    "${ICON_LOGS}  Logs"
+    "${ICON_REFRESH}  Refresh"
+    "${ICON_EXIT}  Exit"
+  )
+  # Shortcuts mirror common compose verbs: u=up, d=down, r=restart, x=reset,
+  # i=instances, s=status, l=logs, f=refresh, e=exit.
+  while true; do
+    MENU_KEY="main" SHORTCUT_KEYS="udrxislfe" \
+      select_option "Main Menu" "${options[@]}"
+    local choice=$?
+    case "$choice" in
+      0) interactive_start; invalidate_status_cache ;;
+      1) interactive_stop; invalidate_status_cache ;;
+      2) interactive_restart; invalidate_status_cache ;;
+      3) interactive_reset; invalidate_status_cache ;;
+      4) instances_menu ;;
+      5) interactive_status; invalidate_status_cache ;;
+      6) interactive_logs ;;
+      7) invalidate_status_cache; ui_note_info "Status refreshed." ;;
+      8|255)
+        show_cursor
+        printf '%s' "$CLEAR_TO_END"
+        exit 0
+        ;;
+    esac
+  done
+}
+
+# === Dispatch ===
+main() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dev)
+        SENTINEL_MODE="dev"
+        shift
+        ;;
+      --prod|--production)
+        SENTINEL_MODE="prod"
+        shift
+        ;;
+      --compose-file)
+        [[ $# -ge 2 ]] || die "--compose-file requires a path"
+        SENTINEL_COMPOSE_FILE="$2"
+        shift 2
+        ;;
+      --compose-file=*)
+        SENTINEL_COMPOSE_FILE="${1#--compose-file=}"
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  resolve_compose_file
+  local command="${1:-menu}"
+  shift || true
+  case "$command" in
+    help|-h|--help)
+      usage
       return 0
       ;;
   esac
+  ensure_cli_env_ready || exit 1
+  detect_tools
 
-  return 1
+  case "$command" in
+    menu) menu_loop ;;
+    up) stack_up "$@" ;;
+    down) stack_down "$@" ;;
+    restart) stack_restart "$@" ;;
+    reset) stack_reset "$@" ;;
+    logs) stack_logs "$@" ;;
+    status) stack_status "$@" ;;
+    instances)
+      local subcommand="${1:-list}"
+      shift || true
+      case "$subcommand" in
+        list) instances_list "$@" ;;
+        create) instances_create "$@" ;;
+        rename) instances_rename "$@" ;;
+        delete|rm) instances_delete "$@" ;;
+        *) usage; exit 1 ;;
+      esac
+      ;;
+    *) usage; exit 1 ;;
+  esac
 }
 
-select_runtime_backend_once() {
-  local inst="$1"
-  local current_backend
-  local options=(
-    "Docker"
-    "QEMU"
-    "Custom SSH"
-  )
-
-  while true; do
-    echo -n "$CLEAR_SCREEN"
-    current_backend="$(current_instance_backend "$inst")"
-    select_option "RUNTIME BACKEND: $inst ($(backend_label "$current_backend"))" "${options[@]}"
-    local choice=$?
-    printf "\n\n"
-
-    if configure_runtime_backend_choice "$inst" "$choice"; then
-      return 0
-    fi
-  done
-}
-
-action_instance_runtime_backend() {
-  local inst="$1"
-  [[ -z "$inst" ]] && return 0
-
-  local ef
-  ef="$(instance_env_file "$inst")"
-  write_instance_defaults "$inst"
-
-  local current_backend
-  current_backend="$(current_instance_backend "$inst")"
-  local options=(
-    "Docker"
-    "QEMU"
-    "Custom SSH"
-    "⬅️  Back"
-  )
-
-  while true; do
-    echo -n "$CLEAR_SCREEN"
-    current_backend="$(current_instance_backend "$inst")"
-    select_option "RUNTIME BACKEND: $inst ($(backend_label "$current_backend"))" "${options[@]}"
-    local choice=$?
-    printf "\n\n"
-
-    case "$choice" in
-      0|1|2) configure_runtime_backend_choice "$inst" "$choice" || true ;;
-      3)
-        return 0
-        ;;
-    esac
-  done
-}
-
-action_instance_config() {
-  local inst=""
-  rm -f "$TMP_PICK"
-  if pick_instance_interactive; then
-    inst=$(cat "$TMP_PICK")
-  fi
-  [[ -z "$inst" ]] && return 0
-
-  local options=(
-    "✏️  Edit Instance"
-    "🧩  Runtime Backend"
-    "🔐  Reset Auth"
-    "📜  Tail Logs"
-    "🗑️   Delete Instance"
-    "⬅️  Back"
-  )
-
-  while true; do
-    echo -n "$CLEAR_SCREEN"
-    local ef backend port
-    ef="$(instance_env_file "$inst")"
-    backend="$(backend_label "$(current_instance_backend "$inst")")"
-    port="$(read_env_value "$ef" "STACK_PORT" || echo "4747")"
-    select_option "INSTANCE CONFIG: $inst (${backend} • :${port})" "${options[@]}"
-    local choice=$?
-    printf "\n\n"
-
-    case "$choice" in
-      0) action_edit_instance "$inst" ;;
-      1) action_instance_runtime_backend "$inst" ;;
-      2) action_reset_auth_managed "$inst" ;;
-      3) action_logs "$inst" ;;
-      4)
-        action_delete "$inst"
-        if [[ ! -f "$(instance_env_file "$inst")" ]]; then
-          return 0
-        fi
-        ;;
-      5) return 0 ;;
-    esac
-  done
-}
-
-action_advanced_mode() {
-  local options=(
-    "${ICON_START}  Start Instance (Dev Mode)"
-    "🧩  Manage Custom Instance Auth"
-    "⬅️  Back"
-  )
-
-  while true; do
-    echo -n "$CLEAR_SCREEN"
-    select_option "ADVANCED MODE" "${options[@]}"
-    local choice=$?
-
-    printf "\n\n"
-    case "$choice" in
-      0) action_up "" "" "" "compose_instance_dev" "dev mode" ;;
-      1) action_manage_custom_auth ;;
-      2) return 0 ;;
-    esac
-  done
-}
-
-action_down() {
-  ensure_docker_ready || return 0
-  local inst="${1:-}"
-  if [[ -z "$inst" ]]; then
-    rm -f "$TMP_PICK"
-    if pick_instance_interactive; then
-      inst=$(cat "$TMP_PICK")
-    fi
-  fi
-  [[ -z "$inst" ]] && return 0
-  
-  info "${ICON_STOP} Stopping '$inst'..."
-  if compose_instance "$inst" down; then
-    stop_qemu_bridge "$inst"
-    success "Stopped."
-    invalidate_status_cache
-    set_menu_note "${GREEN}${inst}${RESET} stopped."
-  else
-    error "Failed to stop '$inst'."
-    set_menu_note "${RED}Failed to stop '${inst}'.${RESET}"
-  fi
-  return 0
-}
-
-action_list() {
-  local instances=()
-  while IFS= read -r line; do [[ -n "$line" ]] && instances+=("$line"); done < <(get_instances)
-  
-  if [[ ${#instances[@]} -eq 0 ]]; then
-    info "No instances found. Use 'New Instance' to get started."
-    return 0
-  fi
-
-  printf "\n${BOLD}GLOBAL STATUS${RESET}\n"
-  local docker_ok=true
-  docker info >/dev/null 2>&1 || docker_ok=false
-
-  for inst in "${instances[@]}"; do
-    local state="${RED}STOPPED${RESET}"
-    local running="0"
-    if [[ "$docker_ok" == "true" ]]; then
-      running="$(count_running_instance_services "$inst")"
-      [[ "$running" -gt 0 ]] && state="${GREEN}RUNNING${RESET}"
-    else
-      state="${YELLOW}DOCKER OFF${RESET}"
-    fi
-    printf "  • %-15s [%b] (%s services active)\n" "$inst" "$state" "$running"
-  done
-  return 0
-}
-
-action_logs() {
-  ensure_docker_ready || return 0
-  local inst="${1:-}"
-  if [[ -z "$inst" ]]; then
-    rm -f "$TMP_PICK"
-    if pick_instance_interactive; then
-      inst=$(cat "$TMP_PICK")
-    fi
-  fi
-  [[ -z "$inst" ]] && return 0
-  
-  info "Attaching to logs for '$inst' (Ctrl+C to detach)..."
-  compose_instance "$inst" logs -f
-  set_menu_note "${DIM}Stopped tailing logs for ${inst}.${RESET}"
-  return 0
-}
-
-action_reset_auth_managed() {
-  ensure_docker_ready || return 0
-  local inst="${1:-}"
-  if [[ -z "$inst" ]]; then
-    rm -f "$TMP_PICK"
-    if pick_instance_interactive; then
-      inst=$(cat "$TMP_PICK")
-    fi
-  fi
-  [[ -z "$inst" ]] && return 0
-
-  echo -n "$CURSOR_ON"
-  printf "\n${CYAN}RESET INSTANCE AUTH${RESET}\n"
-  local auth_user auth_password
-  auth_user="$(prompt_default "Admin Username" "admin")"
-  auth_password="$(prompt_default "Admin Password" "$(generate_secret 12)")"
-
-  if apply_auth_managed_instance "$inst" "$auth_user" "$auth_password"; then
-    success "Auth reset completed for '$inst'."
-    set_menu_note "${GREEN}Auth reset completed for ${inst}.${RESET} Admin: ${BOLD}$(trim_lower "$auth_user")${RESET}"
-  fi
-  return 0
-}
-
-action_db_backup_create() {
-  ensure_docker_ready || return 0
-  local inst=""
-  rm -f "$TMP_PICK"
-  if pick_instance_interactive; then
-    inst=$(cat "$TMP_PICK")
-  fi
-  [[ -z "$inst" ]] && return 0
-
-  load_instance_db_credentials "$inst" || return 0
-  ensure_instance_ready_for_backup "$inst" || return 0
-
-  local backup_dir ts backup_file temp_file tmp_dir checksum
-  backup_dir="$(instance_backup_dir "$inst")"
-  mkdir -p "$backup_dir"
-  ts="$(date +%Y%m%d-%H%M%S)"
-  backup_file="${backup_dir}/${ts}_${inst}.sentinel-backup.tar.gz"
-  temp_file="${backup_file}.tmp"
-  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/sentinel-backup-${inst}.XXXXXX")"
-  local workspaces_included="false"
-  if prompt_backup_workspaces "$inst"; then
-    workspaces_included="true"
-  fi
-
-  info "Creating instance backup for '$inst'..."
-  if write_backup_manifest "$inst" "$DB_NAME" "$workspaces_included" "$tmp_dir/sentinel-backup.json" \
-      && cp "$(instance_env_file "$inst")" "$tmp_dir/instance.env" \
-      && mkdir -p "$tmp_dir/workspaces" \
-      && { [[ "$workspaces_included" != "true" ]] || cp -R "$(instance_workspaces_dir "$inst")/." "$tmp_dir/workspaces/"; } \
-      && compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
-        pg_dump --no-owner --no-privileges -U "$DB_USER" "$DB_NAME" > "$tmp_dir/database.sql" \
-      && tar -czf "$temp_file" -C "$tmp_dir" .; then
-    mv "$temp_file" "$backup_file"
-    checksum="$(file_sha256 "$backup_file")"
-    if [[ -n "$checksum" ]]; then
-      printf "%s  %s\n" "$checksum" "$(basename "$backup_file")" > "${backup_file}.sha256"
-    fi
-    success "Instance backup created: $backup_file"
-    set_menu_note "${GREEN}Backup created for ${inst}.${RESET} $(basename "$backup_file")"
-  else
-    rm -f "$temp_file"
-    error "Backup failed for '$inst'."
-    set_menu_note "${RED}Backup failed for ${inst}.${RESET}"
-  fi
-  rm -rf "$tmp_dir"
-  return 0
-}
-
-action_db_backup_list() {
-  local inst=""
-  rm -f "$TMP_PICK"
-  if pick_instance_interactive; then
-    inst=$(cat "$TMP_PICK")
-  fi
-  [[ -z "$inst" ]] && return 0
-
-  local backups=()
-  while IFS= read -r file; do [[ -n "$file" ]] && backups+=("$file"); done < <(get_instance_backups "$inst")
-  if [[ ${#backups[@]} -eq 0 ]]; then
-    info "No Sentinel instance backups found for '$inst' in $(instance_backup_dir "$inst")."
-    set_menu_note "${DIM}No backups found for ${inst}.${RESET}"
-    return 0
-  fi
-
-  local summary
-  summary="${BOLD}Backups for ${inst}:${RESET}"
-  local file size mod
-  for file in "${backups[@]}"; do
-    size="$(du -h "$file" | awk '{print $1}')"
-    mod="$(date -r "$file" "+%Y-%m-%d %H:%M:%S")"
-    summary+=$'\n'"• $(basename "$file")  ${size}  ${mod}"
-  done
-  set_menu_note "$summary"
-  return 0
-}
-
-action_db_backup_restore() {
-  ensure_docker_ready || return 0
-  rm -f "$TMP_PICK"
-  if ! pick_backup_interactive "" "RESTORE BACKUP"; then
-    return 0
-  fi
-  local backup_file tmp_dir source_name inst
-  backup_file="$(cat "$TMP_PICK")"
-  verify_backup_checksum "$backup_file" || return 0
-
-  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/sentinel-restore.XXXXXX")"
-  if ! tar -xzf "$backup_file" -C "$tmp_dir" || ! validate_extracted_backup "$tmp_dir"; then
-    rm -rf "$tmp_dir"
-    set_menu_note "${RED}Restore failed: invalid backup archive.${RESET}"
-    return 0
-  fi
-
-  source_name="$(read_backup_manifest_field "$tmp_dir" "instanceName" 2>/dev/null || echo main)"
-  inst="$(sanitize_instance_name "$(prompt_default "Restore As Instance" "$source_name")")"
-  if [[ -z "$inst" ]]; then
-    rm -rf "$tmp_dir"
-    error "Instance name cannot be empty."
-    return 0
-  fi
-  if [[ -e "$(instance_dir "$inst")" ]]; then
-    rm -rf "$tmp_dir"
-    error "Instance '$inst' already exists. Restore creates a new instance; it does not overwrite."
-    set_menu_note "${RED}Restore aborted because ${inst} already exists.${RESET}"
-    return 0
-  fi
-
-  warn "This will create a new instance '$inst' from backup $(basename "$backup_file")."
-  read -r -p "Type RESTORE to confirm: " confirm < /dev/tty
-  [[ "$confirm" != "RESTORE" ]] && { rm -rf "$tmp_dir"; info "Restore aborted."; set_menu_note "${DIM}Restore aborted.${RESET}"; return 0; }
-
-  mkdir -p "$(instance_dir "$inst")"
-  cp "$tmp_dir/instance.env" "$(instance_env_file "$inst")"
-  rm -rf "$(instance_workspaces_dir "$inst")"
-  cp -R "$tmp_dir/workspaces" "$(instance_workspaces_dir "$inst")"
-  mkdir -p "$(instance_backup_dir "$inst")" "$(instance_qemu_run_dir "$inst")"
-  upsert_env_value "$(instance_env_file "$inst")" "RUNTIME_WORKSPACES_HOST_DIR" "$(instance_workspaces_dir "$inst")"
-  upsert_env_value "$(instance_env_file "$inst")" "RUNTIME_QEMU_WORKSPACE_ROOT" "$(instance_workspaces_dir "$inst")"
-  upsert_env_value "$(instance_env_file "$inst")" "RUNTIME_QEMU_RUN_ROOT" "$(instance_qemu_run_dir "$inst")"
-
-  load_instance_db_credentials "$inst" || { rm -rf "$(instance_dir "$inst")" "$tmp_dir"; return 0; }
-  if ! compose_instance "$inst" up -d postgres >/dev/null; then
-    rm -rf "$(instance_dir "$inst")" "$tmp_dir"
-    error "Failed to start Postgres for restored instance '$inst'."
-    set_menu_note "${RED}Restore failed for ${inst}.${RESET}"
-    return 0
-  fi
-
-  local ready=false
-  for _ in {1..60}; do
-    if compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
-      psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
-      ready=true
-      break
-    fi
-    sleep 0.5
-  done
-  if [[ "$ready" != "true" ]]; then
-    compose_instance "$inst" down -v --remove-orphans >/dev/null 2>&1 || true
-    rm -rf "$(instance_dir "$inst")" "$tmp_dir"
-    error "Postgres did not become ready for restored instance '$inst'."
-    set_menu_note "${RED}Restore failed for ${inst}.${RESET}"
-    return 0
-  fi
-
-  info "Restoring database for '$inst'..."
-  if ! compose_instance "$inst" exec -T postgres env PGPASSWORD="$DB_PASSWORD" \
-      psql -X -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME" < "$tmp_dir/database.sql" >/dev/null; then
-    compose_instance "$inst" down -v --remove-orphans >/dev/null 2>&1 || true
-    rm -rf "$(instance_dir "$inst")" "$tmp_dir"
-    error "Restore failed for '$inst'."
-    set_menu_note "${RED}Restore failed for ${inst}.${RESET}"
-    return 0
-  fi
-
-  rm -rf "$tmp_dir"
-  success "Restore completed for '$inst'."
-  invalidate_status_cache
-  set_menu_note "${GREEN}Restore completed as ${inst}.${RESET} Source: $(basename "$backup_file")"
-  return 0
-}
-
-action_db_backup_delete() {
-  local inst=""
-  rm -f "$TMP_PICK"
-  if pick_instance_interactive; then
-    inst=$(cat "$TMP_PICK")
-  fi
-  [[ -z "$inst" ]] && return 0
-
-  rm -f "$TMP_PICK"
-  if ! pick_backup_interactive "$inst" "DELETE BACKUP"; then
-    return 0
-  fi
-  local backup_file
-  backup_file="$(cat "$TMP_PICK")"
-
-  warn "Delete backup $(basename "$backup_file")?"
-  read -r -p "Type DELETE to confirm: " confirm < /dev/tty
-  if [[ "$confirm" == "DELETE" ]]; then
-    rm -f "$backup_file" "${backup_file}.sha256"
-    success "Backup deleted."
-    set_menu_note "${GREEN}Deleted backup for ${inst}.${RESET} $(basename "$backup_file")"
-  else
-    info "Delete aborted."
-    set_menu_note "${DIM}Backup delete aborted for ${inst}.${RESET}"
-  fi
-  return 0
-}
-
-action_db_backups_menu() {
-  local options=(
-    "📦  Backup Instance"
-    "🧾  List Backups"
-    "♻️  Restore Backup"
-    "🗑️   Delete Backup"
-    "⬅️  Back"
-  )
-
-  while true; do
-    echo -n "$CLEAR_SCREEN"
-    select_option "INSTANCE BACKUPS" "${options[@]}"
-    local choice=$?
-
-    printf "\n\n"
-    case "$choice" in
-      0) action_db_backup_create ;;
-      1) action_db_backup_list ;;
-      2) action_db_backup_restore ;;
-      3) action_db_backup_delete ;;
-      4) return 0 ;;
-    esac
-  done
-}
-
-action_manage_custom_auth() {
-  ensure_docker_ready || return 0
-  echo -n "$CURSOR_ON"
-  printf "\n${CYAN}MANAGE CUSTOM INSTANCE AUTH${RESET}\n"
-  printf "${DIM}Provide direct PostgreSQL connection values.${RESET}\n"
-
-  local pg_host pg_port pg_db pg_user pg_sslmode pg_password
-  pg_host="$(prompt_default "Postgres Host" "localhost")"
-  pg_port="$(prompt_default "Postgres Port" "5432")"
-  pg_db="$(prompt_default "Postgres DB Name" "arai_stack")"
-  pg_user="$(prompt_default "Postgres User" "arai_stack")"
-  pg_sslmode="$(prompt_default "SSL Mode (disable|prefer|require)" "prefer")"
-
-  printf "%s" "$CURSOR_ON"
-  read -r -s -p "${BOLD}Postgres Password${RESET}: " pg_password < /dev/tty
-  printf "\n%s" "$CURSOR_OFF"
-  if [[ -z "$pg_password" ]]; then
-    warn "Empty DB password; aborting."
-    return 0
-  fi
-
-  local auth_user auth_password
-  auth_user="$(prompt_default "Admin Username" "admin")"
-  auth_password="$(prompt_default "Admin Password" "$(generate_secret 12)")"
-
-  apply_auth_custom_instance \
-    "$pg_host" "$pg_port" "$pg_db" "$pg_user" "$pg_password" "$pg_sslmode" \
-    "$auth_user" "$auth_password"
-  return 0
-}
-
-action_delete() {
-  local inst="${1:-}"
-  if [[ -z "$inst" ]]; then
-    rm -f "$TMP_PICK"
-    if pick_instance_interactive; then
-      inst=$(cat "$TMP_PICK")
-    fi
-  fi
-  [[ -z "$inst" ]] && return 0
-  
-  warn "This will delete '$inst' config, workspaces, and data volumes."
-  read -r -p "Type DELETE to confirm: " confirm < /dev/tty
-  if [[ "$confirm" == "DELETE" ]]; then
-    if docker info >/dev/null 2>&1; then
-      compose_instance "$inst" down -v --remove-orphans || true
-    fi
-    stop_qemu_bridge "$inst"
-    rm -rf "$(instance_dir "$inst")"
-    success "Deleted."
-    invalidate_status_cache
-    set_menu_note "${GREEN}Deleted instance '${inst}'.${RESET}"
-  else
-    info "Aborted."
-    set_menu_note "${DIM}Delete aborted for ${inst}.${RESET}"
-  fi
-  return 0
-}
-
-menu_loop() {
-  local options=(
-    "${ICON_CONFIG}  New Instance"
-    "🧭  Instance Config"
-    "${ICON_START}  Start Instance"
-    "${ICON_STOP}  Stop Instance"
-    "🗄️  Instance Backups"
-    "🛠️  Advanced Mode"
-    "🚪  Exit"
-  )
-
-  while true; do
-    echo -n "$CLEAR_SCREEN"
-    select_option "MAIN MENU" "${options[@]}"
-    local choice=$?
-    
-    printf "\n\n"
-
-    case "$choice" in
-      0) action_create "" ;;
-      1) action_instance_config ;;
-      2) action_up "" ;;
-      3) action_down ;;
-      4) action_db_backups_menu ;;
-      5) action_advanced_mode ;;
-      6) echo "Goodbye!"; exit 0 ;;
-    esac
-
-    while read -r -t 0; do read -r; done < /dev/tty
-  done
-}
-
-trap "echo -n '$CURSOR_ON'; rm -f '$TMP_PICK'; exit" INT TERM EXIT
-menu_loop
+main "$@"

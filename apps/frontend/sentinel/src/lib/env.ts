@@ -10,3 +10,11 @@ const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 export const WS_BASE_URL = `${wsProtocol}//${window.location.host}`;
 
 export const APP_VERSION = '0.1.0';
+
+export function wsSessionsBaseUrl(): string {
+  const match = window.location.pathname.match(/^\/instances\/([^/]+)/);
+  if (!match?.[1]) {
+    return `${WS_BASE_URL}/ws/sessions`;
+  }
+  return `${WS_BASE_URL}/ws/instances/${encodeURIComponent(decodeURIComponent(match[1]))}/sessions`;
+}

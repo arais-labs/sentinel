@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 
-import { WS_BASE_URL } from '../../lib/env';
+import { wsSessionsBaseUrl } from '../../lib/env';
 
 interface TerminalPreviewProps {
   sessionId: string;
@@ -85,7 +85,7 @@ export const TerminalPreview = memo(({ sessionId, terminalId }: TerminalPreviewP
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    const wsUrl = `${WS_BASE_URL}/ws/sessions/${sessionId}/terminals/${terminalId}`;
+    const wsUrl = `${wsSessionsBaseUrl()}/${sessionId}/terminals/${terminalId}`;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;

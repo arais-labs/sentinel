@@ -25,7 +25,7 @@ Output:
 - `infra/runtime/qemu/output/sentinel-runtime-base-arm64.id_ed25519`
 - `infra/runtime/qemu/output/sentinel-runtime-base-arm64.id_ed25519.pub`
 
-These output files are local build artifacts and are intentionally ignored by git. A new machine can select the QEMU runtime backend from `./sentinel-cli.sh`; if the artifacts are missing, the CLI checks prerequisites and asks whether to build and validate them before enabling QEMU.
+These output files are local build artifacts and are intentionally ignored by git. The backend QEMU runtime provider reads them from configured `RUNTIME_QEMU_*` paths. In the development compose stack, `infra/runtime/qemu/output` is mounted read-only at `/data/runtime/qemu-output`.
 
 Prerequisites:
 - Homebrew
@@ -39,12 +39,12 @@ Manual commands:
 ./infra/runtime/qemu/validate-base-image.sh
 ```
 
-After the image validates, select the QEMU runtime backend from `./sentinel-cli.sh` instance config. The CLI expects the image/key under `infra/runtime/qemu/output/` and writes the required `RUNTIME_QEMU_*` values into the selected instance `.env`.
+After the image validates, configure the backend with explicit `RUNTIME_EXEC_BACKEND=qemu` and matching `RUNTIME_QEMU_IMAGE` / `RUNTIME_QEMU_SSH_KEY_PATH` values for the environment that starts Sentinel. The CLI no longer writes generated runtime configuration files.
 
 The SSH key written beside the image is local-only and is used for validation and first-boot inspection of the baked image.
 
 Runtime shape:
-- one shared local QEMU VM per Sentinel instance
+- local QEMU VM runtime managed by the backend
 - per-session Unix users inside the VM
 - per-session browser profiles
 - per-session workspace directories

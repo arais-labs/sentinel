@@ -60,6 +60,20 @@ function filenameFromContentDisposition(header: string | null): string | null {
   return plainMatch?.[1] ?? null;
 }
 
+function currentInstanceName(): string | null {
+  const match = window.location.pathname.match(/^\/instances\/([^/]+)/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function scopedPath(path: string): string {
+  if (!path.startsWith('/')) return path;
+  if (path === '/instances' || path.startsWith('/instances/')) return path;
+  if (path === '/auth' || path.startsWith('/auth/')) return path;
+  const instanceName = currentInstanceName();
+  if (!instanceName) return path;
+  return `/instances/${encodeURIComponent(instanceName)}${path}`;
+}
+
 export async function requestJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const {
     method = 'GET',
@@ -76,7 +90,7 @@ export async function requestJson<T>(path: string, options: RequestOptions = {})
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetch(`${API_BASE_URL}${scopedPath(path)}`, {
       method,
       headers,
       credentials: 'include',
@@ -136,7 +150,7 @@ export async function requestBlob(path: string, options: RequestOptions = {}): P
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetch(`${API_BASE_URL}${scopedPath(path)}`, {
       method,
       headers,
       credentials: 'include',

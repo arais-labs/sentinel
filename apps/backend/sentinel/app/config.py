@@ -1,3 +1,6 @@
+from urllib.parse import quote
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal
 
@@ -10,15 +13,21 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
-    database_url: str = "postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel"
-    jwt_secret_key: str
+    database_host: str = "localhost"
+    database_port: int = 5432
+    database_user: str = "sentinel"
+    database_password: str = "sentinel"
+    database_maintenance_name: str = "postgres"
+    database_manager_name: str = "sentinel_manager"
+    instance_workspace_root: str = "/data/runtime/workspaces"
+    jwt_secret_key: str = Field(min_length=1)
     jwt_algorithm: str = "HS256"
     access_token_ttl_seconds: int = 3600
     refresh_token_ttl_seconds: int = 604800
     auth_cookie_secure: bool = False
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
-    sentinel_auth_username: str = "admin"
-    sentinel_auth_password: str = "admin"
+    sentinel_auth_username: str = Field(min_length=1)
+    sentinel_auth_password: str = Field(min_length=1)
     dev_user_id: str = "dev-admin"
     anthropic_oauth_token: str | None = None
     anthropic_api_key: str | None = None
@@ -108,6 +117,7 @@ class Settings(BaseSettings):
     runtime_memory_limit: str = "2g"
     runtime_cpu_limit: float = 2.0
     runtime_ssh_key_dir: str = "/data/runtime/ssh"
+    session_runtime_base_dir: str = "/data/runtime/workspaces"
     runtime_workspaces_host_dir: str = "/data/runtime/workspaces"
     # QEMU runtime
     runtime_qemu_image: str | None = None
@@ -143,10 +153,20 @@ class Settings(BaseSettings):
     telegram_enabled: bool = False
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    def database_url(self, database_name: str) -> str:
+        user = quote(self.database_user, safe="")
+        password = quote(self.database_password, safe="")
+        host = self.database_host
+        port = int(self.database_port)
+        database = quote(database_name, safe="")
+        return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
+
+    @property
+    def manager_database_url(self) -> str:
+        return self.database_url(self.database_manager_name)
 
 
 settings = Settings()

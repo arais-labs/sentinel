@@ -71,23 +71,14 @@ async function showControlCenter(): Promise<void> {
 }
 
 async function showSentinel(status?: DesktopStatus): Promise<DesktopStatus> {
-  const nextStatus = status || await manager.getStatus();
+  const nextStatus = status?.appUrl ? status : await manager.startServices();
   if (!nextStatus.appUrl) {
-    throw new Error('No running Sentinel instance. Start an instance first.');
+    throw new Error('Sentinel is not running yet.');
   }
   activeSentinelOrigin = new URL(nextStatus.appUrl).origin;
   await ensureWindow();
   await mainWindow!.loadURL(nextStatus.appUrl);
   return nextStatus;
-}
-
-function showSentinelAfterIpc(status: DesktopStatus): DesktopStatus {
-  setTimeout(() => {
-    void showSentinel(status).catch((error) => {
-      dialog.showErrorBox('Sentinel open failed', String(error?.stack || error));
-    });
-  }, 0);
-  return status;
 }
 
 async function ensureWindow(): Promise<void> {
@@ -148,15 +139,7 @@ function installMenu(): void {
 
 function registerIpc(): void {
   ipcMain.handle(IPC.getStatus, () => manager.getStatus());
-  ipcMain.handle(IPC.createInstance, (_event, request) => manager.createInstance(request));
-  ipcMain.handle(IPC.deleteInstance, (_event, name) => manager.deleteInstance(name));
-  ipcMain.handle(IPC.startInstance, async (_event, name) => showSentinelAfterIpc(await manager.startInstance(name)));
-  ipcMain.handle(IPC.stopInstance, () => manager.stopInstance());
-  ipcMain.handle(IPC.restartInstance, async (_event, name) => showSentinelAfterIpc(await manager.restartInstance(name)));
-  ipcMain.handle(IPC.renameInstance, (_event, name, newName) => manager.renameInstance(name, newName));
-  ipcMain.handle(IPC.resetAuth, (_event, name, username, password) => manager.resetAuth(name, username, password));
-  ipcMain.handle(IPC.backupInstance, (_event, name) => manager.backupInstance(name));
-  ipcMain.handle(IPC.restoreInstance, (_event, request) => manager.restoreInstance(request));
+  ipcMain.handle(IPC.stopServices, () => manager.stopServices());
   ipcMain.handle(IPC.openSentinel, () => showSentinel());
   ipcMain.handle(IPC.showControlCenter, () => showControlCenter());
   ipcMain.handle(IPC.revealAppSupport, () => manager.revealAppSupport());
@@ -193,11 +176,13 @@ if (!singleInstanceLock) {
       registerIpc();
       installMenu();
       await createWindow();
-      void manager.initialize().catch((error) => {
-        const message = String(error?.stack || error);
-        console.error(message);
-        dialog.showErrorBox('Sentinel startup failed', message);
-      });
+      void manager.initialize()
+        .then((status) => showSentinel(status))
+        .catch((error) => {
+          const message = String(error?.stack || error);
+          console.error(message);
+          dialog.showErrorBox('Sentinel startup failed', message);
+        });
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
           void createWindow();

@@ -35,13 +35,14 @@ function resolveIcon(name: string | null | undefined): LucideIcon {
 }
 
 import { AppShell } from '../components/AppShell';
+import { api } from '../lib/api';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    API helper — bypasses Sentinel's /api/v1 prefix
    ═══════════════════════════════════════════════════════════════════════════ */
 
 async function modulesApi<T = any>(path: string, opts?: { method?: string; body?: unknown }): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(scopedModulePath(path), {
     method: opts?.method ?? 'GET',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
@@ -52,6 +53,15 @@ async function modulesApi<T = any>(path: string, opts?: { method?: string; body?
     throw new Error(body.detail || body.error?.message || body.error || `Request failed (${res.status})`);
   }
   return res.json();
+}
+
+function scopedModulePath(path: string): string {
+  const match = window.location.pathname.match(/^\/instances\/([^/]+)/);
+  if (!match?.[1] || !path.startsWith('/api/')) {
+    return path;
+  }
+  const instanceName = encodeURIComponent(decodeURIComponent(match[1]));
+  return `/api/instances/${instanceName}${path.slice('/api'.length)}`;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1435,7 +1445,7 @@ function ApprovalsSection() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await modulesApi<{ items: any[]; total: number }>('/api/v1/approvals');
+      const data = await api.get<{ items: any[]; total: number }>('/approvals');
       setApprovals(data.items || []);
     } catch { toast.error('Failed to load approvals'); }
     finally { setLoading(false); }
@@ -1453,7 +1463,7 @@ function ApprovalsSection() {
       const approval = approvals.find(a => (a.approval_id ?? a.id) === id);
       const provider = approval?.provider ?? 'tool';
       const approvalId = approval?.approval_id ?? id;
-      await modulesApi(`/api/v1/approvals/${provider}/${approvalId}/${action}`, { method: 'POST' });
+      await api.post(`/approvals/${provider}/${approvalId}/${action}`, {});
       toast.success(action === 'approve' ? 'Approved' : 'Rejected');
       load();
     } catch { toast.error(`Failed to ${action}`); }
@@ -1677,8 +1687,9 @@ const SECTION_LABELS: Record<ModuleSection, string> = {
 export function ModulesPage() {
   const location = useLocation();
   let activeSection: ModuleSection = 'modules';
-  if (location.pathname.startsWith('/approvals')) activeSection = 'approvals';
-  else if (location.pathname.startsWith('/permissions')) activeSection = 'permissions';
+  const sectionPath = location.pathname.replace(/^\/instances\/[^/]+/, '');
+  if (sectionPath.startsWith('/approvals')) activeSection = 'approvals';
+  else if (sectionPath.startsWith('/permissions')) activeSection = 'permissions';
 
   const isFullHeight = activeSection === 'modules';
 

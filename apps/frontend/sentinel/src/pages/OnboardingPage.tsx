@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
   Zap, ArrowRight, ArrowLeft, Check, Bot, User, Flag,
@@ -12,6 +12,7 @@ import {
   resolveAgentIdentity,
   resolveUserProfile,
 } from '../lib/onboarding-defaults';
+import { instanceRouteFromPath } from '../lib/routes';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -477,6 +478,7 @@ function DoneStep({ firstMessage, setFirstMessage, isCompleting, completedItems,
 
 export function OnboardingPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [step, setStep] = useState(0);
 
   // LLM keys — Anthropic
@@ -574,7 +576,7 @@ export function OnboardingPage() {
       await new Promise(r => setTimeout(r, 600)); // brief pause so user sees the checkmarks
 
       localStorage.setItem('sentinel-mode', 'advanced');
-      navigate('/sessions', { state: { firstMessage: firstMessage.trim() || undefined } });
+      navigate(instanceRouteFromPath(location.pathname, 'sessions'), { state: { firstMessage: firstMessage.trim() || undefined } });
     } catch (err) {
       toast.error('Setup failed — please try again');
       setIsCompleting(false);

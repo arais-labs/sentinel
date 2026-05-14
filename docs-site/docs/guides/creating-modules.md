@@ -13,7 +13,7 @@ This page is code accurate to Sentinel's module router and executor behavior.
 
 | Type | Behavior |
 |---|---|
-| `data` | Record CRUD on `/api/modules/{name}/records` plus optional custom actions |
+| `data` | Record CRUD on `/api/instances/{instance_name}/modules/{name}/records` plus optional custom actions |
 | `tool` | No records, callable actions executed by sandbox executor |
 
 ---
@@ -23,7 +23,7 @@ This page is code accurate to Sentinel's module router and executor behavior.
 Endpoint:
 
 ```http
-POST /api/modules
+POST /api/instances/{instance_name}/modules
 ```
 
 ### Data module example
@@ -82,7 +82,7 @@ Important field conventions:
 ### Tool module action
 
 ```http
-POST /api/modules/{name}/action/{action_id}
+POST /api/instances/{instance_name}/modules/{name}/action/{action_id}
 ```
 
 Body:
@@ -94,7 +94,7 @@ Body:
 ### Data module custom action on a record
 
 ```http
-POST /api/modules/{name}/records/{id}/action/{action_id}
+POST /api/instances/{instance_name}/modules/{name}/records/{id}/action/{action_id}
 ```
 
 ---
@@ -140,7 +140,7 @@ Do not claim hard isolation. Treat action code as privileged and review it accor
 Endpoint:
 
 ```http
-PATCH /api/modules/{name}
+PATCH /api/instances/{instance_name}/modules/{name}
 ```
 
 Editable fields include:
@@ -163,7 +163,7 @@ When actions change, permission rows for stale actions are cleaned and new defau
 
 After creating module:
 
-1. `GET /api/modules/{name}` returns expected schema
+1. `GET /api/instances/{instance_name}/modules/{name}` returns expected schema
 2. permission rows exist for intended actions
 3. test action returns expected result on allow
 4. switch one action to approval and verify 202 flow

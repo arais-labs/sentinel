@@ -11,7 +11,7 @@ import {
   User,
   ChevronDown,
 } from 'lucide-react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
@@ -19,10 +19,12 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api } from '../lib/api';
 import { formatCompactDate } from '../lib/format';
+import { instanceRouteFromPath } from '../lib/routes';
 import { useAuthStore } from '../store/auth-store';
 import type { AuditLog, AuditLogListResponse, ConfigResponse } from '../types/api';
 
 export function AdminPage() {
+  const location = useLocation();
   const role = useAuthStore((s) => s.role);
 
   const [config, setConfig] = useState<ConfigResponse | null>(null);
@@ -36,7 +38,7 @@ export function AdminPage() {
   }, []);
 
   if (role !== 'admin') {
-    return <Navigate to="/settings" replace />;
+    return <Navigate to={instanceRouteFromPath(location.pathname, 'settings')} replace />;
   }
 
   async function loadAdminData(resetLogs: boolean) {

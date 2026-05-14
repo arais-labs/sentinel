@@ -5,9 +5,7 @@ title: CLI Reference
 
 # Sentinel CLI reference
 
-This page maps the CLI menu directly to `sentinel-cli.sh` behavior.
-
----
+This page maps the CLI menu and commands to `sentinel-cli.sh` behavior.
 
 ## Launch
 
@@ -15,110 +13,66 @@ This page maps the CLI menu directly to `sentinel-cli.sh` behavior.
 bash ./sentinel-cli.sh
 ```
 
-The CLI is interactive and uses TTY controls for menu navigation.
+The CLI uses one Compose project by default and talks to the backend manager API for instance operations.
 
-Instance config files are stored in:
+Readiness checks use `GET /health/ready`. Authenticated manager calls use the
+`/api/v1` API base.
 
-- `.instances/<instance>.env`
+## Commands
 
-Each instance uses compose project name:
+| Command | What it does |
+|---|---|
+| `./sentinel-cli.sh up` | Starts the shared stack |
+| `./sentinel-cli.sh down` | Stops the shared stack |
+| `./sentinel-cli.sh restart` | Restarts the shared stack |
+| `./sentinel-cli.sh logs [service]` | Follows Compose logs |
+| `./sentinel-cli.sh status` | Shows Compose status and registered instances |
+| `./sentinel-cli.sh instances list` | Lists manager DB instances |
+| `./sentinel-cli.sh instances create <name> [display-name]` | Creates an instance database and registry row |
+| `./sentinel-cli.sh instances rename <old-name> <new-name>` | Renames the manager registry entry |
+| `./sentinel-cli.sh instances delete <name>` | Deletes the instance database and registry row |
 
-- `sentinel-<instance>`
+## Overrides
 
----
+The shared stack uses deterministic defaults. Process-level overrides are available for launch/debug only:
 
-## Main menu actions
+| Variable | Default |
+|---|---|
+| `COMPOSE_PROJECT_NAME` | `sentinel` |
+| `SENTINEL_MODE` | `prod` |
+| `SENTINEL_COMPOSE_FILE` | empty; derived from mode |
+| `STACK_PORT` | `4747` |
+| `SENTINEL_URL` | `http://localhost:$STACK_PORT` |
+| `SENTINEL_TOKEN` | empty; interactive login is used when needed |
 
-| Menu item | Internal action | What it does |
-|---|---|---|
-| New/Edit Instance | `action_create` | creates or overwrites instance env, then starts instance |
-| Start Instance | `action_up` | starts selected instance and runs startup seeding flow |
-| Stop Instance | `action_down` | `docker compose down` for selected instance |
-| Reset Auth (Managed Instance) | `action_reset_auth_managed` | rewrites auth settings in DB |
-| Global Status | `action_list` | shows service count per instance |
-| Tail Logs | `action_logs` | follows compose logs |
-| Delete Instance | `action_delete` | `down -v --remove-orphans` plus env deletion |
-| Advanced Mode | `action_advanced_mode` | dev mode start and custom DB auth path |
+The CLI reconciles the managed stack settings from simple `KEY=value` entries
+in the root `.env`. Shell variables are still useful for launch/debug knobs such
+as `SENTINEL_MODE`, `SENTINEL_COMPOSE_FILE`, `SENTINEL_URL`, and
+`SENTINEL_TOKEN`, but the stack credentials and workspace path are written to
+and reloaded from `.env`.
 
----
+Changing `COMPOSE_PROJECT_NAME` only changes Compose project metadata and
+container or volume names. The Compose default network is explicitly named
+`sentinel_default` so Docker runtime containers can join it deterministically.
 
-## New instance flow
+The CLI defaults to production mode and uses `docker-compose.yml`. Dev mode is
+explicit: run `./sentinel-cli.sh --dev` or set `SENTINEL_MODE=dev`; that path
+uses `docker-compose.dev.yml` and can write a complete root `.env` with local
+dev defaults.
 
-`action_create` prompts for:
+`SENTINEL_COMPOSE_FILE` is an expert override for stack controls. In normal use,
+prefer `SENTINEL_MODE=prod` or `SENTINEL_MODE=dev`.
 
-- instance name
-- gateway port
-- db name
-- db user
-- db password
-- JWT secret
-- admin username
-- admin password
+## Production compose secrets
 
-Then it writes `.instances/<instance>.env` with core values and calls `action_up`.
+The CLI treats the root `.env` as the source of truth for the managed stack. On
+startup it creates or reconciles missing values before showing the menu or
+running subcommands. `docker-compose.yml` fails during config rendering unless
+these variables are present:
 
----
-
-## Start flow details
-
-`action_up` does more than compose up.
-
-1. `docker compose up --build -d`
-2. tries managed auth seed into `system_settings`
-3. seeds instance URL settings
-4. prints onboarding block with URLs
-
-If API based instance URL seeding fails, it falls back to DB seeding.
-
----
-
-## Auth reset behavior
-
-Managed reset writes these keys:
-
-- `sentinel.auth.username`
-- `sentinel.auth.password_hash`
-
-Password hash generation uses PBKDF2 SHA256 with random salt.
-
----
-
-## Advanced mode
-
-Advanced menu includes:
-
-1. Start instance in dev mode
-   - uses `docker-compose.dev.yml`
-2. Manage custom instance auth
-   - direct Postgres connection inputs
-   - writes same auth setting keys into custom DB
-
----
-
-## Safety checks and prompts
-
-CLI performs:
-
-- docker readiness check
-- port occupancy warning on create
-- delete confirmation requiring literal `DELETE`
-- instance picker for all actions touching existing instances
-
----
-
-## Useful operator sequence
-
-For a fresh machine:
-
-1. New/Edit Instance
-2. Start Instance
-3. Open gateway URL printed by CLI
-4. Sign in with admin credentials you entered
-5. If login fails run Reset Auth and retry
-
-For routine ops:
-
-- Start Instance
-- Global Status
-- Tail Logs
-- Stop Instance
+| Variable | Purpose |
+|---|---|
+| `SENTINEL_POSTGRES_PASSWORD` | Postgres password used by the database and backend |
+| `SENTINEL_JWT_SECRET_KEY` | JWT signing secret |
+| `SENTINEL_AUTH_PASSWORD` | App admin password synced into the manager database on backend startup |
+| `SENTINEL_AUTH_USERNAME` | App admin username synced into the manager database on backend startup |

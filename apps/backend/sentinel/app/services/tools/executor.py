@@ -5,6 +5,9 @@ import logging
 import time
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.database.database import runtime_db_session_factory
 from app.services.agent.agent_modes import AgentMode, get_agent_mode_definition
 from app.services.tools.registry import (
     ToolApprovalDecision,
@@ -39,10 +42,25 @@ class ToolExecutor:
         registry: ToolRegistry,
         approval_waiter: ToolApprovalWaiterFn | None = None,
         approval_result_recorder: ToolApprovalResultRecorderFn | None = None,
+        db_session_factory: async_sessionmaker[AsyncSession] | None = None,
+        sub_agent_orchestrator: Any | None = None,
     ) -> None:
         self._registry = registry
         self._approval_waiter = approval_waiter
         self._approval_result_recorder = approval_result_recorder
+        self._db_session_factory = db_session_factory
+        self._sub_agent_orchestrator = sub_agent_orchestrator
+
+    def set_runtime_defaults(
+        self,
+        *,
+        db_session_factory: async_sessionmaker[AsyncSession] | None = None,
+        sub_agent_orchestrator: Any | None = None,
+    ) -> None:
+        if db_session_factory is not None:
+            self._db_session_factory = db_session_factory
+        if sub_agent_orchestrator is not None:
+            self._sub_agent_orchestrator = sub_agent_orchestrator
 
     async def execute(
         self,
@@ -60,34 +78,39 @@ class ToolExecutor:
             raise PermissionError(f"Tool '{name}' is disabled")
 
         runtime_context = runtime or ToolRuntimeContext()
+        if runtime_context.db_session_factory is None:
+            runtime_context.db_session_factory = self._db_session_factory
+        if runtime_context.sub_agent_orchestrator is None:
+            runtime_context.sub_agent_orchestrator = self._sub_agent_orchestrator
         self._validate_payload(tool, payload)
-        mode_definition = get_agent_mode_definition(agent_mode)
-        approved_metadata = await self._resolve_tool_approval(
-            tool,
-            payload,
-            runtime_context,
-            auto_approve_required=mode_definition.auto_approve_tool_gates,
-            on_pending_approval=on_pending_approval,
-        )
+        with runtime_db_session_factory(runtime_context.db_session_factory):
+            mode_definition = get_agent_mode_definition(agent_mode)
+            approved_metadata = await self._resolve_tool_approval(
+                tool,
+                payload,
+                runtime_context,
+                auto_approve_required=mode_definition.auto_approve_tool_gates,
+                on_pending_approval=on_pending_approval,
+            )
 
-        started = time.perf_counter()
-        try:
-            result = await tool.execute(payload, runtime_context)
-        except ToolValidationError as exc:
-            await self._record_approval_result(
-                approval=approved_metadata,
-                result={"ok": False, "error": str(exc)},
-            )
-            if approved_metadata and getattr(exc, "approval", None) is None:
-                exc.approval = approved_metadata
-            raise
-        except Exception as exc:  # pragma: no cover - defensive wrapper
-            await self._record_approval_result(
-                approval=approved_metadata,
-                result={"ok": False, "error": str(exc)},
-            )
-            raise ToolExecutionError(str(exc), approval=approved_metadata) from exc
-        await self._record_approval_result(approval=approved_metadata, result=result)
+            started = time.perf_counter()
+            try:
+                result = await tool.execute(payload, runtime_context)
+            except ToolValidationError as exc:
+                await self._record_approval_result(
+                    approval=approved_metadata,
+                    result={"ok": False, "error": str(exc)},
+                )
+                if approved_metadata and getattr(exc, "approval", None) is None:
+                    exc.approval = approved_metadata
+                raise
+            except Exception as exc:  # pragma: no cover - defensive wrapper
+                await self._record_approval_result(
+                    approval=approved_metadata,
+                    result={"ok": False, "error": str(exc)},
+                )
+                raise ToolExecutionError(str(exc), approval=approved_metadata) from exc
+            await self._record_approval_result(approval=approved_metadata, result=result)
         if approved_metadata and isinstance(result, dict) and not isinstance(result.get("approval"), dict):
             result["approval"] = approved_metadata
         duration_ms = int((time.perf_counter() - started) * 1000)

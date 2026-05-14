@@ -47,10 +47,11 @@ class _FakeResult:
 class FakeDB:
     """Minimal AsyncSession-like in-memory store for router tests."""
 
-    def __init__(self):
+    def __init__(self, *, seed_auth: bool = True):
         self.storage = defaultdict(list)
         self._tx_snapshots: list[dict] = []
-        self._seed_auth_settings()
+        if seed_auth:
+            self._seed_auth_settings()
 
     def _seed_auth_settings(self) -> None:
         # Test-only convenience so login-based tests don't rely on app startup hooks.
@@ -116,6 +117,8 @@ class FakeDB:
         rows = self.storage.get(model, [])
         for row in rows:
             if getattr(row, "id", None) == obj_id:
+                return row
+            if not hasattr(row, "id") and getattr(row, "name", None) == obj_id:
                 return row
         return None
 

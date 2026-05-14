@@ -35,20 +35,18 @@ You will see the interactive menu.
 
 For first run, choose:
 
-1. **New/Edit Instance**
-2. Enter instance config values (or accept defaults)
-   - gateway port (default `4747`)
-   - Postgres settings
-   - JWT secret
-   - admin username and password
-3. CLI auto starts stack for that instance
+1. Let the CLI create or reconcile the root `.env`. Prod mode proposes
+   generated values and rejects placeholders/default credentials. Dev mode is
+   explicit via `./sentinel-cli.sh --dev` and may write local dev defaults.
+2. Choose **Start Stack**
+3. Choose **Instances** -> **Create Instance**
+4. Create a logical instance, for example `main`
 
 What the CLI does during startup:
 
 - runs `docker compose up --build -d`
-- seeds auth credentials in DB
-- seeds instance URL settings
-- prints onboarding instructions with the login target
+- waits for `GET /health/ready`
+- creates and manages logical instances through the manager API
 
 ---
 
@@ -64,11 +62,7 @@ Use the port you configured (default 4747):
 
 ## 4) Sign in with admin credentials
 
-Sign in using the admin username and password you set during CLI instance creation.
-
-If auth seeding failed, run CLI action:
-
-- **Reset Auth (Managed Instance)**
+Sign in with the admin username and password from the root `.env`.
 
 ---
 

@@ -5,71 +5,66 @@ title: Multi-Instance
 
 # Multi-Instance
 
-Sentinel supports running multiple isolated instances on the same machine. Each instance has its own config, memory, agent state, tools, and port.
+Sentinel runs one shared local stack and supports multiple logical instances
+inside it. Each logical instance has its own app database, sessions, memory,
+modules, permissions, and runtime workspace root.
 
 ---
 
 ## Use cases
 
 - Separate agents for different clients or projects
-- Isolated dev vs. staging environments
-- Testing different LLM configurations side-by-side
-- Running one instance per team member
+- Isolated dev vs. staging data
+- Testing different LLM settings side by side
+- Running one logical workspace per team member
 
 ---
 
 ## Setup
 
-The `sentinel-cli.sh` tool manages multiple instances via named configs.
+Use the CLI to create instances through the backend manager API:
 
 ```bash
 bash ./sentinel-cli.sh
-# Select: Create config
-# Enter instance name: e.g. "project-alpha"
+# Select: Instances
+# Select: Create Instance
+# Enter instance name: project-alpha
 ```
 
-Each instance gets:
-
-- Its own named `.env` file
-- Its own Docker volumes (memory, database, state)
-- Its own port offset (4747, 4748, 4749, ...)
+Each instance gets a manager registry row, its own Postgres database, and a
+workspace root under the shared runtime workspace area.
 
 ---
 
 ## Managing instances
 
 ```bash
-bash ./sentinel-cli.sh
-# Select instance from the list
-# Then: Start / Stop / Logs / Destroy
+./sentinel-cli.sh instances list
+./sentinel-cli.sh instances create project-alpha "Project Alpha"
+./sentinel-cli.sh instances rename project-alpha alpha
+./sentinel-cli.sh instances delete alpha
+```
+
+The stack lifecycle remains shared:
+
+```bash
+./sentinel-cli.sh up
+./sentinel-cli.sh status
+./sentinel-cli.sh logs
+./sentinel-cli.sh down
 ```
 
 ---
 
-## Isolation guarantees
+## Isolation model
 
-| What is isolated | Shared |
+| Isolated by logical instance | Shared by the stack |
 |---|---|
-| Memory tree | — |
-| Agent sessions and history | — |
-| Modules and permissions | — |
-| LLM API keys (per config) | — |
-| Docker volumes | — |
-| — | Host machine resources (CPU, RAM) |
-| — | Docker daemon |
+| App database | Compose services |
+| Sessions and history | Published HTTP port |
+| Memory tree | Manager auth database |
+| Modules and permissions | Docker default network |
+| Runtime workspace root | Host Docker daemon |
 
-One instance's memory, tools, and agent state cannot affect another instance.
-
----
-
-## Port allocation
-
-Instances use sequential port offsets from the base port (4747 by default). If you run three instances:
-
-| Instance | Port |
-|---|---|
-| default | 4747 |
-| project-alpha | 4748 |
-| project-beta | 4749 |
-
-Each instance has the same URL structure (`/`, `/modules`, `/vnc/`) on its own port.
+All instances use the same URL origin. Instance selection happens in the UI and
+API routes, not through separate ports or generated Compose files.

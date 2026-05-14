@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.tools.approval.providers.tool import ToolApprovalProvider
 from app.services.tools.approval.types import (
@@ -14,8 +14,9 @@ from app.services.tools.approval.types import (
 
 
 class ApprovalService:
-    def __init__(self, *, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
-        _ = session_factory
+    # DB sessions are passed per-call so each invocation hits the right
+    # per-instance database. There is no service-level session factory.
+    def __init__(self) -> None:
         self._tool_provider = ToolApprovalProvider()
 
     async def list_approvals(

@@ -82,9 +82,12 @@ bash ./sentinel-cli.sh
 
 For first run:
 
-1. Choose `New/Edit Instance`
-2. Set instance values or accept defaults
-3. Let CLI start services and seed auth
+1. Let the CLI create or reconcile the root `.env`. Prod mode proposes
+   generated values and rejects placeholders/default credentials. Dev mode is
+   explicit via `./sentinel-cli.sh --dev` and may write local dev defaults.
+2. Choose `Start Stack`
+3. Choose `Instances` -> `Create Instance`
+4. Create the default logical instance, for example `main`
 
 ### 3) Open Sentinel
 
@@ -96,21 +99,30 @@ Default URLs:
 
 ### 4) Sign in
 
-Use the admin username and password you configured in CLI.
-If login fails, run `Reset Auth (Managed Instance)` from CLI and retry.
+Use the admin username and password from the root `.env`.
 
 ## Installation paths
 
 ### Recommended
 
 - Use `sentinel-cli.sh` for instance lifecycle, auth seeding, startup, status, logs, and cleanup.
+- The CLI defaults to production mode and uses `docker-compose.yml`.
+- Create a root `.env` from `.env.example` for the default production-shaped
+  path.
+- Use `./sentinel-cli.sh --dev` for explicit local development mode. The CLI
+  can write a complete root `.env` with dev-safe defaults.
 
 ### Manual compose
 
 ```bash
 cp .env.example .env
+# edit .env and replace the placeholder secrets
 docker compose up --build -d
 ```
+
+`docker-compose.yml` is the production-shaped compose file and fails clearly
+unless these secrets are provided. For local development defaults, use
+`docker-compose.dev.yml`.
 
 ### Dev mode
 

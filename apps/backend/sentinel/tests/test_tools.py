@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
 
-from app.dependencies import get_db
+from app.dependencies import get_db, get_manager_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import GitAccount
@@ -22,6 +22,10 @@ from app.services.araios.runtime_services import configure_runtime_services, res
 from app.services.araios.system_modules.git_tool import handlers as git_module
 from app.services.araios.system_modules.module_manager import handlers as module_manager_module
 from app.services.araios.system_modules.runtime_tool import handlers as runtime_tool_module
+from app.services.instance_runtime_context import (
+    InstanceRuntimeContext,
+    instance_runtime_context_registry,
+)
 from app.services.runtime.base import RuntimeExecResult
 from app.services.tools import ToolExecutor
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
@@ -356,6 +360,7 @@ def test_tools_registry_and_execution():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -434,13 +439,14 @@ def test_runtime_runs_command():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "runtime-exec-smoke"},
             headers=headers,
         )
@@ -457,7 +463,7 @@ def test_runtime_runs_command():
         assert payload["ok"] is True
         assert "hello" in payload["stdout"]
 
-        runtime = client.get(f"/api/v1/sessions/{session_id}/runtime", headers=headers)
+        runtime = client.get(f"/api/v1/instances/main/sessions/{session_id}/runtime", headers=headers)
         assert runtime.status_code == 200
         actions = runtime.json().get("actions", [])
         finished_actions = [item for item in actions if item.get("action") == "command_finished"]
@@ -492,13 +498,14 @@ def test_runtime_background_returns_immediately_with_handle():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "runtime-exec-background"},
             headers=headers,
         )
@@ -543,13 +550,14 @@ def test_runtime_background_auto_allocates_bg_terminal_id():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "runtime-bg-auto"},
             headers=headers,
         )
@@ -591,13 +599,14 @@ def test_runtime_background_rejects_terminal_zero():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "runtime-bg-zero-reject"},
             headers=headers,
         )
@@ -637,13 +646,14 @@ def test_runtime_terminal_close_refuses_terminal_zero():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "terminal-close-zero"},
             headers=headers,
         )
@@ -704,13 +714,14 @@ def test_runtime_terminal_close_calls_manager_terminate():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "terminal-close-named"},
             headers=headers,
         )
@@ -768,13 +779,14 @@ def test_runtime_terminal_close_rejects_invalid_terminal_id():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "terminal-close-invalid"},
             headers=headers,
         )
@@ -815,13 +827,14 @@ def test_runtime_rejects_shell_background_without_background_flag():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "runtime-exec-bg-reject"},
             headers=headers,
         )
@@ -916,13 +929,14 @@ def test_runtime_allows_inline_fd_redirection():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "runtime-inline-redirection"},
             headers=headers,
         )
@@ -958,13 +972,14 @@ def test_runtime_timeout_returns_result():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "runtime-exec-timeout"},
             headers=headers,
         )
@@ -1021,13 +1036,14 @@ def test_runtime_root_privilege_requires_approval():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         created_session = client.post(
-            "/api/v1/sessions",
+            "/api/v1/instances/main/sessions",
             json={"title": "runtime-exec-root-approval"},
             headers=headers,
         )
@@ -1071,6 +1087,7 @@ def test_removed_file_read_tool_returns_not_found():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -1101,6 +1118,7 @@ def test_http_request_ssrf_blocked():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -1159,6 +1177,7 @@ def test_module_manager_lists_db_modules():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         fake_db.add(AraiosModule(name="notes", label="Notes", description="d", icon="file-text"))
@@ -1191,6 +1210,7 @@ def test_module_manager_requires_command():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -1221,6 +1241,7 @@ def test_module_manager_create_registers_dynamic_tool_and_permissions():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -1311,6 +1332,50 @@ def test_module_manager_create_registers_dynamic_tool_and_permissions():
         app_main.init_db = old_init
 
 
+def test_module_manager_create_refreshes_instance_runtime_context():
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+    context = InstanceRuntimeContext(
+        name="main",
+        database_name="sentinel_main_0d6e4079",
+        session_factory=app.state.db_session_factory,
+        tool_registry=app.state.tool_registry,
+        tool_executor=app.state.tool_executor,
+        agent_runtime_support=None,
+        trigger_scheduler=object(),
+        sub_agent_orchestrator=object(),
+        background_tasks=[],
+    )
+    instance_runtime_context_registry._contexts["main"] = context
+    try:
+        created = _execute_tool_for_test(
+            "module_manager",
+            {
+                "command": "create_module",
+                "name": "clients",
+                "label": "Clients",
+                "description": "Track customers",
+                "actions": [
+                    {
+                        "id": "sync",
+                        "label": "Sync",
+                        "code": "result = {'ok': True}",
+                    },
+                ],
+            },
+        )
+        assert created.status_code == 200
+
+        rebuilt = instance_runtime_context_registry.get("main")
+        assert rebuilt is not None
+        assert rebuilt is not context
+        assert rebuilt.tool_registry.get("clients") is not None
+        assert app.state.tool_registry.get("clients") is None
+    finally:
+        asyncio.run(instance_runtime_context_registry.remove("main"))
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+
+
 def test_module_manager_rejects_reserved_dynamic_action_names():
     fake_db = FakeDB()
     previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
@@ -1327,6 +1392,7 @@ def test_module_manager_rejects_reserved_dynamic_action_names():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -1453,13 +1519,14 @@ def test_permissions_api_lists_static_system_and_dynamic_actions():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        response = client.get("/api/permissions", headers=headers)
+        response = client.get("/api/instances/main/permissions", headers=headers)
         assert response.status_code == 200
         permissions = {item["action"]: item["level"] for item in response.json()["permissions"]}
 
@@ -1502,20 +1569,21 @@ def test_permissions_api_updates_known_action_and_rejects_unknown_action():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        update = client.patch("/api/permissions/clients.create_records", json={"level": "approval"}, headers=headers)
+        update = client.patch("/api/instances/main/permissions/clients.create_records", json={"level": "approval"}, headers=headers)
         assert update.status_code == 200
         assert update.json() == {"action": "clients.create_records", "level": "approval"}
 
         stored = next(row for row in fake_db.storage[AraiosPermission] if row.action == "clients.create_records")
         assert stored.level == "approval"
 
-        missing = client.patch("/api/permissions/clients.not_real", json={"level": "deny"}, headers=headers)
+        missing = client.patch("/api/instances/main/permissions/clients.not_real", json={"level": "deny"}, headers=headers)
         assert missing.status_code == 404
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
@@ -1539,6 +1607,7 @@ def test_modules_import_package_creates_module_records_and_permissions():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -1579,7 +1648,7 @@ def test_modules_import_package_creates_module_records_and_permissions():
             },
         }
 
-        response = client.post("/api/modules/import", json=package, headers=headers)
+        response = client.post("/api/instances/main/modules/import", json=package, headers=headers)
         assert response.status_code == 201
         payload = response.json()
         assert payload["module"]["name"] == "lead_manager"
@@ -1613,6 +1682,7 @@ def test_modules_import_package_rejects_system_true():
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -1620,7 +1690,7 @@ def test_modules_import_package_rejects_system_true():
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.post(
-            "/api/modules/import",
+            "/api/instances/main/modules/import",
             json={
                 "schema_version": 1,
                 "module": {

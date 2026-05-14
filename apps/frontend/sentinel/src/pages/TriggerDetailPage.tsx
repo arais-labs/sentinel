@@ -15,7 +15,7 @@ import {
   CheckCircle2,
   XCircle,
 } from 'lucide-react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
@@ -24,6 +24,7 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api } from '../lib/api';
 import { formatCompactDate, toPrettyJson } from '../lib/format';
+import { instanceRouteFromPath } from '../lib/routes';
 import type {
   FireTriggerResponse,
   Session,
@@ -42,6 +43,7 @@ function statusTone(status: string): 'default' | 'good' | 'warn' | 'danger' | 'i
 export function TriggerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [logs, setLogs] = useState<TriggerLog[]>([]);
@@ -156,7 +158,7 @@ export function TriggerDetailPage() {
         }
       }
       if (result.log.status !== 'failed' && result.resolved_session_id) {
-        navigate(`/sessions/${result.resolved_session_id}`);
+        navigate(instanceRouteFromPath(location.pathname, `sessions/${result.resolved_session_id}`));
         return;
       }
       await loadAll(true);
@@ -235,7 +237,7 @@ export function TriggerDetailPage() {
     try {
       await api.delete(`/triggers/${id}`);
       toast.success('Trigger purged from registry');
-      navigate('/triggers');
+      navigate(instanceRouteFromPath(location.pathname, 'triggers'));
     } catch { toast.error('Purge failed'); }
   }
 
@@ -245,7 +247,7 @@ export function TriggerDetailPage() {
       subtitle={trigger ? `Type: ${trigger.type} • Protocol: ${trigger.action_type}` : 'Analyzing telemetry...'}
       actions={
         <div className="flex items-center gap-2">
-          <button onClick={() => navigate('/triggers')} className="btn-secondary h-9 px-3 text-xs gap-2">
+          <button onClick={() => navigate(instanceRouteFromPath(location.pathname, 'triggers'))} className="btn-secondary h-9 px-3 text-xs gap-2">
             <ArrowLeft size={14} /> Back
           </button>
           <div className="h-6 w-px bg-[color:var(--border-subtle)] mx-1" />

@@ -4,13 +4,14 @@ import {
   LogOut, ShieldAlert, User, Cpu, Hash, Info, ChevronRight,
   Bot, Eye, EyeOff, Check, Loader2, RefreshCw, HelpCircle, X,
 } from 'lucide-react';
-import { Link as RouterLink } from 'react-router-dom';
+import { Link as RouterLink, useLocation } from 'react-router-dom';
 
 import { AppShell } from '../components/AppShell';
 import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { APP_VERSION } from '../lib/env';
 import { api } from '../lib/api';
+import { instanceRouteFromPath } from '../lib/routes';
 import { useAuthStore } from '../store/auth-store';
 
 // ── types ───────────────────────────────────────────────────────────────────
@@ -253,6 +254,7 @@ function ProviderRow({
 // ── main page ───────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
+  const location = useLocation();
   const userId = useAuthStore((s) => s.userId);
   const role = useAuthStore((s) => s.role);
   const logout = useAuthStore((s) => s.logout);
@@ -393,7 +395,7 @@ export function SettingsPage() {
             <div className="space-y-3">
               {isAdmin ? (
                 <RouterLink
-                  to="/settings/admin"
+                  to={instanceRouteFromPath(location.pathname, 'settings/admin')}
                   className="flex items-center justify-between p-4 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all group"
                 >
                   <div className="flex items-center gap-3">

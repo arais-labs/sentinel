@@ -18,7 +18,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
 
   if (status === 'authenticated') {
-    return <Navigate to="/sessions" replace />;
+    return <Navigate to="/" replace />;
   }
 
   const isLoading = status === 'loading';

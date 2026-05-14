@@ -2,6 +2,7 @@ import {
   ArrowDown,
   Bot,
   ChevronDown,
+  Home,
   Expand,
   Loader2,
   Plus,
@@ -30,6 +31,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -45,7 +47,7 @@ import { Markdown } from '../components/ui/Markdown';
 import { WorkbenchExplorerPane } from '../components/workbench/WorkbenchExplorerPane';
 import { Workbench, type WorkbenchTab } from '../components/workbench/Workbench';
 import { StatusChip } from '../components/ui/StatusChip';
-import { SESSION_DEBUG_PANEL_ENABLED, WS_BASE_URL } from '../lib/env';
+import { SESSION_DEBUG_PANEL_ENABLED, wsSessionsBaseUrl } from '../lib/env';
 import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
 import { buildRuntimeGitChangedTree } from '../lib/runtimeGitTree';
 import {
@@ -55,6 +57,7 @@ import {
   type ApprovalRef,
 } from '../lib/approvals';
 import { api } from '../lib/api';
+import { instanceRouteFromPath } from '../lib/routes';
 import {
   applyToolcallEnd,
   applyToolResult,
@@ -160,6 +163,14 @@ interface SessionDebugEvent {
   at: string;
   type: string;
   summary: string;
+}
+
+interface SentinelInstance {
+  name: string;
+  database_name: string;
+  display_name: string | null;
+  workspace_root: string;
+  runtime_backend: string;
 }
 
 // Top-level right-rail tabs. `runtime` is a composite tab that contains
@@ -588,7 +599,16 @@ export function SessionsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { id: routeSessionId } = useParams<{ id: string }>();
+  const sessionRoute = useCallback(
+    (sessionId?: string | null) => instanceRouteFromPath(location.pathname, sessionId ? `sessions/${sessionId}` : 'sessions'),
+    [location.pathname],
+  );
+  const activeInstanceName = useMemo(() => {
+    const match = location.pathname.match(/^\/instances\/([^/]+)/);
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
+  }, [location.pathname]);
 
+  const [instances, setInstances] = useState<SentinelInstance[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
@@ -608,6 +628,8 @@ export function SessionsPage() {
     const raw = localStorage.getItem(AGENT_MODE_STORAGE_KEY);
     return raw && raw.trim() ? raw.trim() : null;
   });
+  const [isSessionDropdownOpen, setIsSessionDropdownOpen] = useState(false);
+  const [sessionDropdownRect, setSessionDropdownRect] = useState<{ left: number; top: number; width: number } | null>(null);
   const [selectedTier, setSelectedTier] = useState(
     () => parseTier(localStorage.getItem('sentinel-selected-tier')) ?? 'normal',
   );
@@ -764,12 +786,15 @@ export function SessionsPage() {
   }, [selectedAgentMode]);
 
   useEffect(() => {
-    if (!isEffortDropdownOpen && !isAgentModeDropdownOpen) return;
+    if (!isSessionDropdownOpen && !isEffortDropdownOpen && !isAgentModeDropdownOpen) return;
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
+      if (sessionDropdownRef.current?.contains(target)) return;
+      if (sessionDropdownMenuRef.current?.contains(target)) return;
       if (effortDropdownRef.current?.contains(target)) return;
       if (agentModeDropdownRef.current?.contains(target)) return;
+      setIsSessionDropdownOpen(false);
       setIsEffortDropdownOpen(false);
       setIsAgentModeDropdownOpen(false);
     };
@@ -777,7 +802,29 @@ export function SessionsPage() {
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
     };
-  }, [isEffortDropdownOpen, isAgentModeDropdownOpen]);
+  }, [isSessionDropdownOpen, isEffortDropdownOpen, isAgentModeDropdownOpen]);
+
+  const updateSessionDropdownRect = useCallback(() => {
+    const button = sessionDropdownButtonRef.current;
+    if (!button) return;
+    const rect = button.getBoundingClientRect();
+    setSessionDropdownRect({
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - 368)),
+      top: rect.bottom + 8,
+      width: rect.width,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isSessionDropdownOpen) return;
+    updateSessionDropdownRect();
+    window.addEventListener('resize', updateSessionDropdownRect);
+    window.addEventListener('scroll', updateSessionDropdownRect, true);
+    return () => {
+      window.removeEventListener('resize', updateSessionDropdownRect);
+      window.removeEventListener('scroll', updateSessionDropdownRect, true);
+    };
+  }, [isSessionDropdownOpen, updateSessionDropdownRect]);
 
   const [isCompacting, setIsCompacting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -807,6 +854,9 @@ export function SessionsPage() {
   const loadingOlderRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const sessionDropdownRef = useRef<HTMLDivElement | null>(null);
+  const sessionDropdownButtonRef = useRef<HTMLButtonElement | null>(null);
+  const sessionDropdownMenuRef = useRef<HTMLDivElement | null>(null);
   const effortDropdownRef = useRef<HTMLDivElement | null>(null);
   const agentModeDropdownRef = useRef<HTMLDivElement | null>(null);
   const fullscreenFrameRef = useRef<HTMLIFrameElement | null>(null);
@@ -931,6 +981,11 @@ export function SessionsPage() {
       () => sessions.find((session) => session.id === activeSessionId) ?? null,
       [sessions, activeSessionId],
   );
+  const activeInstance = useMemo(
+    () => instances.find((instance) => instance.name === activeInstanceName) ?? null,
+    [instances, activeInstanceName],
+  );
+  const instancePickerLabel = activeInstance?.display_name || activeInstance?.name || activeInstanceName || 'Choose instance';
   const rightRailTabs = useMemo<Array<{ id: RightRailTab; label: string }>>(
     () => {
       // Three primary tabs: Runtime (composite — Desktop/Terminals/Files),
@@ -1109,6 +1164,11 @@ export function SessionsPage() {
     api.post(`/sessions/${sessionId}/read`, {}).catch(() => {/* best-effort */});
   }, []);
 
+  const onInstanceClick = useCallback((instanceName: string) => {
+    if (!instanceName || instanceName === activeInstanceName) return;
+    navigate(`/instances/${encodeURIComponent(instanceName)}/sessions`);
+  }, [activeInstanceName, navigate]);
+
   const onSessionClick = useCallback((id: string) => {
     const previousId = activeSessionIdRef.current;
     if (previousId) {
@@ -1116,9 +1176,9 @@ export function SessionsPage() {
     }
     setRuntimeBooting(true);
     setActiveSessionId(id);
-    navigate(`/sessions/${id}`);
+    navigate(sessionRoute(id));
     markSessionRead(id);
-  }, [markSessionRead, navigate]);
+  }, [markSessionRead, navigate, sessionRoute]);
 
   const startResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1187,11 +1247,12 @@ export function SessionsPage() {
   }, [editingSessionId, sessions]);
 
   useEffect(() => {
+    void fetchInstances();
     void fetchSessions({ autoSelectIfEmpty: true });
     void fetchModels();
     void fetchAgentModes();
     void fetchLiveView();
-  }, []);
+  }, [activeInstanceName]);
 
   // Re-fetch live view when the active session changes
   useEffect(() => {
@@ -1386,10 +1447,18 @@ export function SessionsPage() {
       if (autoSelectIfEmpty && !activeSessionIdRef.current) {
         setActiveSessionId(defaultSession.id);
         activeSessionIdRef.current = defaultSession.id;
-        navigate(`/sessions/${defaultSession.id}`, { replace: true });
+        navigate(sessionRoute(defaultSession.id), { replace: true });
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to load sessions');
+    }
+  }
+
+  async function fetchInstances() {
+    try {
+      setInstances(await api.get<SentinelInstance[]>('/instances'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to load instances');
     }
   }
 
@@ -1420,9 +1489,9 @@ export function SessionsPage() {
             : null) ?? remaining[0]?.id ?? null;
         setActiveSessionId(fallbackId);
         if (fallbackId) {
-          navigate(`/sessions/${fallbackId}`, { replace: true });
+          navigate(sessionRoute(fallbackId), { replace: true });
         } else {
-          navigate('/sessions', { replace: true });
+          navigate(sessionRoute(), { replace: true });
         }
       }
       toast.success('Session deleted');
@@ -1447,7 +1516,7 @@ export function SessionsPage() {
         ),
       );
       setActiveSessionId(updated.id);
-      navigate(`/sessions/${updated.id}`);
+      navigate(sessionRoute(updated.id));
       toast.success('Main session updated');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to set main session');
@@ -1528,9 +1597,9 @@ export function SessionsPage() {
               : null) ?? remaining[0]?.id ?? null;
           setActiveSessionId(fallbackId);
           if (fallbackId) {
-            navigate(`/sessions/${fallbackId}`, { replace: true });
+            navigate(sessionRoute(fallbackId), { replace: true });
           } else {
-            navigate('/sessions', { replace: true });
+            navigate(sessionRoute(), { replace: true });
           }
         }
       }
@@ -1663,7 +1732,7 @@ export function SessionsPage() {
       setActiveSessionId(fresh.id);
       setRuntimeBooting(true);
       setLiveView(null);
-      navigate(`/sessions/${fresh.id}`, { replace: true });
+      navigate(sessionRoute(fresh.id), { replace: true });
       toast.success('New session started. Memories preserved.');
     } catch {
       toast.error('Failed to reset session');
@@ -2292,7 +2361,7 @@ export function SessionsPage() {
     }));
 
     const instanceId = ++wsInstanceRef.current;
-    const ws = new WebSocket(`${WS_BASE_URL}/ws/sessions/${sessionId}/stream`);
+    const ws = new WebSocket(`${wsSessionsBaseUrl()}/${sessionId}/stream`);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -3111,21 +3180,105 @@ export function SessionsPage() {
           hideHeader={mode === 'solo'}
           actions={
             mode === 'advanced' ? (
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <div ref={sessionDropdownRef} className="order-5 relative z-[200] hidden min-w-0 sm:block">
+                  <button
+                    ref={sessionDropdownButtonRef}
+                    type="button"
+                    aria-haspopup="listbox"
+                    aria-expanded={isSessionDropdownOpen}
+                    onClick={() => {
+                      setIsEffortDropdownOpen(false);
+                      setIsAgentModeDropdownOpen(false);
+                      updateSessionDropdownRect();
+                      setIsSessionDropdownOpen((open) => !open);
+                    }}
+                    className="flex h-9 w-[min(390px,34vw)] items-center justify-start gap-4 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] pl-4 pr-3 text-left shadow-sm outline-none transition-all hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)] focus:border-[color:var(--accent-solid)] focus:ring-2 focus:ring-[color:var(--accent-solid)]/20"
+                  >
+                    <span className="w-28 shrink-0 text-left text-[9px] font-bold uppercase tracking-[0.12em] text-[color:var(--text-muted)]">
+                      Instance Picker
+                    </span>
+                    <span aria-hidden="true" className="h-4 w-px shrink-0 bg-[color:var(--border-subtle)]" />
+                    <span className="block min-w-0 flex-1 truncate text-left text-xs font-semibold text-[color:var(--text-primary)]">
+                      {instancePickerLabel}
+                    </span>
+                    <ChevronDown
+                      size={13}
+                      aria-hidden="true"
+                      className={`shrink-0 text-[color:var(--text-muted)] transition-transform duration-300 ${isSessionDropdownOpen ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+
+                  {isSessionDropdownOpen && sessionDropdownRect && createPortal(
+                    <div
+                      ref={sessionDropdownMenuRef}
+                      role="listbox"
+                      aria-label="Switch session"
+                      style={{
+                        left: sessionDropdownRect.left,
+                        top: sessionDropdownRect.top,
+                        width: Math.max(sessionDropdownRect.width, 320),
+                      }}
+                      className="fixed z-[10000] max-h-80 overflow-y-auto rounded-2xl border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] py-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-200 origin-top-left"
+                    >
+                      {instances.length === 0 ? (
+                        <div className="px-3 py-3 text-xs text-[color:var(--text-muted)]">No instances</div>
+                      ) : (
+                        instances.map((instance) => {
+                          const title = (instance.display_name || instance.name).trim() || instance.name;
+                          const active = instance.name === activeInstanceName;
+                          return (
+                            <button
+                              key={instance.name}
+                              type="button"
+                              role="option"
+                              aria-selected={active}
+                              onClick={() => {
+                                setIsSessionDropdownOpen(false);
+                                if (!active) onInstanceClick(instance.name);
+                              }}
+                              className={`group flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
+                                active
+                                  ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
+                                  : 'text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)] hover:text-[color:var(--text-primary)]'
+                              }`}
+                            >
+                              <div className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? 'bg-[color:var(--accent-solid)]' : 'bg-[color:var(--text-muted)]/35 group-hover:bg-[color:var(--text-secondary)]'}`} />
+                              <span className="min-w-0 flex-1 truncate text-xs font-semibold">{title}</span>
+                              {active && <Check size={13} className="shrink-0 text-[color:var(--accent-solid)]" />}
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>,
+                    document.body,
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  title="Instance menu"
+                  aria-label="Instance menu"
+                  onClick={() => navigate('/')}
+                  className="order-6 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-secondary)] shadow-sm transition-all hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] active:scale-95"
+                >
+                  <Home size={14} />
+                </button>
+
                 <button
                     onClick={() => setMode('solo')}
-                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm animate-[focusModePillIn_180ms_cubic-bezier(0.22,1,0.36,1)]"
+                    className="order-1 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm animate-[focusModePillIn_180ms_cubic-bezier(0.22,1,0.36,1)]"
                 >
                   <Expand size={14} className="text-emerald-500/80" />
                   Focus
                 </button>
 
-                <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
+                <div className="order-2 h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
 
                 <button
                     onClick={resetSession}
                     title="Start fresh (memories preserved)"
-                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+                    className="order-3 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
                 >
                   <RefreshCw size={14} className="text-sky-500/80" />
                   New Chat
@@ -3134,7 +3287,7 @@ export function SessionsPage() {
                 <button
                     onClick={compactContext}
                     disabled={isCompacting}
-                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
+                    className="order-4 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
                 >
                   <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-500/80`} />
                   Compact

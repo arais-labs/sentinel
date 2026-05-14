@@ -5,6 +5,8 @@ from enum import StrEnum
 from typing import Any, Awaitable, Callable
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.services.llm.generic.types import ToolSchema
 
 
@@ -12,6 +14,8 @@ from app.services.llm.generic.types import ToolSchema
 class ToolRuntimeContext:
     session_id: UUID | None = None
     runtime_session_id: UUID | None = None
+    db_session_factory: async_sessionmaker[AsyncSession] | None = None
+    sub_agent_orchestrator: Any | None = None
 
 
 ToolExecutorFn = Callable[[dict[str, Any], ToolRuntimeContext], Awaitable[Any]]

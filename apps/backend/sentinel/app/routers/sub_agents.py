@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
+from app.dependencies import get_db, get_request_instance_runtime_context
 from app.middleware.auth import TokenPayload, require_auth
 from app.models import Session, SubAgentTask
 from app.schemas.sub_agents import CreateSubAgentTaskRequest, InterjectRequest, SubAgentTaskListResponse, SubAgentTaskResponse
@@ -15,7 +15,6 @@ from app.services.sub_agents import SubAgentOrchestrator
 from app.services.ws.ws_manager import ConnectionManager
 
 router = APIRouter()
-_orchestrator = SubAgentOrchestrator()
 
 
 @router.post("/{id}/sub-agents", status_code=status.HTTP_202_ACCEPTED)
@@ -182,10 +181,7 @@ def _extract_browser_tab_id(task: SubAgentTask) -> str | None:
 
 
 def _resolve_orchestrator(request: Request) -> SubAgentOrchestrator:
-    orchestrator = getattr(request.app.state, "sub_agent_orchestrator", None)
-    if isinstance(orchestrator, SubAgentOrchestrator):
-        return orchestrator
-    return _orchestrator
+    return get_request_instance_runtime_context(request).sub_agent_orchestrator
 
 
 def _resolve_ws_manager(request: Request) -> ConnectionManager | None:

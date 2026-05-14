@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.dependencies import get_db
+from app.dependencies import get_connection_instance_runtime_context, get_db, get_manager_db
 from app.logging_context import reset_log_session, set_log_session
 from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
 from app.models import Message, ToolApproval
@@ -75,6 +75,7 @@ async def stream_session(
     websocket: WebSocket,
     id: UUID,
     db: AsyncSession = Depends(get_db),
+    manager_db: AsyncSession = Depends(get_manager_db),
 ) -> None:
     manager = _resolve_manager(websocket)
     run_registry = _resolve_run_registry(websocket)
@@ -87,7 +88,7 @@ async def stream_session(
         return
 
     try:
-        user = await decode_and_validate_token(token, db, expected_type="access")
+        user = await decode_and_validate_token(token, manager_db, expected_type="access")
     except Exception:
         await websocket.close(code=4001, reason="Invalid token")
         return
@@ -101,8 +102,9 @@ async def stream_session(
     session_key = str(id)
     session_log_token = set_log_session(session_key)
     await manager.connect(session_key, websocket)
+    instance_context = get_connection_instance_runtime_context(websocket)
     naming_service = SessionNamingService(
-        provider=getattr(getattr(websocket.app.state, "agent_runtime_support", None), "provider", None),
+        provider=getattr(instance_context.agent_runtime_support, "provider", None),
         ws_manager=manager,
     )
 
@@ -116,15 +118,19 @@ async def stream_session(
 
     terminals_payload = await _initial_terminal_descriptors(session_key)
 
-    await websocket.send_json(
+    if not await _try_send_json(
+        websocket,
         {
             "type": "connected",
             "session_id": session_key,
             "history": history,
             "context_token_budget": int(settings.context_token_budget),
             "terminals": terminals_payload,
-        }
-    )
+        },
+    ):
+        reset_log_session(session_log_token)
+        await manager.disconnect(session_key, websocket)
+        return
 
     queue_runtime_activation(websocket.app, session_key)
 
@@ -152,7 +158,8 @@ async def stream_session(
                 "status": "running",
                 "message": "Tool call is still running or waiting for completion.",
             }
-        await websocket.send_json(
+        if not await _try_send_json(
+            websocket,
             {
                 "type": "toolcall_start",
                 "session_id": session_key,
@@ -161,9 +168,13 @@ async def stream_session(
                     "name": call["name"],
                     "arguments": call["arguments"],
                 },
-            }
-        )
-        await websocket.send_json(
+            },
+        ):
+            reset_log_session(session_log_token)
+            await manager.disconnect(session_key, websocket)
+            return
+        if not await _try_send_json(
+            websocket,
             {
                 "type": "tool_result",
                 "session_id": session_key,
@@ -175,8 +186,11 @@ async def stream_session(
                     "metadata": pending_metadata,
                     "tool_arguments": call["arguments"],
                 },
-            }
-        )
+            },
+        ):
+            reset_log_session(session_log_token)
+            await manager.disconnect(session_key, websocket)
+            return
     current_phase = await run_registry.get_phase(session_key) if session_running else None
     if session_running and not unresolved_calls and (current_phase in {None, "thinking"}):
         await manager.broadcast_thinking_start(session_key)
@@ -212,7 +226,7 @@ async def stream_session(
                 metadata=message.metadata_json or {},
             )
 
-            agent_runtime_support = getattr(websocket.app.state, "agent_runtime_support", None)
+            agent_runtime_support = get_connection_instance_runtime_context(websocket).agent_runtime_support
             if agent_runtime_support is None:
                 await manager.broadcast_agent_error(
                     session_key, "No provider connected for agent reply."
@@ -309,6 +323,14 @@ async def _load_pending_tool_approvals(
         if tool_name:
             approvals_by_tool[tool_name].append(row)
     return approvals_by_tool
+
+
+async def _try_send_json(websocket: WebSocket, payload: dict[str, Any]) -> bool:
+    try:
+        await websocket.send_json(payload)
+    except (WebSocketDisconnect, RuntimeError):
+        return False
+    return True
 
 
 def _match_pending_tool_approval(
@@ -491,6 +513,7 @@ async def stream_terminal(
     id: UUID,
     terminal_id: str,
     db: AsyncSession = Depends(get_db),
+    manager_db: AsyncSession = Depends(get_manager_db),
 ) -> None:
     """Bidirectional bridge between xterm.js and the tmux session in the guest VM.
 
@@ -507,7 +530,7 @@ async def stream_terminal(
         return
 
     try:
-        user = await decode_and_validate_token(token, db, expected_type="access")
+        user = await decode_and_validate_token(token, manager_db, expected_type="access")
     except Exception:
         await websocket.close(code=4001, reason="Invalid token")
         return
