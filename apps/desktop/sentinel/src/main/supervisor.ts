@@ -30,6 +30,10 @@ export class ProcessSupervisor extends EventEmitter {
     return this.services.get(name)?.state === 'running';
   }
 
+  pid(name: ServiceName): number | undefined {
+    return this.services.get(name)?.pid;
+  }
+
   async start(options: ManagedProcessOptions): Promise<void> {
     // Wait for any prior process under this name to fully exit before spawning
     // the replacement; otherwise the old SIGTERM'd process can still hold the

@@ -5,6 +5,7 @@ import { IPC } from '../shared/ipc.js';
 const api: DesktopApi = {
   getStatus: () => ipcRenderer.invoke(IPC.getStatus),
   stopServices: () => ipcRenderer.invoke(IPC.stopServices),
+  resetAuth: () => ipcRenderer.invoke(IPC.resetAuth),
   openSentinel: () => ipcRenderer.invoke(IPC.openSentinel),
   showControlCenter: () => ipcRenderer.invoke(IPC.showControlCenter),
   revealAppSupport: () => ipcRenderer.invoke(IPC.revealAppSupport),

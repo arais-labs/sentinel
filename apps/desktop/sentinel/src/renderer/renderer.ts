@@ -61,6 +61,11 @@ el('refreshBtn').addEventListener('click', () => void refresh());
 el('openBtn').addEventListener('click', () => void api.openSentinel());
 el('revealBtn').addEventListener('click', () => void api.revealAppSupport());
 el('stopBtn').addEventListener('click', async () => render(await api.stopServices()));
+el('resetAuthBtn').addEventListener('click', async () => {
+  const confirmed = window.confirm('Reset desktop auth? You will need to create a new admin account on the next login screen.');
+  if (!confirmed) return;
+  render(await api.resetAuth());
+});
 
 api.onStatus(render);
 api.onLog((entry: LogEntry) => {

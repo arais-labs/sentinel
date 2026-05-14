@@ -267,11 +267,18 @@ function buildFrontend() {
   run('npm', ['run', 'build'], { cwd: frontendDir });
 }
 
+async function verifyRuntime(target, platform) {
+  if (platform.verifyRuntime) {
+    await platform.verifyRuntime({ target, paths: buildPaths(target) });
+  }
+}
+
 async function buildDesktop(args) {
   const platform = await loadPlatform(args.target);
   const { config } = await readLock(args.target);
   installNodeDependencies();
   await buildRuntime(args.target, config, platform, args.forceRuntime);
+  await verifyRuntime(args.target, platform);
   buildFrontend();
   run('npx', ['tsc', '-p', 'tsconfig.json']);
   if (platform.preparePackageAssets) {
@@ -286,8 +293,15 @@ async function cleanDesktop() {
   await rm(distRoot, { recursive: true, force: true });
 }
 
+async function verifyDesktop(args) {
+  const platform = await loadPlatform(args.target);
+  run('npx', ['tsc', '-p', 'tsconfig.json', '--noEmit']);
+  await verifyRuntime(args.target, platform);
+}
+
 function usage() {
   console.error('Usage: npm run desktop:build -- [--target macos-arm64] [--force-runtime]');
+  console.error('       npm run desktop:verify -- [--target macos-arm64]');
   console.error('       npm run desktop:clean');
 }
 
@@ -299,6 +313,10 @@ async function main() {
   }
   if (args.command === 'clean') {
     await cleanDesktop();
+    return;
+  }
+  if (args.command === 'verify') {
+    await verifyDesktop(args);
     return;
   }
   usage();

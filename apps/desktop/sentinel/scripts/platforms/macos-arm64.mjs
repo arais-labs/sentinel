@@ -20,6 +20,7 @@ function run(command, args, options = {}) {
 function output(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
     env: process.env,
     ...options,
     env: { ...process.env, ...(options.env ?? {}) },
@@ -33,6 +34,7 @@ function output(command, args, options = {}) {
 function outputMaybe(command, args) {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
     env: process.env,
   });
   return result.status === 0 ? result.stdout.trim() : '';
@@ -167,6 +169,16 @@ function installNameAddRpath(binary, rpath) {
   run('install_name_tool', ['-add_rpath', rpath, binary]);
 }
 
+function loaderPathToLib(file, libDir) {
+  const relative = path.relative(path.dirname(file), libDir) || '.';
+  return `@loader_path/${relative.split(path.sep).join('/')}`;
+}
+
+function loaderPathToFile(fromFile, toFile) {
+  const relative = path.relative(path.dirname(fromFile), toFile);
+  return `@loader_path/${relative.split(path.sep).join('/')}`;
+}
+
 function relocatePythonRuntime(outputDir, version) {
   const majorMinor = pythonMajorMinor(version);
   const libName = `libpython${majorMinor}.dylib`;
@@ -270,6 +282,8 @@ async function buildPythonRuntime({ config, paths }) {
     '-c',
     "import sys, sysconfig, asyncpg, fastapi, pgvector, uvicorn; assert sys.prefix == sys.base_prefix; assert sysconfig.get_config_var('LIBDIR').startswith(sys.base_prefix)",
   ], { env: pythonEnv(outputDir) });
+  await vendorPythonDylibs(outputDir);
+  assertNoExternalDylibs(outputDir, 'Python runtime');
   await prunePythonRuntime(outputDir);
 }
 
@@ -418,7 +432,7 @@ function isSystemDylib(reference) {
   return reference.startsWith('/usr/lib/') || reference.startsWith('/System/Library/');
 }
 
-function assertNoExternalDylibs(outputDir) {
+function assertNoExternalDylibs(outputDir, label = 'Runtime') {
   const files = output('find', [outputDir, '-type', 'f']).split('\n').filter(Boolean);
   const offenders = [];
   for (const file of files) {
@@ -430,7 +444,39 @@ function assertNoExternalDylibs(outputDir) {
     }
   }
   if (offenders.length) {
-    throw new Error(`QEMU runtime has non-system absolute dylib references:\n${offenders.join('\n')}`);
+    throw new Error(`${label} has non-system absolute dylib references:\n${offenders.join('\n')}`);
+  }
+}
+
+async function vendorPythonDylibs(outputDir) {
+  const files = output('find', [outputDir, '-type', 'f']).split('\n').filter(Boolean);
+  rewritePythonSelfInstallNames(files);
+  rewritePythonWheelLocalDylibs(files);
+  const entrypoints = files.filter((file) => !file.endsWith('.a') && parseOtoolDependencies(file).length > 0);
+  await vendorDylibClosure(entrypoints, path.join(outputDir, 'lib'));
+}
+
+function rewritePythonSelfInstallNames(files) {
+  for (const file of files) {
+    for (const reference of parseOtoolDependencies(file)) {
+      if (!reference.startsWith('/')) continue;
+      if (path.resolve(reference) !== path.resolve(file)) continue;
+      installNameChange(file, reference, `@loader_path/${path.basename(file)}`);
+    }
+  }
+}
+
+function rewritePythonWheelLocalDylibs(files) {
+  for (const file of files) {
+    for (const reference of parseOtoolDependencies(file)) {
+      if (!reference.startsWith('/DLC/')) continue;
+      const suffix = reference.slice('/DLC/'.length);
+      const matches = files.filter((candidate) => candidate.endsWith(suffix));
+      if (matches.length !== 1) {
+        throw new Error(`Python dependency ${reference} maps to ${matches.length} bundled files`);
+      }
+      installNameChange(file, reference, loaderPathToFile(file, matches[0]));
+    }
   }
 }
 
@@ -468,7 +514,7 @@ async function vendorDylibClosure(entrypoints, libDir) {
   }
 
   for (const binary of entrypoints) {
-    installNameAddRpath(binary, '@executable_path/../lib');
+    installNameAddRpath(binary, loaderPathToLib(binary, libDir));
   }
   for (const file of [...entrypoints, ...bundledFiles]) {
     const replacementPrefix = bundledFiles.includes(file) ? '@loader_path' : '@rpath';
@@ -567,7 +613,7 @@ async function buildQemuRuntime({ config, paths }) {
     if (!existsSync(built)) throw new Error(`Built QEMU runtime is missing firmware: ${built}`);
   }
   await vendorDylibClosure([qemuSystem, qemuImg], path.join(outputDir, 'lib'));
-  assertNoExternalDylibs(outputDir);
+  assertNoExternalDylibs(outputDir, 'QEMU runtime');
 
   for (const script of ['build-base-image.sh', 'validate-base-image.sh']) {
     await cp(path.join(sourceDir, script), path.join(outputDir, script), { dereference: true });
@@ -602,6 +648,20 @@ export async function preparePackageAssets({ paths }) {
   run('iconutil', ['-c', 'icns', iconsetDir, '-o', iconPath]);
 }
 
+export async function verifyRuntime({ paths }) {
+  const runtimeDir = paths.runtimeDir;
+  const components = [
+    ['Python runtime', path.join(runtimeDir, 'python')],
+    ['Postgres runtime', path.join(runtimeDir, 'postgres')],
+    ['QEMU runtime', path.join(runtimeDir, 'qemu')],
+  ];
+  for (const [label, componentDir] of components) {
+    if (existsSync(componentDir)) {
+      assertNoExternalDylibs(componentDir, label);
+    }
+  }
+}
+
 export function electronBuilderConfig({ paths, baseConfig }) {
   return {
     ...baseConfig,
@@ -627,6 +687,8 @@ export function electronBuilderConfig({ paths, baseConfig }) {
     mac: {
       ...(baseConfig.mac || {}),
       icon: path.join(paths.targetDir, 'icon.icns'),
+      entitlements: path.join(paths.desktopDir, 'scripts/entitlements/mac.plist'),
+      entitlementsInherit: path.join(paths.desktopDir, 'scripts/entitlements/mac.inherit.plist'),
     },
     dmg: {
       ...(baseConfig.dmg || {}),

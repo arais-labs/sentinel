@@ -140,6 +140,7 @@ function installMenu(): void {
 function registerIpc(): void {
   ipcMain.handle(IPC.getStatus, () => manager.getStatus());
   ipcMain.handle(IPC.stopServices, () => manager.stopServices());
+  ipcMain.handle(IPC.resetAuth, () => manager.resetAuth());
   ipcMain.handle(IPC.openSentinel, () => showSentinel());
   ipcMain.handle(IPC.showControlCenter, () => showControlCenter());
   ipcMain.handle(IPC.revealAppSupport, () => manager.revealAppSupport());

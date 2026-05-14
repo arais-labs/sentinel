@@ -282,6 +282,14 @@ input::placeholder {
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.panel-body {
+  padding: 16px 20px;
+}
+
+.panel-body p {
+  margin: 0;
+}
+
 .panel-title {
   margin: 0;
   font-size: 11px;

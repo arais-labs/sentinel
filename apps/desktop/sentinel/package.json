@@ -12,7 +12,7 @@
   "scripts": {
     "desktop:build": "node scripts/desktop-build.mjs build",
     "desktop:clean": "node scripts/desktop-build.mjs clean",
-    "desktop:verify": "tsc -p tsconfig.json --noEmit"
+    "desktop:verify": "node scripts/desktop-build.mjs verify"
   },
   "dependencies": {
     "http-proxy": "^1.18.1",

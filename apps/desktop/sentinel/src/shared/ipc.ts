@@ -39,6 +39,7 @@ export interface LogEntry {
 export interface DesktopApi {
   getStatus(): Promise<DesktopStatus>;
   stopServices(): Promise<DesktopStatus>;
+  resetAuth(): Promise<DesktopStatus>;
   openSentinel(): Promise<DesktopStatus>;
   showControlCenter(): Promise<void>;
   revealAppSupport(): Promise<void>;
@@ -50,6 +51,7 @@ export interface DesktopApi {
 export const IPC = {
   getStatus: 'desktop:getStatus',
   stopServices: 'desktop:stopServices',
+  resetAuth: 'desktop:resetAuth',
   openSentinel: 'desktop:openSentinel',
   showControlCenter: 'desktop:showControlCenter',
   revealAppSupport: 'desktop:revealAppSupport',

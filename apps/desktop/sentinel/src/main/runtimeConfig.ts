@@ -11,6 +11,10 @@ export interface DesktopPorts {
   qemuCdp: number;
 }
 
+export interface DesktopSecrets {
+  jwtSecretKey: string;
+}
+
 export function runtimeOutputDir(): string {
   return path.join(appSupportRoot(), 'qemu/output');
 }
@@ -35,12 +39,16 @@ export function qemuRunRoot(): string {
   return path.join(appSupportRoot(), 'qemu/run');
 }
 
+export function desktopRunRoot(): string {
+  return path.join(appSupportRoot(), 'run');
+}
+
 export function postgresBinaryPath(name: string): string {
   return path.join(resourceRoot(), 'postgres/bin', name);
 }
 
-export function pythonBinaryPath(): string {
-  return path.join(resourceRoot(), 'python/bin/python3');
+export function backendBinaryPath(): string {
+  return path.join(resourceRoot(), 'backend/sentinel-backend/sentinel-backend');
 }
 
 export function qemuBinaryPath(name: string): string {
@@ -48,14 +56,12 @@ export function qemuBinaryPath(name: string): string {
 }
 
 export function runtimeCommandPath(pathValue = process.env.PATH || ''): string {
-  return commandSearchPath(`${path.join(resourceRoot(), 'postgres/bin')}:${path.join(resourceRoot(), 'python/bin')}:${path.join(qemuResourcePath(), 'bin')}:${pathValue}`);
+  return commandSearchPath(`${path.join(resourceRoot(), 'postgres/bin')}:${path.join(qemuResourcePath(), 'bin')}:${pathValue}`);
 }
 
-export function buildBackendEnv(ports: DesktopPorts): NodeJS.ProcessEnv {
+export function buildBackendEnv(ports: DesktopPorts, secrets: DesktopSecrets): NodeJS.ProcessEnv {
   return {
     PATH: runtimeCommandPath(''),
-    PYTHONHOME: path.join(resourceRoot(), 'python'),
-    PYTHONNOUSERSITE: '1',
     LANG: 'C',
     LC_ALL: 'C',
     LC_CTYPE: 'C',
@@ -66,7 +72,7 @@ export function buildBackendEnv(ports: DesktopPorts): NodeJS.ProcessEnv {
     DATABASE_PASSWORD: 'sentinel',
     DATABASE_MAINTENANCE_NAME: 'postgres',
     DATABASE_MANAGER_NAME: 'sentinel_manager',
-    INSTANCE_WORKSPACE_ROOT: desktopWorkspaceRoot(),
+    JWT_SECRET_KEY: secrets.jwtSecretKey,
     SESSION_RUNTIME_BASE_DIR: desktopWorkspaceRoot(),
     RUNTIME_EXEC_BACKEND: 'qemu',
     RUNTIME_QEMU_CONTROL: 'desktop',
