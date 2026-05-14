@@ -9,6 +9,7 @@ import { wsSessionsBaseUrl } from '../../lib/env';
 interface TerminalPreviewProps {
   sessionId: string;
   terminalId: string;
+  instanceName: string;
 }
 
 // Higher-contrast ANSI palette than xterm's defaults so `ls --color=auto`,
@@ -39,7 +40,7 @@ const TERMINAL_THEME = {
   brightWhite: '#ffffff',
 };
 
-export const TerminalPreview = memo(({ sessionId, terminalId }: TerminalPreviewProps) => {
+export const TerminalPreview = memo(({ sessionId, terminalId, instanceName }: TerminalPreviewProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Terminal + WebSocket live across renders for a stable (sessionId, terminalId)
   // pair; switching either tears down and rebuilds via the effect's cleanup.
@@ -85,7 +86,7 @@ export const TerminalPreview = memo(({ sessionId, terminalId }: TerminalPreviewP
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    const wsUrl = `${wsSessionsBaseUrl()}/${sessionId}/terminals/${terminalId}`;
+    const wsUrl = `${wsSessionsBaseUrl(instanceName)}/${sessionId}/terminals/${terminalId}`;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
@@ -169,7 +170,7 @@ export const TerminalPreview = memo(({ sessionId, terminalId }: TerminalPreviewP
       termRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [sessionId, terminalId]);
+  }, [sessionId, terminalId, instanceName]);
 
   return (
     <div className="flex flex-col h-full w-full bg-[color:var(--surface-0)]">

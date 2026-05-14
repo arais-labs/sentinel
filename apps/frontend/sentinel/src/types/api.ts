@@ -7,6 +7,11 @@ export interface TokenResponse {
   expires_in: number;
 }
 
+export interface AuthSetupStatus {
+  configured: boolean;
+  bootstrap_available: boolean;
+}
+
 export interface Session {
   id: string;
   user_id: string;

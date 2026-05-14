@@ -169,7 +169,6 @@ interface SentinelInstance {
   name: string;
   database_name: string;
   display_name: string | null;
-  workspace_root: string;
   runtime_backend: string;
 }
 
@@ -839,6 +838,9 @@ export function SessionsPage() {
   useEffect(() => {
     if (isDesktopFullscreen) {
       setResetMenuOpen(false);
+      setIsSessionDropdownOpen(false);
+      setIsEffortDropdownOpen(false);
+      setIsAgentModeDropdownOpen(false);
     }
   }, [isDesktopFullscreen]);
 
@@ -2361,7 +2363,10 @@ export function SessionsPage() {
     }));
 
     const instanceId = ++wsInstanceRef.current;
-    const ws = new WebSocket(`${wsSessionsBaseUrl()}/${sessionId}/stream`);
+    if (!activeInstanceName) {
+      return;
+    }
+    const ws = new WebSocket(`${wsSessionsBaseUrl(activeInstanceName)}/${sessionId}/stream`);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -3177,9 +3182,9 @@ export function SessionsPage() {
           subtitle={activeSession ? `ID: ${activeSession.id}` : 'Operator Workspace'}
           contentClassName="h-full !p-0 overflow-hidden"
           hideSidebar={mode === 'solo'}
-          hideHeader={mode === 'solo'}
+          hideHeader={mode === 'solo' || isDesktopFullscreen}
           actions={
-            mode === 'advanced' ? (
+            mode === 'advanced' && !isDesktopFullscreen ? (
               <div className="flex min-w-0 items-center gap-2">
                 <div ref={sessionDropdownRef} className="order-5 relative z-[200] hidden min-w-0 sm:block">
                   <button
@@ -4353,6 +4358,7 @@ export function SessionsPage() {
                       key={`${activeSessionId}:${focusedTerminalId ?? activeTerminals[0].id}`}
                       sessionId={activeSessionId}
                       terminalId={focusedTerminalId ?? activeTerminals[0].id}
+                      instanceName={activeInstanceName ?? ''}
                     />
                   ) : (
                     // Empty state mirrors the Agents tab's idle treatment —

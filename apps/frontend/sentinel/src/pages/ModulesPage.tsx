@@ -25,6 +25,9 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { AppShell } from '../components/AppShell';
+import { api } from '../lib/api';
+
 function resolveIcon(name: string | null | undefined): LucideIcon {
   if (!name) return LayoutGrid;
   // lucide icons object uses PascalCase keys (e.g. "Users", "FileText")
@@ -32,36 +35,6 @@ function resolveIcon(name: string | null | undefined): LucideIcon {
   // Convert: "file-text" → "FileText", "users" → "Users"
   const pascal = name.replace(/(^|[-_])([a-z])/g, (_, __, c) => c.toUpperCase());
   return (lucideIcons as Record<string, LucideIcon>)[pascal] || LayoutGrid;
-}
-
-import { AppShell } from '../components/AppShell';
-import { api } from '../lib/api';
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   API helper — bypasses Sentinel's /api/v1 prefix
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-async function modulesApi<T = any>(path: string, opts?: { method?: string; body?: unknown }): Promise<T> {
-  const res = await fetch(scopedModulePath(path), {
-    method: opts?.method ?? 'GET',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: opts?.body !== undefined ? JSON.stringify(opts.body) : undefined,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || body.error?.message || body.error || `Request failed (${res.status})`);
-  }
-  return res.json();
-}
-
-function scopedModulePath(path: string): string {
-  const match = window.location.pathname.match(/^\/instances\/([^/]+)/);
-  if (!match?.[1] || !path.startsWith('/api/')) {
-    return path;
-  }
-  const instanceName = encodeURIComponent(decodeURIComponent(match[1]));
-  return `/api/instances/${instanceName}${path.slice('/api'.length)}`;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -562,7 +535,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
 
   useEffect(() => {
     if (!hasRecordActions) return;
-    modulesApi<{ records: any[] }>(`/api/modules/${config.name}/records`)
+    api.get<{ records: any[] }>(`/modules/${config.name}/records`)
       .then(res => setRecords(res.records || []))
       .catch(() => {});
   }, [config.name, hasRecordActions]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -570,7 +543,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
   const loadSecrets = useCallback(async () => {
     if (!(config.secrets || []).length) return;
     try {
-      const res = await modulesApi<{ secrets: Record<string, boolean> }>(`/api/modules/${config.name}/secrets-status`);
+      const res = await api.get<{ secrets: Record<string, boolean> }>(`/modules/${config.name}/secrets-status`);
       setSecretsStatus(res.secrets || {});
     } catch { /* non-fatal */ }
   }, [config.name, config.secrets]);
@@ -579,6 +552,9 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
 
   const copyPrompt = () => {
     const BASE_URL = window.location.origin;
+    const instanceMatch = window.location.pathname.match(/^\/instances\/([^/]+)/);
+    const instanceName = instanceMatch?.[1] ?? 'main';
+    const apiBase = `${BASE_URL}/api/v1/instances/${instanceName}`;
     const lines = [
       `Module: ${config.label} (${config.name}) \u2014 ${config.description || ''}`,
       `Type: tool \u2014 call actions via POST, no records stored.`,
@@ -586,7 +562,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
     ];
     for (const action of (config.actions || [])) {
       lines.push(`  ${action.id} \u2014 ${action.description || action.label}`);
-      lines.push(`    POST ${BASE_URL}/api/modules/${config.name}/action/${action.id}`);
+      lines.push(`    POST ${apiBase}/modules/${config.name}/action/${action.id}`);
       lines.push(`    Body: { ${(action.params || []).map((p: any) => `"${p.key}"${p.required ? '*' : ''}: "${p.placeholder || p.type}"`).join(', ')} }`);
     }
     navigator.clipboard.writeText(lines.join('\n'));
@@ -597,7 +573,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
 
   const resetSecret = async (key: string, label: string) => {
     try {
-      await modulesApi(`/api/modules/${config.name}/secrets/${key}`, { method: 'DELETE' });
+      await api.delete(`/modules/${config.name}/secrets/${key}`);
       toast.success(`${label} cleared`);
       loadSecrets();
     } catch { toast.error('Could not clear secret'); }
@@ -679,7 +655,7 @@ function SecretCard({ moduleName, secret, isSet, onSaved }: { moduleName: string
     if (!value.trim()) return;
     try {
       setSaving(true);
-      await modulesApi(`/api/modules/${moduleName}/secrets/${secret.key}`, { method: 'PUT', body: { value } });
+      await api.put(`/modules/${moduleName}/secrets/${secret.key}`, { value });
       setValue('');
       setEditing(false);
       toast.success(`${secret.label} saved`);
@@ -779,9 +755,9 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
       setRunning(true);
       setResult(null);
       const url = isRecordAction && selectedRecordId
-        ? `/api/modules/${moduleName}/records/${selectedRecordId}/action/${action.id}`
-        : `/api/modules/${moduleName}/action/${action.id}`;
-      const res = await modulesApi(url, { method: 'POST', body: form });
+        ? `/modules/${moduleName}/records/${selectedRecordId}/action/${action.id}`
+        : `/modules/${moduleName}/action/${action.id}`;
+      const res = await api.post<any>(url, form);
       const ok = res?.ok !== false;
       setResult({ ok, data: res });
       if (!ok) toast.error(res?.error || 'Action returned an error');
@@ -875,7 +851,7 @@ function PageModule({ config }: { config: any }) {
   const save = async () => {
     try {
       setSaving(true);
-      await modulesApi(`/api/modules/${config.name}`, { method: 'PATCH', body: { page_content: content } });
+      await api.patch(`/modules/${config.name}`, { page_content: content });
       toast.success('Page saved');
       setDirty(false);
       setEditing(false);
@@ -965,8 +941,8 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
     try {
       if (!silent) setLoading(true);
       const [cfgRes, recRes] = await Promise.all([
-        modulesApi(`/api/modules/${moduleName}`),
-        modulesApi<{ records: any[] }>(`/api/modules/${moduleName}/records`),
+        api.get<any>(`/modules/${moduleName}`),
+        api.get<{ records: any[] }>(`/modules/${moduleName}/records`),
       ]);
       setConfig(cfgRes);
       const recs = Array.isArray(recRes?.records) ? recRes.records : [];
@@ -1025,7 +1001,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
   const handleCreate = async (data: Record<string, any>) => {
     try {
       setSaving(true);
-      const rec = await modulesApi(`/api/modules/${moduleName}/records`, { method: 'POST', body: data });
+      const rec = await api.post<any>(`/modules/${moduleName}/records`, data);
       setCreateOpen(false);
       toast.success('Created');
       await loadAll(true);
@@ -1038,7 +1014,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
     if (!selectedId) return;
     try {
       setSaving(true);
-      await modulesApi(`/api/modules/${moduleName}/records/${selectedId}`, { method: 'PATCH', body: patch });
+      await api.patch(`/modules/${moduleName}/records/${selectedId}`, patch);
       toast.success('Saved');
       await loadAll(true);
     } catch { toast.error('Save failed'); }
@@ -1048,7 +1024,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
   const handleDelete = async (id: string) => {
     try {
       setSaving(true);
-      await modulesApi(`/api/modules/${moduleName}/records/${id}`, { method: 'DELETE' });
+      await api.delete(`/modules/${moduleName}/records/${id}`);
       setConfirmDeleteId(null);
       setSelectedId(null);
       toast.success('Deleted');
@@ -1059,7 +1035,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
 
   const handleDeleteModule = async () => {
     try {
-      await modulesApi(`/api/modules/${moduleName}`, { method: 'DELETE' });
+      await api.delete(`/modules/${moduleName}`);
       toast.success(`${config?.label || moduleName} deleted`);
       (onDeleted ?? onBack)?.();
     } catch { toast.error('Failed to delete module'); }
@@ -1069,7 +1045,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
     if (!selectedId) return;
     try {
       setSaving(true);
-      const res = await modulesApi(`/api/modules/${moduleName}/records/${selectedId}/action/${actionId}`, { method: 'POST', body: {} });
+      const res = await api.post<any>(`/modules/${moduleName}/records/${selectedId}/action/${actionId}`, {});
       if (res?.ok !== false) toast.success('Action completed');
       else toast.error(res?.error || 'Action returned an error');
       await loadAll(true);
@@ -1080,7 +1056,9 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
   const copyPrompt = () => {
     if (!config) return;
     const BASE_URL = window.location.origin;
-    const base = `${BASE_URL}/api/modules/${config.name}`;
+    const instanceMatch = window.location.pathname.match(/^\/instances\/([^/]+)/);
+    const instanceName = instanceMatch?.[1] ?? 'main';
+    const base = `${BASE_URL}/api/v1/instances/${instanceName}/modules/${config.name}`;
     const flds = (config.fields || []).map((f: any) => `${f.key}${f.required ? '*' : ''} (${f.type}${f.options ? ': ' + f.options.join('|') : ''})`).join(', ');
     const lines = [`Module: ${config.label} (${config.name})`, `Type: data`, '', 'Endpoints:',
       `  GET    ${base}/records`, `  POST   ${base}/records`, `  PATCH  ${base}/records/:id`, `  DELETE ${base}/records/:id`, '',
@@ -1292,7 +1270,7 @@ function ModulesSection() {
   const load = useCallback(async (keepSelection = false) => {
     try {
       setLoading(prev => !keepSelection && prev === true ? true : prev);
-      const data = await modulesApi<{ modules: any[] }>('/api/modules');
+      const data = await api.get<{ modules: any[] }>('/modules');
       const list = data.modules || [];
       setModules(list);
       if (!keepSelection) {
@@ -1313,10 +1291,7 @@ function ModulesSection() {
       setImporting(true);
       const text = await file.text();
       const payload = JSON.parse(text);
-      const response = await modulesApi<{ module: any; imported_records: number }>('/api/modules/import', {
-        method: 'POST',
-        body: payload,
-      });
+      const response = await api.post<{ module: any; imported_records: number }>('/modules/import', payload);
       await load(true);
       if (response?.module?.name) setActiveModule(response.module.name);
       const importedCount = Number(response?.imported_records || 0);
@@ -1580,7 +1555,7 @@ function PermissionsSection() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await modulesApi<{ permissions: { action: string; level: string }[] }>('/api/permissions');
+      const data = await api.get<{ permissions: { action: string; level: string }[] }>('/permissions');
       setPermissions(data.permissions || []);
     } catch { toast.error('Failed to load permissions'); }
     finally { setLoading(false); }
@@ -1593,7 +1568,7 @@ function PermissionsSection() {
   const handleToggle = async (action: string, newLevel: string) => {
     try {
       setUpdatingAction(action);
-      await modulesApi(`/api/permissions/${action}`, { method: 'PATCH', body: { level: newLevel } });
+      await api.patch(`/permissions/${action}`, { level: newLevel });
       setPermissions(prev => prev.map(p => p.action === action ? { ...p, level: newLevel } : p));
       toast.success(`${action} \u2192 ${newLevel}`);
     } catch { toast.error('Failed to update permission'); }

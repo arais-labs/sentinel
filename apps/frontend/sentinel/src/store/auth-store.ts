@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 import { AUTH_BASE_URL } from '../lib/env';
 import { decodeJwt, tokenExpiresSoon } from '../lib/jwt';
-import type { AuthStatus, TokenResponse } from '../types/api';
+import type { AuthSetupStatus, AuthStatus, TokenResponse } from '../types/api';
 
 interface AuthSnapshot {
   accessToken: string;
@@ -16,6 +16,8 @@ interface AuthState extends AuthSnapshot {
   role: string | null;
   errorMessage: string | null;
   initialize: () => void;
+  getSetupStatus: () => Promise<AuthSetupStatus>;
+  bootstrap: (username: string, password: string) => Promise<boolean>;
   login: (username: string, password: string) => Promise<boolean>;
   refresh: () => Promise<boolean>;
   logout: () => Promise<void>;
@@ -68,6 +70,18 @@ async function authRequest(path: string, body?: Record<string, unknown>) {
   }
 
   return payload as TokenResponse;
+}
+
+async function fetchSetupStatus(): Promise<AuthSetupStatus> {
+  const response = await fetch(`${AUTH_BASE_URL}/status`, {
+    method: 'GET',
+    credentials: 'include',
+  });
+  const payload = (await response.json().catch(() => ({}))) as unknown;
+  if (!response.ok) {
+    throw new Error(parseAuthError(payload, 'Unable to read auth status'));
+  }
+  return payload as AuthSetupStatus;
 }
 
 async function fetchMe(): Promise<MeResponse | null> {
@@ -139,6 +153,30 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         errorMessage: null,
       });
     })();
+  },
+
+  getSetupStatus: async () => fetchSetupStatus(),
+
+  bootstrap: async (username: string, password: string) => {
+    set({ status: 'loading', errorMessage: null });
+
+    try {
+      const session = await authRequest('/bootstrap', {
+        username: username.trim(),
+        password: password.trim(),
+      });
+      applySession(set, session);
+      return true;
+    } catch (error) {
+      set({
+        ...emptySession(),
+        status: 'unauthenticated',
+        userId: null,
+        role: null,
+        errorMessage: error instanceof Error ? error.message : 'Setup failed',
+      });
+      return false;
+    }
   },
 
   login: async (username: string, password: string) => {

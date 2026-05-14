@@ -2,7 +2,7 @@ import { useAuthStore } from '../store/auth-store';
 import { API_BASE_URL } from './env';
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   authenticated?: boolean;
   timeoutMs?: number;
@@ -198,6 +198,8 @@ export const api = {
     requestJson<T>(path, { ...options, method: 'GET' }),
   post: <T>(path: string, body?: unknown, options?: Omit<RequestOptions, 'method' | 'body'>) =>
     requestJson<T>(path, { ...options, method: 'POST', body }),
+  put: <T>(path: string, body?: unknown, options?: Omit<RequestOptions, 'method' | 'body'>) =>
+    requestJson<T>(path, { ...options, method: 'PUT', body }),
   patch: <T>(path: string, body?: unknown, options?: Omit<RequestOptions, 'method' | 'body'>) =>
     requestJson<T>(path, { ...options, method: 'PATCH', body }),
   delete: <T>(path: string, body?: unknown, options?: Omit<RequestOptions, 'method' | 'body'>) =>
