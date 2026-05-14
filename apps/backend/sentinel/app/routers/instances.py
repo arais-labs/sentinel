@@ -34,8 +34,6 @@ def _response(instance: SentinelInstance) -> InstanceResponse:
         name=instance.name,
         database_name=instance.database_name,
         display_name=instance.display_name,
-        runtime_backend=instance.runtime_backend,
-        runtime_config=instance.runtime_config_json or {},
         created_at=instance.created_at,
         updated_at=instance.updated_at,
     )
@@ -72,8 +70,6 @@ async def create_instance(
             db,
             name=payload.name,
             display_name=payload.display_name,
-            runtime_backend=payload.runtime_backend,
-            runtime_config=payload.runtime_config,
         )
     except InstanceError as error:
         _raise_instance_error(error)
@@ -114,8 +110,6 @@ async def update_instance(
             db,
             name,
             display_name=payload.display_name,
-            runtime_backend=payload.runtime_backend,
-            runtime_config=payload.runtime_config,
         )
     except InstanceError as error:
         _raise_instance_error(error)

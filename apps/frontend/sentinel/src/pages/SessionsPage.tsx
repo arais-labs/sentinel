@@ -169,7 +169,6 @@ interface SentinelInstance {
   name: string;
   database_name: string;
   display_name: string | null;
-  runtime_backend: string;
 }
 
 // Top-level right-rail tabs. `runtime` is a composite tab that contains

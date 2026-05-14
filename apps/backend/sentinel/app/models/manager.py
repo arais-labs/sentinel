@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, JSON, String, Text, func
+from sqlalchemy import DateTime, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -40,8 +40,6 @@ class SentinelInstance(ManagerBase):
     name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     database_name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    runtime_backend: Mapped[str] = mapped_column(String(32), nullable=False, default="docker")
-    runtime_config_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

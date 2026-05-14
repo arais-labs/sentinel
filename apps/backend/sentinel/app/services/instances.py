@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
-from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -34,11 +32,6 @@ class InvalidInstanceNameError(InstanceError):
     pass
 
 
-@dataclass(frozen=True)
-class InstanceDefaults:
-    runtime_backend: str = "docker"
-
-
 def normalize_instance_name(raw: str) -> str:
     value = re.sub(r"[^a-z0-9-]+", "-", raw.strip().lower())
     value = re.sub(r"-+", "-", value).strip("-")
@@ -61,9 +54,6 @@ def _quote_identifier(value: str) -> str:
 
 
 class InstanceRegistryService:
-    def __init__(self, *, defaults: InstanceDefaults | None = None):
-        self._defaults = defaults or InstanceDefaults()
-
     async def list_instances(self, db: AsyncSession) -> list[SentinelInstance]:
         result = await db.execute(select(SentinelInstance).order_by(SentinelInstance.name))
         return list(result.scalars().all())
@@ -87,8 +77,6 @@ class InstanceRegistryService:
         *,
         name: str,
         display_name: str | None = None,
-        runtime_backend: str | None = None,
-        runtime_config: dict[str, Any] | None = None,
     ) -> SentinelInstance:
         normalized = normalize_instance_name(name)
         database_name = instance_database_name(normalized)
@@ -101,8 +89,6 @@ class InstanceRegistryService:
             name=normalized,
             database_name=database_name,
             display_name=display_name,
-            runtime_backend=runtime_backend or self._defaults.runtime_backend,
-            runtime_config_json=runtime_config or {},
         )
         db.add(instance)
         try:
@@ -134,16 +120,10 @@ class InstanceRegistryService:
         name: str,
         *,
         display_name: str | None = None,
-        runtime_backend: str | None = None,
-        runtime_config: dict[str, Any] | None = None,
     ) -> SentinelInstance:
         instance = await self.get_instance(db, name)
         if display_name is not None:
             instance.display_name = display_name
-        if runtime_backend is not None:
-            instance.runtime_backend = runtime_backend
-        if runtime_config is not None:
-            instance.runtime_config_json = runtime_config
         await db.commit()
         await db.refresh(instance)
         return instance

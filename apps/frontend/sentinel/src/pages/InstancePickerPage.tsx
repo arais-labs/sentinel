@@ -12,7 +12,6 @@ interface SentinelInstance {
   name: string;
   database_name: string;
   display_name: string | null;
-  runtime_backend: string;
 }
 
 interface AuditEvent {
@@ -359,9 +358,6 @@ export function InstancePickerPage() {
 
                     {!isRenaming && (
                       <div className="flex items-center gap-2">
-                        <span className="rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-xs text-[color:var(--text-secondary)]">
-                          {instance.runtime_backend}
-                        </span>
                         <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                           <button
                             type="button"

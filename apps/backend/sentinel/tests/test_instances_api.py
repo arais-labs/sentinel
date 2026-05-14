@@ -64,11 +64,26 @@ def test_instances_api_create_and_list():
     created = create_response.json()
     assert created["name"] == "main"
     assert created["database_name"].startswith("sentinel_main_")
+    assert "runtime_backend" not in created
+    assert "runtime_config" not in created
     assert service.created == [created["database_name"]]
 
     list_response = client.get("/api/v1/instances")
     assert list_response.status_code == 200
     assert [row["name"] for row in list_response.json()] == ["main"]
+    assert "runtime_backend" not in list_response.json()[0]
+    assert "runtime_config" not in list_response.json()[0]
+
+
+def test_instances_api_rejects_legacy_runtime_fields():
+    client, _db, _service = _client()
+
+    create_response = client.post(
+        "/api/v1/instances",
+        json={"name": "Main", "runtime_backend": "qemu", "runtime_config": {"x": True}},
+    )
+
+    assert create_response.status_code == 422
 
 
 def test_instances_api_duplicate_name_conflicts():
