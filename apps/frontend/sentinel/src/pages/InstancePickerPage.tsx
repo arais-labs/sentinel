@@ -1,4 +1,4 @@
-import { Activity, Check, Database, Loader2, LogOut, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { Activity, Check, Database, LayoutDashboard, Loader2, LogOut, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -28,9 +28,18 @@ interface AuditLogList {
   total: number;
 }
 
+declare global {
+  interface Window {
+    sentinelDesktop?: {
+      showControlCenter(): Promise<void>;
+    };
+  }
+}
+
 export function InstancePickerPage() {
   const navigate = useNavigate();
   const logout = useAuthStore((s) => s.logout);
+  const desktopApi = typeof window !== 'undefined' ? window.sentinelDesktop : undefined;
   const [instances, setInstances] = useState<SentinelInstance[]>([]);
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(true);
@@ -194,6 +203,16 @@ export function InstancePickerPage() {
       subtitle="Choose a Sentinel workspace"
       actions={
         <div className="flex items-center gap-2">
+          {desktopApi?.showControlCenter && (
+            <button
+              type="button"
+              onClick={() => void desktopApi.showControlCenter()}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] px-3 text-sm text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)]"
+            >
+              <LayoutDashboard size={15} />
+              Control Center
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {

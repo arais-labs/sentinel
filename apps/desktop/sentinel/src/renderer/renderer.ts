@@ -172,7 +172,7 @@ function renderServiceFilter(): void {
 function renderLogs(): void {
   const visibleLogs = logServiceFilter === 'all' ? logs : logs.filter((entry) => logCategory(entry) === logServiceFilter);
   const output = el('logs');
-  output.innerHTML = visibleLogs.map(renderLogEntry).join('\n');
+  output.innerHTML = visibleLogs.map(renderLogEntry).join('');
   output.scrollTop = output.scrollHeight;
 }
 

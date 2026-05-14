@@ -602,6 +602,7 @@ input::placeholder {
 .log-line {
   display: block;
   min-height: 16px;
+  line-height: 1.25;
 }
 
 .log-time {
