@@ -101,6 +101,15 @@ Default URLs:
 
 Use the admin username and password from the root `.env`.
 
+> **Compose / server mode:** admin credentials live in `.env`
+> (`SENTINEL_AUTH_USERNAME` / `SENTINEL_AUTH_PASSWORD`) and are re-applied to the
+> manager database on every backend startup. Rotate by editing `.env` and
+> restarting the backend; the `POST /auth/change-password` endpoint is disabled.
+>
+> **Desktop mode** (`APP_ENV=desktop`): the manager database is the source of
+> truth. `.env` values, if present, are only used to seed credentials on the
+> very first launch. Use the in-app password-change flow to rotate.
+
 ## Installation paths
 
 ### Recommended
