@@ -9,6 +9,7 @@ const api: DesktopApi = {
   openSentinel: () => ipcRenderer.invoke(IPC.openSentinel),
   showControlCenter: () => ipcRenderer.invoke(IPC.showControlCenter),
   revealAppSupport: () => ipcRenderer.invoke(IPC.revealAppSupport),
+  openLogFolder: () => ipcRenderer.invoke(IPC.openLogFolder),
   getLogs: () => ipcRenderer.invoke(IPC.getLogs),
   onStatus: (listener: (status: DesktopStatus) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: DesktopStatus) => listener(status);

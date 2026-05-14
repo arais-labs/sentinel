@@ -43,6 +43,7 @@ export interface DesktopApi {
   openSentinel(): Promise<DesktopStatus>;
   showControlCenter(): Promise<void>;
   revealAppSupport(): Promise<void>;
+  openLogFolder(): Promise<void>;
   getLogs(): Promise<LogEntry[]>;
   onStatus(listener: (status: DesktopStatus) => void): () => void;
   onLog(listener: (entry: LogEntry) => void): () => void;
@@ -55,6 +56,7 @@ export const IPC = {
   openSentinel: 'desktop:openSentinel',
   showControlCenter: 'desktop:showControlCenter',
   revealAppSupport: 'desktop:revealAppSupport',
+  openLogFolder: 'desktop:openLogFolder',
   getLogs: 'desktop:getLogs',
   statusChanged: 'desktop:statusChanged',
   logEntry: 'desktop:logEntry',

@@ -109,6 +109,9 @@ async function listInputFiles(inputPath) {
   const files = [];
   const entries = await readdir(inputPath, { withFileTypes: true });
   for (const entry of entries) {
+    if (entry.name === '__pycache__' || entry.name === '.DS_Store' || entry.name.endsWith('.pyc')) {
+      continue;
+    }
     const entryPath = path.join(inputPath, entry.name);
     if (entry.isDirectory()) {
       files.push(...await listInputFiles(entryPath));
@@ -239,10 +242,16 @@ async function buildRuntime(target, config, platform, force = false) {
     version: platform.runtimeBuildVersion,
     ...component,
   }));
+  const componentNames = new Set(components.map((component) => component.name));
   if (force) {
     await rm(paths.runtimeDir, { recursive: true, force: true });
   }
   await mkdir(paths.runtimeDir, { recursive: true });
+  for (const entry of await readdir(paths.runtimeDir, { withFileTypes: true })) {
+    if (entry.isDirectory() && !componentNames.has(entry.name)) {
+      await rm(path.join(paths.runtimeDir, entry.name), { recursive: true, force: true });
+    }
+  }
   for (const component of components) {
     if (!force && (await runtimeIsCurrent(target, config, platform, component))) {
       console.log(`Runtime component ${component.name} is current for ${target}; skipping rebuild.`);

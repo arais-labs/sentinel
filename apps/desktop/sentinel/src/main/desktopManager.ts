@@ -18,6 +18,7 @@ import {
   desktopWorkspaceRoot,
   postgresDataDir,
   postgresBinaryPath,
+  postgresSharePath,
   qemuBinaryPath,
   qemuRunRoot,
   runtimeCommandPath,
@@ -220,6 +221,10 @@ export class DesktopManager {
     await shell.openPath(appSupportRoot());
   }
 
+  async openLogFolder(): Promise<void> {
+    await shell.openPath(app.getPath('logs'));
+  }
+
   async shutdown(): Promise<void> {
     await this.localServer.stop();
     await this.supervisor.stopAll();
@@ -239,7 +244,11 @@ export class DesktopManager {
     const dataDir = postgresDataDir();
     const env = this.postgresEnv();
     if (!existsSync(path.join(dataDir, 'PG_VERSION'))) {
-      await execFileText(initdbBin, ['-D', dataDir, '-U', 'sentinel', '--encoding=UTF8'], { env });
+      await execFileText(
+        initdbBin,
+        ['-D', dataDir, '-U', 'sentinel', '--encoding=UTF8', '-L', postgresSharePath()],
+        { env },
+      );
     }
     const existingPostgres = await this.existingPostgresProcess();
     if (existingPostgres !== undefined) {
@@ -456,7 +465,7 @@ export class DesktopManager {
     const stale = entries.filter((entry) => {
       if (entry.pid === process.pid) return false;
       const command = entry.command;
-      if (command.includes(' -m uvicorn app.main:app') && command.includes('Sentinel.app/Contents/Resources/python')) {
+      if (command.includes('sentinel-backend') && command.includes('Sentinel.app/Contents/Resources/backend')) {
         return true;
       }
       if (command.includes('build-base-image.sh') && command.includes('Sentinel.app/Contents/Resources/runtime/qemu')) {

@@ -3,9 +3,7 @@
   "platforms": {
     "macos-arm64": {
       "python": {
-        "version": "3.12.13",
-        "sourceUrl": "https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tgz",
-        "sourceSha256": "0816c4761c97ecdb3f50a3924de0a93fd78cb63ee8e6c04201ddfaedca500b0b"
+        "version": "3.12.13"
       },
       "postgres": {
         "version": "17.9",

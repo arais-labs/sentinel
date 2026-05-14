@@ -19,63 +19,60 @@
           </div>
         </div>
         <div class="header-actions">
-          <button id="refreshBtn" class="btn-ghost">Refresh</button>
+          <button id="resetAuthBtn" class="danger">Reset Auth</button>
           <button id="openBtn" class="primary">Open Sentinel</button>
         </div>
       </header>
 
       <main class="app-content">
-        <section class="grid status-grid reveal delay-1">
-          <article class="card">
-            <span class="label">App support</span>
-            <strong id="supportPath">-</strong>
-            <div class="card-actions">
-              <button id="revealBtn">Reveal Folder</button>
+        <div class="status-grid reveal delay-1">
+          <section class="panel">
+            <div class="panel-header">
+              <div class="panel-title-block">
+                <h2 class="panel-title">Services</h2>
+                <p class="panel-subtitle">Desktop-owned processes and listening ports</p>
+              </div>
+              <span id="servicesOverall" class="pill">Unknown</span>
             </div>
-          </article>
-          <article class="card">
-            <span class="label">QEMU Protocol</span>
-            <strong id="qemuStatus">-</strong>
-            <p id="qemuMessage" class="status-msg"></p>
-          </article>
-          <article class="card">
-            <span class="label">Runtime Image</span>
-            <strong id="imageStatus">-</strong>
-            <p class="status-msg">Prepared by the backend when an instance starts.</p>
-          </article>
-        </section>
+            <div id="services" class="service-list"></div>
+          </section>
 
-        <section class="panel reveal delay-2">
-          <div class="panel-header">
-            <div class="panel-title-block">
-              <h2 class="panel-title">Managed Services</h2>
-              <p class="panel-subtitle">Process Health & Port Allocation</p>
+          <section class="panel">
+            <div class="panel-header">
+              <div class="panel-title-block">
+                <h2 class="panel-title">Runtime</h2>
+                <p class="panel-subtitle">QEMU provider and base image preparation</p>
+              </div>
+              <span id="runtimeOverall" class="pill">Unknown</span>
             </div>
-            <button id="stopBtn" class="danger">Stop Local Services</button>
-          </div>
-          <div id="services" class="services"></div>
-        </section>
+            <div id="runtimeDetails" class="detail-list"></div>
+          </section>
+        </div>
 
-        <section class="panel reveal delay-3">
-          <div class="panel-header">
-            <div class="panel-title-block">
-              <h2 class="panel-title">Desktop Auth</h2>
-              <p class="panel-subtitle">Local credential recovery</p>
+        <section class="panel support-panel reveal delay-2">
+          <div class="support-row">
+            <div>
+              <span class="detail-label">App Support</span>
+              <span id="supportPath" class="mono">-</span>
             </div>
-            <button id="resetAuthBtn" class="danger">Reset Auth</button>
-          </div>
-          <div class="panel-body">
-            <p class="subcopy">
-              Clears the desktop login credentials and invalidates active local web sessions. The next Sentinel login screen will create a new admin account.
-            </p>
+            <button id="revealBtn">Reveal Folder</button>
           </div>
         </section>
 
-        <section class="panel logs-panel reveal delay-4">
+        <section class="panel logs-panel reveal delay-3">
           <div class="panel-header">
             <div class="panel-title-block">
               <h2 class="panel-title">Audit Output</h2>
               <p class="panel-subtitle">Live Supervisor Stream</p>
+            </div>
+            <div class="panel-actions">
+              <label class="select-control" for="logServiceFilter">
+                <span>Service</span>
+                <select id="logServiceFilter">
+                  <option value="all">All</option>
+                </select>
+              </label>
+              <button id="openLogFolderBtn">Open Log Folder</button>
             </div>
           </div>
           <pre id="logs"></pre>

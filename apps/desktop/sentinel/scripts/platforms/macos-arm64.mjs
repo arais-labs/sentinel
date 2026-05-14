@@ -58,7 +58,7 @@ export function verifyBuildTools() {
 
 export function runtimeRequirements() {
   return {
-    python: ['bin/python3'],
+    backend: ['sentinel-backend/sentinel-backend'],
     postgres: [
       'bin/postgres',
       'bin/initdb',
@@ -91,14 +91,17 @@ export function runtimeComponents({ config, paths }) {
   const qemuRuntimeDir = path.join(paths.repoRoot, 'infra/runtime/qemu');
   return [
     {
-      name: 'python',
-      config: pythonConfig(config),
-      required: requirements.python,
+      name: 'backend',
+      config: {
+        python: pythonConfig(config),
+      },
+      required: requirements.backend,
       inputs: [
         path.join(backendDir, 'pyproject.toml'),
         path.join(backendDir, 'uv.lock'),
+        path.join(backendDir, 'app'),
       ],
-      build: buildPythonRuntime,
+      build: buildBackendRuntime,
     },
     {
       name: 'postgres',
@@ -126,28 +129,14 @@ export function runtimeComponents({ config, paths }) {
 
 function pythonConfig(config) {
   if (!config.python || typeof config.python !== 'object') {
-    throw new Error('macos-arm64 runtime lock must define python.version, sourceUrl, and sourceSha256.');
+    throw new Error('macos-arm64 runtime lock must define python.version.');
   }
-  for (const key of ['version', 'sourceUrl', 'sourceSha256']) {
-    if (!config.python[key]) throw new Error(`macos-arm64 runtime lock is missing python.${key}.`);
+  if (!config.python.version) {
+    throw new Error('macos-arm64 runtime lock is missing python.version.');
   }
-  return config.python;
-}
-
-function pythonMajorMinor(version) {
-  return version.split('.').slice(0, 2).join('.');
-}
-
-async function prunePythonRuntime(runtimeDir) {
-  const binDir = path.join(runtimeDir, 'bin');
-  for (const entry of await readdir(binDir)) {
-    if (!/^python(\d+(\.\d+)?)?$|^pip(\d+(\.\d+)?)?$/.test(entry)) {
-      await rm(path.join(binDir, entry), { recursive: true, force: true });
-    }
-  }
-  run('find', [runtimeDir, '-type', 'd', '-name', '__pycache__', '-prune', '-exec', 'rm', '-rf', '{}', '+']);
-  run('find', [runtimeDir, '-name', '*.pyc', '-delete']);
-  run('find', [runtimeDir, '-name', 'direct_url.json', '-delete']);
+  return {
+    version: config.python.version,
+  };
 }
 
 function verifyArchiveSha256(archivePath, expected, label) {
@@ -174,117 +163,59 @@ function loaderPathToLib(file, libDir) {
   return `@loader_path/${relative.split(path.sep).join('/')}`;
 }
 
-function loaderPathToFile(fromFile, toFile) {
-  const relative = path.relative(path.dirname(fromFile), toFile);
-  return `@loader_path/${relative.split(path.sep).join('/')}`;
-}
-
-function relocatePythonRuntime(outputDir, version) {
-  const majorMinor = pythonMajorMinor(version);
-  const libName = `libpython${majorMinor}.dylib`;
-  const libPath = path.join(outputDir, 'lib', libName);
-  const pythonBinary = path.join(outputDir, 'bin', `python${majorMinor}`);
-  const linkedLib = path.join(outputDir, 'lib', libName);
-  if (!existsSync(libPath)) throw new Error(`Built Python is missing ${libPath}`);
-  if (!existsSync(pythonBinary)) throw new Error(`Built Python is missing ${pythonBinary}`);
-  run('install_name_tool', ['-id', `@rpath/${libName}`, libPath]);
-  installNameChange(pythonBinary, linkedLib, `@rpath/${libName}`);
-  installNameAddRpath(pythonBinary, '@executable_path/../lib');
-  const extensionFiles = output('find', [path.join(outputDir, 'lib'), '-name', '*.so']).split('\n').filter(Boolean);
-  for (const extension of extensionFiles) {
-    installNameChange(extension, linkedLib, `@rpath/${libName}`);
-  }
-}
-
-async function rewritePythonInstallMetadata(outputDir, version) {
-  const majorMinor = pythonMajorMinor(version);
-  const sysconfigData = path.join(outputDir, 'lib', `python${majorMinor}`, '_sysconfigdata__darwin_darwin.py');
-  if (existsSync(sysconfigData)) {
-    const current = await readFile(sysconfigData, 'utf8');
-    const placeholder = '__SENTINEL_BUNDLED_PYTHON__';
-    const relocationPatch = `
-
-# Sentinel packages CPython as a relocatable app resource. Configure-time
-# prefixes point at the temporary build tree, so rewrite them at import time.
-import sys as _sentinel_sys
-_sentinel_prefix = _sentinel_sys.base_prefix
-for _sentinel_key, _sentinel_value in list(build_time_vars.items()):
-    if isinstance(_sentinel_value, str):
-        build_time_vars[_sentinel_key] = _sentinel_value.replace(${JSON.stringify(placeholder)}, _sentinel_prefix)
-`;
-    await writeFile(sysconfigData, `${current.replaceAll(outputDir, placeholder)}${relocationPatch}`);
-  }
-
-  const configDir = path.join(outputDir, 'lib', `python${majorMinor}`, `config-${majorMinor}-darwin`);
-  const pythonConfig = path.join(configDir, 'python-config.py');
-  if (existsSync(pythonConfig)) {
-    const current = await readFile(pythonConfig, 'utf8');
-    await writeFile(pythonConfig, current.replace(/^#!.*python[^\n]*/u, '#!/usr/bin/env python3'));
-  }
-  const makefile = path.join(configDir, 'Makefile');
-  if (existsSync(makefile)) {
-    const current = await readFile(makefile, 'utf8');
-    await writeFile(makefile, current.replaceAll(outputDir, '__SENTINEL_BUNDLED_PYTHON__'));
-  }
-}
-
-function pythonEnv(outputDir) {
-  return {
-    PYTHONHOME: outputDir,
-    PYTHONNOUSERSITE: '1',
-    PATH: `${path.join(outputDir, 'bin')}:${process.env.PATH ?? ''}`,
-  };
-}
-
-async function buildPythonRuntime({ config, paths }) {
+async function buildBackendRuntime({ config, paths }) {
   const python = pythonConfig(config);
   const backendDir = path.join(paths.repoRoot, 'apps/backend/sentinel');
-  const workDir = path.join(paths.targetDir, 'work/python');
-  const outputDir = path.join(paths.runtimeDir, 'python');
-  const archivePath = path.join(workDir, `Python-${python.version}.tgz`);
-  const sourceDir = path.join(workDir, `Python-${python.version}`);
-  const requirementsPath = path.join(workDir, 'requirements.txt');
+  const workDir = path.join(paths.targetDir, 'work/backend');
+  const outputDir = path.join(paths.runtimeDir, 'backend');
   await rm(workDir, { recursive: true, force: true });
   await mkdir(workDir, { recursive: true });
   await rm(outputDir, { recursive: true, force: true });
-
-  run('curl', ['-fsSL', python.sourceUrl, '-o', archivePath]);
-  verifyArchiveSha256(archivePath, python.sourceSha256, 'Python source');
-  run('tar', ['-xzf', archivePath, '-C', workDir]);
-  run('./configure', [`--prefix=${outputDir}`, '--enable-shared', '--with-ensurepip=install'], {
-    cwd: sourceDir,
-    env: {
-      MACOSX_DEPLOYMENT_TARGET: '13.0',
-      LDFLAGS: '-Wl,-rpath,@executable_path/../lib',
-    },
-  });
-  run('make', ['-j', output('sysctl', ['-n', 'hw.ncpu'])], { cwd: sourceDir });
-  run('make', ['install'], { cwd: sourceDir });
-  relocatePythonRuntime(outputDir, python.version);
-  await rewritePythonInstallMetadata(outputDir, python.version);
-
-  const runtimePython = path.join(outputDir, 'bin/python3');
+  const buildEnv = {
+    MACOSX_DEPLOYMENT_TARGET: '13.0',
+    APP_ENV: 'desktop-build',
+    DATABASE_HOST: '127.0.0.1',
+    DATABASE_PORT: '5432',
+    DATABASE_USER: 'sentinel',
+    DATABASE_PASSWORD: 'sentinel',
+    DATABASE_MAINTENANCE_NAME: 'postgres',
+    DATABASE_MANAGER_NAME: 'sentinel_manager',
+    JWT_SECRET_KEY: 'desktop-build-placeholder',
+  };
   run('uv', [
-    'export',
+    'run',
+    '--python',
+    python.version,
     '--frozen',
-    '--no-dev',
-    '--no-editable',
-    '--format',
-    'requirements.txt',
-    '--output-file',
-    requirementsPath,
-  ], { cwd: backendDir });
-  run('uv', ['pip', 'sync', '--python', runtimePython, '--system', '--strict', requirementsPath], {
+    '--no-default-groups',
+    '--group',
+    'desktop-build',
+    'pyinstaller',
+    '--noconfirm',
+    '--clean',
+    '--name',
+    'sentinel-backend',
+    '--distpath',
+    outputDir,
+    '--workpath',
+    path.join(workDir, 'pyinstaller'),
+    '--specpath',
+    workDir,
+    '--paths',
+    backendDir,
+    '--collect-submodules',
+    'app.services.araios.system_modules',
+    '--add-data',
+    `${path.join(backendDir, 'app/database/migrations')}:app/database/migrations`,
+    '--add-data',
+    `${path.join(backendDir, 'app/database/startup_sql')}:app/database/startup_sql`,
+    path.join(backendDir, 'app/desktop_entry.py'),
+  ], {
     cwd: backendDir,
-    env: pythonEnv(outputDir),
+    env: buildEnv,
   });
-  run(runtimePython, [
-    '-c',
-    "import sys, sysconfig, asyncpg, fastapi, pgvector, uvicorn; assert sys.prefix == sys.base_prefix; assert sysconfig.get_config_var('LIBDIR').startswith(sys.base_prefix)",
-  ], { env: pythonEnv(outputDir) });
-  await vendorPythonDylibs(outputDir);
-  assertNoExternalDylibs(outputDir, 'Python runtime');
-  await prunePythonRuntime(outputDir);
+  run(path.join(outputDir, 'sentinel-backend/sentinel-backend'), ['--help'], { env: buildEnv });
+  assertNoExternalDylibs(outputDir, 'Backend runtime');
 }
 
 function postgresConfig(config) {
@@ -415,6 +346,7 @@ async function buildPostgresRuntime({ config, paths }) {
     throw new Error(`Built Postgres runtime is missing ${vectorLib}`);
   }
   run(path.join(outputDir, 'bin/postgres'), ['--version']);
+  await rm(path.join(outputDir, 'lib/pgxs'), { recursive: true, force: true });
   assertSystemOnlyDylibs(outputDir);
 }
 
@@ -445,38 +377,6 @@ function assertNoExternalDylibs(outputDir, label = 'Runtime') {
   }
   if (offenders.length) {
     throw new Error(`${label} has non-system absolute dylib references:\n${offenders.join('\n')}`);
-  }
-}
-
-async function vendorPythonDylibs(outputDir) {
-  const files = output('find', [outputDir, '-type', 'f']).split('\n').filter(Boolean);
-  rewritePythonSelfInstallNames(files);
-  rewritePythonWheelLocalDylibs(files);
-  const entrypoints = files.filter((file) => !file.endsWith('.a') && parseOtoolDependencies(file).length > 0);
-  await vendorDylibClosure(entrypoints, path.join(outputDir, 'lib'));
-}
-
-function rewritePythonSelfInstallNames(files) {
-  for (const file of files) {
-    for (const reference of parseOtoolDependencies(file)) {
-      if (!reference.startsWith('/')) continue;
-      if (path.resolve(reference) !== path.resolve(file)) continue;
-      installNameChange(file, reference, `@loader_path/${path.basename(file)}`);
-    }
-  }
-}
-
-function rewritePythonWheelLocalDylibs(files) {
-  for (const file of files) {
-    for (const reference of parseOtoolDependencies(file)) {
-      if (!reference.startsWith('/DLC/')) continue;
-      const suffix = reference.slice('/DLC/'.length);
-      const matches = files.filter((candidate) => candidate.endsWith(suffix));
-      if (matches.length !== 1) {
-        throw new Error(`Python dependency ${reference} maps to ${matches.length} bundled files`);
-      }
-      installNameChange(file, reference, loaderPathToFile(file, matches[0]));
-    }
   }
 }
 
@@ -564,6 +464,7 @@ async function buildQemuRuntime({ config, paths }) {
     '--enable-tcg',
     '--enable-pixman',
     '--enable-slirp',
+    '--enable-virtfs',
     '--enable-fdt=internal',
     '--enable-qcow1',
     '--enable-vdi',
@@ -592,11 +493,20 @@ async function buildQemuRuntime({ config, paths }) {
   ], {
     cwd: buildDir,
     env: {
+      CFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
+      CXXFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
+      OBJCFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
       MACOSX_DEPLOYMENT_TARGET: '13.0',
     },
   });
-  run('make', ['-j', output('sysctl', ['-n', 'hw.ncpu'])], { cwd: buildDir });
-  run('make', ['install'], { cwd: buildDir });
+  const qemuBuildEnv = {
+    CFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
+    CXXFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
+    OBJCFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
+    MACOSX_DEPLOYMENT_TARGET: '13.0',
+  };
+  run('make', ['-j', output('sysctl', ['-n', 'hw.ncpu'])], { cwd: buildDir, env: qemuBuildEnv });
+  run('make', ['install'], { cwd: buildDir, env: qemuBuildEnv });
   await pruneQemuRuntime(outputDir);
 
   const qemuSystem = path.join(outputDir, 'bin/qemu-system-aarch64');
@@ -607,6 +517,10 @@ async function buildQemuRuntime({ config, paths }) {
   const versionLine = output(qemuSystem, ['--version']).split('\n')[0] || '';
   if (!versionLine.includes(qemu.version)) {
     throw new Error(`QEMU version mismatch. Expected ${qemu.version}, got: ${versionLine}`);
+  }
+  const deviceList = output(qemuSystem, ['-device', 'help']);
+  if (!deviceList.includes('virtio-9p')) {
+    throw new Error('Built QEMU runtime is missing virtio-9p support required for workspace mounts.');
   }
   for (const firmware of ['edk2-aarch64-code.fd', 'edk2-arm-vars.fd']) {
     const built = path.join(outputDir, 'share/qemu', firmware);
@@ -651,7 +565,7 @@ export async function preparePackageAssets({ paths }) {
 export async function verifyRuntime({ paths }) {
   const runtimeDir = paths.runtimeDir;
   const components = [
-    ['Python runtime', path.join(runtimeDir, 'python')],
+    ['Backend runtime', path.join(runtimeDir, 'backend')],
     ['Postgres runtime', path.join(runtimeDir, 'postgres')],
     ['QEMU runtime', path.join(runtimeDir, 'qemu')],
   ];
@@ -663,6 +577,7 @@ export async function verifyRuntime({ paths }) {
 }
 
 export function electronBuilderConfig({ paths, baseConfig }) {
+  const extraResources = (baseConfig.extraResources || []).filter((resource) => resource?.to !== 'backend');
   return {
     ...baseConfig,
     directories: {
@@ -670,10 +585,10 @@ export function electronBuilderConfig({ paths, baseConfig }) {
       output: 'dist',
     },
     extraResources: [
-      ...(baseConfig.extraResources || []),
+      ...extraResources,
       {
-        from: path.join(paths.runtimeDir, 'python'),
-        to: 'python',
+        from: path.join(paths.runtimeDir, 'backend'),
+        to: 'backend',
       },
       {
         from: path.join(paths.runtimeDir, 'postgres'),

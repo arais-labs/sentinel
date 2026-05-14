@@ -144,6 +144,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.openSentinel, () => showSentinel());
   ipcMain.handle(IPC.showControlCenter, () => showControlCenter());
   ipcMain.handle(IPC.revealAppSupport, () => manager.revealAppSupport());
+  ipcMain.handle(IPC.openLogFolder, () => manager.openLogFolder());
   ipcMain.handle(IPC.getLogs, () => manager.logs());
 }
 

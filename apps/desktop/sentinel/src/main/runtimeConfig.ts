@@ -47,6 +47,10 @@ export function postgresBinaryPath(name: string): string {
   return path.join(resourceRoot(), 'postgres/bin', name);
 }
 
+export function postgresSharePath(): string {
+  return path.join(resourceRoot(), 'postgres/share');
+}
+
 export function backendBinaryPath(): string {
   return path.join(resourceRoot(), 'backend/sentinel-backend/sentinel-backend');
 }
