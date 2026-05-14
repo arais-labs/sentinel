@@ -79,6 +79,9 @@ async def execute_action(code: str, context: dict) -> dict:
         }
 
         loop = asyncio.get_event_loop()
+        # If you expose helpers that read ContextVars (e.g. the per-instance
+        # DB session factory) into `sandbox_ns`, wrap this with
+        # contextvars.copy_context().run — the executor thread loses the request ctx.
         try:
             await loop.run_in_executor(
                 None,

@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 from typing import cast
 
 from fastapi import HTTPException, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
@@ -87,7 +88,10 @@ async def get_instance_record(instance_name: str) -> SentinelInstance:
             detail=f"Instance not found: {instance_name}",
         )
     async for manager_db in get_db_session():
-        instance = await manager_db.get(SentinelInstance, normalized)
+        result = await manager_db.execute(
+            select(SentinelInstance).where(SentinelInstance.name == normalized)
+        )
+        instance = result.scalar_one_or_none()
         if instance is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

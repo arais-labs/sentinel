@@ -6,12 +6,13 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import settings
+from app.config import Settings, settings
 from app.models.manager import SentinelInstance
 from app.services.agent import ContextBuilder, SentinelRuntimeSupport
 from app.services.llm.factory import build_tier_provider_from_settings
 from app.services.memory.backfill import run_memory_embedding_backfill
 from app.services.memory.embeddings import EmbeddingService
+from app.services.settings.settings_service import SettingsService
 from app.services.sub_agents import SubAgentOrchestrator
 from app.services.tools import ToolExecutor, ToolRegistry
 from app.services.tools.approval.approval_waiters import (
@@ -32,6 +33,7 @@ class _InstanceRuntimeIdentity:
 class InstanceRuntimeContext:
     name: str
     database_name: str
+    instance_settings: Settings
     session_factory: async_sessionmaker[AsyncSession]
     tool_registry: ToolRegistry
     tool_executor: ToolExecutor
@@ -145,6 +147,9 @@ async def _build_instance_runtime_context(
     instance: SentinelInstance | _InstanceRuntimeIdentity,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> InstanceRuntimeContext:
+    async with session_factory() as db:
+        instance_settings = await SettingsService().build_instance_settings(db)
+
     tool_registry = await build_runtime_registry(session_factory=session_factory)
     tool_executor = ToolExecutor(
         tool_registry,
@@ -153,13 +158,13 @@ async def _build_instance_runtime_context(
         db_session_factory=session_factory,
     )
 
-    provider = build_tier_provider_from_settings(settings)
+    provider = build_tier_provider_from_settings(instance_settings)
     memory_search_service = getattr(app_state, "memory_search_service", None)
     agent_runtime_support = None
     if provider is not None:
         available_tools = {tool.name for tool in tool_registry.list_all()}
         context_builder = ContextBuilder(
-            default_system_prompt=settings.default_system_prompt,
+            default_system_prompt=instance_settings.default_system_prompt,
             available_tools=available_tools,
             memory_search_service=memory_search_service,
         )
@@ -198,15 +203,18 @@ async def _build_instance_runtime_context(
             )
         )
         embedding_service = getattr(app_state, "embedding_service", None)
-        if isinstance(embedding_service, EmbeddingService) and settings.memory_embedding_backfill_on_start:
+        if (
+            isinstance(embedding_service, EmbeddingService)
+            and instance_settings.memory_embedding_backfill_on_start
+        ):
             tasks.append(
                 asyncio.create_task(
                     run_memory_embedding_backfill(
                         stop_event=stop_event,
                         db_factory=session_factory,
                         embedding_service=embedding_service,
-                        batch_size=settings.memory_embedding_backfill_batch_size,
-                        max_rows=settings.memory_embedding_backfill_max_rows,
+                        batch_size=instance_settings.memory_embedding_backfill_batch_size,
+                        max_rows=instance_settings.memory_embedding_backfill_max_rows,
                     )
                 )
             )
@@ -214,6 +222,7 @@ async def _build_instance_runtime_context(
     return InstanceRuntimeContext(
         name=instance.name,
         database_name=instance.database_name,
+        instance_settings=instance_settings,
         session_factory=session_factory,
         tool_registry=tool_registry,
         tool_executor=tool_executor,

@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
 from app.config import settings
-from app.database import AsyncSessionLocal, init_db
+from app.database import AsyncSessionLocal, ensure_database_exists, init_db, init_instance_db
 from app.database.instance_sessions import instance_session_registry
 from app.middleware import (
     RateLimitMiddleware,
@@ -28,6 +28,7 @@ from app.middleware import (
 )
 from app.routers import (
     admin,
+    admin_manager,
     agent_modes as agent_modes_router,
     approvals as approvals_router,
     auth,
@@ -84,42 +85,8 @@ async def lifespan(app: FastAPI):
 
         await ensure_default_auth_settings(_auth_db)
 
-    # Load global persisted settings from the manager DB. Per-instance app
-    # settings are loaded through instance-scoped routes after routing lands.
-    async with AsyncSessionLocal() as _db:
-        from app.models.manager import ManagerSetting as _MS
-
-        # Keys that should only load from DB when the env var is empty/None
-        _key_map = {
-            "anthropic_api_key": "anthropic_api_key",
-            "anthropic_oauth_token": "anthropic_oauth_token",
-            "openai_api_key": "openai_api_key",
-            "openai_oauth_token": "openai_oauth_token",
-            "gemini_api_key": "gemini_api_key",
-            "gemini_oauth_credentials": "gemini_oauth_credentials",
-            "default_system_prompt": "default_system_prompt",
-            "telegram_bot_token": "telegram_bot_token",
-            "telegram_owner_user_id": "telegram_owner_user_id",
-            "telegram_owner_chat_id": "telegram_owner_chat_id",
-            "telegram_owner_telegram_user_id": "telegram_owner_telegram_user_id",
-            "telegram_pairing_code_hash": "telegram_pairing_code_hash",
-            "telegram_pairing_code_expires_at": "telegram_pairing_code_expires_at",
-        }
-        # Keys that should ALWAYS load from DB (DB overrides defaults)
-        _always_load = {
-            "primary_provider": "primary_provider",
-        }
-        for _db_key, _settings_attr in _key_map.items():
-            if not getattr(settings, _settings_attr, None):
-                _r = await _db.execute(select(_MS).where(_MS.key == _db_key))
-                _s = _r.scalars().first()
-                if _s:
-                    setattr(settings, _settings_attr, _s.value)
-        for _db_key, _settings_attr in _always_load.items():
-            _r = await _db.execute(select(_MS).where(_MS.key == _db_key))
-            _s = _r.scalars().first()
-            if _s:
-                setattr(settings, _settings_attr, _s.value)
+    # Instance app settings such as provider credentials are loaded from each
+    # instance database when that instance runtime context is built.
 
     embedding_key = settings.embedding_api_key or settings.openai_api_key
     embedding_service = None
@@ -463,12 +430,30 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as manager_db:
         result = await manager_db.execute(select(SentinelInstance).order_by(SentinelInstance.name))
         for instance in result.scalars().all():
+            try:
+                await ensure_database_exists(instance.database_name)
+                await init_instance_db(instance.database_name)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "instance %s: failed to provision DB %s at startup; skipping",
+                    instance.name,
+                    instance.database_name,
+                    exc_info=True,
+                )
+                continue
             session_factory = instance_session_registry.session_factory(instance.database_name)
-            await instance_runtime_context_registry.get_or_create(
-                app_state=app.state,
-                instance=instance,
-                session_factory=session_factory,
-            )
+            try:
+                await instance_runtime_context_registry.get_or_create(
+                    app_state=app.state,
+                    instance=instance,
+                    session_factory=session_factory,
+                )
+            except Exception:  # noqa: BLE001
+                logger.error(
+                    "instance %s: runtime context build failed at startup; skipping",
+                    instance.name,
+                    exc_info=True,
+                )
 
     # --- Telegram bridge ---
     telegram_stop_event = asyncio.Event()
@@ -562,6 +547,7 @@ register_error_handlers(app)
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(instances.router, prefix="/api/v1/instances", tags=["instances"])
+app.include_router(admin_manager.router, prefix="/api/v1/admin", tags=["admin"])
 _instance_api_prefix = "/api/v1/instances/{instance_name}"
 app.include_router(sessions.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"])
 app.include_router(sessions_compaction.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"])
@@ -582,4 +568,4 @@ app.include_router(vnc_proxy.router, tags=["vnc"])
 app.include_router(ws.router, prefix="/ws/instances/{instance_name}/sessions", tags=["ws"])
 
 # Module/control-plane routes used by the Sentinel modules surface.
-app.include_router(araios_api_router, prefix="/api/instances/{instance_name}", tags=["modules"])
+app.include_router(araios_api_router, prefix=_instance_api_prefix, tags=["modules"])

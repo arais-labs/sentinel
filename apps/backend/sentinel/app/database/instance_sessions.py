@@ -13,6 +13,8 @@ from app.config import settings
 
 
 class InstanceSessionRegistry:
+    # TODO: add LRU / idle eviction when active instances exceed ~30
+    # (15 max connections per engine × Postgres default max_connections=100).
     def __init__(self) -> None:
         self._engines: dict[str, AsyncEngine] = {}
         self._factories: dict[str, async_sessionmaker[AsyncSession]] = {}

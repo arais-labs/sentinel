@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db, get_request_db_factory, get_request_instance_runtime_context
+from app.dependencies import get_db, get_request_instance_runtime_context
 from app.models.araios import (
     AraiosModule,
     AraiosModuleRecord,
@@ -508,23 +508,13 @@ async def delete_module(
 
 
 async def _rebuild_current_instance_runtime(request: Request) -> None:
-    from app.models.manager import SentinelInstance
-
     try:
         context = get_request_instance_runtime_context(request)
     except RuntimeError:
         return
-    instance = SentinelInstance(
-        name=context.name,
-        database_name=context.database_name,
-        workspace_root="",
-        runtime_backend="docker",
-        runtime_config_json={},
-    )
-    await instance_runtime_context_registry.rebuild(
+    await instance_runtime_context_registry.rebuild_context(
         app_state=request.app.state,
-        instance=instance,
-        session_factory=get_request_db_factory(request),
+        context=context,
     )
 
 

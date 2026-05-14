@@ -19,15 +19,15 @@ class Settings(BaseSettings):
     database_password: str = "sentinel"
     database_maintenance_name: str = "postgres"
     database_manager_name: str = "sentinel_manager"
-    instance_workspace_root: str = "/data/runtime/workspaces"
     jwt_secret_key: str = Field(min_length=1)
     jwt_algorithm: str = "HS256"
     access_token_ttl_seconds: int = 3600
     refresh_token_ttl_seconds: int = 604800
     auth_cookie_secure: bool = False
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
-    sentinel_auth_username: str = Field(min_length=1)
-    sentinel_auth_password: str = Field(min_length=1)
+    # Required in server mode (enforced at startup); optional in desktop mode.
+    sentinel_auth_username: str = ""
+    sentinel_auth_password: str = ""
     dev_user_id: str = "dev-admin"
     anthropic_oauth_token: str | None = None
     anthropic_api_key: str | None = None

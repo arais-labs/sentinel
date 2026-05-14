@@ -13,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.dependencies import get_connection_instance_runtime_context, get_db, get_manager_db
+from app.database import ManagerSessionLocal
+from app.dependencies import get_connection_instance_runtime_context, get_db
 from app.logging_context import reset_log_session, set_log_session
 from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
 from app.models import Message, ToolApproval
@@ -75,7 +76,6 @@ async def stream_session(
     websocket: WebSocket,
     id: UUID,
     db: AsyncSession = Depends(get_db),
-    manager_db: AsyncSession = Depends(get_manager_db),
 ) -> None:
     manager = _resolve_manager(websocket)
     run_registry = _resolve_run_registry(websocket)
@@ -87,8 +87,10 @@ async def stream_session(
         await websocket.close(code=4001, reason="Missing token")
         return
 
+    # Manager DB only needed for the JWT revocation check; release immediately.
     try:
-        user = await decode_and_validate_token(token, manager_db, expected_type="access")
+        async with ManagerSessionLocal() as manager_db:
+            user = await decode_and_validate_token(token, manager_db, expected_type="access")
     except Exception:
         await websocket.close(code=4001, reason="Invalid token")
         return
@@ -106,6 +108,7 @@ async def stream_session(
     naming_service = SessionNamingService(
         provider=getattr(instance_context.agent_runtime_support, "provider", None),
         ws_manager=manager,
+        db_factory=instance_context.session_factory,
     )
 
     history = await load_history(db, id)
@@ -513,7 +516,6 @@ async def stream_terminal(
     id: UUID,
     terminal_id: str,
     db: AsyncSession = Depends(get_db),
-    manager_db: AsyncSession = Depends(get_manager_db),
 ) -> None:
     """Bidirectional bridge between xterm.js and the tmux session in the guest VM.
 
@@ -530,7 +532,8 @@ async def stream_terminal(
         return
 
     try:
-        user = await decode_and_validate_token(token, manager_db, expected_type="access")
+        async with ManagerSessionLocal() as manager_db:
+            user = await decode_and_validate_token(token, manager_db, expected_type="access")
     except Exception:
         await websocket.close(code=4001, reason="Invalid token")
         return

@@ -11,7 +11,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
-from app.database import AsyncSessionLocal
 from app.models import Message, Session
 from app.services.sessions import session_bindings
 from app.services.llm.generic.types import TextContent, UserMessage
@@ -42,12 +41,12 @@ class SessionNamingService:
         self,
         *,
         provider: Any | None,
+        db_factory: async_sessionmaker[AsyncSession],
         ws_manager: ConnectionManager | None = None,
-        db_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._provider = provider
         self._ws_manager = ws_manager
-        self._db_factory = db_factory or AsyncSessionLocal
+        self._db_factory = db_factory
 
     async def maybe_auto_rename(
         self,

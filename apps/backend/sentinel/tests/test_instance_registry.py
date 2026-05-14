@@ -97,7 +97,6 @@ async def test_create_instance_creates_registry_row_and_database():
 
     assert instance.name == "main"
     assert instance.database_name == instance_database_name("main")
-    assert instance.workspace_root.endswith("/main")
     assert service.created == [instance.database_name]
     assert service.initialized == [instance.database_name]
     assert db.storage[SentinelInstance] == [instance]
@@ -145,3 +144,34 @@ async def test_get_missing_instance_raises():
 
     with pytest.raises(InstanceNotFoundError):
         await service.get_instance(db, "main")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_create_loser_does_not_drop_winners_database():
+    """Regression for the create_instance race: under concurrency, two callers
+    can both pass the pre-check (`_find_by_name`) before either commits. The
+    UNIQUE constraint on instances.name fires on the second commit. Before the
+    fix, the loser's except-branch ran `_drop_database(...)` and destroyed the
+    winner's data. After the fix, the loser raises InstanceAlreadyExistsError
+    without touching Postgres administrative state.
+    """
+    db = FakeDB()
+    service = _TestRegistryService()
+
+    winner = await service.create_instance(db, name="main")
+    dropped_before = list(service.dropped)
+
+    async def _bypass_precheck(_db, _normalized):
+        return None
+
+    original = service._find_by_name
+    service._find_by_name = _bypass_precheck  # type: ignore[method-assign]
+    try:
+        with pytest.raises(InstanceAlreadyExistsError):
+            await service.create_instance(db, name="main")
+    finally:
+        service._find_by_name = original  # type: ignore[method-assign]
+
+    assert service.dropped == dropped_before, "loser must not drop winner's database"
+    assert winner in db.storage[SentinelInstance], "winner's manager row must survive"
+    assert winner.database_name in service.created

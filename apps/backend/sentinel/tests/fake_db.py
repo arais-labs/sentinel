@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from itertools import product
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList, False_, Null, True_
 from sqlalchemy.sql.functions import FunctionElement
 from sqlalchemy.sql.selectable import Select
@@ -81,7 +82,25 @@ class FakeDB:
         self.storage[type(obj)] = [row for row in rows if row is not obj]
 
     async def commit(self):
+        self._check_unique_constraints()
         return None
+
+    def _check_unique_constraints(self) -> None:
+        for model, rows in self.storage.items():
+            table = getattr(model, "__table__", None)
+            if table is None:
+                continue
+            for column in table.columns:
+                if not getattr(column, "unique", False):
+                    continue
+                values = [getattr(row, column.key, None) for row in rows]
+                non_null = [v for v in values if v is not None]
+                if len(non_null) != len(set(non_null)):
+                    raise IntegrityError(
+                        f"UNIQUE constraint failed: {getattr(model, '__tablename__', model.__name__)}.{column.key}",
+                        params=None,
+                        orig=Exception("duplicate"),
+                    )
 
     async def rollback(self):
         if self._tx_snapshots:

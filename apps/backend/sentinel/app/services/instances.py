@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from app.config import settings
@@ -36,7 +36,6 @@ class InvalidInstanceNameError(InstanceError):
 
 @dataclass(frozen=True)
 class InstanceDefaults:
-    workspace_base: Path = Path(settings.instance_workspace_root)
     runtime_backend: str = "docker"
 
 
@@ -69,9 +68,15 @@ class InstanceRegistryService:
         result = await db.execute(select(SentinelInstance).order_by(SentinelInstance.name))
         return list(result.scalars().all())
 
+    async def _find_by_name(self, db: AsyncSession, normalized: str) -> SentinelInstance | None:
+        result = await db.execute(
+            select(SentinelInstance).where(SentinelInstance.name == normalized)
+        )
+        return result.scalar_one_or_none()
+
     async def get_instance(self, db: AsyncSession, name: str) -> SentinelInstance:
         normalized = normalize_instance_name(name)
-        instance = await db.get(SentinelInstance, normalized)
+        instance = await self._find_by_name(db, normalized)
         if instance is None:
             raise InstanceNotFoundError(f"Instance not found: {normalized}")
         return instance
@@ -82,41 +87,46 @@ class InstanceRegistryService:
         *,
         name: str,
         display_name: str | None = None,
-        workspace_root: str | None = None,
         runtime_backend: str | None = None,
         runtime_config: dict[str, Any] | None = None,
     ) -> SentinelInstance:
         normalized = normalize_instance_name(name)
-        existing = await db.get(SentinelInstance, normalized)
+        database_name = instance_database_name(normalized)
+
+        existing = await self._find_by_name(db, normalized)
         if existing is not None:
             raise InstanceAlreadyExistsError(f"Instance already exists: {normalized}")
 
-        database_name = instance_database_name(normalized)
-        await instance_session_registry.dispose(database_name)
-        if await self._database_exists(database_name):
-            raise InstanceAlreadyExistsError(f"Instance database already exists: {database_name}")
-
-        await self._create_database(database_name)
+        instance = SentinelInstance(
+            name=normalized,
+            database_name=database_name,
+            display_name=display_name,
+            runtime_backend=runtime_backend or self._defaults.runtime_backend,
+            runtime_config_json=runtime_config or {},
+        )
+        db.add(instance)
         try:
-            await self._init_database(database_name)
-            instance = SentinelInstance(
-                name=normalized,
-                database_name=database_name,
-                display_name=display_name,
-                workspace_root=workspace_root or str(self._defaults.workspace_base / normalized),
-                runtime_backend=runtime_backend or self._defaults.runtime_backend,
-                runtime_config_json=runtime_config or {},
-            )
-            db.add(instance)
+            # UNIQUE(name) is the serialization point for concurrent creates.
             await db.commit()
-            await db.refresh(instance)
-            return instance
-        except Exception:
+        except IntegrityError:
             await db.rollback()
+            raise InstanceAlreadyExistsError(f"Instance already exists: {normalized}")
+        await db.refresh(instance)
+
+        await instance_session_registry.dispose(database_name)
+        try:
+            await self._create_database(database_name)
+            await self._init_database(database_name)
+        except Exception:
+            try:
+                await db.delete(instance)
+                await db.commit()
+            except Exception:
+                await db.rollback()
             await instance_session_registry.dispose(database_name)
             await self._drop_database(database_name)
-            await instance_session_registry.dispose(database_name)
             raise
+        return instance
 
     async def update_instance(
         self,
@@ -124,15 +134,12 @@ class InstanceRegistryService:
         name: str,
         *,
         display_name: str | None = None,
-        workspace_root: str | None = None,
         runtime_backend: str | None = None,
         runtime_config: dict[str, Any] | None = None,
     ) -> SentinelInstance:
         instance = await self.get_instance(db, name)
         if display_name is not None:
             instance.display_name = display_name
-        if workspace_root is not None:
-            instance.workspace_root = workspace_root
         if runtime_backend is not None:
             instance.runtime_backend = runtime_backend
         if runtime_config is not None:
@@ -146,7 +153,7 @@ class InstanceRegistryService:
         normalized_new = normalize_instance_name(new_name)
         if normalized_new == instance.name:
             return instance
-        existing = await db.get(SentinelInstance, normalized_new)
+        existing = await self._find_by_name(db, normalized_new)
         if existing is not None:
             raise InstanceAlreadyExistsError(f"Instance already exists: {normalized_new}")
         instance.name = normalized_new
