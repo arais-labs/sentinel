@@ -7,23 +7,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        diffutils \
-        dnsutils \
-        fd-find \
-        file \
-        gawk \
         git \
         gh \
-        iputils-ping \
-        jq \
-        less \
-        moreutils \
         openssh-client \
-        patch \
-        ripgrep \
-        rsync \
-        tree \
-        wget \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://get.docker.com | sh
 
@@ -31,7 +17,6 @@ WORKDIR /app
 
 COPY apps/backend/sentinel/ ./
 RUN pip install --no-cache-dir .
-RUN playwright install --with-deps chromium
 RUN chmod +x scripts/start-backend.sh
 
 EXPOSE 8000

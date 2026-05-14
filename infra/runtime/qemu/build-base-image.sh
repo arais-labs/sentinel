@@ -30,8 +30,11 @@ SEED_DIR="${BUILD_DIR}/seed"
 SEED_ISO="${BUILD_DIR}/cidata.iso"
 WORKING_IMAGE="${BUILD_DIR}/runtime.qcow2"
 SSH_KEY="${BUILD_DIR}/builder_ed25519"
-PID_FILE="${RUN_DIR}/build.pid"
+ACTIVE_PID_FILE="${RUN_DIR}/build.pid"
+PID_FILE="${RUN_DIR}/build-${BUILD_ID}.pid"
 SERIAL_LOG="${BUILD_DIR}/serial.log"
+QEMU_STDOUT="${BUILD_DIR}/qemu-stdout.log"
+QEMU_STDERR="${BUILD_DIR}/qemu-stderr.log"
 VARS_FILE="${BUILD_DIR}/edk2-arm-vars.fd"
 OUTPUT_IMAGE="${OUTPUT_DIR}/${OUTPUT_IMAGE_NAME}"
 OUTPUT_KEY="${OUTPUT_DIR}/${OUTPUT_IMAGE_NAME%.qcow2}.id_ed25519"
@@ -153,9 +156,41 @@ cleanup() {
       kill "${pid}" >/dev/null 2>&1 || true
     fi
     rm -f "${PID_FILE}"
+    if [[ -f "${ACTIVE_PID_FILE}" ]] && [[ "$(cat "${ACTIVE_PID_FILE}" 2>/dev/null || true)" == "${pid}" ]]; then
+      rm -f "${ACTIVE_PID_FILE}"
+    fi
   fi
 }
 trap cleanup EXIT
+
+fail_if_qemu_exited() {
+  local qemu_stat
+  qemu_stat="$(ps -o stat= -p "${QEMU_PID}" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ -n "${qemu_stat}" && "${qemu_stat}" != Z* ]]; then
+    return 0
+  fi
+
+  local qemu_status=0
+  set +e
+  wait "${QEMU_PID}"
+  qemu_status=$?
+  set -e
+
+  echo "QEMU builder exited before SSH became available (exit ${qemu_status})." >&2
+  if [[ -s "${QEMU_STDERR}" ]]; then
+    echo "--- qemu stderr ---" >&2
+    sed -n '1,240p' "${QEMU_STDERR}" >&2
+  fi
+  if [[ -s "${QEMU_STDOUT}" ]]; then
+    echo "--- qemu stdout ---" >&2
+    sed -n '1,120p' "${QEMU_STDOUT}" >&2
+  fi
+  if [[ -s "${SERIAL_LOG}" ]]; then
+    echo "--- qemu serial ---" >&2
+    sed -n '1,160p' "${SERIAL_LOG}" >&2
+  fi
+  exit "${qemu_status}"
+}
 
 echo "Booting QEMU builder..."
 qemu-system-aarch64 \
@@ -176,9 +211,10 @@ qemu-system-aarch64 \
   -drive if=virtio,media=cdrom,format=raw,file="${SEED_ISO}" \
   -display none \
   -serial "file:${SERIAL_LOG}" \
-  >/dev/null 2>&1 &
+  >"${QEMU_STDOUT}" 2>"${QEMU_STDERR}" &
 QEMU_PID=$!
 echo "${QEMU_PID}" > "${PID_FILE}"
+echo "${QEMU_PID}" > "${ACTIVE_PID_FILE}"
 
 SSH_OPTS=(
   -i "${SSH_KEY}"
@@ -191,6 +227,7 @@ SSH_OPTS=(
 
 echo "Waiting for SSH..."
 for _ in $(seq 1 180); do
+  fail_if_qemu_exited
   if ssh "${SSH_OPTS[@]}" "${BUILDER_USER}"@127.0.0.1 true >/dev/null 2>&1; then
     break
   fi

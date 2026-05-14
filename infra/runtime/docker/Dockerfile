@@ -48,6 +48,7 @@ RUN apt-get update \
         python3-venv \
         ripgrep \
         sudo \
+        tmux \
         tree \
         wget \
     && rm -rf /var/lib/apt/lists/*
