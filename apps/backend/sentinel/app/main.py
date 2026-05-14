@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections import defaultdict, deque
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
@@ -73,6 +73,16 @@ from app.services.instance_runtime_context import (
 )
 from app.services.browser.pool import BrowserPool
 from app.services.ws.ws_manager import ConnectionManager
+
+
+async def shutdown_runtime_provider(app_state: Any, bounded: Callable[..., Awaitable[None]]) -> None:
+    runtime_provider = getattr(app_state, "runtime_provider", None)
+    if runtime_provider is None:
+        return
+    if hasattr(runtime_provider, "stop_all"):
+        await bounded("runtime_provider.stop_all", runtime_provider.stop_all(), timeout=10.0)
+    if hasattr(runtime_provider, "cancel_background_prepare"):
+        await bounded("runtime_prepare", runtime_provider.cancel_background_prepare(), timeout=5.0)
 
 
 @asynccontextmanager
@@ -511,14 +521,16 @@ async def lifespan(app: FastAPI):
                 timeout=2.0,
             )
 
-        # 4. Cooperative loops (all use stop_event); bound just in case.
+        # 4. Runtime providers own external execution resources. Stop them
+        #    while the backend is still alive so detached VMs/containers do not
+        #    survive desktop quit or server shutdown.
+        await shutdown_runtime_provider(app.state, _bounded)
+
+        # 5. Cooperative loops (all use stop_event); bound just in case.
         await _bounded("rate_limit_cleanup", cleanup_task, timeout=2.0)
         await _bounded("instance_contexts", instance_runtime_context_registry.stop_all(), timeout=5.0)
-        runtime_provider = getattr(app.state, "runtime_provider", None)
-        if runtime_provider is not None and hasattr(runtime_provider, "cancel_background_prepare"):
-            await _bounded("runtime_prepare", runtime_provider.cancel_background_prepare(), timeout=5.0)
 
-        # 5. External resources — these are the historical hang sources.
+        # 6. External resources — these are the historical hang sources.
         from app.services.telegram import stop_telegram_bridge
 
         await _bounded("telegram_bridge", stop_telegram_bridge(app.state), timeout=3.0)

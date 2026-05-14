@@ -1,7 +1,9 @@
 import asyncio
 import os
+from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
@@ -15,6 +17,34 @@ from app.services.browser.pool import BrowserPool
 from tests.fake_db import FakeDB
 
 _TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_runtime_provider_stops_runtime_before_prepare_task():
+    calls: list[str] = []
+
+    class _Provider:
+        async def stop_all(self):
+            calls.append("stop_all")
+            return 1
+
+        async def cancel_background_prepare(self):
+            calls.append("cancel_background_prepare")
+
+    async def _bounded(name, coro, timeout):
+        calls.append(f"bounded:{name}:{timeout:g}")
+        await coro
+
+    from app.main import shutdown_runtime_provider
+
+    await shutdown_runtime_provider(SimpleNamespace(runtime_provider=_Provider()), _bounded)
+
+    assert calls == [
+        "bounded:runtime_provider.stop_all:10",
+        "stop_all",
+        "bounded:runtime_prepare:5",
+        "cancel_background_prepare",
+    ]
 
 
 def test_runtime_live_view_requires_auth():
