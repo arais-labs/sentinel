@@ -106,6 +106,7 @@ ICON_RESET="!"
 ICON_INSTANCES="⬡"
 ICON_STATUS="ⓘ"
 ICON_LOGS="≡"
+ICON_TRANSCRIPT="▤"
 ICON_REFRESH="⟳"
 ICON_EXIT="⏻"
 ICON_BACK="←"
@@ -254,6 +255,7 @@ Usage:
   ./sentinel-cli.sh instances create <name> [display-name]
   ./sentinel-cli.sh instances rename <old-name> <new-name>
   ./sentinel-cli.sh instances delete <name>
+  ./sentinel-cli.sh sessions transcript <session-id> [instance] [--json]
 
 Configuration:
   Root .env is the source of truth for stack credentials, workspace path,
@@ -289,7 +291,8 @@ Interactive keys:
 
 Main-menu letter shortcuts (jump + select in one keystroke):
   u  Start Stack   d  Stop Stack   r  Restart Stack   x  Reset Stack
-  i  Instances     s  Status       l  Logs            f  Refresh     e  Exit
+  i  Instances     t  Transcripts  s  Status          l  Logs
+  f  Refresh       e  Exit
 
 Instances submenu shortcuts:
   l  List   c  Create   r  Rename   d  Delete   b  Back
@@ -513,6 +516,11 @@ prepare_stack_config() {
   prepare_runtime_workspace_dir || return 1
   validate_auth_config || return 1
   validate_prod_stack_config || return 1
+}
+
+build_runtime_image() {
+  run_compose_captured "docker compose runtime image build failed" -- \
+    --profile build-only build sentinel-runtime
 }
 
 write_dev_env_defaults() {
@@ -928,6 +936,109 @@ json_instance_rename_body() {
   python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1]}))' "$1"
 }
 
+format_session_transcript() {
+  require_python || { cat; return 0; }
+  python3 - "$1" "$2" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+mode = sys.argv[1]
+path = sys.argv[2]
+try:
+    messages = json.loads(Path(path).read_text(encoding="utf-8"))
+except Exception:
+    print("Failed to parse session transcript.")
+    raise SystemExit(1)
+
+if mode == "json":
+    print(json.dumps(messages, indent=2, sort_keys=True))
+    raise SystemExit(0)
+
+if not messages:
+    print("No messages.")
+    raise SystemExit(0)
+
+for index, message in enumerate(messages, start=1):
+    role = str(message.get("role") or "?")
+    created = str(message.get("created_at") or "")
+    msg_id = str(message.get("id") or "")
+    tool_name = message.get("tool_name")
+    tool_call_id = message.get("tool_call_id")
+    title = f"[{index}] {role}"
+    if tool_name:
+        title += f" tool={tool_name}"
+    if created:
+        title += f" at {created}"
+    if msg_id:
+        title += f" id={msg_id}"
+    if tool_call_id:
+        title += f" tool_call_id={tool_call_id}"
+    print(title)
+    print("-" * min(120, max(20, len(title))))
+    content = message.get("content")
+    if content is None:
+        content = ""
+    print(str(content).rstrip())
+    metadata = message.get("metadata")
+    if isinstance(metadata, dict) and metadata:
+        interesting = {}
+        for key in ("error", "retryable_error", "tool_calls", "tool_result", "generation", "model", "provider"):
+            if key in metadata:
+                interesting[key] = metadata[key]
+        if interesting:
+            print()
+            print("metadata:")
+            print(json.dumps(interesting, indent=2, sort_keys=True))
+    print()
+PY
+}
+
+format_session_picker_choices() {
+  require_python || return 1
+  python3 - "$1" "$2" "$3" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+search = sys.argv[2].strip().lower()
+target = Path(sys.argv[3])
+
+try:
+    sessions = json.loads(source.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+
+rows = sessions if isinstance(sessions, list) else sessions.get("items", [])
+matches = []
+for row in rows:
+    session_id = str(row.get("id") or "")
+    title = str(row.get("title") or "").strip() or "(untitled)"
+    title = " ".join(title.split())
+    started_at = str(row.get("started_at") or "")
+    agent_id = str(row.get("agent_id") or "")
+    haystack = " ".join([session_id, title, started_at, agent_id]).lower()
+    if search and search not in haystack:
+        continue
+    flags = []
+    if row.get("is_main"):
+        flags.append("main")
+    if row.get("is_running"):
+        flags.append("running")
+    if row.get("has_unread"):
+        flags.append("unread")
+    suffix = f" [{' '.join(flags)}]" if flags else ""
+    short_id = session_id[:8] if session_id else "????????"
+    label = f"{title}  {started_at[:19]}  {short_id}{suffix}"
+    matches.append((session_id, label))
+
+with target.open("w", encoding="utf-8") as handle:
+    for session_id, label in matches[:80]:
+        handle.write(f"{session_id}\t{label}\n")
+PY
+}
+
 parse_access_token() {
   require_python || return 1
   python3 -c '
@@ -979,7 +1090,7 @@ if not rows:
     raise SystemExit(0)
 for row in rows:
     parts = [row.get("name", "?")]
-    for key in ("display_name", "database_name", "runtime_backend", "workspace_root"):
+    for key in ("display_name", "database_name", "runtime_backend"):
         value = row.get(key)
         if value:
             parts.append(f"{key}={value}")
@@ -996,7 +1107,7 @@ try:
 except Exception:
     print("Failed to parse instance.")
     raise SystemExit(1)
-for key in ("name", "display_name", "database_name", "workspace_root", "runtime_backend"):
+for key in ("name", "display_name", "database_name", "runtime_backend"):
     value = row.get(key)
     if value is not None:
         print(f"{key}: {value}")
@@ -1280,6 +1391,12 @@ stack_up() {
     ui_note_error "stack configuration is not ready."
     return 1
   fi
+  info "Checking Sentinel runtime image (${COMPOSE_PROJECT_NAME})..."
+  if ! build_runtime_image; then
+    invalidate_status_cache
+    ui_note_error "docker compose runtime image build failed — details below."
+    return 1
+  fi
   info "Starting Sentinel shared stack (${COMPOSE_PROJECT_NAME})..."
   if ! run_compose_captured "docker compose up failed" -- up --build -d; then
     invalidate_status_cache
@@ -1464,6 +1581,135 @@ instances_delete() {
   ok "Deleted instance: ${name}"
 }
 
+fetch_sessions_for_instance() {
+  local instance_name="$1"
+  local output_file="$2"
+  require_python || return 1
+  ensure_tmp_dir || return 1
+
+  local page_file offset total count
+  page_file="$TMP_DIR/sessions-page.json"
+  offset=0
+  total=1
+  : > "$output_file"
+
+  while (( offset < total )); do
+    api_request GET "/instances/${instance_name}/sessions?include_sub_agents=true&limit=300&offset=${offset}" > "$page_file" \
+      || return 1
+    {
+      IFS= read -r total
+      IFS= read -r count
+    } < <(python3 - "$page_file" "$output_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+page = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+target = Path(sys.argv[2])
+items = page.get("items") or []
+with target.open("a", encoding="utf-8") as handle:
+    for item in items:
+        handle.write(json.dumps(item, separators=(",", ":")) + "\n")
+print(int(page.get("total") or 0))
+print(len(items))
+PY
+)
+    (( count > 0 )) || break
+    offset=$(( offset + count ))
+  done
+
+  python3 - "$output_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+rows = [
+    json.loads(line)
+    for line in path.read_text(encoding="utf-8").splitlines()
+    if line.strip()
+]
+path.write_text(json.dumps(rows), encoding="utf-8")
+PY
+}
+
+session_transcript() {
+  local session_id="${1:-}"
+  local instance_name="main"
+  local output_mode="text"
+  [[ -n "$session_id" ]] || die "Usage: ./sentinel-cli.sh sessions transcript <session-id> [instance] [--json]"
+  shift || true
+  if [[ $# -gt 0 && "${1:-}" != --* ]]; then
+    instance_name="$1"
+    shift || true
+  fi
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        output_mode="json"
+        shift
+        ;;
+      *)
+        die "Unknown transcript option: $1"
+        ;;
+    esac
+  done
+
+  ensure_stack_api
+  require_python || return 1
+  ensure_tmp_dir || return 1
+
+  local all_file page_file transcript_file before query has_more oldest
+  all_file="$TMP_DIR/session-transcript.jsonl"
+  page_file="$TMP_DIR/session-transcript-page.json"
+  transcript_file="$TMP_DIR/session-transcript.json"
+  : > "$all_file"
+  before=""
+  has_more=true
+
+  while [[ "$has_more" == "true" ]]; do
+    query="limit=100"
+    if [[ -n "$before" ]]; then
+      query+="&before=${before}"
+    fi
+    api_request GET "/instances/${instance_name}/sessions/${session_id}/messages?${query}" > "$page_file" || return 1
+    {
+      IFS= read -r has_more
+      IFS= read -r oldest
+    } < <(python3 - "$page_file" "$all_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+page = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+target = Path(sys.argv[2])
+with target.open("a", encoding="utf-8") as handle:
+    for item in page.get("items", []):
+        handle.write(json.dumps(item, separators=(",", ":")) + "\n")
+print("true" if page.get("has_more") else "false")
+items = page.get("items") or []
+print(items[-1].get("id", "") if items else "")
+PY
+)
+    [[ -n "$oldest" ]] || break
+    before="$oldest"
+  done
+
+  python3 - "$all_file" "$transcript_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+rows = []
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if line.strip():
+        rows.append(json.loads(line))
+rows.reverse()
+Path(sys.argv[2]).write_text(json.dumps(rows), encoding="utf-8")
+PY
+  format_session_transcript "$output_mode" "$transcript_file"
+}
+
 # === Interactive instance flows ===
 validate_instance_name() {
   local name="$1"
@@ -1592,6 +1838,83 @@ instances_menu() {
   done
 }
 
+pick_session_for_transcript() {
+  local instance_name="$1"
+  ensure_tmp_dir || return 1
+  require_python || return 1
+
+  local sessions_file choices_file search count ids labels options idx session_id
+  sessions_file="$TMP_DIR/sessions.json"
+  choices_file="$TMP_DIR/session-choices"
+
+  if ! fetch_sessions_for_instance "$instance_name" "$sessions_file"; then
+    ui_note_error "Could not load sessions for ${instance_name}."
+    return 1
+  fi
+
+  while true; do
+    printf '%s' "$CLEAR_SCREEN"
+    printf '%s%s%s %sSession Transcripts%s\n\n' "$CYAN" "$ICON_TRANSCRIPT" "$RESET" "$BOLD" "$RESET"
+    printf '%sInstance:%s %s\n\n' "$DIM" "$RESET" "$instance_name"
+    search="$(prompt_default "Search sessions by title/id/date (blank for recent)" "")"
+    format_session_picker_choices "$sessions_file" "$search" "$choices_file" || {
+      ui_note_error "Could not parse session list."
+      return 1
+    }
+
+    ids=()
+    labels=()
+    while IFS=$'\t' read -r session_id label; do
+      [[ -n "$session_id" ]] || continue
+      ids+=("$session_id")
+      labels+=("$label")
+    done < "$choices_file"
+    count=${#ids[@]}
+
+    if (( count == 0 )); then
+      printf '\n%sNo sessions matched.%s\n\n' "$YELLOW" "$RESET"
+      press_enter_to_return
+      return 1
+    fi
+
+    options=("${labels[@]}" "${ICON_REFRESH}  Search Again" "${ICON_BACK}  Back")
+    MENU_KEY="transcripts" SHORTCUT_KEYS="" \
+      select_option "Choose Session" "${options[@]}"
+    idx=$?
+    if (( idx == 255 )) || (( idx == count + 1 )); then
+      return 1
+    fi
+    if (( idx == count )); then
+      continue
+    fi
+    printf '%s' "${ids[$idx]}" > "$TMP_DIR/session-pick"
+    return 0
+  done
+}
+
+interactive_session_transcripts() {
+  ui_clear_error
+  require_stack_api || return 0
+  pick_instance_name || return 0
+  local instance_name session_id
+  instance_name="$(< "$TMP_DIR/pick")"
+  [[ -n "$instance_name" ]] || return 0
+  pick_session_for_transcript "$instance_name" || return 0
+  session_id="$(< "$TMP_DIR/session-pick")"
+  [[ -n "$session_id" ]] || return 0
+
+  printf '%s' "$CLEAR_SCREEN"
+  printf '%s%s%s %sSession Transcript%s\n\n' "$CYAN" "$ICON_TRANSCRIPT" "$RESET" "$BOLD" "$RESET"
+  printf '%sInstance:%s %s\n' "$DIM" "$RESET" "$instance_name"
+  printf '%sSession:%s  %s\n\n' "$DIM" "$RESET" "$session_id"
+  if ! session_transcript "$session_id" "$instance_name"; then
+    printf '\n'
+    ui_note_error "Failed to pull transcript for ${session_id}."
+  fi
+  printf '\n'
+  press_enter_to_return
+}
+
 # === Other interactive screens ===
 interactive_status() {
   printf '%s' "$CLEAR_SCREEN"
@@ -1658,15 +1981,16 @@ menu_loop() {
     "${ICON_RESTART}  Restart Stack"
     "${ICON_RESET}  Reset Stack"
     "${ICON_INSTANCES}  Instances"
+    "${ICON_TRANSCRIPT}  Session Transcripts"
     "${ICON_STATUS}  Status"
     "${ICON_LOGS}  Logs"
     "${ICON_REFRESH}  Refresh"
     "${ICON_EXIT}  Exit"
   )
   # Shortcuts mirror common compose verbs: u=up, d=down, r=restart, x=reset,
-  # i=instances, s=status, l=logs, f=refresh, e=exit.
+  # i=instances, t=transcripts, s=status, l=logs, f=refresh, e=exit.
   while true; do
-    MENU_KEY="main" SHORTCUT_KEYS="udrxislfe" \
+    MENU_KEY="main" SHORTCUT_KEYS="udrxitslfe" \
       select_option "Main Menu" "${options[@]}"
     local choice=$?
     case "$choice" in
@@ -1675,10 +1999,11 @@ menu_loop() {
       2) interactive_restart; invalidate_status_cache ;;
       3) interactive_reset; invalidate_status_cache ;;
       4) instances_menu ;;
-      5) interactive_status; invalidate_status_cache ;;
-      6) interactive_logs ;;
-      7) invalidate_status_cache; ui_note_info "Status refreshed." ;;
-      8|255)
+      5) interactive_session_transcripts ;;
+      6) interactive_status; invalidate_status_cache ;;
+      7) interactive_logs ;;
+      8) invalidate_status_cache; ui_note_info "Status refreshed." ;;
+      9|255)
         show_cursor
         printf '%s' "$CLEAR_TO_END"
         exit 0
@@ -1741,6 +2066,14 @@ main() {
         create) instances_create "$@" ;;
         rename) instances_rename "$@" ;;
         delete|rm) instances_delete "$@" ;;
+        *) usage; exit 1 ;;
+      esac
+      ;;
+    sessions)
+      local subcommand="${1:-}"
+      shift || true
+      case "$subcommand" in
+        transcript) session_transcript "$@" ;;
         *) usage; exit 1 ;;
       esac
       ;;
