@@ -486,6 +486,13 @@ input::placeholder {
   padding: 12px 20px;
 }
 
+.support-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .row {
   display: grid;
   grid-template-columns: 1fr auto auto;

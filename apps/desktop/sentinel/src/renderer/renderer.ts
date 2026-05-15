@@ -210,6 +210,16 @@ el('resetAuthBtn').addEventListener('click', async () => {
   if (!confirmed) return;
   render(await api.resetAuth());
 });
+el('factoryResetBtn').addEventListener('click', async () => {
+  const value = window.prompt(
+    'Factory reset removes desktop Postgres data, instances, workspaces, runtime image data, and auth. Type RESET to continue.',
+  );
+  if (value !== 'RESET') return;
+  render(await api.factoryReset());
+  logs = await api.getLogs();
+  renderServiceFilter();
+  renderLogs();
+});
 
 api.onStatus(render);
 api.onLog((entry: LogEntry) => {

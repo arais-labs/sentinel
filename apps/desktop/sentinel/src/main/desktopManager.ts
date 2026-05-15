@@ -151,6 +151,18 @@ export class DesktopManager {
     return this.emitStatus();
   }
 
+  async factoryReset(): Promise<DesktopStatus> {
+    await this.ensureInitialized();
+    await this.stopServices();
+    await this.reapOrphanedQemuBuild();
+    await this.reapOrphanedQemuVms();
+    await rm(appSupportRoot(), { recursive: true, force: true });
+    this.ports = undefined;
+    this.secrets = undefined;
+    this.supervisor.appendManagerLog('Factory reset complete; desktop runtime data was removed.');
+    return this.emitStatus();
+  }
+
   private async ensureInitialized(): Promise<void> {
     if (this.ports) return;
     this.logWriter = this.logWriter || new DailyLogWriter(app.getPath('logs'));
