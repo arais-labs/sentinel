@@ -36,11 +36,17 @@ export interface LogEntry {
   at: string;
 }
 
+export interface FactoryResetScopes {
+  db: boolean;
+  runtimeData: boolean;
+  logs: boolean;
+}
+
 export interface DesktopApi {
   getStatus(): Promise<DesktopStatus>;
   stopServices(): Promise<DesktopStatus>;
   resetAuth(): Promise<DesktopStatus>;
-  factoryReset(): Promise<DesktopStatus>;
+  factoryReset(scopes: FactoryResetScopes): Promise<DesktopStatus>;
   openSentinel(): Promise<DesktopStatus>;
   showControlCenter(): Promise<void>;
   revealAppSupport(): Promise<void>;

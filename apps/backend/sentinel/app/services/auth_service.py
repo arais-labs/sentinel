@@ -5,7 +5,7 @@ import secrets
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import is_desktop_app, settings
 from app.services.settings.manager_settings import get_manager_setting, upsert_manager_setting
 
 _USERNAME_KEY = "sentinel.auth.username"
@@ -37,17 +37,13 @@ def _verify_password(password: str, stored_hash: str) -> bool:
     return secrets.compare_digest(candidate, stored_hash)
 
 
-def _is_desktop_mode() -> bool:
-    return (settings.app_env or "").strip().lower() == "desktop"
-
-
 async def ensure_default_auth_settings(db: AsyncSession) -> None:
     username = await get_manager_setting(db, key=_USERNAME_KEY)
     password_hash = await get_manager_setting(db, key=_PASSWORD_HASH_KEY)
     seed_username = _normalize_username(settings.sentinel_auth_username)
     seed_password = settings.sentinel_auth_password.strip()
 
-    if _is_desktop_mode():
+    if is_desktop_app():
         # Desktop: DB wins; env only seeds an empty DB on first run.
         if username and password_hash:
             return
@@ -84,7 +80,7 @@ async def bootstrap_auth_settings(
     username: str,
     password: str,
 ) -> bool:
-    if not _is_desktop_mode():
+    if not is_desktop_app():
         return False
     if await auth_is_configured(db):
         return False

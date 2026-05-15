@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
   Zap, ArrowRight, ArrowLeft, Check, Bot, User, Flag,
-  Eye, EyeOff, Loader2,
+  Eye, EyeOff, Loader2, KeyRound,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import {
@@ -26,6 +26,11 @@ interface StepMeta {
 interface StarterPromptOption {
   label: string;
   prompt: string;
+}
+
+interface DesktopCodexOauthStatus {
+  enabled: boolean;
+  auth_file_found: boolean;
 }
 
 const STEPS: StepMeta[] = [
@@ -116,6 +121,7 @@ function ProviderCard({
   name, color, apiKey, setApiKey, oauthToken, setOauthToken,
   apiPlaceholder, oauthPlaceholder, apiHint, oauthInstructions,
   oauthHint, oauthInputKind = 'token', defaultMode = 'oauth',
+  canImportOauth = false, importedOauth = false, importingOauth = false, onImportOauth,
 }: {
   name: string; color: string;
   apiKey: string; setApiKey: (v: string) => void;
@@ -126,12 +132,16 @@ function ProviderCard({
   oauthHint: React.ReactNode;
   oauthInputKind?: 'token' | 'json';
   defaultMode?: 'oauth' | 'api';
+  canImportOauth?: boolean;
+  importedOauth?: boolean;
+  importingOauth?: boolean;
+  onImportOauth?: () => void;
 }) {
   const [showKey, setShowKey] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [mode, setMode] = useState<'oauth' | 'api'>(defaultMode);
   const [showHelp, setShowHelp] = useState(false);
-  const hasValue = !!(apiKey || oauthToken);
+  const hasValue = !!(apiKey || oauthToken || importedOauth);
   const oauthLabel = oauthInputKind === 'json' ? 'OAuth Credentials' : 'OAuth Token';
 
   return (
@@ -174,6 +184,17 @@ function ProviderCard({
                 </button>
               </div>
             )}
+            {canImportOauth && onImportOauth && (
+              <button
+                type="button"
+                onClick={onImportOauth}
+                disabled={importingOauth}
+                className="btn-secondary h-9 w-full justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
+              >
+                {importingOauth ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
+                {importedOauth ? 'Codex Token Imported' : 'Import from Codex CLI'}
+              </button>
+            )}
             <div className="flex items-center justify-between">
               <div className="text-[10px] text-[color:var(--text-muted)]">{oauthHint}</div>
               {oauthInstructions && (
@@ -206,6 +227,7 @@ function LLMStep({
   apiKey, setApiKey, oauthToken, setOauthToken,
   openaiApiKey, setOpenaiApiKey, openaiOauthToken, setOpenaiOauthToken,
   geminiApiKey, setGeminiApiKey, geminiOauthCredentials, setGeminiOauthCredentials,
+  codexOauthImportAvailable, openaiOauthImported, importingCodexOauth, onImportCodexOauth,
 }: {
   apiKey: string; setApiKey: (v: string) => void;
   oauthToken: string; setOauthToken: (v: string) => void;
@@ -213,6 +235,10 @@ function LLMStep({
   openaiOauthToken: string; setOpenaiOauthToken: (v: string) => void;
   geminiApiKey: string; setGeminiApiKey: (v: string) => void;
   geminiOauthCredentials: string; setGeminiOauthCredentials: (v: string) => void;
+  codexOauthImportAvailable: boolean;
+  openaiOauthImported: boolean;
+  importingCodexOauth: boolean;
+  onImportCodexOauth: () => void;
 }) {
   const [copiedAnthropic, setCopiedAnthropic] = useState(false);
   const [copiedOpenai, setCopiedOpenai] = useState(false);
@@ -225,7 +251,7 @@ function LLMStep({
   }
 
   function copyOpenaiCmd() {
-    navigator.clipboard.writeText('npx codex --full-setup');
+    navigator.clipboard.writeText('codex login');
     setCopiedOpenai(true);
     setTimeout(() => setCopiedOpenai(false), 2000);
   }
@@ -259,7 +285,7 @@ function LLMStep({
       <div className="flex items-center gap-2 px-3 py-1.5">
         <span className="text-[9px] font-black" style={{ color: '#10A37F' }}>1.</span>
         <div className="flex items-center gap-2 flex-1 rounded-md bg-[color:var(--app-bg)] px-2 py-1 font-mono text-[11px] text-[color:var(--text-primary)] border border-[color:var(--border)]">
-          <span className="flex-1">npx codex --full-setup</span>
+          <span className="flex-1">codex login</span>
           <button onClick={copyOpenaiCmd} className="text-[9px] font-bold uppercase tracking-widest hover:opacity-70 transition-opacity shrink-0" style={{ color: '#10A37F' }}>
             {copiedOpenai ? <Check size={10} /> : 'Copy'}
           </button>
@@ -267,7 +293,7 @@ function LLMStep({
       </div>
       <div className="flex items-center gap-2 px-3 py-1.5">
         <span className="text-[9px] font-black" style={{ color: '#10A37F' }}>2.</span>
-        <p className="text-[10px] text-[color:var(--text-muted)]">Sign in via <span className="font-mono text-[color:var(--text-primary)]">auth.openai.com</span></p>
+        <p className="text-[10px] text-[color:var(--text-muted)]">Choose <span className="font-mono text-[color:var(--text-primary)]">Sign in with ChatGPT</span> and complete the browser flow.</p>
       </div>
       <div className="flex items-center gap-2 px-3 py-1.5">
         <span className="text-[9px] font-black" style={{ color: '#10A37F' }}>3.</span>
@@ -329,6 +355,10 @@ function LLMStep({
           apiHint="Get your key at platform.openai.com/api-keys"
           oauthHint={<>Starts with <span className="font-mono text-[color:var(--text-primary)]">eyJhbG...</span></>}
           oauthInstructions={openaiOauthInstructions}
+          canImportOauth={codexOauthImportAvailable}
+          importedOauth={openaiOauthImported}
+          importingOauth={importingCodexOauth}
+          onImportOauth={onImportCodexOauth}
         />
         <ProviderCard
           name="Google Gemini"
@@ -487,6 +517,9 @@ export function OnboardingPage() {
   // LLM keys — OpenAI
   const [openaiApiKey, setOpenaiApiKey] = useState('');
   const [openaiOauthToken, setOpenaiOauthToken] = useState('');
+  const [codexOauthImportAvailable, setCodexOauthImportAvailable] = useState(false);
+  const [openaiOauthImported, setOpenaiOauthImported] = useState(false);
+  const [importingCodexOauth, setImportingCodexOauth] = useState(false);
   // LLM keys — Gemini
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [geminiOauthCredentials, setGeminiOauthCredentials] = useState('');
@@ -509,6 +542,33 @@ export function OnboardingPage() {
 
   const isLastStep = step === STEPS.length - 1;
 
+  useEffect(() => {
+    let cancelled = false;
+    api.get<DesktopCodexOauthStatus>('/settings/desktop-codex-oauth/status')
+      .then((status) => {
+        if (!cancelled) setCodexOauthImportAvailable(status.enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setCodexOauthImportAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleImportCodexOauth() {
+    setImportingCodexOauth(true);
+    try {
+      await api.post('/settings/desktop-codex-oauth/import');
+      setOpenaiOauthImported(true);
+      toast.success('Codex OAuth token imported');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to import Codex OAuth token');
+    } finally {
+      setImportingCodexOauth(false);
+    }
+  }
+
   function canProceed(): boolean {
     return true; // all steps are optional content-wise
   }
@@ -523,7 +583,7 @@ export function OnboardingPage() {
 
       // 1. Save API keys
       const hasAnthropic = !!(apiKey || oauthToken);
-      const hasOpenai = !!(openaiApiKey || openaiOauthToken);
+      const hasOpenai = !!(openaiApiKey || openaiOauthToken || openaiOauthImported);
       const hasGemini = !!(geminiApiKey || geminiOauthCredentials);
       if (hasAnthropic || hasOpenai || hasGemini) {
         await api.post('/settings/api-keys', {
@@ -610,7 +670,7 @@ export function OnboardingPage() {
           <div className="flex-1 overflow-y-auto px-4 py-5 pb-28 sm:px-6 sm:py-6 md:px-12 md:py-10 md:pb-8">
             <div className="w-full max-w-xl mx-auto flex flex-col gap-4 animate-in fade-in duration-300" key={step}>
               {step === 0 && <WelcomeStep />}
-              {step === 1 && <LLMStep apiKey={apiKey} setApiKey={setApiKey} oauthToken={oauthToken} setOauthToken={setOauthToken} openaiApiKey={openaiApiKey} setOpenaiApiKey={setOpenaiApiKey} openaiOauthToken={openaiOauthToken} setOpenaiOauthToken={setOpenaiOauthToken} geminiApiKey={geminiApiKey} setGeminiApiKey={setGeminiApiKey} geminiOauthCredentials={geminiOauthCredentials} setGeminiOauthCredentials={setGeminiOauthCredentials} />}
+              {step === 1 && <LLMStep apiKey={apiKey} setApiKey={setApiKey} oauthToken={oauthToken} setOauthToken={setOauthToken} openaiApiKey={openaiApiKey} setOpenaiApiKey={setOpenaiApiKey} openaiOauthToken={openaiOauthToken} setOpenaiOauthToken={setOpenaiOauthToken} geminiApiKey={geminiApiKey} setGeminiApiKey={setGeminiApiKey} geminiOauthCredentials={geminiOauthCredentials} setGeminiOauthCredentials={setGeminiOauthCredentials} codexOauthImportAvailable={codexOauthImportAvailable} openaiOauthImported={openaiOauthImported} importingCodexOauth={importingCodexOauth} onImportCodexOauth={handleImportCodexOauth} />}
               {step === 2 && <AgentStep name={agentName} setName={setAgentName} role={agentRole} setRole={setAgentRole} personality={agentPersonality} setPersonality={setAgentPersonality} />}
               {step === 3 && <UserStep userName={userName} setUserName={setUserName} userContext={userContext} setUserContext={setUserContext} />}
               {step === 4 && (

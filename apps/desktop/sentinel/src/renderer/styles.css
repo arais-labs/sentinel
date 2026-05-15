@@ -212,6 +212,14 @@ input::placeholder {
   color: var(--text-muted);
 }
 
+input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  padding: 0;
+  accent-color: var(--red);
+}
+
 /* Layout Components */
 
 .grid {
@@ -491,6 +499,108 @@ input::placeholder {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background-color: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(10px);
+}
+
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+.modal-panel {
+  width: min(560px, 100%);
+  background-color: var(--surface-0);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 20px;
+  background-color: var(--surface-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.modal-header h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.modal-header p {
+  margin: 6px 0 0;
+  max-width: 380px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.reset-options {
+  display: flex;
+  flex-direction: column;
+}
+
+.reset-option {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+
+.reset-option:hover {
+  background-color: var(--surface-1);
+}
+
+.reset-option strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.reset-option small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.modal-error {
+  margin: 0;
+  padding: 12px 20px;
+  color: var(--red);
+  border-bottom: 1px solid rgba(244, 63, 94, 0.2);
+  background-color: rgba(244, 63, 94, 0.08);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
 }
 
 .row {

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings, settings
+from app.config import Settings, is_desktop_app, settings
 from app.models.system import SystemSetting
 from app.services.llm.ids import ProviderChoice, parse_provider_choice
 from app.services.llm.providers.gemini_oauth import GeminiOAuthCredentials
@@ -28,6 +31,17 @@ class ProviderAuthStatus:
 class ApiKeysStatus:
     primary_provider: ProviderChoice
     providers: dict[ProviderChoice, ProviderAuthStatus]
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopCodexOauthStatus:
+    enabled: bool
+    auth_file_found: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopCodexOauthImportResult:
+    masked_key: str
 
 
 class SettingsService:
@@ -100,6 +114,31 @@ class SettingsService:
             setting_key="gemini_oauth_credentials",
             value=normalized_gemini_oauth,
         )
+
+    def get_desktop_codex_oauth_status(self, *, auth_path: Path | None = None) -> DesktopCodexOauthStatus:
+        enabled = is_desktop_app()
+        return DesktopCodexOauthStatus(
+            enabled=enabled,
+            auth_file_found=enabled and (auth_path or self._codex_auth_path()).is_file(),
+        )
+
+    async def import_desktop_codex_oauth_token(
+        self,
+        db: AsyncSession,
+        *,
+        auth_path: Path | None = None,
+    ) -> DesktopCodexOauthImportResult:
+        path = auth_path or self._codex_auth_path()
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Codex auth file was not found at ~/.codex/auth.json.") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=422, detail="Codex auth file could not be read.") from exc
+
+        token = self._extract_codex_access_token(raw)
+        await upsert_system_setting(db, key="openai_oauth_token", value=token)
+        return DesktopCodexOauthImportResult(masked_key=self._mask_secret(token) or "****")
 
     def get_api_keys_status(self, instance_settings: Settings | None = None) -> ApiKeysStatus:
         settings_source = instance_settings or settings
@@ -219,3 +258,69 @@ class SettingsService:
             except ValueError:
                 return SettingsService._mask_secret(normalized)
         return SettingsService._mask_secret(normalized)
+
+    @staticmethod
+    def _codex_auth_path() -> Path:
+        return Path.home() / ".codex" / "auth.json"
+
+    @staticmethod
+    def _extract_codex_access_token(raw: str) -> str:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=422, detail="Codex auth file is not valid JSON.") from exc
+
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="Codex auth file must contain a JSON object.")
+
+        token = SettingsService._find_codex_access_token(payload)
+        if token is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Codex auth file does not contain an access_token.",
+            )
+        return token
+
+    @staticmethod
+    def _find_codex_access_token(payload: dict[str, Any]) -> str | None:
+        priority_paths = (
+            ("tokens", "access_token"),
+            ("tokens", "accessToken"),
+            ("auth", "access_token"),
+            ("auth", "accessToken"),
+            ("oauth", "access_token"),
+            ("oauth", "accessToken"),
+            ("access_token",),
+            ("accessToken",),
+            ("OPENAI_OAUTH_TOKEN",),
+        )
+        for path in priority_paths:
+            current: Any = payload
+            for key in path:
+                if not isinstance(current, dict):
+                    current = None
+                    break
+                current = current.get(key)
+            token = SettingsService._strip_or_none(current if isinstance(current, str) else None)
+            if token is not None:
+                return token
+
+        return SettingsService._find_nested_access_token(payload)
+
+    @staticmethod
+    def _find_nested_access_token(value: Any) -> str | None:
+        if isinstance(value, dict):
+            for key in ("access_token", "accessToken"):
+                token = SettingsService._strip_or_none(value.get(key) if isinstance(value.get(key), str) else None)
+                if token is not None:
+                    return token
+            for child in value.values():
+                token = SettingsService._find_nested_access_token(child)
+                if token is not None:
+                    return token
+        if isinstance(value, list):
+            for child in value:
+                token = SettingsService._find_nested_access_token(child)
+                if token is not None:
+                    return token
+        return None

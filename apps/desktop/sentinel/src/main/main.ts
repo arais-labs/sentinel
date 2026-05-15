@@ -141,7 +141,12 @@ function registerIpc(): void {
   ipcMain.handle(IPC.getStatus, () => manager.getStatus());
   ipcMain.handle(IPC.stopServices, () => manager.stopServices());
   ipcMain.handle(IPC.resetAuth, () => manager.resetAuth());
-  ipcMain.handle(IPC.factoryReset, () => manager.factoryReset());
+  ipcMain.handle(IPC.factoryReset, async (_event, scopes) => {
+    const status = await manager.factoryReset(scopes);
+    app.relaunch();
+    app.exit(0);
+    return status;
+  });
   ipcMain.handle(IPC.openSentinel, () => showSentinel());
   ipcMain.handle(IPC.showControlCenter, () => showControlCenter());
   ipcMain.handle(IPC.revealAppSupport, () => manager.revealAppSupport());

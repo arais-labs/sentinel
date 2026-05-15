@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -11,6 +12,7 @@ from app.services.llm.factory import _build_enabled_providers
 from app.services.llm.ids import ProviderChoice
 from app.services.llm.providers.gemini_oauth import GeminiOAuthProvider
 from app.services.settings.settings_service import SettingsService
+from tests.fake_db import FakeDB
 
 
 class _ScalarResult:
@@ -170,3 +172,58 @@ def test_build_enabled_providers_prefers_gemini_oauth() -> None:
             settings.gemini_api_key,
             settings.gemini_oauth_credentials,
         ) = old_values
+
+
+def test_extract_codex_access_token_from_cli_auth_json() -> None:
+    token = SettingsService._extract_codex_access_token(
+        json.dumps(
+            {
+                "tokens": {
+                    "id_token": "not-this-token",
+                    "access_token": "codex-access-token",
+                    "refresh_token": "refresh-token",
+                }
+            }
+        )
+    )
+
+    assert token == "codex-access-token"
+
+
+def test_extract_codex_access_token_rejects_missing_token() -> None:
+    with pytest.raises(HTTPException) as exc:
+        SettingsService._extract_codex_access_token(json.dumps({"tokens": {"id_token": "id-token"}}))
+
+    assert exc.value.status_code == 422
+    assert "access_token" in str(exc.value.detail)
+
+
+def test_desktop_codex_oauth_status_uses_app_env_and_auth_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"tokens":{"access_token":"codex-access-token"}}', encoding="utf-8")
+    monkeypatch.setattr(settings, "app_env", "desktop")
+
+    status = SettingsService().get_desktop_codex_oauth_status(auth_path=auth_path)
+
+    assert status.enabled is True
+    assert status.auth_file_found is True
+
+
+@pytest.mark.asyncio
+async def test_import_desktop_codex_oauth_token_persists_openai_oauth(tmp_path: Path) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"tokens":{"access_token":"codex-access-token"}}', encoding="utf-8")
+    fake_db = FakeDB(seed_auth=False)
+
+    result = await SettingsService().import_desktop_codex_oauth_token(fake_db, auth_path=auth_path)
+
+    assert result.masked_key == "code...oken"
+    persisted = next(
+        row.value
+        for row in fake_db.storage[SystemSetting]
+        if row.key == "openai_oauth_token"
+    )
+    assert persisted == "codex-access-token"

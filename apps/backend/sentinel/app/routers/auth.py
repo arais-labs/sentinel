@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import is_desktop_app, settings
 from app.dependencies import get_manager_db
 from app.middleware.auth import (
     Identity,
@@ -107,16 +107,12 @@ async def login(
     )
 
 
-def _is_desktop_mode() -> bool:
-    return (settings.app_env or "").strip().lower() == "desktop"
-
-
 @router.get("/status", response_model=AuthStatusResponse)
 async def auth_status(db: AsyncSession = Depends(get_manager_db)) -> AuthStatusResponse:
     configured = await auth_is_configured(db)
     return AuthStatusResponse(
         configured=configured,
-        bootstrap_available=_is_desktop_mode() and not configured,
+        bootstrap_available=is_desktop_app() and not configured,
     )
 
 
@@ -127,7 +123,7 @@ async def bootstrap_auth(
     response: Response,
     db: AsyncSession = Depends(get_manager_db),
 ) -> TokenPairResponse:
-    if not _is_desktop_mode():
+    if not is_desktop_app():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auth bootstrap is only available in desktop mode")
     created = await bootstrap_auth_settings(
         db,
@@ -198,7 +194,7 @@ async def change_password(
     # Server/compose mode: env vars are the source of truth and force-sync on
     # every restart would revert any UI change, so the endpoint is hidden.
     # Use the env-rotation flow (edit .env + restart) instead.
-    if (settings.app_env or "").strip().lower() != "desktop":
+    if not is_desktop_app():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(

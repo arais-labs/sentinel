@@ -6,7 +6,7 @@ from contextlib import suppress
 from pathlib import Path
 from uuid import UUID
 
-from app.config import settings
+from app.config import is_desktop_app, settings
 from app.services.runtime.base import (
     RuntimeInstance,
     RuntimeProviderInfo,
@@ -35,7 +35,7 @@ def qemu_control_mode() -> str:
     configured = (settings.runtime_qemu_control or "").strip().lower()
     if configured:
         return configured
-    return "desktop" if settings.app_env == "desktop" else "bridge"
+    return "desktop" if is_desktop_app() else "bridge"
 
 
 def build_qemu_control() -> QemuControl:

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import is_desktop_app
 from app.dependencies import (
     get_db,
     get_runtime_rebuild_service,
@@ -31,6 +32,11 @@ class SetApiKeysRequest(BaseModel):
     openai_oauth_token: str | None = None
     gemini_api_key: str | None = None
     gemini_oauth_credentials: str | None = None
+
+
+def _require_desktop_mode() -> None:
+    if not is_desktop_app():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
 @router.post("/api-keys")
@@ -75,6 +81,32 @@ async def get_api_keys_status(
         "primary_provider": status.primary_provider.value,
         "providers": providers,
     }
+
+
+@router.get("/desktop-codex-oauth/status")
+async def get_desktop_codex_oauth_status(
+    _: TokenPayload = Depends(require_auth),
+    settings_service: SettingsService = Depends(get_settings_service),
+) -> dict[str, bool]:
+    status_result = settings_service.get_desktop_codex_oauth_status()
+    return {
+        "enabled": status_result.enabled,
+        "auth_file_found": status_result.auth_file_found,
+    }
+
+
+@router.post("/desktop-codex-oauth/import")
+async def import_desktop_codex_oauth(
+    request: Request,
+    _: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+    settings_service: SettingsService = Depends(get_settings_service),
+    runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
+) -> dict[str, str | bool]:
+    _require_desktop_mode()
+    result = await settings_service.import_desktop_codex_oauth_token(db)
+    await runtime_rebuild_service.rebuild_request_runtime_support(request)
+    return {"success": True, "masked_key": result.masked_key}
 
 
 class DeleteProviderRequest(BaseModel):

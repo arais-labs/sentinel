@@ -83,6 +83,49 @@
       </main>
     </div>
 
+    <div id="factoryResetModal" class="modal-backdrop" hidden>
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="factoryResetTitle">
+        <div class="modal-header">
+          <div>
+            <h2 id="factoryResetTitle">Factory Reset</h2>
+            <p>Select what Sentinel Desktop should remove. Nothing is selected by default.</p>
+          </div>
+          <button id="factoryResetCloseBtn" class="btn-ghost" aria-label="Close factory reset dialog">Close</button>
+        </div>
+
+        <div class="reset-options">
+          <label class="reset-option">
+            <input id="factoryResetDb" type="checkbox" />
+            <span>
+              <strong>DB</strong>
+              <small>Remove local Postgres data, including instances and auth records.</small>
+            </span>
+          </label>
+          <label class="reset-option">
+            <input id="factoryResetRuntime" type="checkbox" />
+            <span>
+              <strong>Runtime data</strong>
+              <small>Remove QEMU image data, run state, and runtime workspaces.</small>
+            </span>
+          </label>
+          <label class="reset-option">
+            <input id="factoryResetLogs" type="checkbox" />
+            <span>
+              <strong>Logs</strong>
+              <small>Remove Sentinel Desktop log files.</small>
+            </span>
+          </label>
+        </div>
+
+        <p id="factoryResetError" class="modal-error" hidden></p>
+
+        <div class="modal-actions">
+          <button id="factoryResetCancelBtn">Cancel</button>
+          <button id="factoryResetConfirmBtn" class="danger" disabled>Reset Selected and Reboot</button>
+        </div>
+      </section>
+    </div>
+
     <script type="module" src="../../dist/renderer/renderer.js"></script>
   </body>
 </html>

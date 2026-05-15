@@ -171,6 +171,11 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+
+def is_desktop_app() -> bool:
+    return (settings.app_env or "").strip().lower() == "desktop"
+
+
 CHAT_MAX_ITERATIONS = max(1, int(settings.chat_max_iterations))
 CHAT_DEFAULT_ITERATIONS = max(
     1,

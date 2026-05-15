@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Session, SessionBinding
@@ -156,36 +157,44 @@ async def resolve_or_create_main_session(
     if roots:
         roots.sort(key=lambda item: item.created_at or _utc_min())
         selected = roots[0]
-        await bind_session(
-            db,
-            user_id=user_id,
-            binding_type=MAIN_BINDING_TYPE,
-            binding_key=MAIN_BINDING_KEY,
-            session_id=selected.id,
-            metadata={"source": "resolved_root"},
-        )
-        return selected
+        try:
+            async with db.begin_nested():
+                await bind_session(
+                    db,
+                    user_id=user_id,
+                    binding_type=MAIN_BINDING_TYPE,
+                    binding_key=MAIN_BINDING_KEY,
+                    session_id=selected.id,
+                    metadata={"source": "resolved_root"},
+                )
+            return selected
+        except IntegrityError as exc:
+            return await _reload_main_session_after_race(db, user_id=user_id, cause=exc)
 
-    now = datetime.now(UTC)
-    created = Session(
-        user_id=user_id,
-        agent_id=agent_id,
-        title="Main",
-        started_at=now,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(created)
-    await db.flush()
-    await bind_session(
-        db,
-        user_id=user_id,
-        binding_type=MAIN_BINDING_TYPE,
-        binding_key=MAIN_BINDING_KEY,
-        session_id=created.id,
-        metadata={"source": "created_main"},
-    )
-    return created
+    try:
+        async with db.begin_nested():
+            now = datetime.now(UTC)
+            created = Session(
+                user_id=user_id,
+                agent_id=agent_id,
+                title="Main",
+                started_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(created)
+            await db.flush()
+            await bind_session(
+                db,
+                user_id=user_id,
+                binding_type=MAIN_BINDING_TYPE,
+                binding_key=MAIN_BINDING_KEY,
+                session_id=created.id,
+                metadata={"source": "created_main"},
+            )
+        return created
+    except IntegrityError as exc:
+        return await _reload_main_session_after_race(db, user_id=user_id, cause=exc)
 
 
 async def set_main_session(
@@ -244,6 +253,23 @@ async def _get_root_owned_session(
         )
     )
     return result.scalars().first()
+
+
+async def _reload_main_session_after_race(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    cause: IntegrityError,
+) -> Session:
+    bound_main = await get_active_binding_session(
+        db,
+        user_id=user_id,
+        binding_type=MAIN_BINDING_TYPE,
+        binding_key=MAIN_BINDING_KEY,
+    )
+    if bound_main is None:
+        raise cause
+    return bound_main
 
 
 async def _deactivate_active_bindings(

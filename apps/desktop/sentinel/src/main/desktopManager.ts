@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { DesktopStatus, LogEntry } from '../shared/ipc.js';
+import type { DesktopStatus, FactoryResetScopes, LogEntry } from '../shared/ipc.js';
 import { appSupportRoot, backendPath, frontendDistPath, resourceRoot } from './paths.js';
 import { findFreePort } from './ports.js';
 import { commandExists, execFileText } from './shell.js';
@@ -151,15 +151,46 @@ export class DesktopManager {
     return this.emitStatus();
   }
 
-  async factoryReset(): Promise<DesktopStatus> {
+  async factoryReset(scopes: FactoryResetScopes | undefined): Promise<DesktopStatus> {
+    const resetScopes: FactoryResetScopes = {
+      db: Boolean(scopes?.db),
+      runtimeData: Boolean(scopes?.runtimeData),
+      logs: Boolean(scopes?.logs),
+    };
+    if (!resetScopes.db && !resetScopes.runtimeData && !resetScopes.logs) {
+      throw new Error('Select at least one factory reset scope.');
+    }
     await this.ensureInitialized();
     await this.stopServices();
     await this.reapOrphanedQemuBuild();
     await this.reapOrphanedQemuVms();
-    await rm(appSupportRoot(), { recursive: true, force: true });
+    await this.releaseDesktopOwnership();
+    if (resetScopes.db) {
+      await rm(path.join(appSupportRoot(), 'postgres'), { recursive: true, force: true });
+    }
+    if (resetScopes.runtimeData) {
+      await rm(path.join(appSupportRoot(), 'qemu'), { recursive: true, force: true });
+      await rm(desktopWorkspaceRoot(), { recursive: true, force: true });
+      await rm(desktopRunRoot(), { recursive: true, force: true });
+    }
+    if (resetScopes.logs) {
+      await this.logWriter?.flush();
+      this.logWriter = undefined;
+      await rm(app.getPath('logs'), { recursive: true, force: true });
+    }
     this.ports = undefined;
     this.secrets = undefined;
-    this.supervisor.appendManagerLog('Factory reset complete; desktop runtime data was removed.');
+    if (!resetScopes.logs) {
+      this.supervisor.appendManagerLog(
+        `Factory reset complete; removed ${[
+          resetScopes.db ? 'db' : undefined,
+          resetScopes.runtimeData ? 'runtime data' : undefined,
+          resetScopes.logs ? 'logs' : undefined,
+        ]
+          .filter(Boolean)
+          .join(', ')}.`,
+      );
+    }
     return this.emitStatus();
   }
 

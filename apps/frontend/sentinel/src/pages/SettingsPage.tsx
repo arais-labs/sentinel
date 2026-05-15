@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import {
   LogOut, ShieldAlert, User, Cpu, Hash, Info, ChevronRight,
-  Bot, Eye, EyeOff, Check, Loader2, RefreshCw, HelpCircle, X,
+  Bot, Eye, EyeOff, Check, Loader2, RefreshCw, HelpCircle, X, KeyRound,
 } from 'lucide-react';
 import { Link as RouterLink, useLocation } from 'react-router-dom';
 
@@ -31,6 +31,11 @@ interface ProvidersStatusResponse {
   };
 }
 
+interface DesktopCodexOauthStatus {
+  enabled: boolean;
+  auth_file_found: boolean;
+}
+
 // ── OAuth help content ──────────────────────────────────────────────────────
 
 const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: string }> = {
@@ -47,12 +52,13 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: stri
   openai: {
     title: 'How to get an OpenAI Codex OAuth token',
     steps: [
-      'Install and run the Codex CLI: npx codex --full-setup',
-      'A browser opens — sign in with your OpenAI / ChatGPT account via auth.openai.com.',
-      'After authorization, the token is stored in ~/.codex/auth.json.',
+      'Install or update the Codex CLI: npm i -g @openai/codex',
+      'Run: codex login',
+      'Click Sign in with ChatGPT and complete the browser flow.',
+      'After authorization, credentials are stored locally in ~/.codex/auth.json.',
       'Copy the access_token value and paste it here.',
     ],
-    command: 'npx codex --full-setup',
+    command: 'codex login',
   },
   gemini: {
     title: 'How to get Gemini OAuth credentials',
@@ -70,6 +76,7 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: stri
 
 function ProviderRow({
   name, status, onSave, saving, providerId, isPrimary, onSetPrimary, onRemove,
+  canImportOauth = false, importingOauth = false, onImportOauth,
 }: {
   name: string;
   status: ProviderStatus | null;
@@ -79,6 +86,9 @@ function ProviderRow({
   isPrimary: boolean;
   onSetPrimary: () => void;
   onRemove: () => void;
+  canImportOauth?: boolean;
+  importingOauth?: boolean;
+  onImportOauth?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const help = OAUTH_HELP[providerId];
@@ -240,6 +250,17 @@ function ProviderRow({
               Save
             </button>
           </div>
+          {canImportOauth && mode === 'oauth' && onImportOauth && (
+            <button
+              type="button"
+              onClick={onImportOauth}
+              disabled={importingOauth}
+              className="btn-secondary h-10 w-full justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
+            >
+              {importingOauth ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}
+              Import from Codex CLI
+            </button>
+          )}
           {isGeminiOauth && (
             <p className="text-[10px] text-[color:var(--text-muted)]">
               Paste the full contents of <span className="font-mono text-[color:var(--text-primary)]">~/.gemini/oauth_creds.json</span>. Sentinel mirrors Gemini CLI and stores the refreshable Code Assist credential bundle, not a short-lived token.
@@ -264,6 +285,8 @@ export function SettingsPage() {
   const [providerStatus, setProviderStatus] = useState<ProvidersStatusResponse | null>(null);
   const [loadingProviders, setLoadingProviders] = useState(true);
   const [savingProvider, setSavingProvider] = useState<string | null>(null);
+  const [codexOauthImportAvailable, setCodexOauthImportAvailable] = useState(false);
+  const [importingCodexOauth, setImportingCodexOauth] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -277,6 +300,20 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<DesktopCodexOauthStatus>('/settings/desktop-codex-oauth/status')
+      .then((status) => {
+        if (!cancelled) setCodexOauthImportAvailable(status.enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setCodexOauthImportAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleSaveProvider(provider: 'anthropic' | 'openai' | 'gemini', data: { apiKey?: string; oauthToken?: string }) {
     setSavingProvider(provider);
@@ -322,6 +359,19 @@ export function SettingsPage() {
       await fetchStatus();
     } catch {
       toast.error('Failed to set primary provider');
+    }
+  }
+
+  async function handleImportCodexOauth() {
+    setImportingCodexOauth(true);
+    try {
+      await api.post('/settings/desktop-codex-oauth/import');
+      toast.success('Codex OAuth token imported');
+      await fetchStatus();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to import Codex OAuth token');
+    } finally {
+      setImportingCodexOauth(false);
     }
   }
 
@@ -466,6 +516,9 @@ export function SettingsPage() {
                 isPrimary={primaryProvider === 'openai'}
                 onSetPrimary={() => handleSetPrimary('openai')}
                 onRemove={() => handleRemoveProvider('openai')}
+                canImportOauth={codexOauthImportAvailable}
+                importingOauth={importingCodexOauth}
+                onImportOauth={handleImportCodexOauth}
               />
               <ProviderRow
                 name="Google Gemini"

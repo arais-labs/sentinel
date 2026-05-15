@@ -1,4 +1,4 @@
-import type { DesktopStatus, LogEntry, ManagedServiceStatus } from '../shared/ipc.js';
+import type { DesktopStatus, FactoryResetScopes, LogEntry, ManagedServiceStatus } from '../shared/ipc.js';
 
 const api = window.sentinelDesktop;
 let logs: LogEntry[] = [];
@@ -142,6 +142,35 @@ function shortPath(value: string): string {
   return index >= 0 ? value.slice(index + marker.length) : value;
 }
 
+function selectedFactoryResetScopes(): FactoryResetScopes {
+  return {
+    db: el<HTMLInputElement>('factoryResetDb').checked,
+    runtimeData: el<HTMLInputElement>('factoryResetRuntime').checked,
+    logs: el<HTMLInputElement>('factoryResetLogs').checked,
+  };
+}
+
+function hasFactoryResetScope(scopes = selectedFactoryResetScopes()): boolean {
+  return scopes.db || scopes.runtimeData || scopes.logs;
+}
+
+function updateFactoryResetConfirm(): void {
+  el<HTMLButtonElement>('factoryResetConfirmBtn').disabled = !hasFactoryResetScope();
+}
+
+function openFactoryResetDialog(): void {
+  el<HTMLInputElement>('factoryResetDb').checked = false;
+  el<HTMLInputElement>('factoryResetRuntime').checked = false;
+  el<HTMLInputElement>('factoryResetLogs').checked = false;
+  el('factoryResetError').hidden = true;
+  el('factoryResetModal').hidden = false;
+  updateFactoryResetConfirm();
+}
+
+function closeFactoryResetDialog(): void {
+  el('factoryResetModal').hidden = true;
+}
+
 async function refresh(): Promise<void> {
   logs = await api.getLogs();
   render(await api.getStatus());
@@ -210,15 +239,31 @@ el('resetAuthBtn').addEventListener('click', async () => {
   if (!confirmed) return;
   render(await api.resetAuth());
 });
-el('factoryResetBtn').addEventListener('click', async () => {
-  const value = window.prompt(
-    'Factory reset removes desktop Postgres data, instances, workspaces, runtime image data, and auth. Type RESET to continue.',
-  );
-  if (value !== 'RESET') return;
-  render(await api.factoryReset());
-  logs = await api.getLogs();
-  renderServiceFilter();
-  renderLogs();
+el('factoryResetBtn').addEventListener('click', openFactoryResetDialog);
+el('factoryResetCloseBtn').addEventListener('click', closeFactoryResetDialog);
+el('factoryResetCancelBtn').addEventListener('click', closeFactoryResetDialog);
+el('factoryResetModal').addEventListener('click', (event) => {
+  if (event.target === event.currentTarget) closeFactoryResetDialog();
+});
+for (const id of ['factoryResetDb', 'factoryResetRuntime', 'factoryResetLogs']) {
+  el<HTMLInputElement>(id).addEventListener('change', updateFactoryResetConfirm);
+}
+el('factoryResetConfirmBtn').addEventListener('click', async () => {
+  const scopes = selectedFactoryResetScopes();
+  if (!hasFactoryResetScope(scopes)) return;
+  const button = el<HTMLButtonElement>('factoryResetConfirmBtn');
+  const error = el('factoryResetError');
+  button.disabled = true;
+  button.textContent = 'Resetting...';
+  error.hidden = true;
+  try {
+    await api.factoryReset(scopes);
+  } catch (reason) {
+    error.textContent = reason instanceof Error ? reason.message : String(reason);
+    error.hidden = false;
+    button.textContent = 'Reset Selected and Reboot';
+    updateFactoryResetConfirm();
+  }
 });
 
 api.onStatus(render);
