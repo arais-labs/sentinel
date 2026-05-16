@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func as sa_func, select
+from sqlalchemy import func as sa_func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.sentral import ConversationItem, GenerationConfig, ImageBlock, RunTurnRequest, TextBlock
@@ -907,7 +907,11 @@ class SessionService:
         user_id: str,
     ) -> Session:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        session.last_read_at = datetime.now(UTC)
+        await db.execute(
+            update(Session)
+            .where(Session.id == session_id, Session.user_id == user_id)
+            .values(last_read_at=datetime.now(UTC), updated_at=Session.updated_at)
+        )
         await db.commit()
         await db.refresh(session)
         return session

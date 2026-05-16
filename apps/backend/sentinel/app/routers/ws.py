@@ -32,19 +32,13 @@ from app.services.ws.ws_stream_service import (
     get_owned_session,
     load_history,
     unresolved_tool_calls_from_history,
-    maybe_auto_compact_and_resume,
+    maybe_auto_compact_after_run,
     persist_user_message,
     run_agent_once,
 )
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-_COMPACTION_AUTO_RESUME_PROMPT = (
-    "Context was compacted automatically. Continue the same task from the latest state. "
-    "Do not repeat finished steps. If you are blocked, say exactly what is blocking you and the best next step."
-)
-
 
 async def _persist_retryable_error(
     db: AsyncSession,
@@ -273,17 +267,12 @@ async def stream_session(
 
             if not outcome.cancelled and not outcome.run_error:
                 await naming_service.maybe_auto_rename(session_id=id)
-                await maybe_auto_compact_and_resume(
+                await maybe_auto_compact_after_run(
                     db=db,
                     session_id=id,
                     session_key=session_key,
                     manager=manager,
-                    run_registry=run_registry,
                     agent_runtime_support=agent_runtime_support,
-                    tier=parsed.tier,
-                    max_iterations=parsed.max_iterations,
-                    agent_mode=parsed.agent_mode,
-                    auto_resume_prompt=_COMPACTION_AUTO_RESUME_PROMPT,
                     compaction_service_cls=CompactionService,
                 )
     except (WebSocketDisconnect, RuntimeError):

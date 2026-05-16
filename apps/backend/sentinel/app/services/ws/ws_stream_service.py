@@ -10,7 +10,6 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.sentral import ConversationItem, GenerationConfig, ImageBlock, RunTurnRequest, TextBlock
 from app.models import Message, Session
 from app.services.agent.agent_modes import AgentMode, normalize_agent_mode_value
@@ -307,18 +306,19 @@ async def run_agent_once(
     return AgentRunOutcome(failed=failed, cancelled=cancelled, run_error=run_error)
 
 
-async def maybe_auto_compact_and_resume(
+# TODO: Add a mid-run compaction hook. This wrapper only runs *between* WS-driven
+# agent runs. For long autonomous tasks, context can fill mid-iteration; the
+# desired behavior is to pause the loop, compact, reload context, and continue
+# the same run (no separate "resume" prompt). Trigger on TokenUsage.input_tokens
+# from the last turn crossing ~85% of settings.context_token_budget. The hook
+# belongs in app/sentral/engine.py at the iteration boundary, not here.
+async def maybe_auto_compact_after_run(
     *,
     db: AsyncSession,
     session_id: UUID,
     session_key: str,
     manager: ConnectionManager,
-    run_registry: AgentRunRegistry,
     agent_runtime_support: RuntimeSupportProtocol,
-    tier: TierName | None,
-    max_iterations: int,
-    agent_mode: AgentMode,
-    auto_resume_prompt: str,
     compaction_service_cls: type[CompactionService] = CompactionService,
 ) -> None:
     try:
@@ -344,27 +344,6 @@ async def maybe_auto_compact_and_resume(
                 "compressed_token_count": result.compressed_token_count,
                 "summary_preview": result.summary_preview,
             },
-        )
-        if not settings.compaction_auto_resume_enabled:
-            return
-
-        await manager.broadcast(
-            session_key,
-            {"type": "compaction_resuming", "session_id": session_key},
-        )
-        await manager.broadcast_agent_thinking(session_key)
-        await run_agent_once(
-            db=db,
-            session_id=session_id,
-            session_key=session_key,
-            manager=manager,
-            run_registry=run_registry,
-            agent_runtime_support=agent_runtime_support,
-            payload=auto_resume_prompt,
-            tier=tier,
-            max_iterations=max_iterations,
-            agent_mode=agent_mode,
-            persist_user_message=False,
         )
     except Exception:  # noqa: BLE001
         logger.warning("Auto-compaction failed for session %s", session_id, exc_info=True)

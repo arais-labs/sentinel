@@ -104,7 +104,6 @@ class Settings(BaseSettings):
     context_token_budget: int = 200_000
     stored_tool_result_max_chars: int = 4_000
     stored_tool_call_args_max_chars: int = 1_200
-    compaction_auto_resume_enabled: bool = True
     session_auto_rename_enabled: bool = True
     session_auto_rename_every_messages: int = 10
     session_auto_rename_context_messages: int = 24
