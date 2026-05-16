@@ -167,6 +167,7 @@ async def test_run_command_reuses_existing_terminal_via_pipe_log():
     # Second call: in-memory record exists, so we hit has-session first
     # (returns yes → skip new-session), then go straight into the run flow.
     ssh.push(stdout="yes")                    # has-session
+    ssh.push(stdout="0")                      # list-panes pane_dead → alive
     ssh.push(stdout="bash")                   # foreground check
     ssh.push(stdout="0")                      # pipe-log size (still 0 — stub is naive)
     ssh.push()                                # C-u
@@ -191,6 +192,54 @@ async def test_run_command_reuses_existing_terminal_via_pipe_log():
     # Crucially the second invocation does NOT create another tmux session.
     assert new_session_count_after_first == 1
     assert new_session_count_after_second == 1
+
+
+@pytest.mark.asyncio
+async def test_run_command_recreates_when_pane_is_dead():
+    """When the existing tmux session's pane is dead, kill-session + recreate."""
+    ssh = _SSHStub()
+    # First call: full provisioning so an in-memory record exists.
+    ssh.push(stdout="present")                # tmux probe
+    ssh.push()                                # prep
+    ssh.push()                                # new-session
+    ssh.push()                                # options
+    ssh.push(stdout="bash")                   # foreground check
+    ssh.push(stdout="0")                      # pipe-log size
+    ssh.push()                                # C-u
+    ssh.push()                                # send-keys -l
+    ssh.push()                                # Enter
+    ssh.push(stdout=_osc_d_log("true", "", 0))
+    # Second call: session present but pane is dead → kill + recreate.
+    ssh.push(stdout="yes")                    # has-session
+    ssh.push(stdout="1")                      # list-panes pane_dead → DEAD
+    ssh.push()                                # kill-session
+    ssh.push(stdout="present")                # tmux probe (recreate path)
+    ssh.push()                                # prep
+    ssh.push()                                # new-session
+    ssh.push()                                # options
+    ssh.push(stdout="bash")                   # foreground check
+    ssh.push(stdout="0")                      # pipe-log size
+    ssh.push()                                # C-u
+    ssh.push()                                # send-keys -l
+    ssh.push()                                # Enter
+    ssh.push(stdout=_osc_d_log("true", "", 0))
+
+    manager = TerminalManager()
+    runtime = _make_runtime(ssh)
+    session_id = uuid4()
+    await manager.run_command(
+        runtime=runtime, session_id=session_id, terminal_id="0",
+        command="true", timeout=5,
+    )
+    await manager.run_command(
+        runtime=runtime, session_id=session_id, terminal_id="0",
+        command="true", timeout=5,
+    )
+    new_session_count = sum(1 for c in ssh.commands if "tmux new-session" in c)
+    kill_session_count = sum(1 for c in ssh.commands if "tmux kill-session" in c)
+    # Second call should have recreated the tmux session and killed the dead one.
+    assert new_session_count == 2
+    assert kill_session_count == 1
 
 
 def test_build_visible_command_is_bare_when_no_overrides():

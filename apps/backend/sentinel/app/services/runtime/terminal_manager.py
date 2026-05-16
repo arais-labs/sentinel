@@ -913,11 +913,13 @@ class TerminalManager:
         async with self._global_lock:
             existing = self._terminals.get(session_key, {}).get(terminal_id)
         if existing is not None:
-            # If a previous boot of the backend ran with the same terminal,
-            # the tmux session may still exist. If it doesn't (e.g. user
-            # killed it via `exit`), recreate.
-            if await self._tmux_has_session(ssh, existing):
+            # Reuse only if the tmux session AND its pane are alive; a dead
+            # pane silently drops send-keys, so we recreate instead.
+            if await self._tmux_has_session(ssh, existing) and not await self._tmux_pane_dead(ssh, existing):
                 return existing
+            await self._kill_tmux_session(ssh, existing)
+            async with self._global_lock:
+                self._terminals.get(session_key, {}).pop(terminal_id, None)
 
         tmux_name = self._tmux_name(session_key, terminal_id)
         pipe_log = self._pipe_log_path(workspace, terminal_id)
@@ -958,6 +960,26 @@ class TerminalManager:
         except Exception:
             return False
         return (result.stdout or "").strip().endswith("yes")
+
+    async def _tmux_pane_dead(self, ssh: SSHClient, record: TerminalRecord) -> bool:
+        """True if any pane in the session has `#{pane_dead}` set (shell exited)."""
+        try:
+            result = await ssh.run(
+                f"sudo -u {_q(record.session_user)} tmux list-panes -t {_q(record.tmux_name)} -F '#{{pane_dead}}' 2>/dev/null",
+                timeout=10,
+            )
+        except Exception:
+            return True
+        return any(line.strip() == "1" for line in (result.stdout or "").splitlines())
+
+    async def _kill_tmux_session(self, ssh: SSHClient, record: TerminalRecord) -> None:
+        try:
+            await ssh.run(
+                f"sudo -u {_q(record.session_user)} tmux kill-session -t {_q(record.tmux_name)} 2>/dev/null || true",
+                timeout=10,
+            )
+        except Exception:
+            pass
 
     async def _create_tmux_session(self, ssh: SSHClient, record: TerminalRecord) -> None:
         # Fail fast if the guest image lacks tmux entirely — otherwise the
