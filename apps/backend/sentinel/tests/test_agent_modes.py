@@ -17,6 +17,7 @@ def test_agent_mode_registry_contains_expected_modes():
         AgentMode.FULL_PERMISSION,
         AgentMode.READ_ONLY,
         AgentMode.CODE_REVIEW,
+        AgentMode.INTERACTIVE_OUTPUT,
     }
 
 
@@ -38,3 +39,13 @@ def test_code_review_mode_has_policy():
     definition = get_agent_mode_definition("code_review")
     assert definition.id == AgentMode.CODE_REVIEW
     assert definition.policy is not None
+
+
+def test_interactive_output_mode_has_policy():
+    definition = get_agent_mode_definition("interactive_output")
+    assert definition.id == AgentMode.INTERACTIVE_OUTPUT
+    assert definition.label == "Interactive Output"
+    assert definition.auto_approve_tool_gates is False
+    assert definition.policy is not None
+    assert "<!-- sentinel:html -->" in definition.policy.content
+    assert "<!-- sentinel:html-raw -->" in definition.policy.content

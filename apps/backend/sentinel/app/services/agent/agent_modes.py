@@ -4,12 +4,19 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from app.services.agent.interactive_output import (
+    POLICY_CONTENT as _INTERACTIVE_OUTPUT_CONTENT,
+    POLICY_EXPLANATION as _INTERACTIVE_OUTPUT_EXPLANATION,
+    POLICY_TITLE as _INTERACTIVE_OUTPUT_TITLE,
+)
+
 
 class AgentMode(StrEnum):
     NORMAL = "normal"
     FULL_PERMISSION = "full_permission"
     READ_ONLY = "read_only"
     CODE_REVIEW = "code_review"
+    INTERACTIVE_OUTPUT = "interactive_output"
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +99,18 @@ _AGENT_MODE_DEFINITIONS: tuple[AgentModeDefinition, ...] = (
                 "Keep summaries brief and evidence-based.\n"
                 "Do not make code changes unless the user explicitly asks for fixes."
             ),
+        ),
+    ),
+    AgentModeDefinition(
+        id=AgentMode.INTERACTIVE_OUTPUT,
+        label="Interactive Output",
+        description="Assistant can render HTML artifacts in a sandboxed iframe; optionally uses auto-injected Sentinel theme components.",
+        auto_approve_tool_gates=False,
+        policy=AgentModePolicy(
+            kind="agent_mode_policy",
+            title=_INTERACTIVE_OUTPUT_TITLE,
+            explanation=_INTERACTIVE_OUTPUT_EXPLANATION,
+            content=_INTERACTIVE_OUTPUT_CONTENT,
         ),
     ),
 )

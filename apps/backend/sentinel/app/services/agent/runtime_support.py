@@ -13,8 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import Message, Session
-from app.services.agent.agent_modes import AgentMode
+from app.services.agent.agent_modes import AgentMode, parse_agent_mode
 from app.services.agent.context_builder import ContextBuilder
+from app.services.agent.interactive_output import post_process_assistant_html
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRegistry
 from app.services.llm.generic.base import LLMProvider
@@ -141,6 +142,7 @@ class SentinelRuntimeSupport:
         max_iterations: int,
         effective_system_prompt: str | None = None,
         runtime_context_snapshot: dict[str, Any] | None = None,
+        agent_mode: AgentMode | str | None = None,
     ) -> None:
         await self._persist_messages(
             db,
@@ -152,6 +154,7 @@ class SentinelRuntimeSupport:
             max_iterations=max_iterations,
             effective_system_prompt=effective_system_prompt,
             runtime_context_snapshot=runtime_context_snapshot,
+            agent_mode=agent_mode,
         )
 
     def extract_runtime_system_prompt(self, messages: list[AgentMessage]) -> str | None:
@@ -196,7 +199,9 @@ class SentinelRuntimeSupport:
         max_iterations: int,
         effective_system_prompt: str | None = None,
         runtime_context_snapshot: dict[str, Any] | None = None,
+        agent_mode: AgentMode | str | None = None,
     ) -> None:
+        post_process_assistant = parse_agent_mode(agent_mode) == AgentMode.INTERACTIVE_OUTPUT
         session_record = await db.get(Session, session_id)
         existing_result = await db.execute(select(Message).where(Message.session_id == session_id))
         existing_messages = existing_result.scalars().all()
@@ -275,6 +280,8 @@ class SentinelRuntimeSupport:
                 continue
             if isinstance(message, AssistantMessage):
                 text = self._assistant_text(message)
+                if post_process_assistant:
+                    text = post_process_assistant_html(text)
                 tool_calls_data: list[dict[str, Any]] = []
                 for block in message.content:
                     if not isinstance(block, ToolCallContent):

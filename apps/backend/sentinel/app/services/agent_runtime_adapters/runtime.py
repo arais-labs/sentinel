@@ -263,6 +263,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 max_iterations=config.max_iterations,
                 effective_system_prompt=runtime_system_prompt,
                 runtime_context_snapshot=snapshot,
+                agent_mode=mode_definition.id,
             )
             if snapshot is not None:
                 context_snapshot_pending = False
@@ -325,6 +326,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 max_iterations=config.max_iterations,
                 effective_system_prompt=runtime_system_prompt,
                 runtime_context_snapshot=snapshot,
+                agent_mode=mode_definition.id,
             )
             if snapshot is not None:
                 context_snapshot_pending = False

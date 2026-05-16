@@ -38,16 +38,6 @@ from app.services.llm.generic.types import (
 logger = logging.getLogger(__name__)
 
 
-HTML_RESPONSE_CAPABILITY = (
-    "You may format assistant responses as Markdown or a dynamic HTML artifact. "
-    "When using HTML, start the response with '<!-- sentinel:html -->' and then provide a complete "
-    "HTML document or fragment. The HTML is rendered in a sandboxed iframe, so embedded CSS and "
-    "JavaScript are allowed for self-contained interactive UI, demos, diagrams, animations, and "
-    "visualizations. Do not depend on access to Sentinel's DOM, cookies, localStorage, or parent "
-    "JavaScript; the iframe is isolated from the host application."
-)
-
-
 class ContextBuilder:
     """Assemble the exact message list passed to the provider for one run."""
 
@@ -86,8 +76,6 @@ class ContextBuilder:
             f"\n\nCurrent date and time: {datetime.now(UTC).strftime('%A, %B %d, %Y at %H:%M UTC')}"
         )
         prompt += f"\nYour current session ID is: {session_id}"
-        # TODO: Revisit whether HTML artifact capability should be opt-in per mode/session.
-        prompt += f"\n\n{HTML_RESPONSE_CAPABILITY}"
         context: list[AgentMessage] = [
             SystemMessage(
                 content=prompt,
