@@ -86,6 +86,7 @@ class ContextBuilder:
             f"\n\nCurrent date and time: {datetime.now(UTC).strftime('%A, %B %d, %Y at %H:%M UTC')}"
         )
         prompt += f"\nYour current session ID is: {session_id}"
+        # TODO: Revisit whether HTML artifact capability should be opt-in per mode/session.
         prompt += f"\n\n{HTML_RESPONSE_CAPABILITY}"
         context: list[AgentMessage] = [
             SystemMessage(
