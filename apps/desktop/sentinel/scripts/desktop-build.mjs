@@ -169,12 +169,32 @@ function buildPaths(target) {
   };
 }
 
-function installNodeDependencies() {
+async function installNodeDependencies() {
   for (const directory of [frontendDir, desktopDir]) {
-    if (!existsSync(path.join(directory, 'package-lock.json'))) {
+    const lockPath = path.join(directory, 'package-lock.json');
+    if (!existsSync(lockPath)) {
       throw new Error(`Missing package-lock.json in ${path.relative(repoRoot, directory)}; desktop builds require deterministic npm ci installs.`);
     }
+    // Skip npm ci when the lockfile hash matches the last successful install
+    // AND node_modules already exists. Massive win on cached builds.
+    const lockHash = await hashFile(lockPath);
+    const nodeModulesDir = path.join(directory, 'node_modules');
+    const stampPath = path.join(nodeModulesDir, '.npm-ci-stamp');
+    const haveNodeModules = existsSync(nodeModulesDir);
+    let cachedHash = null;
+    if (haveNodeModules && existsSync(stampPath)) {
+      try {
+        cachedHash = (await readFile(stampPath, 'utf8')).trim();
+      } catch {
+        cachedHash = null;
+      }
+    }
+    if (cachedHash === lockHash) {
+      console.log(`npm dependencies in ${path.relative(repoRoot, directory)} are current; skipping npm ci.`);
+      continue;
+    }
     run('npm', ['ci'], { cwd: directory });
+    await writeFile(stampPath, `${lockHash}\n`);
   }
 }
 
@@ -205,13 +225,20 @@ function resolveBuildTools(config, platform) {
 }
 
 async function runtimeStampPayload(target, platform, component, paths) {
+  // Inputs are the component's declared input paths only. We deliberately do
+  // NOT include the platform script (e.g. macos-arm64.mjs) here — otherwise
+  // every tweak to a single component's build helper invalidates *every*
+  // component's stamp, which makes iteration miserable. When you make a
+  // build-logic change that should invalidate caches, either bump
+  // `platform.runtimeBuildVersion` (invalidates all) or pass `--force-runtime`
+  // for a one-off rebuild.
   return {
     version: component.version,
     target,
     component: component.name,
     config: component.config,
     required: component.required,
-    inputsHash: await hashInputs([platform.platformPath, ...(component.inputs || [])], paths),
+    inputsHash: await hashInputs(component.inputs || [], paths),
   };
 }
 
@@ -252,14 +279,17 @@ async function buildRuntime(target, config, platform, force = false) {
       await rm(path.join(paths.runtimeDir, entry.name), { recursive: true, force: true });
     }
   }
+  let rebuiltAny = false;
   for (const component of components) {
     if (!force && (await runtimeIsCurrent(target, config, platform, component))) {
       console.log(`Runtime component ${component.name} is current for ${target}; skipping rebuild.`);
       continue;
     }
+    rebuiltAny = true;
     await component.build({ target, config, paths, tools });
     await writeRuntimeStamp(target, platform, component);
   }
+  return rebuiltAny;
 }
 
 async function writeElectronBuilderConfig(target, platform) {
@@ -283,18 +313,49 @@ async function verifyRuntime(target, platform) {
 }
 
 async function buildDesktop(args) {
+  const phases = [];
+  const time = async (name, fn) => {
+    const start = Date.now();
+    try {
+      return await fn();
+    } finally {
+      const elapsed = (Date.now() - start) / 1000;
+      phases.push({ name, elapsed });
+      console.log(`◆ ${name}: ${elapsed.toFixed(2)}s`);
+    }
+  };
+  const totalStart = Date.now();
   const platform = await loadPlatform(args.target);
   const { config } = await readLock(args.target);
-  installNodeDependencies();
-  await buildRuntime(args.target, config, platform, args.forceRuntime);
-  await verifyRuntime(args.target, platform);
-  buildFrontend();
-  run('npx', ['tsc', '-p', 'tsconfig.json']);
+  await time('install-node-deps', () => installNodeDependencies());
+  const rebuiltAny = await time('build-runtime-components', () =>
+    buildRuntime(args.target, config, platform, args.forceRuntime),
+  );
+  if (rebuiltAny) {
+    await time('verify-runtime', () => verifyRuntime(args.target, platform));
+  } else {
+    console.log('◆ verify-runtime: skipped (all components cached)');
+  }
+  await time('build-frontend (vite)', () => buildFrontend());
+  await time('compile-typescript (tsc)', () => run('npx', ['tsc', '-p', 'tsconfig.json']));
   if (platform.preparePackageAssets) {
-    await platform.preparePackageAssets({ target: args.target, paths: buildPaths(args.target) });
+    await time('prepare-package-assets (icns)', () =>
+      platform.preparePackageAssets({ target: args.target, paths: buildPaths(args.target) }),
+    );
   }
   const builderConfig = await writeElectronBuilderConfig(args.target, platform);
-  run('npx', ['electron-builder', ...platform.electronBuilderArgs(), '--config', builderConfig]);
+  await time('electron-builder (pack + sign + dmg)', () =>
+    run('npx', ['electron-builder', ...platform.electronBuilderArgs(), '--config', builderConfig]),
+  );
+
+  const total = (Date.now() - totalStart) / 1000;
+  console.log('\n=== build timing breakdown ===');
+  for (const p of phases) {
+    const bar = '█'.repeat(Math.max(1, Math.round((p.elapsed / total) * 40)));
+    console.log(`  ${p.name.padEnd(36)} ${p.elapsed.toFixed(2).padStart(7)}s  ${bar}`);
+  }
+  console.log(`  ${'TOTAL'.padEnd(36)} ${total.toFixed(2).padStart(7)}s`);
+  console.log('');
 }
 
 async function cleanDesktop() {

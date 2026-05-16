@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DesktopManager } from './desktopManager.js';
-import { IPC, type DesktopStatus } from '../shared/ipc.js';
+import { IPC, type DesktopStatus, type ReleaseChannel, type RuntimeVersion } from '../shared/ipc.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,9 +45,29 @@ async function createWindow(): Promise<void> {
   };
   const unsubscribeStatus = manager.onStatus((status) => sendToWindow(IPC.statusChanged, status));
   const unsubscribeLog = manager.onLog((entry) => sendToWindow(IPC.logEntry, entry));
+  const unsubscribeBootstrap = manager.onBootstrapProgress((progress) =>
+    sendToWindow(IPC.bootstrapProgress, progress),
+  );
+  const unsubscribeUpdateAvailable = manager.onUpdateAvailable((info) =>
+    sendToWindow(IPC.updateAvailable, info),
+  );
+  const unsubscribeUpdateProgress = manager.onUpdateProgress((progress) =>
+    sendToWindow(IPC.updateProgress, progress),
+  );
+  const unsubscribeUpdateApplied = manager.onUpdateApplied((version) =>
+    sendToWindow(IPC.updateApplied, version),
+  );
+  const unsubscribeUpdateFailed = manager.onUpdateFailed((failure) =>
+    sendToWindow(IPC.updateFailed, failure),
+  );
   window.once('closed', () => {
     unsubscribeStatus();
     unsubscribeLog();
+    unsubscribeBootstrap();
+    unsubscribeUpdateAvailable();
+    unsubscribeUpdateProgress();
+    unsubscribeUpdateApplied();
+    unsubscribeUpdateFailed();
     if (mainWindow === window) mainWindow = undefined;
   });
 
@@ -152,6 +172,16 @@ function registerIpc(): void {
   ipcMain.handle(IPC.revealAppSupport, () => manager.revealAppSupport());
   ipcMain.handle(IPC.openLogFolder, () => manager.openLogFolder());
   ipcMain.handle(IPC.getLogs, () => manager.logs());
+  ipcMain.handle(IPC.getVersion, async (): Promise<RuntimeVersion> => manager.getVersion());
+  ipcMain.handle(IPC.checkForUpdates, async (_event, channel?: ReleaseChannel) =>
+    manager.checkForUpdates(channel),
+  );
+  ipcMain.handle(IPC.applyUpdate, async (_event, targetCommit: string) =>
+    manager.applyUpdate(targetCommit),
+  );
+  ipcMain.handle(IPC.switchChannel, async (_event, channel: ReleaseChannel) =>
+    manager.switchChannel(channel),
+  );
 }
 
 if (!singleInstanceLock) {

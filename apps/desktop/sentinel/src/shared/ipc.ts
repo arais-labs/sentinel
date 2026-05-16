@@ -39,7 +39,66 @@ export interface LogEntry {
 export interface FactoryResetScopes {
   db: boolean;
   runtimeData: boolean;
+  appRuntime: boolean;
   logs: boolean;
+}
+
+export type ReleaseChannel = 'stable' | 'beta';
+
+export interface RuntimeVersion {
+  commit: string | null;
+  channel: ReleaseChannel | 'dev';
+}
+
+export interface UpdateAvailable {
+  channel: ReleaseChannel;
+  currentCommit: string;
+  targetCommit: string;
+  subject: string;
+  hasNewMigrations: boolean;
+}
+
+export type UpdatePhase =
+  | 'snapshot'
+  | 'fetch'
+  | 'checkout'
+  | 'uv-sync'
+  | 'npm-ci'
+  | 'npm-build'
+  | 'restart'
+  | 'health-check'
+  | 'done'
+  | 'rollback-checkout'
+  | 'rollback-uv-sync'
+  | 'rollback-npm-build'
+  | 'rollback-restart'
+  | 'rollback-failed'
+  | 'rollback';
+
+export interface UpdateProgress {
+  phase: UpdatePhase;
+  message: string;
+}
+
+export type BootstrapPhase =
+  | 'extract-python'
+  | 'extract-node'
+  | 'extract-source'
+  | 'extract-node-modules'
+  | 'uv-sync'
+  | 'npm-build'
+  | 'done';
+
+export interface BootstrapProgress {
+  phase: BootstrapPhase;
+  message: string;
+  fractionComplete?: number;
+}
+
+export interface UpdateFailure {
+  phase: UpdatePhase;
+  reason: string;
+  rolledBackTo?: string;
 }
 
 export interface DesktopApi {
@@ -52,8 +111,17 @@ export interface DesktopApi {
   revealAppSupport(): Promise<void>;
   openLogFolder(): Promise<void>;
   getLogs(): Promise<LogEntry[]>;
+  getVersion(): Promise<RuntimeVersion>;
+  checkForUpdates(channel?: ReleaseChannel): Promise<UpdateAvailable | null>;
+  applyUpdate(targetCommit: string): Promise<void>;
+  switchChannel(channel: ReleaseChannel): Promise<void>;
   onStatus(listener: (status: DesktopStatus) => void): () => void;
   onLog(listener: (entry: LogEntry) => void): () => void;
+  onBootstrapProgress(listener: (progress: BootstrapProgress) => void): () => void;
+  onUpdateAvailable(listener: (info: UpdateAvailable) => void): () => void;
+  onUpdateProgress(listener: (progress: UpdateProgress) => void): () => void;
+  onUpdateApplied(listener: (version: RuntimeVersion) => void): () => void;
+  onUpdateFailed(listener: (failure: UpdateFailure) => void): () => void;
 }
 
 export const IPC = {
@@ -66,6 +134,15 @@ export const IPC = {
   revealAppSupport: 'desktop:revealAppSupport',
   openLogFolder: 'desktop:openLogFolder',
   getLogs: 'desktop:getLogs',
+  getVersion: 'desktop:getVersion',
+  checkForUpdates: 'desktop:checkForUpdates',
+  applyUpdate: 'desktop:applyUpdate',
+  switchChannel: 'desktop:switchChannel',
   statusChanged: 'desktop:statusChanged',
   logEntry: 'desktop:logEntry',
+  bootstrapProgress: 'desktop:bootstrapProgress',
+  updateAvailable: 'desktop:updateAvailable',
+  updateProgress: 'desktop:updateProgress',
+  updateApplied: 'desktop:updateApplied',
+  updateFailed: 'desktop:updateFailed',
 } as const;

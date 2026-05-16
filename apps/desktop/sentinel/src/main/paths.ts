@@ -31,14 +31,17 @@ export function frontendDistPath(): string {
   if (!app.isPackaged) {
     return path.join(repoRoot(), 'apps/frontend/sentinel/dist');
   }
-  return path.join(resourceRoot(), 'frontend');
+  // In packaged mode the frontend dist is built at first launch into the
+  // userData source tree (see desktopManager.bootstrapRuntime).
+  return path.join(appSupportRoot(), 'source/apps/frontend/sentinel/dist');
 }
 
 export function backendPath(): string {
   if (!app.isPackaged) {
     return path.join(repoRoot(), 'apps/backend/sentinel');
   }
-  return path.join(resourceRoot(), 'backend');
+  // In packaged mode the backend lives inside the userData source tree.
+  return path.join(appSupportRoot(), 'source/apps/backend/sentinel');
 }
 
 export function qemuResourcePath(): string {

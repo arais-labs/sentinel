@@ -3,7 +3,32 @@
   "platforms": {
     "macos-arm64": {
       "python": {
-        "version": "3.12.13"
+        "version": "3.12.13",
+        "buildTag": "20260510",
+        "sourceUrl": "https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-3.12.13+20260510-aarch64-apple-darwin-install_only.tar.gz",
+        "sourceSha256": "5a30271f8d345a5b02b0c9e4e31e0f1e1455a8e4a04fba95cd9762472abc3b17"
+      },
+      "node": {
+        "version": "22.22.3",
+        "sourceUrl": "https://nodejs.org/dist/v22.22.3/node-v22.22.3-darwin-arm64.tar.xz",
+        "sourceSha256": "753c1629e168cc788ccc46ab61e0b35549fce08c07f82fcd3bb0d41f7fb01e7b"
+      },
+      "uv": {
+        "version": "0.5.10",
+        "sourceUrl": "https://github.com/astral-sh/uv/releases/download/0.5.10/uv-aarch64-apple-darwin.tar.gz",
+        "sourceSha256": "dd3fa053379017923a4692cabdebb96844f83c7a516d9e6cb30502574cbd322d"
+      },
+      "git": {
+        "source": "system-vendored",
+        "systemBinPath": "/Library/Developer/CommandLineTools/usr/bin/git",
+        "systemLibexecPath": "/Library/Developer/CommandLineTools/usr/libexec/git-core",
+        "systemSharePath": "/Library/Developer/CommandLineTools/usr/share/git-core",
+        "expectedVersionPrefix": "git version 2."
+      },
+      "sourceClone": {
+        "url": "https://github.com/arais-labs/sentinel.git",
+        "depth": 50,
+        "channels": ["main", "beta"]
       },
       "postgres": {
         "version": "17.9",

@@ -45,6 +45,7 @@ from app.routers import (
     sub_agents,
     telegram,
     triggers,
+    version as version_router,
     vnc_proxy,
     ws,
     webhooks,
@@ -557,6 +558,7 @@ app.add_middleware(
 register_error_handlers(app)
 
 app.include_router(health.router, tags=["health"])
+app.include_router(version_router.router, tags=["version"])
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(instances.router, prefix="/api/v1/instances", tags=["instances"])
 app.include_router(admin_manager.router, prefix="/api/v1/admin", tags=["admin"])

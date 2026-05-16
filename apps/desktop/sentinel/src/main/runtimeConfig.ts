@@ -51,8 +51,88 @@ export function postgresSharePath(): string {
   return path.join(resourceRoot(), 'postgres/share');
 }
 
-export function backendBinaryPath(): string {
-  return path.join(resourceRoot(), 'backend/sentinel-backend/sentinel-backend');
+export function runtimeSeedRoot(): string {
+  return path.join(resourceRoot(), 'runtime-seed');
+}
+
+// Source-of-truth python/node trees ship inside the DMG's read-only resources.
+// They are *copied* into userData on first bootstrap so all userData artefacts
+// (venv, pyvenv.cfg, etc.) reference stable absolute paths that survive .app
+// updates and DMG remounts.
+export function seedPythonDir(): string {
+  return path.join(runtimeSeedRoot(), 'python');
+}
+
+export function seedNodeDir(): string {
+  return path.join(runtimeSeedRoot(), 'node');
+}
+
+export function pythonHome(): string {
+  return path.join(appSupportRoot(), 'python');
+}
+
+export function nodeHome(): string {
+  return path.join(appSupportRoot(), 'node');
+}
+
+export function bundledPythonBinary(): string {
+  return path.join(pythonHome(), 'bin/python3');
+}
+
+export function bundledWheelsDir(): string {
+  return path.join(runtimeSeedRoot(), 'wheels');
+}
+
+export function bundledNodeModulesArchive(): string {
+  return path.join(runtimeSeedRoot(), 'node_modules-cache.tar.gz');
+}
+
+export function bundledSourceBareArchive(): string {
+  return path.join(runtimeSeedRoot(), 'source.git.tar');
+}
+
+export function userDataBareSourceDir(): string {
+  return path.join(appSupportRoot(), 'source.git');
+}
+
+export function sourceRoot(): string {
+  return path.join(appSupportRoot(), 'source');
+}
+
+export function backendSourceDir(): string {
+  return path.join(sourceRoot(), 'apps/backend/sentinel');
+}
+
+export function frontendSourceDir(): string {
+  return path.join(sourceRoot(), 'apps/frontend/sentinel');
+}
+
+export function venvPython(): string {
+  return path.join(backendSourceDir(), '.venv/bin/python');
+}
+
+export function bundledGitBinary(): string {
+  return path.join(runtimeSeedRoot(), 'git/bin/git');
+}
+
+export function bundledUvBinary(): string {
+  return path.join(runtimeSeedRoot(), 'uv');
+}
+
+export function bundledNodeBinary(): string {
+  return path.join(nodeHome(), 'bin/node');
+}
+
+export function bundledNpmBinary(): string {
+  return path.join(nodeHome(), 'bin/npm');
+}
+
+export function runtimeCommitMarkerPath(): string {
+  return path.join(sourceRoot(), '.runtime-commit');
+}
+
+export function runtimeChannelMarkerPath(): string {
+  return path.join(sourceRoot(), '.runtime-channel');
 }
 
 export function qemuBinaryPath(name: string): string {

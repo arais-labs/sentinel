@@ -1,8 +1,11 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
-import type { Readable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 import type { LogEntry, ManagedServiceStatus, ServiceName, ServiceState } from '../shared/ipc.js';
+import { appSupportRoot } from './paths.js';
 
 export interface ManagedProcessOptions {
   name: ServiceName;
@@ -13,9 +16,68 @@ export interface ManagedProcessOptions {
   port?: number;
 }
 
+// Ties child lifecycle to ours: dies on parent-pipe EOF, propagates child
+// exit code so child.on('exit') fires on crashes.
+const SPAWN_WATCH_SCRIPT = `#!/bin/sh
+set -u
+
+# Dup stdin onto fd 3: async subshells in non-interactive shells get fd 0
+# auto-redirected to /dev/null per POSIX, which would defeat the watcher.
+exec 3<&0
+
+"$@" &
+CHILD_PID=$!
+
+( cat <&3 >/dev/null 2>&1 || true
+  kill -TERM "$CHILD_PID" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8; do
+    kill -0 "$CHILD_PID" 2>/dev/null || exit 0
+    sleep 1
+  done
+  kill -KILL "$CHILD_PID" 2>/dev/null || true
+) &
+
+# Close wrapper's copy so EOF reaches the watcher when the parent goes away.
+exec 3<&-
+
+forward_term() {
+  kill -TERM "$CHILD_PID" 2>/dev/null || true
+}
+trap forward_term TERM INT HUP
+
+STATUS=0
+while kill -0 "$CHILD_PID" 2>/dev/null; do
+  wait "$CHILD_PID"
+  STATUS=$?
+done
+
+exit "$STATUS"
+`;
+
+function ensureWrapperScript(): string {
+  const scriptPath = path.join(appSupportRoot(), 'bin/spawn-watch.sh');
+  // Overwrite each launch so DMG upgrades pick up new script content.
+  mkdirSync(path.dirname(scriptPath), { recursive: true });
+  writeFileSync(scriptPath, SPAWN_WATCH_SCRIPT, { mode: 0o755 });
+  return scriptPath;
+}
+
+// Spawn the wrapper *in its own process group* (detached: true) so that on
+// teardown we can `kill -SIGKILL -pid` to terminate the whole group in one
+// shot — including the wrapped child even if SIGKILL races past the wrapper's
+// own trap handler.
+function killGroup(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class ProcessSupervisor extends EventEmitter {
   private readonly services = new Map<ServiceName, ManagedServiceStatus>();
-  private readonly processes = new Map<ServiceName, ChildProcessByStdio<null, Readable, Readable>>();
+  private readonly processes = new Map<ServiceName, ChildProcessByStdio<Writable, Readable, Readable>>();
   private readonly logs: LogEntry[] = [];
 
   status(): ManagedServiceStatus[] {
@@ -46,11 +108,20 @@ export class ProcessSupervisor extends EventEmitter {
       message: `${options.command} ${(options.args || []).join(' ')}`.trim(),
     });
 
-    const child = spawn(options.command, options.args || [], {
+    // Every spawn goes through a tiny shell wrapper that ties the child's
+    // lifecycle to ours via stdin-EOF. detached:true puts the wrapper (and
+    // its descendants) into a new process group so we can group-kill on
+    // teardown — guaranteeing no orphans even if the wrapper itself is
+    // SIGKILL'd.
+    const wrapperPath = ensureWrapperScript();
+    const child = spawn('/bin/sh', [wrapperPath, options.command, ...(options.args || [])], {
       cwd: options.cwd,
       env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
+    }) as ChildProcessByStdio<Writable, Readable, Readable>;
+    // Don't write to or close the wrapper's stdin; we *want* it to stay open
+    // until our process dies, so the kernel-closed pipe is what signals EOF.
 
     this.processes.set(options.name, child);
     this.setStatus({
@@ -101,10 +172,17 @@ export class ProcessSupervisor extends EventEmitter {
       return;
     }
     this.setStatus({ ...this.services.get(name)!, state: 'stopping' });
-    child.kill('SIGTERM');
+    // Group-kill: wrapper + wrapped child are in the same process group
+    // thanks to `detached: true`. Falls back to direct PID signal if the
+    // group send fails (e.g. wrapper already gone but pid still tracked).
+    if (child.pid !== undefined && !killGroup(child.pid, 'SIGTERM')) {
+      child.kill('SIGTERM');
+    }
     setTimeout(() => {
-      if (this.processes.get(name) === child) {
-        child.kill('SIGKILL');
+      if (this.processes.get(name) === child && child.pid !== undefined) {
+        if (!killGroup(child.pid, 'SIGKILL')) {
+          child.kill('SIGKILL');
+        }
       }
     }, 5000).unref();
   }
@@ -130,8 +208,10 @@ export class ProcessSupervisor extends EventEmitter {
       child.once('error', finish);
       this.stop(name);
       setTimeout(() => {
-        if (this.processes.get(name) === child) {
-          child.kill('SIGKILL');
+        if (this.processes.get(name) === child && child.pid !== undefined) {
+          if (!killGroup(child.pid, 'SIGKILL')) {
+            child.kill('SIGKILL');
+          }
         }
       }, Math.max(1000, timeoutMs - 1000)).unref();
       setTimeout(finish, timeoutMs).unref();

@@ -42,29 +42,7 @@
       "src/renderer/styles.css",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "../../frontend/sentinel/dist",
-        "to": "frontend"
-      },
-      {
-        "from": "../../backend/sentinel",
-        "to": "backend",
-        "filter": [
-          "app/**/*",
-          "!app/**/__pycache__/**/*",
-          "!app/**/*.pyc",
-          "db/alembic/**/*",
-          "!db/alembic/**/__pycache__/**/*",
-          "!db/alembic/**/*.pyc",
-          "alembic.manager.ini",
-          "alembic.instance.ini",
-          "scripts/start-backend.sh",
-          "pyproject.toml",
-          "uv.lock"
-        ]
-      }
-    ],
+    "extraResources": [],
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "assets/icon.png",

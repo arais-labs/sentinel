@@ -49,7 +49,41 @@
           </section>
         </div>
 
-        <section class="panel support-panel reveal delay-2">
+        <section class="panel updates-panel reveal delay-2">
+          <div class="panel-header">
+            <div class="panel-title-block">
+              <h2 class="panel-title">Version &amp; Updates</h2>
+              <p class="panel-subtitle">Current Sentinel build and release channel</p>
+            </div>
+            <div class="panel-actions">
+              <span id="updateStatusPill" class="pill">Idle</span>
+              <button id="checkUpdatesBtn">Check for Updates</button>
+              <button id="applyUpdateBtn" class="primary" hidden>Apply Update</button>
+            </div>
+          </div>
+          <div class="updates-grid">
+            <div class="updates-row">
+              <label class="select-control" for="channelSelect">
+                <span>Channel</span>
+                <select id="channelSelect">
+                  <option value="stable">Stable (main)</option>
+                  <option value="beta">Preview (beta)</option>
+                </select>
+              </label>
+              <span class="detail-label">Current</span>
+              <span id="currentVersion" class="mono">-</span>
+            </div>
+            <div id="updateBanner" class="update-banner" hidden>
+              <span id="updateBannerText"></span>
+            </div>
+            <div id="updateProgress" class="update-progress" hidden>
+              <span id="updateProgressPhase" class="detail-label">-</span>
+              <span id="updateProgressMessage"></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel support-panel reveal delay-3">
           <div class="support-row">
             <div>
               <span class="detail-label">App Support</span>
@@ -62,7 +96,7 @@
           </div>
         </section>
 
-        <section class="panel logs-panel reveal delay-3">
+        <section class="panel logs-panel reveal delay-4">
           <div class="panel-header">
             <div class="panel-title-block">
               <h2 class="panel-title">Audit Output</h2>
@@ -109,6 +143,13 @@
             </span>
           </label>
           <label class="reset-option">
+            <input id="factoryResetAppRuntime" type="checkbox" />
+            <span>
+              <strong>App runtime</strong>
+              <small>Re-bootstrap the Sentinel app: drop the cached source tree, Python venv, and frontend build. Triggers a fresh first-launch on next start.</small>
+            </span>
+          </label>
+          <label class="reset-option">
             <input id="factoryResetLogs" type="checkbox" />
             <span>
               <strong>Logs</strong>
@@ -124,6 +165,18 @@
           <button id="factoryResetConfirmBtn" class="danger" disabled>Reset Selected and Reboot</button>
         </div>
       </section>
+    </div>
+
+    <div id="bootstrapOverlay" class="bootstrap-overlay" hidden>
+      <div class="bootstrap-card">
+        <img class="bootstrap-mark" src="../../assets/icon.png" alt="" />
+        <h2 id="bootstrapTitle" class="bootstrap-title">Setting up Sentinel</h2>
+        <p id="bootstrapPhase" class="bootstrap-phase">Starting...</p>
+        <p id="bootstrapMessage" class="bootstrap-message"></p>
+        <div class="bootstrap-progress">
+          <div id="bootstrapProgressFill" class="bootstrap-progress-fill" style="width: 0%"></div>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="../../dist/renderer/renderer.js"></script>

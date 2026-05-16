@@ -1,4 +1,17 @@
-import type { DesktopStatus, FactoryResetScopes, LogEntry, ManagedServiceStatus } from '../shared/ipc.js';
+import type {
+  BootstrapPhase,
+  BootstrapProgress,
+  DesktopStatus,
+  FactoryResetScopes,
+  LogEntry,
+  ManagedServiceStatus,
+  ReleaseChannel,
+  RuntimeVersion,
+  UpdateAvailable,
+  UpdateFailure,
+  UpdatePhase,
+  UpdateProgress,
+} from '../shared/ipc.js';
 
 const api = window.sentinelDesktop;
 let logs: LogEntry[] = [];
@@ -146,12 +159,13 @@ function selectedFactoryResetScopes(): FactoryResetScopes {
   return {
     db: el<HTMLInputElement>('factoryResetDb').checked,
     runtimeData: el<HTMLInputElement>('factoryResetRuntime').checked,
+    appRuntime: el<HTMLInputElement>('factoryResetAppRuntime').checked,
     logs: el<HTMLInputElement>('factoryResetLogs').checked,
   };
 }
 
 function hasFactoryResetScope(scopes = selectedFactoryResetScopes()): boolean {
-  return scopes.db || scopes.runtimeData || scopes.logs;
+  return scopes.db || scopes.runtimeData || scopes.appRuntime || scopes.logs;
 }
 
 function updateFactoryResetConfirm(): void {
@@ -161,6 +175,7 @@ function updateFactoryResetConfirm(): void {
 function openFactoryResetDialog(): void {
   el<HTMLInputElement>('factoryResetDb').checked = false;
   el<HTMLInputElement>('factoryResetRuntime').checked = false;
+  el<HTMLInputElement>('factoryResetAppRuntime').checked = false;
   el<HTMLInputElement>('factoryResetLogs').checked = false;
   el('factoryResetError').hidden = true;
   el('factoryResetModal').hidden = false;
@@ -245,7 +260,7 @@ el('factoryResetCancelBtn').addEventListener('click', closeFactoryResetDialog);
 el('factoryResetModal').addEventListener('click', (event) => {
   if (event.target === event.currentTarget) closeFactoryResetDialog();
 });
-for (const id of ['factoryResetDb', 'factoryResetRuntime', 'factoryResetLogs']) {
+for (const id of ['factoryResetDb', 'factoryResetRuntime', 'factoryResetAppRuntime', 'factoryResetLogs']) {
   el<HTMLInputElement>(id).addEventListener('change', updateFactoryResetConfirm);
 }
 el('factoryResetConfirmBtn').addEventListener('click', async () => {
@@ -266,7 +281,81 @@ el('factoryResetConfirmBtn').addEventListener('click', async () => {
   }
 });
 
-api.onStatus(render);
+let lastBackendState: string | undefined;
+api.onStatus((status: DesktopStatus) => {
+  render(status);
+  const backend = status.services.find((s: ManagedServiceStatus) => s.name === 'backend');
+  if (backend && backend.state === 'running' && lastBackendState !== 'running') {
+    void refreshVersion();
+    hideBootstrapOverlay();
+  }
+  lastBackendState = backend?.state;
+});
+
+// ---- Full-screen lock overlay (bootstrap + updates) ----
+const BOOTSTRAP_PHASE_LABELS: Record<BootstrapPhase, string> = {
+  'extract-python': 'Installing Python runtime',
+  'extract-node': 'Installing Node runtime',
+  'extract-source': 'Unpacking Sentinel source',
+  'extract-node-modules': 'Restoring frontend packages',
+  'uv-sync': 'Setting up Python environment',
+  'npm-build': 'Building frontend',
+  'done': 'Starting Sentinel',
+};
+const UPDATE_PHASE_LABELS: Record<UpdatePhase, string> = {
+  snapshot: 'Snapshotting state',
+  fetch: 'Fetching changes',
+  checkout: 'Checking out new version',
+  'uv-sync': 'Syncing Python dependencies',
+  'npm-ci': 'Installing frontend packages',
+  'npm-build': 'Building frontend',
+  restart: 'Restarting backend',
+  'health-check': 'Verifying backend',
+  done: 'Done',
+  rollback: 'Rolling back',
+  'rollback-checkout': 'Rolling back: checkout',
+  'rollback-uv-sync': 'Rolling back: Python dependencies',
+  'rollback-npm-build': 'Rolling back: frontend',
+  'rollback-restart': 'Rolling back: backend',
+  'rollback-failed': 'Rollback failed',
+};
+
+let overlayVisible = false;
+
+function showOverlay(title: string): void {
+  if (!overlayVisible) {
+    overlayVisible = true;
+    el('bootstrapOverlay').hidden = false;
+  }
+  el('bootstrapTitle').textContent = title;
+}
+
+function hideOverlay(): void {
+  if (!overlayVisible) return;
+  overlayVisible = false;
+  el('bootstrapOverlay').hidden = true;
+}
+
+function setOverlayProgress(phase: string, message: string, fraction?: number): void {
+  el('bootstrapPhase').textContent = phase;
+  el('bootstrapMessage').textContent = message;
+  const fill = el<HTMLDivElement>('bootstrapProgressFill');
+  if (typeof fraction === 'number') {
+    fill.classList.remove('indeterminate');
+    fill.style.width = `${Math.max(0, Math.min(1, fraction)) * 100}%`;
+  } else {
+    fill.classList.add('indeterminate');
+  }
+}
+
+// Back-compat alias kept for the onStatus dismiss hook.
+const hideBootstrapOverlay = hideOverlay;
+
+api.onBootstrapProgress((progress: BootstrapProgress) => {
+  showOverlay('Setting up Sentinel');
+  const label = BOOTSTRAP_PHASE_LABELS[progress.phase] ?? progress.phase;
+  setOverlayProgress(label, progress.message, progress.phase === 'done' ? undefined : progress.fractionComplete);
+});
 api.onLog((entry: LogEntry) => {
   logs.push(entry);
   if (logs.length > 2000) logs = logs.slice(-2000);
@@ -274,5 +363,217 @@ api.onLog((entry: LogEntry) => {
   renderServiceFilter();
   renderLogs();
 });
+
+// ---- Version & Updates ----
+let pendingUpdate: UpdateAvailable | null = null;
+let updateInProgress = false;
+let currentChannel: ReleaseChannel | 'dev' = 'dev';
+
+function setUpdateStatusPill(text: string, variant = ''): void {
+  setPill('updateStatusPill', text, variant);
+}
+
+function renderVersion(version: RuntimeVersion): void {
+  const short = version.commit ? version.commit.slice(0, 12) : 'unknown';
+  const channel = version.channel || 'dev';
+  el('currentVersion').textContent = `${short} · ${channel}`;
+  currentChannel = version.channel;
+  if (version.channel === 'stable' || version.channel === 'beta') {
+    el<HTMLSelectElement>('channelSelect').value = version.channel;
+  }
+}
+
+function showUpdateBanner(text: string): void {
+  el('updateBannerText').textContent = text;
+  el('updateBanner').hidden = false;
+}
+
+function hideUpdateBanner(): void {
+  el('updateBanner').hidden = true;
+}
+
+function showUpdateProgress(progress: UpdateProgress): void {
+  el('updateProgress').hidden = false;
+  el('updateProgressPhase').textContent = progress.phase.toUpperCase();
+  el('updateProgressMessage').textContent = progress.message;
+}
+
+function hideUpdateProgress(): void {
+  el('updateProgress').hidden = true;
+}
+
+function setUpdateUiBusy(busy: boolean): void {
+  updateInProgress = busy;
+  el<HTMLButtonElement>('checkUpdatesBtn').disabled = busy;
+  el<HTMLButtonElement>('applyUpdateBtn').disabled = busy;
+  el<HTMLSelectElement>('channelSelect').disabled = busy;
+}
+
+async function refreshVersion(): Promise<void> {
+  try {
+    const version = await api.getVersion();
+    renderVersion(version);
+  } catch {
+    el('currentVersion').textContent = 'unavailable';
+  }
+}
+
+el('checkUpdatesBtn').addEventListener('click', async () => {
+  if (updateInProgress) return;
+  const channel = el<HTMLSelectElement>('channelSelect').value as ReleaseChannel;
+  hideUpdateBanner();
+  el<HTMLButtonElement>('applyUpdateBtn').hidden = true;
+  pendingUpdate = null;
+  setUpdateUiBusy(true);
+  setUpdateStatusPill('Checking…', 'pending');
+  try {
+    const result = await api.checkForUpdates(channel);
+    if (result) {
+      pendingUpdate = result;
+      showUpdateBanner(`Update available · ${result.targetCommit.slice(0, 12)} — ${result.subject}`);
+      el<HTMLButtonElement>('applyUpdateBtn').hidden = false;
+      setUpdateStatusPill('Update available', 'ready');
+    } else {
+      setUpdateStatusPill('Up to date', 'ok');
+      showUpdateBanner('You are running the latest commit on this channel.');
+    }
+  } catch (error) {
+    setUpdateStatusPill('Check failed', 'error');
+    showUpdateBanner(error instanceof Error ? error.message : String(error));
+  } finally {
+    setUpdateUiBusy(false);
+  }
+});
+
+el('applyUpdateBtn').addEventListener('click', async () => {
+  if (updateInProgress || !pendingUpdate) return;
+  const target = pendingUpdate.targetCommit;
+  if (pendingUpdate.hasNewMigrations) {
+    const proceed = window.confirm(
+      `This update includes database schema changes.\n\n` +
+        `If the update fails after the schema migrates, automatic rollback ` +
+        `may not be able to restore a working backend, and you may need to ` +
+        `use Factory Reset > Database to recover (this will lose instance data).\n\n` +
+        `Continue with the update?`,
+    );
+    if (!proceed) {
+      setUpdateStatusPill('Cancelled', 'ready');
+      return;
+    }
+  }
+  setUpdateUiBusy(true);
+  hideUpdateBanner();
+  setUpdateStatusPill('Updating…', 'pending');
+  showOverlay('Updating Sentinel');
+  setOverlayProgress('Starting…', '');
+  try {
+    await api.applyUpdate(target);
+  } catch (error) {
+    hideOverlay();
+    setUpdateStatusPill('Update failed', 'error');
+    showUpdateBanner(error instanceof Error ? error.message : String(error));
+    setUpdateUiBusy(false);
+  }
+});
+
+el<HTMLSelectElement>('channelSelect').addEventListener('change', async (event) => {
+  if (updateInProgress) return;
+  const select = event.target as HTMLSelectElement;
+  const channel = select.value as ReleaseChannel;
+  if (currentChannel === channel) return;
+
+  const revertSelect = () => {
+    if (currentChannel === 'stable' || currentChannel === 'beta') {
+      select.value = currentChannel;
+    }
+  };
+
+  setUpdateStatusPill('Checking channel…', 'pending');
+  let probe: UpdateAvailable | null;
+  try {
+    probe = await api.checkForUpdates(channel);
+  } catch (error) {
+    setUpdateStatusPill('Check failed', 'error');
+    showUpdateBanner(error instanceof Error ? error.message : String(error));
+    revertSelect();
+    return;
+  }
+
+  const migrationWarning =
+    probe?.hasNewMigrations
+      ? `\n\nThis switch includes database schema changes. If the switch fails ` +
+        `after the schema migrates, automatic rollback may not be able to ` +
+        `restore a working backend, and you may need to use Factory Reset > ` +
+        `Database to recover (this will lose instance data).`
+      : '';
+  const confirmed = window.confirm(
+    `Switch to ${channel} channel? Sentinel will fetch and apply the latest ` +
+      `${channel} commit, restarting the backend.${migrationWarning}\n\nContinue?`,
+  );
+  if (!confirmed) {
+    revertSelect();
+    setUpdateStatusPill('Cancelled', 'ready');
+    return;
+  }
+
+  setUpdateUiBusy(true);
+  hideUpdateBanner();
+  setUpdateStatusPill('Switching channel…', 'pending');
+  showOverlay(`Switching to ${channel}`);
+  setOverlayProgress('Starting…', '');
+  try {
+    await api.switchChannel(channel);
+  } catch (error) {
+    hideOverlay();
+    setUpdateStatusPill('Switch failed', 'error');
+    showUpdateBanner(error instanceof Error ? error.message : String(error));
+    setUpdateUiBusy(false);
+  }
+});
+
+// Set on initial failure, cleared on rollback's terminal event. Keeps
+// controls disabled so a second update can't race the rollback.
+let rollbackInProgress = false;
+
+api.onUpdateProgress((progress: UpdateProgress) => {
+  showUpdateProgress(progress);
+  const isRollback = progress.phase.startsWith('rollback');
+  showOverlay(isRollback ? 'Rolling back' : 'Updating Sentinel');
+  const label = UPDATE_PHASE_LABELS[progress.phase] ?? progress.phase;
+  setOverlayProgress(label, progress.message);
+});
+
+api.onUpdateApplied(async (version: RuntimeVersion) => {
+  hideUpdateProgress();
+  hideOverlay();
+  pendingUpdate = null;
+  el<HTMLButtonElement>('applyUpdateBtn').hidden = true;
+  if (rollbackInProgress) {
+    setUpdateStatusPill('Rolled back', 'error');
+    rollbackInProgress = false;
+  } else {
+    setUpdateStatusPill('Up to date', 'ok');
+    showUpdateBanner(`Updated to ${version.commit?.slice(0, 12) ?? 'unknown'} on ${version.channel}.`);
+  }
+  renderVersion(version);
+  setUpdateUiBusy(false);
+});
+
+api.onUpdateFailed((failure: UpdateFailure) => {
+  if (failure.phase === 'rollback-failed') {
+    hideUpdateProgress();
+    hideOverlay();
+    setUpdateStatusPill('Rollback failed', 'error');
+    showUpdateBanner(`${failure.reason} Use Factory Reset to recover.`);
+    rollbackInProgress = false;
+    setUpdateUiBusy(false);
+    return;
+  }
+  setUpdateStatusPill('Update failed', 'error');
+  showUpdateBanner(`Update failed during ${failure.phase}: ${failure.reason} Rolling back...`);
+  rollbackInProgress = true;
+});
+
+void refreshVersion();
 
 void refresh();
