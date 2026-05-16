@@ -23,11 +23,17 @@ def test_agent_modes_endpoint_returns_backend_defined_modes():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        response = client.get("/api/v1/instances/main/agent-modes", headers=headers)
+        response = client.get("/api/v1/agent-modes", headers=headers)
         assert response.status_code == 200
         payload = response.json()
         assert payload["default_mode"] == "normal"
         ids = [item["id"] for item in payload["items"]]
-        assert ids == ["normal", "full_permission", "read_only", "code_review"]
+        assert ids == [
+            "normal",
+            "full_permission",
+            "read_only",
+            "code_review",
+            "interactive_output",
+        ]
     finally:
         restore_test_app(old_init)

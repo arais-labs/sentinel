@@ -29,15 +29,22 @@ class Settings(BaseSettings):
     sentinel_auth_username: str = ""
     sentinel_auth_password: str = ""
     dev_user_id: str = "dev-admin"
-    anthropic_oauth_token: str | None = None
-    anthropic_api_key: str | None = None
-    openai_oauth_token: str | None = None
-    openai_api_key: str | None = None
+
+    # LLM provider credentials live in the per-instance `system_settings` DB
+    # table and are populated by SettingsService.build_instance_settings at
+    # request time. Env vars are NOT a supported source for these — the
+    # validation_alias here points at a sentinel name that no real env var
+    # uses, which disables env-var loading for the field while keeping the
+    # attribute available for DB hydration via setattr/model_copy.
+    anthropic_oauth_token: str | None = Field(default=None, validation_alias="_db_only_anthropic_oauth_token")
+    anthropic_api_key: str | None = Field(default=None, validation_alias="_db_only_anthropic_api_key")
+    openai_oauth_token: str | None = Field(default=None, validation_alias="_db_only_openai_oauth_token")
+    openai_api_key: str | None = Field(default=None, validation_alias="_db_only_openai_api_key")
     openai_base_url: str = "https://api.openai.com/v1"
-    gemini_api_key: str | None = None
-    gemini_oauth_credentials: str | None = None
+    gemini_api_key: str | None = Field(default=None, validation_alias="_db_only_gemini_api_key")
+    gemini_oauth_credentials: str | None = Field(default=None, validation_alias="_db_only_gemini_oauth_credentials")
     primary_provider: ProviderChoice = ProviderChoice.ANTHROPIC
-    embedding_api_key: str | None = None
+    embedding_api_key: str | None = Field(default=None, validation_alias="_db_only_embedding_api_key")
     embedding_model: str = "text-embedding-3-small"
     embedding_base_url: str = "https://api.openai.com/v1"
     memory_embedding_backfill_on_start: bool = True

@@ -15,7 +15,6 @@ from app.services.instance_runtime_context import (
     InstanceRuntimeContext,
     instance_runtime_context_registry,
 )
-from app.services.llm.generic.base import LLMProvider
 from app.services.onboarding.onboarding_service import OnboardingService
 from app.services.runtime.runtime_rebuild import RuntimeRebuildService
 from app.services.settings.settings_service import SettingsService
@@ -125,16 +124,3 @@ def get_connection_instance_runtime_context(connection: HTTPConnection) -> Insta
     raise RuntimeError("Instance runtime context is missing; route is not instance-scoped")
 
 
-def get_llm_provider(request: Request) -> LLMProvider:
-    """Typed accessor for runtime LLM provider stored on app state."""
-    if not hasattr(request.app.state, "llm_provider"):
-        raise RuntimeError("LLM provider is missing from app state; startup is incomplete")
-    provider = cast(LLMProvider | None, request.app.state.llm_provider)
-    if provider is None:
-        raise RuntimeError("LLM provider is not configured; check provider credentials and runtime rebuild")
-    return provider
-
-
-def get_optional_llm_provider(request: Request) -> LLMProvider | None:
-    """Typed accessor that allows routes to operate without an LLM provider."""
-    return cast(LLMProvider | None, request.app.state.llm_provider)

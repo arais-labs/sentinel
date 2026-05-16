@@ -69,6 +69,11 @@ async def _start_bridge(app_state: object) -> None:
 
     ws_manager = getattr(app_state, "ws_manager", None)
     run_registry = getattr(app_state, "agent_run_registry", None)
+    # TODO: app.state.agent_runtime_support is no longer populated (LLM provider
+    # is now per-instance only). The telegram bridge needs to be migrated to be
+    # per-instance and read the runtime support from each instance's
+    # InstanceRuntimeContext. Until then, the bridge starts with None and the
+    # agent message-handling path will not function.
     agent_runtime_support = getattr(app_state, "agent_runtime_support", None)
 
     bridge = TelegramBridge(

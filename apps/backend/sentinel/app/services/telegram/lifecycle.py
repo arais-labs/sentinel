@@ -165,6 +165,9 @@ async def start_telegram_bridge(app_state: object) -> bool:
 
     ws_manager = getattr(app_state, "ws_manager", None)
     run_registry = getattr(app_state, "agent_run_registry", None)
+    # TODO: app.state.agent_runtime_support is no longer populated (LLM provider
+    # is now per-instance only). Migrate the telegram bridge to per-instance,
+    # reading runtime support from each InstanceRuntimeContext.
     agent_runtime_support = getattr(app_state, "agent_runtime_support", None)
     owner_user_id = settings.telegram_owner_user_id
     if not owner_user_id:

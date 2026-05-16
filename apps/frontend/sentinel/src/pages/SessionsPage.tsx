@@ -1655,7 +1655,8 @@ export function SessionsPage() {
         (defaultMode && available.has(defaultMode) ? defaultMode : null) ??
         items[0].id;
       setSelectedAgentMode(selected);
-    } catch {
+    } catch (error) {
+      console.error('fetchAgentModes failed', error);
       setAgentModes([]);
       setSelectedAgentMode(null);
     }

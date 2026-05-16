@@ -5,7 +5,6 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.services.araios.dynamic_modules import load_dynamic_module_tool_definitions
-from app.services.runtime.runtime_rebuild import RuntimeRebuildService
 from app.services.tools.approval.approval_waiters import (
     build_tool_db_approval_result_recorder,
     build_tool_db_approval_waiter,
@@ -37,5 +36,4 @@ async def rebuild_runtime_registry(
         approval_result_recorder=build_tool_db_approval_result_recorder(session_factory=session_factory),
         db_session_factory=session_factory,
     )
-    RuntimeRebuildService().rebuild_agent_runtime_support(app_state)
     return registry

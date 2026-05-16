@@ -1,20 +1,24 @@
 import os
 import uuid
 import asyncio
+from types import SimpleNamespace
 
 import jwt
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
-from app.dependencies import get_llm_provider
 from app.main import app
 from app.models import Message, Session, SessionSummary
 from app.services.sessions.compaction import CompactionService
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent
 from tests.fake_db import FakeDB
-from tests.helpers import install_fake_db_overrides, restore_test_app
+from tests.helpers import (
+    install_fake_db_overrides,
+    make_fake_instance_context,
+    restore_test_app,
+)
 
 
 def _run(coro):
@@ -54,8 +58,11 @@ class _NoopProvider(LLMProvider):
 def test_compaction_create_idempotent_and_ownership():
     fake_db = FakeDB()
 
-    old_init = install_fake_db_overrides(app_db=fake_db)
-    app.dependency_overrides[get_llm_provider] = lambda: _NoopProvider()
+    fake_context = make_fake_instance_context(
+        app_db=fake_db,
+        agent_runtime_support=SimpleNamespace(provider=_NoopProvider()),
+    )
+    old_init = install_fake_db_overrides(app_db=fake_db, instance_context=fake_context)
 
     try:
         client = TestClient(app)
@@ -106,8 +113,11 @@ def test_compaction_create_idempotent_and_ownership():
 def test_compaction_noop_when_context_is_small():
     fake_db = FakeDB()
 
-    old_init = install_fake_db_overrides(app_db=fake_db)
-    app.dependency_overrides[get_llm_provider] = lambda: _NoopProvider()
+    fake_context = make_fake_instance_context(
+        app_db=fake_db,
+        agent_runtime_support=SimpleNamespace(provider=_NoopProvider()),
+    )
+    old_init = install_fake_db_overrides(app_db=fake_db, instance_context=fake_context)
 
     try:
         client = TestClient(app)

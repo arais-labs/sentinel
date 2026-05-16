@@ -69,8 +69,17 @@ function scopedPath(path: string): string {
   if (!path.startsWith('/')) return path;
   if (path === '/instances' || path.startsWith('/instances/')) return path;
   if (path === '/auth' || path.startsWith('/auth/')) return path;
+  if (path === '/agent-modes' || path.startsWith('/agent-modes/')) return path;
   const instanceName = currentInstanceName();
-  if (!instanceName) return path;
+  if (!instanceName) {
+    // /admin/* is dual-mounted in the backend (manager router at /api/v1/admin/*
+    // and instance router at /api/v1/instances/.../admin/*). When called outside
+    // an instance context, the manager-level mount is the intended target.
+    if (path === '/admin' || path.startsWith('/admin/')) return path;
+    throw new Error(
+      `API call to "${path}" requires an instance context but the current URL has none.`,
+    );
+  }
   return `/instances/${encodeURIComponent(instanceName)}${path}`;
 }
 

@@ -1,11 +1,11 @@
 import os
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
 
-from app.dependencies import get_optional_llm_provider
 from app.main import app
 from app.config import settings
 from app.schemas.runtime import RuntimeProviderInfoResponse
@@ -57,6 +57,7 @@ def test_full_integration_happy_path():
     session_factory = FakeSessionFactory(fake_db)
     tool_registry = ToolRegistry()
     tool_executor = ToolExecutor(tool_registry)
+    fake_runtime_support = SimpleNamespace(provider=_NoopProvider())
     instance_context = InstanceRuntimeContext(
         name="main",
         database_name="sentinel_main_test",
@@ -64,9 +65,9 @@ def test_full_integration_happy_path():
         session_factory=session_factory,
         tool_registry=tool_registry,
         tool_executor=tool_executor,
-        agent_runtime_support=None,
+        agent_runtime_support=fake_runtime_support,
         trigger_scheduler=TriggerScheduler(
-            agent_runtime_support=None,
+            agent_runtime_support=fake_runtime_support,
             tool_executor=tool_executor,
             db_factory=None,
         ),
@@ -93,7 +94,6 @@ def test_full_integration_happy_path():
         instance_context=instance_context,
         session_factory=session_factory,
     )
-    app.dependency_overrides[get_optional_llm_provider] = lambda: _NoopProvider()
     sessions_router._provision_runtime = _noop_provision_runtime
     runtime_router._resolve_runtime_provider_info = _fake_runtime_provider_info
     ws_router.ManagerSessionLocal = session_factory

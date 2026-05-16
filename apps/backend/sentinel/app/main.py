@@ -55,7 +55,6 @@ from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter, runt
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.araios.runtime_services import configure_runtime_services
 from app.services.memory.embeddings import EmbeddingService
-from app.services.llm.factory import build_tier_provider_from_settings
 from app.services.llm.ids import TierName
 from app.services.memory.search import MemorySearchService
 from app.services.runtime.terminal_manager import (
@@ -86,8 +85,38 @@ async def shutdown_runtime_provider(app_state: Any, bounded: Callable[..., Await
         await bounded("runtime_prepare", runtime_provider.cancel_background_prepare(), timeout=5.0)
 
 
+_LLM_CREDENTIAL_ENV_VARS = (
+    "ANTHROPIC_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_OAUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GEMINI_OAUTH_CREDENTIALS",
+    "EMBEDDING_API_KEY",
+)
+
+
+def _warn_if_llm_creds_in_env() -> None:
+    """Surface a clear warning if anyone still sets legacy LLM cred env vars.
+
+    These were removed as a supported configuration source; credentials live
+    in the per-instance system_settings DB now.
+    """
+    import os
+
+    leaked = [name for name in _LLM_CREDENTIAL_ENV_VARS if os.environ.get(name)]
+    if leaked:
+        logger.warning(
+            "Ignoring LLM credential env vars %s — env-based LLM credentials are no "
+            "longer supported. Configure credentials via the in-app Settings page; "
+            "they are persisted to the instance's system_settings table.",
+            leaked,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _warn_if_llm_creds_in_env()
     stop_event = asyncio.Event()
     cleanup_task = asyncio.create_task(RateLimitMiddleware.cleanup_loop(stop_event))
     await init_db()
@@ -99,6 +128,11 @@ async def lifespan(app: FastAPI):
     # Instance app settings such as provider credentials are loaded from each
     # instance database when that instance runtime context is built.
 
+    # TODO: embedding_api_key / openai_api_key are now DB-only (no env support),
+    # so embedding_key is always None at boot. The embedding service therefore
+    # never initializes at the process-global level. Migrate EmbeddingService
+    # to be built per-instance (like the LLM provider) using DB-hydrated
+    # settings, mirroring _build_instance_runtime_context.
     embedding_key = settings.embedding_api_key or settings.openai_api_key
     embedding_service = None
     if embedding_key:
@@ -150,15 +184,12 @@ async def lifespan(app: FastAPI):
         wakeup_drainer_tasks.add(task)
         task.add_done_callback(wakeup_drainer_tasks.discard)
 
-    provider = build_tier_provider_from_settings(settings)
     app.state.approval_service = ApprovalService()
     app.state.embedding_service = embedding_service
     app.state.memory_search_service = memory_search_service
     app.state.browser_pool = browser_pool
     app.state.ws_manager = ws_manager
     app.state.agent_run_registry = run_registry
-    app.state.llm_provider = provider
-    app.state.agent_runtime_support = None
 
     async def _resolve_runtime_context_for_session(session_id: object):
         from uuid import UUID as _UUID
@@ -541,7 +572,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 # Runtime singletons initialized up-front for deterministic app.state shape.
-app.state.llm_provider = None
 app.state.ws_manager = ConnectionManager()
 app.state.agent_run_registry = AgentRunRegistry()
 app.state.approval_service = ApprovalService()
@@ -573,7 +603,7 @@ app.include_router(git_router.router, prefix=f"{_instance_api_prefix}/git", tags
 app.include_router(approvals_router.router, prefix=f"{_instance_api_prefix}/approvals", tags=["approvals"])
 app.include_router(admin.router, prefix=f"{_instance_api_prefix}/admin", tags=["admin"])
 app.include_router(models.router, prefix=f"{_instance_api_prefix}/models", tags=["models"])
-app.include_router(agent_modes_router.router, prefix=f"{_instance_api_prefix}/agent-modes", tags=["agent-modes"])
+app.include_router(agent_modes_router.router, prefix="/api/v1/agent-modes", tags=["agent-modes"])
 app.include_router(onboarding.router, prefix=f"{_instance_api_prefix}/onboarding", tags=["onboarding"])
 app.include_router(settings_router.router, prefix=f"{_instance_api_prefix}/settings", tags=["settings"])
 app.include_router(runtime.router, prefix=f"{_instance_api_prefix}/runtime", tags=["runtime"])
