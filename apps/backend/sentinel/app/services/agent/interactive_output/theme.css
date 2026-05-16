@@ -55,19 +55,19 @@
   }
 }
 
-html, body { margin: 0; padding: 0; }
+/* overflow:hidden suppresses the iframe-internal scrollbar; height is sized
+   by the host page's resize bridge so content fits exactly. */
+html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
 body {
   font-family: var(--sentinel-font-sans);
   color: var(--sentinel-text-primary);
-  background: var(--sentinel-bg);
   font-size: 14px;
   line-height: 1.5;
-  padding: var(--sentinel-space-4);
 }
 * { box-sizing: border-box; }
 
 /* Layout */
-.sentinel-container { max-width: 960px; margin: 0 auto; }
+.sentinel-container { width: 100%; }
 .sentinel-stack { display: flex; flex-direction: column; gap: var(--sentinel-space-3); }
 .sentinel-grid { display: grid; gap: var(--sentinel-space-3); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 .sentinel-card {

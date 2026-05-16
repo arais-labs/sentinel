@@ -930,6 +930,11 @@ export const SessionMessageCard = memo(({
         </span>
       </div>
 
+      {renderAssistantHtml ? (
+        <div className={cardWidthClass}>
+          <HtmlContent content={renderedAssistantContent ?? ''} />
+        </div>
+      ) : (
       <div
         onClick={isToolResult && !toolExpanded ? () => setToolExpanded(true) : undefined}
         className={`${isToolResult ? `${cardWidthClass} inline-flex flex-col relative group/card` : cardWidthClass} rounded-2xl px-4 py-2 text-xs shadow-sm border transition-all duration-300 ease-in-out ${
@@ -939,8 +944,6 @@ export const SessionMessageCard = memo(({
               ? pendingApproval
                 ? 'bg-rose-500/8 border-rose-500/30 rounded-tl-none shadow-md ring-1 ring-rose-500/20'
                 : `bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] shadow-sm rounded-tl-none ${toolExpanded ? '' : 'cursor-pointer hover:border-sky-500/30 hover:bg-sky-500/[0.03]'}`
-              : renderAssistantHtml
-                ? 'bg-transparent border-transparent rounded-tl-none shadow-none px-0 py-0'
               : isTelegramGroupResponse
                 ? 'bg-emerald-500/8 border-emerald-500/25 rounded-tl-none font-medium'
                 : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] rounded-tl-none font-medium'
@@ -1110,11 +1113,7 @@ export const SessionMessageCard = memo(({
                 </span>
               </div>
             ) : null}
-            {renderAssistantHtml ? (
-              <HtmlContent content={renderedAssistantContent ?? ''} />
-            ) : (
-              <Markdown content={renderedAssistantContent} invert={isUser} />
-            )}
+            <Markdown content={renderedAssistantContent} invert={isUser} />
             {showRetry ? (
               <div className="flex justify-end pt-1">
                 <button
@@ -1144,6 +1143,7 @@ export const SessionMessageCard = memo(({
           </div>
         )}
       </div>
+      )}
       {generationFooter ? (
         <div className={`${cardWidthClass} -mt-2 pl-2 pr-1 ${isUser ? 'text-right' : 'text-left'}`}>
           <span className="text-[10px] leading-none text-[color:var(--text-muted)] opacity-75">{generationFooter}</span>
