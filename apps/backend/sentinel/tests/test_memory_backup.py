@@ -4,10 +4,13 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
-from app.dependencies import get_db
 from app.main import app
-from app.middleware.rate_limit import RateLimitMiddleware
 from tests.fake_db import FakeDB
+from tests.helpers import install_fake_db_overrides, restore_test_app
+
+
+MEMORY_API = "/api/v1/instances/main/memory"
+ONBOARDING_COMPLETE_API = "/api/v1/instances/main/onboarding/complete"
 
 
 def _auth_headers(client: TestClient) -> dict[str, str]:
@@ -20,27 +23,16 @@ def _auth_headers(client: TestClient) -> dict[str, str]:
 def test_memory_backup_export_and_import_roundtrip():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
-        complete = client.post("/api/v1/onboarding/complete", json={}, headers=headers)
+        complete = client.post(ONBOARDING_COMPLETE_API, json={}, headers=headers)
         assert complete.status_code == 200
 
         root = client.post(
-            "/api/v1/memory",
+            MEMORY_API,
             json={
                 "content": "Project backup root",
                 "title": "Backup Root",
@@ -53,7 +45,7 @@ def test_memory_backup_export_and_import_roundtrip():
         root_id = root.json()["id"]
 
         child = client.post(
-            "/api/v1/memory",
+            MEMORY_API,
             json={
                 "content": "Project backup child",
                 "title": "Backup Child",
@@ -64,7 +56,7 @@ def test_memory_backup_export_and_import_roundtrip():
         )
         assert child.status_code == 200
 
-        exported = client.get("/api/v1/memory/backup/export", headers=headers)
+        exported = client.get(f"{MEMORY_API}/backup/export", headers=headers)
         assert exported.status_code == 200
         document = exported.json()
         assert document["schema_version"] == "memory_backup_v1"
@@ -72,11 +64,11 @@ def test_memory_backup_export_and_import_roundtrip():
         assert any(item.get("is_system") is True for item in document["nodes"])
         assert any(item.get("title") == "Backup Root" for item in document["nodes"])
 
-        delete_root = client.delete(f"/api/v1/memory/{root_id}", headers=headers)
+        delete_root = client.delete(f"{MEMORY_API}/{root_id}", headers=headers)
         assert delete_root.status_code == 200
 
         imported = client.post(
-            "/api/v1/memory/backup/import",
+            f"{MEMORY_API}/backup/import",
             json={
                 "document": document,
                 "mode": "merge",
@@ -88,35 +80,23 @@ def test_memory_backup_export_and_import_roundtrip():
         assert payload["total_in_backup"] == len(document["nodes"])
         assert payload["created"] >= 1
 
-        project_nodes = client.get("/api/v1/memory?category=project&limit=200", headers=headers)
+        project_nodes = client.get(f"{MEMORY_API}?category=project&limit=200", headers=headers)
         assert project_nodes.status_code == 200
         assert any(item["title"] == "Backup Root" for item in project_nodes.json()["items"])
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_memory_backup_import_rejects_invalid_parent_reference():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
         imported = client.post(
-            "/api/v1/memory/backup/import",
+            f"{MEMORY_API}/backup/import",
             json={
                 "document": {
                     "schema_version": "memory_backup_v1",
@@ -142,31 +122,19 @@ def test_memory_backup_import_rejects_invalid_parent_reference():
         message = str((body.get("error") or {}).get("message") or "")
         assert "unknown parent_external_id" in message
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_memory_backup_import_rejects_system_node_without_valid_key():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
         imported = client.post(
-            "/api/v1/memory/backup/import",
+            f"{MEMORY_API}/backup/import",
             json={
                 "document": {
                     "schema_version": "memory_backup_v1",
@@ -193,31 +161,19 @@ def test_memory_backup_import_rejects_system_node_without_valid_key():
         message = str((body.get("error") or {}).get("message") or "")
         assert "valid system_key" in message
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_memory_backup_import_rejects_duplicate_external_ids():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
         imported = client.post(
-            "/api/v1/memory/backup/import",
+            f"{MEMORY_API}/backup/import",
             json={
                 "document": {
                     "schema_version": "memory_backup_v1",
@@ -251,31 +207,19 @@ def test_memory_backup_import_rejects_duplicate_external_ids():
         message = str((body.get("error") or {}).get("message") or "")
         assert "Duplicate external_id" in message
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_memory_backup_import_rejects_non_system_node_with_system_key():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
         imported = client.post(
-            "/api/v1/memory/backup/import",
+            f"{MEMORY_API}/backup/import",
             json={
                 "document": {
                     "schema_version": "memory_backup_v1",
@@ -301,34 +245,22 @@ def test_memory_backup_import_rejects_non_system_node_with_system_key():
         message = str((body.get("error") or {}).get("message") or "")
         assert "cannot define system_key" in message
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_memory_backup_replace_non_system_preserves_system_roots():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
-        complete = client.post("/api/v1/onboarding/complete", json={}, headers=headers)
+        complete = client.post(ONBOARDING_COMPLETE_API, json={}, headers=headers)
         assert complete.status_code == 200
 
         project = client.post(
-            "/api/v1/memory",
+            MEMORY_API,
             json={
                 "content": "temporary project node",
                 "title": "Temp Project",
@@ -339,7 +271,7 @@ def test_memory_backup_replace_non_system_preserves_system_roots():
         assert project.status_code == 200
 
         imported = client.post(
-            "/api/v1/memory/backup/import",
+            f"{MEMORY_API}/backup/import",
             json={
                 "mode": "replace_non_system",
                 "document": {
@@ -354,38 +286,26 @@ def test_memory_backup_replace_non_system_preserves_system_roots():
         payload = imported.json()
         assert payload["deleted"] >= 1
 
-        roots = client.get("/api/v1/memory/roots?category=core", headers=headers)
+        roots = client.get(f"{MEMORY_API}/roots?category=core", headers=headers)
         assert roots.status_code == 200
         items = roots.json()["items"]
         system_keys = {item.get("system_key") for item in items if item.get("is_system") is True}
         assert "agent_identity" in system_keys
         assert "user_profile" in system_keys
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_memory_backup_merge_keeps_existing_legacy_system_title_unchanged():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
         legacy = client.post(
-            "/api/v1/memory",
+            MEMORY_API,
             json={
                 "content": "Legacy non-system identity",
                 "title": "Agent Identity",
@@ -399,7 +319,7 @@ def test_memory_backup_merge_keeps_existing_legacy_system_title_unchanged():
         legacy_id = legacy.json()["id"]
 
         imported = client.post(
-            "/api/v1/memory/backup/import",
+            f"{MEMORY_API}/backup/import",
             json={
                 "mode": "merge",
                 "document": {
@@ -426,7 +346,7 @@ def test_memory_backup_merge_keeps_existing_legacy_system_title_unchanged():
         payload = imported.json()
         assert payload["skipped"] == 1
 
-        roots = client.get("/api/v1/memory/roots?category=core&limit=200", headers=headers)
+        roots = client.get(f"{MEMORY_API}/roots?category=core&limit=200", headers=headers)
         assert roots.status_code == 200
         items = roots.json()["items"]
         legacy_after = next(item for item in items if item["id"] == legacy_id)
@@ -434,31 +354,19 @@ def test_memory_backup_merge_keeps_existing_legacy_system_title_unchanged():
         system_items = [item for item in items if item.get("system_key") == "agent_identity"]
         assert len(system_items) == 0
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_memory_backup_replace_all_restores_system_memories_from_backup():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
         legacy = client.post(
-            "/api/v1/memory",
+            MEMORY_API,
             json={
                 "content": "Legacy identity memory",
                 "title": "Agent Identity",
@@ -472,7 +380,7 @@ def test_memory_backup_replace_all_restores_system_memories_from_backup():
         legacy_id = legacy.json()["id"]
 
         imported = client.post(
-            "/api/v1/memory/backup/import",
+            f"{MEMORY_API}/backup/import",
             json={
                 "mode": "replace_all",
                 "document": {
@@ -500,7 +408,7 @@ def test_memory_backup_replace_all_restores_system_memories_from_backup():
         assert payload["created"] >= 1
         assert payload["deleted"] >= 1
 
-        roots = client.get("/api/v1/memory/roots?category=core", headers=headers)
+        roots = client.get(f"{MEMORY_API}/roots?category=core", headers=headers)
         assert roots.status_code == 200
         items = roots.json()["items"]
         assert all(item["id"] != legacy_id for item in items)
@@ -508,34 +416,22 @@ def test_memory_backup_replace_all_restores_system_memories_from_backup():
         assert len(system_items) == 1
         assert system_items[0]["is_system"] is True
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_memory_backup_import_rolls_back_partial_writes_on_failure():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
-        complete = client.post("/api/v1/onboarding/complete", json={}, headers=headers)
+        complete = client.post(ONBOARDING_COMPLETE_API, json={}, headers=headers)
         assert complete.status_code == 200
 
         imported = client.post(
-            "/api/v1/memory/backup/import",
+            f"{MEMORY_API}/backup/import",
             json={
                 "mode": "merge",
                 "document": {
@@ -581,9 +477,8 @@ def test_memory_backup_import_rolls_back_partial_writes_on_failure():
         )
         assert imported.status_code == 403
 
-        project_nodes = client.get("/api/v1/memory?category=project&limit=200", headers=headers)
+        project_nodes = client.get(f"{MEMORY_API}?category=project&limit=200", headers=headers)
         assert project_nodes.status_code == 200
         assert all(item.get("title") != "Project Root" for item in project_nodes.json()["items"])
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)

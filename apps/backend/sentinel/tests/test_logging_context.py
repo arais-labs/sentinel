@@ -60,25 +60,25 @@ def test_logging_routes_allow_runtime_override():
 
         app.dependency_overrides[require_auth] = _fake_auth
         client = TestClient(app)
-        get_resp = client.get("/api/v1/settings/logging")
+        get_resp = client.get("/api/v1/instances/main/settings/logging")
         assert get_resp.status_code == 200
         assert get_resp.json()["default_logger_levels"]["httpx"] == "WARNING"
 
         set_resp = client.post(
-            "/api/v1/settings/logging/levels",
+            "/api/v1/instances/main/settings/logging/levels",
             json={"logger": "app.routers.ws", "level": "DEBUG"},
         )
         assert set_resp.status_code == 200
         assert set_resp.json()["runtime_overrides"]["app.routers.ws"] == "DEBUG"
 
         clear_resp = client.delete(
-            "/api/v1/settings/logging/levels",
+            "/api/v1/instances/main/settings/logging/levels",
             params={"logger": "app.routers.ws"},
         )
         assert clear_resp.status_code == 200
         assert "app.routers.ws" not in clear_resp.json()["runtime_overrides"]
 
-        reset_resp = client.post("/api/v1/settings/logging/reset")
+        reset_resp = client.post("/api/v1/instances/main/settings/logging/reset")
         assert reset_resp.status_code == 200
         assert reset_resp.json()["runtime_overrides"] == {}
     finally:

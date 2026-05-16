@@ -12,15 +12,20 @@ from unittest.mock import patch
 
 import jwt
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects import postgresql
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
-from app.dependencies import get_db
+from tests.helpers import install_fake_db_overrides, make_fake_instance_context, restore_test_app
 from app.main import app
-from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import Message, Session, SessionBinding, ToolApproval
 from app.services.llm.generic.types import AssistantMessage, SystemMessage, TextContent, UserMessage
+from app.services.sessions.agent_run_registry import AgentRunRegistry
+from app.services.sessions.service import SessionService
 from tests.fake_db import FakeDB
+
+
+SESSIONS_API = "/api/v1/instances/main/sessions"
 
 
 def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") -> str:
@@ -66,21 +71,64 @@ def test_schedule_runtime_provision_deduplicates_same_session(monkeypatch):
     asyncio.run(_run())
 
 
+def test_mark_session_read_preserves_updated_at():
+    session = Session(
+        id=uuid.uuid4(),
+        user_id="user-1",
+        agent_id="agent-1",
+        title="alpha",
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    captured_updates = []
+
+    class _ScalarResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def scalars(self):
+            return _ScalarResult(self._rows)
+
+    class _CaptureDb:
+        async def execute(self, stmt):
+            if getattr(stmt, "is_update", False):
+                captured_updates.append(stmt)
+                return _Result([])
+            return _Result([session])
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, _obj):
+            return None
+
+    async def _run() -> None:
+        service = SessionService(run_registry=AgentRunRegistry())
+        await service.mark_as_read(
+            _CaptureDb(),
+            session_id=session.id,
+            user_id=session.user_id,
+        )
+
+    asyncio.run(_run())
+
+    assert len(captured_updates) == 1
+    sql = str(captured_updates[0].compile(dialect=postgresql.dialect()))
+    assert "updated_at=sessions.updated_at" in sql.replace(" ", "")
+
+
 def test_sessions_crud_and_ownership():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -90,14 +138,14 @@ def test_sessions_crud_and_ownership():
 
         user2_token = _make_token(sub="other-user")
 
-        s1 = client.post("/api/v1/sessions", json={"title": "alpha"}, headers={"Authorization": f"Bearer {user1_token}"})
-        s2 = client.post("/api/v1/sessions", json={"title": "beta"}, headers={"Authorization": f"Bearer {user1_token}"})
+        s1 = client.post(SESSIONS_API, json={"title": "alpha"}, headers={"Authorization": f"Bearer {user1_token}"})
+        s2 = client.post(SESSIONS_API, json={"title": "beta"}, headers={"Authorization": f"Bearer {user1_token}"})
         s_child = client.post(
-            "/api/v1/sessions",
+            SESSIONS_API,
             json={"title": "sub-agent:child"},
             headers={"Authorization": f"Bearer {user1_token}"},
         )
-        s3 = client.post("/api/v1/sessions", json={"title": "gamma"}, headers={"Authorization": f"Bearer {user2_token}"})
+        s3 = client.post(SESSIONS_API, json={"title": "gamma"}, headers={"Authorization": f"Bearer {user2_token}"})
         assert s1.status_code == 200 and s2.status_code == 200 and s3.status_code == 200 and s_child.status_code == 200
 
         session1_id = s1.json()["id"]
@@ -113,7 +161,7 @@ def test_sessions_crud_and_ownership():
                 item.initial_prompt = "first prompt"
                 item.latest_system_prompt = "large system prompt" * 1000
 
-        list_user1 = client.get("/api/v1/sessions", headers={"Authorization": f"Bearer {user1_token}"})
+        list_user1 = client.get(SESSIONS_API, headers={"Authorization": f"Bearer {user1_token}"})
         assert list_user1.status_code == 200
         list_items_user1 = list_user1.json()["items"]
         ids_user1 = {item["id"] for item in list_items_user1}
@@ -125,47 +173,47 @@ def test_sessions_crud_and_ownership():
         assert "initial_prompt" not in listed_session1
         assert "latest_system_prompt" not in listed_session1
 
-        forbidden_get = client.get(f"/api/v1/sessions/{session3_id}", headers={"Authorization": f"Bearer {user1_token}"})
+        forbidden_get = client.get(f"{SESSIONS_API}/{session3_id}", headers={"Authorization": f"Bearer {user1_token}"})
         assert forbidden_get.status_code == 404
 
         set_main_resp = client.post(
-            f"/api/v1/sessions/{session2_id}/main",
+            f"{SESSIONS_API}/{session2_id}/main",
             headers={"Authorization": f"Bearer {user1_token}"},
         )
         assert set_main_resp.status_code == 200
         assert set_main_resp.json()["is_main"] is True
 
         delete_resp = client.delete(
-            f"/api/v1/sessions/{session1_id}",
+            f"{SESSIONS_API}/{session1_id}",
             headers={"Authorization": f"Bearer {user1_token}"},
         )
         assert delete_resp.status_code == 200
         assert delete_resp.json()["status"] == "deleted"
         deleted_session = client.get(
-            f"/api/v1/sessions/{session1_id}",
+            f"{SESSIONS_API}/{session1_id}",
             headers={"Authorization": f"Bearer {user1_token}"},
         )
         assert deleted_session.status_code == 404
 
         m1 = client.post(
-            f"/api/v1/sessions/{session2_id}/messages",
+            f"{SESSIONS_API}/{session2_id}/messages",
             json={"role": "user", "content": "first", "metadata": {}},
             headers={"Authorization": f"Bearer {user1_token}"},
         )
         m2 = client.post(
-            f"/api/v1/sessions/{session2_id}/messages",
+            f"{SESSIONS_API}/{session2_id}/messages",
             json={"role": "system", "content": "second", "metadata": {}},
             headers={"Authorization": f"Bearer {user1_token}"},
         )
         m3 = client.post(
-            f"/api/v1/sessions/{session2_id}/messages",
+            f"{SESSIONS_API}/{session2_id}/messages",
             json={"role": "user", "content": "third", "metadata": {}},
             headers={"Authorization": f"Bearer {user1_token}"},
         )
         assert m1.status_code == 200 and m2.status_code == 200 and m3.status_code == 200
 
         history = client.get(
-            f"/api/v1/sessions/{session2_id}/messages?limit=2",
+            f"{SESSIONS_API}/{session2_id}/messages?limit=2",
             headers={"Authorization": f"Bearer {user1_token}"},
         )
         assert history.status_code == 200
@@ -174,31 +222,19 @@ def test_sessions_crud_and_ownership():
         assert payload["has_more"] is True
 
         stop_resp = client.post(
-            f"/api/v1/sessions/{session2_id}/stop",
+            f"{SESSIONS_API}/{session2_id}/stop",
             headers={"Authorization": f"Bearer {user1_token}"},
         )
         assert stop_resp.status_code == 200
         assert stop_resp.json()["status"] in {"stopping", "idle"}
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_session_rename_endpoint():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -206,12 +242,12 @@ def test_session_rename_endpoint():
         assert login.status_code == 200
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        created = client.post("/api/v1/sessions", json={"title": "alpha"}, headers=headers)
+        created = client.post(SESSIONS_API, json={"title": "alpha"}, headers=headers)
         assert created.status_code == 200
         session_id = created.json()["id"]
 
         renamed = client.patch(
-            f"/api/v1/sessions/{session_id}",
+            f"{SESSIONS_API}/{session_id}",
             json={"title": "   Better Name   "},
             headers=headers,
         )
@@ -219,35 +255,22 @@ def test_session_rename_endpoint():
         assert renamed.json()["title"] == "Better Name"
 
         cleared = client.patch(
-            f"/api/v1/sessions/{session_id}",
+            f"{SESSIONS_API}/{session_id}",
             json={"title": "   "},
             headers=headers,
         )
         assert cleared.status_code == 200
         assert cleared.json()["title"] is None
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_retry_message_endpoint_reruns_existing_user_message():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
     old_ws_manager = getattr(app.state, "ws_manager", None)
     old_runtime_support = getattr(app.state, "agent_runtime_support", None)
     old_db_factory = getattr(app.state, "db_factory", None)
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
 
     captured: dict[str, object] = {}
     scheduled: list[object] = []
@@ -259,6 +282,18 @@ def test_retry_message_endpoint_reruns_existing_user_message():
     @asynccontextmanager
     async def _db_factory():
         yield fake_db
+
+    runtime_support = object()
+    instance_context = make_fake_instance_context(
+        app_db=fake_db,
+        agent_runtime_support=runtime_support,
+        session_factory=_db_factory,
+    )
+    old_init = install_fake_db_overrides(
+        app_db=fake_db,
+        instance_context=instance_context,
+        session_factory=_db_factory,
+    )
 
     async def _fake_run_agent_once(**kwargs):
         captured.update(kwargs)
@@ -276,7 +311,7 @@ def test_retry_message_endpoint_reruns_existing_user_message():
 
     try:
         app.state.ws_manager = _DummyManager()
-        app.state.agent_runtime_support = object()
+        app.state.agent_runtime_support = runtime_support
         app.state.db_factory = _db_factory
 
         client = TestClient(app)
@@ -284,12 +319,12 @@ def test_retry_message_endpoint_reruns_existing_user_message():
         assert login.status_code == 200
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        created = client.post("/api/v1/sessions", json={"title": "alpha"}, headers=headers)
+        created = client.post(SESSIONS_API, json={"title": "alpha"}, headers=headers)
         assert created.status_code == 200
         session_id = created.json()["id"]
 
         message = client.post(
-            f"/api/v1/sessions/{session_id}/messages",
+            f"{SESSIONS_API}/{session_id}/messages",
             json={
                 "role": "user",
                 "content": "retry me",
@@ -310,7 +345,7 @@ def test_retry_message_endpoint_reruns_existing_user_message():
             "app.routers.sessions.asyncio.create_task", side_effect=_fake_create_task
         ):
             response = client.post(
-                f"/api/v1/sessions/{session_id}/messages/{message_id}/retry",
+                f"{SESSIONS_API}/{session_id}/messages/{message_id}/retry",
                 headers=headers,
             )
 
@@ -328,8 +363,7 @@ def test_retry_message_endpoint_reruns_existing_user_message():
             assert captured["payload"] == "retry me"
             assert captured["thinking_session_key"] == session_id
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
         app.state.ws_manager = old_ws_manager
         app.state.agent_runtime_support = old_runtime_support
         app.state.db_factory = old_db_factory
@@ -338,18 +372,7 @@ def test_retry_message_endpoint_reruns_existing_user_message():
 def test_cannot_set_telegram_channel_session_as_main():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -358,11 +381,11 @@ def test_cannot_set_telegram_channel_session_as_main():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        main_resp = client.get("/api/v1/sessions/default", headers=headers)
+        main_resp = client.get(f"{SESSIONS_API}/default", headers=headers)
         assert main_resp.status_code == 200
         main_session_id = main_resp.json()["id"]
 
-        channel_resp = client.post("/api/v1/sessions", json={"title": "TG Group · Ops"}, headers=headers)
+        channel_resp = client.post(SESSIONS_API, json={"title": "TG Group · Ops"}, headers=headers)
         assert channel_resp.status_code == 200
         channel_session_id = channel_resp.json()["id"]
 
@@ -380,7 +403,7 @@ def test_cannot_set_telegram_channel_session_as_main():
             )
         )
 
-        forbidden = client.post(f"/api/v1/sessions/{channel_session_id}/main", headers=headers)
+        forbidden = client.post(f"{SESSIONS_API}/{channel_session_id}/main", headers=headers)
         assert forbidden.status_code == 400
         payload = forbidden.json()
         detail = (
@@ -390,29 +413,17 @@ def test_cannot_set_telegram_channel_session_as_main():
         )
         assert "Telegram channel sessions cannot be set as main" in detail
 
-        still_main = client.get(f"/api/v1/sessions/{main_session_id}", headers=headers)
+        still_main = client.get(f"{SESSIONS_API}/{main_session_id}", headers=headers)
         assert still_main.status_code == 200
         assert still_main.json()["is_main"] is True
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_cannot_rename_telegram_channel_session():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -421,7 +432,7 @@ def test_cannot_rename_telegram_channel_session():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        channel_resp = client.post("/api/v1/sessions", json={"title": "TG Group · Ops"}, headers=headers)
+        channel_resp = client.post(SESSIONS_API, json={"title": "TG Group · Ops"}, headers=headers)
         assert channel_resp.status_code == 200
         channel_session_id = channel_resp.json()["id"]
 
@@ -440,7 +451,7 @@ def test_cannot_rename_telegram_channel_session():
         )
 
         rename = client.patch(
-            f"/api/v1/sessions/{channel_session_id}",
+            f"{SESSIONS_API}/{channel_session_id}",
             json={"title": "Renamed"},
             headers=headers,
         )
@@ -453,25 +464,13 @@ def test_cannot_rename_telegram_channel_session():
         )
         assert "cannot be renamed" in detail.lower()
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_reset_default_session_keeps_previous_main_runtime_workspace():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -483,7 +482,7 @@ def test_reset_default_session_keeps_previous_main_runtime_workspace():
                 token = login.json()["access_token"]
                 headers = {"Authorization": f"Bearer {token}"}
 
-                main_resp = client.get("/api/v1/sessions/default", headers=headers)
+                main_resp = client.get(f"{SESSIONS_API}/default", headers=headers)
                 assert main_resp.status_code == 200
                 old_main_id = main_resp.json()["id"]
 
@@ -492,7 +491,7 @@ def test_reset_default_session_keeps_previous_main_runtime_workspace():
                 marker = old_workspace / "keep.txt"
                 marker.write_text("preserve")
 
-                reset_resp = client.post("/api/v1/sessions/default/reset", headers=headers)
+                reset_resp = client.post(f"{SESSIONS_API}/default/reset", headers=headers)
                 assert reset_resp.status_code == 200
                 new_main_id = reset_resp.json()["id"]
                 assert new_main_id != old_main_id
@@ -501,25 +500,13 @@ def test_reset_default_session_keeps_previous_main_runtime_workspace():
                 assert marker.exists() is True
                 assert marker.read_text() == "preserve"
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_stop_session_generation_cancels_pending_git_approvals():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -528,7 +515,7 @@ def test_stop_session_generation_cancels_pending_git_approvals():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "stop-cancels-approvals"}, headers=headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "stop-cancels-approvals"}, headers=headers)
         assert session_resp.status_code == 200
         session_id = uuid.UUID(session_resp.json()["id"])
 
@@ -545,31 +532,19 @@ def test_stop_session_generation_cancels_pending_git_approvals():
         )
         fake_db.add(pending)
 
-        stop_resp = client.post(f"/api/v1/sessions/{session_id}/stop", headers=headers)
+        stop_resp = client.post(f"{SESSIONS_API}/{session_id}/stop", headers=headers)
         assert stop_resp.status_code == 200
         assert stop_resp.json()["status"] in {"stopping", "idle"}
         assert pending.status == "cancelled"
         assert pending.resolved_at is not None
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_stop_session_generation_materializes_unresolved_tool_calls():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -578,7 +553,7 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "stop-materializes-tool-result"}, headers=headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "stop-materializes-tool-result"}, headers=headers)
         assert session_resp.status_code == 200
         session_id = uuid.UUID(session_resp.json()["id"])
 
@@ -606,11 +581,11 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
             )
         )
 
-        stop_resp = client.post(f"/api/v1/sessions/{session_id}/stop", headers=headers)
+        stop_resp = client.post(f"{SESSIONS_API}/{session_id}/stop", headers=headers)
         assert stop_resp.status_code == 200
         assert stop_resp.json()["status"] in {"stopping", "idle"}
 
-        messages_resp = client.get(f"/api/v1/sessions/{session_id}/messages", headers=headers)
+        messages_resp = client.get(f"{SESSIONS_API}/{session_id}/messages", headers=headers)
         assert messages_resp.status_code == 200
         items = messages_resp.json()["items"]
         materialized = next(
@@ -630,19 +605,11 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
         assert generation.get("resolved_model") == "gpt-4.1-mini"
         assert generation.get("provider") == "openai"
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
     fake_db = FakeDB()
-
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
     class _FakeContextBuilder:
         async def build(self, db, session_id, system_prompt=None, pending_user_message=None):
             _ = (db, session_id, system_prompt, pending_user_message)
@@ -656,54 +623,40 @@ def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
         def __init__(self):
             self.context_builder = _FakeContextBuilder()
 
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    fake_loop = _FakeLoop()
+    old_init = install_fake_db_overrides(
+        app_db=fake_db,
+        instance_context=make_fake_instance_context(
+            app_db=fake_db,
+            agent_runtime_support=fake_loop,
+        ),
+    )
 
     try:
         client = TestClient(app)
-        old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
-        app.state.agent_runtime_support = _FakeLoop()
 
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "usage-rebuild"}, headers=headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "usage-rebuild"}, headers=headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        usage_resp = client.get(f"/api/v1/sessions/{session_id}/context-usage", headers=headers)
+        usage_resp = client.get(f"{SESSIONS_API}/{session_id}/context-usage", headers=headers)
         assert usage_resp.status_code == 200
         payload = usage_resp.json()
         assert payload["source"] == "rebuilt_context_estimate"
         assert isinstance(payload["estimated_context_tokens"], int)
         assert payload["estimated_context_tokens"] > 0
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-        if "old_agent_runtime_support" in locals():
-            app.state.agent_runtime_support = old_agent_runtime_support
+        restore_test_app(old_init)
 
 
 def test_runtime_file_explorer_endpoints():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -712,7 +665,7 @@ def test_runtime_file_explorer_endpoints():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        created = client.post("/api/v1/sessions", json={"title": "runtime-explorer"}, headers=headers)
+        created = client.post(SESSIONS_API, json={"title": "runtime-explorer"}, headers=headers)
         assert created.status_code == 200
         session_id = created.json()["id"]
 
@@ -726,7 +679,7 @@ def test_runtime_file_explorer_endpoints():
             subprocess.run(["git", "-C", str(workspace / "repo"), "init"], check=False)
 
             with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
-                files_root = client.get(f"/api/v1/sessions/{session_id}/runtime/files", headers=headers)
+                files_root = client.get(f"{SESSIONS_API}/{session_id}/runtime/files", headers=headers)
                 assert files_root.status_code == 200
                 root_payload = files_root.json()
                 names = {item["name"] for item in root_payload["entries"]}
@@ -736,7 +689,7 @@ def test_runtime_file_explorer_endpoints():
                 assert repo_entry["is_git_root"] is True
 
                 files_src = client.get(
-                    f"/api/v1/sessions/{session_id}/runtime/files?path=src",
+                    f"{SESSIONS_API}/{session_id}/runtime/files?path=src",
                     headers=headers,
                 )
                 assert files_src.status_code == 200
@@ -746,7 +699,7 @@ def test_runtime_file_explorer_endpoints():
                 assert any(item["name"] == "main.py" and item["kind"] == "file" for item in src_payload["entries"])
 
                 preview = client.get(
-                    f"/api/v1/sessions/{session_id}/runtime/file?path=src/main.py",
+                    f"{SESSIONS_API}/{session_id}/runtime/file?path=src/main.py",
                     headers=headers,
                 )
                 assert preview.status_code == 200
@@ -755,30 +708,18 @@ def test_runtime_file_explorer_endpoints():
                 assert "print('ok')" in preview_payload["content"]
 
                 forbidden = client.get(
-                    f"/api/v1/sessions/{session_id}/runtime/files?path=../secrets",
+                    f"{SESSIONS_API}/{session_id}/runtime/files?path=../secrets",
                     headers=headers,
                 )
                 assert forbidden.status_code == 400
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_runtime_git_diff_supports_deleted_and_untracked_files():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -787,7 +728,7 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        created = client.post("/api/v1/sessions", json={"title": "runtime-git-diff"}, headers=headers)
+        created = client.post(SESSIONS_API, json={"title": "runtime-git-diff"}, headers=headers)
         assert created.status_code == 200
         session_id = created.json()["id"]
 
@@ -811,7 +752,7 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
 
             with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
                 deleted_resp = client.get(
-                    f"/api/v1/sessions/{session_id}/runtime/git/diff?path=repo/old.txt&base_ref=HEAD&staged=false&context_lines=3&max_bytes=120000",
+                    f"{SESSIONS_API}/{session_id}/runtime/git/diff?path=repo/old.txt&base_ref=HEAD&staged=false&context_lines=3&max_bytes=120000",
                     headers=headers,
                 )
                 assert deleted_resp.status_code == 200
@@ -820,7 +761,7 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
                 assert "deleted file mode" in deleted_payload["diff"]
 
                 added_resp = client.get(
-                    f"/api/v1/sessions/{session_id}/runtime/git/diff?path=repo/new.txt&base_ref=HEAD&staged=false&context_lines=3&max_bytes=120000",
+                    f"{SESSIONS_API}/{session_id}/runtime/git/diff?path=repo/new.txt&base_ref=HEAD&staged=false&context_lines=3&max_bytes=120000",
                     headers=headers,
                 )
                 assert added_resp.status_code == 200
@@ -829,25 +770,13 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
                 assert "+++ b/new.txt" in added_payload["diff"]
                 assert "+after" in added_payload["diff"]
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_runtime_download_supports_files_and_directories():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -856,7 +785,7 @@ def test_runtime_download_supports_files_and_directories():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        created = client.post("/api/v1/sessions", json={"title": "runtime-download"}, headers=headers)
+        created = client.post(SESSIONS_API, json={"title": "runtime-download"}, headers=headers)
         assert created.status_code == 200
         session_id = created.json()["id"]
 
@@ -872,7 +801,7 @@ def test_runtime_download_supports_files_and_directories():
 
             with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
                 file_resp = client.get(
-                    f"/api/v1/sessions/{session_id}/runtime/download?path=README.md",
+                    f"{SESSIONS_API}/{session_id}/runtime/download?path=README.md",
                     headers=headers,
                 )
                 assert file_resp.status_code == 200
@@ -881,7 +810,7 @@ def test_runtime_download_supports_files_and_directories():
                 assert file_resp.text == "# demo\n"
 
                 folder_resp = client.get(
-                    f"/api/v1/sessions/{session_id}/runtime/download?path=docs",
+                    f"{SESSIONS_API}/{session_id}/runtime/download?path=docs",
                     headers=headers,
                 )
                 assert folder_resp.status_code == 200
@@ -894,5 +823,4 @@ def test_runtime_download_supports_files_and_directories():
                     assert archive.namelist() == ["guide.txt"]
                     assert archive.read("guide.txt").decode("utf-8") == "hello zip\n"
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)

@@ -9,13 +9,22 @@ from starlette.websockets import WebSocketDisconnect
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
-from app.dependencies import get_db
 from app.main import app
-from app.middleware.rate_limit import RateLimitMiddleware
+from app.routers import ws as ws_router
 from app.models import Message, ToolApproval
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.ws.ws_stream_service import unresolved_tool_calls_from_history
 from tests.fake_db import FakeDB
+from tests.helpers import FakeSessionFactory, install_fake_db_overrides, restore_test_app
+
+
+SESSIONS_API = "/api/v1/instances/main/sessions"
+WS_API = "/ws/instances/main/sessions"
+
+
+@pytest.fixture(autouse=True)
+def _use_fake_ws_manager_db(monkeypatch):
+    monkeypatch.setattr(ws_router, "ManagerSessionLocal", FakeSessionFactory(FakeDB()))
 
 
 def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") -> str:
@@ -48,15 +57,7 @@ class _ThinkingRunningRegistry(_AlwaysRunningRegistry):
 def test_ws_connect_send_ack_and_rejections():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
     from app.routers import sessions as sessions_router
 
@@ -64,9 +65,6 @@ def test_ws_connect_send_ack_and_rejections():
         return None
 
     old_provision_runtime = sessions_router._provision_runtime
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
     app.state.agent_runtime_support = None
     sessions_router._provision_runtime = _noop_provision_runtime
 
@@ -77,11 +75,11 @@ def test_ws_connect_send_ack_and_rejections():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-test"}, headers=owner_headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "ws-test"}, headers=owner_headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -121,7 +119,7 @@ def test_ws_connect_send_ack_and_rejections():
             assert done["type"] == "done"
             assert done["stop_reason"] == "error"
 
-        messages = client.get(f"/api/v1/sessions/{session_id}/messages", headers=owner_headers)
+        messages = client.get(f"{SESSIONS_API}/{session_id}/messages", headers=owner_headers)
         assert messages.status_code == 200
         matching = [item for item in messages.json()["items"] if item["content"] == "hello from ws"]
         assert len(matching) == 1
@@ -138,29 +136,28 @@ def test_ws_connect_send_ack_and_rejections():
 
         anon_client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as missing_token:
-            with anon_client.websocket_connect(f"/ws/sessions/{session_id}/stream"):
+            with anon_client.websocket_connect(f"{WS_API}/{session_id}/stream"):
                 pass
         assert missing_token.value.code == 4001
 
         with pytest.raises(WebSocketDisconnect) as bad_token:
-            with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token=invalid-token"):
+            with client.websocket_connect(f"{WS_API}/{session_id}/stream?token=invalid-token"):
                 pass
         assert bad_token.value.code == 4001
 
         other_token = _make_token(sub="other-user")
         with pytest.raises(WebSocketDisconnect) as forbidden:
-            with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={other_token}"):
+            with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={other_token}"):
                 pass
         assert forbidden.value.code == 4004
 
         unknown_session = uuid.uuid4()
         with pytest.raises(WebSocketDisconnect) as unknown:
-            with client.websocket_connect(f"/ws/sessions/{unknown_session}/stream?token={owner_token}"):
+            with client.websocket_connect(f"{WS_API}/{unknown_session}/stream?token={owner_token}"):
                 pass
         assert unknown.value.code == 4004
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
         app.state.agent_runtime_support = old_agent_runtime_support
         sessions_router._provision_runtime = old_provision_runtime
 
@@ -168,18 +165,7 @@ def test_ws_connect_send_ack_and_rejections():
 def test_ws_rejects_invalid_agent_mode_payload():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -188,11 +174,11 @@ def test_ws_rejects_invalid_agent_mode_payload():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-invalid-mode"}, headers=owner_headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "ws-invalid-mode"}, headers=owner_headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             ws.send_json({"type": "message", "content": "hello", "agent_mode": "invalid-mode"})
@@ -200,27 +186,15 @@ def test_ws_rejects_invalid_agent_mode_payload():
             assert error["type"] == "error"
             assert error["code"] == "invalid_payload"
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_ws_connected_rehydrates_unresolved_tool_calls():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     old_run_registry = getattr(app.state, "agent_run_registry", None)
     app.state.agent_run_registry = _ThinkingRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -229,7 +203,7 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-pending"}, headers=owner_headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "ws-pending"}, headers=owner_headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -263,7 +237,7 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             )
         )
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -292,27 +266,15 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             delattr(app.state, "agent_run_registry")
         else:
             app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_ws_connected_rehydrates_active_run_as_thinking_when_no_tool_pending():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     old_run_registry = getattr(app.state, "agent_run_registry", None)
     app.state.agent_run_registry = _AlwaysRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -321,11 +283,11 @@ def test_ws_connected_rehydrates_active_run_as_thinking_when_no_tool_pending():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-running"}, headers=owner_headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "ws-running"}, headers=owner_headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -338,8 +300,7 @@ def test_ws_connected_rehydrates_active_run_as_thinking_when_no_tool_pending():
             delattr(app.state, "agent_run_registry")
         else:
             app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_unresolved_tool_calls_ignore_calls_with_persisted_tool_result():
@@ -380,20 +341,9 @@ def test_unresolved_tool_calls_ignore_calls_with_persisted_tool_result():
 def test_ws_connected_history_includes_pending_tool_result_for_approval():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     old_run_registry = getattr(app.state, "agent_run_registry", None)
     app.state.agent_run_registry = _AlwaysRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -402,7 +352,7 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-pending-truncated"}, headers=owner_headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "ws-pending-truncated"}, headers=owner_headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -446,7 +396,7 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
             )
         )
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -462,28 +412,16 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
             delattr(app.state, "agent_run_registry")
         else:
             app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 
 def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     old_run_registry = getattr(app.state, "agent_run_registry", None)
     app.state.agent_run_registry = _AlwaysRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -492,7 +430,7 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-runtime-pending"}, headers=owner_headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "ws-runtime-pending"}, headers=owner_headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -513,7 +451,7 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
             )
         )
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -535,27 +473,15 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
             delattr(app.state, "agent_run_registry")
         else:
             app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_ws_connected_does_not_attach_mismatched_pending_approval():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     old_run_registry = getattr(app.state, "agent_run_registry", None)
     app.state.agent_run_registry = _AlwaysRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -564,7 +490,7 @@ def test_ws_connected_does_not_attach_mismatched_pending_approval():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-pending-mismatch"}, headers=owner_headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "ws-pending-mismatch"}, headers=owner_headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -598,7 +524,7 @@ def test_ws_connected_does_not_attach_mismatched_pending_approval():
             )
         )
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -618,25 +544,13 @@ def test_ws_connected_does_not_attach_mismatched_pending_approval():
             delattr(app.state, "agent_run_registry")
         else:
             app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -645,7 +559,7 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-stale-pending"}, headers=owner_headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "ws-stale-pending"}, headers=owner_headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -685,7 +599,7 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
         )
         fake_db.add(pending_approval)
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             history = connected.get("history") or []
@@ -710,5 +624,4 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
         assert pending_approval.status == "cancelled"
         assert pending_approval.resolved_at is not None
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)

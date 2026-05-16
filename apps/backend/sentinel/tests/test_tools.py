@@ -1560,7 +1560,7 @@ def test_permissions_api_lists_static_system_and_dynamic_actions():
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        response = client.get("/api/instances/main/permissions", headers=headers)
+        response = client.get("/api/v1/instances/main/permissions", headers=headers)
         assert response.status_code == 200
         permissions = {item["action"]: item["level"] for item in response.json()["permissions"]}
 
@@ -1610,14 +1610,14 @@ def test_permissions_api_updates_known_action_and_rejects_unknown_action():
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        update = client.patch("/api/instances/main/permissions/clients.create_records", json={"level": "approval"}, headers=headers)
+        update = client.patch("/api/v1/instances/main/permissions/clients.create_records", json={"level": "approval"}, headers=headers)
         assert update.status_code == 200
         assert update.json() == {"action": "clients.create_records", "level": "approval"}
 
         stored = next(row for row in fake_db.storage[AraiosPermission] if row.action == "clients.create_records")
         assert stored.level == "approval"
 
-        missing = client.patch("/api/instances/main/permissions/clients.not_real", json={"level": "deny"}, headers=headers)
+        missing = client.patch("/api/v1/instances/main/permissions/clients.not_real", json={"level": "deny"}, headers=headers)
         assert missing.status_code == 404
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
@@ -1682,7 +1682,7 @@ def test_modules_import_package_creates_module_records_and_permissions():
             },
         }
 
-        response = client.post("/api/instances/main/modules/import", json=package, headers=headers)
+        response = client.post("/api/v1/instances/main/modules/import", json=package, headers=headers)
         assert response.status_code == 201
         payload = response.json()
         assert payload["module"]["name"] == "lead_manager"
@@ -1724,7 +1724,7 @@ def test_modules_import_package_rejects_system_true():
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         response = client.post(
-            "/api/instances/main/modules/import",
+            "/api/v1/instances/main/modules/import",
             json={
                 "schema_version": 1,
                 "module": {

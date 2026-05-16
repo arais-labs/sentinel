@@ -7,6 +7,7 @@ import pytest
 
 from app.models import GitAccount, Session
 from app.services.araios.system_modules.git_tool import handlers as git_module
+from app.services.runtime import session_runtime
 from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
 from app.services.tools.registry import ToolApprovalOutcome, ToolApprovalOutcomeStatus, ToolRegistry, ToolRuntimeContext
 from app.services.tools.registry_builder import build_default_registry
@@ -68,6 +69,11 @@ def _build_git_tool(*, session_factory=None):
 
 
 git_module.git_tool = _build_git_tool
+
+
+@pytest.fixture(autouse=True)
+def _use_tmp_runtime_base(monkeypatch, tmp_path):
+    monkeypatch.setattr(session_runtime, "_RUNTIME_BASE_DIR", tmp_path / "runtime")
 
 
 def test_resolve_origin_url_reports_not_git_repo(monkeypatch, tmp_path):

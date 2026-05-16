@@ -6,14 +6,17 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
 from app.config import settings
-from app.dependencies import get_db
 from app.main import app
-from app.middleware.rate_limit import RateLimitMiddleware
 from app.models import Session
 from app.models.system import SystemSetting
 from app.services.agent import ContextBuilder
 from app.services.onboarding.onboarding_defaults import DEFAULT_SYSTEM_PROMPT, build_system_prompt
 from tests.fake_db import FakeDB
+from tests.helpers import install_fake_db_overrides, restore_test_app
+
+
+MEMORY_API = "/api/v1/instances/main/memory"
+ONBOARDING_API = "/api/v1/instances/main/onboarding"
 
 
 def _auth_headers(client: TestClient) -> dict[str, str]:
@@ -30,24 +33,13 @@ def test_onboarding_prompt_when_user_skips_everything():
     fake_db = FakeDB()
     old_prompt = settings.default_system_prompt
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
-        complete = client.post("/api/v1/onboarding/complete", json={}, headers=headers)
+        complete = client.post(f"{ONBOARDING_API}/complete", json={}, headers=headers)
         assert complete.status_code == 200
         assert complete.json()["completed"] is True
 
@@ -64,26 +56,14 @@ def test_onboarding_prompt_when_user_skips_everything():
         print(f"SKIP_EVERYTHING_PROMPT: {persisted_prompt}")
     finally:
         settings.default_system_prompt = old_prompt
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_onboarding_prompt_when_user_inputs_everything():
     fake_db = FakeDB()
     old_prompt = settings.default_system_prompt
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -98,7 +78,7 @@ def test_onboarding_prompt_when_user_inputs_everything():
             agent_personality="Direct, pragmatic, and highly solution-oriented.",
         )
         complete = client.post(
-            "/api/v1/onboarding/complete",
+            f"{ONBOARDING_API}/complete",
             json={
                 "agent_name": "Atlas",
                 "agent_role": (
@@ -125,31 +105,19 @@ def test_onboarding_prompt_when_user_inputs_everything():
         print(f"FULL_INPUT_PROMPT: {persisted_prompt}")
     finally:
         settings.default_system_prompt = old_prompt
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_runtime_context_assembly_when_user_skips_everything():
     fake_db = FakeDB()
     old_prompt = settings.default_system_prompt
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
-        complete = client.post("/api/v1/onboarding/complete", json={}, headers=headers)
+        complete = client.post(f"{ONBOARDING_API}/complete", json={}, headers=headers)
         assert complete.status_code == 200
 
         session = Session(user_id="dev-admin", status="active", title="context-skip")
@@ -180,26 +148,14 @@ def test_runtime_context_assembly_when_user_skips_everything():
         print(f"SKIP_EVERYTHING_RUNTIME_CONTEXT:\n{assembled}")
     finally:
         settings.default_system_prompt = old_prompt
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_runtime_context_assembly_when_user_inputs_everything():
     fake_db = FakeDB()
     old_prompt = settings.default_system_prompt
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -214,7 +170,7 @@ def test_runtime_context_assembly_when_user_inputs_everything():
             agent_personality="Direct, pragmatic, and highly solution-oriented.",
         )
         create_agent_identity = client.post(
-            "/api/v1/memory",
+            MEMORY_API,
             json={
                 "content": (
                     "You are Atlas.\n\n"
@@ -231,7 +187,7 @@ def test_runtime_context_assembly_when_user_inputs_everything():
         assert create_agent_identity.status_code == 200
 
         create_user_profile = client.post(
-            "/api/v1/memory",
+            MEMORY_API,
             json={
                 "content": (
                     "The user's name is Alexandre.\n\n"
@@ -247,7 +203,7 @@ def test_runtime_context_assembly_when_user_inputs_everything():
         assert create_user_profile.status_code == 200
 
         complete = client.post(
-            "/api/v1/onboarding/complete",
+            f"{ONBOARDING_API}/complete",
             json={
                 "agent_name": "Atlas",
                 "agent_role": (
@@ -288,40 +244,28 @@ def test_runtime_context_assembly_when_user_inputs_everything():
         print(f"FULL_INPUT_RUNTIME_CONTEXT:\n{assembled}")
     finally:
         settings.default_system_prompt = old_prompt
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_onboarding_complete_creates_default_system_memories_and_prompt():
     fake_db = FakeDB()
     old_prompt = settings.default_system_prompt
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
         headers = _auth_headers(client)
 
-        complete = client.post("/api/v1/onboarding/complete", json={}, headers=headers)
+        complete = client.post(f"{ONBOARDING_API}/complete", json={}, headers=headers)
         assert complete.status_code == 200
         assert complete.json()["completed"] is True
 
-        status = client.get("/api/v1/onboarding/status", headers=headers)
+        status = client.get(f"{ONBOARDING_API}/status", headers=headers)
         assert status.status_code == 200
         assert status.json()["completed"] is True
 
-        roots = client.get("/api/v1/memory/roots?category=core", headers=headers)
+        roots = client.get(f"{MEMORY_API}/roots?category=core", headers=headers)
         assert roots.status_code == 200
         items = roots.json()["items"]
 
@@ -354,26 +298,14 @@ def test_onboarding_complete_creates_default_system_memories_and_prompt():
         assert persisted_prompt.startswith("You are Sentinel")
     finally:
         settings.default_system_prompt = old_prompt
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_onboarding_complete_keeps_existing_agent_identity_memory():
     fake_db = FakeDB()
     old_prompt = settings.default_system_prompt
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -381,7 +313,7 @@ def test_onboarding_complete_keeps_existing_agent_identity_memory():
 
         custom_agent_content = "You are Atlas. Keep responses terse."
         create_agent = client.post(
-            "/api/v1/memory",
+            MEMORY_API,
             json={
                 "content": custom_agent_content,
                 "title": "Agent Identity",
@@ -399,7 +331,7 @@ def test_onboarding_complete_keeps_existing_agent_identity_memory():
             agent_personality=None,
         )
         complete = client.post(
-            "/api/v1/onboarding/complete",
+            f"{ONBOARDING_API}/complete",
             json={
                 "agent_name": "Atlas",
                 "agent_role": "Be terse.",
@@ -409,7 +341,7 @@ def test_onboarding_complete_keeps_existing_agent_identity_memory():
         )
         assert complete.status_code == 200
 
-        roots = client.get("/api/v1/memory/roots?category=core", headers=headers)
+        roots = client.get(f"{MEMORY_API}/roots?category=core", headers=headers)
         assert roots.status_code == 200
         items = roots.json()["items"]
         agent_identity_items = [item for item in items if item["title"] == "Agent Identity"]
@@ -423,5 +355,4 @@ def test_onboarding_complete_keeps_existing_agent_identity_memory():
         assert settings.default_system_prompt == expected_prompt
     finally:
         settings.default_system_prompt = old_prompt
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)

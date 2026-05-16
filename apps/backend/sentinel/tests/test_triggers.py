@@ -7,27 +7,22 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
-from app.dependencies import get_db
 from app.main import app
-from app.middleware.rate_limit import RateLimitMiddleware
 from tests.fake_db import FakeDB
+from tests.helpers import install_fake_db_overrides, make_fake_instance_context, restore_test_app
+
+
+TRIGGERS_API = "/api/v1/instances/main/triggers"
+WEBHOOKS_API = "/api/v1/instances/main/webhooks"
 
 
 def test_triggers_crud_fire_logs_and_webhook():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(
+        app_db=fake_db,
+        instance_context=make_fake_instance_context(app_db=fake_db),
+    )
 
     try:
         client = TestClient(app)
@@ -37,7 +32,7 @@ def test_triggers_crud_fire_logs_and_webhook():
         headers = {"Authorization": f"Bearer {token}"}
 
         invalid = client.post(
-            "/api/v1/triggers",
+            TRIGGERS_API,
             json={
                 "name": "invalid",
                 "type": "invalid",
@@ -50,7 +45,7 @@ def test_triggers_crud_fire_logs_and_webhook():
         assert invalid.status_code == 422
 
         create = client.post(
-            "/api/v1/triggers",
+            TRIGGERS_API,
             json={
                 "name": "daily-check",
                 "type": "cron",
@@ -65,7 +60,7 @@ def test_triggers_crud_fire_logs_and_webhook():
         trigger_id = create.json()["id"]
 
         heartbeat = client.post(
-            "/api/v1/triggers",
+            TRIGGERS_API,
             json={
                 "name": "heartbeat-check",
                 "type": "heartbeat",
@@ -78,28 +73,28 @@ def test_triggers_crud_fire_logs_and_webhook():
         assert heartbeat.status_code == 200
         assert heartbeat.json()["next_fire_at"] is not None
 
-        listed = client.get("/api/v1/triggers", headers=headers)
+        listed = client.get(TRIGGERS_API, headers=headers)
         assert listed.status_code == 200
         assert any(item["id"] == trigger_id for item in listed.json()["items"])
 
-        fetched = client.get(f"/api/v1/triggers/{trigger_id}", headers=headers)
+        fetched = client.get(f"{TRIGGERS_API}/{trigger_id}", headers=headers)
         assert fetched.status_code == 200
         assert fetched.json()["name"] == "daily-check"
 
         updated = client.patch(
-            f"/api/v1/triggers/{trigger_id}",
+            f"{TRIGGERS_API}/{trigger_id}",
             json={"name": "daily-check-updated"},
             headers=headers,
         )
         assert updated.status_code == 200
         assert updated.json()["name"] == "daily-check-updated"
 
-        fetched_after_update = client.get(f"/api/v1/triggers/{trigger_id}", headers=headers)
+        fetched_after_update = client.get(f"{TRIGGERS_API}/{trigger_id}", headers=headers)
         assert fetched_after_update.status_code == 200
         assert fetched_after_update.json()["name"] == "daily-check-updated"
 
         fired = client.post(
-            f"/api/v1/triggers/{trigger_id}/fire",
+            f"{TRIGGERS_API}/{trigger_id}/fire",
             json={"input_payload": {"source": "manual"}},
             headers=headers,
         )
@@ -107,19 +102,19 @@ def test_triggers_crud_fire_logs_and_webhook():
         assert fired.json()["log"]["input_payload"] == {"source": "manual"}
         fire_log_id = fired.json()["log"]["id"]
 
-        logs = client.get(f"/api/v1/triggers/{trigger_id}/logs", headers=headers)
+        logs = client.get(f"{TRIGGERS_API}/{trigger_id}/logs", headers=headers)
         assert logs.status_code == 200
         assert any(item["id"] == fire_log_id for item in logs.json()["items"])
 
-        deleted = client.delete(f"/api/v1/triggers/{trigger_id}", headers=headers)
+        deleted = client.delete(f"{TRIGGERS_API}/{trigger_id}", headers=headers)
         assert deleted.status_code == 200
         assert deleted.json()["status"] == "deleted"
 
-        after_delete = client.get(f"/api/v1/triggers/{trigger_id}", headers=headers)
+        after_delete = client.get(f"{TRIGGERS_API}/{trigger_id}", headers=headers)
         assert after_delete.status_code == 404
 
         webhook = client.post(
-            "/api/v1/triggers",
+            TRIGGERS_API,
             json={
                 "name": "incoming-event",
                 "type": "webhook",
@@ -135,7 +130,7 @@ def test_triggers_crud_fire_logs_and_webhook():
         payload = b'{"event":"ping"}'
         valid_sig = hmac.new(b"topsecret", payload, hashlib.sha256).hexdigest()
         accepted = client.post(
-            f"/api/v1/webhooks/{webhook_id}",
+            f"{WEBHOOKS_API}/{webhook_id}",
             content=payload,
             headers={"X-Webhook-Signature": valid_sig, "Content-Type": "application/json"},
         )
@@ -143,21 +138,21 @@ def test_triggers_crud_fire_logs_and_webhook():
         assert accepted.json()["status"] == "accepted"
 
         rejected = client.post(
-            f"/api/v1/webhooks/{webhook_id}",
+            f"{WEBHOOKS_API}/{webhook_id}",
             content=payload,
             headers={"X-Webhook-Signature": "bad-signature", "Content-Type": "application/json"},
         )
         assert rejected.status_code == 401
 
         missing = client.post(
-            f"/api/v1/webhooks/{uuid.uuid4()}",
+            f"{WEBHOOKS_API}/{uuid.uuid4()}",
             content=payload,
             headers={"X-Webhook-Signature": valid_sig, "Content-Type": "application/json"},
         )
         assert missing.status_code == 404
 
         disabled = client.post(
-            "/api/v1/triggers",
+            TRIGGERS_API,
             json={
                 "name": "disabled-webhook",
                 "type": "webhook",
@@ -171,11 +166,10 @@ def test_triggers_crud_fire_logs_and_webhook():
         assert disabled.status_code == 200
         disabled_id = disabled.json()["id"]
         disabled_resp = client.post(
-            f"/api/v1/webhooks/{disabled_id}",
+            f"{WEBHOOKS_API}/{disabled_id}",
             content=payload,
             headers={"X-Webhook-Signature": valid_sig, "Content-Type": "application/json"},
         )
         assert disabled_resp.status_code == 409
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)

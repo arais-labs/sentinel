@@ -23,9 +23,12 @@ def _request(path: str, method: str = "GET") -> Request:
     return Request(scope)
 
 
+def _endpoint(_session_id: str) -> vnc_proxy.RuntimeServiceEndpoint:
+    return vnc_proxy.RuntimeServiceEndpoint(host="192.168.2.33", port=16081)
+
+
 def test_vnc_package_json_is_served_without_upstream(monkeypatch) -> None:
-    monkeypatch.setattr(vnc_proxy, "_get_runtime_host", lambda _session_id: "192.168.2.33")
-    monkeypatch.setattr(vnc_proxy, "_get_runtime_vnc_port", lambda _session_id: 16081)
+    monkeypatch.setattr(vnc_proxy, "_get_runtime_vnc_endpoint", _endpoint)
 
     class _Client:
         def __init__(self, *args, **kwargs):
@@ -47,8 +50,7 @@ def test_vnc_package_json_is_served_without_upstream(monkeypatch) -> None:
 
 
 def test_vnc_package_json_head_is_empty(monkeypatch) -> None:
-    monkeypatch.setattr(vnc_proxy, "_get_runtime_host", lambda _session_id: "192.168.2.33")
-    monkeypatch.setattr(vnc_proxy, "_get_runtime_vnc_port", lambda _session_id: 16081)
+    monkeypatch.setattr(vnc_proxy, "_get_runtime_vnc_endpoint", _endpoint)
 
     class _Client:
         def __init__(self, *args, **kwargs):
@@ -69,8 +71,7 @@ def test_vnc_package_json_head_is_empty(monkeypatch) -> None:
 
 
 def test_vnc_proxy_uses_provider_resolved_port(monkeypatch) -> None:
-    monkeypatch.setattr(vnc_proxy, "_get_runtime_host", lambda _session_id: "192.168.2.33")
-    monkeypatch.setattr(vnc_proxy, "_get_runtime_vnc_port", lambda _session_id: 16081)
+    monkeypatch.setattr(vnc_proxy, "_get_runtime_vnc_endpoint", _endpoint)
 
     captured: dict[str, object] = {}
 
@@ -111,8 +112,7 @@ def test_vnc_proxy_uses_provider_resolved_port(monkeypatch) -> None:
 
 
 def test_vnc_websockify_http_get_is_not_proxied(monkeypatch) -> None:
-    monkeypatch.setattr(vnc_proxy, "_get_runtime_host", lambda _session_id: "192.168.2.33")
-    monkeypatch.setattr(vnc_proxy, "_get_runtime_vnc_port", lambda _session_id: 16081)
+    monkeypatch.setattr(vnc_proxy, "_get_runtime_vnc_endpoint", _endpoint)
 
     class _Client:
         def __init__(self, *args, **kwargs):
@@ -133,8 +133,7 @@ def test_vnc_websockify_http_get_is_not_proxied(monkeypatch) -> None:
 
 
 def test_vnc_proxy_upstream_failure_returns_plain_502(monkeypatch) -> None:
-    monkeypatch.setattr(vnc_proxy, "_get_runtime_host", lambda _session_id: "192.168.2.33")
-    monkeypatch.setattr(vnc_proxy, "_get_runtime_vnc_port", lambda _session_id: 16081)
+    monkeypatch.setattr(vnc_proxy, "_get_runtime_vnc_endpoint", _endpoint)
 
     class _Client:
         def __init__(self, *args, **kwargs):

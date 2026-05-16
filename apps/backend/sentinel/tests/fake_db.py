@@ -132,6 +132,9 @@ class FakeDB:
     def begin(self):
         return self._TxContext(self)
 
+    def begin_nested(self):
+        return self._TxContext(self)
+
     async def get(self, model, obj_id):
         rows = self.storage.get(model, [])
         for row in rows:

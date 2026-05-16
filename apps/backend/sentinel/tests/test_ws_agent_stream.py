@@ -1,3 +1,4 @@
+import asyncio
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -7,17 +8,21 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
-from app.config import settings
-from app.dependencies import get_db
 from app.main import app
-from app.middleware.rate_limit import RateLimitMiddleware
+from app.routers import ws as ws_router
 from app.services.agent import PreparedRuntimeTurnContext
 from app.services.sessions.compaction import CompactionResult
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRegistry
+from app.services.ws.ws_stream_service import maybe_auto_compact_after_run
 from tests.fake_db import FakeDB
+from tests.helpers import FakeSessionFactory, install_fake_db_overrides, make_fake_instance_context, restore_test_app
+
+
+SESSIONS_API = "/api/v1/instances/main/sessions"
+WS_API = "/ws/instances/main/sessions"
 
 
 class _FakeProvider(LLMProvider):
@@ -98,30 +103,21 @@ class _FakeLoop:
 
 def test_ws_streams_runtime_events_when_provider_available():
     fake_db = FakeDB()
+    fake_loop = _FakeLoop()
+    instance_context = make_fake_instance_context(app_db=fake_db, agent_runtime_support=fake_loop)
+    old_init = install_fake_db_overrides(app_db=fake_db, instance_context=instance_context)
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_manager_session = ws_router.ManagerSessionLocal
+    ws_router.ManagerSessionLocal = FakeSessionFactory(FakeDB())
 
     try:
         client = TestClient(app)
-        old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
-        app.state.agent_runtime_support = _FakeLoop()
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-stream"}, headers=headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "ws-stream"}, headers=headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -129,7 +125,7 @@ def test_ws_streams_runtime_events_when_provider_available():
             "app.routers.ws.SessionNamingService.maybe_auto_rename",
             new=AsyncMock(return_value=None),
         ):
-            with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={token}") as ws:
+            with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={token}") as ws:
                 connected = ws.receive_json()
                 assert connected["type"] == "connected"
 
@@ -156,97 +152,56 @@ def test_ws_streams_runtime_events_when_provider_available():
                 assert done["type"] == "done"
                 assert done["stop_reason"] == "stop"
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-        if "old_agent_runtime_support" in locals():
-            app.state.agent_runtime_support = old_agent_runtime_support
+        ws_router.ManagerSessionLocal = old_manager_session
+        restore_test_app(old_init)
 
 
-def test_ws_auto_resumes_after_compaction():
-    fake_db = FakeDB()
+def test_ws_auto_compacts_without_resuming():
+    session_id = UUID("11111111-1111-1111-1111-111111111111")
 
-    async def _override_get_db():
-        yield fake_db
+    class _Manager:
+        def __init__(self):
+            self.events = []
+            self.thinking_count = 0
 
-    async def _noop_init_db():
-        return None
+        async def broadcast(self, _session_key, event):
+            self.events.append(event)
 
-    from app import main as app_main
+        async def broadcast_agent_thinking(self, _session_key):
+            self.thinking_count += 1
 
-    old_init = app_main.init_db
-    old_auto_resume = settings.compaction_auto_resume_enabled
-    app_main.init_db = _noop_init_db
-    settings.compaction_auto_resume_enabled = True
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    class _CompactionService:
+        should_auto_compact = AsyncMock(return_value=True)
+        auto_compact_if_needed = AsyncMock(
+            return_value=CompactionResult(
+                session_id=session_id,
+                raw_token_count=120,
+                compressed_token_count=40,
+                summary_preview="summary",
+            )
+        )
 
-    try:
-        client = TestClient(app)
-        old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
-        fake_loop = _FakeLoop(deltas_by_run=[["first run"], ["resumed run"]])
-        app.state.agent_runtime_support = fake_loop
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        def __init__(self, provider=None):
+            self.provider = provider
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-resume"}, headers=headers)
-        assert session_resp.status_code == 200
-        session_id = session_resp.json()["id"]
+    async def _run():
+        manager = _Manager()
+        await maybe_auto_compact_after_run(
+            db=FakeDB(),
+            session_id=session_id,
+            session_key=str(session_id),
+            manager=manager,
+            agent_runtime_support=SimpleNamespace(provider=object()),
+            compaction_service_cls=_CompactionService,
+        )
+        return manager
 
-        with (
-            patch(
-                "app.routers.ws.CompactionService.should_auto_compact",
-                new=AsyncMock(return_value=True),
-            ) as should_compact_mock,
-            patch(
-                "app.routers.ws.CompactionService.auto_compact_if_needed",
-                new=AsyncMock(
-                    return_value=CompactionResult(
-                        session_id=UUID(session_id),
-                        raw_token_count=120,
-                        compressed_token_count=40,
-                        summary_preview="summary",
-                    )
-                ),
-            ) as auto_compact_mock,
-        ):
-            with patch(
-                "app.routers.ws.SessionNamingService.maybe_auto_rename",
-                new=AsyncMock(return_value=None),
-            ):
-                with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={token}") as ws:
-                    connected = ws.receive_json()
-                    assert connected["type"] == "connected"
+    manager = asyncio.run(_run())
 
-                    ws.send_json({"type": "message", "content": "hello"})
-                    assert ws.receive_json()["type"] == "message_ack"
-                    assert ws.receive_json()["type"] == "agent_thinking"
-                    progress = ws.receive_json()
-                    assert progress["type"] == "agent_progress"
-                    assert progress["iteration"] == 1
-                    assert ws.receive_json()["type"] == "text_delta"
-                    assert ws.receive_json()["type"] == "done"
-                    assert ws.receive_json()["type"] == "compaction_started"
-                    assert ws.receive_json()["type"] == "compaction_completed"
-                    assert ws.receive_json()["type"] == "compaction_resuming"
-                    assert ws.receive_json()["type"] == "agent_thinking"
-                    resumed_progress = ws.receive_json()
-                    assert resumed_progress["type"] == "agent_progress"
-                    assert resumed_progress["iteration"] == 1
-                    resumed_text = ws.receive_json()
-                    assert resumed_text["type"] == "text_delta"
-                    assert resumed_text["delta"] == "resumed run"
-                    resumed_done = ws.receive_json()
-                    assert resumed_done["type"] == "done"
-                    assert resumed_done["stop_reason"] == "stop"
-
-        assert fake_loop.provider.calls == 2
-        should_compact_mock.assert_awaited_once()
-        auto_compact_mock.assert_awaited_once()
-    finally:
-        settings.compaction_auto_resume_enabled = old_auto_resume
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-        if "old_agent_runtime_support" in locals():
-            app.state.agent_runtime_support = old_agent_runtime_support
+    assert [event["type"] for event in manager.events] == [
+        "compaction_started",
+        "compaction_completed",
+    ]
+    assert manager.thinking_count == 0
+    _CompactionService.should_auto_compact.assert_awaited_once()
+    _CompactionService.auto_compact_if_needed.assert_awaited_once()
