@@ -381,6 +381,10 @@ default_qemu_run_root() {
 
 ensure_qemu_env_defaults() {
   [[ "$SENTINEL_RUNTIME_BACKEND" == "qemu" ]] || return 0
+  ensure_qemu_config_defaults
+}
+
+ensure_qemu_config_defaults() {
   if [[ -z "$SENTINEL_QEMU_ARTIFACTS_DIR" ]]; then
     SENTINEL_QEMU_ARTIFACTS_DIR="$(default_qemu_artifacts_dir)"
   fi
@@ -771,6 +775,26 @@ start_qemu_bridge() {
     return 1
   fi
   qemu_bridge_refresh_pid_file "$port" "$pid_file"
+}
+
+stop_local_qemu_bridge_for_rebuild() {
+  ensure_qemu_config_defaults
+  require_python || return 1
+  local host_port port pid_file
+  host_port="$(qemu_bridge_url_host_port)" || {
+    err "Invalid SENTINEL_QEMU_BRIDGE_URL: ${SENTINEL_QEMU_BRIDGE_URL}"
+    return 1
+  }
+  port="$(printf '%s' "$host_port" | awk -F'\t' '{print $2}')"
+  if [[ ! "$SENTINEL_QEMU_BRIDGE_URL" =~ ^http://(localhost|127\.0\.0\.1|host\.docker\.internal):[0-9]+$ ]]; then
+    warn "QEMU bridge is not local (${SENTINEL_QEMU_BRIDGE_URL}); not stopping it before rebuild."
+    return 0
+  fi
+  stop_matching_qemu_bridge_processes "$port"
+  pid_file="$SENTINEL_QEMU_RUN_ROOT/bridge.pid"
+  if [[ -f "$pid_file" ]]; then
+    rm -f "$pid_file" 2>/dev/null || true
+  fi
 }
 
 prepare_stack_config() {
@@ -1828,22 +1852,64 @@ runtime_backend_set() {
   warn "Restart the stack for the backend process to use the new runtime provider."
 }
 
+qemu_rebuild_image() {
+  reload_env_config
+  ensure_qemu_config_defaults
+  if ! is_absolute_path "$SENTINEL_QEMU_ARTIFACTS_DIR"; then
+    err "SENTINEL_QEMU_ARTIFACTS_DIR must be an absolute path: ${SENTINEL_QEMU_ARTIFACTS_DIR}"
+    return 1
+  fi
+  if ! is_absolute_path "$SENTINEL_QEMU_RUN_ROOT"; then
+    err "SENTINEL_QEMU_RUN_ROOT must be an absolute path: ${SENTINEL_QEMU_RUN_ROOT}"
+    return 1
+  fi
+  warn "This rebuilds the QEMU base image and may take a while."
+  warn "Any local QEMU bridge on ${SENTINEL_QEMU_BRIDGE_URL} will be stopped first."
+  if ! confirm_phrase "Type REBUILD to continue: " "REBUILD"; then
+    ui_note_warn "QEMU image rebuild aborted."
+    return 1
+  fi
+
+  stop_local_qemu_bridge_for_rebuild || return 1
+  mkdir -p "$SENTINEL_QEMU_ARTIFACTS_DIR" "$SENTINEL_QEMU_RUN_ROOT" || return 1
+
+  info "Building QEMU runtime image into ${SENTINEL_QEMU_ARTIFACTS_DIR}..."
+  if ! SENTINEL_QEMU_OUTPUT_DIR="$SENTINEL_QEMU_ARTIFACTS_DIR" \
+      ./infra/runtime/qemu/build-base-image.sh; then
+    ui_note_error "QEMU image build failed."
+    return 1
+  fi
+
+  info "Validating QEMU runtime image..."
+  if ! SENTINEL_QEMU_VALIDATE_IMAGE="$SENTINEL_QEMU_ARTIFACTS_DIR/sentinel-runtime-base-arm64.qcow2" \
+      SENTINEL_QEMU_VALIDATE_KEY="$SENTINEL_QEMU_ARTIFACTS_DIR/sentinel-runtime-base-arm64.id_ed25519" \
+      ./infra/runtime/qemu/validate-base-image.sh; then
+    ui_note_error "QEMU image validation failed."
+    return 1
+  fi
+
+  ok "QEMU runtime image rebuilt and validated."
+  ui_note_ok "QEMU runtime image rebuilt and validated."
+}
+
 interactive_runtime_backend() {
   local current="${SENTINEL_RUNTIME_BACKEND:-docker}"
   local options=(
     "Docker runtime"
     "QEMU runtime"
+    "Rebuild QEMU image"
     "${ICON_BACK}  Back"
   )
   printf '%s' "$CLEAR_SCREEN"
   printf '%s%s%s %sRuntime Backend%s\n\n' "$CYAN" "$ICON_RUNTIME" "$RESET" "$BOLD" "$RESET"
   printf '%sCurrent:%s %s\n\n' "$DIM" "$RESET" "$current"
-  MENU_KEY="runtime" SHORTCUT_KEYS="dqb" \
+  MENU_KEY="runtime" SHORTCUT_KEYS="dqrb" \
     select_option "Choose Runtime Backend" "${options[@]}"
   local choice=$?
   case "$choice" in
     0) runtime_backend_set docker ;;
     1) runtime_backend_set qemu ;;
+    2) qemu_rebuild_image ;;
     *) return 0 ;;
   esac
   press_enter_to_return
