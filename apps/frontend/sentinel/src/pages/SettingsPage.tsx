@@ -118,13 +118,13 @@ function ProviderRow({
           <span className="text-xs font-bold uppercase tracking-widest">{name}</span>
           <div className="flex-1" />
           {configured && isPrimary && (
-            <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-[color:var(--accent-solid)]/15 text-[color:var(--accent-solid)]">Primary</span>
+            <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">Primary</span>
           )}
           {configured && !isPrimary && (
             <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-[color:var(--surface-2)] text-[color:var(--text-muted)]">Fallback</span>
           )}
           {configured && (
-            <StatusChip label={status?.auth_method === 'oauth' ? 'OAuth' : 'API Key'} tone="good" className="scale-90" />
+            <StatusChip label={status?.auth_method === 'oauth' ? 'OAuth' : 'API Key'} tone="info" className="scale-90" />
           )}
           {!configured && (
             <StatusChip label="Not configured" tone="warn" className="scale-90" />
@@ -144,7 +144,11 @@ function ProviderRow({
               Set primary
             </button>
           )}
-          <button onClick={() => { setEditing(v => !v); setConfirmRemove(false); }}
+          <button onClick={() => {
+              if (!editing) setMode(status?.auth_method === 'oauth' ? 'oauth' : 'api');
+              setEditing(v => !v);
+              setConfirmRemove(false);
+            }}
             className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-70 transition-opacity">
             {editing ? 'Cancel' : configured ? 'Update' : 'Configure'}
           </button>
