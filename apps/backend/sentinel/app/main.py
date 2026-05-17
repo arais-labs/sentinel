@@ -79,8 +79,14 @@ async def shutdown_runtime_provider(app_state: Any, bounded: Callable[..., Await
     runtime_provider = getattr(app_state, "runtime_provider", None)
     if runtime_provider is None:
         return
-    if hasattr(runtime_provider, "stop_all"):
+    preserve_qemu_for_dev_reload = (
+        settings.app_env.lower() == "development"
+        and settings.runtime_exec_backend.lower() == "qemu"
+    )
+    if hasattr(runtime_provider, "stop_all") and not preserve_qemu_for_dev_reload:
         await bounded("runtime_provider.stop_all", runtime_provider.stop_all(), timeout=10.0)
+    elif preserve_qemu_for_dev_reload:
+        logger.info("shutdown: preserving QEMU runtime across development backend reload")
     if hasattr(runtime_provider, "cancel_background_prepare"):
         await bounded("runtime_prepare", runtime_provider.cancel_background_prepare(), timeout=5.0)
 

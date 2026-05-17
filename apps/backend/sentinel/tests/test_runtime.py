@@ -20,7 +20,10 @@ _TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
 
 
 @pytest.mark.asyncio
-async def test_shutdown_runtime_provider_stops_runtime_before_prepare_task():
+async def test_shutdown_runtime_provider_stops_runtime_before_prepare_task(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "runtime_exec_backend", "docker")
     calls: list[str] = []
 
     class _Provider:
@@ -42,6 +45,36 @@ async def test_shutdown_runtime_provider_stops_runtime_before_prepare_task():
     assert calls == [
         "bounded:runtime_provider.stop_all:10",
         "stop_all",
+        "bounded:runtime_prepare:5",
+        "cancel_background_prepare",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_runtime_provider_preserves_qemu_in_development(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "app_env", "development")
+    monkeypatch.setattr(settings, "runtime_exec_backend", "qemu")
+    calls: list[str] = []
+
+    class _Provider:
+        async def stop_all(self):
+            calls.append("stop_all")
+            return 1
+
+        async def cancel_background_prepare(self):
+            calls.append("cancel_background_prepare")
+
+    async def _bounded(name, coro, timeout):
+        calls.append(f"bounded:{name}:{timeout:g}")
+        await coro
+
+    from app.main import shutdown_runtime_provider
+
+    await shutdown_runtime_provider(SimpleNamespace(runtime_provider=_Provider()), _bounded)
+
+    assert calls == [
         "bounded:runtime_prepare:5",
         "cancel_background_prepare",
     ]
