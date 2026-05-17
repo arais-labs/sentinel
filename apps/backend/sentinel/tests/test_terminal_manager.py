@@ -10,6 +10,7 @@ from app.services.llm.generic.types import ToolCallContent
 from app.services.runtime import terminal_manager as tm_module
 from app.services.runtime.base import RuntimeExecResult, RuntimeInstance, RuntimeTerminalSession
 from app.services.runtime.terminal_manager import (
+    _SENTINEL_BASHRC,
     TerminalBlockedError,
     TerminalManager,
     configure_terminal_event_broadcaster,
@@ -94,6 +95,16 @@ def _osc_d_log(echoed_command: str, output: str, exit_code: int = 0) -> str:
     marker our bashrc's PROMPT_COMMAND emits before drawing the next prompt.
     """
     return f"{echoed_command}\n{output}\x1b]133;D;{exit_code}\x1b\\"
+
+
+def test_terminal_prompt_command_resets_strict_shell_options() -> None:
+    assert "PROMPT_COMMAND='__sentinel_prompt_command'" in _SENTINEL_BASHRC
+    assert "local __rc=$?" in _SENTINEL_BASHRC
+    assert "printf '\\033]133;D;%s\\033\\\\' \"$__rc\"" in _SENTINEL_BASHRC
+    assert "set +e" in _SENTINEL_BASHRC
+    assert "set +u" in _SENTINEL_BASHRC
+    assert "set +o pipefail" in _SENTINEL_BASHRC
+    assert "return $__rc" in _SENTINEL_BASHRC
 
 
 @pytest.mark.asyncio

@@ -45,7 +45,8 @@ from app.services.runtime.base import RuntimeExecResult, RuntimeTerminalSession
 #     apply)
 #   - turns on color for the usual suspects (ls, grep, diff, ip, etc.)
 #   - gives a readable PS1 with cwd
-#   - sets LESS=-R so paged output keeps its ANSI colors
+#   - disables implicit pagers so agent-sent commands stay live in the pane
+#     instead of trapping the terminal in less
 _SENTINEL_BASHRC = r"""# Sentinel terminal init — colors, readable prompt, and OSC 133 prompt-boundary
 # markers so backend tooling can find command boundaries in the pipe-pane log
 # without leaving any visible noise in the pane.
@@ -55,7 +56,60 @@ fi
 export TERM="${TERM:-xterm-256color}"
 export COLORTERM="${COLORTERM:-truecolor}"
 export CLICOLOR=1
-export LESS='-R'
+export PAGER='cat'
+export GIT_PAGER='cat'
+export LESS='FRX'
+bind 'set enable-bracketed-paste on' 2>/dev/null || true
+__sentinel_safe_set() {
+  local args=()
+  local arg chars filtered ch has_o
+  while (($#)); do
+    arg="$1"
+    shift
+    case "$arg" in
+      -o)
+        if (($#)) && [[ "$1" == "pipefail" ]]; then
+          shift
+          continue
+        fi
+        args+=("$arg")
+        ;;
+      -[!-]*)
+        chars="${arg:1}"
+        filtered=""
+        has_o=0
+        while [[ -n "$chars" ]]; do
+          ch="${chars:0:1}"
+          chars="${chars:1}"
+          case "$ch" in
+            e|u) ;;
+            o) has_o=1 ;;
+            *) filtered+="$ch" ;;
+          esac
+        done
+        if [[ -n "$filtered" ]]; then
+          args+=("-$filtered")
+        fi
+        if [[ "$has_o" == "1" ]]; then
+          if (($#)) && [[ "$1" == "pipefail" ]]; then
+            shift
+          else
+            args+=("-o")
+          fi
+        fi
+        ;;
+      *)
+        args+=("$arg")
+        ;;
+    esac
+  done
+  if ((${#args[@]})); then
+    builtin set "${args[@]}"
+  fi
+}
+set() {
+  __sentinel_safe_set "$@"
+}
 alias ls='ls --color=auto'
 alias ll='ls -lah --color=auto'
 alias la='ls -A --color=auto'
@@ -76,12 +130,15 @@ fi
 #
 #   A: prompt start. B: prompt end / command input start. D;<exit>: command
 #   output end (emitted by PROMPT_COMMAND right before the next prompt).
-__sentinel_osc_d() {
+__sentinel_prompt_command() {
   local __rc=$?
   printf '\033]133;D;%s\033\\' "$__rc"
+  set +e
+  set +u
+  set +o pipefail 2>/dev/null || true
   return $__rc
 }
-PROMPT_COMMAND='__sentinel_osc_d'
+PROMPT_COMMAND='__sentinel_prompt_command'
 PS1='\[\033]133;A\033\\\]\[\e[1;36m\]\u\[\e[0m\]@\[\e[1;32m\]\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ \[\033]133;B\033\\\]'
 """
 
@@ -523,6 +580,24 @@ class TerminalManager:
             f"sudo -u {_q(record.session_user)} tmux send-keys -t {_q(record.tmux_name)} C-u",
             timeout=10,
         )
+        if "\n" in visible_command:
+            await ssh.run(
+                f"sudo -u {_q(record.session_user)} tmux send-keys -t {_q(record.tmux_name)} -l $'\\e[200~'",
+                timeout=10,
+            )
+            await ssh.run(
+                f"sudo -u {_q(record.session_user)} tmux send-keys -t {_q(record.tmux_name)} -l {_q(visible_command)}",
+                timeout=15,
+            )
+            await ssh.run(
+                f"sudo -u {_q(record.session_user)} tmux send-keys -t {_q(record.tmux_name)} -l $'\\e[201~'",
+                timeout=10,
+            )
+            await ssh.run(
+                f"sudo -u {_q(record.session_user)} tmux send-keys -t {_q(record.tmux_name)} Enter",
+                timeout=10,
+            )
+            return initial_offset
         await ssh.run(
             f"sudo -u {_q(record.session_user)} tmux send-keys -t {_q(record.tmux_name)} -l {_q(visible_command)}",
             timeout=15,
@@ -1046,6 +1121,9 @@ class TerminalManager:
             f"-c {_q(record.workspace_path)} "
             f"-e TERM=xterm-256color "
             f"-e COLORTERM=truecolor "
+            f"-e PAGER=cat "
+            f"-e GIT_PAGER=cat "
+            f"-e LESS=FRX "
             f"-e HOME={_q(record.workspace_path)} "
             f"{_q(bash_invocation)}"
         )
