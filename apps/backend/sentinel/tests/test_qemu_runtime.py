@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from pathlib import Path
+
+import pytest
 
 import app.services.runtime as runtime_module
 from app.config import settings
@@ -10,7 +14,28 @@ from app.services.runtime.qemu import (
     QemuRuntimeProvider,
     build_qemu_profile,
 )
+from app.services.runtime.qemu.controls import QemuBridgeError
 from app.services.runtime.qemu.provider import qemu_control_mode
+
+
+def test_qemu_guest_cleanup_script_is_fail_closed() -> None:
+    source = Path("../../../../infra/runtime/qemu/provision/runtime-base.sh")
+    script = (Path(__file__).resolve().parent / source).resolve().read_text()
+
+    cleanup_start = script.index("cat > /usr/local/bin/sentinel-session-cleanup.sh")
+    cleanup_body_start = script.index("#!/usr/bin/env bash", cleanup_start)
+    cleanup = script[cleanup_body_start:script.index("\nEOF\n", cleanup_body_start)]
+
+    assert 'rm -rf "${SESSION_ROOT}"' not in cleanup
+    assert 'remove_vm_dir "home" "${SESSION_HOME}"' in cleanup
+    assert 'remove_vm_dir "runtime" "${SESSION_RUNTIME_DIR}"' in cleanup
+    assert 'remove_vm_dir "browser-profile" "${SESSION_PROFILE}"' in cleanup
+    assert 'remove_vm_dir "venvs" "${SESSION_VENV_DIR}"' in cleanup
+    assert 'mountpoint -q "${path}"' in cleanup
+    assert 'umount "${SESSION_WORKSPACE}" || abort' in cleanup
+    assert 'rmdir "${SESSION_WORKSPACE}"' in cleanup
+    assert 'rmdir "${SESSION_ROOT}"' in cleanup
+    assert "cleanup session=%s user=%s" in cleanup
 
 
 def test_build_qemu_profile_defaults_to_runtime_workspace_root(monkeypatch, tmp_path) -> None:
@@ -177,6 +202,43 @@ def test_qemu_provider_restart_browser_uses_session_metadata(monkeypatch, tmp_pa
     assert "SENTINEL_BROWSER_PROFILE='/srv/sentinel/sessions/session-123/browser-profile'" in command
     assert "SENTINEL_BROWSER_RUNTIME_DIR='/srv/sentinel/sessions/session-123/runtime'" in command
     assert "systemctl restart sentinel-runtime-browser.service" in command
+
+
+def test_qemu_provider_destroy_logs_cleanup_stdout_and_stderr(monkeypatch, tmp_path, caplog) -> None:
+    monkeypatch.setattr(settings, "runtime_qemu_image", str(tmp_path / "runtime.qcow2"))
+    monkeypatch.setattr(settings, "runtime_qemu_ssh_key_path", str(tmp_path / "runtime.id_ed25519"))
+    monkeypatch.setattr(settings, "runtime_qemu_workspace_root", str(tmp_path / "workspaces"))
+
+    provider = QemuRuntimeProvider()
+    commands: list[str] = []
+
+    async def _run_root(command: str, *, timeout: int = 120):
+        commands.append(command)
+
+        class _Result:
+            stdout = "cleanup stdout line"
+            stderr = "cleanup stderr line"
+            exit_status = 23
+
+        return _Result()
+
+    monkeypatch.setattr(provider, "_run_root", _run_root)
+    provider._instances["session-fail"] = RuntimeInstance(
+        session_id="session-fail",
+        client=object(),  # type: ignore[arg-type]
+        workspace_path="/srv/sentinel/sessions/session-fail/workspace",
+        host="host.docker.internal",
+        metadata={},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(QemuBridgeError):
+            asyncio.run(provider.destroy("session-fail"))
+
+    assert commands == ["/usr/local/bin/sentinel-session-cleanup.sh --session-id 'session-fail'"]
+    assert "cleanup stdout line" in caplog.text
+    assert "cleanup stderr line" in caplog.text
+    assert "session-fail" in provider._instances
 
 
 def test_qemu_provider_ensure_does_not_activate_visual_session(monkeypatch, tmp_path) -> None:

@@ -204,14 +204,69 @@ SLUG="$(printf '%s' "${SESSION_ID}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-
 
 SESSION_USER="ssn-${SLUG}"
 SESSION_ROOT="/srv/sentinel/sessions/${SESSION_ID}"
+SESSION_HOME="${SESSION_ROOT}/home"
 SESSION_WORKSPACE="${SESSION_ROOT}/workspace"
+SESSION_PROFILE="${SESSION_ROOT}/browser-profile"
+SESSION_RUNTIME_DIR="${SESSION_ROOT}/runtime"
+SESSION_VENV_DIR="${SESSION_ROOT}/venvs"
 
+log() {
+  printf 'cleanup session=%s user=%s: %s\n' "${SESSION_ID}" "${SESSION_USER}" "$*" >&2
+}
+
+abort() {
+  log "abort: $*"
+  exit 1
+}
+
+remove_vm_dir() {
+  local label="$1"
+  local path="$2"
+  if [[ ! -e "${path}" ]]; then
+    log "skip missing VM-only dir ${label} path=${path}"
+    return
+  fi
+  if [[ -L "${path}" ]]; then
+    abort "refusing to remove symlinked VM-only dir ${label} path=${path}"
+  fi
+  if mountpoint -q "${path}"; then
+    abort "refusing to remove mounted VM-only dir ${label} path=${path}"
+  fi
+  log "removing VM-only dir ${label} path=${path}"
+  rm -rf --one-file-system "${path}"
+  log "removed VM-only dir ${label} path=${path}"
+}
+
+log "killing session processes"
 pkill -u "${SESSION_USER}" >/dev/null 2>&1 || true
+
+log "checking and removing VM-only session dirs"
+remove_vm_dir "home" "${SESSION_HOME}"
+remove_vm_dir "runtime" "${SESSION_RUNTIME_DIR}"
+remove_vm_dir "browser-profile" "${SESSION_PROFILE}"
+remove_vm_dir "venvs" "${SESSION_VENV_DIR}"
+
 if mountpoint -q "${SESSION_WORKSPACE}"; then
-  umount "${SESSION_WORKSPACE}" || true
+  log "unmounting workspace path=${SESSION_WORKSPACE}"
+  umount "${SESSION_WORKSPACE}" || abort "workspace unmount failed path=${SESSION_WORKSPACE}"
 fi
+if mountpoint -q "${SESSION_WORKSPACE}"; then
+  abort "workspace still mounted after unmount path=${SESSION_WORKSPACE}"
+fi
+
+if [[ -e "${SESSION_WORKSPACE}" ]]; then
+  log "removing empty workspace mountpoint path=${SESSION_WORKSPACE}"
+  rmdir "${SESSION_WORKSPACE}" || abort "workspace mountpoint is not empty path=${SESSION_WORKSPACE}"
+fi
+
+log "removing session user"
 userdel "${SESSION_USER}" >/dev/null 2>&1 || true
-rm -rf "${SESSION_ROOT}"
+
+if [[ -e "${SESSION_ROOT}" ]]; then
+  log "removing empty session root path=${SESSION_ROOT}"
+  rmdir "${SESSION_ROOT}" || abort "session root is not empty path=${SESSION_ROOT}"
+fi
+log "complete"
 EOF
 
 chmod 0755 /usr/local/bin/sentinel-session-prepare.sh /usr/local/bin/sentinel-session-cleanup.sh

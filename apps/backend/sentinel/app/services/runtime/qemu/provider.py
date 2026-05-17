@@ -143,6 +143,14 @@ class QemuRuntimeProvider:
         ssh = await self._ensure_ssh()
         return await ssh.run(f"sudo bash -lc {quote(command)}", timeout=timeout)
 
+    @staticmethod
+    def _result_output(result) -> str:
+        stdout = (getattr(result, "stdout", "") or "").strip()
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        if stdout and stderr:
+            return f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        return stdout or stderr
+
     async def _ensure_workspace_share_mount(self) -> None:
         cmd = (
             f"mkdir -p {quote(self._profile.share_mount)} && "
@@ -294,17 +302,19 @@ class QemuRuntimeProvider:
 
     async def destroy(self, session_id: UUID | str) -> None:
         key = str(session_id)
-        runtime = self._instances.pop(key, None)
+        runtime = self._instances.get(key)
         if runtime is None:
             return
-        if self._active_visual_session == key:
-            self._active_visual_session = None
         result = await self._run_root(
             f"/usr/local/bin/sentinel-session-cleanup.sh --session-id {quote(key)}",
             timeout=60,
         )
         if result.exit_status != 0:
-            logger.warning("Failed to cleanup QEMU session %s: %s", key, result.stderr or result.stdout)
+            logger.warning("Failed to cleanup QEMU session %s:\n%s", key, self._result_output(result))
+            raise QemuBridgeError(self._result_output(result) or "QEMU session cleanup failed")
+        self._instances.pop(key, None)
+        if self._active_visual_session == key:
+            self._active_visual_session = None
 
     async def stop(self, session_id: UUID | str) -> bool:
         key = str(session_id)
