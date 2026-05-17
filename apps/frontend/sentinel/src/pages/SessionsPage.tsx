@@ -40,6 +40,7 @@ import { SessionMessageCard, buildToolArgumentsByCallId, ToolPayloadView, ToolPa
 import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
 import { DesktopPreview } from '../components/session/DesktopPreview';
 import { TerminalPreview } from '../components/session/TerminalPreview';
+import { useSessionDeleteConfirmation } from '../components/session/SessionDeleteConfirmDialog';
 import { getTerminalLabel, summarizeCommand } from '../lib/terminalIdentity';
 import { SubAgentTaskModal } from '../components/SubAgentTaskModal';
 import { SpawnSubAgentModal } from '../components/SpawnSubAgentModal';
@@ -58,6 +59,7 @@ import {
 } from '../lib/approvals';
 import { api } from '../lib/api';
 import { instanceRouteFromPath } from '../lib/routes';
+import { getSessionDeleteWorkspaceSummary } from '../lib/sessionDeletion';
 import {
   applyToolcallEnd,
   applyToolResult,
@@ -610,6 +612,7 @@ export function SessionsPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const { confirmSessionDelete, sessionDeleteConfirmDialog } = useSessionDeleteConfirmation();
   const [settingMainSessionId, setSettingMainSessionId] = useState<string | null>(null);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -1469,12 +1472,19 @@ export function SessionsPage() {
       toast.error('Main session cannot be deleted');
       return;
     }
-    const label = (session.title || 'Session').trim() || 'Session';
-    const confirmed = window.confirm(`Delete "${label}" and all its messages? This cannot be undone.`);
-    if (!confirmed) return;
-
     setDeletingSessionId(session.id);
     try {
+      const label = (session.title || 'Session').trim() || 'Session';
+      const workspaceSummary = await getSessionDeleteWorkspaceSummary(session.id);
+      if (workspaceSummary.needsConfirmation) {
+        const confirmed = await confirmSessionDelete({
+          kind: 'single',
+          label,
+          topLevelEntries: workspaceSummary.topLevelEntries,
+        });
+        if (!confirmed) return;
+      }
+
       await api.delete<{ status: string }>(`/sessions/${session.id}`);
       let remaining: Session[] = [];
       setSessions((current) => {
@@ -1572,11 +1582,26 @@ export function SessionsPage() {
     if (deletingSessionId) return;
     const targetIds = selectedSessionIds.filter((id) => id !== defaultSessionId);
     if (targetIds.length === 0) return;
-    const confirmed = window.confirm(`Delete ${targetIds.length} selected sessions? This cannot be undone.`);
-    if (!confirmed) return;
 
     setDeletingSessionId('bulk');
     try {
+      const workspaceSummaries = await Promise.all(
+        targetIds.map((id) => getSessionDeleteWorkspaceSummary(id)),
+      );
+      const nonEmptyWorkspaceCount = workspaceSummaries.filter((summary) => summary.needsConfirmation).length;
+      if (nonEmptyWorkspaceCount > 0) {
+        const topLevelEntries = Array.from(
+          new Set(workspaceSummaries.flatMap((summary) => summary.topLevelEntries)),
+        ).slice(0, 10);
+        const confirmed = await confirmSessionDelete({
+          kind: 'bulk',
+          sessionCount: targetIds.length,
+          workspaceSessionCount: nonEmptyWorkspaceCount,
+          topLevelEntries,
+        });
+        if (!confirmed) return;
+      }
+
       const results = await Promise.allSettled(
         targetIds.map((id) => api.delete<{ status: string }>(`/sessions/${id}`)),
       );
@@ -4599,6 +4624,8 @@ export function SessionsPage() {
                 isSpawning={isSpawning}
             />
         )}
+
+        {sessionDeleteConfirmDialog}
 
         {confirmTerminateTaskId && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
