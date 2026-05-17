@@ -615,26 +615,116 @@ print(f"{parsed.hostname}\t{parsed.port}")
 PY
 }
 
-qemu_bridge_health() {
+qemu_bridge_matching_pids() {
+  local port="$1"
+  require_python || return 1
+  python3 - "$port" "${SENTINEL_QEMU_BRIDGE_TOKEN:-}" <<'PY'
+import os
+import subprocess
+import sys
+
+port = sys.argv[1]
+token = sys.argv[2]
+current = os.getpid()
+parent = os.getppid()
+
+try:
+    result = subprocess.run(
+        ["ps", "-eo", "pid=,command="],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+except OSError:
+    raise SystemExit(0)
+
+for line in result.stdout.splitlines():
+    stripped = line.strip()
+    if not stripped:
+        continue
+    pid_text, _, command = stripped.partition(" ")
+    try:
+        pid = int(pid_text)
+    except ValueError:
+        continue
+    if pid in {current, parent}:
+        continue
+    has_bridge = "bridge.py" in command
+    has_port = f"--port {port}" in command or f"--port={port}" in command
+    has_token = not token or f"--token {token}" in command or f"--token={token}" in command
+    if has_bridge and has_port and has_token:
+        print(pid)
+PY
+}
+
+qemu_bridge_refresh_pid_file() {
+  local port="$1"
+  local pid_file="$2"
+  local pid
+  pid="$(qemu_bridge_matching_pids "$port" | head -n 1 || true)"
+  [[ -n "$pid" ]] || return 0
+  mkdir -p "$(dirname "$pid_file")" || return 1
+  printf '%s\n' "$pid" > "$pid_file"
+}
+
+qemu_bridge_health_url() {
+  local url="$1"
   [[ -n "$HAVE_CURL" ]] || return 1
-  [[ -n "${SENTINEL_QEMU_BRIDGE_URL:-}" && -n "${SENTINEL_QEMU_BRIDGE_TOKEN:-}" ]] || return 1
+  [[ -n "${SENTINEL_QEMU_BRIDGE_TOKEN:-}" ]] || return 1
   curl -fsS --max-time 2 \
     -H "X-Sentinel-Bridge-Token: ${SENTINEL_QEMU_BRIDGE_TOKEN}" \
-    "${SENTINEL_QEMU_BRIDGE_URL%/}/healthz" >/dev/null 2>&1
+    "${url%/}/healthz" >/dev/null 2>&1
+}
+
+qemu_bridge_health() {
+  [[ -n "${SENTINEL_QEMU_BRIDGE_URL:-}" && -n "${SENTINEL_QEMU_BRIDGE_TOKEN:-}" ]] || return 1
+  qemu_bridge_health_url "$SENTINEL_QEMU_BRIDGE_URL"
+}
+
+stop_matching_qemu_bridge_processes() {
+  local port="$1"
+  local pids pid still_running
+  pids="$(qemu_bridge_matching_pids "$port" || true)"
+  [[ -n "$pids" ]] || return 0
+
+  warn "Stopping stale QEMU bridge process(es) on port ${port}."
+  for pid in $pids; do
+    kill "$pid" 2>/dev/null || true
+  done
+
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    still_running=0
+    for pid in $pids; do
+      if kill -0 "$pid" 2>/dev/null; then
+        still_running=1
+      fi
+    done
+    [[ "$still_running" -eq 0 ]] && return 0
+    sleep 0.2
+  done
+
+  for pid in $pids; do
+    kill -9 "$pid" 2>/dev/null || true
+  done
+}
+
+qemu_bridge_port_is_busy() {
+  local port="$1"
+  command -v lsof >/dev/null 2>&1 || return 1
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+}
+
+print_qemu_bridge_port_owner() {
+  local port="$1"
+  command -v lsof >/dev/null 2>&1 || return 0
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN >&2 || true
 }
 
 start_qemu_bridge() {
   [[ "$SENTINEL_RUNTIME_BACKEND" == "qemu" ]] || return 0
   ensure_qemu_env_defaults
-  if qemu_bridge_health; then
-    return 0
-  fi
-  if [[ ! "$SENTINEL_QEMU_BRIDGE_URL" =~ ^http://(localhost|127\.0\.0\.1|host\.docker\.internal):[0-9]+$ ]]; then
-    warn "QEMU bridge is not local (${SENTINEL_QEMU_BRIDGE_URL}); expecting it to be managed externally."
-    return 0
-  fi
   require_python || return 1
-  mkdir -p "$SENTINEL_QEMU_RUN_ROOT" || return 1
   local host_port host port log pid_file
   host_port="$(qemu_bridge_url_host_port)" || {
     err "Invalid SENTINEL_QEMU_BRIDGE_URL: ${SENTINEL_QEMU_BRIDGE_URL}"
@@ -645,8 +735,27 @@ start_qemu_bridge() {
   if [[ "$host" == "host.docker.internal" ]]; then
     host="127.0.0.1"
   fi
+  if [[ ! "$SENTINEL_QEMU_BRIDGE_URL" =~ ^http://(localhost|127\.0\.0\.1|host\.docker\.internal):[0-9]+$ ]]; then
+    warn "QEMU bridge is not local (${SENTINEL_QEMU_BRIDGE_URL}); expecting it to be managed externally."
+    return 0
+  fi
+  mkdir -p "$SENTINEL_QEMU_RUN_ROOT" || return 1
   log="$SENTINEL_QEMU_RUN_ROOT/bridge.log"
   pid_file="$SENTINEL_QEMU_RUN_ROOT/bridge.pid"
+  if qemu_bridge_health; then
+    qemu_bridge_refresh_pid_file "$port" "$pid_file"
+    return 0
+  fi
+  if qemu_bridge_health_url "http://${host}:${port}"; then
+    qemu_bridge_refresh_pid_file "$port" "$pid_file"
+    return 0
+  fi
+  stop_matching_qemu_bridge_processes "$port"
+  if qemu_bridge_port_is_busy "$port"; then
+    err "QEMU bridge port ${port} is already in use by a non-Sentinel bridge process."
+    print_qemu_bridge_port_owner "$port"
+    return 1
+  fi
   info "Starting QEMU bridge on ${host}:${port}..."
   (
     cd "$ROOT_DIR" && \
@@ -657,10 +766,11 @@ start_qemu_bridge() {
   ) >>"$log" 2>&1 &
   printf '%s\n' "$!" > "$pid_file"
   sleep 1
-  if ! qemu_bridge_health; then
+  if ! qemu_bridge_health_url "http://${host}:${port}"; then
     err "QEMU bridge did not become healthy. See ${log}"
     return 1
   fi
+  qemu_bridge_refresh_pid_file "$port" "$pid_file"
 }
 
 prepare_stack_config() {
