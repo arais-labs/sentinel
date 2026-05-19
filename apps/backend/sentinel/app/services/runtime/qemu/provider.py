@@ -186,19 +186,45 @@ class QemuRuntimeProvider:
         parsed["HOST_WORKSPACE"] = host_workspace
         return parsed
 
+    async def _cached_session_ready(self, runtime: RuntimeInstance) -> bool:
+        terminal = runtime.terminal
+        session_user = terminal.session_user if terminal is not None else runtime.metadata.get("session_user")
+        workspace = terminal.workspace_path if terminal is not None else runtime.workspace_path
+        if not isinstance(session_user, str) or not session_user.strip():
+            return False
+        if not isinstance(workspace, str) or not workspace.strip():
+            return False
+        result = await self._run_root(
+            f"id -u {quote(session_user)} >/dev/null 2>&1 && mountpoint -q {quote(workspace)}",
+            timeout=10,
+        )
+        return result.exit_status == 0
+
+    async def _forget_cached_session(self, session_id: str) -> None:
+        self._instances.pop(session_id, None)
+        if self._active_visual_session == session_id:
+            self._active_visual_session = None
+        from app.services.runtime.terminal_manager import get_terminal_manager
+
+        await get_terminal_manager().forget_session(session_id)
+
     async def ensure(self, session_id: UUID | str) -> RuntimeInstance:
         key = str(session_id)
         lock = self._ensure_locks.setdefault(key, asyncio.Lock())
         async with lock:
-            existing = self._instances.get(key)
-            if existing is not None:
-                return existing
-
             await self.bridge_health()
             await self._ensure_base_image()
             await self._ensure_vm()
             ssh = await self._ensure_ssh()
             await self._ensure_workspace_share_mount()
+
+            existing = self._instances.get(key)
+            if existing is not None:
+                if await self._cached_session_ready(existing):
+                    return existing
+                logger.warning("QEMU cached session %s is stale; re-preparing session state", key)
+                await self._forget_cached_session(key)
+
             session_env = await self._prepare_session(key)
 
             runtime = RuntimeInstance(

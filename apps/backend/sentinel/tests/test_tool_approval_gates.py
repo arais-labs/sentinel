@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from app.services.tools.approval.approval_waiters import _jsonb_safe
 from app.services.tools.executor import ToolExecutionError, ToolExecutor
 from app.services.tools.registry import (
     ToolApprovalEvaluation,
@@ -200,3 +201,17 @@ def test_executor_records_approved_result_with_generic_recorder():
 
     assert result["ok"] is True
     assert recorded == [("apr_recorded", result)]
+
+
+def test_approval_result_sanitizer_removes_postgres_nul_bytes():
+    result = _jsonb_safe(
+        {
+            "stdout": "before\x00after",
+            "nested": [{"stderr": "\x00bad"}, ("tuple\x00value",)],
+        }
+    )
+
+    assert result == {
+        "stdout": "beforeafter",
+        "nested": [{"stderr": "bad"}, ["tuplevalue"]],
+    }

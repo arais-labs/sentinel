@@ -107,6 +107,15 @@ def test_terminal_prompt_command_resets_strict_shell_options() -> None:
     assert "return $__rc" in _SENTINEL_BASHRC
 
 
+def test_parse_output_strips_nul_bytes_before_storage() -> None:
+    manager = TerminalManager()
+
+    result = manager._parse_output(b"printf bad\nok\x00still-ok\n", 0)
+
+    assert result.stdout == "okstill-ok"
+    assert "\x00" not in result.stdout
+
+
 @pytest.mark.asyncio
 async def test_run_command_creates_session_and_captures_output_via_pipe_log(monkeypatch):
     """A fresh terminal is provisioned and we parse output from the pipe-pane log.

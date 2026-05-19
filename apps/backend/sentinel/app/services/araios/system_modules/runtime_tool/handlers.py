@@ -19,7 +19,7 @@ from uuid import UUID, uuid4
 
 from app.database.database import AsyncSessionLocal
 from app.services.runtime import get_runtime
-from app.services.runtime.base import RuntimeExecResult
+from app.services.runtime.base import RuntimeExecResult, RuntimeInstance, RuntimeTerminalSession
 from app.services.runtime.session_runtime import (
     ensure_runtime_layout,
     mark_runtime_state,
@@ -41,6 +41,7 @@ from app.services.tools.runtime_context import require_runtime_session_id
 _MAX_RUNTIME_EXEC_OUTPUT_CHARS = 50_000
 _TERMINAL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 _DEFAULT_TERMINAL_ID = "0"
+_ROOT_TERMINAL_ID = "root"
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +205,8 @@ async def _execute_in_runtime(
     with a terminal handle; the agent gets a fresh wakeup turn carrying
     the result when the command finishes.
 
-    Root commands (privilege='root') bypass the terminal entirely and run
-    via direct SSH — they're gated by approval and traditionally one-shot.
+    Root commands (privilege='root') also use tmux, but always through the
+    single root-owned terminal named 'root'. They remain approval-gated.
     """
     runtime = await get_runtime().ensure(session_id)
     sandbox_workspace = runtime.workspace_path
@@ -246,60 +247,14 @@ async def _execute_in_runtime(
             )
         explicit_env[key] = str(value)
 
-    # Root path: direct SSH, no terminal, full default env.
+    if privilege == "user" and terminal_id == _ROOT_TERMINAL_ID:
+        raise ToolValidationError("terminal_id='root' is reserved for runtime.root")
     if privilege != "user":
-        env: dict[str, str] = {
-            "HOME": sandbox_workspace,
-            "PWD": sandbox_cwd,
-            "TMPDIR": "/tmp",
-            **explicit_env,
-        }
-        command_result_details: dict[str, Any] | None = None
-        await mark_runtime_state(session_id, active=True, command=command_text, pid=None)
-        try:
-            try:
-                result = await runtime.client.run(
-                    command_text,
-                    cwd=sandbox_cwd,
-                    env=env,
-                    timeout=timeout_seconds,
-                    as_root=True,
-                )
-                timed_out = False
-                timeout_hint = None
-            except TimeoutError:
-                timed_out = True
-                timeout_hint = (
-                    f"Command timed out after {timeout_seconds}s. "
-                    "Use background=true for long-running commands."
-                )
-                result = RuntimeExecResult(exit_status=-1, stdout="", stderr="[timed out]")
+        terminal_id = _ROOT_TERMINAL_ID
+        terminal_auto = False
+        runtime = _runtime_for_root_terminal(runtime, session_id)
 
-            command_result_details = {
-                "ok": not timed_out and result.exit_status == 0,
-                "timed_out": timed_out,
-                "returncode": result.exit_status,
-                "stdout": _truncate_runtime_exec_text(result.stdout),
-                "stderr": _truncate_runtime_exec_text(result.stderr),
-                "message": timeout_hint,
-                "privilege": privilege,
-            }
-            return {
-                **command_result_details,
-                "session_id": str(session_id),
-                "workspace": sandbox_workspace,
-                "cwd": sandbox_cwd,
-            }
-        finally:
-            await mark_runtime_state(
-                session_id,
-                active=False,
-                command=command_text,
-                pid=None,
-                action_details=command_result_details,
-            )
-
-    # User path: through the terminal.
+    # User and root paths both run through a persistent terminal.
     terminal_manager = get_terminal_manager()
     existed_before = any(
         rec.terminal_id == terminal_id
@@ -486,6 +441,27 @@ def _validate_terminal_id(raw: Any) -> str:
     return value
 
 
+def _runtime_for_root_terminal(runtime: RuntimeInstance, session_id: UUID) -> RuntimeInstance:
+    terminal = getattr(runtime, "terminal", None)
+    if terminal is None:
+        raise TerminalUnavailableError(
+            "terminal_not_supported",
+            detail="Runtime provider does not expose an SSH/tmux terminal session.",
+        )
+    return RuntimeInstance(
+        session_id=str(getattr(runtime, "session_id", session_id)),
+        client=runtime.client,
+        workspace_path=runtime.workspace_path,
+        host=runtime.host,
+        terminal=RuntimeTerminalSession(
+            ssh=terminal.ssh,
+            session_user="root",
+            workspace_path=terminal.workspace_path,
+        ),
+        metadata={**runtime.metadata, "terminal_privilege": "root"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Handler functions
 # ---------------------------------------------------------------------------
@@ -544,6 +520,9 @@ async def _handle_run_with_privilege(
             terminal_id = _DEFAULT_TERMINAL_ID
     else:
         terminal_id = _validate_terminal_id(terminal_id_raw)
+
+    if privilege == "user" and terminal_id == _ROOT_TERMINAL_ID:
+        raise ToolValidationError("terminal_id='root' is reserved for runtime.root")
 
     # Hard guardrail: background never gets to share the main shell.
     if background and privilege == "user" and terminal_id == _DEFAULT_TERMINAL_ID:

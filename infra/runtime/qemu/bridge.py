@@ -153,6 +153,7 @@ def _record_overlay_base(overlay: Path, image: Path) -> None:
 # asked to exit, so VMs do not survive the bridge as orphans.
 _TRACKED_LOCK = threading.Lock()
 _TRACKED_RUN_DIRS: set[Path] = set()
+_ENSURE_LOCK = threading.Lock()
 
 
 def _track_run_dir(run_root: Path) -> None:
@@ -344,7 +345,8 @@ class QemuBridgeHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/qemu/ensure":
             payload = self._read_json()
             try:
-                result = self._ensure_vm(payload)
+                with _ENSURE_LOCK:
+                    result = self._ensure_vm(payload)
             except Exception as exc:
                 self._send_json(HTTPStatus.OK, {"ok": False, "error": str(exc)})
                 return
@@ -431,6 +433,12 @@ class QemuBridgeHandler(BaseHTTPRequestHandler):
             raise FileNotFoundError(f"QEMU image not found: {image}")
 
         overlay = run_dir / "runtime-overlay.qcow2"
+        status = self._status(run_dir)
+        if status.get("running"):
+            current_config = status.get("config")
+            if current_config == requested_config:
+                return {"ok": True, **status}
+            self._stop_vm(run_dir)
 
         reset_reason = _overlay_should_reset(overlay, image)
         if reset_reason:
@@ -445,12 +453,6 @@ class QemuBridgeHandler(BaseHTTPRequestHandler):
             _overlay_base_sidecar(overlay).unlink(missing_ok=True)
 
         status = self._status(run_dir)
-        if status.get("running"):
-            current_config = status.get("config")
-            if current_config == requested_config:
-                return {"ok": True, **status}
-            self._stop_vm(run_dir)
-
         pid_file = run_dir / "vm.pid"
         serial_log = run_dir / "serial.log"
         qemu_log = run_dir / "qemu.log"

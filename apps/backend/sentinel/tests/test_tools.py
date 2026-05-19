@@ -256,7 +256,7 @@ def _install_app_tool_runtime(fake_db: FakeDB, *, approval_waiter=None):
             cwd=cwd or runtime.terminal.workspace_path,
             env=env or None,
             timeout=timeout,
-            as_root=False,
+            as_root=runtime.terminal.session_user == "root",
         )
 
     terminal_manager.run_command = _fake_terminal_run  # type: ignore[method-assign]
@@ -653,6 +653,49 @@ def test_runtime_background_rejects_terminal_zero():
         )
         assert run.status_code == 422
         assert "terminal_id='0'" in run.json()["error"]["message"]
+    finally:
+        _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
+        app.dependency_overrides.clear()
+        app_main.init_db = old_init
+
+
+def test_runtime_user_rejects_reserved_root_terminal():
+    fake_db = FakeDB()
+    previous_registry, previous_executor, previous_get_runtime = _install_app_tool_runtime(fake_db)
+
+    async def _override_get_db():
+        yield fake_db
+
+    async def _noop_init_db():
+        return None
+
+    from app import main as app_main
+
+    old_init = app_main.init_db
+    app_main.init_db = _noop_init_db
+    RateLimitMiddleware._buckets.clear()
+    app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_manager_db] = _override_get_db
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created_session = client.post(
+            "/api/v1/instances/main/sessions",
+            json={"title": "runtime-root-terminal-reserved"},
+            headers=headers,
+        )
+        assert created_session.status_code == 200
+        session_id = created_session.json()["id"]
+
+        run = _execute_tool_for_test(
+            "runtime",
+            _runtime_input(shell_command="whoami", terminal_id="root"),
+            session_id=session_id,
+        )
+        assert run.status_code == 422
+        assert "reserved for runtime.root" in run.json()["error"]["message"]
     finally:
         _restore_app_tool_runtime(previous_registry, previous_executor, previous_get_runtime)
         app.dependency_overrides.clear()
@@ -1088,6 +1131,7 @@ def test_runtime_root_privilege_requires_approval():
             {
                 "command": "root",
                 "shell_command": "echo root-approved",
+                "terminal_id": "install-builder",
             },
             session_id=session_id,
         )
@@ -1095,6 +1139,8 @@ def test_runtime_root_privilege_requires_approval():
         payload = run.json()["result"]
         assert payload["ok"] is True
         assert "root-approved" in payload["stdout"]
+        assert payload["terminal_id"] == "root"
+        assert payload["terminal_auto"] is False
         assert payload["approval"]["provider"] == "runtime"
         assert payload["approval"]["approval_id"] == "apr_runtime_root"
         assert waiter_seen["action"] == "runtime.root"

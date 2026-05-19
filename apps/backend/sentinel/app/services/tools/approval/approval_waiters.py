@@ -21,6 +21,22 @@ from app.services.tools.registry import (
 _POLL_INTERVAL_SECONDS = 1.5
 
 
+def _jsonb_safe(value: Any) -> Any:
+    """Remove values PostgreSQL JSONB cannot store.
+
+    PostgreSQL text/jsonb rejects U+0000 even when JSON-escaped as "\\u0000".
+    Tool results can include terminal bytes, so sanitize recursively before
+    preserving approval results.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {str(key): _jsonb_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonb_safe(item) for item in value]
+    return value
+
+
 def build_tool_db_approval_waiter(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -112,7 +128,7 @@ def build_tool_db_approval_result_recorder(
             approval = db_result.scalars().first()
             if approval is None:
                 return
-            approval.result_json = result if isinstance(result, dict) else {"result": result}
+            approval.result_json = _jsonb_safe(result if isinstance(result, dict) else {"result": result})
             await db.commit()
 
     return _record

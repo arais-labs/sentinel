@@ -23,8 +23,10 @@ _TERMINAL_ID_PROPERTY: dict = {
         "prefer short descriptive identifiers (e.g. 'build', 'tests', "
         "'dev-server', 'logs'). Each terminal is its own persistent bash "
         "session — `cd`/`export` in this terminal don't affect other "
-        "terminals. For `runtime.user`/`runtime.root`: omit to use the "
-        "default 'main' terminal (id '0'), the user's primary shared shell. "
+        "terminals. For `runtime.user`: omit to use the default 'main' "
+        "terminal (id '0'), the user's primary shared shell. `runtime.user` "
+        "cannot use terminal_id='root'. For `runtime.root`: terminal_id is "
+        "ignored; all elevated commands run through the single terminal 'root'. "
         "For `runtime.terminal_read`: required, must match an existing terminal."
     ),
 }
@@ -149,7 +151,9 @@ MODULE = ModuleDefinition(
         "into the same shell in parallel — treat the default terminal "
         "('main') as the user's primary shared shell.\n"
         "\n"
-        "Use `user` for the default runtime user, `root` for elevated execution.\n"
+        "Use `user` for the default runtime user. Use `root` for elevated "
+        "execution; all root commands share one persistent root-owned terminal "
+        "named 'root'.\n"
         "\n"
         "Scoped vs. persistent state: `cwd` and `env` on this tool apply ONLY "
         "to the single command (wrapped in a subshell). To persistently "
@@ -185,7 +189,11 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="root",
             label="Root Command",
-            description="Run a shell command as root inside the session runtime workspace.",
+            description=(
+                "Run a shell command as root inside the session runtime workspace. "
+                "Always uses the single persistent root terminal named 'root'; "
+                "any provided terminal_id is ignored."
+            ),
             streaming=True,
             handler=handle_run_root,
             approval=True,

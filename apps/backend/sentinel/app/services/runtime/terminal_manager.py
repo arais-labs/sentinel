@@ -172,6 +172,10 @@ _ANSI_PATTERN = re.compile(
 )
 
 
+def _strip_postgres_nuls(value: str) -> str:
+    return value.replace("\x00", "")
+
+
 # Optional broadcaster injected at app startup. Signature mirrors a
 # fire-and-forget event emitter; we never await its result inside hot paths
 # so a slow ws_manager cannot stall command execution.
@@ -852,6 +856,22 @@ class TerminalManager:
                 },
             )
 
+    async def forget_session(self, session_id: UUID | str) -> None:
+        """Forget local terminal bookkeeping without touching guest processes."""
+        session_key = str(session_id)
+        async with self._global_lock:
+            records = self._terminals.pop(session_key, {})
+            for terminal_id in records:
+                self._locks.pop((session_key, terminal_id), None)
+        for record in records.values():
+            await self._emit_event(
+                "terminal_closed",
+                {
+                    "session_id": session_key,
+                    "terminal_id": record.terminal_id,
+                },
+            )
+
     async def rehydrate(
         self,
         *,
@@ -1088,7 +1108,7 @@ class TerminalManager:
             f"touch {_q(record.pipe_log_path)} && "
             f"printf %s {_q(rcfile_b64)} | base64 -d > {_q(rcfile_path)} && "
             f"chown -R {_q(record.session_user)}:{_q(record.session_user)} "
-            f"{_q(record.workspace_path)}/.runtime"
+            f"{_q(record.workspace_path)}/.runtime/term/{_q(record.terminal_id)}"
         )
         result = await ssh.run(f"sudo bash -lc {_q(prep)}", timeout=15)
         if result.exit_status != 0:
@@ -1318,7 +1338,7 @@ class TerminalManager:
         # bash may have written into the log between our send and the next
         # prompt.
         cleaned = _ANSI_PATTERN.sub(b"", raw)
-        text = cleaned.decode("utf-8", errors="replace")
+        text = _strip_postgres_nuls(cleaned.decode("utf-8", errors="replace"))
         # The first line is the echo of our own command. Drop it.
         newline = text.find("\n")
         if newline >= 0:
