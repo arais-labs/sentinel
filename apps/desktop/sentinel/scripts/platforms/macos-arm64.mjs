@@ -65,6 +65,7 @@ export function runtimeRequirements() {
       'node/bin/node',
       'node/bin/npm',
       'git/bin/git',
+      'gh/bin/gh',
       'uv',
       'source.git.tar',
       'wheels/.complete',
@@ -109,6 +110,7 @@ export function runtimeComponents({ config, paths }) {
         node: nodeRuntimeConfig(config),
         uv: uvRuntimeConfig(config),
         git: gitRuntimeConfig(config),
+        gh: ghRuntimeConfig(config),
         sourceClone: sourceCloneConfig(config, paths),
       },
       required: requirements['runtime-seed'],
@@ -185,6 +187,16 @@ function gitRuntimeConfig(config) {
     if (!config.git[key]) throw new Error(`macos-arm64 runtime lock is missing git.${key}.`);
   }
   return config.git;
+}
+
+function ghRuntimeConfig(config) {
+  if (!config.gh || typeof config.gh !== 'object') {
+    throw new Error('macos-arm64 runtime lock must define gh.{version,sourceUrl,sourceSha256}.');
+  }
+  for (const key of ['version', 'sourceUrl', 'sourceSha256']) {
+    if (!config.gh[key]) throw new Error(`macos-arm64 runtime lock is missing gh.${key}.`);
+  }
+  return config.gh;
 }
 
 function sourceCloneConfig(config, paths) {
@@ -284,6 +296,7 @@ async function buildRuntimeSeed({ config, paths }) {
     node: nodeRuntimeConfig(config),
     uv: uvRuntimeConfig(config),
     git: gitRuntimeConfig(config),
+    gh: ghRuntimeConfig(config),
     sourceClone: sourceCloneConfig(config, paths),
   };
   const workDir = path.join(paths.targetDir, 'work/runtime-seed');
@@ -299,6 +312,7 @@ async function buildRuntimeSeed({ config, paths }) {
   await stageNode(cfg.node, outputDir, downloadCacheDir, workDir);
   await stageUv(cfg.uv, outputDir, downloadCacheDir, workDir);
   await stageGit(cfg.git, outputDir);
+  await stageGh(cfg.gh, outputDir, downloadCacheDir, workDir);
   await stageSourceClone(cfg.sourceClone, outputDir, workDir);
   await stageWheels(cfg.python, outputDir, paths);
   await stageNodeModulesCache(outputDir, paths, workDir);
@@ -424,6 +438,33 @@ async function stageGit(gitCfg, outputDir) {
     throw new Error(`Vendored git version mismatch. Expected prefix "${gitCfg.expectedVersionPrefix}", got: ${versionLine}`);
   }
   assertNoExternalDylibs(gitOut, 'Git runtime');
+}
+
+async function stageGh(ghCfg, outputDir, cacheDir, workDir) {
+  const archive = await downloadWithSha(
+    ghCfg.sourceUrl,
+    ghCfg.sourceSha256,
+    path.join(cacheDir, `gh-${ghCfg.version}-macos-arm64.zip`),
+    'GitHub CLI',
+  );
+  const extractDir = path.join(workDir, 'gh-extract');
+  await rm(extractDir, { recursive: true, force: true });
+  await mkdir(extractDir, { recursive: true });
+  run('ditto', ['-x', '-k', archive, extractDir]);
+  const entries = await readdir(extractDir);
+  const inner = entries.find((entry) => entry.startsWith(`gh_${ghCfg.version}_macOS_arm64`));
+  if (!inner) {
+    throw new Error(`GitHub CLI archive did not contain expected gh_${ghCfg.version}_macOS_arm64 directory.`);
+  }
+  const ghBinary = path.join(extractDir, inner, 'bin/gh');
+  if (!existsSync(ghBinary)) {
+    throw new Error('GitHub CLI archive did not contain expected bin/gh executable.');
+  }
+  const ghOut = path.join(outputDir, 'gh');
+  await mkdir(path.join(ghOut, 'bin'), { recursive: true });
+  await cp(ghBinary, path.join(ghOut, 'bin/gh'), { dereference: false });
+  run(path.join(ghOut, 'bin/gh'), ['--version']);
+  assertNoExternalDylibs(ghOut, 'GitHub CLI runtime');
 }
 
 async function stageSourceClone(sourceCfg, outputDir, workDir) {
@@ -910,6 +951,7 @@ export async function verifyRuntime({ paths }) {
     ['Runtime seed (python)', path.join(runtimeDir, 'runtime-seed/python')],
     ['Runtime seed (node)', path.join(runtimeDir, 'runtime-seed/node')],
     ['Runtime seed (git)', path.join(runtimeDir, 'runtime-seed/git')],
+    ['Runtime seed (gh)', path.join(runtimeDir, 'runtime-seed/gh')],
     ['Postgres runtime', path.join(runtimeDir, 'postgres')],
     ['QEMU runtime', path.join(runtimeDir, 'qemu')],
   ];

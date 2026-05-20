@@ -115,6 +115,10 @@ export function bundledGitBinary(): string {
   return path.join(runtimeSeedRoot(), 'git/bin/git');
 }
 
+export function bundledGhBinary(): string {
+  return path.join(runtimeSeedRoot(), 'gh/bin/gh');
+}
+
 export function bundledUvBinary(): string {
   return path.join(runtimeSeedRoot(), 'uv');
 }
@@ -140,7 +144,15 @@ export function qemuBinaryPath(name: string): string {
 }
 
 export function runtimeCommandPath(pathValue = process.env.PATH || ''): string {
-  return commandSearchPath(`${path.join(resourceRoot(), 'postgres/bin')}:${path.join(qemuResourcePath(), 'bin')}:${pathValue}`);
+  return commandSearchPath(
+    [
+      path.join(resourceRoot(), 'postgres/bin'),
+      path.join(qemuResourcePath(), 'bin'),
+      path.dirname(bundledGitBinary()),
+      path.dirname(bundledGhBinary()),
+      pathValue,
+    ].join(':'),
+  );
 }
 
 export function buildBackendEnv(ports: DesktopPorts, secrets: DesktopSecrets): NodeJS.ProcessEnv {

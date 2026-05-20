@@ -25,6 +25,11 @@
         "systemSharePath": "/Library/Developer/CommandLineTools/usr/share/git-core",
         "expectedVersionPrefix": "git version 2."
       },
+      "gh": {
+        "version": "2.92.0",
+        "sourceUrl": "https://github.com/cli/cli/releases/download/v2.92.0/gh_2.92.0_macOS_arm64.zip",
+        "sourceSha256": "b11c54f6bd7d15ed6590475079e5b2fcf36f45d3991a80041b29c9d0cc1f1d07"
+      },
       "sourceClone": {
         "url": "https://github.com/arais-labs/sentinel.git",
         "depth": 50,
