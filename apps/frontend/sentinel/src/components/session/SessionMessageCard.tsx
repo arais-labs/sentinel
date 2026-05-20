@@ -1,10 +1,11 @@
-import { AlertCircle, ArrowRight, Check, CheckCircle2, ChevronDown, Clock3, ExternalLink, Globe, Hash, Loader2, RotateCcw, Send, Terminal, Users, Wrench, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, CheckCircle2, ChevronDown, Clock3, ExternalLink, Globe, Loader2, RotateCcw, Send, Terminal, Users, Wrench, X } from 'lucide-react';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { JsonBlock } from '../ui/JsonBlock';
 import { Markdown } from '../ui/Markdown';
 import { HtmlContent, looksLikeHtmlContent } from '../ui/HtmlContent';
+import { findCustomToolCard, type CustomToolCardContext } from './toolCards';
 import { approvalKey, approvalRefFromMetadata, isWaitingApproval, type ApprovalRef } from '../../lib/approvals';
 import { formatCompactDate } from '../../lib/format';
 import {
@@ -885,6 +886,41 @@ export const SessionMessageCard = memo(({
 
   function openLightbox() { setLightboxOpen(true); setZoom(1); setPan({ x: 0, y: 0 }); }
 
+  const customToolCardContext: CustomToolCardContext = {
+    toolName: message.tool_name || 'tool_result',
+    inputRaw: toolInputRaw,
+    outputRaw: message.content,
+    outputError: toolFailed,
+    screenshotBase64,
+    openLightbox,
+    renderGenericCompact: (options) => (
+      <ToolPayloadCompactSummary
+        toolName={message.tool_name || 'tool_result'}
+        inputRaw={toolInputRaw}
+        outputRaw={message.content}
+        outputEmptyLabel="No output payload."
+        outputError={toolFailed}
+        hideInput={options?.hideInput ?? false}
+      />
+    ),
+    renderGenericOutput: (options) => (
+      <ToolPayloadView
+        raw={message.content}
+        emptyLabel="No output."
+        showRawJson={options?.showRawJson ?? !isScreenshotTool}
+        toolName={message.tool_name || 'tool_result'}
+        payloadKind="output"
+      />
+    ),
+    renderPortForwardCompact: () => (
+      <RuntimeForwardCompactSummary raw={message.content} outputError={toolFailed} />
+    ),
+    renderPortForwardExpanded: () => (
+      <RuntimeForwardResultView raw={message.content} />
+    ),
+  };
+  const customToolCard = isToolResult ? findCustomToolCard(customToolCardContext) : null;
+
   function onWheel(e: React.WheelEvent) {
     e.preventDefault();
     setZoom((z) => Math.min(10, Math.max(0.5, z * (e.deltaY < 0 ? 1.1 : 0.9))));
@@ -906,13 +942,13 @@ export const SessionMessageCard = memo(({
   function onMouseUp() { dragRef.current = null; }
 
   useEffect(() => {
-    if (isScreenshotTool) {
+    if (customToolCard?.autoExpand?.(customToolCardContext)) {
       setToolExpanded(true);
     }
-  }, [isScreenshotTool]);
+  }, [customToolCard?.id, screenshotBase64]);
 
   const cardWidthClass = isToolResult
-    ? (toolExpanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]')
+    ? (toolExpanded || customToolCard ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]')
     : renderAssistantHtml
       ? 'w-full max-w-[90%]'
       : 'max-w-[90%]';
@@ -990,7 +1026,7 @@ export const SessionMessageCard = memo(({
             {toolExpanded ? (
               <div className="mt-0 pt-3 animate-in fade-in slide-in-from-top-1 duration-200">
                 <div className="space-y-6">
-                  {!isScreenshotTool ? (
+                  {!customToolCard?.hideGenericArguments?.(customToolCardContext) ? (
                     <div>
                       <div className="mb-2.5 flex items-center gap-2">
                         <div className="flex items-center justify-center w-7 h-7 rounded-full bg-[color:var(--surface-1)] border border-sky-500/30 text-sky-500/60 shadow-sm shrink-0">
@@ -1024,33 +1060,18 @@ export const SessionMessageCard = memo(({
                       )}
                     </div>
                     <div className="pl-9">
-                    {screenshotBase64 ? (
-                      <div className="space-y-3">
-                        <div className="relative group/screenshot">
-                          <img
-                            src={`data:image/png;base64,${screenshotBase64}`}
-                            alt="Browser screenshot"
-                            onClick={openLightbox}
-                            className="rounded-xl max-w-full border border-sky-500/20 mt-0.5 cursor-zoom-in group-hover/screenshot:border-sky-500/40 transition-all shadow-md"
-                            style={{ maxHeight: '400px', objectFit: 'contain' }}
-                          />
-                        </div>
-                        <div className="flex items-center gap-2 text-[9px] text-[color:var(--text-muted)] italic px-1 opacity-60">
-                           <Hash size={9} className="opacity-40" />
-                           Frame captured
-                        </div>
-                      </div>
-                    ) : message.tool_name === 'port_forward' ? (
-                      <RuntimeForwardResultView raw={message.content} />
-                    ) : (
                       <div className="space-y-4">
-                        <ToolPayloadView
-                          raw={message.content}
-                          emptyLabel="No output."
-                          showRawJson={!isScreenshotTool}
-                          toolName={message.tool_name || 'tool_result'}
-                          payloadKind="output"
-                        />
+                        {customToolCard ? (
+                          customToolCard.renderExpandedResult(customToolCardContext)
+                        ) : (
+                          <ToolPayloadView
+                            raw={message.content}
+                            emptyLabel="No output."
+                            showRawJson={!isScreenshotTool}
+                            toolName={message.tool_name || 'tool_result'}
+                            payloadKind="output"
+                          />
+                        )}
                         {canResolveApproval && approvalRef && onResolveApproval ? (
                           <div className="flex items-center gap-3 pt-1">
                             <button
@@ -1082,13 +1103,12 @@ export const SessionMessageCard = memo(({
                           </div>
                         ) : null}
                       </div>
-                    )}
                     </div>
                   </div>
                 </div>
               </div>
-            ) : message.tool_name === 'port_forward' ? (
-                <RuntimeForwardCompactSummary raw={message.content} outputError={toolFailed} />
+            ) : customToolCard ? (
+                customToolCard.renderCompact(customToolCardContext)
               ) : (
                 <ToolPayloadCompactSummary
                   toolName={message.tool_name || 'tool_result'}
