@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import settings
+from app.logging_context import apply_logging_config
 
 manager_engine = create_async_engine(
     settings.manager_database_url,
@@ -116,7 +117,10 @@ async def _run_alembic_upgrade(*, ini_name: str, database_url: str) -> None:
     script_location = _ALEMBIC_SCRIPT_LOCATIONS[ini_name]
     config.set_main_option("script_location", str(script_location))
     config.set_main_option("sqlalchemy.url", database_url)
-    await asyncio.to_thread(command.upgrade, config, "head")
+    try:
+        await asyncio.to_thread(command.upgrade, config, "head")
+    finally:
+        apply_logging_config()
 
 
 def _quote_identifier(value: str) -> str:
