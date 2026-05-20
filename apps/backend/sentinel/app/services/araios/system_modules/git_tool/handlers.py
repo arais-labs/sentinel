@@ -9,6 +9,7 @@ import hashlib
 import logging
 import os
 import shlex
+import shutil
 import stat
 import tempfile
 
@@ -872,6 +873,19 @@ async def _run_git_subprocess(
     timeout_seconds: int,
     redactions: list[str] | None = None,
 ) -> dict[str, Any]:
+    executable = args[0] if args else ""
+    if not executable or shutil.which(executable, path=env.get("PATH")) is None:
+        command = " ".join(args)
+        return {
+            "ok": False,
+            "returncode": 127,
+            "timed_out": False,
+            "stdout": "",
+            "stderr": f"Required executable '{executable or '<empty>'}' is not available in the backend runtime PATH.",
+            "cwd": str(run_dir),
+            "command": command,
+        }
+
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=str(run_dir),

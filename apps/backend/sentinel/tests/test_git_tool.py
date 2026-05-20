@@ -92,6 +92,24 @@ def test_resolve_origin_url_reports_not_git_repo(monkeypatch, tmp_path):
         git_module._resolve_origin_url(tmp_path)
 
 
+def test_run_git_subprocess_reports_missing_executable(tmp_path):
+    result = _run(
+        git_module._run_git_subprocess(
+            args=["gh", "repo", "view", "exampleco/exampleco"],
+            run_dir=tmp_path,
+            env={"PATH": ""},
+            timeout_seconds=10,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["returncode"] == 127
+    assert result["stdout"] == ""
+    assert "Required executable 'gh' is not available" in result["stderr"]
+    assert result["cwd"] == str(tmp_path)
+    assert result["command"] == "gh repo view exampleco/exampleco"
+
+
 def test_resolve_origin_url_reports_missing_remote(monkeypatch, tmp_path):
     def _fake_run_blocking(*, args, cwd, env, timeout_seconds):
         _ = args, cwd, env, timeout_seconds
