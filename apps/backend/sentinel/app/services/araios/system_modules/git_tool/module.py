@@ -63,6 +63,7 @@ MODULE = ModuleDefinition(
     label="Git",
     description=(
         "Execute git commands and selected GitHub CLI commands inside the session workspace with managed credentials. "
+        "Use this tool for git and GitHub operations; prefer it over running `git` or `gh` commands through the runtime shell. "
         "Use `read` for read operations like `git clone/fetch/pull/ls-remote/submodule/request-pull` and `gh repo clone/list/view`, `gh pr view`, `gh api` GET. "
         "Use `write` only for mutating operations like push, commit, branch updates, `gh pr create`, `gh pr merge`, and `gh api` POST/PUT. "
         "Allowed gh commands: `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT). "
