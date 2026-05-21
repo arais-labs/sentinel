@@ -13,6 +13,7 @@ import {
   parsePayloadJson,
   previewPayloadValue,
   topLevelPayloadFieldCount,
+  type ToolFieldPreview,
   type ToolPayloadKind,
 } from '../../lib/toolPayloadPreview';
 import type { Message, MessageAttachment } from '../../types/api';
@@ -262,7 +263,7 @@ const SHELL_CLASS: Record<ShellTok, string> = {
 
 // ---- PopupContent ----
 
-function PopupContent({ content }: { content: string }) {
+function PopupTextContent({ content }: { content: string }) {
   const { lang, tokens } = useMemo(() => {
     const lang = detectLang(content);
     if (lang === 'json') {
@@ -304,6 +305,13 @@ function PopupContent({ content }: { content: string }) {
       ))}
     </pre>
   );
+}
+
+function PopupContent({ content, value }: { content: string; value?: unknown }) {
+  if (value !== undefined && shouldRenderStructuredPreview(value)) {
+    return <NestedPayloadPreview value={value} />;
+  }
+  return <PopupTextContent content={content} />;
 }
 
 function normalizeForwardUrl(value: string): string {
@@ -467,11 +475,13 @@ function RuntimeForwardCompactSummary({ raw, outputError = false }: { raw: strin
 function ToolFieldPopup({
   title,
   content,
+  value,
   anchorRect,
   onClose,
 }: {
   title: string;
   content: string;
+  value?: unknown;
   anchorRect: DOMRect;
   onClose: () => void;
 }) {
@@ -520,11 +530,183 @@ function ToolFieldPopup({
            </button>
         </div>
         <div className="p-4 overflow-auto max-h-[400px] selection:bg-sky-500/20">
-          <PopupContent content={content} />
+          <PopupContent content={content} value={value} />
         </div>
       </div>
     </div>,
     document.body
+  );
+}
+
+type ToolFieldPreviewItem = ToolFieldPreview & { value?: unknown; fullValue?: unknown };
+
+const STRUCTURED_PREVIEW_MAX_ITEMS = 8;
+const STRUCTURED_PREVIEW_MAX_DEPTH = 3;
+const MULTILINE_PREVIEW_MAX_CHARS = 6000;
+
+const PREVIEW_SENSITIVE_KEY_PATTERN =
+  /(token|secret|password|passphrase|api[_-]?key|authorization|cookie|credential|private[_-]?key)/i;
+const PREVIEW_SENSITIVE_VALUE_PATTERN =
+  /(sk-[A-Za-z0-9_-]{12,}|bearer\s+[A-Za-z0-9._-]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})/i;
+
+function isMultilineString(value: unknown): value is string {
+  return typeof value === 'string' && /[\r\n]/.test(value);
+}
+
+function valueLooksSensitiveForPreview(value: unknown): boolean {
+  return typeof value === 'string' && PREVIEW_SENSITIVE_VALUE_PATTERN.test(value);
+}
+
+function truncatePreviewText(value: string, maxChars = MULTILINE_PREVIEW_MAX_CHARS): { text: string; truncated: boolean } {
+  if (value.length <= maxChars) return { text: value, truncated: false };
+  return { text: value.slice(0, maxChars), truncated: true };
+}
+
+function shouldRenderStructuredPreview(value: unknown): boolean {
+  if (isMultilineString(value)) return true;
+  if (Array.isArray(value)) return true;
+  return isObjectRecord(value);
+}
+
+function primitivePreviewText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return String(value);
+  if (value === undefined) return 'undefined';
+  return String(value);
+}
+
+function summarizeNestedValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.length} item${value.length === 1 ? '' : 's'}]`;
+  if (isObjectRecord(value)) return `{${Object.keys(value).length} field${Object.keys(value).length === 1 ? '' : 's'}}`;
+  const preview = previewPayloadValue(value, 140);
+  return preview.text || '""';
+}
+
+function buildFieldPreviewItem(key: string, value: unknown): ToolFieldPreviewItem {
+  if (PREVIEW_SENSITIVE_KEY_PATTERN.test(key) || valueLooksSensitiveForPreview(value)) {
+    return { key, text: '[redacted]', truncated: false, redacted: true };
+  }
+  const preview = previewPayloadValue(value);
+  let fullText: string | undefined;
+  if (preview.truncated) {
+    if (typeof value === 'string') {
+      fullText = value;
+    } else {
+      try {
+        fullText = JSON.stringify(value, null, 2);
+      } catch {
+        fullText = String(value);
+      }
+    }
+  }
+  return {
+    key,
+    value,
+    fullValue: shouldRenderStructuredPreview(value) || preview.truncated ? value : undefined,
+    text: preview.text,
+    fullText,
+    truncated: preview.truncated,
+    redacted: false,
+  };
+}
+
+function NestedPayloadPreview({
+  value,
+  depth = 0,
+}: {
+  value: unknown;
+  depth?: number;
+}) {
+  if (isMultilineString(value)) {
+    const preview = truncatePreviewText(value);
+    return (
+      <div>
+        <pre className="m-0 whitespace-pre-wrap break-words rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/70 px-3 py-2 font-mono text-[12px] leading-relaxed text-[color:var(--text-primary)]">
+          {preview.text}
+        </pre>
+        {preview.truncated ? (
+          <span className="mt-1 block text-[7px] font-black uppercase tracking-widest text-[color:var(--text-muted)]">
+            Truncated
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (!shouldRenderStructuredPreview(value)) {
+    return (
+      <span className="font-mono text-[12px] break-words text-[color:var(--text-primary)] leading-normal whitespace-pre-wrap">
+        {primitivePreviewText(value) || <span className="italic opacity-30">null</span>}
+      </span>
+    );
+  }
+
+  if (depth >= STRUCTURED_PREVIEW_MAX_DEPTH) {
+    return (
+      <span className="font-mono text-[12px] text-[color:var(--text-secondary)]">
+        {summarizeNestedValue(value)}
+      </span>
+    );
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return <span className="font-mono text-[12px] text-[color:var(--text-muted)]">[]</span>;
+    }
+    const visible = value.slice(0, STRUCTURED_PREVIEW_MAX_ITEMS);
+    return (
+      <div className="space-y-2">
+        {visible.map((item, index) => (
+          <div key={index} className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/35 px-2.5 py-2">
+            <div className="mb-1 text-[8px] font-black uppercase tracking-widest text-[color:var(--text-muted)]">
+              [{index}]
+            </div>
+            <NestedPayloadPreview value={item} depth={depth + 1} />
+          </div>
+        ))}
+        {value.length > visible.length ? (
+          <div className="text-[8px] font-black uppercase tracking-widest text-[color:var(--text-muted)]">
+            +{value.length - visible.length} more
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (!isObjectRecord(value)) return null;
+
+  const entries = Object.entries(value);
+  if (entries.length === 0) {
+    return <span className="font-mono text-[12px] text-[color:var(--text-muted)]">{'{}'}</span>;
+  }
+  const visible = entries.slice(0, STRUCTURED_PREVIEW_MAX_ITEMS);
+  return (
+    <div className="space-y-1.5">
+      {visible.map(([key, nestedValue]) => {
+        const redacted = PREVIEW_SENSITIVE_KEY_PATTERN.test(key) || valueLooksSensitiveForPreview(nestedValue);
+        return (
+          <div key={key} className="grid grid-cols-[minmax(70px,140px)_minmax(0,1fr)] gap-2">
+            <span className="truncate pt-0.5 font-mono text-[9px] font-black uppercase tracking-widest text-[color:var(--text-muted)]">
+              {key}
+            </span>
+            <div className="min-w-0">
+              {redacted ? (
+                <span className="text-[9px] font-black uppercase tracking-widest text-rose-400/60 bg-rose-500/5 px-1.5 py-0.5 rounded border border-rose-500/10 italic">
+                  Secret Masked
+                </span>
+              ) : (
+                <NestedPayloadPreview value={nestedValue} depth={depth + 1} />
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {entries.length > visible.length ? (
+        <div className="text-[8px] font-black uppercase tracking-widest text-[color:var(--text-muted)]">
+          +{entries.length - visible.length} more
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -533,14 +715,16 @@ function ToolFieldPreviewList({
   extraCount = 0,
   variant = 'input',
 }: {
-  items: Array<{ key: string; text: string; fullText?: string; truncated: boolean; redacted?: boolean }>;
+  items: ToolFieldPreviewItem[];
   extraCount?: number;
   variant?: 'input' | 'output';
 }) {
-  const [hoveredField, setHoveredField] = useState<{ item: any; rect: DOMRect } | null>(null);
+  const [hoveredField, setHoveredField] = useState<{ item: ToolFieldPreviewItem; rect: DOMRect } | null>(null);
   const c = variant === 'output'
     ? { border: 'border-emerald-500/15', hover: 'hover:bg-emerald-500/5', bar: 'group-hover/field:bg-emerald-500/40', key: 'text-emerald-500/50', hint: 'text-emerald-500/40 group-hover/field:text-emerald-500', extra: 'text-emerald-500/30 bg-emerald-500/10' }
     : { border: 'border-sky-500/10',     hover: 'hover:bg-sky-500/5',     bar: 'group-hover/field:bg-sky-500/40',     key: 'text-sky-500/40',     hint: 'text-sky-500/40 group-hover/field:text-sky-500',     extra: 'text-sky-500/30 bg-sky-500/10' };
+
+  const canExpandField = (item: ToolFieldPreviewItem): boolean => Boolean(item.fullText || item.fullValue !== undefined);
 
   return (
     <div className={`flex flex-col gap-0 border-l ${c.border} ml-2`}>
@@ -548,11 +732,11 @@ function ToolFieldPreviewList({
         <div
           key={item.key}
           onClick={(e) => {
-            if (item.truncated && item.fullText) {
+            if (canExpandField(item)) {
               setHoveredField({ item, rect: e.currentTarget.getBoundingClientRect() });
             }
           }}
-          className={`group/field relative flex gap-3 px-2.5 py-1.5 transition-all ${c.hover} hover:rounded-r-lg ${item.truncated ? 'cursor-pointer' : ''}`}
+          className={`group/field relative flex gap-3 px-2.5 py-1.5 transition-all ${c.hover} hover:rounded-r-lg ${canExpandField(item) ? 'cursor-pointer' : ''}`}
         >
           <div className={`absolute left-[-1px] top-0.5 bottom-0.5 w-0.5 bg-transparent ${c.bar} transition-colors`} />
           <div className="w-[85px] shrink-0 pt-0.5">
@@ -570,7 +754,7 @@ function ToolFieldPreviewList({
                 <p className="font-mono text-[12px] break-words text-[color:var(--text-primary)] leading-normal whitespace-pre-wrap">
                   {item.text || <span className="italic opacity-30">null</span>}
                 </p>
-                {item.truncated && (
+                {canExpandField(item) && (
                   <span className={`text-[7px] font-black uppercase tracking-widest mt-0.5 transition-colors ${c.hint}`}>Click to expand</span>
                 )}
               </div>
@@ -590,7 +774,8 @@ function ToolFieldPreviewList({
       {hoveredField && (
         <ToolFieldPopup
           title={hoveredField.item.key}
-          content={hoveredField.item.fullText}
+          content={hoveredField.item.fullText ?? ''}
+          value={hoveredField.item.fullValue}
           anchorRect={hoveredField.rect}
           onClose={() => setHoveredField(null)}
         />
@@ -648,11 +833,7 @@ export function ToolPayloadView({
   }
 
   if (isObjectRecord(parsed)) {
-    const entries = Object.entries(parsed).map(([key, value]) => {
-      const preview = previewPayloadValue(value);
-      const fullText = preview.truncated ? (typeof value === 'string' ? value : JSON.stringify(value, null, 2)) : undefined;
-      return { key, text: preview.text, fullText, truncated: preview.truncated, redacted: false };
-    });
+    const entries = Object.entries(parsed).map(([key, value]) => buildFieldPreviewItem(key, value));
     return (
       <div className="space-y-2">
         <ToolFieldPreviewList items={entries} variant={fieldVariant} />
@@ -676,7 +857,7 @@ export function ToolPayloadView({
       <div className="space-y-2">
         <ToolFieldPreviewList
           variant={fieldVariant}
-          items={[{ key: payloadKind ?? 'value', text: preview.text || '""', fullText, truncated: preview.truncated, redacted: false }]}
+          items={[{ key: payloadKind ?? 'value', value: parsed, text: preview.text || '""', fullText, truncated: preview.truncated, redacted: false }]}
         />
         {showRawJson ? (
           <details className="group">

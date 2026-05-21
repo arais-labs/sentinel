@@ -9,8 +9,8 @@ MODULE = ModuleDefinition(
     name="str_replace_editor",
     label="Str Replace Editor",
     description=(
-        "Replace an exact string in a file with a new string. "
-        "Runs through the same user runtime path as runtime and requires a unique exact match."
+        "Replace one exact string in a workspace file. The target path is scoped "
+        "to the session runtime workspace and the old string must match exactly once."
     ),
     icon="file-edit",
     system=True,
@@ -19,8 +19,8 @@ MODULE = ModuleDefinition(
             id="edit",
             label="Edit File",
             description=(
-                "Replace an exact string in a file with a new string. "
-                "Runs through the same user runtime path as runtime and requires a unique exact match."
+                "Replace one exact string in a workspace file. Use enough surrounding "
+                "context in old_str to make the match unique."
             ),
             handler=handle_edit,
             requires_runtime_context=True,
@@ -29,9 +29,18 @@ MODULE = ModuleDefinition(
                 "additionalProperties": False,
                 "required": ["path", "old_str", "new_str"],
                 "properties": {
-                    "path": {"type": "string", "description": "Path to the file relative to workspace"},
-                    "old_str": {"type": "string", "description": "The exact string to find in the file (must be unique)"},
-                    "new_str": {"type": "string", "description": "The replacement string"},
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to the session workspace.",
+                    },
+                    "old_str": {
+                        "type": "string",
+                        "description": "Exact string to replace. It must appear exactly once.",
+                    },
+                    "new_str": {
+                        "type": "string",
+                        "description": "Replacement string.",
+                    },
                 },
             },
         )

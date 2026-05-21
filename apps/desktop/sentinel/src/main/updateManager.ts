@@ -19,7 +19,7 @@ import {
   runtimeChannelMarkerPath,
   runtimeCommitMarkerPath,
   sourceRoot,
-} from './runtimeConfig.js';
+} from './desktopConfig.js';
 
 export function channelToBranch(channel: ReleaseChannel): string {
   return CHANNEL_TO_BRANCH[channel];

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Download, FileCode2, Folder, GitBranch, Loader2 } from 'lucide-react';
 import type { SessionRuntimeFileEntry } from '../../types/api';
 
@@ -10,6 +10,7 @@ interface FileTreeProps {
   loadFolderEntries: (path: string) => Promise<SessionRuntimeFileEntry[]>;
   onDirectoryToggle?: (entry: SessionRuntimeFileEntry, expanded: boolean) => void;
   loading?: boolean;
+  refreshKey?: number;
 }
 
 export const FileTree: React.FC<FileTreeProps> = ({
@@ -20,12 +21,23 @@ export const FileTree: React.FC<FileTreeProps> = ({
   loadFolderEntries,
   onDirectoryToggle,
   loading = false,
+  refreshKey = 0,
 }) => {
   const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({});
   const [loadingPaths, setLoadingPaths] = useState<Record<string, boolean>>({});
   const [entriesByPath, setEntriesByPath] = useState<Record<string, SessionRuntimeFileEntry[]>>({});
+  const expandedPathsRef = useRef(expandedPaths);
+  const loadFolderEntriesRef = useRef(loadFolderEntries);
 
   const normalizedRootPath = useMemo(() => rootPath.trim(), [rootPath]);
+
+  useEffect(() => {
+    expandedPathsRef.current = expandedPaths;
+  }, [expandedPaths]);
+
+  useEffect(() => {
+    loadFolderEntriesRef.current = loadFolderEntries;
+  }, [loadFolderEntries]);
 
   useEffect(() => {
     setEntriesByPath((current) => ({ ...current, [normalizedRootPath]: entries }));
@@ -34,6 +46,39 @@ export const FileTree: React.FC<FileTreeProps> = ({
   useEffect(() => {
     setExpandedPaths({});
   }, [normalizedRootPath]);
+
+  useEffect(() => {
+    const expanded = Object.entries(expandedPathsRef.current)
+      .filter(([, isExpanded]) => isExpanded)
+      .map(([path]) => path);
+    if (expanded.length === 0) return;
+
+    let cancelled = false;
+    for (const path of expanded) {
+      setLoadingPaths((current) => ({ ...current, [path]: true }));
+      void loadFolderEntriesRef.current(path)
+        .then((children) => {
+          if (cancelled) return;
+          setEntriesByPath((current) => ({ ...current, [path]: children }));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setEntriesByPath((current) => {
+            const next = { ...current };
+            delete next[path];
+            return next;
+          });
+        })
+        .finally(() => {
+          if (cancelled) return;
+          setLoadingPaths((current) => ({ ...current, [path]: false }));
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
 
   async function toggleDirectory(entry: SessionRuntimeFileEntry) {
     const nextExpanded = !expandedPaths[entry.path];

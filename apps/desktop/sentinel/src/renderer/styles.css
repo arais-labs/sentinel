@@ -802,10 +802,6 @@ input[type='checkbox'] {
   color: #34d399;
 }
 
-.log-service.qemu {
-  color: #fbbf24;
-}
-
 .log-level {
   font-weight: 500;
 }

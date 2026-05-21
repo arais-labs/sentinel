@@ -15,10 +15,6 @@ from app.schemas.memory import (
     StoreMemoryRequest,
 )
 from app.schemas.models import ModelOptionResponse, ModelsResponse
-from app.schemas.runtime import (
-    RuntimeResetResponse,
-    RuntimeLiveViewResponse,
-)
 from app.schemas.sessions import (
     CreateMessageRequest,
     CreateSessionRequest,
@@ -64,8 +60,6 @@ __all__ = [
     "ModelsResponse",
     "MessageListResponse",
     "MessageResponse",
-    "RuntimeResetResponse",
-    "RuntimeLiveViewResponse",
     "SessionListResponse",
     "SessionResponse",
     "StoreMemoryRequest",

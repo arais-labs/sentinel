@@ -1,102 +1,104 @@
-import type {
-  SessionRuntimeGitChangedFile,
-  SessionRuntimeGitChangedFilesResponse,
-} from '../types/api';
+import type { SessionRuntimeGitChangedFile, SessionRuntimeGitChangedFilesResponse } from '../types/api';
 
-export type RuntimeGitChangedTreeNode = {
+export type RuntimeGitChangedTreeNode =
+  | {
+      kind: 'directory';
+      key: string;
+      name: string;
+      fullPath: string;
+      children: RuntimeGitChangedTreeNode[];
+      fileCount: number;
+    }
+  | {
+      kind: 'file';
+      key: string;
+      name: string;
+      fullPath: string;
+      entry: SessionRuntimeGitChangedFile;
+    };
+
+type RuntimeGitChangedFileNode = Extract<RuntimeGitChangedTreeNode, { kind: 'file' }>;
+type RuntimeGitChangedDirectoryNode = Extract<RuntimeGitChangedTreeNode, { kind: 'directory' }>;
+
+interface MutableDirectoryNode {
+  kind: 'directory';
   key: string;
   name: string;
   fullPath: string;
-  kind: 'file' | 'directory';
+  children: Map<string, MutableDirectoryNode | RuntimeGitChangedFileNode>;
   fileCount: number;
-  children: RuntimeGitChangedTreeNode[];
-  entry?: SessionRuntimeGitChangedFile;
-};
-
-type MutableTreeNode = {
-  key: string;
-  name: string;
-  fullPath: string;
-  kind: 'file' | 'directory';
-  children: MutableTreeNode[];
-  fileCount: number;
-  entry?: SessionRuntimeGitChangedFile;
-};
-
-function trimPrefix(path: string, prefix: string): string {
-  const normalizedPath = path.trim().replace(/^\/+|\/+$/g, '');
-  const normalizedPrefix = prefix.trim().replace(/^\/+|\/+$/g, '');
-  if (!normalizedPrefix) return normalizedPath;
-  if (normalizedPath === normalizedPrefix) return '';
-  if (normalizedPath.startsWith(`${normalizedPrefix}/`)) {
-    return normalizedPath.slice(normalizedPrefix.length + 1);
-  }
-  return normalizedPath;
 }
 
-function sortNodes(nodes: MutableTreeNode[]): RuntimeGitChangedTreeNode[] {
-  const sorted = [...nodes].sort((left, right) => {
-    if (left.kind !== right.kind) {
-      return left.kind === 'directory' ? -1 : 1;
-    }
-    return left.name.localeCompare(right.name);
-  });
-  return sorted.map((node) => {
-    const children = sortNodes(node.children);
-    const fileCount = node.kind === 'file'
-      ? 1
-      : children.reduce((sum, child) => sum + child.fileCount, 0);
-    return {
-      key: node.key,
-      name: node.name,
-      fullPath: node.fullPath,
-      kind: node.kind,
-      fileCount,
-      children,
-      entry: node.entry,
-    };
-  });
+function makeDirectory(name: string, fullPath: string): MutableDirectoryNode {
+  return {
+    kind: 'directory',
+    key: `dir:${fullPath || '.'}`,
+    name,
+    fullPath,
+    children: new Map(),
+    fileCount: 0,
+  };
+}
+
+function freezeDirectory(node: MutableDirectoryNode): RuntimeGitChangedDirectoryNode {
+  const children = Array.from(node.children.values())
+    .map((child): RuntimeGitChangedTreeNode => (child.kind === 'directory' ? freezeDirectory(child) : child))
+    .sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  return {
+    kind: 'directory',
+    key: node.key,
+    name: node.name,
+    fullPath: node.fullPath,
+    children,
+    fileCount: node.fileCount,
+  };
 }
 
 export function buildRuntimeGitChangedTree(
-  payload: SessionRuntimeGitChangedFilesResponse | null,
+  payload: SessionRuntimeGitChangedFilesResponse | null | undefined,
 ): RuntimeGitChangedTreeNode[] {
-  if (!payload?.entries?.length) return [];
+  const root = makeDirectory('', '');
+  const entries = Array.isArray(payload?.entries) ? payload.entries : [];
 
-  const basePath = (payload.path || payload.git_root || '').trim();
-  const roots: MutableTreeNode[] = [];
+  for (const entry of entries) {
+    const cleanPath = entry.path.split('/').filter(Boolean);
+    if (cleanPath.length === 0) continue;
 
-  for (const entry of payload.entries) {
-    const relativePath = trimPrefix(entry.path, basePath || payload.git_root || '');
-    const parts = (relativePath || entry.path).split('/').filter(Boolean);
-    if (!parts.length) continue;
+    let current = root;
+    current.fileCount += 1;
 
-    let cursor = roots;
-    let currentPath = basePath;
+    for (let index = 0; index < cleanPath.length; index += 1) {
+      const part = cleanPath[index];
+      const fullPath = cleanPath.slice(0, index + 1).join('/');
+      const isFile = index === cleanPath.length - 1;
 
-    for (const [index, part] of parts.entries()) {
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      const isLeaf = index === parts.length - 1;
-      let node = cursor.find((candidate) => candidate.name === part && candidate.kind === (isLeaf ? 'file' : 'directory'));
-      if (!node) {
-        node = {
-          key: currentPath,
+      if (isFile) {
+        current.children.set(fullPath, {
+          kind: 'file',
+          key: `file:${fullPath}`,
           name: part,
-          fullPath: currentPath,
-          kind: isLeaf ? 'file' : 'directory',
-          children: [],
-          fileCount: 0,
-          entry: isLeaf ? entry : undefined,
-        };
-        cursor.push(node);
+          fullPath,
+          entry,
+        });
+        continue;
       }
-      if (isLeaf) {
-        node.entry = entry;
-      } else {
-        cursor = node.children;
+
+      const existing = current.children.get(fullPath);
+      if (existing?.kind === 'directory' && 'children' in existing && existing.children instanceof Map) {
+        existing.fileCount += 1;
+        current = existing;
+        continue;
       }
+
+      const next = makeDirectory(part, fullPath);
+      next.fileCount = 1;
+      current.children.set(fullPath, next);
+      current = next;
     }
   }
 
-  return sortNodes(roots);
+  return freezeDirectory(root).children;
 }

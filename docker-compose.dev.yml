@@ -15,22 +15,10 @@ services:
       timeout: 3s
       retries: 20
 
-  sentinel-runtime:
-    build:
-      context: .
-      dockerfile: infra/runtime/docker/Dockerfile
-    image: sentinel-runtime
-    profiles:
-      - build-only
-
   sentinel-backend:
     build:
       context: .
       dockerfile: infra/docker/sentinel-backend.dev.Dockerfile
-    cap_add:
-      - SYS_ADMIN
-    security_opt:
-      - seccomp=unconfined
     environment:
       APP_ENV: development
       DATABASE_HOST: ${SENTINEL_DATABASE_HOST:-postgres}
@@ -42,25 +30,16 @@ services:
       JWT_SECRET_KEY: ${SENTINEL_JWT_SECRET_KEY:?Set SENTINEL_JWT_SECRET_KEY in .env to a long random value}
       SENTINEL_AUTH_USERNAME: ${SENTINEL_AUTH_USERNAME:?Set SENTINEL_AUTH_USERNAME in .env or the shell}
       SENTINEL_AUTH_PASSWORD: ${SENTINEL_AUTH_PASSWORD:?Set SENTINEL_AUTH_PASSWORD in .env or the shell}
-      RUNTIME_EXEC_BACKEND: ${SENTINEL_RUNTIME_BACKEND:?Set SENTINEL_RUNTIME_BACKEND in .env or the shell}
-      RUNTIME_DOCKER_NETWORK: sentinel_default
-      RUNTIME_QEMU_IMAGE: ${SENTINEL_QEMU_ARTIFACTS_DIR:-/tmp/sentinel-qemu-output}/sentinel-runtime-base-arm64.qcow2
-      RUNTIME_QEMU_SSH_KEY_PATH: ${SENTINEL_QEMU_ARTIFACTS_DIR:-/tmp/sentinel-qemu-output}/sentinel-runtime-base-arm64.id_ed25519
-      RUNTIME_QEMU_BRIDGE_URL: ${SENTINEL_QEMU_BRIDGE_URL:-http://host.docker.internal:47481}
-      RUNTIME_QEMU_BRIDGE_TOKEN: ${SENTINEL_QEMU_BRIDGE_TOKEN:-}
-      RUNTIME_QEMU_RUN_ROOT: ${SENTINEL_QEMU_RUN_ROOT:-}
-      SESSION_RUNTIME_BASE_DIR: /data/runtime/workspaces
-      RUNTIME_WORKSPACES_HOST_DIR: ${SENTINEL_RUNTIME_WORKSPACES_DIR:?Run ./sentinel-cli.sh --dev or set SENTINEL_RUNTIME_WORKSPACES_DIR}
+      SENTINEL_RUNTIME_SSH_HOST: ${SENTINEL_RUNTIME_SSH_HOST:?Set SENTINEL_RUNTIME_SSH_HOST in .env}
+      SENTINEL_RUNTIME_SSH_PORT: ${SENTINEL_RUNTIME_SSH_PORT:-22}
+      SENTINEL_RUNTIME_SSH_USERNAME: ${SENTINEL_RUNTIME_SSH_USERNAME:?Set SENTINEL_RUNTIME_SSH_USERNAME in .env}
+      SENTINEL_RUNTIME_SSH_KEY_PATH: ${SENTINEL_RUNTIME_SSH_KEY_PATH:-}
+      SENTINEL_RUNTIME_SSH_PASSWORD: ${SENTINEL_RUNTIME_SSH_PASSWORD:-}
+      SENTINEL_RUNTIME_WORKSPACES_DIR: ${SENTINEL_RUNTIME_WORKSPACES_DIR:?Set SENTINEL_RUNTIME_WORKSPACES_DIR in .env}
       UVICORN_RELOAD: "true"
     volumes:
       - ./apps/backend/sentinel:/app
-      - sentinel-runtime-ssh-dev:/data/runtime/ssh
-      - ${SENTINEL_RUNTIME_WORKSPACES_DIR:?Run ./sentinel-cli.sh --dev or set SENTINEL_RUNTIME_WORKSPACES_DIR}:/data/runtime/workspaces
-      - ${SENTINEL_QEMU_ARTIFACTS_DIR:-/tmp/sentinel-qemu-output}:${SENTINEL_QEMU_ARTIFACTS_DIR:-/tmp/sentinel-qemu-output}:ro
-      - ./infra/runtime/qemu/output:/data/runtime/qemu-output:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - ${SENTINEL_RUNTIME_SSH_KEY_PATH}:${SENTINEL_RUNTIME_SSH_KEY_PATH}:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,7 +65,6 @@ services:
 
 volumes:
   pgdata_dev:
-  sentinel-runtime-ssh-dev:
 
 networks:
   default:

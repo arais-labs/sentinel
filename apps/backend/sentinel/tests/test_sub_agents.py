@@ -93,7 +93,6 @@ def test_sub_agents_crud_ownership_and_concurrency_cap():
             json={
                 "name": "collect evidence",
                 "scope": "session notes",
-                "browser_tab_id": "t2",
                 "max_steps": 4,
             },
             headers=owner_headers,
@@ -101,7 +100,6 @@ def test_sub_agents_crud_ownership_and_concurrency_cap():
         assert created.status_code == 202
         created_payload = created.json()
         assert created_payload["status"] == "completed"
-        assert created_payload["browser_tab_id"] == "t2"
         task_id = created_payload["id"]
         assert any(item["task_id"] == task_id for item in ws_events)
 
@@ -109,7 +107,6 @@ def test_sub_agents_crud_ownership_and_concurrency_cap():
         assert listed.status_code == 200
         assert listed.json()["total"] >= 1
         assert any(item["id"] == task_id for item in listed.json()["items"])
-        assert any(item.get("browser_tab_id") == "t2" for item in listed.json()["items"])
 
         detail = client.get(
             f"/api/v1/instances/main/sessions/{session_id}/sub-agents/{task_id}",

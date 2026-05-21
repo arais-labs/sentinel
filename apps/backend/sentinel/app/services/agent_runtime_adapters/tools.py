@@ -26,7 +26,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional until secrets module 
 
 # Top-level keys stripped from tool results before they reach the model —
 # tools echo these for logging; the model already has them from turn scaffold.
-_RESULT_STRIP_TOP_LEVEL_FIELDS: frozenset[str] = frozenset({"session_id"})
+_RESULT_STRIP_TOP_LEVEL_FIELDS: frozenset[str] = frozenset({"session_id", "metadata"})
 
 
 class SentinelToolRegistryAdapter(RuntimeToolRegistry):
@@ -127,6 +127,8 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
             )
             if approval is not None:
                 metadata["approval"] = approval
+            if isinstance(result, dict) and isinstance(result.get("metadata"), dict):
+                metadata.update(result["metadata"])
 
             cleaned_content = result
             if isinstance(result, (dict, list)):

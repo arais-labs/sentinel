@@ -5,7 +5,7 @@ import base64
 from uuid import UUID
 
 import app.services.browser.pool as browser_pool_module
-import app.services.runtime as runtime_module
+from app.schemas.runtime import RuntimeExecResult
 from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
 from app.services.browser.manager import BrowserManager
 from app.services.tools.executor import ToolExecutor, ToolValidationError
@@ -227,6 +227,57 @@ class _StubBrowserPool:
         pass
 
 
+class _FakeListener:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    async def wait_closed(self):
+        return None
+
+
+class _FakeSSH:
+    def __init__(self):
+        self.scripts: list[str] = []
+        self.listeners: list[_FakeListener] = []
+
+    async def run_script(self, script: str, *, timeout: int = 300):
+        _ = timeout
+        self.scripts.append(script)
+        if "profile_dir = browser_dir / \"chromium\"" in script and "shutil.rmtree(profile_dir)" in script:
+            return RuntimeExecResult(exit_status=0, stdout='{"ok":true,"profile_dir":"/tmp/profile"}', stderr="")
+        if "metadata_path = Path(request[\"runtime\"])" in script and "browser.json" in script and "kill_pid(pid)" in script:
+            return RuntimeExecResult(exit_status=0, stdout='{"ok":true}', stderr="")
+        return RuntimeExecResult(
+            exit_status=0,
+            stdout='{"ok":true,"pid":1234,"port":9333,"profile_dir":"/tmp/profile","reused":false}',
+            stderr="",
+        )
+
+    async def forward_local_port(self, listen_host: str, listen_port: int, target_host: str, target_port: int):
+        _ = listen_host, listen_port, target_host, target_port
+        listener = _FakeListener()
+        self.listeners.append(listener)
+        return listener
+
+
+class _FakeTerminalManager:
+    def __init__(self):
+        self.ssh = _FakeSSH()
+        self.prepared: list[str] = []
+
+    async def prepare_workspace(self, session_id: str):
+        self.prepared.append(session_id)
+
+
+class _FakeDesktopManager:
+    async def ensure_session_desktop(self, session_id: str):
+        _ = session_id
+        return type("Desktop", (), {"display": ":75", "geometry": "1920x1200"})()
+
+
 def _stub_pool(manager=None):
     return _StubBrowserPool(manager)
 
@@ -354,23 +405,10 @@ def test_browser_manager_lazy_init_and_actions():
 
 def test_browser_pool_restarts_remote_browser_when_cdp_is_unavailable():
     state = {"created": 0}
-    restart_calls: list[str] = []
-
-    class _FakeRuntimeProvider:
-        async def ensure(self, session_id):
-            _ = session_id
-            return type("Runtime", (), {"host": "127.0.0.1"})()
-
-        def get_host(self, session_id):
-            _ = session_id
-            return "127.0.0.1"
-
-        async def restart_browser(self, session_id, runtime):
-            _ = runtime
-            restart_calls.append(str(session_id))
 
     class _FakeBrowserManager:
-        def __init__(self, *, cdp_endpoint: str | None = None):
+        def __init__(self, *, cdp_endpoint: str | None = None, **kwargs):
+            _ = kwargs
             self.cdp_endpoint = cdp_endpoint
             self.instance_number = state["created"]
             state["created"] += 1
@@ -383,39 +421,26 @@ def test_browser_pool_restarts_remote_browser_when_cdp_is_unavailable():
         async def close(self):
             self.closed = True
 
-    old_get_runtime = runtime_module.get_runtime
-    old_manager_cls = browser_pool_module.BrowserManager
-    browser_pool_module.BrowserManager = _FakeBrowserManager
-    runtime_module.get_runtime = lambda: _FakeRuntimeProvider()
-    try:
-        pool = browser_pool_module.BrowserPool()
-        manager = _run(pool.get(_SID))
-    finally:
-        browser_pool_module.BrowserManager = old_manager_cls
-        runtime_module.get_runtime = old_get_runtime
+    terminal_manager = _FakeTerminalManager()
+    pool = browser_pool_module.BrowserPool(
+        terminal_manager=terminal_manager,
+        desktop_manager=_FakeDesktopManager(),
+        manager_cls=_FakeBrowserManager,
+    )
+    manager = _run(pool.get(_SID))
 
     assert isinstance(manager, _FakeBrowserManager)
     assert manager.instance_number == 1
-    assert restart_calls == [_SID]
+    assert len(terminal_manager.ssh.listeners) == 2
+    assert terminal_manager.ssh.listeners[0].closed is True
 
 
 def test_browser_pool_recreates_unhealthy_cached_manager():
-    class _FakeRuntimeProvider:
-        async def ensure(self, session_id):
-            _ = session_id
-            return type("Runtime", (), {"host": "127.0.0.1"})()
-
-        def get_host(self, session_id):
-            _ = session_id
-            return "127.0.0.1"
-
-        async def restart_browser(self, session_id, runtime):
-            _ = session_id, runtime
-
     class _FakeBrowserManager:
         instances: list["_FakeBrowserManager"] = []
 
-        def __init__(self, *, cdp_endpoint: str | None = None):
+        def __init__(self, *, cdp_endpoint: str | None = None, **kwargs):
+            _ = kwargs
             self.cdp_endpoint = cdp_endpoint
             self.fail = False
             self.closed = False
@@ -428,18 +453,14 @@ def test_browser_pool_recreates_unhealthy_cached_manager():
         async def close(self):
             self.closed = True
 
-    old_get_runtime = runtime_module.get_runtime
-    old_manager_cls = browser_pool_module.BrowserManager
-    browser_pool_module.BrowserManager = _FakeBrowserManager
-    runtime_module.get_runtime = lambda: _FakeRuntimeProvider()
-    try:
-        pool = browser_pool_module.BrowserPool()
-        first = _run(pool.get(_SID))
-        first.fail = True
-        second = _run(pool.get(_SID))
-    finally:
-        browser_pool_module.BrowserManager = old_manager_cls
-        runtime_module.get_runtime = old_get_runtime
+    pool = browser_pool_module.BrowserPool(
+        terminal_manager=_FakeTerminalManager(),
+        desktop_manager=_FakeDesktopManager(),
+        manager_cls=_FakeBrowserManager,
+    )
+    first = _run(pool.get(_SID))
+    first.fail = True
+    second = _run(pool.get(_SID))
 
     assert first is not second
     assert first.closed is True
@@ -596,23 +617,10 @@ def test_browser_reset_tool_executes():
 
 def test_browser_pool_reset_restarts_remote_browser():
     state = {"created": 0}
-    restart_calls: list[str] = []
-
-    class _FakeRuntimeProvider:
-        async def ensure(self, session_id):
-            _ = session_id
-            return type("Runtime", (), {"host": "127.0.0.1"})()
-
-        def get_host(self, session_id):
-            _ = session_id
-            return "127.0.0.1"
-
-        async def restart_browser(self, session_id, runtime):
-            _ = runtime
-            restart_calls.append(str(session_id))
 
     class _FakeBrowserManager:
-        def __init__(self, *, cdp_endpoint: str | None = None):
+        def __init__(self, *, cdp_endpoint: str | None = None, **kwargs):
+            _ = kwargs
             self.cdp_endpoint = cdp_endpoint
             self.instance_number = state["created"]
             state["created"] += 1
@@ -627,21 +635,18 @@ def test_browser_pool_reset_restarts_remote_browser():
         async def close(self):
             self.closed = True
 
-    old_get_runtime = runtime_module.get_runtime
-    old_manager_cls = browser_pool_module.BrowserManager
-    browser_pool_module.BrowserManager = _FakeBrowserManager
-    runtime_module.get_runtime = lambda: _FakeRuntimeProvider()
-    try:
-        pool = browser_pool_module.BrowserPool()
-        result = _run(pool.reset(_SID))
-    finally:
-        browser_pool_module.BrowserManager = old_manager_cls
-        runtime_module.get_runtime = old_get_runtime
+    terminal_manager = _FakeTerminalManager()
+    pool = browser_pool_module.BrowserPool(
+        terminal_manager=terminal_manager,
+        desktop_manager=_FakeDesktopManager(),
+        manager_cls=_FakeBrowserManager,
+    )
+    result = _run(pool.reset(_SID))
 
     assert result["reset"] is True
     assert result["url"] == "about:blank"
-    assert result["cdp_endpoint"] == "http://127.0.0.1:9223"
-    assert restart_calls == [_SID]
+    assert result["cdp_endpoint"].startswith("http://127.0.0.1:")
+    assert any("shutil.rmtree(profile_dir)" in script for script in terminal_manager.ssh.scripts)
 
 
 def test_browser_tabs_tool_executes():

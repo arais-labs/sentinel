@@ -16,14 +16,6 @@ services:
       timeout: 3s
       retries: 20
 
-  sentinel-runtime:
-    build:
-      context: .
-      dockerfile: infra/runtime/docker/Dockerfile
-    image: sentinel-runtime
-    profiles:
-      - build-only
-
   sentinel-backend:
     build:
       context: .
@@ -44,23 +36,17 @@ services:
       JWT_SECRET_KEY: ${SENTINEL_JWT_SECRET_KEY:?Set SENTINEL_JWT_SECRET_KEY to a long random value before using docker-compose.yml}
       SENTINEL_AUTH_USERNAME: ${SENTINEL_AUTH_USERNAME:?Set SENTINEL_AUTH_USERNAME before using docker-compose.yml}
       SENTINEL_AUTH_PASSWORD: ${SENTINEL_AUTH_PASSWORD:?Set SENTINEL_AUTH_PASSWORD before using docker-compose.yml}
-      RUNTIME_EXEC_BACKEND: ${SENTINEL_RUNTIME_BACKEND:?Set SENTINEL_RUNTIME_BACKEND before using docker-compose.yml}
-      RUNTIME_DOCKER_NETWORK: sentinel_default
-      RUNTIME_QEMU_IMAGE: ${SENTINEL_QEMU_ARTIFACTS_DIR:-/tmp/sentinel-qemu-output}/sentinel-runtime-base-arm64.qcow2
-      RUNTIME_QEMU_SSH_KEY_PATH: ${SENTINEL_QEMU_ARTIFACTS_DIR:-/tmp/sentinel-qemu-output}/sentinel-runtime-base-arm64.id_ed25519
-      RUNTIME_QEMU_BRIDGE_URL: ${SENTINEL_QEMU_BRIDGE_URL:-http://host.docker.internal:47481}
-      RUNTIME_QEMU_BRIDGE_TOKEN: ${SENTINEL_QEMU_BRIDGE_TOKEN:-}
-      RUNTIME_QEMU_RUN_ROOT: ${SENTINEL_QEMU_RUN_ROOT:-}
-      SESSION_RUNTIME_BASE_DIR: /data/runtime/workspaces
-      RUNTIME_WORKSPACES_HOST_DIR: ${SENTINEL_RUNTIME_WORKSPACES_DIR:?Set SENTINEL_RUNTIME_WORKSPACES_DIR to an absolute host path before using docker-compose.yml}
+      SENTINEL_RUNTIME_SSH_HOST: ${SENTINEL_RUNTIME_SSH_HOST:?Set SENTINEL_RUNTIME_SSH_HOST before using docker-compose.yml}
+      SENTINEL_RUNTIME_SSH_PORT: ${SENTINEL_RUNTIME_SSH_PORT:-22}
+      SENTINEL_RUNTIME_SSH_USERNAME: ${SENTINEL_RUNTIME_SSH_USERNAME:?Set SENTINEL_RUNTIME_SSH_USERNAME before using docker-compose.yml}
+      SENTINEL_RUNTIME_SSH_KEY_PATH: ${SENTINEL_RUNTIME_SSH_KEY_PATH:-}
+      SENTINEL_RUNTIME_SSH_PASSWORD: ${SENTINEL_RUNTIME_SSH_PASSWORD:-}
+      SENTINEL_RUNTIME_WORKSPACES_DIR: ${SENTINEL_RUNTIME_WORKSPACES_DIR:?Set SENTINEL_RUNTIME_WORKSPACES_DIR before using docker-compose.yml}
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
-      - sentinel-runtime-ssh:/data/runtime/ssh
-      - ${SENTINEL_RUNTIME_WORKSPACES_DIR:?Set SENTINEL_RUNTIME_WORKSPACES_DIR to an absolute host path before using docker-compose.yml}:/data/runtime/workspaces
-      - ${SENTINEL_QEMU_ARTIFACTS_DIR:-/tmp/sentinel-qemu-output}:${SENTINEL_QEMU_ARTIFACTS_DIR:-/tmp/sentinel-qemu-output}:ro
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SENTINEL_RUNTIME_SSH_KEY_PATH}:${SENTINEL_RUNTIME_SSH_KEY_PATH}:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -82,7 +68,6 @@ services:
 
 volumes:
   pgdata:
-  sentinel-runtime-ssh:
 
 networks:
   default:

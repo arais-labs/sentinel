@@ -39,14 +39,9 @@ import {
   postgresDataDir,
   postgresBinaryPath,
   postgresSharePath,
-  qemuBinaryPath,
-  qemuRunRoot,
   runtimeChannelMarkerPath,
   runtimeCommandPath,
   runtimeCommitMarkerPath,
-  runtimeImagePath,
-  runtimeKeyPath,
-  runtimeOutputDir,
   runtimeSeedRoot,
   seedNodeDir,
   seedPythonDir,
@@ -54,7 +49,8 @@ import {
   pythonHome,
   sourceRoot,
   venvPython,
-} from './runtimeConfig.js';
+} from './desktopConfig.js';
+import { runtimeSshConfig, runtimeSshEnv } from './runtimeSshConfig.js';
 import { DailyLogWriter } from './logWriter.js';
 
 interface PostgresProcessInfo {
@@ -77,7 +73,7 @@ interface DesktopProcessEntry {
   command: string;
 }
 
-type DesktopPidService = 'backend' | 'postgres' | 'qemu-build' | 'qemu-vm';
+type DesktopPidService = 'backend' | 'postgres';
 
 export class DesktopManager {
   private readonly supervisor = new ProcessSupervisor();
@@ -150,8 +146,6 @@ export class DesktopManager {
     await this.stopExistingPostgres();
     await this.clearPidFile('backend');
     await this.clearPidFile('postgres');
-    await this.clearPidFile('qemu-build');
-    await this.clearPidFile('qemu-vm');
     this.supervisor.setVirtualStatus({
       name: 'postgres',
       state: 'stopped',
@@ -207,14 +201,11 @@ export class DesktopManager {
     }
     // No ensureInitialized: appRuntime reset must work when bootstrap is broken.
     await this.stopServices();
-    await this.reapOrphanedQemuBuild();
-    await this.reapOrphanedQemuVms();
     await this.releaseDesktopOwnership();
     if (resetScopes.db) {
       await rm(path.join(appSupportRoot(), 'postgres'), { recursive: true, force: true });
     }
     if (resetScopes.runtimeData) {
-      await rm(path.join(appSupportRoot(), 'qemu'), { recursive: true, force: true });
       await rm(desktopWorkspaceRoot(), { recursive: true, force: true });
       await rm(desktopRunRoot(), { recursive: true, force: true });
     }
@@ -252,15 +243,11 @@ export class DesktopManager {
   private async ensureInitialized(): Promise<void> {
     if (this.ports) return;
     this.logWriter = this.logWriter || new DailyLogWriter(app.getPath('logs'));
-    await mkdir(runtimeOutputDir(), { recursive: true });
-    await mkdir(qemuRunRoot(), { recursive: true });
     await mkdir(desktopRunRoot(), { recursive: true });
     await mkdir(desktopWorkspaceRoot(), { recursive: true });
     await mkdir(postgresDataDir(), { recursive: true });
     await this.acquireDesktopOwnership();
     await this.reapStaleDesktopProcesses();
-    await this.reapOrphanedQemuBuild();
-    await this.reapOrphanedQemuVms();
     if (app.isPackaged) {
       await this.bootstrapRuntime();
     }
@@ -270,9 +257,6 @@ export class DesktopManager {
       app: await findFreePort(5070),
       backend: await findFreePort(18020),
       postgres: await findFreePort(15452),
-      qemuSsh: await findFreePort(2247),
-      qemuVnc: await findFreePort(16101),
-      qemuCdp: await findFreePort(19244),
     };
   }
 
@@ -468,28 +452,11 @@ export class DesktopManager {
   }
 
   async getStatus(): Promise<DesktopStatus> {
-    const qemuSystemPath = await this.resolveQemuStatusPath('qemu-system-aarch64');
-    const qemuImgPath = await this.resolveQemuStatusPath('qemu-img');
-    const qemuPresent = Boolean(qemuSystemPath && qemuImgPath);
-    const imagePath = runtimeImagePath();
-    const keyPath = runtimeKeyPath();
     const appUrl = this.ports && this.localServer.running ? this.appUrl() : undefined;
     return {
       appUrl,
       appSupportPath: appSupportRoot(),
-      qemu: {
-        installed: qemuPresent,
-        qemuSystemPath: qemuSystemPath || qemuBinaryPath('qemu-system-aarch64'),
-        qemuImgPath: qemuImgPath || qemuBinaryPath('qemu-img'),
-        message: qemuPresent
-          ? app.isPackaged ? 'Bundled QEMU runtime present' : 'QEMU detected on PATH'
-          : app.isPackaged ? 'Bundled QEMU runtime missing. Rebuild the desktop package.' : 'QEMU is not available on PATH',
-      },
-      runtimeImage: {
-        imagePath,
-        keyPath,
-        present: existsSync(imagePath) && existsSync(keyPath),
-      },
+      runtime: runtimeSshConfig(),
       services: this.supervisor.status(),
     };
   }
@@ -674,8 +641,6 @@ export class DesktopManager {
     await this.stopExistingPostgres();
     await this.clearPidFile('backend');
     await this.clearPidFile('postgres');
-    await this.clearPidFile('qemu-build');
-    await this.clearPidFile('qemu-vm');
     await this.releaseDesktopOwnership();
     await this.logWriter?.flush();
   }
@@ -729,7 +694,7 @@ export class DesktopManager {
       command: backend.command,
       args: backend.args,
       cwd: backend.cwd,
-      env: buildBackendEnv(this.ports!, this.secrets!),
+      env: buildBackendEnv(this.ports!, this.secrets!, runtimeSshEnv()),
       port: this.ports!.backend,
     });
     const pid = this.supervisor.pid('backend');
@@ -833,12 +798,6 @@ export class DesktopManager {
     throw new Error('Missing Python runtime for local desktop development.');
   }
 
-  private async resolveQemuStatusPath(name: string): Promise<string | undefined> {
-    const bundled = qemuBinaryPath(name);
-    if (app.isPackaged) return existsSync(bundled) ? bundled : undefined;
-    return commandExists(name);
-  }
-
   private async waitForPostgres(): Promise<void> {
     const pgIsReady = await this.resolvePostgresBinary('pg_isready').catch(() => undefined);
     if (!pgIsReady) {
@@ -937,15 +896,6 @@ export class DesktopManager {
       if (command.includes('app.desktop_entry') && command.includes(appSupportRoot())) {
         return true;
       }
-      if (command.includes('build-base-image.sh') && command.includes('Sentinel.app/Contents/Resources/runtime/qemu')) {
-        return true;
-      }
-      if (command.includes('sentinel-qemu-builder') && command.includes(appSupportRoot())) {
-        return true;
-      }
-      if (command.includes('sentinel-qemu-runtime') && command.includes(appSupportRoot())) {
-        return true;
-      }
       return false;
     });
     for (const entry of stale) {
@@ -957,8 +907,6 @@ export class DesktopManager {
       await rm(path.join(dataDir, 'postmaster.pid'), { force: true });
     }
     await this.reapPidFile('backend');
-    await this.reapPidFile('qemu-build');
-    await this.reapPidFile('qemu-vm');
   }
 
   private async reapPidFile(service: DesktopPidService): Promise<void> {
@@ -982,18 +930,6 @@ export class DesktopManager {
 
   private async clearPidFile(service: DesktopPidService): Promise<void> {
     await rm(this.pidPath(service), { force: true });
-  }
-
-  private async reapOrphanedQemuBuild(): Promise<void> {
-    const pidFile = path.join(qemuRunRoot(), 'build.pid');
-    const raw = await readFileSafe(pidFile);
-    const pid = raw ? Number(raw.trim()) : NaN;
-    if (Number.isInteger(pid) && pid > 0 && isProcessAlive(pid)) {
-      this.supervisor.appendManagerLog(`Reaped orphaned QEMU build pid=${pid}`);
-      await terminateProcess(pid);
-    }
-    await rm(pidFile, { force: true });
-    await this.clearPidFile('qemu-build');
   }
 
   private async terminateStalePostgresClients(): Promise<void> {
@@ -1108,23 +1044,6 @@ export class DesktopManager {
     return status;
   }
 
-  private async reapOrphanedQemuVms(): Promise<void> {
-    const root = qemuRunRoot();
-    if (!existsSync(root)) return;
-    const entries = await readFileSafe(path.join(root, 'vm.pid'));
-    if (entries === undefined) return;
-    const pid = Number(entries.trim());
-    if (!Number.isInteger(pid) || pid <= 0) return;
-    try {
-      process.kill(pid, 0);
-      process.kill(pid, 'SIGTERM');
-      this.supervisor.appendManagerLog(`Reaped orphaned QEMU pid=${pid}`);
-    } catch {
-      // Process is already gone.
-    }
-    await rm(path.join(root, 'vm.pid'), { force: true });
-    await this.clearPidFile('qemu-vm');
-  }
 }
 
 async function listProcesses(): Promise<DesktopProcessEntry[]> {

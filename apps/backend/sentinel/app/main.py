@@ -46,7 +46,6 @@ from app.routers import (
     telegram,
     triggers,
     version as version_router,
-    vnc_proxy,
     ws,
     webhooks,
 )
@@ -57,38 +56,13 @@ from app.services.araios.runtime_services import configure_runtime_services
 from app.services.memory.embeddings import EmbeddingService
 from app.services.llm.ids import TierName
 from app.services.memory.search import MemorySearchService
-from app.services.runtime.terminal_manager import (
-    configure_terminal_completion_handler,
-    configure_terminal_event_broadcaster,
-    get_terminal_manager,
-)
-from app.services.runtime.session_runtime import (
-    configure_runtime_job_completion_callback,
-)
 from app.services.sessions.session_naming import SessionNamingService
 from app.services.tools.approval import ApprovalService
 from app.models.manager import SentinelInstance
 from app.services.instance_runtime_context import (
     instance_runtime_context_registry,
 )
-from app.services.browser.pool import BrowserPool
 from app.services.ws.ws_manager import ConnectionManager
-
-
-async def shutdown_runtime_provider(app_state: Any, bounded: Callable[..., Awaitable[None]]) -> None:
-    runtime_provider = getattr(app_state, "runtime_provider", None)
-    if runtime_provider is None:
-        return
-    preserve_qemu_for_dev_reload = (
-        settings.app_env.lower() == "development"
-        and settings.runtime_exec_backend.lower() == "qemu"
-    )
-    if hasattr(runtime_provider, "stop_all") and not preserve_qemu_for_dev_reload:
-        await bounded("runtime_provider.stop_all", runtime_provider.stop_all(), timeout=10.0)
-    elif preserve_qemu_for_dev_reload:
-        logger.info("shutdown: preserving QEMU runtime across development backend reload")
-    if hasattr(runtime_provider, "cancel_background_prepare"):
-        await bounded("runtime_prepare", runtime_provider.cancel_background_prepare(), timeout=5.0)
 
 
 _LLM_CREDENTIAL_ENV_VARS = (
@@ -148,7 +122,6 @@ async def lifespan(app: FastAPI):
             base_url=settings.embedding_base_url,
         )
     memory_search_service = MemorySearchService(embedding_service)
-    browser_pool = BrowserPool()
     ws_manager = ConnectionManager()
     run_registry = AgentRunRegistry()
     app.state.instance_stop_event = stop_event
@@ -156,27 +129,9 @@ async def lifespan(app: FastAPI):
     configure_runtime_services(
         embedding_service=embedding_service,
         memory_search_service=memory_search_service,
-        browser_pool=browser_pool,
         app_state=app.state,
     )
 
-    # Recover running runtime containers that survived a backend restart/reload
-    try:
-        from app.services.runtime import get_runtime
-        _rt = get_runtime()
-        app.state.runtime_provider = _rt
-        if hasattr(_rt, "recover_existing"):
-            _recovered = await _rt.recover_existing()
-            if _recovered:
-                logger.info("Recovered %d existing runtime container(s)", _recovered)
-        if hasattr(_rt, "start_background_prepare"):
-            _rt.start_background_prepare()
-    except Exception:
-        logger.debug("Runtime container recovery skipped", exc_info=True)
-
-    # Let the TerminalManager broadcast terminal_opened/closed/busy events to
-    # any subscribers of a chat session's WS stream.
-    configure_terminal_event_broadcaster(ws_manager.broadcast)
     wakeup_pending: dict[str, deque[str]] = defaultdict(deque)
     wakeup_workers: set[str] = set()
     wakeup_lock = asyncio.Lock()
@@ -193,7 +148,6 @@ async def lifespan(app: FastAPI):
     app.state.approval_service = ApprovalService()
     app.state.embedding_service = embedding_service
     app.state.memory_search_service = memory_search_service
-    app.state.browser_pool = browser_pool
     app.state.ws_manager = ws_manager
     app.state.agent_run_registry = run_registry
 
@@ -422,13 +376,6 @@ async def lifespan(app: FastAPI):
         )
 
     run_registry.configure_idle_interjections_callback(_resume_pending_runtime_job_updates)
-    configure_runtime_job_completion_callback(_handle_runtime_job_completed)
-    # Same hook reused for the new tmux-backed background runs: completion of
-    # a `runtime.user(background=true)` lands in `_handle_runtime_job_completed`,
-    # which queues an interjection + wakeup so the agent gets a fresh turn
-    # with the result. There is no separate notification channel for
-    # background runs — they share the runtime-job completion path.
-    configure_terminal_completion_handler(_handle_runtime_job_completed)
 
     async def _broadcast_sub_agent_completed(task) -> None:
         await ws_manager.broadcast_sub_agent_completed(
@@ -473,7 +420,10 @@ async def lifespan(app: FastAPI):
         )
 
     app.state.sub_agent_completed_callback = _broadcast_sub_agent_completed
-    configure_runtime_services(ws_manager=ws_manager)
+    configure_runtime_services(
+        ws_manager=ws_manager,
+        runtime_job_completed_callback=_handle_runtime_job_completed,
+    )
 
     async with AsyncSessionLocal() as manager_db:
         result = await manager_db.execute(select(SentinelInstance).order_by(SentinelInstance.name))
@@ -532,8 +482,6 @@ async def lifespan(app: FastAPI):
             except Exception:  # noqa: BLE001
                 logger.warning("shutdown step %r raised", name, exc_info=True)
 
-        configure_runtime_job_completion_callback(None)
-        configure_terminal_completion_handler(None)
         run_registry.configure_idle_interjections_callback(None)
         stop_event.set()
 
@@ -543,12 +491,7 @@ async def lifespan(app: FastAPI):
         if cancelled_runs:
             logger.info("shutdown: cancelled %d active agent run(s)", cancelled_runs)
 
-        # 2. Stop background terminal watchers so their asyncssh polls die.
-        await _bounded("terminal_manager.shutdown",
-                       get_terminal_manager().shutdown(timeout=3.0),
-                       timeout=4.0)
-
-        # 3. Cancel any pending wakeup drainers — they only do small work but
+        # 2. Cancel any pending wakeup drainers — they only do small work but
         #    can be mid-await on a generation that we just cancelled above.
         if wakeup_drainer_tasks:
             for task in list(wakeup_drainer_tasks):
@@ -559,20 +502,16 @@ async def lifespan(app: FastAPI):
                 timeout=2.0,
             )
 
-        # 4. Runtime providers own external execution resources. Stop them
-        #    while the backend is still alive so detached VMs/containers do not
-        #    survive desktop quit or server shutdown.
-        await shutdown_runtime_provider(app.state, _bounded)
-
-        # 5. Cooperative loops (all use stop_event); bound just in case.
+        # 3. Cooperative loops (all use stop_event); bound just in case.
         await _bounded("rate_limit_cleanup", cleanup_task, timeout=2.0)
         await _bounded("instance_contexts", instance_runtime_context_registry.stop_all(), timeout=5.0)
 
-        # 6. External resources — these are the historical hang sources.
+        # 4. External resources.
         from app.services.telegram import stop_telegram_bridge
+        from app.services.runtime.ssh_runtime import close_runtime_terminal_manager
 
+        await _bounded("runtime_ssh", close_runtime_terminal_manager(), timeout=3.0)
         await _bounded("telegram_bridge", stop_telegram_bridge(app.state), timeout=3.0)
-        await _bounded("browser_pool", browser_pool.close_all(), timeout=5.0)
         await _bounded("instance_db_engines", instance_session_registry.dispose_all(), timeout=3.0)
 
 
@@ -612,9 +551,8 @@ app.include_router(models.router, prefix=f"{_instance_api_prefix}/models", tags=
 app.include_router(agent_modes_router.router, prefix="/api/v1/agent-modes", tags=["agent-modes"])
 app.include_router(onboarding.router, prefix=f"{_instance_api_prefix}/onboarding", tags=["onboarding"])
 app.include_router(settings_router.router, prefix=f"{_instance_api_prefix}/settings", tags=["settings"])
-app.include_router(runtime.router, prefix=f"{_instance_api_prefix}/runtime", tags=["runtime"])
 app.include_router(telegram.router, prefix=f"{_instance_api_prefix}/telegram", tags=["telegram"])
-app.include_router(vnc_proxy.router, tags=["vnc"])
+app.include_router(runtime.router, prefix=f"{_instance_api_prefix}/runtime", tags=["runtime"])
 app.include_router(ws.router, prefix="/ws/instances/{instance_name}/sessions", tags=["ws"])
 
 # Module/control-plane routes used by the Sentinel modules surface.

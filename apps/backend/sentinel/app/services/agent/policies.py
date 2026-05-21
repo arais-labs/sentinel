@@ -82,7 +82,6 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
             "2) call delegate with command=spawn and a narrow objective and explicit scope. "
             "Use delegate instead of doing multiple exploratory or checking tool calls yourself when those branches are independent. "
             "Default to permissive tool access (omit allowed_tools or pass empty list) unless the user asked for tighter restrictions.\n"
-            "2b) for browser delegation, pass browser_tab_id to pin a sub-agent to exactly one tab.\n"
             "3) call delegate with command=list only when you need to inspect existing delegated tasks or avoid overlap with work already in flight.\n"
             "4) do not continue doing the same exploratory work yourself once you have delegated those branches. Keep the main loop on synthesis, critical-path decisions, and integration.\n"
             "5) after spawning, do not immediately poll with command=status in typical cases. In the normal case, end the turn and wait so the user can steer while the delegated branch runs. The main session will be prompted automatically when the delegated branch finishes, so immediate polling is usually unnecessary.\n"
@@ -204,7 +203,6 @@ _POLICIES: tuple[PolicyDefinition, ...] = (
             "Before clicking a submit/next button, use browser(command='wait_for', condition='enabled').\n"
             "After filling fields, verify with browser(command='get_value') or a fresh browser(command='snapshot').\n"
             "When navigation/popups create multiple tabs, use browser(command='tabs') then browser(command='tab_focus') before continuing.\n"
-            "When delegating browser work to sub-agents, assign each sub-agent a specific browser_tab_id.\n"
             "Only stop for user help when external human verification is required (captcha, OTP, email code, phone code)."
         ),
     ),

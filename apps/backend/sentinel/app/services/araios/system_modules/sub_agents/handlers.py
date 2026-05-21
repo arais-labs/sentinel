@@ -9,88 +9,17 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.services.araios.runtime_services import (
-    get_browser_pool,
     get_sub_agent_orchestrator,
     get_ws_manager,
 )
 from app.database.database import AsyncSessionLocal
 from app.models import SubAgentTask
-from app.services.browser.manager import BrowserManager
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.runtime_context import require_session_id
 
 
 # ── Helpers ──
-
-
-def _extract_browser_tab_constraint(constraints: Any) -> str | None:
-    items = constraints if isinstance(constraints, list) else []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("type", "")).strip().lower() != "browser_tab":
-            continue
-        tab_id = item.get("tab_id")
-        if isinstance(tab_id, str) and tab_id.strip():
-            return tab_id.strip()
-    return None
-
-
-def _active_sub_agent_tab_ids(tasks: list[SubAgentTask]) -> set[str]:
-    reserved: set[str] = set()
-    for task in tasks:
-        tab_id = _extract_browser_tab_constraint(task.constraints)
-        if tab_id:
-            reserved.add(tab_id)
-    return reserved
-
-
-def _sub_agent_may_use_browser(allowed_tools: list[str]) -> bool:
-    if not allowed_tools:
-        return True
-    return any(tool == "browser" or tool.startswith("browser_") for tool in allowed_tools)
-
-
-async def _select_sub_agent_browser_tab_id(
-    browser_manager: BrowserManager,
-    *,
-    reserved_tab_ids: set[str],
-) -> str | None:
-    try:
-        tabs_payload = await browser_manager.list_tabs()
-        tabs = tabs_payload.get("tabs", [])
-        active_tab_id = tabs_payload.get("active_tab_id")
-        active_tab_id = active_tab_id.strip() if isinstance(active_tab_id, str) else None
-
-        for item in tabs:
-            if not isinstance(item, dict):
-                continue
-            tab_id = item.get("tab_id")
-            if not isinstance(tab_id, str) or not tab_id.strip():
-                continue
-            normalized_tab_id = tab_id.strip()
-            if normalized_tab_id in reserved_tab_ids:
-                continue
-            if active_tab_id is not None and normalized_tab_id == active_tab_id:
-                continue
-            return normalized_tab_id
-
-        opened = await browser_manager.open_tab("about:blank")
-        tab_id = opened.get("tab_id")
-        normalized_opened_tab_id = (
-            tab_id.strip() if isinstance(tab_id, str) and tab_id.strip() else None
-        )
-        if (
-            active_tab_id is not None
-            and normalized_opened_tab_id is not None
-            and active_tab_id != normalized_opened_tab_id
-        ):
-            with contextlib.suppress(Exception):
-                await browser_manager.focus_tab(active_tab_id)
-        return normalized_opened_tab_id
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -112,16 +41,6 @@ async def handle_spawn(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
     if not isinstance(allowed_tools, list):
         raise ToolValidationError("Field 'allowed_tools' must be an array")
     normalized_allowed_tools = [str(t) for t in allowed_tools if isinstance(t, str)]
-    browser_tab_id = payload.get("browser_tab_id")
-    if browser_tab_id is not None and (
-        not isinstance(browser_tab_id, str) or not browser_tab_id.strip()
-    ):
-        raise ToolValidationError("Field 'browser_tab_id' must be a non-empty string")
-    normalized_browser_tab_id = (
-        browser_tab_id.strip()
-        if isinstance(browser_tab_id, str) and browser_tab_id.strip()
-        else None
-    )
 
     max_steps = payload.get("max_steps", 10)
     if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
@@ -137,8 +56,6 @@ async def handle_spawn(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
         raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
     timeout_seconds = min(timeout_seconds, 3600)
 
-    auto_assigned_browser_tab = False
-
     async with AsyncSessionLocal() as db:
         # Enforce max 3 concurrent tasks per session
         result = await db.execute(select(SubAgentTask).where(SubAgentTask.session_id == sid))
@@ -146,30 +63,12 @@ async def handle_spawn(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
         active = [t for t in tasks if t.status in {"pending", "running"}]
         if len(active) >= 3:
             raise ToolValidationError("Max 3 concurrent sub-agent tasks per session")
-        browser_pool = get_browser_pool()
-        if (
-            normalized_browser_tab_id is None
-            and _sub_agent_may_use_browser(normalized_allowed_tools)
-        ):
-            reserved_tab_ids = _active_sub_agent_tab_ids(active)
-            try:
-                _mgr = await browser_pool.get(sid)
-                normalized_browser_tab_id = await _select_sub_agent_browser_tab_id(
-                    _mgr, reserved_tab_ids=reserved_tab_ids
-                )
-            except Exception:
-                pass
-            auto_assigned_browser_tab = normalized_browser_tab_id is not None
 
         task = SubAgentTask(
             session_id=sid,
             objective=objective.strip(),
             context=(scope.strip() if isinstance(scope, str) and scope.strip() else None),
-            constraints=(
-                [{"type": "browser_tab", "tab_id": normalized_browser_tab_id}]
-                if normalized_browser_tab_id
-                else []
-            ),
+            constraints=[],
             allowed_tools=normalized_allowed_tools,
             max_turns=max_steps,
             timeout_seconds=timeout_seconds,
@@ -197,8 +96,6 @@ async def handle_spawn(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
         "status": "pending",
         "objective": objective.strip(),
         "timeout_seconds": timeout_seconds,
-        "browser_tab_id": normalized_browser_tab_id,
-        "auto_assigned_browser_tab": auto_assigned_browser_tab,
         "note": (
             f"Sub-agent spawned (timeout: {timeout_seconds}s). "
             "Do not call delegate with command=status immediately in the normal case. "

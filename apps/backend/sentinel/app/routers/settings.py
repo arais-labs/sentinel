@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import is_desktop_app
 from app.dependencies import (
     get_db,
-    get_runtime_rebuild_service,
+    get_request_instance_runtime_context,
     get_settings_service,
 )
 from app.logging_context import (
@@ -18,8 +18,8 @@ from app.logging_context import (
     set_runtime_logger_override,
 )
 from app.middleware.auth import TokenPayload, require_auth
+from app.services.instance_runtime_context import instance_runtime_context_registry
 from app.services.llm.ids import ProviderChoice
-from app.services.runtime.runtime_rebuild import RuntimeRebuildService
 from app.services.settings.settings_service import SettingsService
 
 router = APIRouter()
@@ -39,6 +39,17 @@ def _require_desktop_mode() -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
+async def _rebuild_current_instance_runtime_context(request: Request) -> None:
+    try:
+        context = get_request_instance_runtime_context(request)
+    except RuntimeError:
+        return
+    await instance_runtime_context_registry.rebuild_context(
+        app_state=request.app.state,
+        context=context,
+    )
+
+
 @router.post("/api-keys")
 async def set_api_keys(
     payload: SetApiKeysRequest,
@@ -46,7 +57,6 @@ async def set_api_keys(
     _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
-    runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
 ) -> dict[str, bool]:
     await settings_service.set_api_keys(
         db,
@@ -57,7 +67,7 @@ async def set_api_keys(
         gemini_api_key=payload.gemini_api_key,
         gemini_oauth_credentials=payload.gemini_oauth_credentials,
     )
-    await runtime_rebuild_service.rebuild_request_runtime_support(request)
+    await _rebuild_current_instance_runtime_context(request)
     return {"success": True}
 
 
@@ -101,11 +111,10 @@ async def import_desktop_codex_oauth(
     _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
-    runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
 ) -> dict[str, str | bool]:
     _require_desktop_mode()
     result = await settings_service.import_desktop_codex_oauth_token(db)
-    await runtime_rebuild_service.rebuild_request_runtime_support(request)
+    await _rebuild_current_instance_runtime_context(request)
     return {"success": True, "masked_key": result.masked_key}
 
 
@@ -120,10 +129,9 @@ async def delete_api_keys(
     _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
-    runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
 ) -> dict[str, bool]:
     await settings_service.delete_api_keys(db, provider=payload.provider)
-    await runtime_rebuild_service.rebuild_request_runtime_support(request)
+    await _rebuild_current_instance_runtime_context(request)
     return {"success": True}
 
 
@@ -138,10 +146,9 @@ async def set_primary_provider(
     _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
-    runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
 ) -> dict[str, str | bool]:
     await settings_service.set_primary_provider(db, provider=payload.provider)
-    await runtime_rebuild_service.rebuild_request_runtime_support(request)
+    await _rebuild_current_instance_runtime_context(request)
     return {"success": True, "primary_provider": payload.provider.value}
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import contextlib
 from datetime import UTC, datetime
 from typing import Awaitable, Callable
@@ -15,15 +14,9 @@ from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, Text
 from app.models import Session, SubAgentTask
 from app.services.agent import ContextBuilder, SentinelRuntimeSupport
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
-from app.services.araios.system_modules.browser import (
-    BROWSER_TAB_MANAGEMENT_COMMANDS,
-    BROWSER_TAB_TARGETABLE_COMMANDS,
-)
 from app.services.llm.ids import TierName
 from app.services.llm.generic.types import AgentEvent
-from app.services.tools import ToolDefinition, ToolExecutor, ToolRegistry
-from app.services.tools.executor import ToolValidationError
-from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools import ToolExecutor, ToolRegistry
 
 _SUB_AGENT_EXCLUDED_TOOLS = frozenset({"delegate"})
 
@@ -298,14 +291,13 @@ class SubAgentOrchestrator:
                 return
 
     def _scoped_runtime_support(self, task: SubAgentTask) -> SentinelRuntimeSupport:
-        """Build a runtime support object restricted to the task allowlist/tab scope."""
+        """Build a runtime support object restricted to the task allowlist."""
         if self._base_tool_registry is None:
             return self._agent_runtime_support
 
         allowed_tools = (
             task.allowed_tools if isinstance(task.allowed_tools, list) else []
         )
-        pinned_tab_id = self._pinned_browser_tab_id(task)
         if allowed_tools:
             allowed = {
                 str(item)
@@ -323,9 +315,7 @@ class SubAgentOrchestrator:
         for tool in self._base_tool_registry.list_all():
             if tool.name not in allowed:
                 continue
-            scoped_registry.register(
-                self._tool_with_optional_tab_scope(tool, pinned_tab_id)
-            )
+            scoped_registry.register(tool)
 
         available_tools = {tool.name for tool in scoped_registry.list_all()}
 
@@ -347,58 +337,6 @@ class SubAgentOrchestrator:
             ),
         )
 
-    def _tool_with_optional_tab_scope(
-        self,
-        tool: ToolDefinition,
-        pinned_tab_id: str | None,
-    ) -> ToolDefinition:
-        if pinned_tab_id is None or tool.name != "browser":
-            return tool
-
-        schema = copy.deepcopy(tool.parameters_schema) if isinstance(tool.parameters_schema, dict) else {}
-        properties = schema.get("properties")
-        if isinstance(properties, dict) and "tab_id" in properties:
-            properties.pop("tab_id", None)
-        required = schema.get("required")
-        if isinstance(required, list):
-            schema["required"] = [item for item in required if item != "tab_id"]
-
-        async def _execute(payload: dict, runtime: ToolRuntimeContext) -> dict:
-            scoped_payload = dict(payload or {})
-            command = scoped_payload.get("command")
-            normalized_command = (
-                command.strip().lower()
-                if isinstance(command, str) and command.strip()
-                else None
-            )
-            if normalized_command in BROWSER_TAB_MANAGEMENT_COMMANDS:
-                raise ToolValidationError(
-                    f"Browser command '{normalized_command}' is not allowed when browser_tab_id is pinned"
-                )
-            if normalized_command in BROWSER_TAB_TARGETABLE_COMMANDS:
-                scoped_payload["tab_id"] = pinned_tab_id
-            return await tool.execute(scoped_payload, runtime)
-
-        return ToolDefinition(
-            name=tool.name,
-            description=tool.description,
-            parameters_schema=schema,
-            execute=_execute,
-            enabled=tool.enabled,
-        )
-
-    def _pinned_browser_tab_id(self, task: SubAgentTask) -> str | None:
-        constraints = task.constraints if isinstance(task.constraints, list) else []
-        for item in constraints:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("type", "")).strip().lower() != "browser_tab":
-                continue
-            tab_id = item.get("tab_id")
-            if isinstance(tab_id, str) and tab_id.strip():
-                return tab_id.strip()
-        return None
-
     def _sub_agent_system_prompt(self, task: SubAgentTask) -> str:
         """Generate a strict scope/constraint prompt for delegated sub-agent runs."""
         tools = (
@@ -407,17 +345,8 @@ class SubAgentOrchestrator:
             else "all available tools"
         )
         scope = task.context or "No extra scope provided"
-        pinned_tab_id = self._pinned_browser_tab_id(task)
-        tab_scope = ""
-        if pinned_tab_id is not None:
-            tab_scope = (
-                f"\nBrowser tab scope: you are pinned to tab_id={pinned_tab_id}. "
-                "All browser actions are forced to this tab. "
-                "Do not attempt to open/focus/close/list tabs or reset the browser."
-            )
         return (
             "You are a delegated sub-agent. Stay strictly within objective and scope.\n"
             f"Allowed tools: {tools}.\n"
             f"Scope: {scope}"
-            f"{tab_scope}"
         )

@@ -73,21 +73,23 @@ function renderServices(services: ManagedServiceStatus[]): void {
 
 function renderRuntime(status: DesktopStatus): void {
   const root = el('runtimeDetails');
-  const imageVariant = status.runtimeImage.present ? 'ok' : recentQemuLine() ? 'starting' : 'missing';
-  const imageLabel = status.runtimeImage.present ? 'Present' : recentQemuLine() ? 'Preparing' : 'Missing';
-  const qemuVariant = status.qemu.installed ? 'ok' : 'missing';
-  const qemuLabel = status.qemu.installed ? 'Installed' : 'Missing';
-  const overallVariant = !status.qemu.installed ? 'missing' : status.runtimeImage.present ? 'ok' : 'starting';
-  const overallLabel = !status.qemu.installed ? 'Missing' : status.runtimeImage.present ? 'Ready' : 'Preparing';
+  const overallVariant = status.runtime.configured ? 'ok' : 'missing';
+  const overallLabel = status.runtime.configured ? 'Configured' : 'Missing';
   setPill('runtimeOverall', overallLabel, overallVariant);
   root.innerHTML = [
-    detailRow('Provider', '<span class="mono">qemu</span>'),
-    detailRow('Protocol', stateDot(qemuLabel, qemuVariant)),
-    detailRow('Base Image', stateDot(imageLabel, imageVariant)),
-    detailRow('Image Path', `<span class="mono">${escapeHtml(shortPath(status.runtimeImage.imagePath))}</span>`),
-    detailRow('Key Path', `<span class="mono">${escapeHtml(shortPath(status.runtimeImage.keyPath))}</span>`),
+    detailRow('Provider', '<span class="mono">ssh</span>'),
+    detailRow('Connection', stateDot(overallLabel, overallVariant)),
+    detailRow('Host', `<span class="mono">${escapeHtml(formatRuntimeHost(status))}</span>`),
+    detailRow('User', `<span class="mono">${escapeHtml(status.runtime.username || '-')}</span>`),
+    detailRow('Auth', `<span class="mono">${escapeHtml(status.runtime.authMethod)}</span>`),
+    detailRow('Workspaces', `<span class="mono">${escapeHtml(shortPath(status.runtime.workspacesDir))}</span>`),
     detailRow('Phase', `<span class="mono">${escapeHtml(runtimePhase(status))}</span>`),
   ].join('');
+}
+
+function formatRuntimeHost(status: DesktopStatus): string {
+  if (!status.runtime.host) return '-';
+  return `${status.runtime.host}:${status.runtime.port || 22}`;
 }
 
 function detailRow(label: string, value: string): string {
@@ -129,23 +131,10 @@ function stateVariant(state: ManagedServiceStatus['state']): string {
 }
 
 function runtimePhase(status: DesktopStatus): string {
-  const qemuLine = recentQemuLine();
-  if (qemuLine) return qemuLine;
-  if (!status.qemu.installed) return status.qemu.message || 'QEMU unavailable';
-  return status.runtimeImage.present ? 'Base image ready' : 'Waiting for backend runtime preparation';
-}
-
-function recentQemuLine(): string | undefined {
-  const entry = [...logs].reverse().find((item) => logCategory(item) === 'qemu');
-  if (!entry) return undefined;
-  return summarizeLogLine(entry.line);
+  return status.runtime.message || (status.runtime.configured ? 'SSH runtime configured' : 'SSH runtime not configured');
 }
 
 function summarizeLogLine(line: string): string {
-  const qemuPrefix = line.match(/qemu image build:\s*(.*)$/i);
-  if (qemuPrefix) return qemuPrefix[1].trim();
-  const runtimePrefix = line.match(/runtime[/.]qemu[^:]*:\s*(.*)$/i);
-  if (runtimePrefix) return runtimePrefix[1].trim();
   return line.length > 92 ? `${line.slice(0, 89)}...` : line;
 }
 
@@ -227,7 +216,6 @@ function renderLogEntry(entry: LogEntry): string {
 }
 
 function logCategory(entry: LogEntry): string {
-  if (/qemu image build|runtime[/.]qemu|qemu-system|qemu-img|cloud-init/i.test(entry.line)) return 'qemu';
   return entry.service;
 }
 

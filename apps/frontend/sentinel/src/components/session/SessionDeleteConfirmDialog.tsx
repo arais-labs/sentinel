@@ -12,6 +12,11 @@ type SessionDeleteConfirmRequest =
       sessionCount: number;
       workspaceSessionCount: number;
       topLevelEntries: string[];
+    }
+  | {
+      kind: 'workspace_wipe';
+      label: string;
+      topLevelEntries: string[];
     };
 
 type SessionDeleteConfirmDialogProps = {
@@ -28,14 +33,23 @@ function SessionDeleteConfirmDialog({
   if (!request) return null;
 
   const isBulk = request.kind === 'bulk';
-  const title = isBulk ? 'Delete sessions and workspaces?' : 'Delete session and workspace?';
-  const description = isBulk
+  const isWorkspaceWipe = request.kind === 'workspace_wipe';
+  const title = isWorkspaceWipe
+    ? 'Wipe runtime workspace?'
+    : isBulk ? 'Delete sessions and workspaces?' : 'Delete session and workspace?';
+  const description = isWorkspaceWipe
+    ? `This will permanently delete runtime workspace files for "${request.label}". The chat session and messages will be kept.`
+    : isBulk
     ? `This will permanently delete ${request.sessionCount} selected sessions, their messages, and runtime workspace files for ${request.workspaceSessionCount} session${request.workspaceSessionCount === 1 ? '' : 's'}.`
     : `This will permanently delete "${request.label}", all messages in the session, and this session's runtime workspace files.`;
-  const workspaceCopy = isBulk
+  const workspaceCopy = isWorkspaceWipe
+    ? 'Workspace files will be removed from disk. Any files the agent created, edited, cloned, downloaded, or generated in this session workspace will be deleted.'
+    : isBulk
     ? `Workspace files will be removed from disk for ${request.workspaceSessionCount} selected session${request.workspaceSessionCount === 1 ? '' : 's'}. Any files the agent created, edited, cloned, downloaded, or generated in those workspaces will be deleted.`
     : 'Workspace files will be removed from disk. Any files the agent created, edited, cloned, downloaded, or generated in this session workspace will be deleted.';
-  const actionLabel = isBulk ? 'Delete sessions and workspaces' : 'Delete session and workspace';
+  const actionLabel = isWorkspaceWipe
+    ? 'Wipe workspace'
+    : isBulk ? 'Delete sessions and workspaces' : 'Delete session and workspace';
   const previewLabel = isBulk
     ? 'Top-level workspace files and folders found'
     : 'Top-level workspace files and folders';

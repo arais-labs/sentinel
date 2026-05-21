@@ -9,8 +9,7 @@ Electron management shell for local Sentinel instances.
 - No Docker dependency for the desktop app.
 - FastAPI backend runs as a managed local child process.
 - Postgres + pgvector are bundled into packaged builds.
-- QEMU is bundled into packaged builds.
-- QEMU runtime image provisioning is owned by the backend in desktop mode.
+- Agent runtime execution is SSH-first and configured outside the desktop package for now.
 - `sentinel-cli.sh` remains supported and unchanged for terminal workflows.
 
 ## Verification
@@ -59,9 +58,7 @@ The packaged app stores mutable data under Electron's app support directory:
 
 - instance env/config
 - Postgres data
-- QEMU runtime images
-- QEMU run overlays/logs
-- workspaces
+- runtime workspaces
 - backups
 
 Nothing mutable should be stored inside the `.app` bundle.

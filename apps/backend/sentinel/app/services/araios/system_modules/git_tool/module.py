@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
-from .handlers import (
-    handle_accounts,
-    handle_read,
-    handle_write,
-)
+from .handlers import handle_accounts, handle_read, handle_write
+
+
 def _run_parameters_schema() -> dict:
     return {
         "type": "object",
@@ -15,15 +13,21 @@ def _run_parameters_schema() -> dict:
         "properties": {
             "cli_command": {
                 "type": "string",
-                "description": "Git or supported GitHub CLI command to execute. Use command=read for read operations like `git clone`, `git fetch`, `git pull`, `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, and `gh api` GET. Use command=write for write operations like push, commit, branch mutation, `gh pr create`, `gh pr merge`, and `gh api` POST/PUT.",
+                "description": (
+                    "Git or supported GitHub CLI command to execute in the session runtime workspace. "
+                    "Use command=read for reads like git clone/fetch/pull/status/log/diff, "
+                    "gh repo clone/list/view, gh pr view, and gh api GET. Use command=write for "
+                    "mutations like git push/commit/add/reset/checkout/switch, gh pr create/merge, "
+                    "and gh api POST/PUT."
+                ),
             },
             "cwd": {
                 "type": "string",
-                "description": "Optional working directory relative to the session workspace.",
+                "description": "Optional working directory inside /workspace.",
             },
             "timeout_seconds": {
                 "type": "integer",
-                "description": "Execution timeout in seconds (default 600, max 3600).",
+                "description": "Execution timeout in seconds. Defaults to 600, max 3600.",
             },
             "git_account_name": {
                 "type": "string",
@@ -44,7 +48,7 @@ def _accounts_parameters_schema() -> dict:
         "properties": {
             "host": {
                 "type": "string",
-                "description": "Optional host filter (for example: github.com).",
+                "description": "Optional host filter, for example github.com.",
             },
             "repo_url": {
                 "type": "string",
@@ -62,13 +66,8 @@ MODULE = ModuleDefinition(
     name="git",
     label="Git",
     description=(
-        "Execute git commands and selected GitHub CLI commands inside the session workspace with managed credentials. "
-        "Use this tool for git and GitHub operations; prefer it over running `git` or `gh` commands through the runtime shell. "
-        "Use `read` for read operations like `git clone/fetch/pull/ls-remote/submodule/request-pull` and `gh repo clone/list/view`, `gh pr view`, `gh api` GET. "
-        "Use `write` only for mutating operations like push, commit, branch updates, `gh pr create`, `gh pr merge`, and `gh api` POST/PUT. "
-        "Allowed gh commands: `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT). "
-        "Allowed network git reads include `git clone/fetch/pull/ls-remote/submodule/request-pull`; "
-        "`git request-pull` only generates a pull-request summary and does not open a GitHub PR."
+        "Execute git and selected GitHub CLI commands inside the SSH runtime workspace "
+        "with managed credentials. Prefer this over running git or gh through the shell."
     ),
     icon="git-branch",
     system=True,
@@ -77,7 +76,10 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="read",
             label="Read Git Command",
-            description="Execute a git or supported gh read-oriented command inside the session workspace. Use this for clone, fetch, pull, ls-remote, repo listing/viewing, PR viewing, and gh api GET.",
+            description=(
+                "Execute a read-oriented git or gh command inside the session workspace. "
+                "Use for clone, fetch, pull, status, log, diff, repo listing/viewing, PR viewing, and gh api GET."
+            ),
             handler=handle_read,
             requires_runtime_context=True,
             parameters_schema=_run_parameters_schema(),
@@ -85,7 +87,10 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="write",
             label="Write Git Command",
-            description="Execute a git or supported gh write-oriented command inside the session workspace. Use this only for mutating operations like push, commit, branch updates, gh pr create, gh pr merge, and gh api POST/PUT. Do not use this for clone.",
+            description=(
+                "Execute a mutating git or gh command inside the session workspace. "
+                "Use for push, commit, branch/worktree changes, gh pr create/merge, and gh api POST/PUT."
+            ),
             handler=handle_write,
             approval=True,
             requires_runtime_context=True,

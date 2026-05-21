@@ -6,15 +6,16 @@ import re
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
+import httpx
+import websockets
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import CHAT_DEFAULT_ITERATIONS
+from app.database import ManagerSessionLocal
 from app.dependencies import get_db, get_request_db_factory, get_request_instance_runtime_context
-from app.middleware.auth import TokenPayload, require_auth
+from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, TokenPayload, decode_and_validate_token, require_auth
 from app.models import Message, Session
 from app.schemas.sessions import (
     ChatRequest,
@@ -27,13 +28,6 @@ from app.schemas.sessions import (
     SessionListItemResponse,
     SessionListResponse,
     SessionContextUsageResponse,
-    SessionRuntimeCleanupResponse,
-    SessionRuntimeGitChangedFilesResponse,
-    SessionRuntimeGitDiffResponse,
-    SessionRuntimeGitRootsResponse,
-    SessionRuntimeFilePreviewResponse,
-    SessionRuntimeFilesResponse,
-    SessionRuntimeResponse,
     SessionResponse,
 )
 from app.services.agent.agent_modes import (
@@ -49,57 +43,44 @@ from app.services.sessions import (
     MainSessionDeletionError,
     MainSessionTargetInvalidError,
     MessageNotFoundError,
-    RuntimePathInvalidError,
-    RuntimePathNotFoundError,
     SessionRenameNotAllowedError,
     SessionNotFoundError,
     SessionService,
+    SessionWorkspaceCleanupError,
 )
+from app.schemas.runtime import (
+    SessionRuntimeFilePreviewResponse,
+    SessionRuntimeFilesResponse,
+    SessionRuntimeGitChangedFilesResponse,
+    SessionRuntimeGitDiffResponse,
+    SessionRuntimeGitRootsResponse,
+)
+from app.services.runtime.files import (
+    RuntimePathInvalidError,
+    RuntimePathIsDirectoryError,
+    RuntimePathNotFoundError,
+)
+from app.services.araios.runtime_services import get_browser_pool
+from app.services.runtime.ssh_runtime import get_runtime_desktop_manager, get_runtime_terminal_manager, get_runtime_workspace_files
+from app.services.runtime.port_forwards import RuntimeForwardNotFound
+from app.services.runtime.ssh_runtime import get_runtime_port_forward_manager
 from app.services.ws.ws_stream_service import run_agent_once
 
 router = APIRouter()
 
 _logger = logging.getLogger(__name__)
-
-
-def _runtime_provision_tasks(request: Request) -> dict[str, asyncio.Task[None]]:
-    tasks = getattr(request.app.state, "runtime_provision_tasks", None)
-    if isinstance(tasks, dict):
-        return tasks
-    tasks = {}
-    request.app.state.runtime_provision_tasks = tasks
-    return tasks
-
-
-def _schedule_runtime_provision(request: Request, session_id: UUID) -> None:
-    tasks = _runtime_provision_tasks(request)
-    key = str(session_id)
-    existing = tasks.get(key)
-    if existing is not None and not existing.done():
-        return
-    ws = getattr(request.app.state, "ws_manager", None)
-    task = asyncio.create_task(_provision_runtime(session_id, ws_manager=ws))
-    tasks[key] = task
-
-    def _cleanup(_task: asyncio.Task[None]) -> None:
-        current = tasks.get(key)
-        if current is _task:
-            tasks.pop(key, None)
-
-    task.add_done_callback(_cleanup)
-
-
-async def _provision_runtime(session_id: UUID, ws_manager: object | None = None) -> None:
-    """Eagerly provision the runtime container so it's ready when the user needs it."""
-    try:
-        from app.services.runtime import get_runtime
-        provider = get_runtime()
-        await provider.ensure(session_id)
-        _logger.info("Runtime provisioned for session %s", session_id)
-        if ws_manager is not None and hasattr(ws_manager, "broadcast_runtime_ready"):
-            await ws_manager.broadcast_runtime_ready(str(session_id))
-    except Exception:
-        _logger.warning("Background runtime provisioning failed for session %s", session_id, exc_info=True)
+_TERMINAL_ID_HTTP_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+_SENTINEL_PRIVATE_HEADERS = {"authorization", "cookie", "host", "content-length"}
 
 
 def _resolve_session_service(request: Request) -> SessionService:
@@ -155,22 +136,70 @@ def _raise_http_for_session_error(exc: Exception) -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No LLM provider configured",
         ) from exc
+    if isinstance(exc, SessionWorkspaceCleanupError):
+        detail = "Runtime workspace cleanup failed; session was not deleted."
+        if exc.detail:
+            detail = f"{detail} {exc.detail}"
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=detail,
+        ) from exc
     if isinstance(exc, ChatPayloadRequiredError):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="content or attachments required",
         ) from exc
-    if isinstance(exc, RuntimePathInvalidError):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc) or "Invalid runtime path",
-        ) from exc
+    raise exc
+
+
+def _raise_http_for_runtime_path_error(exc: Exception) -> None:
     if isinstance(exc, RuntimePathNotFoundError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc) or "Runtime path not found",
         ) from exc
+    if isinstance(exc, (RuntimePathInvalidError, RuntimePathIsDirectoryError)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc) or "Invalid runtime path",
+        ) from exc
     raise exc
+
+
+def _raise_http_for_session_or_runtime_error(exc: Exception) -> None:
+    if isinstance(exc, (RuntimePathNotFoundError, RuntimePathInvalidError, RuntimePathIsDirectoryError)):
+        _raise_http_for_runtime_path_error(exc)
+        return
+    _raise_http_for_session_error(exc)
+
+
+def _proxy_request_headers(request: Request) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for key, value in request.headers.items():
+        normalized = key.lower()
+        if normalized in _HOP_BY_HOP_HEADERS or normalized in _SENTINEL_PRIVATE_HEADERS:
+            continue
+        headers[key] = value
+    return headers
+
+
+def _proxy_response_headers(response: httpx.Response) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for key, value in response.headers.items():
+        normalized = key.lower()
+        if normalized in _HOP_BY_HOP_HEADERS or normalized in {"content-length"}:
+            continue
+        headers[key] = value
+    return headers
+
+
+def _forward_query_without_auth(websocket: WebSocket) -> str:
+    pairs = [
+        (key, value)
+        for key, value in websocket.query_params.multi_items()
+        if key.lower() != "token"
+    ]
+    return str(httpx.QueryParams(pairs))
 
 
 def _message_retry_attachments(message: Message) -> list[dict[str, Any]]:
@@ -411,180 +440,6 @@ async def set_session_as_main(
     return await _session_response(session, service, main_session_id=session.id)
 
 
-@router.get("/{id}/runtime")
-async def get_session_runtime(
-    id: UUID,
-    request: Request,
-    action_limit: int = Query(default=40, ge=1, le=200),
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeResponse:
-    service = _resolve_session_service(request)
-    try:
-        snapshot = await service.get_runtime_snapshot(
-            db, session_id=id, user_id=user.sub, action_limit=action_limit
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_error(exc)
-        raise
-    return SessionRuntimeResponse(**snapshot)
-
-
-@router.get("/{id}/runtime/files", response_model=SessionRuntimeFilesResponse)
-async def list_session_runtime_files(
-    id: UUID,
-    request: Request,
-    path: str = Query(default=""),
-    limit: int = Query(default=400, ge=1, le=2000),
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeFilesResponse:
-    service = _resolve_session_service(request)
-    try:
-        payload = await service.list_runtime_files(
-            db,
-            session_id=id,
-            user_id=user.sub,
-            path=path,
-            limit=limit,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_error(exc)
-        raise
-    return SessionRuntimeFilesResponse(**payload)
-
-
-@router.get("/{id}/runtime/file", response_model=SessionRuntimeFilePreviewResponse)
-async def get_session_runtime_file(
-    id: UUID,
-    request: Request,
-    path: str = Query(..., min_length=1),
-    max_bytes: int = Query(default=32000, ge=256, le=200000),
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeFilePreviewResponse:
-    service = _resolve_session_service(request)
-    try:
-        payload = await service.get_runtime_file_preview(
-            db,
-            session_id=id,
-            user_id=user.sub,
-            path=path,
-            max_bytes=max_bytes,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_error(exc)
-        raise
-    return SessionRuntimeFilePreviewResponse(**payload)
-
-
-@router.get("/{id}/runtime/download")
-async def download_session_runtime_path(
-    id: UUID,
-    request: Request,
-    path: str = Query(..., min_length=1),
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-):
-    service = _resolve_session_service(request)
-    try:
-        payload = await service.get_runtime_download(
-            db,
-            session_id=id,
-            user_id=user.sub,
-            path=path,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_error(exc)
-        raise
-    return FileResponse(
-        path=payload.host_path,
-        media_type=payload.media_type,
-        filename=payload.download_name,
-        background=BackgroundTask(payload.cleanup_path.unlink)
-        if payload.cleanup_path is not None
-        else None,
-    )
-
-
-@router.get("/{id}/runtime/git/roots", response_model=SessionRuntimeGitRootsResponse)
-async def list_session_runtime_git_roots(
-    id: UUID,
-    request: Request,
-    path: str = Query(default=""),
-    limit: int = Query(default=200, ge=1, le=1000),
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeGitRootsResponse:
-    service = _resolve_session_service(request)
-    try:
-        payload = await service.list_runtime_git_roots(
-            db,
-            session_id=id,
-            user_id=user.sub,
-            path=path,
-            limit=limit,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_error(exc)
-        raise
-    return SessionRuntimeGitRootsResponse(**payload)
-
-
-@router.get("/{id}/runtime/git/diff", response_model=SessionRuntimeGitDiffResponse)
-async def get_session_runtime_git_diff(
-    id: UUID,
-    request: Request,
-    path: str = Query(..., min_length=1),
-    base_ref: str = Query(default="HEAD"),
-    staged: bool = Query(default=False),
-    context_lines: int = Query(default=3, ge=0, le=20),
-    max_bytes: int = Query(default=120000, ge=1024, le=500000),
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeGitDiffResponse:
-    service = _resolve_session_service(request)
-    try:
-        payload = await service.get_runtime_git_diff(
-            db,
-            session_id=id,
-            user_id=user.sub,
-            path=path,
-            base_ref=base_ref,
-            staged=staged,
-            context_lines=context_lines,
-            max_bytes=max_bytes,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_error(exc)
-        raise
-    return SessionRuntimeGitDiffResponse(**payload)
-
-
-@router.get("/{id}/runtime/git/changed", response_model=SessionRuntimeGitChangedFilesResponse)
-async def list_session_runtime_git_changed_files(
-    id: UUID,
-    request: Request,
-    path: str = Query(default=""),
-    limit: int = Query(default=200, ge=1, le=1000),
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeGitChangedFilesResponse:
-    service = _resolve_session_service(request)
-    try:
-        payload = await service.get_runtime_git_changed_files(
-            db,
-            session_id=id,
-            user_id=user.sub,
-            path=path,
-            limit=limit,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_error(exc)
-        raise
-    return SessionRuntimeGitChangedFilesResponse(**payload)
-
-
 @router.get("/{id}/context-usage", response_model=SessionContextUsageResponse)
 async def get_session_context_usage(
     id: UUID,
@@ -603,25 +458,265 @@ async def get_session_context_usage(
     return SessionContextUsageResponse(**usage)
 
 
-@router.post("/{id}/runtime/cleanup")
-async def cleanup_runtime(
+@router.get("/{id}/runtime/files", response_model=SessionRuntimeFilesResponse)
+async def list_session_runtime_files(
     id: UUID,
     request: Request,
+    path: str = Query(default=""),
+    limit: int = Query(default=400, ge=1, le=2000),
     user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeCleanupResponse:
+) -> SessionRuntimeFilesResponse:
     service = _resolve_session_service(request)
     try:
-        session_id, result = await service.cleanup_runtime(
-            db, session_id=id, user_id=user.sub
+        await service.get_session(db, session_id=id, user_id=user.sub)
+        payload = await get_runtime_workspace_files().list_files(str(id), path=path, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_or_runtime_error(exc)
+        raise
+    return SessionRuntimeFilesResponse(**payload)
+
+
+@router.get("/{id}/runtime/file", response_model=SessionRuntimeFilePreviewResponse)
+async def get_session_runtime_file(
+    id: UUID,
+    request: Request,
+    path: str = Query(..., min_length=1),
+    max_bytes: int = Query(default=32000, ge=256, le=200000),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeFilePreviewResponse:
+    service = _resolve_session_service(request)
+    try:
+        await service.get_session(db, session_id=id, user_id=user.sub)
+        payload = await get_runtime_workspace_files().preview_file(
+            str(id),
+            path=path,
+            max_bytes=max_bytes,
         )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_or_runtime_error(exc)
+        raise
+    return SessionRuntimeFilePreviewResponse(**payload)
+
+
+@router.get("/{id}/runtime/download")
+async def download_session_runtime_path(
+    id: UUID,
+    request: Request,
+    path: str = Query(..., min_length=1),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    service = _resolve_session_service(request)
+    try:
+        await service.get_session(db, session_id=id, user_id=user.sub)
+        payload = await get_runtime_workspace_files().download(str(id), path=path)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_or_runtime_error(exc)
+        raise
+    headers = {"Content-Disposition": f'attachment; filename="{payload.download_name}"'}
+    return Response(content=payload.content, media_type=payload.media_type, headers=headers)
+
+
+@router.api_route(
+    "/{id}/runtime/forwards/{forward_id}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+)
+@router.api_route(
+    "/{id}/runtime/forwards/{forward_id}/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+)
+async def proxy_runtime_forward_http(
+    id: UUID,
+    forward_id: str,
+    request: Request,
+    path: str = "",
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    service = _resolve_session_service(request)
+    try:
+        await service.get_session(db, session_id=id, user_id=user.sub)
+        forward = await get_runtime_port_forward_manager().get_forward(
+            session_id=str(id),
+            forward_id=forward_id,
+        )
+    except RuntimeForwardNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime forward not found") from exc
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
-    return SessionRuntimeCleanupResponse(session_id=session_id, **result)
+
+    suffix = path.strip("/")
+    target_url = f"http://{forward.local_host}:{forward.local_port}/"
+    if suffix:
+        target_url += suffix
+    if request.url.query:
+        target_url += f"?{request.url.query}"
+
+    async with httpx.AsyncClient(follow_redirects=False, timeout=60.0) as client:
+        proxied = await client.request(
+            request.method,
+            target_url,
+            headers=_proxy_request_headers(request),
+            content=await request.body(),
+        )
+    return Response(
+        content=proxied.content,
+        status_code=proxied.status_code,
+        headers=_proxy_response_headers(proxied),
+        media_type=proxied.headers.get("content-type"),
+    )
 
 
-_TERMINAL_ID_HTTP_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+@router.websocket("/{id}/runtime/forwards/{forward_id}")
+@router.websocket("/{id}/runtime/forwards/{forward_id}/{path:path}")
+async def proxy_runtime_forward_websocket(
+    websocket: WebSocket,
+    id: UUID,
+    forward_id: str,
+    path: str = "",
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    token = websocket.query_params.get("token")
+    if not token:
+        token = websocket.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
+    try:
+        async with ManagerSessionLocal() as manager_db:
+            user = await decode_and_validate_token(token, manager_db, expected_type="access")
+    except Exception:
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+    result = await db.execute(select(Session).where(Session.id == id, Session.user_id == user.sub))
+    if result.scalar_one_or_none() is None:
+        await websocket.close(code=4004, reason="Session not found")
+        return
+    try:
+        forward = await get_runtime_port_forward_manager().get_forward(
+            session_id=str(id),
+            forward_id=forward_id,
+        )
+    except RuntimeForwardNotFound:
+        await websocket.close(code=4004, reason="Runtime forward not found")
+        return
+
+    suffix = path.strip("/")
+    target_url = f"ws://{forward.local_host}:{forward.local_port}/"
+    if suffix:
+        target_url += suffix
+    query = _forward_query_without_auth(websocket)
+    if query:
+        target_url += f"?{query}"
+
+    await websocket.accept()
+    try:
+        async with websockets.connect(target_url) as remote:
+            async def _client_to_remote() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message.get("type") == "websocket.disconnect":
+                        return
+                    if "text" in message and message["text"] is not None:
+                        await remote.send(message["text"])
+                    elif "bytes" in message and message["bytes"] is not None:
+                        await remote.send(message["bytes"])
+
+            async def _remote_to_client() -> None:
+                async for message in remote:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            done, pending = await asyncio.wait(
+                {
+                    asyncio.create_task(_client_to_remote()),
+                    asyncio.create_task(_remote_to_client()),
+                },
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*done, *pending, return_exceptions=True)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        _logger.warning("runtime forward websocket proxy failed", exc_info=True)
+        try:
+            await websocket.close(code=4005, reason="Runtime forward unavailable")
+        except Exception:
+            return
+
+
+@router.get("/{id}/runtime/git/roots", response_model=SessionRuntimeGitRootsResponse)
+async def list_session_runtime_git_roots(
+    id: UUID,
+    request: Request,
+    path: str = Query(default=""),
+    limit: int = Query(default=200, ge=1, le=1000),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeGitRootsResponse:
+    service = _resolve_session_service(request)
+    try:
+        await service.get_session(db, session_id=id, user_id=user.sub)
+        payload = await get_runtime_workspace_files().git_roots(str(id), path=path, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_or_runtime_error(exc)
+        raise
+    return SessionRuntimeGitRootsResponse(**payload)
+
+
+@router.get("/{id}/runtime/git/changed", response_model=SessionRuntimeGitChangedFilesResponse)
+async def list_session_runtime_git_changed_files(
+    id: UUID,
+    request: Request,
+    path: str = Query(default=""),
+    limit: int = Query(default=200, ge=1, le=1000),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeGitChangedFilesResponse:
+    service = _resolve_session_service(request)
+    try:
+        await service.get_session(db, session_id=id, user_id=user.sub)
+        payload = await get_runtime_workspace_files().git_changed(str(id), path=path, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_or_runtime_error(exc)
+        raise
+    return SessionRuntimeGitChangedFilesResponse(**payload)
+
+
+@router.get("/{id}/runtime/git/diff", response_model=SessionRuntimeGitDiffResponse)
+async def get_session_runtime_git_diff(
+    id: UUID,
+    request: Request,
+    path: str = Query(..., min_length=1),
+    base_ref: str = Query(default="HEAD"),
+    staged: bool = Query(default=False),
+    context_lines: int = Query(default=3, ge=0, le=20),
+    max_bytes: int = Query(default=120000, ge=1024, le=500000),
+    user: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> SessionRuntimeGitDiffResponse:
+    service = _resolve_session_service(request)
+    try:
+        await service.get_session(db, session_id=id, user_id=user.sub)
+        payload = await get_runtime_workspace_files().git_diff(
+            str(id),
+            path=path,
+            base_ref=base_ref,
+            staged=staged,
+            context_lines=context_lines,
+            max_bytes=max_bytes,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_or_runtime_error(exc)
+        raise
+    return SessionRuntimeGitDiffResponse(**payload)
 
 
 @router.delete("/{id}/terminals/{terminal_id}")
@@ -632,32 +727,63 @@ async def close_terminal(
     user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    if not _TERMINAL_ID_HTTP_PATTERN.match(terminal_id):
+    if not _TERMINAL_ID_HTTP_PATTERN.fullmatch(terminal_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="terminal_id must match [a-zA-Z0-9_-]{1,32}",
-        )
-    if terminal_id == "0":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Terminal '0' is the primary shell and cannot be closed.",
+            detail="terminal_id must match [A-Za-z0-9][A-Za-z0-9_.-]{0,63}",
         )
     service = _resolve_session_service(request)
     try:
-        session_id, tid, existed = await service.close_terminal(
-            db,
-            session_id=id,
-            terminal_id=terminal_id,
-            user_id=user.sub,
-        )
+        await service.get_session(db, session_id=id, user_id=user.sub)
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
+    status_result = await get_runtime_terminal_manager().close_terminal(
+        str(id),
+        terminal_id=terminal_id,
+    )
+    manager = getattr(request.app.state, "ws_manager", None)
+    if manager is not None and hasattr(manager, "broadcast"):
+        await manager.broadcast(
+            str(id),
+            {"type": "terminal_closed", "session_id": str(id), "terminal_id": terminal_id},
+        )
     return {
-        "session_id": str(session_id),
-        "terminal_id": tid,
-        "closed": existed,
+        "session_id": str(id),
+        "terminal_id": terminal_id,
+        "closed": status_result.status == "stopped",
     }
+
+
+async def _cleanup_runtime_for_deleted_sessions(session_ids: list[UUID]) -> None:
+    terminal_manager = get_runtime_terminal_manager()
+    for session_id in session_ids:
+        session_key = str(session_id)
+        try:
+            await get_browser_pool().remove(session_key)
+        except Exception:
+            _logger.debug(
+                "failed to close runtime browser for deleted session %s",
+                session_key,
+                exc_info=True,
+            )
+        try:
+            await get_runtime_port_forward_manager().close_session(session_key)
+        except Exception:
+            _logger.debug(
+                "failed to close runtime forwards for deleted session %s",
+                session_key,
+                exc_info=True,
+            )
+        try:
+            await get_runtime_desktop_manager().close_session(session_key)
+        except Exception:
+            _logger.debug(
+                "failed to close runtime desktop for deleted session %s",
+                session_key,
+                exc_info=True,
+            )
+        await terminal_manager.delete_workspace(session_key)
 
 
 @router.delete("/{id}")
@@ -670,7 +796,10 @@ async def delete_session(
     service = _resolve_session_service(request)
     try:
         deleted_descendants = await service.delete_session(
-            db, session_id=id, user_id=user.sub
+            db,
+            session_id=id,
+            user_id=user.sub,
+            before_delete=_cleanup_runtime_for_deleted_sessions,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)

@@ -1,10 +1,10 @@
 import asyncio
+import mimetypes
 import os
 import subprocess
 import tempfile
 import uuid
 import zipfile
-from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,12 +20,153 @@ from tests.helpers import install_fake_db_overrides, make_fake_instance_context,
 from app.main import app
 from app.models import Message, Session, SessionBinding, ToolApproval
 from app.services.llm.generic.types import AssistantMessage, SystemMessage, TextContent, UserMessage
+from app.services.runtime.files import RuntimeDownload, RuntimePathInvalidError, RuntimePathIsDirectoryError
 from app.services.sessions.agent_run_registry import AgentRunRegistry
+from app.services.sessions.errors import SessionWorkspaceCleanupError
 from app.services.sessions.service import SessionService
 from tests.fake_db import FakeDB
 
 
 SESSIONS_API = "/api/v1/instances/main/sessions"
+
+
+class _LocalRuntimeWorkspaceFiles:
+    def __init__(self, runtime_base: Path) -> None:
+        self._runtime_base = runtime_base
+
+    def _workspace(self, session_id: uuid.UUID | str) -> Path:
+        return (self._runtime_base / str(session_id) / "workspace").resolve()
+
+    def _resolve(self, session_id: uuid.UUID | str, path: str, *, must_exist: bool = True) -> Path:
+        workspace = self._workspace(session_id).resolve()
+        target = (workspace / path).resolve(strict=False) if path else workspace
+        if target != workspace and workspace not in target.parents:
+            raise RuntimePathInvalidError("Path must stay within runtime workspace")
+        if ".." in Path(path).parts:
+            raise RuntimePathInvalidError("Path traversal is not allowed")
+        if must_exist and not target.exists():
+            raise FileNotFoundError(path)
+        return target
+
+    def _entry(self, workspace: Path, path: Path) -> dict:
+        rel = path.relative_to(workspace).as_posix()
+        is_git_root = path.is_dir() and (path / ".git").exists()
+        return {
+            "name": path.name,
+            "path": rel,
+            "kind": "directory" if path.is_dir() else "file",
+            "size_bytes": None if path.is_dir() else path.stat().st_size,
+            "modified_at": datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(),
+            "is_git_root": is_git_root,
+            "git_branch": "main" if is_git_root else None,
+            "git_detached_head": False,
+        }
+
+    async def list_files(self, session_id: uuid.UUID | str, *, path: str = "", limit: int = 400) -> dict:
+        workspace = self._workspace(session_id)
+        target = self._resolve(session_id, path)
+        if not target.is_dir():
+            raise RuntimePathInvalidError("Runtime path is not a directory")
+        children = sorted(target.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
+        entries = [self._entry(workspace, child) for child in children[:limit]]
+        return {
+            "session_id": str(session_id),
+            "runtime_exists": workspace.parent.exists(),
+            "workspace_exists": workspace.exists(),
+            "path": path,
+            "parent_path": str(Path(path).parent).replace(".", "") if path else None,
+            "entries": entries,
+            "truncated": len(children) > limit,
+        }
+
+    async def preview_file(self, session_id: uuid.UUID | str, *, path: str, max_bytes: int = 32_000) -> dict:
+        target = self._resolve(session_id, path)
+        if not target.is_file():
+            raise RuntimePathIsDirectoryError(path)
+        raw = target.read_bytes()
+        return {
+            "session_id": str(session_id),
+            "runtime_exists": target.parent.exists(),
+            "workspace_exists": self._workspace(session_id).exists(),
+            "path": path,
+            "name": target.name,
+            "size_bytes": target.stat().st_size,
+            "modified_at": datetime.fromtimestamp(target.stat().st_mtime, UTC).isoformat(),
+            "content": raw[:max_bytes].decode("utf-8", errors="replace"),
+            "truncated": len(raw) > max_bytes,
+            "max_bytes": max_bytes,
+        }
+
+    async def download(self, session_id: uuid.UUID | str, *, path: str) -> RuntimeDownload:
+        target = self._resolve(session_id, path)
+        if target.is_file():
+            return RuntimeDownload(
+                content=target.read_bytes(),
+                download_name=target.name,
+                media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+            )
+        buffer = tempfile.SpooledTemporaryFile()
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for current in sorted(target.rglob("*")):
+                if current.is_file():
+                    archive.write(current, current.relative_to(target).as_posix())
+        buffer.seek(0)
+        return RuntimeDownload(
+            content=buffer.read(),
+            download_name=f"{target.name}.zip",
+            media_type="application/zip",
+        )
+
+    async def git_diff(
+        self,
+        session_id: uuid.UUID | str,
+        *,
+        path: str,
+        base_ref: str = "HEAD",
+        staged: bool = False,
+        context_lines: int = 3,
+        max_bytes: int = 120_000,
+    ) -> dict:
+        workspace = self._workspace(session_id)
+        target = self._resolve(session_id, path, must_exist=False)
+        probe = target if target.exists() and target.is_dir() else target.parent
+        root = subprocess.run(
+            ["git", "-C", str(probe), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        file_rel = target.relative_to(Path(root)).as_posix()
+        command = ["git", "-C", root, "diff", f"--unified={context_lines}"]
+        if staged:
+            command.append("--staged")
+        command.extend([base_ref, "--", file_rel])
+        completed = subprocess.run(command, check=True, capture_output=True, text=True)
+        diff = completed.stdout
+        if not diff and target.exists():
+            tracked = subprocess.run(
+                ["git", "-C", root, "ls-files", "--error-unmatch", "--", file_rel],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if tracked.returncode != 0:
+                diff = f"--- /dev/null\n+++ b/{file_rel}\n@@ -0,0 +1 @@\n+{target.read_text(encoding='utf-8').rstrip()}\n"
+        return {
+            "session_id": str(session_id),
+            "runtime_exists": workspace.parent.exists(),
+            "workspace_exists": workspace.exists(),
+            "path": path,
+            "git_root": Path(root).relative_to(workspace).as_posix(),
+            "branch": "main",
+            "detached_head": False,
+            "base_ref": base_ref,
+            "staged": staged,
+            "context_lines": context_lines,
+            "diff": diff[:max_bytes],
+            "truncated": len(diff.encode("utf-8")) > max_bytes,
+            "max_bytes": max_bytes,
+        }
 
 
 def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") -> str:
@@ -43,32 +184,6 @@ def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") 
         secret,
         algorithm="HS256",
     )
-
-
-def test_schedule_runtime_provision_deduplicates_same_session(monkeypatch):
-    from app.routers import sessions as sessions_router
-
-    started: list[str] = []
-    release = asyncio.Event()
-
-    async def _fake_provision_runtime(session_id, ws_manager=None):  # noqa: ARG001
-        started.append(str(session_id))
-        await release.wait()
-
-    monkeypatch.setattr(sessions_router, "_provision_runtime", _fake_provision_runtime)
-
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
-    session_id = uuid.uuid4()
-
-    async def _run() -> None:
-        sessions_router._schedule_runtime_provision(request, session_id)
-        sessions_router._schedule_runtime_provision(request, session_id)
-        await asyncio.sleep(0)
-        assert started == [str(session_id)]
-        release.set()
-        await asyncio.sleep(0)
-
-    asyncio.run(_run())
 
 
 def test_mark_session_read_preserves_updated_at():
@@ -125,7 +240,109 @@ def test_mark_session_read_preserves_updated_at():
     assert "updated_at=sessions.updated_at" in sql.replace(" ", "")
 
 
-def test_sessions_crud_and_ownership():
+def test_delete_session_runs_cleanup_before_database_delete():
+    fake_db = FakeDB()
+    service = SessionService(run_registry=AgentRunRegistry())
+    parent = Session(
+        id=uuid.uuid4(),
+        user_id="user-1",
+        agent_id="agent-1",
+        title="parent",
+    )
+    child = Session(
+        id=uuid.uuid4(),
+        user_id="user-1",
+        agent_id="agent-1",
+        title="child",
+        parent_session_id=parent.id,
+    )
+    main = Session(
+        id=uuid.uuid4(),
+        user_id="user-1",
+        agent_id="agent-1",
+        title="main",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    parent.created_at = datetime(2026, 1, 2, tzinfo=UTC)
+    fake_db.add(parent)
+    fake_db.add(child)
+    fake_db.add(main)
+
+    cleanup_ids: list[uuid.UUID] = []
+
+    async def _cleanup(session_ids: list[uuid.UUID]) -> None:
+        cleanup_ids.extend(session_ids)
+        assert parent in fake_db.storage[Session]
+        assert child in fake_db.storage[Session]
+
+    async def _run() -> None:
+        deleted_descendants = await service.delete_session(
+            fake_db,
+            session_id=parent.id,
+            user_id=parent.user_id,
+            before_delete=_cleanup,
+        )
+        assert deleted_descendants == 1
+
+    asyncio.run(_run())
+
+    assert cleanup_ids == [parent.id, child.id]
+    assert parent not in fake_db.storage[Session]
+    assert child not in fake_db.storage[Session]
+
+
+def test_delete_session_keeps_database_rows_when_cleanup_fails():
+    fake_db = FakeDB()
+    service = SessionService(run_registry=AgentRunRegistry())
+    session = Session(
+        id=uuid.uuid4(),
+        user_id="user-1",
+        agent_id="agent-1",
+        title="kept",
+    )
+    main = Session(
+        id=uuid.uuid4(),
+        user_id="user-1",
+        agent_id="agent-1",
+        title="main",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    session.created_at = datetime(2026, 1, 2, tzinfo=UTC)
+    fake_db.add(session)
+    fake_db.add(main)
+
+    async def _cleanup(_session_ids: list[uuid.UUID]) -> None:
+        raise RuntimeError("remote cleanup failed")
+
+    async def _run() -> None:
+        try:
+            await service.delete_session(
+                fake_db,
+                session_id=session.id,
+                user_id=session.user_id,
+                before_delete=_cleanup,
+            )
+        except SessionWorkspaceCleanupError as exc:
+            assert exc.detail == "remote cleanup failed"
+        else:
+            raise AssertionError("expected cleanup failure")
+
+    asyncio.run(_run())
+
+    assert session in fake_db.storage[Session]
+
+
+def test_sessions_crud_and_ownership(monkeypatch):
+    from app.routers import sessions as sessions_router
+
+    async def _noop_runtime_cleanup(_session_ids: list[uuid.UUID]) -> None:
+        return None
+
+    monkeypatch.setattr(
+        sessions_router,
+        "_cleanup_runtime_for_deleted_sessions",
+        _noop_runtime_cleanup,
+    )
     fake_db = FakeDB()
 
     old_init = install_fake_db_overrides(app_db=fake_db)
@@ -475,30 +692,29 @@ def test_reset_default_session_keeps_previous_main_runtime_workspace():
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_base = Path(tmpdir)
-            with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
-                client = TestClient(app)
-                login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-                assert login.status_code == 200
-                token = login.json()["access_token"]
-                headers = {"Authorization": f"Bearer {token}"}
+            client = TestClient(app)
+            login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+            assert login.status_code == 200
+            token = login.json()["access_token"]
+            headers = {"Authorization": f"Bearer {token}"}
 
-                main_resp = client.get(f"{SESSIONS_API}/default", headers=headers)
-                assert main_resp.status_code == 200
-                old_main_id = main_resp.json()["id"]
+            main_resp = client.get(f"{SESSIONS_API}/default", headers=headers)
+            assert main_resp.status_code == 200
+            old_main_id = main_resp.json()["id"]
 
-                old_workspace = runtime_base / old_main_id / "workspace"
-                old_workspace.mkdir(parents=True, exist_ok=True)
-                marker = old_workspace / "keep.txt"
-                marker.write_text("preserve")
+            old_workspace = runtime_base / old_main_id / "workspace"
+            old_workspace.mkdir(parents=True, exist_ok=True)
+            marker = old_workspace / "keep.txt"
+            marker.write_text("preserve")
 
-                reset_resp = client.post(f"{SESSIONS_API}/default/reset", headers=headers)
-                assert reset_resp.status_code == 200
-                new_main_id = reset_resp.json()["id"]
-                assert new_main_id != old_main_id
+            reset_resp = client.post(f"{SESSIONS_API}/default/reset", headers=headers)
+            assert reset_resp.status_code == 200
+            new_main_id = reset_resp.json()["id"]
+            assert new_main_id != old_main_id
 
-                assert old_workspace.exists() is True
-                assert marker.exists() is True
-                assert marker.read_text() == "preserve"
+            assert old_workspace.exists() is True
+            assert marker.exists() is True
+            assert marker.read_text() == "preserve"
     finally:
         restore_test_app(old_init)
 
@@ -678,7 +894,7 @@ def test_runtime_file_explorer_endpoints():
             (workspace / "repo").mkdir(parents=True, exist_ok=True)
             subprocess.run(["git", "-C", str(workspace / "repo"), "init"], check=False)
 
-            with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
+            with patch("app.routers.sessions.get_runtime_workspace_files", return_value=_LocalRuntimeWorkspaceFiles(runtime_base)):
                 files_root = client.get(f"{SESSIONS_API}/{session_id}/runtime/files", headers=headers)
                 assert files_root.status_code == 200
                 root_payload = files_root.json()
@@ -750,7 +966,7 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
             added_file = repo_dir / "new.txt"
             added_file.write_text("after\n", encoding="utf-8")
 
-            with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
+            with patch("app.routers.sessions.get_runtime_workspace_files", return_value=_LocalRuntimeWorkspaceFiles(runtime_base)):
                 deleted_resp = client.get(
                     f"{SESSIONS_API}/{session_id}/runtime/git/diff?path=repo/old.txt&base_ref=HEAD&staged=false&context_lines=3&max_bytes=120000",
                     headers=headers,
@@ -799,7 +1015,7 @@ def test_runtime_download_supports_files_and_directories():
             guide = docs_dir / "guide.txt"
             guide.write_text("hello zip\n", encoding="utf-8")
 
-            with patch("app.services.runtime.session_runtime._RUNTIME_BASE_DIR", runtime_base):
+            with patch("app.routers.sessions.get_runtime_workspace_files", return_value=_LocalRuntimeWorkspaceFiles(runtime_base)):
                 file_resp = client.get(
                     f"{SESSIONS_API}/{session_id}/runtime/download?path=README.md",
                     headers=headers,

@@ -48,12 +48,12 @@ API_BASE="${STACK_URL%/}/api/v1"
 HEALTH_READY_URL="${STACK_URL%/}/health/ready"
 READY_TIMEOUT="${SENTINEL_READY_TIMEOUT:-60}"
 CACHE_TTL="${SENTINEL_STATUS_TTL:-5}"
-SENTINEL_RUNTIME_BACKEND="${SENTINEL_RUNTIME_BACKEND:-}"
 SENTINEL_RUNTIME_WORKSPACES_DIR="${SENTINEL_RUNTIME_WORKSPACES_DIR:-}"
-SENTINEL_QEMU_ARTIFACTS_DIR="${SENTINEL_QEMU_ARTIFACTS_DIR:-}"
-SENTINEL_QEMU_BRIDGE_URL="${SENTINEL_QEMU_BRIDGE_URL:-}"
-SENTINEL_QEMU_BRIDGE_TOKEN="${SENTINEL_QEMU_BRIDGE_TOKEN:-}"
-SENTINEL_QEMU_RUN_ROOT="${SENTINEL_QEMU_RUN_ROOT:-}"
+SENTINEL_RUNTIME_SSH_HOST="${SENTINEL_RUNTIME_SSH_HOST:-}"
+SENTINEL_RUNTIME_SSH_PORT="${SENTINEL_RUNTIME_SSH_PORT:-}"
+SENTINEL_RUNTIME_SSH_USERNAME="${SENTINEL_RUNTIME_SSH_USERNAME:-}"
+SENTINEL_RUNTIME_SSH_KEY_PATH="${SENTINEL_RUNTIME_SSH_KEY_PATH:-}"
+SENTINEL_RUNTIME_SSH_PASSWORD="${SENTINEL_RUNTIME_SSH_PASSWORD:-}"
 SENTINEL_AUTH_USERNAME="${SENTINEL_AUTH_USERNAME:-}"
 SENTINEL_AUTH_PASSWORD="${SENTINEL_AUTH_PASSWORD:-}"
 
@@ -261,22 +261,17 @@ Usage:
   ./sentinel-cli.sh instances create <name> [display-name]
   ./sentinel-cli.sh instances rename <old-name> <new-name>
   ./sentinel-cli.sh instances delete <name>
-  ./sentinel-cli.sh runtime backend [docker|qemu]
   ./sentinel-cli.sh sessions transcript <session-id> [instance] [--json]
 
 Configuration:
-  Root .env is the source of truth for stack credentials, runtime backend,
+  Root .env is the source of truth for stack credentials, SSH runtime,
   workspace path, COMPOSE_PROJECT_NAME, and STACK_PORT. The CLI creates or
   reconciles it on startup before showing the menu or running commands.
 
   COMPOSE_PROJECT_NAME       Compose project name (default: sentinel).
-                             Runtime Docker network remains sentinel_default.
-  SENTINEL_RUNTIME_BACKEND   Backend-wide runtime provider for CLI/Docker
-                             stacks: docker or qemu (default: docker).
   SENTINEL_RUNTIME_WORKSPACES_DIR
-                             Absolute host directory for runtime session
-                             workspaces. Required in prod. Dev defaults to
-                             .sentinel/runtime/workspaces under this checkout.
+                             Absolute remote directory on the SSH target for runtime
+                             session workspaces.
   SENTINEL_AUTH_USERNAME     App admin username from root .env.
                              Required in both modes; prod rejects defaults.
   SENTINEL_AUTH_PASSWORD     App admin password from root .env.
@@ -300,8 +295,8 @@ Interactive keys:
 
 Main-menu letter shortcuts (jump + select in one keystroke):
   u  Start Stack   d  Stop Stack   r  Restart Stack   x  Reset Stack
-  i  Instances     t  Transcripts  b  Runtime Backend s  Status
-  l  Logs          f  Refresh      e  Exit
+  i  Instances     t  Transcripts  s  Status        l  Logs
+  f  Refresh       e  Exit
 
 Instances submenu shortcuts:
   l  List   c  Create   r  Rename   d  Delete   b  Back
@@ -339,66 +334,11 @@ is_absolute_path() {
   [[ "$1" == /* ]]
 }
 
-normalize_runtime_backend() {
-  local value="$1"
-  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
-  case "$value" in
-    docker|qemu)
-      printf '%s' "$value"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-resolve_runtime_backend() {
-  if [[ -z "$SENTINEL_RUNTIME_BACKEND" ]]; then
-    SENTINEL_RUNTIME_BACKEND="docker"
-  fi
-  SENTINEL_RUNTIME_BACKEND="$(normalize_runtime_backend "$SENTINEL_RUNTIME_BACKEND" 2>/dev/null || printf '%s' "$SENTINEL_RUNTIME_BACKEND")"
-  export SENTINEL_RUNTIME_BACKEND
-}
-
 resolve_runtime_workspace_dir() {
   if [[ -z "$SENTINEL_RUNTIME_WORKSPACES_DIR" && "$SENTINEL_MODE" == "dev" ]]; then
-    SENTINEL_RUNTIME_WORKSPACES_DIR="$ROOT_DIR/.sentinel/runtime/workspaces"
+    SENTINEL_RUNTIME_WORKSPACES_DIR="/srv/sentinel/runtime-workspaces"
   fi
   export SENTINEL_RUNTIME_WORKSPACES_DIR
-}
-
-default_qemu_artifacts_dir() {
-  printf '%s/infra/runtime/qemu/output' "$ROOT_DIR"
-}
-
-default_qemu_bridge_url() {
-  printf 'http://host.docker.internal:47481'
-}
-
-default_qemu_run_root() {
-  printf '%s/.sentinel/runtime/qemu' "$ROOT_DIR"
-}
-
-ensure_qemu_env_defaults() {
-  [[ "$SENTINEL_RUNTIME_BACKEND" == "qemu" ]] || return 0
-  ensure_qemu_config_defaults
-}
-
-ensure_qemu_config_defaults() {
-  if [[ -z "$SENTINEL_QEMU_ARTIFACTS_DIR" ]]; then
-    SENTINEL_QEMU_ARTIFACTS_DIR="$(default_qemu_artifacts_dir)"
-  fi
-  if [[ -z "$SENTINEL_QEMU_BRIDGE_URL" ]]; then
-    SENTINEL_QEMU_BRIDGE_URL="$(default_qemu_bridge_url)"
-  fi
-  if [[ -z "$SENTINEL_QEMU_BRIDGE_TOKEN" ]]; then
-    SENTINEL_QEMU_BRIDGE_TOKEN="$(generate_secret)"
-  fi
-  if [[ -z "$SENTINEL_QEMU_RUN_ROOT" ]]; then
-    SENTINEL_QEMU_RUN_ROOT="$(default_qemu_run_root)"
-  fi
-  export SENTINEL_QEMU_ARTIFACTS_DIR SENTINEL_QEMU_BRIDGE_URL
-  export SENTINEL_QEMU_BRIDGE_TOKEN SENTINEL_QEMU_RUN_ROOT
 }
 
 resolve_auth_config() {
@@ -483,14 +423,14 @@ env_value_invalid() {
     STACK_PORT)
       [[ "$value" =~ ^[0-9]+$ ]] || return 0
       ;;
-    SENTINEL_RUNTIME_BACKEND)
-      normalize_runtime_backend "$value" >/dev/null 2>&1 || return 0
-      ;;
     SENTINEL_RUNTIME_WORKSPACES_DIR)
       is_absolute_path "$value" || return 0
       ;;
-    SENTINEL_QEMU_ARTIFACTS_DIR|SENTINEL_QEMU_RUN_ROOT)
-      is_absolute_path "$value" || return 0
+    SENTINEL_RUNTIME_SSH_PORT)
+      [[ "$value" =~ ^[0-9]+$ ]] || return 0
+      ;;
+    SENTINEL_RUNTIME_SSH_KEY_PATH)
+      [[ -z "$value" || -f "$value" ]] || return 0
       ;;
   esac
   if [[ "$SENTINEL_MODE" == "prod" ]]; then
@@ -527,11 +467,14 @@ collect_env_errors() {
   for key in \
     COMPOSE_PROJECT_NAME \
     STACK_PORT \
-    SENTINEL_RUNTIME_BACKEND \
     SENTINEL_POSTGRES_PASSWORD \
     SENTINEL_JWT_SECRET_KEY \
     SENTINEL_AUTH_USERNAME \
     SENTINEL_AUTH_PASSWORD \
+    SENTINEL_RUNTIME_SSH_HOST \
+    SENTINEL_RUNTIME_SSH_PORT \
+    SENTINEL_RUNTIME_SSH_USERNAME \
+    SENTINEL_RUNTIME_SSH_KEY_PATH \
     SENTINEL_RUNTIME_WORKSPACES_DIR
   do
     value="${!key:-}"
@@ -543,42 +486,25 @@ collect_env_errors() {
       ENV_ERRORS+="${key} is invalid for ${SENTINEL_MODE} mode"$'\n'
     fi
   done
-  if [[ "${SENTINEL_RUNTIME_BACKEND:-}" == "qemu" ]]; then
-    for key in \
-      SENTINEL_QEMU_ARTIFACTS_DIR \
-      SENTINEL_QEMU_BRIDGE_URL \
-      SENTINEL_QEMU_BRIDGE_TOKEN \
-      SENTINEL_QEMU_RUN_ROOT
-    do
-      value="${!key:-}"
-      if ! root_env_has_key "$key"; then
-        ENV_ERRORS+="${key} is missing from .env for qemu runtime"$'\n'
-      elif [[ -z "$value" ]]; then
-        ENV_ERRORS+="${key} is missing for qemu runtime"$'\n'
-      elif env_value_invalid "$key"; then
-        ENV_ERRORS+="${key} is invalid for qemu runtime"$'\n'
-      fi
-    done
-  fi
   [[ -z "$ENV_ERRORS" ]]
 }
 
 reload_env_config() {
   unset COMPOSE_PROJECT_NAME STACK_PORT SENTINEL_POSTGRES_PASSWORD SENTINEL_JWT_SECRET_KEY
-  unset SENTINEL_AUTH_USERNAME SENTINEL_AUTH_PASSWORD SENTINEL_RUNTIME_BACKEND SENTINEL_RUNTIME_WORKSPACES_DIR
-  unset SENTINEL_QEMU_ARTIFACTS_DIR SENTINEL_QEMU_BRIDGE_URL SENTINEL_QEMU_BRIDGE_TOKEN SENTINEL_QEMU_RUN_ROOT
+  unset SENTINEL_AUTH_USERNAME SENTINEL_AUTH_PASSWORD SENTINEL_RUNTIME_WORKSPACES_DIR
+  unset SENTINEL_RUNTIME_SSH_HOST SENTINEL_RUNTIME_SSH_PORT SENTINEL_RUNTIME_SSH_USERNAME
+  unset SENTINEL_RUNTIME_SSH_KEY_PATH SENTINEL_RUNTIME_SSH_PASSWORD
   load_root_env true
   COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-sentinel}"
   STACK_PORT="${STACK_PORT:-4747}"
-  SENTINEL_RUNTIME_BACKEND="${SENTINEL_RUNTIME_BACKEND:-}"
   SENTINEL_RUNTIME_WORKSPACES_DIR="${SENTINEL_RUNTIME_WORKSPACES_DIR:-}"
-  SENTINEL_QEMU_ARTIFACTS_DIR="${SENTINEL_QEMU_ARTIFACTS_DIR:-}"
-  SENTINEL_QEMU_BRIDGE_URL="${SENTINEL_QEMU_BRIDGE_URL:-}"
-  SENTINEL_QEMU_BRIDGE_TOKEN="${SENTINEL_QEMU_BRIDGE_TOKEN:-}"
-  SENTINEL_QEMU_RUN_ROOT="${SENTINEL_QEMU_RUN_ROOT:-}"
+  SENTINEL_RUNTIME_SSH_HOST="${SENTINEL_RUNTIME_SSH_HOST:-}"
+  SENTINEL_RUNTIME_SSH_PORT="${SENTINEL_RUNTIME_SSH_PORT:-}"
+  SENTINEL_RUNTIME_SSH_USERNAME="${SENTINEL_RUNTIME_SSH_USERNAME:-}"
+  SENTINEL_RUNTIME_SSH_KEY_PATH="${SENTINEL_RUNTIME_SSH_KEY_PATH:-}"
+  SENTINEL_RUNTIME_SSH_PASSWORD="${SENTINEL_RUNTIME_SSH_PASSWORD:-}"
   SENTINEL_AUTH_USERNAME="${SENTINEL_AUTH_USERNAME:-}"
   SENTINEL_AUTH_PASSWORD="${SENTINEL_AUTH_PASSWORD:-}"
-  resolve_runtime_backend
   resolve_runtime_workspace_dir
   resolve_auth_config
   refresh_urls
@@ -598,265 +524,54 @@ validate_prod_stack_config() {
   fi
 }
 
-prepare_runtime_workspace_dir() {
-  ensure_runtime_workspace_config || return 1
-  if ! mkdir -p "$SENTINEL_RUNTIME_WORKSPACES_DIR"; then
-    err "Failed to create runtime workspace directory: ${SENTINEL_RUNTIME_WORKSPACES_DIR}"
-    return 1
-  fi
-}
-
-qemu_bridge_url_host_port() {
-  require_python || return 1
-  python3 - "$SENTINEL_QEMU_BRIDGE_URL" <<'PY'
-import sys
-from urllib.parse import urlparse
-
-parsed = urlparse(sys.argv[1])
-if parsed.scheme not in {"http", "https"} or not parsed.hostname or not parsed.port:
-    raise SystemExit(1)
-print(f"{parsed.hostname}\t{parsed.port}")
-PY
-}
-
-qemu_bridge_matching_pids() {
-  local port="$1"
-  require_python || return 1
-  python3 - "$port" "${SENTINEL_QEMU_BRIDGE_TOKEN:-}" <<'PY'
-import os
-import subprocess
-import sys
-
-port = sys.argv[1]
-token = sys.argv[2]
-current = os.getpid()
-parent = os.getppid()
-
-try:
-    result = subprocess.run(
-        ["ps", "-eo", "pid=,command="],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-except OSError:
-    raise SystemExit(0)
-
-for line in result.stdout.splitlines():
-    stripped = line.strip()
-    if not stripped:
-        continue
-    pid_text, _, command = stripped.partition(" ")
-    try:
-        pid = int(pid_text)
-    except ValueError:
-        continue
-    if pid in {current, parent}:
-        continue
-    has_bridge = "bridge.py" in command
-    has_port = f"--port {port}" in command or f"--port={port}" in command
-    has_token = not token or f"--token {token}" in command or f"--token={token}" in command
-    if has_bridge and has_port and has_token:
-        print(pid)
-PY
-}
-
-qemu_bridge_refresh_pid_file() {
-  local port="$1"
-  local pid_file="$2"
-  local pid
-  pid="$(qemu_bridge_matching_pids "$port" | head -n 1 || true)"
-  [[ -n "$pid" ]] || return 0
-  mkdir -p "$(dirname "$pid_file")" || return 1
-  printf '%s\n' "$pid" > "$pid_file"
-}
-
-qemu_bridge_health_url() {
-  local url="$1"
-  [[ -n "$HAVE_CURL" ]] || return 1
-  [[ -n "${SENTINEL_QEMU_BRIDGE_TOKEN:-}" ]] || return 1
-  curl -fsS --max-time 2 \
-    -H "X-Sentinel-Bridge-Token: ${SENTINEL_QEMU_BRIDGE_TOKEN}" \
-    "${url%/}/healthz" >/dev/null 2>&1
-}
-
-qemu_bridge_health() {
-  [[ -n "${SENTINEL_QEMU_BRIDGE_URL:-}" && -n "${SENTINEL_QEMU_BRIDGE_TOKEN:-}" ]] || return 1
-  qemu_bridge_health_url "$SENTINEL_QEMU_BRIDGE_URL"
-}
-
-stop_matching_qemu_bridge_processes() {
-  local port="$1"
-  local pids pid still_running
-  pids="$(qemu_bridge_matching_pids "$port" || true)"
-  [[ -n "$pids" ]] || return 0
-
-  warn "Stopping stale QEMU bridge process(es) on port ${port}."
-  for pid in $pids; do
-    kill "$pid" 2>/dev/null || true
-  done
-
-  local attempt
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    still_running=0
-    for pid in $pids; do
-      if kill -0 "$pid" 2>/dev/null; then
-        still_running=1
-      fi
-    done
-    [[ "$still_running" -eq 0 ]] && return 0
-    sleep 0.2
-  done
-
-  for pid in $pids; do
-    kill -9 "$pid" 2>/dev/null || true
-  done
-}
-
-qemu_bridge_port_is_busy() {
-  local port="$1"
-  command -v lsof >/dev/null 2>&1 || return 1
-  lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
-}
-
-print_qemu_bridge_port_owner() {
-  local port="$1"
-  command -v lsof >/dev/null 2>&1 || return 0
-  lsof -nP -iTCP:"$port" -sTCP:LISTEN >&2 || true
-}
-
-start_qemu_bridge() {
-  [[ "$SENTINEL_RUNTIME_BACKEND" == "qemu" ]] || return 0
-  ensure_qemu_env_defaults
-  require_python || return 1
-  local host_port host port log pid_file
-  host_port="$(qemu_bridge_url_host_port)" || {
-    err "Invalid SENTINEL_QEMU_BRIDGE_URL: ${SENTINEL_QEMU_BRIDGE_URL}"
-    return 1
-  }
-  host="$(printf '%s' "$host_port" | awk -F'\t' '{print $1}')"
-  port="$(printf '%s' "$host_port" | awk -F'\t' '{print $2}')"
-  if [[ "$host" == "host.docker.internal" ]]; then
-    host="127.0.0.1"
-  fi
-  if [[ ! "$SENTINEL_QEMU_BRIDGE_URL" =~ ^http://(localhost|127\.0\.0\.1|host\.docker\.internal):[0-9]+$ ]]; then
-    warn "QEMU bridge is not local (${SENTINEL_QEMU_BRIDGE_URL}); expecting it to be managed externally."
-    return 0
-  fi
-  mkdir -p "$SENTINEL_QEMU_RUN_ROOT" || return 1
-  log="$SENTINEL_QEMU_RUN_ROOT/bridge.log"
-  pid_file="$SENTINEL_QEMU_RUN_ROOT/bridge.pid"
-  if qemu_bridge_health; then
-    qemu_bridge_refresh_pid_file "$port" "$pid_file"
-    return 0
-  fi
-  if qemu_bridge_health_url "http://${host}:${port}"; then
-    qemu_bridge_refresh_pid_file "$port" "$pid_file"
-    return 0
-  fi
-  stop_matching_qemu_bridge_processes "$port"
-  if qemu_bridge_port_is_busy "$port"; then
-    err "QEMU bridge port ${port} is already in use by a non-Sentinel bridge process."
-    print_qemu_bridge_port_owner "$port"
-    return 1
-  fi
-  info "Starting QEMU bridge on ${host}:${port}..."
-  (
-    cd "$ROOT_DIR" && \
-      python3 infra/runtime/qemu/bridge.py \
-        --host "$host" \
-        --port "$port" \
-        --token "$SENTINEL_QEMU_BRIDGE_TOKEN"
-  ) >>"$log" 2>&1 &
-  printf '%s\n' "$!" > "$pid_file"
-  sleep 1
-  if ! qemu_bridge_health_url "http://${host}:${port}"; then
-    err "QEMU bridge did not become healthy. See ${log}"
-    return 1
-  fi
-  qemu_bridge_refresh_pid_file "$port" "$pid_file"
-}
-
-stop_local_qemu_bridge_for_rebuild() {
-  ensure_qemu_config_defaults
-  require_python || return 1
-  local host_port port pid_file
-  host_port="$(qemu_bridge_url_host_port)" || {
-    err "Invalid SENTINEL_QEMU_BRIDGE_URL: ${SENTINEL_QEMU_BRIDGE_URL}"
-    return 1
-  }
-  port="$(printf '%s' "$host_port" | awk -F'\t' '{print $2}')"
-  if [[ ! "$SENTINEL_QEMU_BRIDGE_URL" =~ ^http://(localhost|127\.0\.0\.1|host\.docker\.internal):[0-9]+$ ]]; then
-    warn "QEMU bridge is not local (${SENTINEL_QEMU_BRIDGE_URL}); not stopping it before rebuild."
-    return 0
-  fi
-  stop_matching_qemu_bridge_processes "$port"
-  pid_file="$SENTINEL_QEMU_RUN_ROOT/bridge.pid"
-  if [[ -f "$pid_file" ]]; then
-    rm -f "$pid_file" 2>/dev/null || true
-  fi
-}
-
 prepare_stack_config() {
   ensure_cli_env_ready || return 1
-  prepare_runtime_workspace_dir || return 1
-  start_qemu_bridge || return 1
+  ensure_runtime_workspace_config || return 1
   validate_auth_config || return 1
   validate_prod_stack_config || return 1
-}
-
-build_runtime_image() {
-  run_compose_captured "docker compose runtime image build failed" -- \
-    --profile build-only build sentinel-runtime
 }
 
 write_dev_env_defaults() {
   upsert_root_env_value "COMPOSE_PROJECT_NAME" "$(env_value_or_default "COMPOSE_PROJECT_NAME" "sentinel")" || return 1
   upsert_root_env_value "STACK_PORT" "$(env_value_or_default "STACK_PORT" "4747")" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_BACKEND" "$(env_value_or_default "SENTINEL_RUNTIME_BACKEND" "docker")" || return 1
   upsert_root_env_value "SENTINEL_POSTGRES_PASSWORD" "$(env_value_or_default "SENTINEL_POSTGRES_PASSWORD" "sentinel")" || return 1
   upsert_root_env_value "SENTINEL_JWT_SECRET_KEY" "$(env_value_or_default "SENTINEL_JWT_SECRET_KEY" "sentinel-local-dev-secret-change-me")" || return 1
   upsert_root_env_value "SENTINEL_AUTH_USERNAME" "$(env_value_or_default "SENTINEL_AUTH_USERNAME" "admin")" || return 1
   upsert_root_env_value "SENTINEL_AUTH_PASSWORD" "$(env_value_or_default "SENTINEL_AUTH_PASSWORD" "admin")" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_WORKSPACES_DIR" "$(env_value_or_default "SENTINEL_RUNTIME_WORKSPACES_DIR" "$ROOT_DIR/.sentinel/runtime/workspaces")" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_SSH_HOST" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_HOST" "host.docker.internal")" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_SSH_PORT" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_PORT" "22")" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_SSH_USERNAME" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_USERNAME" "sentinel")" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_SSH_KEY_PATH" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_KEY_PATH" "$HOME/.ssh/id_ed25519")" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_WORKSPACES_DIR" "$(env_value_or_default "SENTINEL_RUNTIME_WORKSPACES_DIR" "/srv/sentinel/runtime-workspaces")" || return 1
   reload_env_config
-  ensure_qemu_env_defaults
-  if [[ "$SENTINEL_RUNTIME_BACKEND" == "qemu" ]]; then
-    upsert_root_env_value "SENTINEL_QEMU_ARTIFACTS_DIR" "$SENTINEL_QEMU_ARTIFACTS_DIR" || return 1
-    upsert_root_env_value "SENTINEL_QEMU_BRIDGE_URL" "$SENTINEL_QEMU_BRIDGE_URL" || return 1
-    upsert_root_env_value "SENTINEL_QEMU_BRIDGE_TOKEN" "$SENTINEL_QEMU_BRIDGE_TOKEN" || return 1
-    upsert_root_env_value "SENTINEL_QEMU_RUN_ROOT" "$SENTINEL_QEMU_RUN_ROOT" || return 1
-  fi
 }
 
 write_prod_env_interactive() {
-  local compose_project stack_port runtime_backend db_password jwt_secret auth_username auth_password workspace_dir
+  local compose_project stack_port db_password jwt_secret auth_username auth_password workspace_dir ssh_host ssh_port ssh_username ssh_key_path
   compose_project="$(prompt_default "Compose project name" "$(env_value_or_default "COMPOSE_PROJECT_NAME" "sentinel")")"
   stack_port="$(prompt_default "Stack port" "$(env_value_or_default "STACK_PORT" "4747")")"
-  runtime_backend="$(prompt_default "Runtime backend (docker or qemu)" "$(env_value_or_default "SENTINEL_RUNTIME_BACKEND" "docker")")"
-  runtime_backend="$(normalize_runtime_backend "$runtime_backend" 2>/dev/null || printf '%s' "$runtime_backend")"
   db_password="$(prompt_default "Database password" "$(env_value_or_default "SENTINEL_POSTGRES_PASSWORD" "$(generate_secret)")")"
   jwt_secret="$(prompt_default "JWT secret" "$(env_value_or_default "SENTINEL_JWT_SECRET_KEY" "$(generate_secret)")")"
   auth_username="$(prompt_default "Admin username" "$(env_value_or_default "SENTINEL_AUTH_USERNAME" "sentinel-admin")")"
   auth_password="$(prompt_default "Admin password" "$(env_value_or_default "SENTINEL_AUTH_PASSWORD" "$(generate_secret)")")"
-  workspace_dir="$(prompt_default "Runtime workspaces directory" "$(env_value_or_default "SENTINEL_RUNTIME_WORKSPACES_DIR" "$ROOT_DIR/.sentinel/runtime/workspaces")")"
+  ssh_host="$(prompt_default "Runtime SSH host" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_HOST" "host.docker.internal")")"
+  ssh_port="$(prompt_default "Runtime SSH port" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_PORT" "22")")"
+  ssh_username="$(prompt_default "Runtime SSH username" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_USERNAME" "sentinel")")"
+  ssh_key_path="$(prompt_default "Runtime SSH key path" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_KEY_PATH" "$HOME/.ssh/id_ed25519")")"
+  workspace_dir="$(prompt_default "Runtime remote workspaces directory" "$(env_value_or_default "SENTINEL_RUNTIME_WORKSPACES_DIR" "/srv/sentinel/runtime-workspaces")")"
 
   upsert_root_env_value "COMPOSE_PROJECT_NAME" "$compose_project" || return 1
   upsert_root_env_value "STACK_PORT" "$stack_port" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_BACKEND" "$runtime_backend" || return 1
   upsert_root_env_value "SENTINEL_POSTGRES_PASSWORD" "$db_password" || return 1
   upsert_root_env_value "SENTINEL_JWT_SECRET_KEY" "$jwt_secret" || return 1
   upsert_root_env_value "SENTINEL_AUTH_USERNAME" "$auth_username" || return 1
   upsert_root_env_value "SENTINEL_AUTH_PASSWORD" "$auth_password" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_SSH_HOST" "$ssh_host" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_SSH_PORT" "$ssh_port" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_SSH_USERNAME" "$ssh_username" || return 1
+  upsert_root_env_value "SENTINEL_RUNTIME_SSH_KEY_PATH" "$ssh_key_path" || return 1
   upsert_root_env_value "SENTINEL_RUNTIME_WORKSPACES_DIR" "$workspace_dir" || return 1
   reload_env_config
-  ensure_qemu_env_defaults
-  if [[ "$SENTINEL_RUNTIME_BACKEND" == "qemu" ]]; then
-    upsert_root_env_value "SENTINEL_QEMU_ARTIFACTS_DIR" "$(prompt_default "QEMU artifacts directory" "$SENTINEL_QEMU_ARTIFACTS_DIR")" || return 1
-    upsert_root_env_value "SENTINEL_QEMU_BRIDGE_URL" "$(prompt_default "QEMU bridge URL" "$SENTINEL_QEMU_BRIDGE_URL")" || return 1
-    upsert_root_env_value "SENTINEL_QEMU_BRIDGE_TOKEN" "$(prompt_default "QEMU bridge token" "$SENTINEL_QEMU_BRIDGE_TOKEN")" || return 1
-    upsert_root_env_value "SENTINEL_QEMU_RUN_ROOT" "$(prompt_default "QEMU run root" "$SENTINEL_QEMU_RUN_ROOT")" || return 1
-  fi
 }
 
 print_env_errors() {
@@ -983,7 +698,6 @@ build_status() {
   buf+="  ${CYAN}${ICON_DOCKER}${RESET}  ${DIM}Docker${RESET}  ${docker_state}${CLEAR_LINE}"$'\n'
   buf+="  ${CYAN}${ICON_API}${RESET}  ${DIM}API${RESET}     ${api_state}${CLEAR_LINE}"$'\n'
   buf+="  ${CYAN}${ICON_UI}${RESET}  ${DIM}UI${RESET}      ${ui_state}${CLEAR_LINE}"$'\n'
-  buf+="  ${CYAN}${ICON_RUNTIME}${RESET}  ${DIM}Runtime${RESET} ${SENTINEL_RUNTIME_BACKEND:-docker}${CLEAR_LINE}"$'\n'
   buf+="  ${CYAN}${ICON_STACK}${RESET}  ${DIM}Stack${RESET}   ${COMPOSE_PROJECT_NAME} on :${STACK_PORT} ${DIM}(${SENTINEL_MODE}, ${COMPOSE_FILE})${RESET}${CLEAR_LINE}"$'\n'
   buf+="${CLEAR_LINE}"$'\n'
   STATUS_CACHE_TEXT="$buf"
@@ -1699,12 +1413,6 @@ stack_up() {
     ui_note_error "stack configuration is not ready."
     return 1
   fi
-  info "Checking Sentinel runtime image (${COMPOSE_PROJECT_NAME})..."
-  if ! build_runtime_image; then
-    invalidate_status_cache
-    ui_note_error "docker compose runtime image build failed — details below."
-    return 1
-  fi
   info "Starting Sentinel shared stack (${COMPOSE_PROJECT_NAME})..."
   if ! run_compose_captured "docker compose up failed" -- up --build -d; then
     invalidate_status_cache
@@ -1741,21 +1449,6 @@ stack_down() {
 stack_restart() {
   stack_down || true
   stack_up
-}
-
-remove_runtime_containers() {
-  local ids=() id
-  while IFS= read -r id; do
-    [[ -n "$id" ]] && ids+=("$id")
-  done < <(
-    docker ps -a -q \
-      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
-      --filter "label=com.docker.compose.service=sentinel-runtime" 2>/dev/null
-  )
-  if [[ ${#ids[@]} -eq 0 ]]; then
-    return 0
-  fi
-  docker rm -f "${ids[@]}"
 }
 
 confirm_stack_reset() {
@@ -1820,99 +1513,9 @@ stack_reset() {
     ui_note_error "docker compose reset failed — details below."
     return 1
   fi
-  if ! remove_runtime_containers; then
-    ui_note_error "Failed to remove runtime containers."
-    return 1
-  fi
   invalidate_status_cache
   ok "Sentinel stack reset. .env and runtime workspaces were preserved."
   ui_note_ok "Stack reset complete. .env and runtime workspaces were preserved."
-}
-
-runtime_backend_set() {
-  local backend="${1:-}"
-  backend="$(normalize_runtime_backend "$backend" 2>/dev/null || true)"
-  if [[ -z "$backend" ]]; then
-    err "Runtime backend must be docker or qemu."
-    return 1
-  fi
-  reload_env_config
-  upsert_root_env_value "SENTINEL_RUNTIME_BACKEND" "$backend" || return 1
-  reload_env_config
-  ensure_qemu_env_defaults
-  if [[ "$backend" == "qemu" ]]; then
-    upsert_root_env_value "SENTINEL_QEMU_ARTIFACTS_DIR" "$SENTINEL_QEMU_ARTIFACTS_DIR" || return 1
-    upsert_root_env_value "SENTINEL_QEMU_BRIDGE_URL" "$SENTINEL_QEMU_BRIDGE_URL" || return 1
-    upsert_root_env_value "SENTINEL_QEMU_BRIDGE_TOKEN" "$SENTINEL_QEMU_BRIDGE_TOKEN" || return 1
-    upsert_root_env_value "SENTINEL_QEMU_RUN_ROOT" "$SENTINEL_QEMU_RUN_ROOT" || return 1
-  fi
-  reload_env_config
-  invalidate_status_cache
-  ok "Runtime backend set to ${backend} in .env."
-  warn "Restart the stack for the backend process to use the new runtime provider."
-}
-
-qemu_rebuild_image() {
-  reload_env_config
-  ensure_qemu_config_defaults
-  if ! is_absolute_path "$SENTINEL_QEMU_ARTIFACTS_DIR"; then
-    err "SENTINEL_QEMU_ARTIFACTS_DIR must be an absolute path: ${SENTINEL_QEMU_ARTIFACTS_DIR}"
-    return 1
-  fi
-  if ! is_absolute_path "$SENTINEL_QEMU_RUN_ROOT"; then
-    err "SENTINEL_QEMU_RUN_ROOT must be an absolute path: ${SENTINEL_QEMU_RUN_ROOT}"
-    return 1
-  fi
-  warn "This rebuilds the QEMU base image and may take a while."
-  warn "Any local QEMU bridge on ${SENTINEL_QEMU_BRIDGE_URL} will be stopped first."
-  if ! confirm_phrase "Type REBUILD to continue: " "REBUILD"; then
-    ui_note_warn "QEMU image rebuild aborted."
-    return 1
-  fi
-
-  stop_local_qemu_bridge_for_rebuild || return 1
-  mkdir -p "$SENTINEL_QEMU_ARTIFACTS_DIR" "$SENTINEL_QEMU_RUN_ROOT" || return 1
-
-  info "Building QEMU runtime image into ${SENTINEL_QEMU_ARTIFACTS_DIR}..."
-  if ! SENTINEL_QEMU_OUTPUT_DIR="$SENTINEL_QEMU_ARTIFACTS_DIR" \
-      ./infra/runtime/qemu/build-base-image.sh; then
-    ui_note_error "QEMU image build failed."
-    return 1
-  fi
-
-  info "Validating QEMU runtime image..."
-  if ! SENTINEL_QEMU_VALIDATE_IMAGE="$SENTINEL_QEMU_ARTIFACTS_DIR/sentinel-runtime-base-arm64.qcow2" \
-      SENTINEL_QEMU_VALIDATE_KEY="$SENTINEL_QEMU_ARTIFACTS_DIR/sentinel-runtime-base-arm64.id_ed25519" \
-      ./infra/runtime/qemu/validate-base-image.sh; then
-    ui_note_error "QEMU image validation failed."
-    return 1
-  fi
-
-  ok "QEMU runtime image rebuilt and validated."
-  ui_note_ok "QEMU runtime image rebuilt and validated."
-}
-
-interactive_runtime_backend() {
-  local current="${SENTINEL_RUNTIME_BACKEND:-docker}"
-  local options=(
-    "Docker runtime"
-    "QEMU runtime"
-    "Rebuild QEMU image"
-    "${ICON_BACK}  Back"
-  )
-  printf '%s' "$CLEAR_SCREEN"
-  printf '%s%s%s %sRuntime Backend%s\n\n' "$CYAN" "$ICON_RUNTIME" "$RESET" "$BOLD" "$RESET"
-  printf '%sCurrent:%s %s\n\n' "$DIM" "$RESET" "$current"
-  MENU_KEY="runtime" SHORTCUT_KEYS="dqrb" \
-    select_option "Choose Runtime Backend" "${options[@]}"
-  local choice=$?
-  case "$choice" in
-    0) runtime_backend_set docker ;;
-    1) runtime_backend_set qemu ;;
-    2) qemu_rebuild_image ;;
-    *) return 0 ;;
-  esac
-  press_enter_to_return
 }
 
 stack_logs() {
@@ -2376,17 +1979,16 @@ menu_loop() {
     "${ICON_RESET}  Reset Stack"
     "${ICON_INSTANCES}  Instances"
     "${ICON_TRANSCRIPT}  Session Transcripts"
-    "${ICON_RUNTIME}  Runtime Backend"
     "${ICON_STATUS}  Status"
     "${ICON_LOGS}  Logs"
     "${ICON_REFRESH}  Refresh"
     "${ICON_EXIT}  Exit"
   )
   # Shortcuts mirror common compose verbs: u=up, d=down, r=restart, x=reset,
-  # i=instances, t=transcripts, b=runtime backend, s=status, l=logs,
+  # i=instances, t=transcripts, s=status, l=logs,
   # f=refresh, e=exit.
   while true; do
-    MENU_KEY="main" SHORTCUT_KEYS="udrxitbslfe" \
+    MENU_KEY="main" SHORTCUT_KEYS="udrxitslfe" \
       select_option "Main Menu" "${options[@]}"
     local choice=$?
     case "$choice" in
@@ -2396,11 +1998,10 @@ menu_loop() {
       3) interactive_reset; invalidate_status_cache ;;
       4) instances_menu ;;
       5) interactive_session_transcripts ;;
-      6) interactive_runtime_backend ;;
-      7) interactive_status; invalidate_status_cache ;;
-      8) interactive_logs ;;
-      9) invalidate_status_cache; ui_note_info "Status refreshed." ;;
-      10|255)
+      6) interactive_status; invalidate_status_cache ;;
+      7) interactive_logs ;;
+      8) invalidate_status_cache; ui_note_info "Status refreshed." ;;
+      9|255)
         show_cursor
         printf '%s' "$CLEAR_TO_END"
         exit 0
@@ -2445,12 +2046,6 @@ main() {
       ;;
   esac
   detect_tools
-
-  if [[ "$command" == "runtime" && "${1:-}" == "backend" ]]; then
-    shift
-    runtime_backend_set "$@"
-    return $?
-  fi
 
   ensure_cli_env_ready || exit 1
 

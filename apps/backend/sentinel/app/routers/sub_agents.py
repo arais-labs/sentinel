@@ -33,11 +33,7 @@ async def create_sub_agent_task(
         session_id=session.id,
         objective=payload.name,
         context=payload.scope,
-        constraints=(
-            [{"type": "browser_tab", "tab_id": payload.browser_tab_id}]
-            if payload.browser_tab_id
-            else []
-        ),
+        constraints=[],
         allowed_tools=payload.allowed_tools,
         max_turns=payload.max_steps,
         timeout_seconds=payload.timeout_seconds,
@@ -153,7 +149,6 @@ def _task_response(task: SubAgentTask) -> SubAgentTaskResponse:
         session_id=task.session_id,
         name=task.objective,
         scope=task.context,
-        browser_tab_id=_extract_browser_tab_id(task),
         max_steps=max_steps,
         status=task.status,
         allowed_tools=task.allowed_tools if isinstance(task.allowed_tools, list) else [],
@@ -165,19 +160,6 @@ def _task_response(task: SubAgentTask) -> SubAgentTaskResponse:
         started_at=task.started_at,
         completed_at=task.completed_at,
     )
-
-
-def _extract_browser_tab_id(task: SubAgentTask) -> str | None:
-    constraints = task.constraints if isinstance(task.constraints, list) else []
-    for item in constraints:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("type", "")).strip().lower() != "browser_tab":
-            continue
-        tab_id = item.get("tab_id")
-        if isinstance(tab_id, str) and tab_id.strip():
-            return tab_id.strip()
-    return None
 
 
 def _resolve_orchestrator(request: Request) -> SubAgentOrchestrator:

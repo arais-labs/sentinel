@@ -43,10 +43,3 @@ export function backendPath(): string {
   // In packaged mode the backend lives inside the userData source tree.
   return path.join(appSupportRoot(), 'source/apps/backend/sentinel');
 }
-
-export function qemuResourcePath(): string {
-  if (!app.isPackaged) {
-    return path.join(repoRoot(), 'infra/runtime/qemu');
-  }
-  return path.join(resourceRoot(), 'runtime/qemu');
-}

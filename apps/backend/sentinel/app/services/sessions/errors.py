@@ -17,6 +17,14 @@ class MainSessionDeletionError(SessionServiceError):
     """Main session cannot be deleted."""
 
 
+class SessionWorkspaceCleanupError(SessionServiceError):
+    """Runtime workspace cleanup failed before session deletion."""
+
+    def __init__(self, message: str, *, detail: str | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail
+
+
 class MainSessionTargetInvalidError(SessionServiceError):
     """Requested main session target is invalid."""
 
@@ -27,14 +35,6 @@ class AgentRuntimeUnavailableError(SessionServiceError):
 
 class ChatPayloadRequiredError(SessionServiceError):
     """Chat requires text and/or attachments."""
-
-
-class RuntimePathInvalidError(SessionServiceError):
-    """Requested runtime path is invalid."""
-
-
-class RuntimePathNotFoundError(SessionServiceError):
-    """Requested runtime path does not exist."""
 
 
 class SessionRenameNotAllowedError(SessionServiceError):

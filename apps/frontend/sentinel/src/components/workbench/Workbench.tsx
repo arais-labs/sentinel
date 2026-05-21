@@ -42,6 +42,7 @@ interface WorkbenchProps {
   onExplorerDownload?: (entry: SessionRuntimeFileEntry) => void;
   loadExplorerDirectory: (path: string) => Promise<SessionRuntimeFileEntry[]>;
   onExplorerDirectoryToggle?: (entry: SessionRuntimeFileEntry, expanded: boolean) => void;
+  explorerRefreshKey?: number;
   
   // Git / Diff
   repoChangesSections: WorkbenchRepoChangesSection[];
@@ -76,6 +77,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   onExplorerDownload,
   loadExplorerDirectory,
   onExplorerDirectoryToggle,
+  explorerRefreshKey = 0,
   repoChangesSections,
   expandedGitDirs,
   onToggleGitDir,
@@ -169,6 +171,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                   onExplorerDownload={onExplorerDownload}
                   loadExplorerDirectory={loadExplorerDirectory}
                   onExplorerDirectoryToggle={onExplorerDirectoryToggle}
+                  explorerRefreshKey={explorerRefreshKey}
                   repoChangesSections={repoChangesSections}
                   expandedGitDirs={expandedGitDirs}
                   onToggleGitDir={onToggleGitDir}

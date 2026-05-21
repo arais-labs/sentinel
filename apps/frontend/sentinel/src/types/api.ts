@@ -406,6 +406,9 @@ export interface RuntimeLiveView {
   available: boolean;
   mode?: string;
   url: string | null;
+  ws_url: string | null;
+  display: string | null;
+  geometry: string | null;
   reason: string | null;
   provider: {
     id: string;
@@ -418,6 +421,46 @@ export interface RuntimeLiveView {
       value: string;
     }>;
   };
+}
+
+export interface RuntimeRepairResponse {
+  ok: boolean;
+  status: 'completed' | 'unavailable' | 'failed';
+  command: string[];
+  stdout: string | null;
+  stderr: string | null;
+  detail: string | null;
+}
+
+export interface RuntimeActionResponse {
+  ok: boolean;
+  action: string;
+  session_id: string;
+  detail: string | null;
+  result: Record<string, unknown>;
+}
+
+export interface RuntimeStatusCheck {
+  id: string;
+  label: string;
+  status: 'pass' | 'fail' | 'warn' | 'skip';
+  detail: string | null;
+  required: boolean;
+  duration_ms: number | null;
+}
+
+export interface RuntimeStatusResponse {
+  status: 'ready' | 'degraded' | 'not_configured' | 'unreachable' | 'failed';
+  summary: string;
+  checked_at: string;
+  target: {
+    host: string | null;
+    port: number | null;
+    username: string | null;
+    workspaces_dir: string | null;
+  };
+  checks: RuntimeStatusCheck[];
+  capabilities: Record<string, string>;
 }
 
 export interface ConfigResponse {

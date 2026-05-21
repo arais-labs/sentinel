@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from unittest.mock import patch
 
 import pytest
 
@@ -87,18 +86,13 @@ async def test_stop_generation_waits_for_cancelled_run_to_materialize_tool_resul
     try:
         assert await run_registry.register(str(session_id), task) is True
         await asyncio.sleep(0)
-        with patch(
-            "app.services.sessions.service.stop_all_detached_runtime_jobs",
-            autospec=True,
-        ) as stop_jobs:
-            cancelled = await service.stop_generation(
-                fake_db,
-                session_id=session_id,
-                user_id="user-1",
-            )
+        cancelled = await service.stop_generation(
+            fake_db,
+            session_id=session_id,
+            user_id="user-1",
+        )
 
         assert cancelled is True
-        stop_jobs.assert_awaited_once()
         tool_results = [
             row
             for row in fake_db.storage[Message]

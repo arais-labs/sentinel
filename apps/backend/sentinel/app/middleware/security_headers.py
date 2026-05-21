@@ -19,22 +19,15 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Skip security headers for VNC proxy paths (needs iframe embedding)
-        path: str = scope.get("path", "")
-        is_vnc = path.startswith("/vnc/")
-
         async def send_with_headers(message: dict) -> None:
             if message["type"] == "http.response.start":
-                headers = dict(message.get("headers", []))
-                # Convert to mutable list
                 header_list = list(message.get("headers", []))
 
-                if not is_vnc:
-                    _setdefault(header_list, b"x-content-type-options", b"nosniff")
-                    _setdefault(header_list, b"x-frame-options", b"DENY")
-                    _setdefault(header_list, b"referrer-policy", b"no-referrer")
-                    _setdefault(header_list, b"permissions-policy", b"camera=(), microphone=(), geolocation=()")
-                    _setdefault(header_list, b"cache-control", b"no-store")
+                _setdefault(header_list, b"x-content-type-options", b"nosniff")
+                _setdefault(header_list, b"x-frame-options", b"DENY")
+                _setdefault(header_list, b"referrer-policy", b"no-referrer")
+                _setdefault(header_list, b"permissions-policy", b"camera=(), microphone=(), geolocation=()")
+                _setdefault(header_list, b"cache-control", b"no-store")
 
                 message = {**message, "headers": header_list}
 

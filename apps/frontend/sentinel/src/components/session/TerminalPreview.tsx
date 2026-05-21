@@ -1,7 +1,7 @@
-import { memo, useEffect, useRef } from 'react';
-import { Terminal } from '@xterm/xterm';
+import { useEffect, useRef, useState } from 'react';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
 import { wsSessionsBaseUrl } from '../../lib/env';
@@ -12,173 +12,116 @@ interface TerminalPreviewProps {
   instanceName: string;
 }
 
-// Higher-contrast ANSI palette than xterm's defaults so `ls --color=auto`,
-// grep highlights, git diff output etc. render with real punch on the dark
-// Sentinel surface. Bright variants are visibly more saturated than their
-// non-bright twins so semantic distinctions stay readable at small font sizes.
-const TERMINAL_THEME = {
-  background: '#0a0a0c',
-  foreground: '#f3f4f6',
-  cursor: '#38bdf8',
-  cursorAccent: '#0a0a0c',
-  selectionBackground: 'rgba(56, 189, 248, 0.35)',
-  black: '#1f2128',
-  red: '#ef4444',
-  green: '#22c55e',
-  yellow: '#eab308',
-  blue: '#3b82f6',
-  magenta: '#d946ef',
-  cyan: '#06b6d4',
-  white: '#e5e7eb',
-  brightBlack: '#6b7280',
-  brightRed: '#f87171',
-  brightGreen: '#4ade80',
-  brightYellow: '#facc15',
-  brightBlue: '#60a5fa',
-  brightMagenta: '#e879f9',
-  brightCyan: '#22d3ee',
-  brightWhite: '#ffffff',
-};
-
-export const TerminalPreview = memo(({ sessionId, terminalId, instanceName }: TerminalPreviewProps) => {
+export function TerminalPreview({ sessionId, terminalId, instanceName }: TerminalPreviewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // Terminal + WebSocket live across renders for a stable (sessionId, terminalId)
-  // pair; switching either tears down and rebuilds via the effect's cleanup.
-  const termRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
+  const terminalRef = useRef<XTerm | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'closed' | 'error'>('connecting');
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || !instanceName || !sessionId || !terminalId) return undefined;
 
-    const term = new Terminal({
-      theme: TERMINAL_THEME,
+    setStatus('connecting');
+
+    const terminal = new XTerm({
       cursorBlink: true,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace',
-      fontSize: 13,
-      lineHeight: 1.2,
+      convertEol: true,
+      fontFamily: 'JetBrains Mono, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: 12,
+      lineHeight: 1.25,
       scrollback: 5000,
-      allowProposedApi: true,
+      theme: {
+        background: '#050608',
+        foreground: '#d6deeb',
+        cursor: '#f8fafc',
+        selectionBackground: '#334155',
+        black: '#1f2937',
+        red: '#f87171',
+        green: '#34d399',
+        yellow: '#fbbf24',
+        blue: '#60a5fa',
+        magenta: '#c084fc',
+        cyan: '#22d3ee',
+        white: '#e5e7eb',
+        brightBlack: '#64748b',
+        brightRed: '#fb7185',
+        brightGreen: '#4ade80',
+        brightYellow: '#fde047',
+        brightBlue: '#93c5fd',
+        brightMagenta: '#d8b4fe',
+        brightCyan: '#67e8f9',
+        brightWhite: '#ffffff',
+      },
     });
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    term.loadAddon(new WebLinksAddon());
-    term.open(container);
+    const fit = new FitAddon();
+    terminal.loadAddon(fit);
+    terminal.loadAddon(new WebLinksAddon());
+    terminal.open(container);
+    terminal.focus();
+    fit.fit();
 
-    // fitAddon.fit() reads container dimensions; if the parent hasn't been
-    // laid out yet (flex item with min-h-0), it touches `undefined.dimensions`
-    // and crashes the mount. Defer until dimensions are positive, and retry
-    // every ResizeObserver tick. Safe to skip the call entirely while size is 0.
-    const safeFit = () => {
-      const rect = container.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      try {
-        fitAddon.fit();
-      } catch {
-        // Swallow: usually means xterm internals haven't finished initializing
-        // for this dimension change; the next ResizeObserver tick retries.
-      }
-    };
-    // First attempt deferred to next frame so React can flush layout.
-    requestAnimationFrame(safeFit);
+    terminalRef.current = terminal;
+    fitRef.current = fit;
 
-    termRef.current = term;
-    fitAddonRef.current = fitAddon;
-
-    const wsUrl = `${wsSessionsBaseUrl(instanceName)}/${sessionId}/terminals/${terminalId}`;
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(
+      `${wsSessionsBaseUrl(instanceName)}/${encodeURIComponent(sessionId)}/terminals/${encodeURIComponent(terminalId)}`,
+    );
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
-    const decoder = new TextDecoder('utf-8');
-    ws.addEventListener('message', (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        term.write(decoder.decode(event.data));
-      } else if (typeof event.data === 'string') {
-        // The backend pushes pane bytes as binary frames, but some servers
-        // (or future event channels) might use text; tolerate both.
-        term.write(event.data);
+    const sendResize = () => {
+      if (ws.readyState !== WebSocket.OPEN || !terminal.cols || !terminal.rows) return;
+      ws.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+    };
+
+    const resizeObserver = new ResizeObserver(() => {
+      fit.fit();
+      sendResize();
+    });
+    resizeObserver.observe(container);
+
+    const dataDisposable = terminal.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data);
       }
     });
 
-    // Send a resize control frame on open + on subsequent xterm resizes so
-    // the guest tmux pane matches the viewport — otherwise `top`, `vim`, etc.
-    // render at the wrong dimensions.
-    const sendResize = () => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      try {
-        ws.send(
-          JSON.stringify({
-            type: 'resize',
-            cols: term.cols,
-            rows: term.rows,
-          }),
-        );
-      } catch {
-        // No-op: socket may have closed between checks.
-      }
+    ws.onopen = () => {
+      setStatus('connected');
+      sendResize();
     };
-    ws.addEventListener('open', sendResize);
-    const resizeDisposable = term.onResize(sendResize);
-
-    // Forward keystrokes (including raw escape sequences for arrows, Ctrl-C,
-    // etc.). The backend parses these and translates to tmux send-keys.
-    const dataDisposable = term.onData((data: string) => {
-      if (ws.readyState !== WebSocket.OPEN) {
+    ws.onmessage = async (event) => {
+      if (typeof event.data === 'string') {
+        terminal.write(event.data);
         return;
       }
-      ws.send(data);
-    });
-
-    let resizeFrame: number | null = null;
-    const handleWindowResize = () => {
-      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
-      resizeFrame = requestAnimationFrame(safeFit);
+      const buffer = event.data instanceof Blob ? await event.data.arrayBuffer() : event.data;
+      terminal.write(new Uint8Array(buffer));
     };
-    window.addEventListener('resize', handleWindowResize);
-    const observer = new ResizeObserver(handleWindowResize);
-    observer.observe(container);
+    ws.onerror = () => setStatus('error');
+    ws.onclose = () => setStatus((current) => (current === 'error' ? 'error' : 'closed'));
 
     return () => {
-      window.removeEventListener('resize', handleWindowResize);
-      observer.disconnect();
-      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
-      resizeDisposable.dispose();
+      resizeObserver.disconnect();
       dataDisposable.dispose();
-      try {
-        ws.close();
-      } catch {
-        // Best-effort.
-      }
+      ws.close();
+      terminal.dispose();
       wsRef.current = null;
-      try {
-        term.dispose();
-      } catch {
-        // Best-effort.
-      }
-      // xterm's dispose() leaves the xterm wrapper div behind. In React 18
-      // StrictMode the effect runs setup → cleanup → setup, and if we don't
-      // explicitly clear the container the second setup grafts a new xterm
-      // alongside the dead one — visible cursor on the corpse, live xterm
-      // hidden / unfocused, onData never fires. Wipe the container so the
-      // next mount starts from a clean DOM slate.
-      const root = containerRef.current;
-      if (root) {
-        while (root.firstChild) root.removeChild(root.firstChild);
-      }
-      termRef.current = null;
-      fitAddonRef.current = null;
+      terminalRef.current = null;
+      fitRef.current = null;
     };
-  }, [sessionId, terminalId, instanceName]);
+  }, [instanceName, sessionId, terminalId]);
 
   return (
-    <div className="flex flex-col h-full w-full bg-[color:var(--surface-0)]">
-      <div ref={containerRef} className="flex-1 w-full overflow-hidden p-2" />
+    <div className="relative h-full min-h-[260px] w-full overflow-hidden bg-[#050608]">
+      <div ref={containerRef} className="h-full w-full p-2" />
+      {status !== 'connected' ? (
+        <div className="pointer-events-none absolute right-3 top-3 rounded-md border border-white/10 bg-black/70 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-white/60">
+          {status}
+        </div>
+      ) : null}
     </div>
   );
-});
-
-TerminalPreview.displayName = 'TerminalPreview';
-
-export default TerminalPreview;
+}

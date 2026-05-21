@@ -8,7 +8,6 @@ os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
 
 from app.main import app
 from app.config import settings
-from app.schemas.runtime import RuntimeProviderInfoResponse
 from app.services.instance_runtime_context import InstanceRuntimeContext
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent
@@ -75,29 +74,15 @@ def test_full_integration_happy_path():
         background_tasks=[],
     )
 
-    from app.routers import sessions as sessions_router
-    from app.routers import runtime as runtime_router
     from app.routers import ws as ws_router
 
-    async def _noop_provision_runtime(session_id, ws_manager=None):  # noqa: ARG001
-        return None
-
-    async def _fake_runtime_provider_info(session_id: str) -> RuntimeProviderInfoResponse:  # noqa: ARG001
-        return RuntimeProviderInfoResponse(id="test", label="Test", status="available", items=[])
-
-    old_provision_runtime = sessions_router._provision_runtime
-    old_runtime_provider_info = runtime_router._resolve_runtime_provider_info
     old_manager_session = ws_router.ManagerSessionLocal
-    old_queue_runtime_activation = ws_router.queue_runtime_activation
     old_init = install_fake_db_overrides(
         app_db=fake_db,
         instance_context=instance_context,
         session_factory=session_factory,
     )
-    sessions_router._provision_runtime = _noop_provision_runtime
-    runtime_router._resolve_runtime_provider_info = _fake_runtime_provider_info
     ws_router.ManagerSessionLocal = session_factory
-    ws_router.queue_runtime_activation = lambda _app, _session_id: False
 
     try:
         client = TestClient(app)
@@ -197,7 +182,4 @@ def test_full_integration_happy_path():
         assert audits.json()["total"] >= 1
     finally:
         restore_test_app(old_init)
-        sessions_router._provision_runtime = old_provision_runtime
-        runtime_router._resolve_runtime_provider_info = old_runtime_provider_info
         ws_router.ManagerSessionLocal = old_manager_session
-        ws_router.queue_runtime_activation = old_queue_runtime_activation

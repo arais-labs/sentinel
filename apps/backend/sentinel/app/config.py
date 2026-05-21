@@ -1,11 +1,19 @@
+import platform
+from pathlib import Path
 from urllib.parse import quote
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal
 
 from app.services.llm.ids import ProviderChoice
 from app.services.onboarding.onboarding_defaults import DEFAULT_SYSTEM_PROMPT
+
+
+def _default_runtime_workspaces_dir() -> str:
+    if platform.system() == "Darwin":
+        return str(Path.home() / "Library" / "Application Support" / "Sentinel" / "runtime" / "workspaces")
+    return str(Path.home() / ".local" / "share" / "sentinel" / "runtime" / "workspaces")
 
 
 class Settings(BaseSettings):
@@ -94,20 +102,6 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
     chat_default_iterations: int = 25
     chat_max_iterations: int = 100
-    runtime_live_view_enabled: bool = True
-    runtime_live_public_url: str | None = None
-    runtime_live_host: str = "127.0.0.1"
-    runtime_live_port: int = 6080
-    runtime_live_path: str = "/vnc.html"
-    runtime_live_view_only: bool = False
-    runtime_live_autoconnect: bool = True
-    runtime_live_resize: str = "scale"
-    runtime_live_probe_timeout_ms: int = 500
-    runtime_forward_public_host: str = "localhost"
-    runtime_forward_port_start: int = 12000
-    runtime_forward_port_end: int = 12009
-    runtime_prewarm_on_start: bool = False
-    runtime_vnc_password: str | None = None
     context_token_budget: int = 200_000
     stored_tool_result_max_chars: int = 4_000
     stored_tool_call_args_max_chars: int = 1_200
@@ -115,39 +109,15 @@ class Settings(BaseSettings):
     session_auto_rename_every_messages: int = 10
     session_auto_rename_context_messages: int = 24
     session_auto_rename_model_tier: str = "fast"
-    # --- Runtime Execution ---
-    runtime_exec_backend: str = "docker"  # "docker", "qemu", or "remote"
-    # Docker runtime
-    runtime_image: str = "sentinel-runtime"
-    runtime_docker_network: str = "sentinel_default"
-    runtime_memory_limit: str = "2g"
-    runtime_cpu_limit: float = 2.0
-    runtime_ssh_key_dir: str = "/data/runtime/ssh"
-    session_runtime_base_dir: str = "/data/runtime/workspaces"
-    runtime_workspaces_host_dir: str = "/data/runtime/workspaces"
-    # QEMU runtime
-    runtime_qemu_image: str | None = None
-    runtime_qemu_ssh_key_path: str | None = None
-    runtime_qemu_cpus: int = 4
-    runtime_qemu_memory_mb: int = 4096
-    runtime_qemu_control: Literal["bridge", "desktop"] | None = None
-    runtime_qemu_bridge_url: str = "http://host.docker.internal:47481"
-    runtime_qemu_bridge_token: str | None = None
-    runtime_qemu_run_root: str = "/data/runtime/qemu"
-    runtime_qemu_workspace_root: str | None = None
-    runtime_qemu_ssh_port: int = 2227
-    runtime_qemu_vnc_port: int = 16081
-    runtime_qemu_cdp_port: int = 19224
-    runtime_qemu_host: str = "host.docker.internal"
-    runtime_qemu_public_host: str = "localhost"
-    runtime_qemu_share_tag: str = "sentinel-host-workspaces"
-    runtime_qemu_share_mount: str = "/mnt/sentinel-host-workspaces"
-    # Remote SSH runtime
-    runtime_ssh_host: str | None = None
-    runtime_ssh_port: int = 22
-    runtime_ssh_user: str = "sentinel"
-    runtime_ssh_key_path: str | None = None
-    runtime_ssh_workspace: str = "/home/sentinel/workspace"
+    runtime_workspaces_dir: str = Field(
+        default_factory=_default_runtime_workspaces_dir,
+        validation_alias=AliasChoices("SENTINEL_RUNTIME_WORKSPACES_DIR", "RUNTIME_WORKSPACES_HOST_DIR"),
+    )
+    runtime_ssh_host: str = Field(default="", validation_alias="SENTINEL_RUNTIME_SSH_HOST")
+    runtime_ssh_port: int = Field(default=22, validation_alias="SENTINEL_RUNTIME_SSH_PORT")
+    runtime_ssh_username: str = Field(default="", validation_alias="SENTINEL_RUNTIME_SSH_USERNAME")
+    runtime_ssh_key_path: str = Field(default="", validation_alias="SENTINEL_RUNTIME_SSH_KEY_PATH")
+    runtime_ssh_password: str = Field(default="", validation_alias="SENTINEL_RUNTIME_SSH_PASSWORD")
 
     # --- Telegram ---
     telegram_bot_token: str | None = None

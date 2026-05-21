@@ -194,14 +194,6 @@ async def _build_instance_runtime_context(
     stop_event = getattr(app_state, "instance_stop_event", None)
     if isinstance(stop_event, asyncio.Event):
         tasks.append(asyncio.create_task(scheduler.start(stop_event)))
-        tasks.append(
-            asyncio.create_task(
-                _run_instance_runtime_janitor(
-                    stop_event=stop_event,
-                    session_factory=session_factory,
-                )
-            )
-        )
         embedding_service = getattr(app_state, "embedding_service", None)
         if (
             isinstance(embedding_service, EmbeddingService)
@@ -231,16 +223,6 @@ async def _build_instance_runtime_context(
         sub_agent_orchestrator=sub_agent_orchestrator,
         background_tasks=tasks,
     )
-
-
-async def _run_instance_runtime_janitor(
-    *,
-    stop_event: asyncio.Event,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    from app.services.runtime.session_runtime import run_session_runtime_janitor
-
-    await run_session_runtime_janitor(stop_event=stop_event, db_factory=session_factory)
 
 
 async def _stop_instance_context(context: InstanceRuntimeContext) -> None:

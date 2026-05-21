@@ -1,22 +1,15 @@
-"""Native module: git — git/GitHub CLI execution with managed credentials."""
+"""Native module: git — hidden SSH runtime git/GitHub execution."""
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import base64
 import fnmatch
-import hashlib
-import logging
-import os
+import posixpath
 import shlex
-import shutil
-import stat
-import tempfile
-
-import httpx
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from shlex import quote
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
@@ -25,18 +18,39 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.database import AsyncSessionLocal
-from app.models import GitAccount, Session
-from app.services.runtime.session_runtime import ensure_runtime_layout, runtime_workspace_dir
+from app.models import GitAccount
+from app.services.runtime.linux_bubblewrap import build_bubblewrap_command
+from app.services.runtime.ssh_runtime import get_runtime_terminal_manager, runtime_configured
+from app.services.runtime.workspace import workspace_paths
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
-from app.services.tools.runtime_context import require_runtime_session_id
-
-logger = logging.getLogger(__name__)
 
 _MAX_GIT_OUTPUT_CHARS = 50_000
+_DEFAULT_GIT_TIMEOUT_SECONDS = 600
+_MAX_GIT_TIMEOUT_SECONDS = 3600
 _FORBIDDEN_GIT_GLOBAL_FLAGS = {"-c", "-C", "--git-dir", "--work-tree"}
 _NETWORK_READ_SUBCOMMANDS = {"clone", "fetch", "pull", "ls-remote", "submodule", "request-pull"}
 _NETWORK_WRITE_SUBCOMMANDS = {"push"}
+_GIT_WRITE_SUBCOMMANDS = {
+    "add",
+    "am",
+    "apply",
+    "bisect",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "commit",
+    "merge",
+    "mv",
+    "rebase",
+    "reset",
+    "restore",
+    "revert",
+    "rm",
+    "stash",
+    "switch",
+    "worktree",
+}
 _GH_NETWORK_READ_SUBCOMMANDS = {
     ("repo", "clone"),
     ("repo", "list"),
@@ -49,11 +63,7 @@ _GH_NETWORK_WRITE_SUBCOMMANDS = {
     ("pr", "merge"),
 }
 _GH_API_WRITE_METHODS = {"POST", "PUT"}
-_DEFAULT_GIT_TIMEOUT_SECONDS = 600
-_MAX_GIT_TIMEOUT_SECONDS = 3600
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class _RepoRef:
@@ -74,18 +84,11 @@ class _AccountSelector:
     account_name: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# Helpers — session / account resolution
-# ---------------------------------------------------------------------------
-
-async def _ensure_session_exists(
-    session_id: UUID,
-) -> None:
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Session).where(Session.id == session_id))
-        session = result.scalars().first()
-        if session is None:
-            raise ToolValidationError("Session not found")
+def _session_key(runtime: ToolRuntimeContext) -> str:
+    session_id = runtime.runtime_session_id or runtime.session_id
+    if session_id is None:
+        raise ToolValidationError("Git tool requires an active session context.")
+    return str(session_id)
 
 
 def _account_selector_from_payload(payload: dict[str, Any]) -> _AccountSelector | None:
@@ -109,15 +112,10 @@ def _account_selector_from_payload(payload: dict[str, Any]) -> _AccountSelector 
 
     if account_name is not None and account_id is not None:
         raise ToolValidationError("Provide only one of 'git_account_name' or 'git_account_id'")
-
     if account_name is None and account_id is None:
         return None
     return _AccountSelector(account_id=account_id, account_name=account_name)
 
-
-# ---------------------------------------------------------------------------
-# Command parsing
-# ---------------------------------------------------------------------------
 
 def _parse_cli_command(command: str) -> list[str]:
     try:
@@ -127,10 +125,7 @@ def _parse_cli_command(command: str) -> list[str]:
     if not tokens:
         raise ToolValidationError("Command is empty")
     if tokens[0] not in {"git", "gh"}:
-        raise ToolValidationError(
-            "Only git or selected gh commands are allowed. "
-            "Supported gh commands in git: `gh repo clone`, `gh repo list`, `gh repo view`, `gh pr view`, `gh pr create`, `gh pr merge`, `gh api` (GET/POST/PUT)."
-        )
+        raise ToolValidationError("Only git or selected gh commands are allowed in the git tool.")
     return tokens
 
 
@@ -159,324 +154,19 @@ def _validate_no_forbidden_global_flags(tokens: list[str]) -> None:
             raise ToolValidationError("Custom git-dir/work-tree is not allowed in git")
 
 
-def _normalize_command(command: str) -> str:
-    return " ".join(command.strip().split()).lower()
+def _git_branch_is_write(subargs: list[str]) -> bool:
+    if not subargs:
+        return False
+    write_flags = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--set-upstream-to", "--unset-upstream"}
+    return any(part in write_flags or part.startswith("--set-upstream-to=") for part in subargs)
 
 
-def _command_hash(command: str) -> str:
-    normalized = _normalize_command(command)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+def _git_tag_is_write(subargs: list[str]) -> bool:
+    if not subargs:
+        return False
+    write_flags = {"-a", "-s", "-u", "-d", "-f", "--annotate", "--sign", "--delete", "--force"}
+    return any(part in write_flags for part in subargs) or any(not part.startswith("-") for part in subargs)
 
-
-# ---------------------------------------------------------------------------
-# Account validation (pre-flight, per-command)
-# ---------------------------------------------------------------------------
-
-_ACCOUNT_PROBE_TIMEOUT_SECONDS = 5.0
-
-
-async def _validate_github_account(
-    *,
-    account: GitAccount,
-    token: str,
-    target_owner: str | None,
-) -> dict[str, Any] | None:
-    """Pre-flight probe a GitHub PAT. Returns None if healthy, or a
-    {name, host, reason, detail} warning with the raw GitHub response."""
-    host = (account.host or "").lower()
-    if host not in {"github.com", "api.github.com"}:
-        return None
-    if not token:
-        return {
-            "name": account.name,
-            "host": account.host,
-            "reason": "missing_token",
-            "detail": "Account has no token configured for this access mode.",
-        }
-
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    base = "https://api.github.com"
-    try:
-        async with httpx.AsyncClient(timeout=_ACCOUNT_PROBE_TIMEOUT_SECONDS) as client:
-            user_resp = await client.get(f"{base}/user", headers=headers)
-            if user_resp.status_code == 401:
-                return {
-                    "name": account.name,
-                    "host": account.host,
-                    "reason": "token_invalid",
-                    "detail": (user_resp.text or "401 Unauthorized")[:500],
-                }
-            if 400 <= user_resp.status_code < 500:
-                return {
-                    "name": account.name,
-                    "host": account.host,
-                    "reason": "probe_failed",
-                    "detail": f"HTTP {user_resp.status_code}: {(user_resp.text or '')[:300]}",
-                }
-
-            if not target_owner:
-                return None
-
-            # /users/<owner> resolves both Users and Orgs; 404 means the
-            # agent has the wrong slug.
-            owner_resp = await client.get(
-                f"{base}/users/{target_owner}", headers=headers,
-            )
-            if owner_resp.status_code == 404:
-                return {
-                    "name": account.name,
-                    "host": account.host,
-                    "reason": "owner_not_found",
-                    "detail": (
-                        f"GitHub has no user or organization named "
-                        f"'{target_owner}'. "
-                        + (owner_resp.text or "")[:300]
-                    ),
-                }
-            if owner_resp.status_code >= 400 and owner_resp.status_code != 403:
-                return {
-                    "name": account.name,
-                    "host": account.host,
-                    "reason": "probe_failed",
-                    "detail": f"HTTP {owner_resp.status_code}: {(owner_resp.text or '')[:300]}",
-                }
-
-            # Org repos probe surfaces SAML-SSO 403s that /user never sees.
-            owner_type: str | None = None
-            try:
-                owner_type = (owner_resp.json() or {}).get("type")
-            except Exception:  # noqa: BLE001
-                owner_type = None
-            if owner_type == "Organization":
-                org_resp = await client.get(
-                    f"{base}/orgs/{target_owner}/repos",
-                    params={"per_page": 1},
-                    headers=headers,
-                )
-                if org_resp.status_code == 403:
-                    return {
-                        "name": account.name,
-                        "host": account.host,
-                        "reason": "org_forbidden",
-                        "detail": (org_resp.text or "403 Forbidden")[:500],
-                    }
-    except httpx.RequestError as exc:
-        return {
-            "name": account.name,
-            "host": account.host,
-            "reason": "network_error",
-            "detail": str(exc)[:300],
-        }
-    return None
-
-
-def _attach_account_warning(
-    result: dict[str, Any],
-    warning: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Append a single account warning to the tool result if one was produced."""
-    if warning is None:
-        return result
-    existing = result.get("account_warnings")
-    if isinstance(existing, list):
-        existing.append(warning)
-    else:
-        result["account_warnings"] = [warning]
-    return result
-
-
-# ---------------------------------------------------------------------------
-# gh helpers
-# ---------------------------------------------------------------------------
-
-def _extract_gh_host(tokens: list[str]) -> str:
-    idx = 1
-    while idx < len(tokens):
-        part = tokens[idx]
-        if part == "--hostname":
-            if idx + 1 < len(tokens) and tokens[idx + 1].strip():
-                return tokens[idx + 1].strip().lower()
-            raise ToolValidationError("gh --hostname requires a value")
-        if part.startswith("--hostname="):
-            value = part.split("=", 1)[1].strip().lower()
-            if value:
-                return value
-            raise ToolValidationError("gh --hostname requires a value")
-        idx += 1
-    return "github.com"
-
-
-def _gh_network_mode(tokens: list[str]) -> str | None:
-    primary, secondary = _gh_subcommand(tokens)
-    if (primary, secondary) in _GH_NETWORK_WRITE_SUBCOMMANDS:
-        return "write"
-    if (primary, secondary) in _GH_NETWORK_READ_SUBCOMMANDS:
-        if primary == "api":
-            method = _gh_api_method(tokens)
-            if method == "GET":
-                return "read"
-            if method in _GH_API_WRITE_METHODS:
-                return "write"
-            raise ToolValidationError("gh api supports GET, POST, and PUT in git")
-        return "read"
-    return None
-
-
-def _gh_subcommand(tokens: list[str]) -> tuple[str, str | None]:
-    if len(tokens) < 2:
-        raise ToolValidationError("Missing gh subcommand")
-    primary = tokens[1].strip().lower()
-    if primary.startswith("-"):
-        raise ToolValidationError(
-            "gh global flags before subcommand are not supported in git; place subcommand first"
-        )
-    if primary == "api":
-        return primary, None
-    secondary: str | None = None
-    if len(tokens) >= 3 and not tokens[2].startswith("-"):
-        secondary = tokens[2].strip().lower()
-    return primary, secondary
-
-
-def _gh_api_method(tokens: list[str]) -> str:
-    idx = 0
-    method = "GET"
-    while idx < len(tokens):
-        part = tokens[idx]
-        if part in {"-X", "--method"}:
-            if idx + 1 >= len(tokens):
-                raise ToolValidationError("gh api method flag requires a value")
-            method = str(tokens[idx + 1]).strip().upper()
-            idx += 2
-            continue
-        if part.startswith("--method="):
-            method = part.split("=", 1)[1].strip().upper()
-        idx += 1
-    return method or "GET"
-
-
-def _extract_gh_owner(tokens: list[str], *, run_dir: Path) -> str | None:
-    primary, secondary = _gh_subcommand(tokens)
-    if primary == "repo" and secondary == "list":
-        owner = _first_positional_argument(tokens[3:])
-        return _normalize_owner(owner)
-    if primary == "repo" and secondary == "clone":
-        slug = _first_positional_argument(tokens[3:])
-        if slug and "/" in slug:
-            return _normalize_owner(slug.split("/", 1)[0])
-        explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
-        if explicit_repo and "/" in explicit_repo:
-            return _normalize_owner(explicit_repo.split("/", 1)[0])
-        return None
-    if primary == "repo" and secondary == "view":
-        slug = _first_positional_argument(tokens[3:])
-        if slug and "/" in slug:
-            return _normalize_owner(slug.split("/", 1)[0])
-        explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
-        if explicit_repo and "/" in explicit_repo:
-            return _normalize_owner(explicit_repo.split("/", 1)[0])
-        origin_url = _resolve_origin_url(run_dir)
-        repo = _parse_repo_ref(origin_url)
-        return _normalize_owner(repo.path.split("/", 1)[0])
-    if primary == "api":
-        endpoint = _first_positional_argument(tokens[2:])
-        if endpoint:
-            return _normalize_owner(_extract_owner_from_gh_api_endpoint(endpoint))
-    if primary == "pr" and secondary in {"create", "view", "merge"}:
-        explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
-        if explicit_repo and "/" in explicit_repo:
-            return _normalize_owner(explicit_repo.split("/", 1)[0])
-        origin_url = _resolve_origin_url(run_dir)
-        repo = _parse_repo_ref(origin_url)
-        return _normalize_owner(repo.path.split("/", 1)[0])
-    return None
-
-
-def _extract_owner_from_gh_api_endpoint(endpoint: str) -> str | None:
-    value = endpoint.strip()
-    if not value:
-        return None
-    if "://" in value:
-        parsed = urlparse(value)
-        value = parsed.path or ""
-    path = value.strip().lstrip("/")
-    parts = [part for part in path.split("/") if part]
-    if len(parts) >= 3 and parts[0] == "orgs" and parts[2] == "repos":
-        return parts[1]
-    if len(parts) >= 3 and parts[0] == "users" and parts[2] == "repos":
-        return parts[1]
-    if len(parts) >= 3 and parts[0] == "repos":
-        return parts[1]
-    return None
-
-
-def _extract_option_value(args: list[str], option_names: set[str]) -> str | None:
-    idx = 0
-    while idx < len(args):
-        part = args[idx]
-        if part in option_names:
-            if idx + 1 < len(args):
-                value = args[idx + 1].strip()
-                return value or None
-            return None
-        for name in option_names:
-            prefix = f"{name}="
-            if part.startswith(prefix):
-                value = part.split("=", 1)[1].strip()
-                return value or None
-        idx += 1
-    return None
-
-
-def _validate_gh_clone_destination(*, run_dir: Path, tokens: list[str]) -> None:
-    primary, secondary = _gh_subcommand(tokens)
-    if (primary, secondary) != ("repo", "clone"):
-        return
-
-    positional: list[str] = []
-    idx = 3
-    while idx < len(tokens):
-        part = tokens[idx]
-        if part == "--":
-            positional.extend(tokens[idx + 1 :])
-            break
-        if part in {"-R", "--repo"}:
-            idx += 2
-            continue
-        if part.startswith("--repo="):
-            idx += 1
-            continue
-        if part.startswith("-"):
-            idx += 1
-            continue
-        positional.append(part)
-        idx += 1
-
-    if len(positional) < 2:
-        return
-
-    destination = positional[1]
-    candidate = (
-        (run_dir / destination).resolve()
-        if not Path(destination).is_absolute()
-        else Path(destination).expanduser().resolve()
-    )
-    if candidate != run_dir and run_dir not in candidate.parents:
-        raise ToolValidationError("gh repo clone destination must stay inside session workspace")
-
-
-def _normalize_owner(value: str | None) -> str | None:
-    normalized = (value or "").strip().strip("/")
-    return normalized.lower() if normalized else None
-
-
-# ---------------------------------------------------------------------------
-# Network mode / URL resolution
-# ---------------------------------------------------------------------------
 
 def _network_mode_for_command(subcommand: str) -> str | None:
     if subcommand in _NETWORK_READ_SUBCOMMANDS:
@@ -486,108 +176,105 @@ def _network_mode_for_command(subcommand: str) -> str | None:
     return None
 
 
-def _resolve_run_dir(workspace_dir: Path, cwd_raw: Any) -> Path:
-    run_dir = workspace_dir
-    if isinstance(cwd_raw, str) and cwd_raw.strip():
-        requested = cwd_raw.strip()
-        candidate = (
-            (workspace_dir / requested).resolve()
-            if not Path(requested).is_absolute()
-            else Path(requested).expanduser().resolve()
-        )
-        if candidate != workspace_dir and workspace_dir not in candidate.parents:
-            raise ToolValidationError("Field 'cwd' must stay within session workspace")
-        run_dir = candidate
-        run_dir.mkdir(parents=True, exist_ok=True)
-    return run_dir
+def _git_command_mode(tokens: list[str]) -> str:
+    subcommand, idx = _extract_git_subcommand(tokens)
+    subargs = tokens[idx + 1 :]
+    network_mode = _network_mode_for_command(subcommand)
+    if network_mode is not None:
+        return network_mode
+    if subcommand == "branch":
+        return "write" if _git_branch_is_write(subargs) else "read"
+    if subcommand == "tag":
+        return "write" if _git_tag_is_write(subargs) else "read"
+    if subcommand in _GIT_WRITE_SUBCOMMANDS:
+        return "write"
+    return "read"
 
 
-def _resolve_network_repo_url(subcommand: str, subargs: list[str], run_dir: Path) -> tuple[str, str]:
-    if subcommand == "clone":
-        repo_url = _extract_clone_repo_url(subargs)
-        remote_name = _extract_clone_remote_name(subargs) or "origin"
-        return repo_url, remote_name
-
-    if subcommand == "ls-remote":
-        candidate = _first_positional_argument(subargs)
-        if candidate and _looks_like_repo_url(candidate):
-            return candidate, "origin"
-
-    if subcommand == "request-pull":
-        repo_url, remote_name = _extract_request_pull_repo_url(subargs, run_dir)
-        return repo_url, remote_name
-
-    remote_name = _first_positional_argument(subargs) or "origin"
-    repo_url = _resolve_origin_url(run_dir, remote_name=remote_name)
-    return repo_url, remote_name
+def _gh_subcommand(tokens: list[str]) -> tuple[str | None, str | None]:
+    if len(tokens) < 2:
+        return None, None
+    primary = tokens[1]
+    secondary = tokens[2] if len(tokens) >= 3 and not tokens[2].startswith("-") else None
+    return primary, secondary
 
 
-def _extract_request_pull_repo_url(subargs: list[str], run_dir: Path) -> tuple[str, str]:
-    positionals = _positional_arguments(subargs)
-    if len(positionals) < 2:
-        raise ToolValidationError("git request-pull requires <start> and <url> arguments")
-    upstream = positionals[1]
-    if _looks_like_repo_url(upstream):
-        return upstream, "origin"
-    return _resolve_origin_url(run_dir, remote_name=upstream), upstream
-
-
-def _extract_clone_repo_url(subargs: list[str]) -> str:
-    repo_url = _first_positional_argument(subargs)
-    if repo_url is None:
-        raise ToolValidationError("git clone requires a repository URL")
-    if not _looks_like_repo_url(repo_url):
-        raise ToolValidationError("git clone repository argument must be a URL or ssh repo spec")
-    return repo_url
-
-
-def _extract_clone_remote_name(subargs: list[str]) -> str | None:
-    idx = 0
-    while idx < len(subargs):
-        part = subargs[idx]
-        if part in {"-o", "--origin"}:
-            if idx + 1 < len(subargs):
-                return subargs[idx + 1].strip()
-            return None
-        if part.startswith("--origin="):
-            return part.split("=", 1)[1].strip()
+def _gh_api_method(tokens: list[str]) -> str:
+    idx = 2
+    while idx < len(tokens):
+        part = tokens[idx]
+        if part in {"-X", "--method"} and idx + 1 < len(tokens):
+            return tokens[idx + 1].strip().upper()
+        if part.startswith("--method="):
+            return part.split("=", 1)[1].strip().upper()
         idx += 1
+    return "GET"
+
+
+def _gh_network_mode(tokens: list[str]) -> str | None:
+    primary, secondary = _gh_subcommand(tokens)
+    if primary == "api":
+        method = _gh_api_method(tokens)
+        if method == "GET":
+            return "read"
+        if method in _GH_API_WRITE_METHODS:
+            return "write"
+        return None
+    if (primary, secondary) in _GH_NETWORK_READ_SUBCOMMANDS:
+        return "read"
+    if (primary, secondary) in _GH_NETWORK_WRITE_SUBCOMMANDS:
+        return "write"
     return None
 
 
-def _first_positional_argument(args: list[str]) -> str | None:
-    positionals = _positional_arguments(args)
-    return positionals[0] if positionals else None
+def _command_mode(tokens: list[str]) -> str:
+    if tokens[0] == "git":
+        return _git_command_mode(tokens)
+    mode = _gh_network_mode(tokens)
+    if mode is None:
+        raise ToolValidationError(
+            "Unsupported gh command in git. Supported: gh repo clone/list/view, "
+            "gh pr view/create/merge, and gh api GET/POST/PUT."
+        )
+    return mode
+
+
+def _validate_run_command_kind(*, cli_command: str, expect_write: bool) -> None:
+    mode = _command_mode(_parse_cli_command(cli_command.strip()))
+    if expect_write and mode != "write":
+        raise ToolValidationError("Field 'command' must be 'read' for non-write git or gh commands")
+    if not expect_write and mode == "write":
+        raise ToolValidationError("Field 'command' must be 'write' for write git or gh commands")
+
+
+def _timeout_seconds(payload: dict[str, Any]) -> int:
+    value = payload.get("timeout_seconds", _DEFAULT_GIT_TIMEOUT_SECONDS)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
+    return min(value, _MAX_GIT_TIMEOUT_SECONDS)
+
+
+def _sandbox_cwd(cwd_raw: Any) -> str:
+    if cwd_raw is None:
+        return "/workspace"
+    if not isinstance(cwd_raw, str) or not cwd_raw.strip():
+        raise ToolValidationError("Field 'cwd' must be a non-empty string when provided")
+    requested = cwd_raw.strip()
+    if requested.startswith("/"):
+        candidate = posixpath.normpath(requested)
+    else:
+        candidate = posixpath.normpath(posixpath.join("/workspace", requested))
+    if candidate != "/workspace" and not candidate.startswith("/workspace/"):
+        raise ToolValidationError("Field 'cwd' must stay within /workspace")
+    return candidate
 
 
 def _positional_arguments(args: list[str]) -> list[str]:
     options_with_value = {
-        "-b",
-        "--branch",
-        "-o",
-        "--origin",
-        "--depth",
-        "--shallow-since",
-        "--recurse-submodules",
-        "--jobs",
-        "--config",
-        "--upload-pack",
-        "--limit",
-        "-L",
-        "--json",
-        "--jq",
-        "--template",
-        "--hostname",
-        "-R",
-        "--repo",
-        "-X",
-        "--method",
-        "-f",
-        "-F",
-        "--field",
-        "--raw-field",
-        "-H",
-        "--header",
+        "-b", "--branch", "-o", "--origin", "--depth", "--shallow-since", "--recurse-submodules",
+        "--jobs", "--config", "--upload-pack", "--limit", "-L", "--json", "--jq", "--template",
+        "--hostname", "-R", "--repo", "-X", "--method", "-f", "-F", "--field", "--raw-field",
+        "-H", "--header",
     }
     positionals: list[str] = []
     idx = 0
@@ -610,6 +297,11 @@ def _positional_arguments(args: list[str]) -> list[str]:
     return positionals
 
 
+def _first_positional_argument(args: list[str]) -> str | None:
+    positionals = _positional_arguments(args)
+    return positionals[0] if positionals else None
+
+
 def _looks_like_repo_url(value: str) -> bool:
     candidate = value.strip()
     if not candidate:
@@ -617,65 +309,41 @@ def _looks_like_repo_url(value: str) -> bool:
     if "://" in candidate:
         parsed = urlparse(candidate)
         return parsed.scheme in {"http", "https", "ssh"} and bool(parsed.hostname)
-    if candidate.startswith("git@") and ":" in candidate:
-        return True
-    return False
+    return candidate.startswith("git@") and ":" in candidate
 
 
-def _resolve_origin_url(run_dir: Path, remote_name: str = "origin") -> str:
-    args = ["git", "remote", "get-url", remote_name]
-    result = _run_blocking(args=args, cwd=run_dir, env=os.environ.copy(), timeout_seconds=30)
-    if result["returncode"] != 0:
-        raise ToolValidationError(_format_remote_resolution_error(result=result, remote_name=remote_name))
-    repo_url = (result["stdout"] or "").strip()
-    if not repo_url:
-        raise ToolValidationError("Repository remote URL is empty")
+def _extract_clone_repo_url(subargs: list[str]) -> str:
+    repo_url = _first_positional_argument(subargs)
+    if repo_url is None:
+        raise ToolValidationError("git clone requires a repository URL")
+    if not _looks_like_repo_url(repo_url):
+        raise ToolValidationError("git clone repository argument must be a URL or ssh repo spec")
     return repo_url
 
 
-def _format_remote_resolution_error(*, result: dict[str, Any], remote_name: str) -> str:
-    stderr = (result.get("stderr") or "").strip()
-    lowered = stderr.lower()
-    if "not a git repository" in lowered:
-        return (
-            "git fetch/pull requires a git repository in the selected cwd. "
-            "Run `git clone <repo>` first or set `cwd` to an existing repository in the session workspace."
-        )
-    if "no such remote" in lowered or "could not get url" in lowered:
-        return (
-            f"Git remote '{remote_name}' was not found in this repository. "
-            "Run `git remote -v` and use a valid remote name."
-        )
-    detail = stderr.splitlines()[0] if stderr else ""
-    suffix = f" (git: {detail})" if detail else ""
-    return (
-        "Unable to resolve repository remote URL for account matching. "
-        "Ensure the repository has a configured remote URL."
-        f"{suffix}"
-    )
+def _extract_request_pull_repo_url(subargs: list[str]) -> tuple[str, str]:
+    positionals = _positional_arguments(subargs)
+    if len(positionals) < 2:
+        raise ToolValidationError("git request-pull requires <start> and <url> arguments")
+    upstream = positionals[1]
+    if _looks_like_repo_url(upstream):
+        return upstream, "origin"
+    return "", upstream
 
-
-# ---------------------------------------------------------------------------
-# Repo ref / account matching
-# ---------------------------------------------------------------------------
 
 def _parse_repo_ref(repo_url: str) -> _RepoRef:
     raw = repo_url.strip()
     if not raw:
         raise ToolValidationError("Repository URL is empty")
-
-    host = ""
-    path = ""
     if "://" in raw:
         parsed = urlparse(raw)
         host = (parsed.hostname or "").strip().lower()
-        path = parsed.path.strip().lstrip("/")
+        path = (parsed.path or "").strip().lstrip("/")
     elif raw.startswith("git@") and ":" in raw:
         host = raw[4:].split(":", 1)[0].strip().lower()
         path = raw.split(":", 1)[1].strip().lstrip("/")
     else:
         raise ToolValidationError("Unsupported repository URL format for account matching")
-
     if path.endswith(".git"):
         path = path[:-4]
     path = path.strip("/")
@@ -692,7 +360,7 @@ def _repo_target_label(repo_url: str) -> str:
 
 
 def _specificity(pattern: str) -> int:
-    return sum(1 for ch in pattern if ch not in {"*", "?", "["})
+    return sum(1 for char in pattern if char not in {"*", "?", "["})
 
 
 async def _resolve_git_account(
@@ -706,72 +374,56 @@ async def _resolve_git_account(
     result = await db.execute(select(GitAccount))
     accounts = result.scalars().all()
 
-    requested_account: GitAccount | None = None
     if selector is not None:
-        if selector.account_id is not None:
-            requested_account = next(
-                (item for item in accounts if item.id == selector.account_id),
-                None,
-            )
-            if requested_account is None:
-                raise ToolValidationError(
-                    f"Requested git account id '{selector.account_id}' was not found"
-                )
-        elif selector.account_name is not None:
-            selected_name = selector.account_name.casefold()
-            requested_account = next(
-                (
-                    item
-                    for item in accounts
-                    if (item.name or "").strip().casefold() == selected_name
-                ),
-                None,
-            )
-            if requested_account is None:
-                raise ToolValidationError(
-                    f"Requested git account '{selector.account_name}' was not found"
-                )
-
-    if requested_account is not None:
-        host = (requested_account.host or "").strip().lower()
+        requested = _find_requested_account(accounts, selector)
+        host = (requested.host or "").strip().lower()
         if host != repo.host:
             raise ToolValidationError(
-                "Requested git account does not match repository host "
-                f"'{repo.host}' (account host: '{host or '<empty>'}')"
+                f"Requested git account does not match repository host '{repo.host}' "
+                f"(account host: '{host or '<empty>'}')"
             )
-        pattern_raw = (requested_account.scope_pattern or "*").strip().lower() or "*"
-        matches_scope = fnmatch.fnmatch(repo.target, pattern_raw) or fnmatch.fnmatch(repo.path, pattern_raw)
-        if not matches_scope:
+        pattern = (requested.scope_pattern or "*").strip().lower() or "*"
+        if not (fnmatch.fnmatch(repo.target, pattern) or fnmatch.fnmatch(repo.path, pattern)):
             raise ToolValidationError(
-                "Requested git account scope does not match repository "
-                f"'{repo.target}' (scope: '{requested_account.scope_pattern}')"
+                f"Requested git account scope does not match repository '{repo.target}' "
+                f"(scope: '{requested.scope_pattern}')"
             )
-        token = requested_account.token_write if require_write else requested_account.token_read
+        token = requested.token_write if require_write else requested.token_read
         if not token.strip():
             missing_kind = "write token" if require_write else "read token"
-            raise ToolValidationError(
-                f"Requested git account is missing required {missing_kind}"
-            )
-        return _ResolvedAccount(account=requested_account, repo=repo)
+            raise ToolValidationError(f"Requested git account is missing required {missing_kind}")
+        return _ResolvedAccount(account=requested, repo=repo)
 
     best: tuple[int, GitAccount] | None = None
     for item in accounts:
         host = (item.host or "").strip().lower()
         if host != repo.host:
             continue
-        pattern_raw = (item.scope_pattern or "*").strip().lower() or "*"
-        matches = fnmatch.fnmatch(repo.target, pattern_raw) or fnmatch.fnmatch(repo.path, pattern_raw)
-        if not matches:
+        pattern = (item.scope_pattern or "*").strip().lower() or "*"
+        if not (fnmatch.fnmatch(repo.target, pattern) or fnmatch.fnmatch(repo.path, pattern)):
             continue
-        if not (item.token_write.strip() if require_write else item.token_read.strip()):
+        token = item.token_write if require_write else item.token_read
+        if not token.strip():
             continue
-        score = _specificity(pattern_raw)
+        score = _specificity(pattern)
         if best is None or score > best[0]:
             best = (score, item)
+    return _ResolvedAccount(account=best[1], repo=repo) if best else None
 
-    if best is None:
-        return None
-    return _ResolvedAccount(account=best[1], repo=repo)
+
+def _find_requested_account(accounts: list[GitAccount], selector: _AccountSelector) -> GitAccount:
+    if selector.account_id is not None:
+        for item in accounts:
+            if item.id == selector.account_id:
+                return item
+        raise ToolValidationError(f"Requested git account id '{selector.account_id}' was not found")
+    if selector.account_name is not None:
+        selected = selector.account_name.casefold()
+        for item in accounts:
+            if (item.name or "").strip().casefold() == selected:
+                return item
+        raise ToolValidationError(f"Requested git account '{selector.account_name}' was not found")
+    raise ToolValidationError("Explicit git account selection is required")
 
 
 async def _resolve_selected_git_account_for_host(
@@ -782,143 +434,19 @@ async def _resolve_selected_git_account_for_host(
     selector: _AccountSelector,
 ) -> GitAccount:
     result = await db.execute(select(GitAccount))
-    accounts = result.scalars().all()
-
-    requested_account: GitAccount | None = None
-    if selector.account_id is not None:
-        requested_account = next(
-            (item for item in accounts if item.id == selector.account_id),
-            None,
-        )
-        if requested_account is None:
-            raise ToolValidationError(
-                f"Requested git account id '{selector.account_id}' was not found"
-            )
-    elif selector.account_name is not None:
-        selected_name = selector.account_name.casefold()
-        requested_account = next(
-            (
-                item
-                for item in accounts
-                if (item.name or "").strip().casefold() == selected_name
-            ),
-            None,
-        )
-        if requested_account is None:
-            raise ToolValidationError(
-                f"Requested git account '{selector.account_name}' was not found"
-            )
-    else:
-        raise ToolValidationError("Explicit git account selection is required")
-
+    account = _find_requested_account(result.scalars().all(), selector)
     normalized_host = host.strip().lower()
-    account_host = (requested_account.host or "").strip().lower()
+    account_host = (account.host or "").strip().lower()
     if account_host != normalized_host:
         raise ToolValidationError(
-            "Requested git account does not match GitHub host "
-            f"'{normalized_host}' (account host: '{account_host or '<empty>'}')"
+            f"Requested git account does not match GitHub host '{normalized_host}' "
+            f"(account host: '{account_host or '<empty>'}')"
         )
-    token = requested_account.token_write if require_write else requested_account.token_read
+    token = account.token_write if require_write else account.token_read
     if not token.strip():
         missing_kind = "write token" if require_write else "read token"
-        raise ToolValidationError(
-            f"Requested git account is missing required {missing_kind}"
-        )
-    return requested_account
-
-
-# ---------------------------------------------------------------------------
-# Subprocess execution
-# ---------------------------------------------------------------------------
-
-def _run_blocking(
-    *,
-    args: list[str],
-    cwd: Path,
-    env: dict[str, str],
-    timeout_seconds: int,
-) -> dict[str, Any]:
-    import subprocess
-
-    try:
-        completed = subprocess.run(
-            args,
-            cwd=str(cwd),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-        return {
-            "returncode": int(completed.returncode),
-            "stdout": _truncate_output(completed.stdout),
-            "stderr": _truncate_output(completed.stderr),
-            "timed_out": False,
-        }
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "returncode": -1,
-            "stdout": _truncate_output((exc.stdout or "") if isinstance(exc.stdout, str) else ""),
-            "stderr": _truncate_output((exc.stderr or "") if isinstance(exc.stderr, str) else ""),
-            "timed_out": True,
-        }
-
-
-async def _run_git_subprocess(
-    *,
-    args: list[str],
-    run_dir: Path,
-    env: dict[str, str],
-    timeout_seconds: int,
-    redactions: list[str] | None = None,
-) -> dict[str, Any]:
-    executable = args[0] if args else ""
-    if not executable or shutil.which(executable, path=env.get("PATH")) is None:
-        command = " ".join(args)
-        return {
-            "ok": False,
-            "returncode": 127,
-            "timed_out": False,
-            "stdout": "",
-            "stderr": f"Required executable '{executable or '<empty>'}' is not available in the backend runtime PATH.",
-            "cwd": str(run_dir),
-            "command": command,
-        }
-
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=str(run_dir),
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-    )
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-        timed_out = False
-    except TimeoutError:
-        timed_out = True
-        if proc.returncode is None:
-            proc.kill()
-        stdout_bytes, stderr_bytes = await proc.communicate()
-
-    stdout = stdout_bytes.decode("utf-8", errors="replace")
-    stderr = stderr_bytes.decode("utf-8", errors="replace")
-    if redactions:
-        for secret in redactions:
-            if secret:
-                stdout = stdout.replace(secret, "***")
-                stderr = stderr.replace(secret, "***")
-    return {
-        "ok": not timed_out and proc.returncode == 0,
-        "returncode": int(proc.returncode if proc.returncode is not None else -1),
-        "timed_out": timed_out,
-        "stdout": _truncate_output(stdout),
-        "stderr": _truncate_output(stderr),
-        "cwd": str(run_dir),
-        "command": " ".join(args),
-    }
+        raise ToolValidationError(f"Requested git account is missing required {missing_kind}")
+    return account
 
 
 def _truncate_output(value: str | None) -> str:
@@ -928,414 +456,360 @@ def _truncate_output(value: str | None) -> str:
     return f"{text[:_MAX_GIT_OUTPUT_CHARS]}\n...[truncated]"
 
 
-def _create_askpass_script(*, token: str) -> Path:
-    with tempfile.NamedTemporaryFile("w", delete=False, prefix="sentinel-git-askpass-", suffix=".sh") as handle:
-        handle.write("#!/bin/sh\n")
-        handle.write('prompt="$1"\n')
-        handle.write('case "$prompt" in\n')
-        handle.write('  *Username* ) echo "${GIT_EXEC_USERNAME:-x-access-token}" ;;\n')
-        handle.write('  * ) echo "${GIT_EXEC_PASSWORD:-}" ;;\n')
-        handle.write("esac\n")
-        path = Path(handle.name)
-    path.chmod(stat.S_IRWXU)
-    _ = token
-    return path
+def _redact(text: str, redactions: list[str] | None) -> str:
+    output = text
+    for secret in redactions or []:
+        if secret:
+            output = output.replace(secret, "***")
+    return output
 
 
-# ---------------------------------------------------------------------------
-# Local / network git execution
-# ---------------------------------------------------------------------------
-
-async def _run_local_git(
+async def _run_hidden_runtime_command(
     *,
-    run_dir: Path,
+    session_id: str,
     tokens: list[str],
+    cwd: str,
+    env: dict[str, str] | None,
     timeout_seconds: int,
-    author_name: str | None,
-    author_email: str | None,
+    redactions: list[str] | None = None,
 ) -> dict[str, Any]:
-    env = os.environ.copy()
-    env["HOME"] = str(run_dir)
-    env["PWD"] = str(run_dir)
-    if author_name and author_email:
-        env["GIT_AUTHOR_NAME"] = author_name
-        env["GIT_AUTHOR_EMAIL"] = author_email
-        env["GIT_COMMITTER_NAME"] = author_name
-        env["GIT_COMMITTER_EMAIL"] = author_email
-    return await _run_git_subprocess(args=tokens, run_dir=run_dir, env=env, timeout_seconds=timeout_seconds)
+    if not runtime_configured():
+        raise ToolValidationError("Runtime SSH target is not configured.")
+    terminal_manager = get_runtime_terminal_manager()
+    await terminal_manager.prepare_workspace(session_id)
+    paths = workspace_paths(session_id)
+    shell_command = "cd " + quote(cwd) + " && exec " + " ".join(quote(part) for part in tokens)
+    bwrap_command = build_bubblewrap_command(paths, ["bash", "-lc", shell_command])
+    try:
+        result = await terminal_manager.ssh.run(bwrap_command, timeout=timeout_seconds, env=env)
+    except asyncio.TimeoutError:
+        return {
+            "ok": False,
+            "returncode": -1,
+            "timed_out": True,
+            "stdout": "",
+            "stderr": f"Git command timed out after {timeout_seconds}s",
+            "cwd": cwd,
+            "command": " ".join(tokens),
+        }
+    stderr = _redact(result.stderr, redactions)
+    if result.exit_status == 127:
+        stderr = f"Required executable '{tokens[0]}' is not available in the runtime PATH.\n{stderr}".strip()
+    return {
+        "ok": result.exit_status == 0,
+        "returncode": int(result.exit_status if result.exit_status is not None else -1),
+        "timed_out": False,
+        "stdout": _truncate_output(_redact(result.stdout, redactions)),
+        "stderr": _truncate_output(stderr),
+        "cwd": cwd,
+        "command": " ".join(tokens),
+    }
+
+
+async def _resolve_origin_url(session_id: str, run_dir: str, remote_name: str = "origin") -> str:
+    result = await _run_hidden_runtime_command(
+        session_id=session_id,
+        tokens=["git", "remote", "get-url", remote_name],
+        cwd=run_dir,
+        env=None,
+        timeout_seconds=30,
+    )
+    if result["returncode"] != 0:
+        stderr = (result.get("stderr") or "").strip()
+        lowered = stderr.lower()
+        if "not a git repository" in lowered:
+            raise ToolValidationError(
+                "git fetch/pull/push requires a git repository in the selected cwd. "
+                "Run `git clone <repo>` first or set `cwd` to an existing repository in the session workspace."
+            )
+        if "no such remote" in lowered or "could not get url" in lowered:
+            raise ToolValidationError(f"Git remote '{remote_name}' was not found in this repository.")
+        detail = stderr.splitlines()[0] if stderr else ""
+        raise ToolValidationError(
+            "Unable to resolve repository remote URL for account matching."
+            + (f" (git: {detail})" if detail else "")
+        )
+    repo_url = (result.get("stdout") or "").strip()
+    if not repo_url:
+        raise ToolValidationError("Repository remote URL is empty")
+    return repo_url
+
+
+async def _resolve_network_repo_url(
+    *,
+    session_id: str,
+    run_dir: str,
+    subcommand: str,
+    subargs: list[str],
+) -> str:
+    if subcommand == "clone":
+        return _extract_clone_repo_url(subargs)
+    if subcommand == "ls-remote":
+        candidate = _first_positional_argument(subargs)
+        if candidate and _looks_like_repo_url(candidate):
+            return candidate
+    if subcommand == "request-pull":
+        repo_url, remote_name = _extract_request_pull_repo_url(subargs)
+        return repo_url or await _resolve_origin_url(session_id, run_dir, remote_name=remote_name)
+    remote_name = _first_positional_argument(subargs) or "origin"
+    return await _resolve_origin_url(session_id, run_dir, remote_name=remote_name)
+
+
+def _git_auth_env(token: str, repo: _RepoRef) -> dict[str, str]:
+    basic = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+    return {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_KEY_1": f"http.https://{repo.host}/.extraheader",
+        "GIT_CONFIG_VALUE_1": f"Authorization: Basic {basic}",
+    }
+
+
+def _author_env(account: GitAccount) -> dict[str, str]:
+    return {
+        "GIT_AUTHOR_NAME": account.author_name,
+        "GIT_AUTHOR_EMAIL": account.author_email,
+        "GIT_COMMITTER_NAME": account.author_name,
+        "GIT_COMMITTER_EMAIL": account.author_email,
+    }
 
 
 async def _run_network_git(
     *,
-    account: _ResolvedAccount | None,
-    workspace_dir: Path,
-    run_dir: Path,
+    session_id: str,
+    account: _ResolvedAccount,
+    run_dir: str,
     tokens: list[str],
     timeout_seconds: int,
+    mode: str,
 ) -> dict[str, Any]:
-    if account is None:
-        raise ToolValidationError("No matching git account found for this repository")
-    subcommand, subcommand_index = _extract_git_subcommand(tokens)
-    mode = _network_mode_for_command(subcommand)
-    if mode is None:
-        raise ToolValidationError("Expected network git command")
-    token = account.account.token_write if mode == "write" else account.account.token_read
-    if not token.strip():
-        raise ToolValidationError("Matching git account is missing required token")
-
-    env = os.environ.copy()
-    env["HOME"] = str(workspace_dir)
-    env["PWD"] = str(run_dir)
-    askpass_file = _create_askpass_script(token=token)
-    try:
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        env["GIT_ASKPASS"] = str(askpass_file)
-        env["SSH_ASKPASS"] = str(askpass_file)
-        env["GIT_EXEC_USERNAME"] = "x-access-token"
-        env["GIT_EXEC_PASSWORD"] = token
-
-        args = tokens[:subcommand_index] + ["-c", "credential.helper="] + tokens[subcommand_index:]
-        result = await _run_git_subprocess(
-            args=args,
-            run_dir=run_dir,
-            env=env,
-            timeout_seconds=timeout_seconds,
-            redactions=[token],
-        )
-        result["network_mode"] = mode
-        result["account"] = {
-            "id": str(account.account.id),
-            "name": account.account.name,
-            "host": account.account.host,
-            "scope_pattern": account.account.scope_pattern,
-        }
-        return result
-    finally:
-        with contextlib.suppress(OSError):
-            askpass_file.unlink()
-
-
-async def _configure_author_identity_after_clone(
-    *,
-    run_dir: Path,
-    subargs: list[str],
-    repo_url: str,
-    author_name: str,
-    author_email: str,
-    timeout_seconds: int,
-) -> None:
-    repo_dir = _resolve_clone_destination(run_dir=run_dir, subargs=subargs, repo_url=repo_url)
-    if repo_dir is None or not repo_dir.exists():
-        return
-
-    env = os.environ.copy()
-    env["HOME"] = str(run_dir)
-    env["PWD"] = str(repo_dir)
-    _run_blocking(
-        args=["git", "config", "user.name", author_name],
-        cwd=repo_dir,
-        env=env,
-        timeout_seconds=timeout_seconds,
-    )
-    _run_blocking(
-        args=["git", "config", "user.email", author_email],
-        cwd=repo_dir,
-        env=env,
-        timeout_seconds=timeout_seconds,
-    )
-
-
-def _resolve_clone_destination(
-    *,
-    run_dir: Path,
-    subargs: list[str],
-    repo_url: str,
-) -> Path | None:
-    positional: list[str] = []
-    idx = 0
-    while idx < len(subargs):
-        part = subargs[idx]
-        if part == "--":
-            positional.extend(subargs[idx + 1 :])
-            break
-        if part in {"-b", "--branch", "-o", "--origin", "--depth", "--shallow-since", "--jobs"}:
-            idx += 2
-            continue
-        if part.startswith("--") and "=" in part:
-            idx += 1
-            continue
-        if part.startswith("-"):
-            idx += 1
-            continue
-        positional.append(part)
-        idx += 1
-
-    if not positional:
-        return None
-    if len(positional) >= 2:
-        destination = positional[1]
-    else:
-        tail = repo_url.rstrip("/").split("/")[-1].strip()
-        destination = tail[:-4] if tail.endswith(".git") else tail
-    if not destination:
-        return None
-    candidate = (
-        (run_dir / destination).resolve()
-        if not Path(destination).is_absolute()
-        else Path(destination).expanduser().resolve()
-    )
-    if candidate != run_dir and run_dir not in candidate.parents:
-        raise ToolValidationError("git clone destination must stay inside session workspace")
-    return candidate
-
-
-# ---------------------------------------------------------------------------
-# gh command execution
-# ---------------------------------------------------------------------------
-
-async def _execute_gh_command(
-    *,
-    session_id: UUID,
-    workspace_dir: Path,
-    run_dir: Path,
-    tokens: list[str],
-    timeout_seconds: int,
-    account_selector: _AccountSelector | None,
-) -> dict[str, Any]:
-    host = _extract_gh_host(tokens)
-    primary, secondary = _gh_subcommand(tokens)
-    mode = _gh_network_mode(tokens)
-    if mode not in {"read", "write"}:
-        if primary == "auth":
-            raise ToolValidationError(
-                "Unsupported gh auth command in git. "
-                "Authentication is managed automatically via configured Git account tokens, "
-                "so interactive auth commands like `gh auth status/login` are not needed. "
-                "Use supported commands: `gh repo clone <org>/<repo>`, `gh repo list <org>`, `gh repo view <org>/<repo>`, "
-                "`gh pr view`, `gh pr create`, `gh pr merge`, `gh api <endpoint>` (GET/POST/PUT)."
-            )
-        raise ToolValidationError(
-            "Unsupported gh command in git. "
-            "Supported: `gh repo clone <org>/<repo>`, `gh repo list <org>`, `gh repo view <org>/<repo>`, "
-            "`gh pr view`, `gh pr create`, `gh pr merge`, `gh api <endpoint>` (GET/POST/PUT)."
-        )
-
-    _validate_gh_clone_destination(run_dir=run_dir, tokens=tokens)
-
-    owner = _extract_gh_owner(tokens, run_dir=run_dir)
-    selected_account: GitAccount | None = None
-    if not owner and account_selector is not None:
-        async with AsyncSessionLocal() as db:
-            selected_account = await _resolve_selected_git_account_for_host(
-                db,
-                host=host,
-                require_write=mode == "write",
-                selector=account_selector,
-            )
-    elif not owner:
-        raise ToolValidationError(
-            "Unable to infer GitHub owner for gh command. "
-            "Provide explicit owner (for example: `gh repo list <org>`, `gh repo view <org>/<repo>`, "
-            "or `gh api /orgs/<org>/repos`). "
-            "If the command is ownerless, provide an explicit git account selection."
-        )
-
-    account: GitAccount
-    if selected_account is not None:
-        account = selected_account
-    else:
-        assert owner is not None
-        scope_repo_url = f"https://{host}/{owner}/_gh_scope"
-        async with AsyncSessionLocal() as db:
-            resolved = await _resolve_git_account(
-                db,
-                repo_url=scope_repo_url,
-                require_write=mode == "write",
-                selector=account_selector,
-            )
-        if resolved is None:
-            required_token = "write token" if mode == "write" else "read token"
-            raise ToolValidationError(
-                "No matching git account is configured for "
-                f"'{host}/{owner}' ({mode} access). "
-                f"Add/update a Git account with matching host/scope and a {required_token}."
-            )
-        account = resolved.account
-
-    token = (
-        (account.token_write if mode == "write" else account.token_read)
-        or ""
-    ).strip()
+    token = (account.account.token_write if mode == "write" else account.account.token_read).strip()
     if not token:
         missing_kind = "write token" if mode == "write" else "read token"
         raise ToolValidationError(f"Matching git account is missing required {missing_kind}")
-
-    account_warning = await _validate_github_account(
-        account=account, token=token, target_owner=owner,
+    env = _git_auth_env(token, account.repo)
+    if mode == "write":
+        env.update(_author_env(account.account))
+    result = await _run_hidden_runtime_command(
+        session_id=session_id,
+        tokens=tokens,
+        cwd=run_dir,
+        env=env,
+        timeout_seconds=timeout_seconds,
+        redactions=[token, base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")],
     )
+    result["network_mode"] = mode
+    result["account"] = _account_payload(account.account)
+    return result
 
-    env = os.environ.copy()
-    env["HOME"] = str(workspace_dir)
-    env["PWD"] = str(run_dir)
-    env["GH_TOKEN"] = token
-    env["GITHUB_TOKEN"] = token
-    env["GH_HOST"] = host
-    env["GH_PROMPT_DISABLED"] = "1"
 
-    result = await _run_git_subprocess(
-        args=tokens,
-        run_dir=run_dir,
+def _extract_gh_host(tokens: list[str]) -> str:
+    idx = 1
+    while idx < len(tokens):
+        part = tokens[idx]
+        if part == "--hostname" and idx + 1 < len(tokens):
+            return tokens[idx + 1].strip().lower()
+        if part.startswith("--hostname="):
+            return part.split("=", 1)[1].strip().lower()
+        idx += 1
+    return "github.com"
+
+
+def _extract_option_value(args: list[str], option_names: set[str]) -> str | None:
+    idx = 0
+    while idx < len(args):
+        part = args[idx]
+        if part in option_names:
+            if idx + 1 < len(args):
+                value = args[idx + 1].strip()
+                return value or None
+            return None
+        for name in option_names:
+            prefix = f"{name}="
+            if part.startswith(prefix):
+                value = part.split("=", 1)[1].strip()
+                return value or None
+        idx += 1
+    return None
+
+
+def _normalize_owner(value: str | None) -> str | None:
+    normalized = (value or "").strip().strip("/")
+    return normalized.lower() if normalized else None
+
+
+def _extract_owner_from_gh_api_endpoint(endpoint: str) -> str | None:
+    value = endpoint.strip()
+    if not value:
+        return None
+    if "://" in value:
+        parsed = urlparse(value)
+        value = parsed.path or ""
+    parts = [part for part in value.strip().lstrip("/").split("/") if part]
+    if len(parts) >= 3 and parts[0] == "orgs" and parts[2] == "repos":
+        return parts[1]
+    if len(parts) >= 3 and parts[0] == "users" and parts[2] == "repos":
+        return parts[1]
+    if len(parts) >= 3 and parts[0] == "repos":
+        return parts[1]
+    return None
+
+
+async def _extract_gh_owner(*, session_id: str, run_dir: str, tokens: list[str]) -> str | None:
+    primary, secondary = _gh_subcommand(tokens)
+    if primary == "repo" and secondary == "list":
+        return _normalize_owner(_first_positional_argument(tokens[3:]))
+    if primary == "repo" and secondary == "clone":
+        slug = _first_positional_argument(tokens[3:])
+        if slug and "/" in slug:
+            return _normalize_owner(slug.split("/", 1)[0])
+        explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
+        if explicit_repo and "/" in explicit_repo:
+            return _normalize_owner(explicit_repo.split("/", 1)[0])
+        return None
+    if primary == "repo" and secondary == "view":
+        slug = _first_positional_argument(tokens[3:])
+        if slug and "/" in slug:
+            return _normalize_owner(slug.split("/", 1)[0])
+        explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
+        if explicit_repo and "/" in explicit_repo:
+            return _normalize_owner(explicit_repo.split("/", 1)[0])
+        origin_url = await _resolve_origin_url(session_id, run_dir)
+        repo = _parse_repo_ref(origin_url)
+        return _normalize_owner(repo.path.split("/", 1)[0])
+    if primary == "pr" and secondary in {"create", "view", "merge"}:
+        explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
+        if explicit_repo and "/" in explicit_repo:
+            return _normalize_owner(explicit_repo.split("/", 1)[0])
+        origin_url = await _resolve_origin_url(session_id, run_dir)
+        repo = _parse_repo_ref(origin_url)
+        return _normalize_owner(repo.path.split("/", 1)[0])
+    if primary == "api":
+        endpoint = _first_positional_argument(tokens[2:])
+        return _normalize_owner(_extract_owner_from_gh_api_endpoint(endpoint or ""))
+    return None
+
+
+def _validate_gh_clone_destination(*, tokens: list[str]) -> None:
+    primary, secondary = _gh_subcommand(tokens)
+    if (primary, secondary) != ("repo", "clone"):
+        return
+    positionals = _positional_arguments(tokens[3:])
+    if len(positionals) < 2:
+        return
+    destination = positionals[1].strip()
+    candidate = posixpath.normpath(destination if destination.startswith("/") else posixpath.join("/workspace", destination))
+    if candidate != "/workspace" and not candidate.startswith("/workspace/"):
+        raise ToolValidationError("gh repo clone destination must stay inside /workspace")
+
+
+async def _execute_gh_command(
+    *,
+    session_id: str,
+    run_dir: str,
+    tokens: list[str],
+    timeout_seconds: int,
+    selector: _AccountSelector | None,
+) -> dict[str, Any]:
+    mode = _gh_network_mode(tokens)
+    if mode not in {"read", "write"}:
+        raise ToolValidationError(
+            "Unsupported gh command in git. Supported: gh repo clone/list/view, "
+            "gh pr view/create/merge, and gh api GET/POST/PUT."
+        )
+    _validate_gh_clone_destination(tokens=tokens)
+    host = _extract_gh_host(tokens)
+    owner = await _extract_gh_owner(session_id=session_id, run_dir=run_dir, tokens=tokens)
+    async with AsyncSessionLocal() as db:
+        if owner:
+            resolved = await _resolve_git_account(
+                db,
+                repo_url=f"https://{host}/{owner}/_gh_scope",
+                require_write=mode == "write",
+                selector=selector,
+            )
+            if resolved is None:
+                required_token = "write token" if mode == "write" else "read token"
+                raise ToolValidationError(
+                    f"No matching git account is configured for '{host}/{owner}' ({mode} access). "
+                    f"Add/update a Git account with matching host/scope and a {required_token}."
+                )
+            account = resolved.account
+        elif selector is not None:
+            account = await _resolve_selected_git_account_for_host(
+                db,
+                host=host,
+                require_write=mode == "write",
+                selector=selector,
+            )
+        else:
+            raise ToolValidationError(
+                "Unable to infer GitHub owner for gh command. Provide an explicit owner or git account."
+            )
+
+    token = (account.token_write if mode == "write" else account.token_read).strip()
+    env = {
+        "GH_TOKEN": token,
+        "GITHUB_TOKEN": token,
+        "GH_HOST": host,
+        "GH_PROMPT_DISABLED": "1",
+    }
+    result = await _run_hidden_runtime_command(
+        session_id=session_id,
+        tokens=tokens,
+        cwd=run_dir,
         env=env,
         timeout_seconds=timeout_seconds,
         redactions=[token],
     )
     result["network_mode"] = mode
-    result["account"] = {
+    result["account"] = _account_payload(account)
+    return result
+
+
+def _account_payload(account: GitAccount) -> dict[str, str]:
+    return {
         "id": str(account.id),
         "name": account.name,
         "host": account.host,
         "scope_pattern": account.scope_pattern,
     }
-    _attach_account_warning(result, account_warning)
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Approval helpers
-# ---------------------------------------------------------------------------
-
-def _approval_action_for_tokens(tokens: list[str]) -> str | None:
-    if not tokens:
-        return None
-    if tokens[0] == "git":
-        subcommand, _ = _extract_git_subcommand(tokens)
-        mode = _network_mode_for_command(subcommand)
-        if mode == "write":
-            return f"git.{subcommand}"
-        return None
-    if tokens[0] == "gh":
-        mode = _gh_network_mode(tokens)
-        if mode != "write":
-            return None
-        primary, secondary = _gh_subcommand(tokens)
-        if primary == "api":
-            method = _gh_api_method(tokens).lower()
-            return f"gh.api.{method}"
-        if secondary:
-            return f"gh.{primary}.{secondary}"
-        return f"gh.{primary}"
-    return None
-
-
-# ---------------------------------------------------------------------------
-# git_accounts_available helpers (from git_accounts_available.py)
-# ---------------------------------------------------------------------------
-
-def _parse_accounts_repo_ref(repo_url: str) -> dict[str, str]:
-    raw = repo_url.strip()
-    if not raw:
-        raise ToolValidationError("Field 'repo_url' must be non-empty")
-
-    host = ""
-    path = ""
-    if "://" in raw:
-        parsed = urlparse(raw)
-        host = (parsed.hostname or "").strip().lower()
-        path = (parsed.path or "").strip().lstrip("/")
-    elif raw.startswith("git@") and ":" in raw:
-        host = raw[4:].split(":", 1)[0].strip().lower()
-        path = raw.split(":", 1)[1].strip().lstrip("/")
-    else:
-        raise ToolValidationError("Field 'repo_url' must be a supported git URL")
-
-    if path.endswith(".git"):
-        path = path[:-4]
-    path = path.strip("/")
-    if not host or not path:
-        raise ToolValidationError("Field 'repo_url' must include host and repository path")
-    target = f"{host}/{path.lower()}"
-    return {"host": host, "path": path.lower(), "target": target}
-
-
-def _matches_repo(*, item: GitAccount, repo: dict[str, str] | None) -> bool:
-    if repo is None:
-        return True
-    host = (item.host or "").strip().lower()
-    if host != repo["host"]:
-        return False
-    pattern = (item.scope_pattern or "*").strip().lower() or "*"
-    return fnmatch.fnmatch(repo["target"], pattern) or fnmatch.fnmatch(repo["path"], pattern)
-
-
-# ---------------------------------------------------------------------------
-# Handler functions (module-level)
-# ---------------------------------------------------------------------------
-
-def _is_git_write_command(cli_command: str) -> bool:
-    tokens = _parse_cli_command(cli_command.strip())
-    return _approval_action_for_tokens(tokens) is not None
-
-
-def _validate_run_command_kind(
-    *,
-    cli_command: str,
-    expect_write: bool,
-) -> None:
-    is_write = _is_git_write_command(cli_command)
-    if expect_write and not is_write:
-        raise ToolValidationError("Field 'command' must be 'read' for non-write git or gh commands")
-    if (not expect_write) and is_write:
-        raise ToolValidationError("Field 'command' must be 'write' for write git or gh commands")
 
 
 async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    session_id = require_runtime_session_id(runtime)
-
+    session_id = _session_key(runtime)
     cli_command = payload.get("cli_command")
     if not isinstance(cli_command, str) or not cli_command.strip():
         raise ToolValidationError("Field 'cli_command' must be a non-empty string")
-
-    timeout_seconds = payload.get("timeout_seconds", _DEFAULT_GIT_TIMEOUT_SECONDS)
-    if (
-        not isinstance(timeout_seconds, int)
-        or isinstance(timeout_seconds, bool)
-        or timeout_seconds < 1
-    ):
-        raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
-    timeout_seconds = min(timeout_seconds, _MAX_GIT_TIMEOUT_SECONDS)
-
-    cwd_raw = payload.get("cwd")
-    if cwd_raw is not None and (not isinstance(cwd_raw, str) or not cwd_raw.strip()):
-        raise ToolValidationError("Field 'cwd' must be a non-empty string when provided")
+    timeout_seconds = _timeout_seconds(payload)
+    run_dir = _sandbox_cwd(payload.get("cwd"))
     selector = _account_selector_from_payload(payload)
-
-    await _ensure_session_exists(session_id)
-    await ensure_runtime_layout(session_id)
-    workspace_dir = runtime_workspace_dir(session_id)
-    run_dir = _resolve_run_dir(workspace_dir, cwd_raw)
-
     tokens = _parse_cli_command(cli_command.strip())
+
     if tokens[0] == "gh":
         return await _execute_gh_command(
             session_id=session_id,
-            workspace_dir=workspace_dir,
             run_dir=run_dir,
             tokens=tokens,
             timeout_seconds=timeout_seconds,
-            account_selector=selector,
+            selector=selector,
         )
 
     subcommand, subcommand_index = _extract_git_subcommand(tokens)
     subargs = tokens[subcommand_index + 1 :]
-
     _validate_no_forbidden_global_flags(tokens[:subcommand_index])
     _validate_no_forbidden_global_flags(subargs)
 
     network_mode = _network_mode_for_command(subcommand)
-    account: _ResolvedAccount | None = None
-
     if network_mode is not None:
-        repo_url, remote_name = _resolve_network_repo_url(subcommand, subargs, run_dir)
+        repo_url = await _resolve_network_repo_url(
+            session_id=session_id,
+            run_dir=run_dir,
+            subcommand=subcommand,
+            subargs=subargs,
+        )
         async with AsyncSessionLocal() as db:
             account = await _resolve_git_account(
                 db,
@@ -1344,45 +818,23 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
                 selector=selector,
             )
         if account is None:
-            repo_target = _repo_target_label(repo_url)
             required_token = "write token" if network_mode == "write" else "read token"
             raise ToolValidationError(
-                "No matching git account is configured for "
-                f"'{repo_target}' ({network_mode} access). "
-                f"Add/update a Git account with matching host/scope and a {required_token}."
+                f"No matching git account is configured for '{_repo_target_label(repo_url)}' "
+                f"({network_mode} access). Add/update a Git account with matching host/scope and a {required_token}."
             )
-
-        probe_owner = (account.repo.path.split("/", 1)[0] or None) if account else None
-        probe_token = (
-            account.account.token_write if network_mode == "write" else account.account.token_read
-        ) or ""
-        account_warning = await _validate_github_account(
-            account=account.account,
-            token=probe_token.strip(),
-            target_owner=probe_owner,
-        )
-
-        result = await _run_network_git(
+        return await _run_network_git(
+            session_id=session_id,
             account=account,
-            workspace_dir=workspace_dir,
             run_dir=run_dir,
             tokens=tokens,
             timeout_seconds=timeout_seconds,
+            mode=network_mode,
         )
-        if subcommand == "clone" and account is not None and result["ok"]:
-            await _configure_author_identity_after_clone(
-                run_dir=run_dir,
-                subargs=subargs,
-                repo_url=repo_url,
-                author_name=account.account.author_name,
-                author_email=account.account.author_email,
-                timeout_seconds=min(60, timeout_seconds),
-            )
-        _attach_account_warning(result, account_warning)
-        return result
 
+    env: dict[str, str] | None = None
     if subcommand == "commit":
-        origin_url = _resolve_origin_url(run_dir)
+        origin_url = await _resolve_origin_url(session_id, run_dir)
         async with AsyncSessionLocal() as db:
             account = await _resolve_git_account(
                 db,
@@ -1391,32 +843,25 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
                 selector=selector,
             )
         if account is None:
-            repo_target = _repo_target_label(origin_url)
             raise ToolValidationError(
-                "No matching git account is configured for "
-                f"'{repo_target}' (commit attribution). "
-                "Add/update a Git account with matching host/scope and a read token."
+                f"No matching git account is configured for '{_repo_target_label(origin_url)}' "
+                "(commit attribution). Add/update a Git account with matching host/scope and a read token."
             )
-        result = await _run_local_git(
-            run_dir=run_dir,
-            tokens=tokens,
-            timeout_seconds=timeout_seconds,
-            author_name=account.account.author_name,
-            author_email=account.account.author_email,
-        )
-        result["author"] = {
-            "name": account.account.author_name,
-            "email": account.account.author_email,
-        }
-        return result
+        env = _author_env(account.account)
 
-    return await _run_local_git(
-        run_dir=run_dir,
+    result = await _run_hidden_runtime_command(
+        session_id=session_id,
         tokens=tokens,
+        cwd=run_dir,
+        env=env,
         timeout_seconds=timeout_seconds,
-        author_name=None,
-        author_email=None,
     )
+    if subcommand == "commit" and env is not None:
+        result["author"] = {
+            "name": env["GIT_AUTHOR_NAME"],
+            "email": env["GIT_AUTHOR_EMAIL"],
+        }
+    return result
 
 
 async def handle_read(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
@@ -1435,25 +880,34 @@ async def handle_write(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
     return await _handle_run(payload, runtime)
 
 
-async def handle_accounts(payload: dict[str, Any]) -> dict[str, Any]:
-    host_filter_raw = payload.get("host")
-    repo_url_raw = payload.get("repo_url")
-    require_write_raw = payload.get("require_write", False)
+def _parse_accounts_repo_ref(repo_url: str) -> dict[str, str]:
+    repo = _parse_repo_ref(repo_url)
+    return {"host": repo.host, "path": repo.path, "target": repo.target}
 
-    if host_filter_raw is not None and (
-        not isinstance(host_filter_raw, str) or not host_filter_raw.strip()
-    ):
+
+def _matches_repo(*, item: GitAccount, repo: dict[str, str] | None) -> bool:
+    if repo is None:
+        return True
+    host = (item.host or "").strip().lower()
+    if host != repo["host"]:
+        return False
+    pattern = (item.scope_pattern or "*").strip().lower() or "*"
+    return fnmatch.fnmatch(repo["target"], pattern) or fnmatch.fnmatch(repo["path"], pattern)
+
+
+async def handle_accounts(payload: dict[str, Any]) -> dict[str, Any]:
+    host_raw = payload.get("host")
+    repo_url_raw = payload.get("repo_url")
+    require_write = payload.get("require_write", False)
+    if host_raw is not None and (not isinstance(host_raw, str) or not host_raw.strip()):
         raise ToolValidationError("Field 'host' must be a non-empty string when provided")
-    if repo_url_raw is not None and (
-        not isinstance(repo_url_raw, str) or not repo_url_raw.strip()
-    ):
+    if repo_url_raw is not None and (not isinstance(repo_url_raw, str) or not repo_url_raw.strip()):
         raise ToolValidationError("Field 'repo_url' must be a non-empty string when provided")
-    if not isinstance(require_write_raw, bool):
+    if not isinstance(require_write, bool):
         raise ToolValidationError("Field 'require_write' must be a boolean")
 
-    host_filter = host_filter_raw.strip().lower() if isinstance(host_filter_raw, str) else None
+    host_filter = host_raw.strip().lower() if isinstance(host_raw, str) else None
     repo_ref = _parse_accounts_repo_ref(repo_url_raw) if isinstance(repo_url_raw, str) else None
-
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(GitAccount))
         accounts = result.scalars().all()
@@ -1471,12 +925,11 @@ async def handle_accounts(payload: dict[str, Any]) -> dict[str, Any]:
         host = (item.host or "").strip().lower()
         if host_filter and host != host_filter:
             continue
-        matches_repo_flag = _matches_repo(item=item, repo=repo_ref)
-        if repo_ref is not None and not matches_repo_flag:
+        if not _matches_repo(item=item, repo=repo_ref):
             continue
-        if require_write_raw and not (item.token_write or "").strip():
+        if require_write and not (item.token_write or "").strip():
             continue
-        if (not require_write_raw) and not (item.token_read or "").strip():
+        if not require_write and not (item.token_read or "").strip():
             continue
         entries.append(
             {
@@ -1488,20 +941,7 @@ async def handle_accounts(payload: dict[str, Any]) -> dict[str, Any]:
                 "author_email": item.author_email,
                 "has_read_token": bool((item.token_read or "").strip()),
                 "has_write_token": bool((item.token_write or "").strip()),
-                "matches_repo": matches_repo_flag if repo_ref is not None else None,
-                "created_at": item.created_at.isoformat() if item.created_at else None,
-                "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+                "matches_repo": _matches_repo(item=item, repo=repo_ref),
             }
         )
-
-    return {
-        "total": len(entries),
-        "require_write": require_write_raw,
-        "repo_target": repo_ref["target"] if repo_ref is not None else None,
-        "accounts": entries,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Unified tool dispatch
-# ---------------------------------------------------------------------------
+    return {"accounts": entries, "total": len(entries)}

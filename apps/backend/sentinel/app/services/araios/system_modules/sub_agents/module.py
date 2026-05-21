@@ -26,10 +26,6 @@ def _spawn_parameters_schema() -> dict:
                 "items": {"type": "string"},
                 "description": "Optional allowlist of tool names. Omit or pass [] to allow all tools.",
             },
-            "browser_tab_id": {
-                "type": "string",
-                "description": "Optional browser tab ID to pin sub-agent browser actions to one tab.",
-            },
             "max_steps": {
                 "type": "integer",
                 "description": "Maximum iterations (default 10, max 50).",

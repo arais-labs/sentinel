@@ -16,7 +16,6 @@ from app.services.instance_runtime_context import (
     instance_runtime_context_registry,
 )
 from app.services.onboarding.onboarding_service import OnboardingService
-from app.services.runtime.runtime_rebuild import RuntimeRebuildService
 from app.services.settings.settings_service import SettingsService
 
 
@@ -31,10 +30,6 @@ def get_onboarding_service() -> OnboardingService:
 
 def get_settings_service() -> SettingsService:
     return SettingsService()
-
-
-def get_runtime_rebuild_service() -> RuntimeRebuildService:
-    return RuntimeRebuildService()
 
 
 async def get_db(connection: HTTPConnection) -> AsyncGenerator[AsyncSession, None]:
@@ -122,5 +117,4 @@ def get_connection_instance_runtime_context(connection: HTTPConnection) -> Insta
     if isinstance(context, InstanceRuntimeContext):
         return context
     raise RuntimeError("Instance runtime context is missing; route is not instance-scoped")
-
 

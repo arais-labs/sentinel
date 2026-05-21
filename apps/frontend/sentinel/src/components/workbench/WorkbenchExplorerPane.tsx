@@ -21,6 +21,7 @@ interface WorkbenchExplorerPaneProps {
   onExplorerDownload?: (entry: SessionRuntimeFileEntry) => void;
   loadExplorerDirectory: (path: string) => Promise<SessionRuntimeFileEntry[]>;
   onExplorerDirectoryToggle?: (entry: SessionRuntimeFileEntry, expanded: boolean) => void;
+  explorerRefreshKey?: number;
   repoChangesSections: WorkbenchRepoChangesSection[];
   expandedGitDirs: Record<string, boolean>;
   onToggleGitDir: (path: string) => void;
@@ -36,6 +37,7 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
   onExplorerDownload,
   loadExplorerDirectory,
   onExplorerDirectoryToggle,
+  explorerRefreshKey = 0,
   repoChangesSections,
   expandedGitDirs,
   onToggleGitDir,
@@ -175,6 +177,7 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
             onEntryDownload={onExplorerDownload}
             loadFolderEntries={loadExplorerDirectory}
             onDirectoryToggle={onExplorerDirectoryToggle}
+            refreshKey={explorerRefreshKey}
             loading={explorerLoading}
           />
         </div>

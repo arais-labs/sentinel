@@ -4,11 +4,10 @@ from app.services.sessions.errors import (
     MainSessionDeletionError,
     MainSessionTargetInvalidError,
     MessageNotFoundError,
-    RuntimePathInvalidError,
-    RuntimePathNotFoundError,
     SessionRenameNotAllowedError,
     SessionNotFoundError,
     SessionServiceError,
+    SessionWorkspaceCleanupError,
 )
 from app.services.sessions.service import ChatRunResult, MessagePage, SessionPage, SessionService
 
@@ -19,12 +18,11 @@ __all__ = [
     "MainSessionDeletionError",
     "MainSessionTargetInvalidError",
     "MessageNotFoundError",
-    "RuntimePathInvalidError",
-    "RuntimePathNotFoundError",
     "SessionRenameNotAllowedError",
     "MessagePage",
     "SessionNotFoundError",
     "SessionPage",
     "SessionService",
     "SessionServiceError",
+    "SessionWorkspaceCleanupError",
 ]

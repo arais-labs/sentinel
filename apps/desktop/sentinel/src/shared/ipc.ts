@@ -16,16 +16,15 @@ export interface ManagedServiceStatus {
 export interface DesktopStatus {
   appUrl?: string;
   appSupportPath: string;
-  qemu: {
-    installed: boolean;
-    qemuSystemPath?: string;
-    qemuImgPath?: string;
+  runtime: {
+    provider: 'ssh';
+    configured: boolean;
+    host?: string;
+    port?: number;
+    username?: string;
+    workspacesDir: string;
+    authMethod: 'key' | 'password' | 'none';
     message?: string;
-  };
-  runtimeImage: {
-    imagePath: string;
-    keyPath: string;
-    present: boolean;
   };
   services: ManagedServiceStatus[];
 }

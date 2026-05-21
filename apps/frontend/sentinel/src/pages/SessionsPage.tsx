@@ -9,6 +9,7 @@ import {
   RefreshCw,
   RotateCcw,
   Send,
+  Settings2,
   Users,
   Square,
   Wand2,
@@ -49,7 +50,7 @@ import { WorkbenchExplorerPane } from '../components/workbench/WorkbenchExplorer
 import { Workbench, type WorkbenchTab } from '../components/workbench/Workbench';
 import { StatusChip } from '../components/ui/StatusChip';
 import { SESSION_DEBUG_PANEL_ENABLED, wsSessionsBaseUrl } from '../lib/env';
-import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
+import { toPrettyJson, truncate } from '../lib/format';
 import { buildRuntimeGitChangedTree } from '../lib/runtimeGitTree';
 import {
   approvalKey,
@@ -78,7 +79,11 @@ import type {
   MessageListResponse,
   ModelOption,
   ModelsResponse,
+  RuntimeActionResponse,
   RuntimeLiveView,
+  RuntimeRepairResponse,
+  RuntimeStatusCheck,
+  RuntimeStatusResponse,
   Session,
   SessionContextUsage,
   SessionRuntimeFileEntry,
@@ -97,6 +102,18 @@ import type {
 
 // --- Utility Functions ---
 
+const DESKTOP_RESOLUTION_PRESETS = [
+  { value: '1280x800', label: '1280 x 800' },
+  { value: '1440x900', label: '1440 x 900' },
+  { value: '1680x1050', label: '1680 x 1050' },
+  { value: '1920x1200', label: '1920 x 1200' },
+  { value: '2560x1600', label: '2560 x 1600' },
+  { value: '2880x1800', label: '2880 x 1800' },
+  { value: '3840x2400', label: '3840 x 2400' },
+];
+
+const DEFAULT_DESKTOP_RESOLUTION = '1920x1200';
+
 function taskStatusTone(status: string): 'default' | 'good' | 'warn' | 'danger' | 'info' {
   switch (status) {
     case 'running':
@@ -112,6 +129,48 @@ function taskStatusTone(status: string): 'default' | 'good' | 'warn' | 'danger' 
       return 'danger';
     default:
       return 'default';
+  }
+}
+
+function runtimeStatusTone(status: RuntimeStatusResponse['status'] | undefined): 'default' | 'good' | 'warn' | 'danger' | 'info' {
+  switch (status) {
+    case 'ready':
+      return 'good';
+    case 'degraded':
+      return 'warn';
+    case 'unreachable':
+    case 'failed':
+      return 'danger';
+    case 'not_configured':
+      return 'default';
+    default:
+      return 'default';
+  }
+}
+
+function runtimeCheckTone(status: RuntimeStatusCheck['status']): 'good' | 'warn' | 'danger' | 'default' {
+  switch (status) {
+    case 'pass':
+      return 'good';
+    case 'warn':
+      return 'warn';
+    case 'fail':
+      return 'danger';
+    default:
+      return 'default';
+  }
+}
+
+function runtimeCheckDotClass(status: RuntimeStatusCheck['status']): string {
+  switch (status) {
+    case 'pass':
+      return 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.35)]';
+    case 'warn':
+      return 'bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.28)]';
+    case 'fail':
+      return 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.3)]';
+    default:
+      return 'bg-[color:var(--text-muted)]';
   }
 }
 
@@ -332,17 +391,6 @@ function hasMeaningfulToolArguments(raw: string): boolean {
   if (!trimmed) return false;
   if (trimmed === '{}' || trimmed === 'null') return false;
   return true;
-}
-
-function browserCommandLabelFromArguments(raw: string | undefined): string {
-  if (!raw) return 'browser';
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const command = typeof parsed.command === 'string' ? parsed.command.trim() : '';
-    return command ? command.replaceAll('_', ' ') : 'browser';
-  } catch {
-    return 'browser';
-  }
 }
 
 function mergeStreamingToolArguments(current: string, delta: string): string {
@@ -721,6 +769,10 @@ export function SessionsPage() {
   }, [isRuntimeTab, runtimeView]);
   const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
   const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
+  const [runtimeFilesRefreshKey, setRuntimeFilesRefreshKey] = useState(0);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
+  const [runtimeStatusLoading, setRuntimeStatusLoading] = useState(false);
+  const [runtimeRepairing, setRuntimeRepairing] = useState(false);
 
   const [runtimePath, setRuntimePath] = useState('');
   const [runtimeRepoChangesByRoot, setRuntimeRepoChangesByRoot] = useState<Record<string, SessionRuntimeGitChangedFilesResponse | null>>({});
@@ -829,8 +881,12 @@ export function SessionsPage() {
 
   const [isCompacting, setIsCompacting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
-  const [isResettingRuntime, setIsResettingRuntime] = useState(false);
-  const [isRestartingContainer, setIsRestartingContainer] = useState(false);
+  const [runtimeActionBusy, setRuntimeActionBusy] = useState(false);
+  const [isDesktopResolutionChanging, setIsDesktopResolutionChanging] = useState(false);
+  const [desktopResolution, setDesktopResolutionState] = useState(() => (
+    localStorage.getItem('sentinel-desktop-resolution') || DEFAULT_DESKTOP_RESOLUTION
+  ));
+  const [desktopLayoutNonce, setDesktopLayoutNonce] = useState(0);
   const [resetMenuOpen, setResetMenuOpen] = useState(false);
   const resetMenuRef = useRef<HTMLDivElement>(null);
   const [isDesktopFullscreen, setIsDesktopFullscreen] = useState(false);
@@ -845,6 +901,13 @@ export function SessionsPage() {
       setIsAgentModeDropdownOpen(false);
     }
   }, [isDesktopFullscreen]);
+
+  useEffect(() => {
+    if (!DESKTOP_RESOLUTION_PRESETS.some((preset) => preset.value === desktopResolution)) {
+      setDesktopResolutionState(DEFAULT_DESKTOP_RESOLUTION);
+      localStorage.setItem('sentinel-desktop-resolution', DEFAULT_DESKTOP_RESOLUTION);
+    }
+  }, [desktopResolution]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const messagesRef = useRef<Message[]>([]);
@@ -1029,20 +1092,6 @@ export function SessionsPage() {
   const activeWorkbenchBaseRefOptions = useMemo(
     () => (activeWorkbenchTab ? buildRuntimeDiffBaseRefOptions(activeWorkbenchGitRoots, activeWorkbenchBaseRef) : ['HEAD']),
     [activeWorkbenchTab, activeWorkbenchGitRoots, activeWorkbenchBaseRef],
-  );
-
-  const browserToolResults = useMemo(
-    () =>
-      messages
-        .filter(
-          (message) =>
-            message.role === 'tool_result' &&
-            typeof message.tool_name === 'string' &&
-            message.tool_name === 'browser'
-        )
-        .slice(-25)
-        .reverse(),
-    [messages],
   );
 
   const toolArgumentsByCallId = useMemo(() => buildToolArgumentsByCallId(messages), [messages]);
@@ -1256,6 +1305,7 @@ export function SessionsPage() {
     void fetchModels();
     void fetchAgentModes();
     void fetchLiveView();
+    void fetchRuntimeStatus();
   }, [activeInstanceName]);
 
   // Re-fetch live view when the active session changes
@@ -1284,6 +1334,11 @@ export function SessionsPage() {
       window.clearInterval(interval);
     };
   }, [activeSessionId, showDesktopView, runtimeBooting, liveView?.enabled, liveView?.available]);
+
+  useEffect(() => {
+    if (!showDesktopView) return;
+    void fetchRuntimeStatus();
+  }, [showDesktopView, activeInstanceName]);
 
   // Poll sessions every 30s to pick up unread changes
   useEffect(() => {
@@ -1695,7 +1750,8 @@ export function SessionsPage() {
       return;
     }
     try {
-      const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?session_id=${sid}`);
+      const query = new URLSearchParams({ session_id: sid, geometry: desktopResolution });
+      const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?${query.toString()}`);
       setLiveView(payload);
       if (payload.enabled && payload.available) {
         setRuntimeBooting(false);
@@ -1709,37 +1765,132 @@ export function SessionsPage() {
     }
   }
 
-  async function resetRuntime() {
-    if (isResettingRuntime) return;
-    const sid = activeSessionIdRef.current;
-    if (!sid) return;
-    setIsResettingRuntime(true);
+  async function fetchRuntimeStatus() {
+    setRuntimeStatusLoading(true);
     try {
-      await api.post(`/runtime/reset?session_id=${sid}`, {});
-      toast.success('Runtime reset successful');
-      await fetchLiveView();
+      const payload = await api.get<RuntimeStatusResponse>('/runtime/status');
+      setRuntimeStatus(payload);
     } catch {
-      toast.error('Failed to reset runtime');
+      setRuntimeStatus(null);
     } finally {
-      setIsResettingRuntime(false);
+      setRuntimeStatusLoading(false);
     }
   }
 
-  async function restartContainer() {
-    if (isRestartingContainer) return;
+  async function repairRuntime() {
+    if (runtimeRepairing) return;
+    setRuntimeRepairing(true);
+    try {
+      const payload = await api.post<RuntimeRepairResponse>('/runtime/repair', {}, { timeoutMs: 900_000 });
+      if (payload.ok) {
+        toast.success('Runtime repair completed');
+      } else {
+        toast.error(payload.detail || 'Runtime repair did not complete');
+      }
+      await fetchRuntimeStatus();
+      await fetchLiveView();
+    } catch {
+      toast.error('Runtime repair failed');
+    } finally {
+      setRuntimeRepairing(false);
+    }
+  }
+
+  async function setDesktopResolution(geometry: string) {
+    if (isDesktopResolutionChanging || geometry === desktopResolution) return;
     const sid = activeSessionIdRef.current;
     if (!sid) return;
-    setIsRestartingContainer(true);
+    setDesktopResolutionState(geometry);
+    localStorage.setItem('sentinel-desktop-resolution', geometry);
+    setIsDesktopResolutionChanging(true);
+    setRuntimeBooting(true);
+    setDesktopLayoutNonce((value) => value + 1);
+    try {
+      const query = new URLSearchParams({ session_id: sid });
+      const payload = await api.post<RuntimeLiveView>(
+        `/runtime/live-view/resolution?${query.toString()}`,
+        { geometry },
+        { timeoutMs: 60_000 },
+      );
+      setLiveView(payload);
+      if (payload.enabled && payload.available) {
+        setRuntimeBooting(false);
+        setDesktopLayoutNonce((value) => value + 1);
+      } else {
+        toast.error(payload.reason || 'Desktop resolution change failed');
+      }
+    } catch {
+      toast.error('Failed to change desktop resolution');
+      setRuntimeBooting(false);
+    } finally {
+      setIsDesktopResolutionChanging(false);
+    }
+  }
+
+  async function resetBrowser() {
+    if (runtimeActionBusy) return;
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    setRuntimeActionBusy(true);
+    try {
+      await api.post<RuntimeActionResponse>(`/runtime/browser/reset?session_id=${sid}`, {});
+      toast.success('Browser reset');
+      await fetchLiveView();
+    } catch {
+      toast.error('Failed to reset browser');
+    } finally {
+      setRuntimeActionBusy(false);
+    }
+  }
+
+  async function restartDesktop() {
+    if (runtimeActionBusy) return;
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    setRuntimeActionBusy(true);
     setRuntimeBooting(true);
     setLiveView(null);
     try {
-      await api.post(`/runtime/restart-container?session_id=${sid}`, {});
-      toast.success('Container restarting...');
+      await api.post<RuntimeActionResponse>(
+        `/runtime/desktop/restart?session_id=${sid}`,
+        { geometry: desktopResolution },
+        { timeoutMs: 60_000 },
+      );
+      toast.success('Desktop restarted');
+      await fetchLiveView();
     } catch {
-      toast.error('Failed to restart container');
+      toast.error('Failed to restart desktop');
       setRuntimeBooting(false);
     } finally {
-      setIsRestartingContainer(false);
+      setRuntimeActionBusy(false);
+    }
+  }
+
+  async function wipeWorkspace() {
+    if (runtimeActionBusy) return;
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    const label = (activeSession?.title || 'Session').trim() || 'Session';
+    const workspaceSummary = await getSessionDeleteWorkspaceSummary(sid);
+    const confirmed = await confirmSessionDelete({
+      kind: 'workspace_wipe',
+      label,
+      topLevelEntries: workspaceSummary.topLevelEntries,
+    });
+    if (!confirmed) return;
+    setRuntimeActionBusy(true);
+    setRuntimeBooting(true);
+    setLiveView(null);
+    try {
+      await api.post<RuntimeActionResponse>(`/runtime/workspace/wipe?session_id=${sid}`, {}, { timeoutMs: 90_000 });
+      toast.success('Workspace wiped');
+      await fetchLiveView();
+      void fetchRuntimeFiles(sid, '');
+    } catch {
+      toast.error('Failed to wipe workspace');
+      setRuntimeBooting(false);
+    } finally {
+      setRuntimeActionBusy(false);
     }
   }
 
@@ -2870,9 +3021,11 @@ export function SessionsPage() {
           if (
             toolNameForRefresh === 'runtime' ||
             toolNameForRefresh === 'python' ||
-            toolNameForRefresh === 'git'
+            toolNameForRefresh === 'git' ||
+            toolNameForRefresh === 'str_replace_editor'
           ) {
             if (showFilesView) {
+              setRuntimeFilesRefreshKey((current) => current + 1);
               void fetchRuntimeFiles(sessionId, runtimePath);
             }
           }
@@ -2947,7 +3100,8 @@ export function SessionsPage() {
             const sid = activeSessionIdRef.current;
             if (!sid) break;
             try {
-              const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?session_id=${sid}`);
+              const query = new URLSearchParams({ session_id: sid, geometry: desktopResolution });
+              const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?${query.toString()}`);
               setLiveView(payload);
               if (payload.enabled && payload.available) {
                 setRuntimeBooting(false);
@@ -3155,7 +3309,6 @@ export function SessionsPage() {
   // event will also fire and is idempotent against the optimistic update.
   async function closeTerminal(terminalId: string) {
     if (!activeSessionId) return;
-    if (terminalId === '0') return; // protected by both ends, but belt-and-braces
     setActiveTerminals((current) => current.filter((t) => t.id !== terminalId));
     setFocusedTerminalId((current) => (current === terminalId ? null : current));
     try {
@@ -3788,10 +3941,7 @@ export function SessionsPage() {
                                 const tooltip = terminal.lastCommand
                                   ? `${display} — last: ${summarizeCommand(terminal.lastCommand)}`
                                   : display;
-                                // Terminal '0' is the user's primary shared
-                                // shell — never offer to close it. Everything
-                                // else gets an ✕ on hover.
-                                const closable = terminal.id !== '0';
+                                const closable = true;
                                 const focusedClasses = isFocused
                                   ? 'border-sky-500 bg-sky-500/20 text-sky-300'
                                   : 'border-sky-500/30 bg-[color:var(--surface-0)]/90 text-sky-500 hover:bg-sky-500 hover:text-white';
@@ -3984,6 +4134,7 @@ export function SessionsPage() {
                   onExplorerFileClick={(entry) => void openRuntimeFile(entry.path)}
                   onExplorerDownload={(entry) => void downloadRuntimeEntry(entry)}
                   loadExplorerDirectory={loadRuntimeDirectoryEntries}
+                  explorerRefreshKey={runtimeFilesRefreshKey}
                 onExplorerDirectoryToggle={(entry, expanded) => {
                   if (!activeSessionId || !entry.is_git_root) return;
                   if (!expanded) {
@@ -4165,18 +4316,30 @@ export function SessionsPage() {
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
+                    <select
+                      value={desktopResolution}
+                      onChange={(event) => void setDesktopResolution(event.target.value)}
+                      disabled={isDesktopResolutionChanging || isDesktopRuntimeStarting}
+                      className="h-7 max-w-[126px] rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2 font-mono text-[10px] font-bold text-[color:var(--text-secondary)] outline-none transition-colors hover:bg-[color:var(--surface-2)] disabled:opacity-50"
+                      title="Desktop resolution"
+                    >
+                      {DESKTOP_RESOLUTION_PRESETS.map((preset) => (
+                        <option key={preset.value} value={preset.value}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </select>
                     {/* Reset dropdown */}
                     <div className={`relative ${isDesktopFullscreen ? 'z-10' : 'z-[120]'}`} ref={resetMenuRef}>
                       <button
                         onClick={() => setResetMenuOpen((o) => !o)}
-                        disabled={isResettingRuntime || isRestartingContainer}
-                        className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-[color:var(--text-muted)] disabled:opacity-50 flex items-center gap-0.5"
-                        title="Reset options"
+                        disabled={runtimeActionBusy}
+                        className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-[color:var(--text-muted)] disabled:opacity-50"
+                        title="Runtime actions"
                       >
-                        {isResettingRuntime || isRestartingContainer
+                        {runtimeActionBusy
                           ? <RotateCcw size={14} className="animate-spin" />
-                          : <RotateCcw size={14} />}
-                        <ChevronDown size={10} />
+                          : <Settings2 size={14} />}
                       </button>
                       {resetMenuOpen && (
                         <div
@@ -4187,23 +4350,34 @@ export function SessionsPage() {
                         >
                           <button
                             className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
-                            onClick={() => { setResetMenuOpen(false); void resetRuntime(); }}
+                            onClick={() => { setResetMenuOpen(false); void resetBrowser(); }}
                           >
                             <RotateCcw size={13} className="text-rose-400 shrink-0" />
                             <div>
-                              <div className="font-semibold">Reset Chromium</div>
-                              <div className="text-[9px] text-[color:var(--text-muted)]">Restart browser only</div>
+                              <div className="font-semibold">Reset Browser</div>
+                              <div className="text-[9px] text-[color:var(--text-muted)]">Wipe Chrome profile</div>
                             </div>
                           </button>
                           <div className="h-px bg-[color:var(--border-subtle)]" />
                           <button
                             className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
-                            onClick={() => { setResetMenuOpen(false); void restartContainer(); }}
+                            onClick={() => { setResetMenuOpen(false); void restartDesktop(); }}
                           >
                             <RefreshCw size={13} className="text-amber-400 shrink-0" />
                             <div>
-                              <div className="font-semibold">Restart Runtime</div>
-                              <div className="text-[9px] text-[color:var(--text-muted)]">Hard reset and reprovision</div>
+                              <div className="font-semibold">Restart Desktop</div>
+                              <div className="text-[9px] text-[color:var(--text-muted)]">Restart VNC session</div>
+                            </div>
+                          </button>
+                          <div className="h-px bg-[color:var(--border-subtle)]" />
+                          <button
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-rose-300 hover:bg-rose-500/10 transition-colors"
+                            onClick={() => { setResetMenuOpen(false); void wipeWorkspace(); }}
+                          >
+                            <Trash2 size={13} className="text-rose-400 shrink-0" />
+                            <div>
+                              <div className="font-semibold">Wipe Workspace</div>
+                              <div className="text-[9px] text-[color:var(--text-muted)]">Delete session files</div>
                             </div>
                           </button>
                         </div>
@@ -4219,13 +4393,14 @@ export function SessionsPage() {
                   </div>
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto">
-                  <div className="relative w-full aspect-video overflow-hidden border-b border-[color:var(--border-subtle)] bg-black">
+                  <div className="relative w-full aspect-[16/10] overflow-hidden border-b border-[color:var(--border-subtle)] bg-black">
                     <DesktopPreview
                       url={liveView?.enabled && liveView?.available ? liveView.url : null}
+                      wsUrl={liveView?.enabled && liveView?.available ? liveView.ws_url : null}
                       isFullscreen={isDesktopFullscreen}
                       onClose={() => setIsDesktopFullscreen(false)}
                       isBooting={isDesktopRuntimeStarting && !(liveView?.enabled && liveView?.available)}
-                      layoutKey={mode}
+                      layoutKey={`${mode}:${desktopLayoutNonce}:${liveView?.geometry ?? desktopResolution}`}
                       onFrameLoad={handleDesktopFrameLoad}
                       onInteract={handleDesktopInteract}
                     />
@@ -4262,7 +4437,7 @@ export function SessionsPage() {
                           <div className="flex items-center justify-between gap-3">
                             <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">Stream URL</span>
                             <div className="flex-1 min-w-0 font-mono text-[10px] text-[color:var(--text-secondary)] truncate text-right">
-                              {liveView?.url || '—'}
+                              {liveView?.ws_url || liveView?.url || '—'}
                             </div>
                           </div>
                           {liveView?.reason && (
@@ -4275,71 +4450,142 @@ export function SessionsPage() {
                     </section>
 
                     <section>
-                      <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2.5 px-1">Runtime Provider</div>
+                      <div className="flex items-center justify-between mb-2.5 px-1">
+                        <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Runtime Provider</div>
+                        <button
+                          type="button"
+                          onClick={() => void fetchRuntimeStatus()}
+                          disabled={runtimeStatusLoading}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] disabled:opacity-50"
+                          title="Refresh runtime diagnostics"
+                        >
+                          <RefreshCw size={12} className={runtimeStatusLoading ? 'animate-spin' : ''} />
+                        </button>
+                      </div>
                       <div className="space-y-1.5">
                         <div className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]">
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
                               <div className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)]">
-                                {liveView?.provider?.label || 'Runtime'}
+                                {liveView?.provider?.label || 'SSH'}
                               </div>
                               <div className="mt-1 text-[10px] text-[color:var(--text-muted)] leading-relaxed">
-                                {liveView?.provider?.summary || 'Provider details unavailable.'}
+                                {runtimeStatus?.summary || liveView?.provider?.summary || 'Provider details unavailable.'}
                               </div>
                             </div>
-                            <span className="shrink-0 text-[10px] font-mono font-bold uppercase text-[color:var(--text-primary)]">
-                              {liveView?.provider?.status || 'UNKNOWN'}
-                            </span>
+                            <StatusChip
+                              label={runtimeStatus?.status || liveView?.provider?.status || 'unknown'}
+                              tone={runtimeStatusTone(runtimeStatus?.status)}
+                              className="shrink-0"
+                            />
                           </div>
                         </div>
-                        {liveView?.provider?.items?.length ? (
-                          <div className="space-y-1.5">
-                            {liveView.provider.items.map((item) => (
-                              <div
-                                key={item.key}
-                                className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]"
-                              >
-                                <div className="flex items-center justify-between gap-3">
-                                  <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">
-                                    {item.label}
-                                  </span>
-                                  <div className="flex-1 min-w-0 font-mono text-[10px] text-[color:var(--text-secondary)] truncate text-right">
-                                    {item.value || '—'}
-                                  </div>
+                        <div className="space-y-1.5">
+                          {[
+                            {
+                              key: 'host',
+                              label: 'Host',
+                              value: runtimeStatus?.target.host
+                                ? `${runtimeStatus.target.host}:${runtimeStatus.target.port ?? 22}`
+                                : liveView?.provider?.items?.find((item) => item.key === 'host')?.value,
+                            },
+                            {
+                              key: 'user',
+                              label: 'User',
+                              value: runtimeStatus?.target.username,
+                            },
+                            {
+                              key: 'workspaces',
+                              label: 'Workspaces',
+                              value:
+                                runtimeStatus?.target.workspaces_dir ||
+                                liveView?.provider?.items?.find((item) => item.key === 'workspaces')?.value,
+                            },
+                          ].map((item) => (
+                            <div
+                              key={item.key}
+                              className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">
+                                  {item.label}
+                                </span>
+                                <div className="flex-1 min-w-0 font-mono text-[10px] text-[color:var(--text-secondary)] truncate text-right">
+                                  {item.value || '—'}
                                 </div>
                               </div>
-                            ))}
-                          </div>
-                        ) : null}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </section>
 
                     <section>
                       <div className="flex items-center justify-between mb-2.5 px-1">
-                        <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Recent Actions</div>
+                        <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Runtime Diagnostics</div>
+                        {runtimeStatus && runtimeStatus.capabilities.desktop !== 'available' ? (
+                          <button
+                            type="button"
+                            onClick={() => void repairRuntime()}
+                            disabled={runtimeRepairing}
+                            className="inline-flex h-6 items-center gap-1.5 rounded-md border border-amber-500/25 px-2 text-[9px] font-bold uppercase tracking-widest text-amber-400 transition-colors hover:bg-amber-500/10 disabled:opacity-50"
+                          >
+                            {runtimeRepairing ? <Loader2 size={10} className="animate-spin" /> : <Wrench size={10} />}
+                            Repair
+                          </button>
+                        ) : null}
                       </div>
-                      {browserToolResults.length > 0 ? (
-                        <div className="space-y-1">
-                          {browserToolResults.slice(0, 12).map((item) => (
+                      {runtimeStatus ? (
+                        <div className="space-y-1.5">
+                          {runtimeStatus.checks.map((check) => (
                             <div
-                              key={item.id}
-                              className="flex items-center justify-between p-2.5 rounded-lg border border-transparent hover:border-[color:var(--border-subtle)] hover:bg-[color:var(--surface-1)] transition-all group active:scale-[0.99]"
+                              key={check.id}
+                              className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]"
                             >
-                              <div className="flex items-center gap-3 min-0">
-                                <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] opacity-20 group-hover:opacity-100 transition-opacity" />
-                                <span className="text-[11px] font-bold text-[color:var(--text-primary)] truncate capitalize">
-                                  {browserCommandLabelFromArguments(toolArgumentsByCallId.get(item.tool_call_id || ''))}
-                                </span>
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="flex min-w-0 items-start gap-2.5">
+                                  <div className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${runtimeCheckDotClass(check.status)}`} />
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)]">
+                                        {check.label}
+                                      </span>
+                                      {!check.required ? (
+                                        <span className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                          Optional
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    {check.detail ? (
+                                      <div className="mt-1 max-w-full break-words font-mono text-[9px] leading-relaxed text-[color:var(--text-muted)]">
+                                        {check.detail}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                <div className="flex shrink-0 flex-col items-end gap-1">
+                                  <StatusChip
+                                    label={check.status}
+                                    tone={runtimeCheckTone(check.status)}
+                                    className="px-1.5 py-0 text-[8px]"
+                                  />
+                                  {typeof check.duration_ms === 'number' ? (
+                                    <span className="font-mono text-[8px] text-[color:var(--text-muted)]">
+                                      {check.duration_ms}ms
+                                    </span>
+                                  ) : null}
+                                </div>
                               </div>
-                              <span className="text-[9px] font-mono text-[color:var(--text-muted)] shrink-0 opacity-60 group-hover:opacity-100">
-                                {formatCompactDate(item.created_at)}
-                              </span>
                             </div>
                           ))}
                         </div>
+                      ) : runtimeStatusLoading ? (
+                        <div className="py-8 text-center text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] opacity-50">
+                          Checking runtime...
+                        </div>
                       ) : (
                         <div className="py-8 text-center text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] opacity-40">
-                          No activity yet.
+                          No diagnostics yet.
                         </div>
                       )}
                     </section>
@@ -4466,6 +4712,7 @@ export function SessionsPage() {
                   onExplorerFileClick={(entry) => void openRuntimeFile(entry.path)}
                   onExplorerDownload={(entry) => void downloadRuntimeEntry(entry)}
                   loadExplorerDirectory={loadRuntimeDirectoryEntries}
+                  explorerRefreshKey={runtimeFilesRefreshKey}
                   onExplorerDirectoryToggle={(entry, expanded) => {
                     if (!activeSessionId || !entry.is_git_root) return;
                     if (!expanded) {

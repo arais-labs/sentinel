@@ -12,17 +12,14 @@ export default defineConfig({
       '/api/v1': {
         target: 'http://sentinel-backend:8000',
         changeOrigin: true,
+        ws: true,
       },
       '/api': {
         target: 'http://sentinel-backend:8000',
         changeOrigin: true,
-      },
-      '/ws': {
-        target: 'ws://sentinel-backend:8000',
-        changeOrigin: true,
         ws: true,
       },
-      '/vnc': {
+      '/ws': {
         target: 'ws://sentinel-backend:8000',
         changeOrigin: true,
         ws: true,

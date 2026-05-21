@@ -1,121 +1,19 @@
-"""Native module: str_replace_editor — exact string replacement in files."""
+"""Native module: str_replace_editor — exact string replacement in runtime files."""
 
 from __future__ import annotations
 
-import base64
 import json
-import os
 from typing import Any
-from uuid import UUID
 
-from sqlalchemy import select
-
-from app.database.database import AsyncSessionLocal
-from app.models import Session
-from app.services.runtime import get_runtime
-from app.services.runtime.session_runtime import ensure_runtime_layout, runtime_workspace_dir
+from app.services.runtime.files import (
+    RuntimePathInvalidError,
+    RuntimePathIsDirectoryError,
+    RuntimePathNotFoundError,
+)
+from app.services.runtime.ssh_runtime import get_runtime_workspace_files, runtime_configured
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.runtime_context import require_runtime_session_id
-
-_STR_REPLACE_TIMEOUT_SECONDS = 120
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _shell_quote(s: str) -> str:
-    return "'" + s.replace("'", "'\\''") + "'"
-
-
-_STR_REPLACE_PAYLOAD_ENV = "SENTINEL_STR_REPLACE_EDITOR_PAYLOAD_B64"
-_STR_REPLACE_WORKSPACE_ENV = "SENTINEL_STR_REPLACE_WORKSPACE"
-_STR_REPLACE_SCRIPT = """python3 - <<'PY'
-import base64
-import json
-import os
-import pathlib
-import sys
-
-
-def fail(message: str) -> None:
-    print(json.dumps({"ok": False, "error": message}))
-    raise SystemExit(1)
-
-
-payload_b64 = os.environ.get("%s", "")
-if not payload_b64:
-    fail("Missing str_replace_editor payload")
-
-try:
-    payload_raw = base64.b64decode(payload_b64.encode("ascii"))
-    payload = json.loads(payload_raw.decode("utf-8"))
-except Exception as exc:
-    fail(f"Invalid str_replace_editor payload: {exc}")
-
-path_raw = payload.get("path")
-old_str = payload.get("old_str")
-new_str = payload.get("new_str")
-
-if not isinstance(path_raw, str) or not path_raw.strip():
-    fail("Field 'path' must be a non-empty string")
-if not isinstance(old_str, str):
-    fail("Field 'old_str' must be a string")
-if not isinstance(new_str, str):
-    fail("Field 'new_str' must be a string")
-if old_str == "":
-    fail("Field 'old_str' must be a non-empty string")
-
-workspace = pathlib.Path(os.environ.get("%s", "/home/sentinel/workspace")).resolve()
-target = (workspace / path_raw).resolve()
-if target != workspace and workspace not in target.parents:
-    fail(f"Path outside allowed directory: {path_raw}")
-if not target.exists() or not target.is_file():
-    fail(f"File not found: {path_raw}")
-
-try:
-    content = target.read_text(encoding="utf-8")
-except UnicodeDecodeError:
-    fail(f"File is not UTF-8 text: {path_raw}")
-
-first = content.find(old_str)
-if first < 0:
-    fail(
-        f"The exact string to replace was not found in {path_raw}. "
-        "Check for whitespace/indentation issues."
-    )
-
-# Look for a second occurrence starting one char later to catch overlaps.
-second = content.find(old_str, first + 1)
-if second >= 0:
-    fail(
-        f"The string to replace occurs multiple times in {path_raw}. "
-        "Please provide a more unique block of context."
-    )
-
-updated = content[:first] + new_str + content[first + len(old_str):]
-target.write_text(updated, encoding="utf-8")
-print(
-    json.dumps(
-        {
-            "ok": True,
-            "path": path_raw,
-            "message": "File patched successfully",
-            "old_str_count": 1,
-        }
-    )
-)
-PY
-""" % (_STR_REPLACE_PAYLOAD_ENV, _STR_REPLACE_WORKSPACE_ENV)
-
-
-async def _ensure_session_exists(session_id: UUID) -> None:
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Session).where(Session.id == session_id))
-        session = result.scalars().first()
-        if session is None:
-            raise ToolValidationError("Session not found")
 
 
 def _parse_str_replace_output(stdout_text: str) -> dict[str, Any]:
@@ -131,92 +29,40 @@ def _parse_str_replace_output(stdout_text: str) -> dict[str, Any]:
     return payload
 
 
-async def _run_str_replace_in_runtime_exec(
-    *,
-    session_id: UUID | str,
-    workspace_dir: Any,
-    path: str,
-    old_str: str,
-    new_str: str,
-) -> dict[str, Any]:
-    payload_b64 = base64.b64encode(
-        json.dumps(
-            {"path": path, "old_str": old_str, "new_str": new_str},
-            ensure_ascii=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).decode("ascii")
-
-    runtime = await get_runtime().ensure(session_id)
-    command = (
-        f"export {_STR_REPLACE_PAYLOAD_ENV}={payload_b64}; "
-        f"export {_STR_REPLACE_WORKSPACE_ENV}={runtime.workspace_path}; "
-        f"{_STR_REPLACE_SCRIPT}"
-    )
-
-    try:
-        result = await runtime.client.run(
-            f"bash -lc {_shell_quote(command)}",
-            cwd=runtime.workspace_path,
-            timeout=_STR_REPLACE_TIMEOUT_SECONDS,
-        )
-    except TimeoutError:
-        raise ToolValidationError("str_replace_editor timed out")
-
-    stdout_text = result.stdout
-    stderr_text = result.stderr
-    payload = _parse_str_replace_output(stdout_text)
-
-    if result.exit_status != 0:
-        error = payload.get("error")
-        if isinstance(error, str) and error.strip():
-            raise ToolValidationError(error.strip())
-        detail = stderr_text.strip() or stdout_text.strip() or "str_replace_editor failed"
-        raise ToolValidationError(detail)
-
-    ok = payload.get("ok")
-    if ok is not True:
-        error = payload.get("error")
-        if isinstance(error, str) and error.strip():
-            raise ToolValidationError(error.strip())
-        raise ToolValidationError("str_replace_editor failed")
-
-    return {
-        "path": str(payload.get("path") or path),
-        "message": str(payload.get("message") or "File patched successfully"),
-        "old_str_count": int(payload.get("old_str_count") or 1),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Handler functions (module-level)
-# ---------------------------------------------------------------------------
+def _string_field(payload: dict[str, Any], key: str, *, required: bool = False) -> str:
+    value = payload.get(key)
+    if value is None:
+        if required:
+            raise ToolValidationError(f"Field '{key}' is required.")
+        return ""
+    if not isinstance(value, str):
+        raise ToolValidationError(f"Field '{key}' must be a string.")
+    if required and not value.strip():
+        raise ToolValidationError(f"Field '{key}' must be a non-empty string.")
+    return value
 
 
 async def handle_edit(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    if not runtime_configured():
+        raise ToolValidationError("Runtime SSH target is not configured.")
+
     session_id = require_runtime_session_id(runtime)
-
-    path_raw = payload.get("path")
-    if not isinstance(path_raw, str) or not path_raw.strip():
-        raise ToolValidationError("Field 'path' must be a non-empty string")
-
-    old_str = payload.get("old_str")
-    if not isinstance(old_str, str):
-        raise ToolValidationError("Field 'old_str' must be a string")
+    path = _string_field(payload, "path", required=True).strip()
+    old_str = _string_field(payload, "old_str")
     if old_str == "":
-        raise ToolValidationError("Field 'old_str' must be a non-empty string")
+        raise ToolValidationError("Field 'old_str' must be a non-empty string.")
+    new_str = _string_field(payload, "new_str")
 
-    new_str = payload.get("new_str")
-    if not isinstance(new_str, str):
-        raise ToolValidationError("Field 'new_str' must be a string")
-
-    await _ensure_session_exists(session_id)
-    await ensure_runtime_layout(session_id)
-    workspace_dir = runtime_workspace_dir(session_id)
-    return await _run_str_replace_in_runtime_exec(
-        session_id=session_id,
-        workspace_dir=workspace_dir,
-        path=path_raw.strip(),
-        old_str=old_str,
-        new_str=new_str,
-    )
+    try:
+        return await get_runtime_workspace_files().str_replace(
+            str(session_id),
+            path=path,
+            old_str=old_str,
+            new_str=new_str,
+        )
+    except RuntimePathNotFoundError as exc:
+        raise ToolValidationError(str(exc) or "Runtime file not found.") from exc
+    except RuntimePathIsDirectoryError as exc:
+        raise ToolValidationError(str(exc) or "Runtime path is a directory.") from exc
+    except RuntimePathInvalidError as exc:
+        raise ToolValidationError(str(exc) or "Invalid runtime path.") from exc

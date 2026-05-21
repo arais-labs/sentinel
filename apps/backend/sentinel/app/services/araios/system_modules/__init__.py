@@ -6,13 +6,12 @@ from importlib import import_module
 from app.services.araios.module_types import ModuleDefinition
 
 _SYSTEM_MODULE_NAMES = (
-    "runtime_tool",
-    "python",
-    "git_tool",
-    "str_replace_editor",
     "http_request",
     "browser",
+    "runtime",
     "port_forward",
+    "git_tool",
+    "str_replace_editor",
     "memory",
     "sub_agents",
     "telegram",

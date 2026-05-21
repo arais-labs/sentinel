@@ -49,9 +49,9 @@ export function resolveBuildTools() {
 }
 
 export function verifyBuildTools() {
-  // `git` is needed to clone the source bundle; everything else is for the
-  // Postgres + QEMU builds (which still build from source on the VM).
-  const required = ['clang', 'curl', 'ditto', 'git', 'install_name_tool', 'make', 'ninja', 'pkg-config', 'shasum', 'tar'];
+  // `git` is needed to clone the source bundle; the native build tools are
+  // for Postgres/pgvector, which still build from source on the VM.
+  const required = ['clang', 'curl', 'ditto', 'git', 'make', 'ninja', 'pkg-config', 'shasum', 'tar'];
   const missing = required.filter((command) => !commandExists(command));
   if (missing.length) {
     throw new Error(`Missing macOS runtime build tools: ${missing.join(', ')}`);
@@ -83,17 +83,6 @@ export function runtimeRequirements() {
       'share/extension/vector.control',
       'lib/vector.dylib',
     ],
-    qemu: [
-      'bin/qemu-system-aarch64',
-      'bin/qemu-img',
-      'share/qemu/edk2-aarch64-code.fd',
-      'share/qemu/edk2-arm-vars.fd',
-      'build-base-image.sh',
-      'validate-base-image.sh',
-      'cloud-init/user-data.tpl',
-      'cloud-init/meta-data',
-      'provision/runtime-base.sh',
-    ],
   };
 }
 
@@ -101,7 +90,6 @@ export function runtimeComponents({ config, paths }) {
   const requirements = runtimeRequirements();
   const backendDir = path.join(paths.repoRoot, 'apps/backend/sentinel');
   const frontendDir = path.join(paths.repoRoot, 'apps/frontend/sentinel');
-  const qemuRuntimeDir = path.join(paths.repoRoot, 'infra/runtime/qemu');
   return [
     {
       name: 'runtime-seed',
@@ -130,18 +118,6 @@ export function runtimeComponents({ config, paths }) {
       },
       required: requirements.postgres,
       build: buildPostgresRuntime,
-    },
-    {
-      name: 'qemu',
-      config: qemuConfig(config),
-      required: requirements.qemu,
-      inputs: [
-        path.join(qemuRuntimeDir, 'build-base-image.sh'),
-        path.join(qemuRuntimeDir, 'validate-base-image.sh'),
-        path.join(qemuRuntimeDir, 'cloud-init'),
-        path.join(qemuRuntimeDir, 'provision'),
-      ],
-      build: buildQemuRuntime,
     },
   ];
 }
@@ -271,23 +247,6 @@ function verifyArchiveSha256(archivePath, expected, label) {
   if (actual !== expected) {
     throw new Error(`${label} checksum mismatch. Expected ${expected}, got ${actual}.`);
   }
-}
-
-function installNameChange(binary, from, to) {
-  const linked = output('otool', ['-L', binary]);
-  if (!linked.includes(from)) return;
-  run('install_name_tool', ['-change', from, to, binary]);
-}
-
-function installNameAddRpath(binary, rpath) {
-  const current = output('otool', ['-l', binary]);
-  if (current.includes(rpath)) return;
-  run('install_name_tool', ['-add_rpath', rpath, binary]);
-}
-
-function loaderPathToLib(file, libDir) {
-  const relative = path.relative(path.dirname(file), libDir) || '.';
-  return `@loader_path/${relative.split(path.sep).join('/')}`;
 }
 
 async function buildRuntimeSeed({ config, paths }) {
@@ -614,16 +573,6 @@ function pgvectorConfig(config) {
   return config.pgvector;
 }
 
-function qemuConfig(config) {
-  if (!config.qemu || typeof config.qemu !== 'object') {
-    throw new Error('macos-arm64 runtime lock must define qemu.version, sourceUrl, and sourceSha256.');
-  }
-  for (const key of ['version', 'sourceUrl', 'sourceSha256']) {
-    if (!config.qemu[key]) throw new Error(`macos-arm64 runtime lock is missing qemu.${key}.`);
-  }
-  return config.qemu;
-}
-
 async function patchPostgresDarwinInstallNames(sourceDir) {
   const makefile = path.join(sourceDir, 'src/Makefile.shlib');
   const current = await readFile(makefile, 'utf8');
@@ -759,162 +708,6 @@ function assertNoExternalDylibs(outputDir, label = 'Runtime') {
   }
 }
 
-async function vendorDylibClosure(entrypoints, libDir) {
-  await mkdir(libDir, { recursive: true });
-  const originalToBundled = new Map();
-  const bundledByName = new Map();
-  const queue = [...entrypoints];
-
-  while (queue.length) {
-    const current = queue.shift();
-    for (const reference of parseOtoolDependencies(current)) {
-      if (!reference.startsWith('/') || isSystemDylib(reference)) continue;
-      const name = path.basename(reference);
-      const bundled = path.join(libDir, name);
-      const existing = bundledByName.get(name);
-      if (existing && existing !== reference) {
-        throw new Error(`QEMU dependency basename collision for ${name}: ${existing} and ${reference}`);
-      }
-      if (!originalToBundled.has(reference)) {
-        if (!existsSync(reference)) {
-          throw new Error(`QEMU dependency does not exist on builder: ${reference}`);
-        }
-        await cp(reference, bundled, { dereference: true });
-        originalToBundled.set(reference, bundled);
-        bundledByName.set(name, reference);
-        queue.push(bundled);
-      }
-    }
-  }
-
-  const bundledFiles = [...originalToBundled.values()];
-  for (const dylib of bundledFiles) {
-    run('install_name_tool', ['-id', `@rpath/${path.basename(dylib)}`, dylib]);
-  }
-
-  for (const binary of entrypoints) {
-    installNameAddRpath(binary, loaderPathToLib(binary, libDir));
-  }
-  for (const file of [...entrypoints, ...bundledFiles]) {
-    const replacementPrefix = bundledFiles.includes(file) ? '@loader_path' : '@rpath';
-    for (const [original, bundled] of originalToBundled.entries()) {
-      installNameChange(file, original, `${replacementPrefix}/${path.basename(bundled)}`);
-    }
-  }
-}
-
-async function pruneQemuRuntime(outputDir) {
-  const binDir = path.join(outputDir, 'bin');
-  const keep = new Set(['qemu-system-aarch64', 'qemu-img']);
-  if (existsSync(binDir)) {
-    for (const entry of await readdir(binDir)) {
-      if (!keep.has(entry)) {
-        await rm(path.join(binDir, entry), { recursive: true, force: true });
-      }
-    }
-  }
-  await rm(path.join(outputDir, 'share/doc'), { recursive: true, force: true });
-  await rm(path.join(outputDir, 'share/man'), { recursive: true, force: true });
-}
-
-async function buildQemuRuntime({ config, paths }) {
-  const qemu = qemuConfig(config);
-  const outputDir = path.join(paths.runtimeDir, 'qemu');
-  const sourceDir = path.join(paths.repoRoot, 'infra/runtime/qemu');
-  const workDir = path.join(paths.targetDir, 'work/qemu');
-  const archivePath = path.join(workDir, `qemu-${qemu.version}.tar.xz`);
-  const extractedDir = path.join(workDir, `qemu-${qemu.version}`);
-  const buildDir = path.join(extractedDir, 'build-sentinel');
-  await rm(outputDir, { recursive: true, force: true });
-  await rm(workDir, { recursive: true, force: true });
-  await mkdir(workDir, { recursive: true });
-
-  run('curl', ['-fsSL', qemu.sourceUrl, '-o', archivePath]);
-  verifyArchiveSha256(archivePath, qemu.sourceSha256, 'QEMU source');
-  run('tar', ['-xf', archivePath, '-C', workDir]);
-  await mkdir(buildDir, { recursive: true });
-  run('../configure', [
-    `--prefix=${outputDir}`,
-    '--target-list=aarch64-softmmu',
-    '--without-default-features',
-    '--enable-system',
-    '--enable-tools',
-    '--enable-hvf',
-    '--enable-tcg',
-    '--enable-pixman',
-    '--enable-slirp',
-    '--enable-virtfs',
-    '--enable-fdt=internal',
-    '--enable-qcow1',
-    '--enable-vdi',
-    '--enable-vmdk',
-    '--enable-vpc',
-    '--enable-vhdx',
-    '--disable-docs',
-    '--disable-gtk',
-    '--disable-sdl',
-    '--disable-cocoa',
-    '--disable-vnc',
-    '--disable-curl',
-    '--disable-libssh',
-    '--disable-gnutls',
-    '--disable-nettle',
-    '--disable-lzo',
-    '--disable-snappy',
-    '--disable-zstd',
-    '--disable-png',
-    '--disable-capstone',
-    '--disable-libusb',
-    '--disable-vde',
-    '--disable-bzip2',
-    '--disable-lzfse',
-    '--disable-dmg',
-  ], {
-    cwd: buildDir,
-    env: {
-      CFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
-      CXXFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
-      OBJCFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
-      MACOSX_DEPLOYMENT_TARGET: '13.0',
-    },
-  });
-  const qemuBuildEnv = {
-    CFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
-    CXXFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
-    OBJCFLAGS: `-ffile-prefix-map=${extractedDir}=.`,
-    MACOSX_DEPLOYMENT_TARGET: '13.0',
-  };
-  run('make', ['-j', output('sysctl', ['-n', 'hw.ncpu'])], { cwd: buildDir, env: qemuBuildEnv });
-  run('make', ['install'], { cwd: buildDir, env: qemuBuildEnv });
-  await pruneQemuRuntime(outputDir);
-
-  const qemuSystem = path.join(outputDir, 'bin/qemu-system-aarch64');
-  const qemuImg = path.join(outputDir, 'bin/qemu-img');
-  if (!existsSync(qemuSystem) || !existsSync(qemuImg)) {
-    throw new Error('Built QEMU runtime is missing qemu-system-aarch64 or qemu-img.');
-  }
-  const versionLine = output(qemuSystem, ['--version']).split('\n')[0] || '';
-  if (!versionLine.includes(qemu.version)) {
-    throw new Error(`QEMU version mismatch. Expected ${qemu.version}, got: ${versionLine}`);
-  }
-  const deviceList = output(qemuSystem, ['-device', 'help']);
-  if (!deviceList.includes('virtio-9p')) {
-    throw new Error('Built QEMU runtime is missing virtio-9p support required for workspace mounts.');
-  }
-  for (const firmware of ['edk2-aarch64-code.fd', 'edk2-arm-vars.fd']) {
-    const built = path.join(outputDir, 'share/qemu', firmware);
-    if (!existsSync(built)) throw new Error(`Built QEMU runtime is missing firmware: ${built}`);
-  }
-  await vendorDylibClosure([qemuSystem, qemuImg], path.join(outputDir, 'lib'));
-  assertNoExternalDylibs(outputDir, 'QEMU runtime');
-
-  for (const script of ['build-base-image.sh', 'validate-base-image.sh']) {
-    await cp(path.join(sourceDir, script), path.join(outputDir, script), { dereference: true });
-  }
-  await cp(path.join(sourceDir, 'cloud-init'), path.join(outputDir, 'cloud-init'), { recursive: true, dereference: true });
-  await cp(path.join(sourceDir, 'provision'), path.join(outputDir, 'provision'), { recursive: true, dereference: true });
-}
-
 export async function preparePackageAssets({ paths }) {
   const iconsetDir = path.join(paths.targetDir, 'icon.iconset');
   const iconPath = path.join(paths.targetDir, 'icon.icns');
@@ -953,7 +746,6 @@ export async function verifyRuntime({ paths }) {
     ['Runtime seed (git)', path.join(runtimeDir, 'runtime-seed/git')],
     ['Runtime seed (gh)', path.join(runtimeDir, 'runtime-seed/gh')],
     ['Postgres runtime', path.join(runtimeDir, 'postgres')],
-    ['QEMU runtime', path.join(runtimeDir, 'qemu')],
   ];
   for (const [label, componentDir] of components) {
     if (existsSync(componentDir)) {
@@ -981,10 +773,6 @@ export function electronBuilderConfig({ paths, baseConfig }) {
       {
         from: path.join(paths.runtimeDir, 'postgres'),
         to: 'postgres',
-      },
-      {
-        from: path.join(paths.runtimeDir, 'qemu'),
-        to: 'runtime/qemu',
       },
     ],
     mac: {

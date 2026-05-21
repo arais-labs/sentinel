@@ -4,6 +4,8 @@ export interface ToolFieldPreview {
   key: string;
   text: string;
   fullText?: string;
+  value?: unknown;
+  fullValue?: unknown;
   truncated: boolean;
   redacted: boolean;
 }
@@ -158,7 +160,14 @@ function valueLooksSensitive(value: unknown): boolean {
   return SENSITIVE_VALUE_PATTERN.test(value);
 }
 
-function redactField(key: string, value: unknown): { text: string; fullText?: string; truncated: boolean; redacted: boolean } {
+function isExpandablePreviewValue(value: unknown, truncated: boolean): boolean {
+  if (truncated) return true;
+  if (typeof value === 'string' && /[\r\n]/.test(value)) return true;
+  if (Array.isArray(value)) return true;
+  return isObjectRecord(value);
+}
+
+function redactField(key: string, value: unknown): Omit<ToolFieldPreview, 'key'> {
   if (SENSITIVE_KEY_PATTERN.test(key) || valueLooksSensitive(value)) {
     return { text: '[redacted]', truncated: false, redacted: true };
   }
@@ -175,7 +184,14 @@ function redactField(key: string, value: unknown): { text: string; fullText?: st
       }
     }
   }
-  return { text: preview.text, fullText, truncated: preview.truncated, redacted: false };
+  return {
+    text: preview.text,
+    fullText,
+    value,
+    fullValue: isExpandablePreviewValue(value, preview.truncated) ? value : undefined,
+    truncated: preview.truncated,
+    redacted: false,
+  };
 }
 
 export function topLevelPayloadFieldCount(raw: string): number {

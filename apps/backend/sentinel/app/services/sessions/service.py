@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -29,18 +29,6 @@ from app.services.llm.generic.types import ImageContent, TextContent, UserMessag
 from app.services.llm.ids import TierName
 from app.services.memory import MemoryRepository, MemoryService
 from app.services.messages import normalize_generation_metadata, with_generation_metadata
-from app.services.runtime.terminal_manager import get_terminal_manager
-from app.services.runtime.session_runtime import (
-    cleanup_session_runtime,
-    get_session_runtime_snapshot,
-    list_runtime_workspace_git_changed_files,
-    list_runtime_workspace_git_roots,
-    list_runtime_workspace_entries,
-    prepare_runtime_workspace_download,
-    read_runtime_workspace_git_diff,
-    read_runtime_workspace_file_preview,
-    stop_all_detached_runtime_jobs,
-)
 from app.services.sessions.session_naming import (
     SessionNamingService,
     apply_conversation_message_delta,
@@ -52,13 +40,14 @@ from app.services.sessions.errors import (
     MainSessionDeletionError,
     MainSessionTargetInvalidError,
     MessageNotFoundError,
-    RuntimePathInvalidError,
-    RuntimePathNotFoundError,
     SessionRenameNotAllowedError,
     SessionNotFoundError,
+    SessionWorkspaceCleanupError,
 )
 
 logger = logging.getLogger(__name__)
+
+SessionDeleteCleanup = Callable[[list[UUID]], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -258,160 +247,6 @@ class SessionService:
             raise SessionNotFoundError("Session not found")
         return session
 
-    async def get_runtime_snapshot(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        action_limit: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        return get_session_runtime_snapshot(session.id, action_limit=action_limit)
-
-    async def list_runtime_files(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-        limit: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return list_runtime_workspace_entries(
-                session.id,
-                path=path,
-                limit=limit,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
-        except NotADirectoryError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime path is not a directory") from exc
-
-    async def get_runtime_file_preview(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-        max_bytes: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return read_runtime_workspace_file_preview(
-                session.id,
-                path=path,
-                max_bytes=max_bytes,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
-        except IsADirectoryError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime path is a directory") from exc
-
-    async def get_runtime_download(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-    ):
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return await asyncio.to_thread(
-                prepare_runtime_workspace_download,
-                session.id,
-                path=path,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
-
-    async def list_runtime_git_roots(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-        limit: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return list_runtime_workspace_git_roots(
-                session.id,
-                path=path,
-                limit=limit,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
-        except NotADirectoryError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime path is not a directory") from exc
-
-    async def get_runtime_git_diff(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-        base_ref: str,
-        staged: bool,
-        context_lines: int,
-        max_bytes: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return read_runtime_workspace_git_diff(
-                session.id,
-                path=path,
-                base_ref=base_ref,
-                staged=staged,
-                context_lines=context_lines,
-                max_bytes=max_bytes,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
-        except IsADirectoryError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime path is a directory") from exc
-        except RuntimeError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime git diff failed") from exc
-
-    async def get_runtime_git_changed_files(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-        limit: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return list_runtime_workspace_git_changed_files(
-                session.id,
-                path=path,
-                limit=limit,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
-        except RuntimeError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime git status failed") from exc
-
     async def get_context_usage(
         self,
         db: AsyncSession,
@@ -515,40 +350,13 @@ class SessionService:
             context_budget=context_budget,
         )
 
-    async def cleanup_runtime(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-    ) -> tuple[UUID, dict[str, bool]]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        result = await cleanup_session_runtime(session.id)
-        return session.id, result
-
-    async def close_terminal(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        terminal_id: str,
-        user_id: str,
-    ) -> tuple[UUID, str, bool]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        manager = get_terminal_manager()
-        existed = any(
-            rec.terminal_id == terminal_id
-            for rec in manager.list_terminals(session.id)
-        )
-        await manager.terminate(session.id, terminal_id=terminal_id)
-        return session.id, terminal_id, existed
-
     async def delete_session(
         self,
         db: AsyncSession,
         *,
         session_id: UUID,
         user_id: str,
+        before_delete: SessionDeleteCleanup | None = None,
     ) -> int:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
         main_session_id = await self._get_main_session_id(db, user_id=user_id)
@@ -557,11 +365,22 @@ class SessionService:
         descendants = await self._get_descendant_sessions(
             db, root_session_id=session.id, user_id=user_id
         )
+        if before_delete is not None:
+            affected_session_ids = [session.id, *(child.id for child in descendants)]
+            try:
+                await before_delete(affected_session_ids)
+            except SessionWorkspaceCleanupError:
+                raise
+            except Exception as exc:
+                detail = str(exc).strip() or exc.__class__.__name__
+                raise SessionWorkspaceCleanupError(
+                    "Runtime workspace cleanup failed; session was not deleted.",
+                    detail=detail,
+                ) from exc
         for child in descendants:
             await db.delete(child)
         await db.delete(session)
         await db.commit()
-        await self._cleanup_runtime_for_session_ids([session.id, *[c.id for c in descendants]])
         return len(descendants)
 
     async def stop_generation(
@@ -645,10 +464,6 @@ class SessionService:
 
         if has_mutations:
             await db.commit()
-        await stop_all_detached_runtime_jobs(
-            session_id,
-            reason="Cancelled by user via stop",
-        )
         return cancelled
 
     @staticmethod
@@ -1074,15 +889,3 @@ class SessionService:
                 descendants.append(child)
                 stack.append(child.id)
         return descendants
-
-    async def _cleanup_runtime_for_session_ids(self, session_ids: list[UUID]) -> None:
-        unique_ids = list(dict.fromkeys(session_ids))
-        if not unique_ids:
-            return
-        tasks = [cleanup_session_runtime(session_id) for session_id in unique_ids]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for session_id, result in zip(unique_ids, results, strict=True):
-            if isinstance(result, Exception):
-                logger.warning(
-                    "Runtime cleanup failed for session %s", session_id, exc_info=result
-                )
