@@ -10,6 +10,7 @@ from shlex import quote
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
+from app.services.runtime.remote_commands import load_remote_command
 from app.services.runtime.ssh_client import SSHClient
 from app.services.runtime.tmux import (
     build_close_tmux_script,
@@ -106,8 +107,10 @@ class RuntimeTerminalManager:
         return self._ssh
 
     async def prepare_workspace(self, session_id: str) -> None:
+        script, args = build_prepare_workspace_script(session_id, root=self._workspaces_root)
         await self._run_required_script(
-            build_prepare_workspace_script(session_id, root=self._workspaces_root),
+            script,
+            args,
             timeout=60,
             reason="workspace_prepare_failed",
         )
@@ -117,8 +120,10 @@ class RuntimeTerminalManager:
         terminal_ids.add("0")
         for terminal_id in terminal_ids:
             await self.close_terminal(session_id, terminal_id=terminal_id)
+        script, args = build_delete_workspace_script(session_id, root=self._workspaces_root)
         await self._run_required_script(
-            build_delete_workspace_script(session_id, root=self._workspaces_root),
+            script,
+            args,
             timeout=60,
             reason="workspace_delete_failed",
         )
@@ -134,8 +139,10 @@ class RuntimeTerminalManager:
         if key in self._running_terminals:
             return TerminalStatus(session_id=session_id, terminal_id=terminal_id, status="running")
         await self.prepare_workspace(session_id)
+        script, args = build_open_tmux_script(session_id, terminal_id=terminal_id, root=self._workspaces_root)
         await self._run_required_script(
-            build_open_tmux_script(session_id, terminal_id=terminal_id, root=self._workspaces_root),
+            script,
+            args,
             timeout=30,
             reason="terminal_open_failed",
         )
@@ -154,8 +161,10 @@ class RuntimeTerminalManager:
 
     async def close_terminal(self, session_id: str, *, terminal_id: str = "0") -> TerminalStatus:
         validate_terminal_id(terminal_id)
+        script, args = build_close_tmux_script(session_id, terminal_id=terminal_id, root=self._workspaces_root)
         result = await self._ssh.run_script(
-            build_close_tmux_script(session_id, terminal_id=terminal_id, root=self._workspaces_root),
+            script,
+            args=args,
             timeout=30,
         )
         if result.exit_status not in {0, None}:
@@ -172,8 +181,10 @@ class RuntimeTerminalManager:
 
     async def status(self, session_id: str, *, terminal_id: str = "0") -> TerminalStatus:
         validate_terminal_id(terminal_id)
+        script, args = build_tmux_status_script(session_id, terminal_id=terminal_id, root=self._workspaces_root)
         result = await self._ssh.run_script(
-            build_tmux_status_script(session_id, terminal_id=terminal_id, root=self._workspaces_root),
+            script,
+            args=args,
             timeout=15,
         )
         if result.exit_status not in {0, None}:
@@ -520,22 +531,7 @@ class RuntimeTerminalManager:
 
     async def _discover_running_terminal_ids(self, session_id: str) -> set[str]:
         paths = workspace_paths(session_id, root=self._workspaces_root)
-        script = f"""#!/usr/bin/env bash
-set -euo pipefail
-
-tmux_dir={quote(paths.tmux)}
-if [ ! -d "${{tmux_dir}}" ]; then
-  exit 0
-fi
-
-shopt -s nullglob
-for socket in "${{tmux_dir}}"/*.sock; do
-  name="$(basename "${{socket}}" .sock)"
-  if tmux -S "${{socket}}" has-session -t "sentinel_${{name}}" 2>/dev/null; then
-    printf '%s\\n' "${{name}}"
-  fi
-done
-"""
+        script = load_remote_command("tmux/discover.sh").replace("__TMUX_DIR__", quote(paths.tmux))
         result = await self._ssh.run_script(script, timeout=15)
         if result.exit_status not in {0, None}:
             raise TerminalUnavailableError(
@@ -556,8 +552,8 @@ done
             self._locks[key] = lock
         return lock
 
-    async def _run_required_script(self, script: str, *, timeout: int, reason: str) -> None:
-        result = await self._ssh.run_script(script, timeout=timeout)
+    async def _run_required_script(self, script: str, args: list[str], *, timeout: int, reason: str) -> None:
+        result = await self._ssh.run_script(script, args=args, timeout=timeout)
         if result.exit_status not in {0, None}:
             raise TerminalUnavailableError(
                 reason,
@@ -697,34 +693,23 @@ done
             "created_at": _utc_now(),
             "started_at": _utc_now(),
         }
-        script = _build_background_job_script(
-            job_id=job_id,
-            command=command,
-            cwd=cwd,
-            env=env,
-            job_dir=inner_job_dir,
-            done_path=inner_done_path,
+        request = {
+            "job_dir": host_job_dir,
+            "runner": load_remote_command("jobs/run.sh"),
+            "config": {
+                "job_id": job_id,
+                "command": command,
+                "cwd": cwd,
+                "env": env or {},
+                "done_path": inner_done_path,
+            },
+            "manifest": manifest,
+        }
+        result = await self._ssh.run_script(
+            load_remote_command("jobs/write.sh"),
+            args=[json.dumps(request, separators=(",", ":"))],
+            timeout=30,
         )
-        writer = f"""#!/usr/bin/env bash
-set -euo pipefail
-
-job_dir={quote(host_job_dir)}
-mkdir -p "${{job_dir}}"
-python3 - <<'SENTINEL_BACKGROUND_JOB'
-import json
-import os
-from pathlib import Path
-
-job_dir = Path({json.dumps(host_job_dir)})
-run_path = job_dir / "run.sh"
-manifest_path = job_dir / "manifest.json"
-manifest = json.loads({json.dumps(json.dumps(manifest, ensure_ascii=True))})
-run_path.write_text({json.dumps(script)}, encoding="utf-8")
-os.chmod(run_path, 0o700)
-manifest_path.write_text(json.dumps(manifest, ensure_ascii=True), encoding="utf-8")
-SENTINEL_BACKGROUND_JOB
-"""
-        result = await self._ssh.run_script(writer, timeout=30)
         if result.exit_status not in {0, None}:
             raise TerminalUnavailableError(
                 "background_job_prepare_failed",
@@ -819,56 +804,6 @@ def get_terminal_manager(ssh: SSHClient, *, workspaces_root: str | None = None) 
 
 def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _build_background_job_script(
-    *,
-    job_id: str,
-    command: str,
-    cwd: str | None,
-    env: dict[str, str] | None,
-    job_dir: str,
-    done_path: str,
-) -> str:
-    lines = [
-        "#!/usr/bin/env bash",
-        "set +e",
-        f"__sentinel_job_id={quote(job_id)}",
-        f"__sentinel_done_path={quote(done_path)}",
-        f"mkdir -p {quote(job_dir)}",
-        "__sentinel_write_done() {",
-        "  local __sentinel_rc=$?",
-        "  SENTINEL_JOB_RC=\"$__sentinel_rc\" SENTINEL_JOB_ID=\"$__sentinel_job_id\" "
-        f"SENTINEL_DONE_PATH={quote(done_path)} python3 - <<'SENTINEL_JOB_DONE'",
-        "import json",
-        "import os",
-        "from datetime import UTC, datetime",
-        "from pathlib import Path",
-        "",
-        "rc = int(os.environ.get('SENTINEL_JOB_RC') or '1')",
-        "done_path = Path(os.environ['SENTINEL_DONE_PATH'])",
-        "payload = {",
-        "    'id': os.environ['SENTINEL_JOB_ID'],",
-        "    'status': 'completed' if rc == 0 else 'failed',",
-        "    'returncode': rc,",
-        "    'ended_at': datetime.now(UTC).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),",
-        "}",
-        "tmp = done_path.with_suffix('.json.tmp')",
-        "tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding='utf-8')",
-        "tmp.replace(done_path)",
-        "SENTINEL_JOB_DONE",
-        "}",
-        "trap __sentinel_write_done EXIT",
-    ]
-    if cwd:
-        lines.append(f"cd {quote(cwd)} || exit $?")
-    if env:
-        for key, value in env.items():
-            if not key:
-                continue
-            lines.append(f"export {key}={quote(str(value))}")
-    lines.extend(["", command, ""])
-    return "\n".join(lines)
 
 
 def _clean_terminal_text(raw: bytes) -> str:

@@ -17,14 +17,17 @@ from app.schemas.runtime import RuntimeExecResult
 class _SSHStub:
     def __init__(self) -> None:
         self.scripts: list[str] = []
+        self.script_args: list[list[str]] = []
         self.commands: list[str] = []
         self.responses: list[RuntimeExecResult] = []
 
     def push(self, stdout: str = "", stderr: str = "", exit_status: int = 0) -> None:
         self.responses.append(RuntimeExecResult(exit_status=exit_status, stdout=stdout, stderr=stderr))
 
-    async def run_script(self, script: str, *, timeout: int = 300) -> RuntimeExecResult:
+    async def run_script(self, script: str, *, args: list[str] | None = None, timeout: int = 300) -> RuntimeExecResult:
+        _ = timeout
         self.scripts.append(script)
+        self.script_args.append(args or [])
         if "echo missing" in script:
             return RuntimeExecResult(exit_status=0, stdout="running\n", stderr="")
         return RuntimeExecResult(exit_status=0, stdout="", stderr="")
@@ -92,7 +95,7 @@ async def test_run_command_opens_tmux_sends_plain_command_and_parses_marker() ->
     )
 
     assert result == RuntimeExecResult(exit_status=0, stdout="hello", stderr="")
-    assert any("/srv/sentinel/session-123/workspace" in script for script in ssh.scripts)
+    assert any("/srv/sentinel/session-123/workspace" in arg for args in ssh.script_args for arg in args)
     assert any("nohup bwrap" in script for script in ssh.scripts)
     send_literals = [command for command in ssh.commands if "send-keys" in command and " -l " in command]
     assert send_literals == [
@@ -164,6 +167,6 @@ async def test_start_background_command_allocates_terminal_and_sends_job_script(
     assert isinstance(handle, BackgroundJobHandle)
     assert handle.terminal_id.startswith("bg-")
     assert handle.result_path.endswith(f"/state/runtime/jobs/{handle.id}/done.json")
-    assert any(f"/srv/sentinel/session-123/state/runtime/jobs/{handle.id}" in script for script in ssh.scripts)
-    assert any("sleep 1 && echo done" in script for script in ssh.scripts)
+    assert any(f"/srv/sentinel/session-123/state/runtime/jobs/{handle.id}" in arg for args in ssh.script_args for arg in args)
+    assert any("sleep 1 && echo done" in arg for args in ssh.script_args for arg in args)
     assert any("bash /state/runtime/jobs/" in command for command in ssh.commands)

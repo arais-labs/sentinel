@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import re
-from shlex import quote
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from app.config import settings
+from app.services.runtime.remote_commands import load_remote_command
 
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -93,9 +93,8 @@ def workspace_paths(session_id: str, *, root: str | None = None) -> RemoteWorksp
     )
 
 
-def build_prepare_workspace_script(session_id: str, *, root: str | None = None) -> str:
+def build_prepare_workspace_script(session_id: str, *, root: str | None = None) -> tuple[str, list[str]]:
     paths = workspace_paths(session_id, root=root)
-    manifest = json.dumps(paths.manifest_payload(), indent=2, sort_keys=True)
     directories = [
         paths.workspaces_root,
         paths.session_root,
@@ -108,10 +107,12 @@ def build_prepare_workspace_script(session_id: str, *, root: str | None = None) 
         paths.tmp,
         paths.logs,
     ]
-    mkdir_args = " ".join(quote(path) for path in directories)
-    chmod_private_args = " ".join(
-        quote(path)
-        for path in [
+    request = {
+        "session_root": paths.session_root,
+        "workspaces_root": paths.workspaces_root,
+        "manifest_path": paths.manifest,
+        "directories": directories,
+        "private_directories": [
             paths.session_root,
             paths.workspace,
             paths.state,
@@ -121,56 +122,16 @@ def build_prepare_workspace_script(session_id: str, *, root: str | None = None) 
             paths.browser,
             paths.tmp,
             paths.logs,
-        ]
-    )
-    return f"""#!/usr/bin/env bash
-set -euo pipefail
-
-session_root={quote(paths.session_root)}
-workspaces_root={quote(paths.workspaces_root)}
-manifest_path={quote(paths.manifest)}
-
-case "${{session_root}}/" in
-  "${{workspaces_root}}/"*) ;;
-  *) echo "session path escaped workspaces root" >&2; exit 2 ;;
-esac
-
-mkdir -p {mkdir_args}
-chmod 0755 {quote(paths.workspaces_root)}
-chmod 0700 {chmod_private_args}
-
-tmp_manifest="${{manifest_path}}.$$.$RANDOM.tmp"
-trap 'rm -f "$tmp_manifest"' EXIT
-cat >"${{tmp_manifest}}" <<'SENTINEL_MANIFEST_JSON'
-{manifest}
-SENTINEL_MANIFEST_JSON
-chmod 0600 "${{tmp_manifest}}"
-mv "${{tmp_manifest}}" "${{manifest_path}}"
-trap - EXIT
-"""
+        ],
+        "manifest": paths.manifest_payload(),
+    }
+    return load_remote_command("workspace/prepare.sh"), [json.dumps(request, separators=(",", ":"))]
 
 
-def build_delete_workspace_script(session_id: str, *, root: str | None = None) -> str:
+def build_delete_workspace_script(session_id: str, *, root: str | None = None) -> tuple[str, list[str]]:
     paths = workspace_paths(session_id, root=root)
-    return f"""#!/usr/bin/env bash
-set -euo pipefail
-
-session_root={quote(paths.session_root)}
-workspaces_root={quote(paths.workspaces_root)}
-
-case "${{session_root}}/" in
-  "${{workspaces_root}}/"*) ;;
-  *) echo "session path escaped workspaces root" >&2; exit 2 ;;
-esac
-
-if [ -L "${{session_root}}" ]; then
-  echo "refusing to delete symlinked session root" >&2
-  exit 4
-fi
-
-if [ ! -e "${{session_root}}" ]; then
-  exit 0
-fi
-
-rm -rf --one-file-system -- "${{session_root}}"
-"""
+    request = {
+        "session_root": paths.session_root,
+        "workspaces_root": paths.workspaces_root,
+    }
+    return load_remote_command("workspace/delete.sh"), [json.dumps(request, separators=(",", ":"))]

@@ -81,8 +81,14 @@ class SSHClient:
                 raise
         raise RuntimeError("SSH run exhausted retries")
 
-    async def run_script(self, script: str, *, timeout: int = 300) -> RuntimeExecResult:
-        return await self._run_script(script, timeout=timeout)
+    async def run_script(
+        self,
+        script: str,
+        *,
+        args: list[str] | None = None,
+        timeout: int = 300,
+    ) -> RuntimeExecResult:
+        return await self._run_script(script, args=args or [], timeout=timeout)
 
     async def create_process(
         self,
@@ -118,9 +124,11 @@ class SSHClient:
     async def close(self) -> None:
         await self._reset_conn()
 
-    async def _run_script(self, script: str, *, timeout: int) -> RuntimeExecResult:
+    async def _run_script(self, script: str, *, args: list[str], timeout: int) -> RuntimeExecResult:
         conn = await self._ensure_conn()
-        process = await conn.create_process("bash -s", encoding="utf-8")
+        argv = " ".join(quote(arg) for arg in args)
+        command = f"bash -s -- {argv}" if argv else "bash -s"
+        process = await conn.create_process(command, encoding="utf-8")
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
 

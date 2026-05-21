@@ -241,11 +241,13 @@ class _FakeListener:
 class _FakeSSH:
     def __init__(self):
         self.scripts: list[str] = []
+        self.script_args: list[list[str]] = []
         self.listeners: list[_FakeListener] = []
 
-    async def run_script(self, script: str, *, timeout: int = 300):
+    async def run_script(self, script: str, *, args: list[str] | None = None, timeout: int = 300):
         _ = timeout
         self.scripts.append(script)
+        self.script_args.append(args or [])
         if "profile_dir = browser_dir / \"chromium\"" in script and "shutil.rmtree(profile_dir)" in script:
             return RuntimeExecResult(exit_status=0, stdout='{"ok":true,"profile_dir":"/tmp/profile"}', stderr="")
         if "metadata_path = Path(request[\"runtime\"])" in script and "browser.json" in script and "kill_pid(pid)" in script:

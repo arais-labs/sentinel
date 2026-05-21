@@ -49,23 +49,23 @@ def test_settings_use_sentinel_runtime_workspaces_dir(monkeypatch) -> None:
 
 
 def test_prepare_workspace_script_is_filesystem_only() -> None:
-    script = build_prepare_workspace_script("session-123", root="/srv/sentinel")
+    script, args = build_prepare_workspace_script("session-123", root="/srv/sentinel")
 
-    assert "mkdir -p" in script
-    assert "/srv/sentinel/session-123/workspace" in script
-    assert "manifest.json" in script
+    assert "directories" in script
+    assert "/srv/sentinel/session-123/workspace" in args[0]
+    assert "manifest.json" in args[0]
     assert "tmux -S" not in script
     assert "bwrap" not in script
     assert "rm -rf" not in script
 
 
 def test_delete_workspace_script_is_safe_and_process_free() -> None:
-    script = build_delete_workspace_script("session-123", root="/srv/sentinel")
+    script, args = build_delete_workspace_script("session-123", root="/srv/sentinel")
 
     assert "refusing to delete symlinked session root" in script
     assert "session path escaped workspaces root" in script
     assert "rm -rf --one-file-system --" in script
-    assert "/srv/sentinel/session-123" in script
+    assert "/srv/sentinel/session-123" in args[0]
     assert "tmux" not in script
     assert "bwrap" not in script
 
@@ -88,7 +88,7 @@ def test_bubblewrap_does_not_bind_home_root_or_srv() -> None:
 
 
 def test_open_tmux_starts_tmux_inside_bubblewrap() -> None:
-    script = build_open_tmux_script("session-123", terminal_id="main", root="/srv/sentinel")
+    script, _ = build_open_tmux_script("session-123", terminal_id="main", root="/srv/sentinel")
 
     assert "test -d /srv/sentinel/session-123/workspace" in script
     assert "bwrap" in script
@@ -109,7 +109,7 @@ def test_open_tmux_starts_tmux_inside_bubblewrap() -> None:
 
 
 def test_close_tmux_only_targets_terminal_socket() -> None:
-    script = build_close_tmux_script("session-123", terminal_id="main", root="/srv/sentinel")
+    script, _ = build_close_tmux_script("session-123", terminal_id="main", root="/srv/sentinel")
 
     assert "kill-session" in script
     assert "/srv/sentinel/session-123/state/tmux/main.sock" in script
@@ -119,7 +119,7 @@ def test_close_tmux_only_targets_terminal_socket() -> None:
 
 
 def test_tmux_status_reports_missing_without_creating_workspace() -> None:
-    script = build_tmux_status_script("session-123", terminal_id="main", root="/srv/sentinel")
+    script, _ = build_tmux_status_script("session-123", terminal_id="main", root="/srv/sentinel")
 
     assert "echo missing" in script
     assert "mkdir -p" not in script

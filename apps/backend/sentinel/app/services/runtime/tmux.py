@@ -8,6 +8,7 @@ from app.services.runtime.linux_bubblewrap import (
     build_bubblewrap_command,
     build_require_workspace_script,
 )
+from app.services.runtime.remote_commands import load_remote_command
 from app.services.runtime.workspace import RuntimeWorkspaceError, workspace_paths
 
 
@@ -82,7 +83,7 @@ def build_open_tmux_script(
     *,
     terminal_id: str = "0",
     root: str | None = None,
-) -> str:
+) -> tuple[str, list[str]]:
     paths = workspace_paths(session_id, root=root)
     terminal_id = validate_terminal_id(terminal_id)
     socket = tmux_socket_path(terminal_id)
@@ -111,28 +112,15 @@ def build_open_tmux_script(
         f"tmux -S {quote(socket)} set-option -t {quote(name)} mouse on; "
         f"tmux -S {quote(socket)} pipe-pane -t {quote(name)} -o {quote(f'cat >> {pane_log}')}"
     )
-    return f"""#!/usr/bin/env bash
-set -euo pipefail
-
-{build_require_workspace_script(paths)}
-mkdir -p {quote(paths.runtime)} {quote(paths.logs)}
-
-if tmux -S {quote(host_socket)} has-session -t {quote(name)} 2>/dev/null; then
-  exit 0
-fi
-
-nohup {build_bubblewrap_command(paths, ["bash", "-lc", inner])} >{quote(log_path)} 2>&1 </dev/null &
-
-for _ in $(seq 1 50); do
-  if tmux -S {quote(host_socket)} has-session -t {quote(name)} 2>/dev/null; then
-    exit 0
-  fi
-  sleep 0.1
-done
-
-cat {quote(log_path)} >&2 || true
-exit 1
-"""
+    script = load_remote_command("tmux/open.sh")
+    script = script.replace("__REQUIRE_WORKSPACE__", build_require_workspace_script(paths).strip())
+    script = script.replace("__RUNTIME_DIR__", quote(paths.runtime))
+    script = script.replace("__LOGS_DIR__", quote(paths.logs))
+    script = script.replace("__HOST_SOCKET__", quote(host_socket))
+    script = script.replace("__TMUX_NAME__", quote(name))
+    script = script.replace("__BWRAP_COMMAND__", build_bubblewrap_command(paths, ["bash", "-lc", inner]))
+    script = script.replace("__LOG_PATH__", quote(log_path))
+    return script, []
 
 
 def build_close_tmux_script(
@@ -140,30 +128,16 @@ def build_close_tmux_script(
     *,
     terminal_id: str = "0",
     root: str | None = None,
-) -> str:
+) -> tuple[str, list[str]]:
     paths = workspace_paths(session_id, root=root)
     terminal_id = validate_terminal_id(terminal_id)
     host_socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=root)
     name = tmux_session_name(terminal_id)
-    return f"""#!/usr/bin/env bash
-set -euo pipefail
-
-if [ ! -d {quote(paths.session_root)} ]; then
-  exit 0
-fi
-
-tmux -S {quote(host_socket)} kill-session -t {quote(name)} 2>/dev/null || true
-
-for _ in $(seq 1 50); do
-  if ! tmux -S {quote(host_socket)} has-session -t {quote(name)} 2>/dev/null; then
-    rm -f {quote(host_socket)}
-    exit 0
-  fi
-  sleep 0.1
-done
-
-exit 1
-"""
+    script = load_remote_command("tmux/close.sh")
+    script = script.replace("__SESSION_ROOT__", quote(paths.session_root))
+    script = script.replace("__HOST_SOCKET__", quote(host_socket))
+    script = script.replace("__TMUX_NAME__", quote(name))
+    return script, []
 
 
 def build_tmux_status_script(
@@ -171,18 +145,13 @@ def build_tmux_status_script(
     *,
     terminal_id: str = "0",
     root: str | None = None,
-) -> str:
+) -> tuple[str, list[str]]:
     paths = workspace_paths(session_id, root=root)
     terminal_id = validate_terminal_id(terminal_id)
     host_socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=root)
     name = tmux_session_name(terminal_id)
-    return f"""#!/usr/bin/env bash
-set -euo pipefail
-
-if [ ! -d {quote(paths.session_root)} ]; then
-  echo missing
-  exit 0
-fi
-
-tmux -S {quote(host_socket)} has-session -t {quote(name)} 2>/dev/null && echo running || echo stopped
-"""
+    script = load_remote_command("tmux/status.sh")
+    script = script.replace("__SESSION_ROOT__", quote(paths.session_root))
+    script = script.replace("__HOST_SOCKET__", quote(host_socket))
+    script = script.replace("__TMUX_NAME__", quote(name))
+    return script, []
