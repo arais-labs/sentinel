@@ -19,11 +19,7 @@ export interface DesktopStatus {
   runtime: {
     provider: 'ssh';
     configured: boolean;
-    host?: string;
-    port?: number;
-    username?: string;
-    workspacesDir: string;
-    authMethod: 'key' | 'password' | 'none';
+    authMethod: 'db';
     message?: string;
   };
   services: ManagedServiceStatus[];

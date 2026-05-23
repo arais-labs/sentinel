@@ -130,10 +130,8 @@ export function runtimeCommandPath(pathValue = process.env.PATH || ''): string {
 export function buildBackendEnv(
   ports: DesktopPorts,
   secrets: DesktopSecrets,
-  runtimeEnv: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   return {
-    ...runtimeEnv,
     PATH: runtimeCommandPath(''),
     LANG: 'C',
     LC_ALL: 'C',
@@ -147,7 +145,6 @@ export function buildBackendEnv(
     DATABASE_MANAGER_NAME: 'sentinel_manager',
     JWT_SECRET_KEY: secrets.jwtSecretKey,
     SESSION_RUNTIME_BASE_DIR: desktopWorkspaceRoot(),
-    SENTINEL_RUNTIME_WORKSPACES_DIR: runtimeEnv.SENTINEL_RUNTIME_WORKSPACES_DIR || desktopWorkspaceRoot(),
     AUTH_COOKIE_SECURE: 'false',
     AUTH_COOKIE_SAMESITE: 'lax',
   };

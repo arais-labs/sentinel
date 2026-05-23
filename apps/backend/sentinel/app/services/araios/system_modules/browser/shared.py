@@ -23,7 +23,10 @@ async def resolve_browser_manager(
     runtime: ToolRuntimeContext,
 ):
     del payload
-    return await get_browser_pool().get(str(require_runtime_session_id(runtime)))
+    return await get_browser_pool().get(
+        str(require_runtime_session_id(runtime)),
+        instance_name=runtime.instance_name,
+    )
 
 
 def extract_browser_tab_constraint(constraints: Any) -> str | None:

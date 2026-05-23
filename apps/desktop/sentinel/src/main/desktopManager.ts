@@ -50,7 +50,6 @@ import {
   sourceRoot,
   venvPython,
 } from './desktopConfig.js';
-import { runtimeSshConfig, runtimeSshEnv } from './runtimeSshConfig.js';
 import { DailyLogWriter } from './logWriter.js';
 
 interface PostgresProcessInfo {
@@ -456,7 +455,12 @@ export class DesktopManager {
     return {
       appUrl,
       appSupportPath: appSupportRoot(),
-      runtime: runtimeSshConfig(),
+      runtime: {
+        provider: 'ssh',
+        configured: true,
+        authMethod: 'db',
+        message: 'Runtime is ready.',
+      },
       services: this.supervisor.status(),
     };
   }
@@ -694,7 +698,7 @@ export class DesktopManager {
       command: backend.command,
       args: backend.args,
       cwd: backend.cwd,
-      env: buildBackendEnv(this.ports!, this.secrets!, runtimeSshEnv()),
+      env: buildBackendEnv(this.ports!, this.secrets!),
       port: this.ports!.backend,
     });
     const pid = this.supervisor.pid('backend');

@@ -334,6 +334,7 @@ class SubAgentOrchestrator:
                 scoped_registry,
                 db_session_factory=self._db_factory,
                 sub_agent_orchestrator=self,
+                instance_name=getattr(self._agent_runtime_support.tool_executor, "_instance_name", None),
             ),
         )
 

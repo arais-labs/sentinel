@@ -110,7 +110,7 @@ async def stream_session(
         await _materialize_interrupted_tool_results(db, session_id=id, unresolved_calls=unresolved_calls)
         history = await load_history(db, id)
         unresolved_calls = []
-    terminals_payload = _initial_terminal_descriptors()
+    terminals_payload = await _initial_terminal_descriptors(instance_context.name)
 
     if not await _try_send_json(
         websocket,
@@ -470,8 +470,8 @@ def _apply_terminal_tool_result_update(
     message.metadata_json = metadata
 
 
-def _initial_terminal_descriptors() -> list[dict[str, Any]]:
-    if not runtime_configured():
+async def _initial_terminal_descriptors(instance_name: str) -> list[dict[str, Any]]:
+    if not await runtime_configured(instance_name=instance_name):
         return []
     return [
         {
@@ -514,7 +514,9 @@ async def stream_terminal(
 
     await websocket.accept()
     try:
-        await get_runtime_terminal_manager().attach_ws(str(id), terminal_id, websocket)
+        await (
+            await get_runtime_terminal_manager(instance_name=str(websocket.path_params["instance_name"]))
+        ).attach_ws(str(id), terminal_id, websocket)
     except WebSocketDisconnect:
         return
     except Exception as exc:  # noqa: BLE001

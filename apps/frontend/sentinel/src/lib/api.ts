@@ -68,6 +68,7 @@ function currentInstanceName(): string | null {
 function scopedPath(path: string): string {
   if (!path.startsWith('/')) return path;
   if (path === '/instances' || path.startsWith('/instances/')) return path;
+  if (path === '/runtime-targets' || path.startsWith('/runtime-targets/')) return path;
   if (path === '/auth' || path.startsWith('/auth/')) return path;
   if (path === '/agent-modes' || path.startsWith('/agent-modes/')) return path;
   const instanceName = currentInstanceName();

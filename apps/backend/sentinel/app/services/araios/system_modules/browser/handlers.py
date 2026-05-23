@@ -215,7 +215,10 @@ async def handle_snapshot(payload: dict[str, Any], runtime: ToolRuntimeContext) 
 
 async def handle_reset(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     del payload
-    return await get_browser_pool().reset(str(require_runtime_session_id(runtime)))
+    return await get_browser_pool().reset(
+        str(require_runtime_session_id(runtime)),
+        instance_name=runtime.instance_name,
+    )
 
 
 async def handle_tabs(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:

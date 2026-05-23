@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
-  Zap, ArrowRight, ArrowLeft, Check, Bot, User, Flag,
-  Eye, EyeOff, Loader2, KeyRound,
+  Zap, ArrowRight, ArrowLeft, Check, Bot, User, Flag, Cpu,
+  Eye, EyeOff, Loader2, KeyRound, Plus, X, Wifi, Server, SkipForward,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import type { RuntimeSSHTarget, RuntimeSSHTargetTestResponse } from '../types/api';
 import {
   buildAgentIdentityMemoryContent,
   buildUserProfileMemoryContent,
@@ -33,9 +34,32 @@ interface DesktopCodexOauthStatus {
   auth_file_found: boolean;
 }
 
+interface SentinelInstance {
+  name: string;
+  database_name: string;
+  display_name: string | null;
+  runtime_target_id: string | null;
+}
+
+const emptyRuntimeTargetForm = {
+  name: '',
+  host: '',
+  port: '22',
+  username: '',
+  workspaces_dir: '',
+  auth_type: 'private_key' as 'private_key' | 'password',
+  private_key: '',
+  password: '',
+};
+
+const RUNTIME_VERIFICATION_FIELDS = new Set<keyof typeof emptyRuntimeTargetForm>([
+  'host', 'port', 'username', 'workspaces_dir', 'auth_type', 'private_key', 'password',
+]);
+
 const STEPS: StepMeta[] = [
   { id: 'welcome',  label: 'Welcome',       icon: <Zap size={14} /> },
   { id: 'llm',      label: 'Providers',     icon: <Bot size={14} /> },
+  { id: 'runtime',  label: 'Runtime',       icon: <Cpu size={14} />, optional: true },
   { id: 'agent',    label: 'Your Agent',    icon: <Bot size={14} /> },
   { id: 'user',     label: 'About You',     icon: <User size={14} /> },
   { id: 'done',     label: 'Launch',        icon: <Flag size={14} /> },
@@ -84,6 +108,266 @@ function StepIndicator({ current }: { current: number }) {
         );
       })}
     </nav>
+  );
+}
+
+const onboardingInputClass = 'h-10 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs font-medium text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] outline-none focus:border-[color:var(--accent-solid)]';
+
+function RuntimeStep({
+  targets,
+  selectedTargetId,
+  onSelect,
+  form,
+  updateForm,
+  onTest,
+  onCreate,
+  testing,
+  saving,
+  formOpen,
+  setFormOpen,
+  verified,
+  resolvedHome,
+}: {
+  targets: RuntimeSSHTarget[];
+  selectedTargetId: string;
+  onSelect: (targetId: string) => void;
+  form: typeof emptyRuntimeTargetForm;
+  updateForm: (updates: Partial<typeof emptyRuntimeTargetForm>) => void;
+  onTest: () => void;
+  onCreate: () => void;
+  testing: boolean;
+  saving: boolean;
+  formOpen: boolean;
+  setFormOpen: Dispatch<SetStateAction<boolean>>;
+  verified: boolean;
+  resolvedHome: string | null;
+}) {
+  const hasTargets = targets.length > 0;
+  const effectiveFormOpen = !hasTargets || formOpen;
+  const suggestedWorkspaceRoot = resolvedHome
+    ? `${resolvedHome.replace(/\/+$/, '')}/sentinel/workspaces`
+    : null;
+  const canShowSuggestion = !!(suggestedWorkspaceRoot && form.workspaces_dir.trim() !== suggestedWorkspaceRoot);
+
+  function renderForm() {
+    return (
+      <div className="rounded-xl border border-[color:var(--accent-solid)]/40 bg-[color:var(--surface-1)] p-4 space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)]">
+            {hasTargets ? 'New runtime target' : 'Create your first runtime target'}
+          </span>
+          {verified ? (
+            <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+              <Check size={10} /> Verified
+            </span>
+          ) : (
+            <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400">
+              Not verified
+            </span>
+          )}
+          <div className="flex-1" />
+          {hasTargets && (
+            <button type="button" onClick={() => setFormOpen(false)} className="p-1 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors" title="Cancel">
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        <p className="text-[11px] leading-relaxed text-[color:var(--text-muted)]">
+          Sentinel creates one session workspace per session under this remote root and runs tools through SSH/tmux.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="space-y-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Name</span>
+            <input value={form.name} onChange={(e) => updateForm({ name: e.target.value })} className={`${onboardingInputClass} w-full`} />
+          </label>
+          <label className="space-y-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Username</span>
+            <input value={form.username} onChange={(e) => updateForm({ username: e.target.value })} className={`${onboardingInputClass} w-full`} />
+          </label>
+          <label className="space-y-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Host</span>
+            <input value={form.host} onChange={(e) => updateForm({ host: e.target.value })} placeholder="hostname or IP" className={`${onboardingInputClass} w-full font-mono`} />
+          </label>
+          <label className="space-y-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Port</span>
+            <input value={form.port} onChange={(e) => updateForm({ port: e.target.value })} className={`${onboardingInputClass} w-full font-mono`} />
+          </label>
+        </div>
+
+        <label className="block space-y-1">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Workspace root</span>
+          <input value={form.workspaces_dir} onChange={(e) => updateForm({ workspaces_dir: e.target.value })} className={`${onboardingInputClass} w-full font-mono`} />
+          {canShowSuggestion && (
+            <button
+              type="button"
+              onClick={() => updateForm({ workspaces_dir: suggestedWorkspaceRoot! })}
+              className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-70 transition-opacity"
+            >
+              <Check size={11} />
+              Use <span className="font-mono normal-case tracking-normal">{suggestedWorkspaceRoot}</span>
+            </button>
+          )}
+          <p className="text-[10px] text-[color:var(--text-muted)]">
+            Leave blank to use <span className="font-mono">$HOME/sentinel/workspaces</span>.
+          </p>
+        </label>
+
+        <div className="space-y-2">
+          <span className="block text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Authentication</span>
+          <div className="flex rounded-lg bg-[color:var(--surface-2)] p-0.5 w-fit">
+            {(['private_key', 'password'] as const).map((mode) => (
+              <button key={mode} type="button" onClick={() => updateForm({ auth_type: mode })}
+                className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${form.auth_type === mode ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]' : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'}`}>
+                {mode === 'private_key' ? 'Private key' : 'Password'}
+              </button>
+            ))}
+          </div>
+          {form.auth_type === 'private_key' ? (
+            <textarea
+              value={form.private_key}
+              onChange={(e) => updateForm({ private_key: e.target.value })}
+              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+              className="w-full min-h-28 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 py-2 font-mono text-[10px] font-medium leading-relaxed text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] outline-none focus:border-[color:var(--accent-solid)]"
+            />
+          ) : (
+            <input type="password" value={form.password} onChange={(e) => updateForm({ password: e.target.value })} className={`${onboardingInputClass} w-full`} />
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[color:var(--border-subtle)]">
+          {hasTargets && (
+            <button type="button" onClick={() => setFormOpen(false)} className="btn-secondary h-10 px-3 text-[10px] font-bold uppercase tracking-widest">
+              Cancel
+            </button>
+          )}
+          <div className="flex-1" />
+          {!verified && (
+            <span className="text-[10px] text-amber-400 font-medium">
+              Test connection to enable save
+            </span>
+          )}
+          <button type="button" onClick={onTest} disabled={testing || saving} className="btn-secondary h-10 px-3 gap-2 text-[10px] font-bold uppercase tracking-widest">
+            {testing ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
+            Test connection
+          </button>
+          <button
+            type="button"
+            onClick={onCreate}
+            disabled={saving || testing || !verified}
+            title={!verified ? 'Run Test connection successfully before saving' : undefined}
+            className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+            Save & select
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-2xl font-black tracking-tight mb-1">Runtime target</h2>
+        <p className="text-sm text-[color:var(--text-muted)]">
+          Select the SSH machine where Sentinel will create session workspaces and run tools. You can change or add more from Settings later.
+        </p>
+      </div>
+
+      {!hasTargets && !effectiveFormOpen ? null : !hasTargets ? (
+        renderForm()
+      ) : (
+        <div className="space-y-2">
+          {targets.map((target) => {
+            const isSelected = selectedTargetId === target.id;
+            return (
+              <button
+                key={target.id}
+                type="button"
+                onClick={() => onSelect(target.id)}
+                className={`group w-full text-left rounded-xl border transition-all flex items-start gap-3 px-4 py-3 ${
+                  isSelected
+                    ? 'border-[color:var(--accent-solid)] bg-[color:var(--surface-1)] ring-1 ring-[color:var(--accent-solid)]/30'
+                    : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-1)]'
+                }`}
+              >
+                <div className={`mt-1 h-2.5 w-2.5 rounded-full shrink-0 ${isSelected ? 'bg-emerald-500' : 'bg-[color:var(--text-muted)]/40 group-hover:bg-[color:var(--text-muted)]'}`} />
+                <div className="flex-1 min-w-0 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold truncate">{target.name}</span>
+                    {isSelected && (
+                      <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                        Selected
+                      </span>
+                    )}
+                    <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-[color:var(--surface-2)] text-[color:var(--text-muted)]">
+                      {target.auth_type === 'private_key' ? 'Key' : 'Password'}
+                    </span>
+                  </div>
+                  <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
+                    {target.username}@{target.host}:{target.port}
+                  </div>
+                  <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
+                    {target.workspaces_dir}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+
+          <button
+            type="button"
+            onClick={() => onSelect('')}
+            className={`group w-full text-left rounded-xl border transition-all flex items-start gap-3 px-4 py-3 ${
+              selectedTargetId === ''
+                ? 'border-[color:var(--accent-solid)] bg-[color:var(--surface-1)] ring-1 ring-[color:var(--accent-solid)]/30'
+                : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-1)]'
+            }`}
+          >
+            <div className={`mt-1 h-2.5 w-2.5 rounded-full shrink-0 ${selectedTargetId === '' ? 'bg-emerald-500' : 'bg-[color:var(--text-muted)]/40 group-hover:bg-[color:var(--text-muted)]'}`} />
+            <div className="flex-1 min-w-0 space-y-1">
+              <div className="flex items-center gap-2">
+                <SkipForward size={13} className="text-[color:var(--text-muted)]" />
+                <span className="text-xs font-bold">Skip for now</span>
+              </div>
+              <div className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">
+                Continue without a runtime target. You can configure one later from Settings.
+              </div>
+            </div>
+          </button>
+
+          {effectiveFormOpen ? (
+            renderForm()
+          ) : (
+            <button
+              type="button"
+              onClick={() => setFormOpen(true)}
+              className="w-full h-12 rounded-xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--accent-solid)] hover:bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)] transition-colors flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
+            >
+              <Plus size={14} /> Add another runtime target
+            </button>
+          )}
+        </div>
+      )}
+
+      {!hasTargets && (
+        <button
+          type="button"
+          onClick={() => onSelect('')}
+          className="w-full text-left rounded-xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] transition-colors flex items-start gap-3 px-4 py-3"
+        >
+          <Server size={14} className="text-[color:var(--text-muted)] mt-0.5" />
+          <div className="flex-1">
+            <div className="text-xs font-bold">Skip for now</div>
+            <div className="text-[10px] text-[color:var(--text-muted)] leading-relaxed mt-0.5">
+              Continue without a runtime target. You can configure one later from Settings.
+            </div>
+          </div>
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -523,6 +807,24 @@ export function OnboardingPage() {
   // LLM keys — Gemini
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [geminiOauthCredentials, setGeminiOauthCredentials] = useState('');
+  const [runtimeTargets, setRuntimeTargets] = useState<RuntimeSSHTarget[]>([]);
+  const [selectedRuntimeTargetId, setSelectedRuntimeTargetId] = useState('');
+  const [runtimeForm, setRuntimeForm] = useState(emptyRuntimeTargetForm);
+  const [testingRuntimeTarget, setTestingRuntimeTarget] = useState(false);
+  const [savingRuntimeTarget, setSavingRuntimeTarget] = useState(false);
+  const [runtimeFormOpen, setRuntimeFormOpen] = useState(false);
+  const [runtimeVerified, setRuntimeVerified] = useState(false);
+  const [runtimeResolvedHome, setRuntimeResolvedHome] = useState<string | null>(null);
+
+  function updateRuntimeForm(updates: Partial<typeof emptyRuntimeTargetForm>) {
+    setRuntimeForm((f) => ({ ...f, ...updates }));
+    const touchesVerification = (Object.keys(updates) as Array<keyof typeof emptyRuntimeTargetForm>)
+      .some((k) => RUNTIME_VERIFICATION_FIELDS.has(k));
+    if (touchesVerification) {
+      setRuntimeVerified(false);
+      setRuntimeResolvedHome(null);
+    }
+  }
 
   // Agent identity
   const [agentName, setAgentName] = useState('');
@@ -541,6 +843,9 @@ export function OnboardingPage() {
   const [completedItems, setCompletedItems] = useState<string[]>([]);
 
   const isLastStep = step === STEPS.length - 1;
+  const instanceName = location.pathname.match(/^\/instances\/([^/]+)/)?.[1]
+    ? decodeURIComponent(location.pathname.match(/^\/instances\/([^/]+)/)?.[1] || '')
+    : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -556,6 +861,26 @@ export function OnboardingPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!instanceName) return;
+    let cancelled = false;
+    Promise.all([
+      api.get<RuntimeSSHTarget[]>('/runtime-targets'),
+      api.get<SentinelInstance>(`/instances/${encodeURIComponent(instanceName)}`),
+    ])
+      .then(([targets, instance]) => {
+        if (cancelled) return;
+        setRuntimeTargets(targets);
+        setSelectedRuntimeTargetId(instance.runtime_target_id ?? '');
+      })
+      .catch(() => {
+        if (!cancelled) setRuntimeTargets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [instanceName]);
+
   async function handleImportCodexOauth() {
     setImportingCodexOauth(true);
     try {
@@ -566,6 +891,90 @@ export function OnboardingPage() {
       toast.error(error instanceof Error ? error.message : 'Failed to import Codex OAuth token');
     } finally {
       setImportingCodexOauth(false);
+    }
+  }
+
+  function runtimeTargetBody() {
+    return {
+      name: runtimeForm.name.trim(),
+      host: runtimeForm.host.trim(),
+      port: Number(runtimeForm.port || 22),
+      username: runtimeForm.username.trim(),
+      workspaces_dir: runtimeForm.workspaces_dir.trim(),
+      auth_type: runtimeForm.auth_type,
+      private_key: runtimeForm.auth_type === 'private_key' ? runtimeForm.private_key : undefined,
+      password: runtimeForm.auth_type === 'password' ? runtimeForm.password : undefined,
+    };
+  }
+
+  function validateRuntimeTargetBody(body: ReturnType<typeof runtimeTargetBody>, opts: { requireWorkspaceDir: boolean; requireName: boolean }) {
+    if (!body.host || !body.username) {
+      toast.error('Host and username are required');
+      return false;
+    }
+    if (opts.requireName && !body.name) {
+      toast.error('Name is required');
+      return false;
+    }
+    if (opts.requireWorkspaceDir && !body.workspaces_dir) {
+      toast.error('Workspace root is required');
+      return false;
+    }
+    if (body.auth_type === 'private_key' && !runtimeForm.private_key.trim()) {
+      toast.error('Private key is required');
+      return false;
+    }
+    if (body.auth_type === 'password' && !runtimeForm.password) {
+      toast.error('SSH password is required');
+      return false;
+    }
+    return true;
+  }
+
+  async function handleTestRuntimeTarget() {
+    const body = runtimeTargetBody();
+    if (!validateRuntimeTargetBody(body, { requireWorkspaceDir: false, requireName: false })) return;
+    setTestingRuntimeTarget(true);
+    try {
+      const result = await api.post<RuntimeSSHTargetTestResponse>('/runtime-targets/test', body, { timeoutMs: 20_000 });
+      if (result.ok) {
+        if (result.resolved_workspaces_dir) {
+          setRuntimeForm((f) => ({ ...f, workspaces_dir: result.resolved_workspaces_dir as string }));
+        }
+        setRuntimeVerified(true);
+        setRuntimeResolvedHome(result.resolved_home ?? null);
+        toast.success(result.detail);
+      } else {
+        setRuntimeVerified(false);
+        setRuntimeResolvedHome(null);
+        toast.error(result.detail);
+      }
+    } catch (error) {
+      setRuntimeVerified(false);
+      setRuntimeResolvedHome(null);
+      toast.error(error instanceof Error ? error.message : 'Runtime target test failed');
+    } finally {
+      setTestingRuntimeTarget(false);
+    }
+  }
+
+  async function handleCreateRuntimeTarget() {
+    const body = runtimeTargetBody();
+    if (!validateRuntimeTargetBody(body, { requireWorkspaceDir: true, requireName: true })) return;
+    setSavingRuntimeTarget(true);
+    try {
+      const target = await api.post<RuntimeSSHTarget>('/runtime-targets', body);
+      setRuntimeTargets((items) => [...items.filter((item) => item.id !== target.id), target]);
+      setSelectedRuntimeTargetId(target.id);
+      setRuntimeForm(emptyRuntimeTargetForm);
+      setRuntimeFormOpen(false);
+      setRuntimeVerified(false);
+      setRuntimeResolvedHome(null);
+      toast.success('Runtime target saved');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to save runtime target');
+    } finally {
+      setSavingRuntimeTarget(false);
     }
   }
 
@@ -599,6 +1008,14 @@ export function OnboardingPage() {
         if (hasOpenai) saved.push('OpenAI');
         if (hasGemini) saved.push('Gemini');
         items.push(`${saved.join(' + ')} provider${saved.length > 1 ? 's' : ''} saved`);
+        setCompletedItems([...items]);
+      }
+
+      if (instanceName && selectedRuntimeTargetId) {
+        await api.patch(`/instances/${encodeURIComponent(instanceName)}/runtime-target`, {
+          runtime_target_id: selectedRuntimeTargetId,
+        });
+        items.push('Runtime target selected');
         setCompletedItems([...items]);
       }
 
@@ -671,9 +1088,26 @@ export function OnboardingPage() {
             <div className="w-full max-w-xl mx-auto flex flex-col gap-4 animate-in fade-in duration-300" key={step}>
               {step === 0 && <WelcomeStep />}
               {step === 1 && <LLMStep apiKey={apiKey} setApiKey={setApiKey} oauthToken={oauthToken} setOauthToken={setOauthToken} openaiApiKey={openaiApiKey} setOpenaiApiKey={setOpenaiApiKey} openaiOauthToken={openaiOauthToken} setOpenaiOauthToken={setOpenaiOauthToken} geminiApiKey={geminiApiKey} setGeminiApiKey={setGeminiApiKey} geminiOauthCredentials={geminiOauthCredentials} setGeminiOauthCredentials={setGeminiOauthCredentials} codexOauthImportAvailable={codexOauthImportAvailable} openaiOauthImported={openaiOauthImported} importingCodexOauth={importingCodexOauth} onImportCodexOauth={handleImportCodexOauth} />}
-              {step === 2 && <AgentStep name={agentName} setName={setAgentName} role={agentRole} setRole={setAgentRole} personality={agentPersonality} setPersonality={setAgentPersonality} />}
-              {step === 3 && <UserStep userName={userName} setUserName={setUserName} userContext={userContext} setUserContext={setUserContext} />}
-              {step === 4 && (
+              {step === 2 && (
+                <RuntimeStep
+                  targets={runtimeTargets}
+                  selectedTargetId={selectedRuntimeTargetId}
+                  onSelect={setSelectedRuntimeTargetId}
+                  form={runtimeForm}
+                  updateForm={updateRuntimeForm}
+                  onTest={() => void handleTestRuntimeTarget()}
+                  onCreate={() => void handleCreateRuntimeTarget()}
+                  testing={testingRuntimeTarget}
+                  saving={savingRuntimeTarget}
+                  formOpen={runtimeFormOpen}
+                  setFormOpen={setRuntimeFormOpen}
+                  verified={runtimeVerified}
+                  resolvedHome={runtimeResolvedHome}
+                />
+              )}
+              {step === 3 && <AgentStep name={agentName} setName={setAgentName} role={agentRole} setRole={setAgentRole} personality={agentPersonality} setPersonality={setAgentPersonality} />}
+              {step === 4 && <UserStep userName={userName} setUserName={setUserName} userContext={userContext} setUserContext={setUserContext} />}
+              {step === 5 && (
                 <DoneStep
                   firstMessage={firstMessage}
                   setFirstMessage={setFirstMessage}

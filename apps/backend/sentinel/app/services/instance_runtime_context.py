@@ -156,6 +156,7 @@ async def _build_instance_runtime_context(
         approval_waiter=build_tool_db_approval_waiter(session_factory=session_factory),
         approval_result_recorder=build_tool_db_approval_result_recorder(session_factory=session_factory),
         db_session_factory=session_factory,
+        instance_name=instance.name,
     )
 
     provider = build_tier_provider_from_settings(instance_settings)
@@ -188,7 +189,7 @@ async def _build_instance_runtime_context(
         base_tool_registry=tool_registry,
         on_task_completed=getattr(app_state, "sub_agent_completed_callback", None),
     )
-    tool_executor.set_runtime_defaults(sub_agent_orchestrator=sub_agent_orchestrator)
+    tool_executor.set_runtime_defaults(sub_agent_orchestrator=sub_agent_orchestrator, instance_name=instance.name)
 
     tasks: list[asyncio.Task[Any]] = []
     stop_event = getattr(app_state, "instance_stop_event", None)

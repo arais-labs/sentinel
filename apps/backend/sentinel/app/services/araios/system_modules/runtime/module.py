@@ -30,7 +30,7 @@ MODULE = ModuleDefinition(
             label="Run Shell Command",
             description=(
                 "Run a shell command in the session runtime workspace. Commands execute inside "
-                "the session's tmux-backed Linux sandbox."
+                "the session's tmux-backed OS sandbox."
             ),
             handler=handle_user,
             requires_runtime_context=True,

@@ -9,6 +9,7 @@ import posixpath
 import shlex
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from shlex import quote
 from typing import Any
 from urllib.parse import urlparse
@@ -19,9 +20,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.database import AsyncSessionLocal
 from app.models import GitAccount
+from app.services.runtime.darwin_seatbelt import (
+    build_append_seatbelt_tool_roots_script,
+    build_seatbelt_command,
+    build_seatbelt_profile,
+)
 from app.services.runtime.linux_bubblewrap import build_bubblewrap_command
 from app.services.runtime.ssh_runtime import get_runtime_terminal_manager, runtime_configured
-from app.services.runtime.workspace import workspace_paths
+from app.services.runtime.workspace import RemoteWorkspacePaths, workspace_paths
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 
@@ -464,8 +470,49 @@ def _redact(text: str, redactions: list[str] | None) -> str:
     return output
 
 
+def _remote_workspace_cwd(paths: RemoteWorkspacePaths, cwd: str) -> str:
+    if cwd == "/workspace":
+        return paths.workspace
+    suffix = cwd.removeprefix("/workspace/")
+    return (PurePosixPath(paths.workspace) / suffix).as_posix()
+
+
+def _build_hidden_runtime_command(paths: RemoteWorkspacePaths, *, os_name: str, sandbox: str, cwd: str, tokens: list[str]) -> str:
+    if os_name == "linux" and sandbox == "bubblewrap":
+        shell_command = "cd " + quote(cwd) + " && exec " + " ".join(quote(part) for part in tokens)
+        return build_bubblewrap_command(paths, ["bash", "-lc", shell_command])
+    if os_name == "darwin" and sandbox == "seatbelt":
+        profile_path = (PurePosixPath(paths.runtime) / "git.sb").as_posix()
+        remote_cwd = _remote_workspace_cwd(paths, cwd)
+        shell_command = (
+            "cd " + quote(remote_cwd)
+            + " && export HOME=" + quote(paths.home)
+            + " TMPDIR=" + quote(paths.tmp)
+            + " XDG_CONFIG_HOME=" + quote((PurePosixPath(paths.home) / ".config").as_posix())
+            + " XDG_RUNTIME_DIR=" + quote(paths.runtime)
+            + " && exec " + " ".join(quote(part) for part in tokens)
+        )
+        prelude = "\n".join(
+            [
+                f"mkdir -p {quote(paths.runtime)}",
+                f"cat > {quote(profile_path)} <<'SENTINEL_SEATBELT'",
+                build_seatbelt_profile(paths),
+                "SENTINEL_SEATBELT",
+                build_append_seatbelt_tool_roots_script(paths, profile_path, tools=["/bin/bash", "bash", "git", "gh", "ssh"]),
+            ]
+        )
+        sandbox_command = build_seatbelt_command(
+            paths,
+            profile_path,
+            ["/bin/bash", "--noprofile", "--norc", "-lc", shell_command],
+        )
+        return "/bin/sh -c " + quote(prelude + "\nexec " + sandbox_command)
+    raise ToolValidationError("Git tool requires a runtime target with a supported sandbox.")
+
+
 async def _run_hidden_runtime_command(
     *,
+    runtime: ToolRuntimeContext,
     session_id: str,
     tokens: list[str],
     cwd: str,
@@ -473,15 +520,23 @@ async def _run_hidden_runtime_command(
     timeout_seconds: int,
     redactions: list[str] | None = None,
 ) -> dict[str, Any]:
-    if not runtime_configured():
+    if runtime.instance_name is None:
+        raise ToolValidationError("Git tool requires an active instance context.")
+    if not await runtime_configured(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory):
         raise ToolValidationError("Runtime SSH target is not configured.")
-    terminal_manager = get_runtime_terminal_manager()
+    terminal_manager = await get_runtime_terminal_manager(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory)
+    environment = await terminal_manager.runtime_environment()
     await terminal_manager.prepare_workspace(session_id)
-    paths = workspace_paths(session_id)
-    shell_command = "cd " + quote(cwd) + " && exec " + " ".join(quote(part) for part in tokens)
-    bwrap_command = build_bubblewrap_command(paths, ["bash", "-lc", shell_command])
+    paths = workspace_paths(session_id, root=terminal_manager.workspaces_root)
+    runtime_command = _build_hidden_runtime_command(
+        paths,
+        os_name=environment.os,
+        sandbox=environment.sandbox,
+        cwd=cwd,
+        tokens=tokens,
+    )
     try:
-        result = await terminal_manager.ssh.run(bwrap_command, timeout=timeout_seconds, env=env)
+        result = await terminal_manager.ssh.run(runtime_command, timeout=timeout_seconds, env=env)
     except asyncio.TimeoutError:
         return {
             "ok": False,
@@ -506,8 +561,14 @@ async def _run_hidden_runtime_command(
     }
 
 
-async def _resolve_origin_url(session_id: str, run_dir: str, remote_name: str = "origin") -> str:
+async def _resolve_origin_url(
+    runtime: ToolRuntimeContext,
+    session_id: str,
+    run_dir: str,
+    remote_name: str = "origin",
+) -> str:
     result = await _run_hidden_runtime_command(
+        runtime=runtime,
         session_id=session_id,
         tokens=["git", "remote", "get-url", remote_name],
         cwd=run_dir,
@@ -537,6 +598,7 @@ async def _resolve_origin_url(session_id: str, run_dir: str, remote_name: str = 
 
 async def _resolve_network_repo_url(
     *,
+    runtime: ToolRuntimeContext,
     session_id: str,
     run_dir: str,
     subcommand: str,
@@ -550,9 +612,9 @@ async def _resolve_network_repo_url(
             return candidate
     if subcommand == "request-pull":
         repo_url, remote_name = _extract_request_pull_repo_url(subargs)
-        return repo_url or await _resolve_origin_url(session_id, run_dir, remote_name=remote_name)
+        return repo_url or await _resolve_origin_url(runtime, session_id, run_dir, remote_name=remote_name)
     remote_name = _first_positional_argument(subargs) or "origin"
-    return await _resolve_origin_url(session_id, run_dir, remote_name=remote_name)
+    return await _resolve_origin_url(runtime, session_id, run_dir, remote_name=remote_name)
 
 
 def _git_auth_env(token: str, repo: _RepoRef) -> dict[str, str]:
@@ -578,6 +640,7 @@ def _author_env(account: GitAccount) -> dict[str, str]:
 
 async def _run_network_git(
     *,
+    runtime: ToolRuntimeContext,
     session_id: str,
     account: _ResolvedAccount,
     run_dir: str,
@@ -593,6 +656,7 @@ async def _run_network_git(
     if mode == "write":
         env.update(_author_env(account.account))
     result = await _run_hidden_runtime_command(
+        runtime=runtime,
         session_id=session_id,
         tokens=tokens,
         cwd=run_dir,
@@ -657,7 +721,13 @@ def _extract_owner_from_gh_api_endpoint(endpoint: str) -> str | None:
     return None
 
 
-async def _extract_gh_owner(*, session_id: str, run_dir: str, tokens: list[str]) -> str | None:
+async def _extract_gh_owner(
+    *,
+    runtime: ToolRuntimeContext,
+    session_id: str,
+    run_dir: str,
+    tokens: list[str],
+) -> str | None:
     primary, secondary = _gh_subcommand(tokens)
     if primary == "repo" and secondary == "list":
         return _normalize_owner(_first_positional_argument(tokens[3:]))
@@ -676,14 +746,14 @@ async def _extract_gh_owner(*, session_id: str, run_dir: str, tokens: list[str])
         explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
         if explicit_repo and "/" in explicit_repo:
             return _normalize_owner(explicit_repo.split("/", 1)[0])
-        origin_url = await _resolve_origin_url(session_id, run_dir)
+        origin_url = await _resolve_origin_url(runtime, session_id, run_dir)
         repo = _parse_repo_ref(origin_url)
         return _normalize_owner(repo.path.split("/", 1)[0])
     if primary == "pr" and secondary in {"create", "view", "merge"}:
         explicit_repo = _extract_option_value(tokens[3:], {"-R", "--repo"})
         if explicit_repo and "/" in explicit_repo:
             return _normalize_owner(explicit_repo.split("/", 1)[0])
-        origin_url = await _resolve_origin_url(session_id, run_dir)
+        origin_url = await _resolve_origin_url(runtime, session_id, run_dir)
         repo = _parse_repo_ref(origin_url)
         return _normalize_owner(repo.path.split("/", 1)[0])
     if primary == "api":
@@ -707,6 +777,7 @@ def _validate_gh_clone_destination(*, tokens: list[str]) -> None:
 
 async def _execute_gh_command(
     *,
+    runtime: ToolRuntimeContext,
     session_id: str,
     run_dir: str,
     tokens: list[str],
@@ -721,7 +792,7 @@ async def _execute_gh_command(
         )
     _validate_gh_clone_destination(tokens=tokens)
     host = _extract_gh_host(tokens)
-    owner = await _extract_gh_owner(session_id=session_id, run_dir=run_dir, tokens=tokens)
+    owner = await _extract_gh_owner(runtime=runtime, session_id=session_id, run_dir=run_dir, tokens=tokens)
     async with AsyncSessionLocal() as db:
         if owner:
             resolved = await _resolve_git_account(
@@ -757,6 +828,7 @@ async def _execute_gh_command(
         "GH_PROMPT_DISABLED": "1",
     }
     result = await _run_hidden_runtime_command(
+        runtime=runtime,
         session_id=session_id,
         tokens=tokens,
         cwd=run_dir,
@@ -790,6 +862,7 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
 
     if tokens[0] == "gh":
         return await _execute_gh_command(
+            runtime=runtime,
             session_id=session_id,
             run_dir=run_dir,
             tokens=tokens,
@@ -805,6 +878,7 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
     network_mode = _network_mode_for_command(subcommand)
     if network_mode is not None:
         repo_url = await _resolve_network_repo_url(
+            runtime=runtime,
             session_id=session_id,
             run_dir=run_dir,
             subcommand=subcommand,
@@ -824,6 +898,7 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
                 f"({network_mode} access). Add/update a Git account with matching host/scope and a {required_token}."
             )
         return await _run_network_git(
+            runtime=runtime,
             session_id=session_id,
             account=account,
             run_dir=run_dir,
@@ -834,7 +909,7 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
 
     env: dict[str, str] | None = None
     if subcommand == "commit":
-        origin_url = await _resolve_origin_url(session_id, run_dir)
+        origin_url = await _resolve_origin_url(runtime, session_id, run_dir)
         async with AsyncSessionLocal() as db:
             account = await _resolve_git_account(
                 db,
@@ -850,6 +925,7 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
         env = _author_env(account.account)
 
     result = await _run_hidden_runtime_command(
+        runtime=runtime,
         session_id=session_id,
         tokens=tokens,
         cwd=run_dir,

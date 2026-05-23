@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
-from app.config import settings
 from app.services.runtime.remote_commands import load_remote_command
 
 
@@ -61,7 +60,7 @@ def validate_session_id(session_id: str) -> str:
 
 
 def normalize_workspaces_root(root: str | None = None) -> str:
-    value = (root if root is not None else settings.runtime_workspaces_dir).strip()
+    value = (root or "").strip()
     if not value:
         raise RuntimeWorkspaceError("runtime workspaces dir cannot be empty")
     if "\x00" in value or "\n" in value:
@@ -125,7 +124,7 @@ def build_prepare_workspace_script(session_id: str, *, root: str | None = None) 
         ],
         "manifest": paths.manifest_payload(),
     }
-    return load_remote_command("workspace/prepare.sh"), [json.dumps(request, separators=(",", ":"))]
+    return load_remote_command("common/workspace/prepare.sh"), [json.dumps(request, separators=(",", ":"))]
 
 
 def build_delete_workspace_script(session_id: str, *, root: str | None = None) -> tuple[str, list[str]]:
@@ -134,4 +133,4 @@ def build_delete_workspace_script(session_id: str, *, root: str | None = None) -
         "session_root": paths.session_root,
         "workspaces_root": paths.workspaces_root,
     }
-    return load_remote_command("workspace/delete.sh"), [json.dumps(request, separators=(",", ":"))]
+    return load_remote_command("common/workspace/delete.sh"), [json.dumps(request, separators=(",", ":"))]

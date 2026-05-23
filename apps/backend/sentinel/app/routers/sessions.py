@@ -470,7 +470,8 @@ async def list_session_runtime_files(
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id=user.sub)
-        payload = await get_runtime_workspace_files().list_files(str(id), path=path, limit=limit)
+        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        payload = await files.list_files(str(id), path=path, limit=limit)
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_or_runtime_error(exc)
         raise
@@ -489,7 +490,8 @@ async def get_session_runtime_file(
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id=user.sub)
-        payload = await get_runtime_workspace_files().preview_file(
+        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        payload = await files.preview_file(
             str(id),
             path=path,
             max_bytes=max_bytes,
@@ -511,7 +513,8 @@ async def download_session_runtime_path(
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id=user.sub)
-        payload = await get_runtime_workspace_files().download(str(id), path=path)
+        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        payload = await files.download(str(id), path=path)
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_or_runtime_error(exc)
         raise
@@ -538,7 +541,8 @@ async def proxy_runtime_forward_http(
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id=user.sub)
-        forward = await get_runtime_port_forward_manager().get_forward(
+        forwards = await get_runtime_port_forward_manager(instance_name=_request_instance_name(request))
+        forward = await forwards.get_forward(
             session_id=str(id),
             forward_id=forward_id,
         )
@@ -596,7 +600,10 @@ async def proxy_runtime_forward_websocket(
         await websocket.close(code=4004, reason="Session not found")
         return
     try:
-        forward = await get_runtime_port_forward_manager().get_forward(
+        forwards = await get_runtime_port_forward_manager(
+            instance_name=str(websocket.path_params["instance_name"])
+        )
+        forward = await forwards.get_forward(
             session_id=str(id),
             forward_id=forward_id,
         )
@@ -664,7 +671,8 @@ async def list_session_runtime_git_roots(
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id=user.sub)
-        payload = await get_runtime_workspace_files().git_roots(str(id), path=path, limit=limit)
+        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        payload = await files.git_roots(str(id), path=path, limit=limit)
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_or_runtime_error(exc)
         raise
@@ -683,7 +691,8 @@ async def list_session_runtime_git_changed_files(
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id=user.sub)
-        payload = await get_runtime_workspace_files().git_changed(str(id), path=path, limit=limit)
+        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        payload = await files.git_changed(str(id), path=path, limit=limit)
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_or_runtime_error(exc)
         raise
@@ -705,7 +714,8 @@ async def get_session_runtime_git_diff(
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id=user.sub)
-        payload = await get_runtime_workspace_files().git_diff(
+        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        payload = await files.git_diff(
             str(id),
             path=path,
             base_ref=base_ref,
@@ -738,7 +748,8 @@ async def close_terminal(
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
-    status_result = await get_runtime_terminal_manager().close_terminal(
+    terminal_manager = await get_runtime_terminal_manager(instance_name=_request_instance_name(request))
+    status_result = await terminal_manager.close_terminal(
         str(id),
         terminal_id=terminal_id,
     )
@@ -755,12 +766,12 @@ async def close_terminal(
     }
 
 
-async def _cleanup_runtime_for_deleted_sessions(session_ids: list[UUID]) -> None:
-    terminal_manager = get_runtime_terminal_manager()
+async def _cleanup_runtime_for_deleted_sessions(session_ids: list[UUID], *, instance_name: str) -> None:
+    terminal_manager = await get_runtime_terminal_manager(instance_name=instance_name)
     for session_id in session_ids:
         session_key = str(session_id)
         try:
-            await get_browser_pool().remove(session_key)
+            await get_browser_pool().remove(session_key, instance_name=instance_name)
         except Exception:
             _logger.debug(
                 "failed to close runtime browser for deleted session %s",
@@ -768,7 +779,8 @@ async def _cleanup_runtime_for_deleted_sessions(session_ids: list[UUID]) -> None
                 exc_info=True,
             )
         try:
-            await get_runtime_port_forward_manager().close_session(session_key)
+            forwards = await get_runtime_port_forward_manager(instance_name=instance_name)
+            await forwards.close_session(session_key)
         except Exception:
             _logger.debug(
                 "failed to close runtime forwards for deleted session %s",
@@ -776,7 +788,8 @@ async def _cleanup_runtime_for_deleted_sessions(session_ids: list[UUID]) -> None
                 exc_info=True,
             )
         try:
-            await get_runtime_desktop_manager().close_session(session_key)
+            desktop = await get_runtime_desktop_manager(instance_name=instance_name)
+            await desktop.close_session(session_key)
         except Exception:
             _logger.debug(
                 "failed to close runtime desktop for deleted session %s",
@@ -794,12 +807,16 @@ async def delete_session(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str | int]:
     service = _resolve_session_service(request)
+    instance_name = _request_instance_name(request)
     try:
         deleted_descendants = await service.delete_session(
             db,
             session_id=id,
             user_id=user.sub,
-            before_delete=_cleanup_runtime_for_deleted_sessions,
+            before_delete=lambda ids: _cleanup_runtime_for_deleted_sessions(
+                ids,
+                instance_name=instance_name,
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
@@ -1067,3 +1084,5 @@ def _message_response(message: Message) -> MessageResponse:
         runtime_context_structured=runtime_context_structured,
         created_at=message.created_at,
     )
+def _request_instance_name(request: Request) -> str:
+    return str(getattr(request.state, "instance_name", request.path_params.get("instance_name", "")))

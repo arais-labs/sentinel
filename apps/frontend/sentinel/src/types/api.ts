@@ -423,15 +423,6 @@ export interface RuntimeLiveView {
   };
 }
 
-export interface RuntimeRepairResponse {
-  ok: boolean;
-  status: 'completed' | 'unavailable' | 'failed';
-  command: string[];
-  stdout: string | null;
-  stderr: string | null;
-  detail: string | null;
-}
-
 export interface RuntimeActionResponse {
   ok: boolean;
   action: string;
@@ -445,6 +436,7 @@ export interface RuntimeStatusCheck {
   label: string;
   status: 'pass' | 'fail' | 'warn' | 'skip';
   detail: string | null;
+  hint: string | null;
   required: boolean;
   duration_ms: number | null;
 }
@@ -453,7 +445,10 @@ export interface RuntimeStatusResponse {
   status: 'ready' | 'degraded' | 'not_configured' | 'unreachable' | 'failed';
   summary: string;
   checked_at: string;
+  os: 'linux' | 'darwin' | 'unsupported' | 'unknown';
+  sandbox: 'bubblewrap' | 'seatbelt' | 'unavailable' | 'unknown';
   target: {
+    name?: string | null;
     host: string | null;
     port: number | null;
     username: string | null;
@@ -461,6 +456,25 @@ export interface RuntimeStatusResponse {
   };
   checks: RuntimeStatusCheck[];
   capabilities: Record<string, string>;
+}
+
+export interface RuntimeSSHTarget {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  workspaces_dir: string;
+  auth_type: 'private_key' | 'password';
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface RuntimeSSHTargetTestResponse {
+  ok: boolean;
+  detail: string;
+  resolved_home: string | null;
+  resolved_workspaces_dir: string | null;
 }
 
 export interface ConfigResponse {

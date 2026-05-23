@@ -14,6 +14,7 @@ from app.services.llm.generic.types import ToolSchema
 class ToolRuntimeContext:
     session_id: UUID | None = None
     runtime_session_id: UUID | None = None
+    instance_name: str | None = None
     db_session_factory: async_sessionmaker[AsyncSession] | None = None
     sub_agent_orchestrator: Any | None = None
 

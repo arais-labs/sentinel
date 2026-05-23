@@ -20,6 +20,7 @@ class SSHCredentials:
     port: int = 22
     username: str = "lima"
     key_path: Path | None = None
+    private_key: str | None = None
     password: str | None = None
 
 
@@ -32,11 +33,17 @@ class SSHClient:
         self._lock = asyncio.Lock()
 
     async def wait_ready(self, *, timeout: int = 60) -> None:
+        if self._conn is not None:
+            try:
+                await asyncio.wait_for(self._conn.run("true", check=False), timeout=5)
+                return
+            except Exception:  # noqa: BLE001
+                await self._reset_conn()
         deadline = asyncio.get_running_loop().time() + timeout
         last_exc: Exception | None = None
         while asyncio.get_running_loop().time() < deadline:
             try:
-                await self._connect()
+                await self._ensure_conn()
                 return
             except (OSError, asyncssh.Error) as exc:
                 last_exc = exc
@@ -173,7 +180,9 @@ class SSHClient:
             "username": self._credentials.username,
             "known_hosts": None,
         }
-        if self._credentials.key_path is not None:
+        if self._credentials.private_key is not None:
+            kwargs["client_keys"] = [asyncssh.import_private_key(self._credentials.private_key)]
+        elif self._credentials.key_path is not None:
             kwargs["client_keys"] = [str(self._credentials.key_path)]
         if self._credentials.password is not None:
             kwargs["password"] = self._credentials.password
@@ -202,4 +211,4 @@ def build_shell_command(
     if cwd:
         parts.append(f"cd {quote(cwd)}")
     parts.append(command)
-    return f"bash -lc {quote('; '.join(parts))}"
+    return f"bash --noprofile --norc -c {quote('; '.join(parts))}"

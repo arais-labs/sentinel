@@ -5,7 +5,6 @@ import json
 import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID
 
 from app.services.runtime.remote_commands import load_remote_command
@@ -63,6 +62,9 @@ class RuntimeDesktopManager:
         target_geometry = geometry or self._geometry
         lock = self._locks.setdefault(sid, asyncio.Lock())
         async with lock:
+            environment = await self._terminal_manager.runtime_environment()
+            if environment.os != "linux":
+                raise RuntimeDesktopError("Desktop live view is currently supported only on Linux SSH targets.")
             existing = self._handles.get(sid)
             if existing is not None:
                 if geometry is None or existing.desktop.geometry == target_geometry:
@@ -160,69 +162,6 @@ async def _close_listener(listener: object) -> None:
             await maybe_coro
 
 
-def find_repo_root(start: Path | None = None) -> Path:
-    current = (start or Path(__file__)).resolve()
-    for candidate in [current, *current.parents]:
-        if (candidate / "infra" / "runtime" / "ansible" / "sentinel-runtime.yml").exists():
-            return candidate
-    raise FileNotFoundError("Could not locate Sentinel repository root.")
-
-
-def ansible_repair_command() -> list[str]:
-    from app.config import settings
-
-    host = settings.runtime_ssh_host.strip()
-    username = settings.runtime_ssh_username.strip()
-    if not host or not username:
-        raise RuntimeDesktopError("Runtime SSH host and username must be configured.")
-    if settings.runtime_ssh_password.strip() and not settings.runtime_ssh_key_path.strip():
-        raise RuntimeDesktopError("Runtime repair with password auth is not supported yet; use an SSH key.")
-
-    playbook = find_repo_root() / "infra" / "runtime" / "ansible" / "sentinel-runtime.yml"
-    command = [
-        "ansible-playbook",
-        "-i",
-        f"{host},",
-        str(playbook),
-        "-u",
-        username,
-        "-e",
-        f"ansible_port={int(settings.runtime_ssh_port)}",
-    ]
-    key_path = settings.runtime_ssh_key_path.strip()
-    if key_path:
-        command.extend(["--private-key", str(Path(key_path).expanduser())])
-    return command
-
-
-async def run_ansible_repair() -> dict[str, object]:
-    command = ansible_repair_command()
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(find_repo_root()),
-        )
-    except FileNotFoundError:
-        return {
-            "ok": False,
-            "status": "unavailable",
-            "command": command,
-            "detail": "ansible-playbook is not available in the backend environment.",
-        }
-
-    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=900)
-    return {
-        "ok": process.returncode == 0,
-        "status": "completed" if process.returncode == 0 else "failed",
-        "command": command,
-        "stdout": stdout.decode("utf-8", errors="replace")[-8000:] or None,
-        "stderr": stderr.decode("utf-8", errors="replace")[-8000:] or None,
-        "detail": None if process.returncode == 0 else f"ansible-playbook exited with {process.returncode}",
-    }
-
-
 def _build_ensure_desktop_script(
     session_id: str,
     *,
@@ -240,7 +179,7 @@ def _build_ensure_desktop_script(
         "geometry": geometry,
         "depth": depth,
     }
-    return load_remote_command("desktop/ensure.sh"), [json.dumps(request, separators=(",", ":"))]
+    return load_remote_command("linux/desktop/ensure.sh"), [json.dumps(request, separators=(",", ":"))]
 
 
 def _build_stop_desktop_script(session_id: str, *, root: str | None) -> tuple[str, list[str]]:
@@ -249,4 +188,4 @@ def _build_stop_desktop_script(session_id: str, *, root: str | None) -> tuple[st
         "home": paths.home,
         "runtime": paths.runtime,
     }
-    return load_remote_command("desktop/stop.sh"), [json.dumps(request, separators=(",", ":"))]
+    return load_remote_command("linux/desktop/stop.sh"), [json.dumps(request, separators=(",", ":"))]

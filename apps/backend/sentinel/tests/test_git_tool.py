@@ -6,6 +6,7 @@ import pytest
 
 from app.models import GitAccount
 from app.schemas.runtime import RuntimeExecResult
+from app.services.runtime.environment import RuntimeEnvironment
 from app.services.tools.executor import ToolExecutor, ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.registry_builder import build_default_registry
@@ -59,9 +60,14 @@ class _SSHStub:
 
 
 class _TerminalManagerStub:
-    def __init__(self) -> None:
+    def __init__(self, *, environment: RuntimeEnvironment | None = None) -> None:
         self.ssh = _SSHStub()
         self.prepared: list[str] = []
+        self.workspaces_root = "/srv/sentinel"
+        self._environment = environment or RuntimeEnvironment(os="linux", sandbox="bubblewrap")
+
+    async def runtime_environment(self) -> RuntimeEnvironment:
+        return self._environment
 
     async def prepare_workspace(self, session_id: str) -> None:
         self.prepared.append(session_id)
@@ -83,6 +89,21 @@ def _fake_db_with_account(*, write: bool = True) -> FakeDB:
     return db
 
 
+async def _runtime_configured_stub(**_kwargs) -> bool:
+    return True
+
+
+def _terminal_manager_stub(manager: _TerminalManagerStub):
+    async def _stub(**_kwargs) -> _TerminalManagerStub:
+        return manager
+
+    return _stub
+
+
+def _runtime_context(session_id):
+    return ToolRuntimeContext(session_id=session_id, instance_name="main")
+
+
 @pytest.mark.asyncio
 async def test_git_tool_is_registered() -> None:
     registry = build_default_registry()
@@ -100,8 +121,8 @@ async def test_git_read_runs_hidden_in_ssh_runtime(monkeypatch) -> None:
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", lambda: manager)
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -114,7 +135,7 @@ async def test_git_read_runs_hidden_in_ssh_runtime(monkeypatch) -> None:
             "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
             "timeout_seconds": 30,
         },
-        runtime=ToolRuntimeContext(session_id=session_id),
+        runtime=_runtime_context(session_id),
     )
 
     assert result["ok"] is True
@@ -178,8 +199,8 @@ async def test_git_gh_uses_ephemeral_token_env(monkeypatch) -> None:
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", lambda: manager)
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -190,7 +211,7 @@ async def test_git_gh_uses_ephemeral_token_env(monkeypatch) -> None:
             "command": "read",
             "cli_command": "gh repo view arais-labs/sentinel",
         },
-        runtime=ToolRuntimeContext(session_id=uuid4()),
+        runtime=_runtime_context(uuid4()),
     )
 
     assert result["ok"] is True
@@ -209,8 +230,8 @@ async def test_git_gh_pr_view_infers_owner_from_origin(monkeypatch) -> None:
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", lambda: manager)
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -222,7 +243,7 @@ async def test_git_gh_pr_view_infers_owner_from_origin(monkeypatch) -> None:
             "cli_command": "gh pr view 123",
             "cwd": "/workspace/sentinel",
         },
-        runtime=ToolRuntimeContext(session_id=uuid4()),
+        runtime=_runtime_context(uuid4()),
     )
 
     assert result["ok"] is True
@@ -240,8 +261,8 @@ async def test_git_reports_missing_runtime_executable(monkeypatch) -> None:
     manager = _TerminalManagerStub()
     manager.ssh.next_result = RuntimeExecResult(exit_status=127, stdout="", stderr="bash: gh: command not found\n")
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", lambda: manager)
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -252,9 +273,49 @@ async def test_git_reports_missing_runtime_executable(monkeypatch) -> None:
             "command": "read",
             "cli_command": "gh repo view arais-labs/sentinel",
         },
-        runtime=ToolRuntimeContext(session_id=uuid4()),
+        runtime=_runtime_context(uuid4()),
     )
 
     assert result["ok"] is False
     assert result["returncode"] == 127
     assert "Required executable 'gh' is not available" in result["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_git_read_runs_hidden_in_macos_seatbelt_runtime(monkeypatch) -> None:
+    from app.services.araios.system_modules.git_tool import handlers
+
+    db = _fake_db_with_account()
+    manager = _TerminalManagerStub(environment=RuntimeEnvironment(os="darwin", sandbox="seatbelt"))
+    monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
+
+    registry = build_default_registry()
+    executor = ToolExecutor(registry)
+    session_id = uuid4()
+
+    result, _duration_ms = await executor.execute(
+        "git",
+        {
+            "command": "read",
+            "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
+            "cwd": "/workspace/subdir",
+            "timeout_seconds": 30,
+        },
+        runtime=_runtime_context(session_id),
+    )
+
+    assert result["ok"] is True
+    call = manager.ssh.calls[0]
+    command = str(call["command"])
+    assert "sandbox-exec -f /srv/sentinel/" in command
+    assert "/bin/sh -lc" not in command
+    assert "bwrap" not in command
+    assert f"/srv/sentinel/{session_id}/workspace/subdir" in command
+    assert f"HOME=/srv/sentinel/{session_id}/state/home" in command
+    assert f"TMPDIR=/srv/sentinel/{session_id}/tmp" in command
+    assert "/Library/Developer" in command
+    assert "xcrun --find git" in command
+    assert "sentinel_resolve_tool" in command
+    assert " git " in command

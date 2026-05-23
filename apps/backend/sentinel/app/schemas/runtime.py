@@ -45,15 +45,6 @@ class RuntimeDesktopResolutionRequest(BaseModel):
     geometry: str
 
 
-class RuntimeRepairResponse(BaseModel):
-    ok: bool
-    status: Literal["completed", "unavailable", "failed"]
-    command: list[str] = Field(default_factory=list)
-    stdout: str | None = None
-    stderr: str | None = None
-    detail: str | None = None
-
-
 class RuntimeResetResponse(BaseModel):
     reset: bool
     url: str
@@ -70,6 +61,7 @@ class RuntimeActionResponse(BaseModel):
 
 
 class RuntimeStatusTargetResponse(BaseModel):
+    name: str | None = None
     host: str | None = None
     port: int | None = None
     username: str | None = None
@@ -81,6 +73,7 @@ class RuntimeStatusCheckResponse(BaseModel):
     label: str
     status: Literal["pass", "fail", "warn", "skip"]
     detail: str | None = None
+    hint: str | None = None
     required: bool = True
     duration_ms: int | None = None
 
@@ -89,6 +82,8 @@ class RuntimeStatusResponse(BaseModel):
     status: Literal["ready", "degraded", "not_configured", "unreachable", "failed"]
     summary: str
     checked_at: datetime
+    os: Literal["linux", "darwin", "unsupported", "unknown"] = "unknown"
+    sandbox: Literal["bubblewrap", "seatbelt", "unavailable", "unknown"] = "unknown"
     target: RuntimeStatusTargetResponse
     checks: list[RuntimeStatusCheckResponse] = Field(default_factory=list)
     capabilities: dict[str, str] = Field(default_factory=dict)

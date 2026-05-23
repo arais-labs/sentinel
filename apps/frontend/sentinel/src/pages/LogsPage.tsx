@@ -34,9 +34,9 @@ import { getSessionDeleteWorkspaceSummary } from '../lib/sessionDeletion';
 import type {
   Message,
   MessageListResponse,
+  RuntimeStatusResponse,
   Session,
   SessionListResponse,
-  SessionRuntimeStatus,
 } from '../types/api';
 
 type SidebarTab = 'sessions' | 'sub_agents';
@@ -365,10 +365,13 @@ function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
   return sortMessagesDesc(Array.from(byId.values()));
 }
 
-function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
+function runtimeStatusLabel(runtime: RuntimeStatusResponse | null): string {
   if (!runtime) return 'unavailable';
-  if (!runtime.runtime_exists) return 'missing';
-  return runtime.active ? 'active' : 'idle';
+  return runtime.status.replace('_', ' ');
+}
+
+function runtimeIsAvailable(runtime: RuntimeStatusResponse | null): boolean {
+  return runtime?.status === 'ready' || runtime?.status === 'degraded';
 }
 
 function extractRuntimeContextPayload(message: Message): RuntimeContextPayload | null {
@@ -1340,7 +1343,7 @@ export function LogsPage() {
   const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [runtimeBySession, setRuntimeBySession] = useState<Record<string, SessionRuntimeStatus>>({});
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
 
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -1588,14 +1591,11 @@ export function LogsPage() {
   async function loadMessages(sessionId: string, silent = false) {
     if (!silent) setLoadingMessages(true);
     try {
-      const [payload, runtimeStatus] = await Promise.all([
-        api.get<MessageListResponse>(`/sessions/${sessionId}/messages?limit=100`),
-        api.get<SessionRuntimeStatus>(`/sessions/${sessionId}/runtime?action_limit=80`),
-      ]);
+      const payload = await api.get<MessageListResponse>(`/sessions/${sessionId}/messages?limit=100`);
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setMessages(sortMessagesDesc(items));
       setHasMore(Boolean(payload?.has_more));
-      setRuntimeBySession((current) => ({ ...current, [sessionId]: runtimeStatus }));
+      void refreshRuntimeStatus();
     } catch {
       if (!silent) toast.error('Failed to load logs');
     } finally {
@@ -1605,16 +1605,22 @@ export function LogsPage() {
 
   async function refreshMessages(sessionId: string, silent = false) {
     try {
-      const [payload, runtimeStatus] = await Promise.all([
-        api.get<MessageListResponse>(`/sessions/${sessionId}/messages?limit=100`),
-        api.get<SessionRuntimeStatus>(`/sessions/${sessionId}/runtime?action_limit=80`),
-      ]);
+      const payload = await api.get<MessageListResponse>(`/sessions/${sessionId}/messages?limit=100`);
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setMessages((current) => mergeMessages(current, items));
       setHasMore((current) => current || Boolean(payload?.has_more));
-      setRuntimeBySession((current) => ({ ...current, [sessionId]: runtimeStatus }));
+      void refreshRuntimeStatus();
     } catch {
       if (!silent) toast.error('Failed to refresh logs');
+    }
+  }
+
+  async function refreshRuntimeStatus() {
+    try {
+      const payload = await api.get<RuntimeStatusResponse>('/runtime/status');
+      setRuntimeStatus(payload);
+    } catch {
+      setRuntimeStatus(null);
     }
   }
 
@@ -1687,7 +1693,8 @@ export function LogsPage() {
     () => sessions.find((item) => item.id === selectedSessionId) ?? null,
     [sessions, selectedSessionId],
   );
-  const activeRuntime = selectedSessionId ? runtimeBySession[selectedSessionId] ?? null : null;
+  const activeRuntime = selectedSessionId ? runtimeStatus : null;
+  const runtimeAvailable = runtimeIsAvailable(activeRuntime);
 
   const loopContextByUserMessageId = useMemo(
     () => mapRuntimeContextToUserMessages(messages),
@@ -2086,7 +2093,7 @@ export function LogsPage() {
                 className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
               >
                 <Terminal size={14} className="text-amber-500/80" />
-                Explore Runtime
+                Runtime Info
               </button>
             </>
           )}
@@ -2142,14 +2149,14 @@ export function LogsPage() {
                 <div className="px-6 h-14 flex items-center justify-between border-b border-[color:var(--border-subtle)]/30">
                   <div className="flex items-center gap-4 min-w-0">
                     <div className="flex items-center gap-2 shrink-0">
-                      <div className={`w-2 h-2 rounded-full transition-all duration-500 ${activeRuntime?.active ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-[color:var(--border-strong)]'}`} />
+                      <div className={`w-2 h-2 rounded-full transition-all duration-500 ${runtimeAvailable ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-[color:var(--border-strong)]'}`} />
                       <h2 className="text-sm font-bold text-[color:var(--text-primary)] uppercase tracking-wider truncate max-w-[400px]">
                         {activeSession.title || 'Live Process'}
                       </h2>
                     </div>
                     <div className="flex items-center gap-3 text-[10px] font-mono font-bold text-[color:var(--text-muted)] border-l border-[color:var(--border-subtle)] pl-4 truncate">
                       <span className="opacity-40">ID: {activeSession.id.slice(0, 12)}…</span>
-                      <span className={`px-2 py-0.5 rounded-full border transition-colors ${activeRuntime?.active ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]'} uppercase font-bold tracking-widest text-[8px]`}>
+                      <span className={`px-2 py-0.5 rounded-full border transition-colors ${runtimeAvailable ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]'} uppercase font-bold tracking-widest text-[8px]`}>
                         {runtimeStatusLabel(activeRuntime)}
                       </span>
                     </div>

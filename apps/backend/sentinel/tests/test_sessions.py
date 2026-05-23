@@ -335,7 +335,8 @@ def test_delete_session_keeps_database_rows_when_cleanup_fails():
 def test_sessions_crud_and_ownership(monkeypatch):
     from app.routers import sessions as sessions_router
 
-    async def _noop_runtime_cleanup(_session_ids: list[uuid.UUID]) -> None:
+    async def _noop_runtime_cleanup(_session_ids: list[uuid.UUID], *, instance_name: str) -> None:
+        assert instance_name == "main"
         return None
 
     monkeypatch.setattr(

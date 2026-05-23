@@ -1,87 +1,165 @@
 from __future__ import annotations
 
-from pathlib import Path
+import asyncio
+from dataclasses import dataclass
 
-from app.config import settings
-from app.services.runtime.ssh_client import SSHClient, SSHCredentials
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from app.database import ManagerSessionLocal
+from app.services.instance_runtime_context import instance_runtime_context_registry
 from app.services.runtime.desktop import RuntimeDesktopManager
 from app.services.runtime.files import RuntimeWorkspaceFiles
 from app.services.runtime.port_forwards import RuntimePortForwardManager
+from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.targets import (
+    InstanceRuntimeTargetNotConfigured,
+    RuntimeTargetNotFound,
+    ResolvedRuntimeTarget,
+    resolve_instance_runtime_target,
+)
 from app.services.runtime.terminal_manager import RuntimeTerminalManager
 
-_manager: RuntimeTerminalManager | None = None
-_files: RuntimeWorkspaceFiles | None = None
-_forwards: RuntimePortForwardManager | None = None
-_desktop: RuntimeDesktopManager | None = None
+
+@dataclass(slots=True)
+class _RuntimeBundle:
+    target_id: str
+    updated_at_marker: str
+    terminal: RuntimeTerminalManager
+    files: RuntimeWorkspaceFiles
+    forwards: RuntimePortForwardManager
+    desktop: RuntimeDesktopManager
 
 
-def runtime_configured() -> bool:
-    return bool(settings.runtime_ssh_host.strip() and settings.runtime_ssh_username.strip())
+_bundles: dict[str, _RuntimeBundle] = {}
+_lock = asyncio.Lock()
 
 
-def get_runtime_terminal_manager() -> RuntimeTerminalManager:
-    global _manager
-    if _manager is not None:
-        return _manager
-    host = settings.runtime_ssh_host.strip()
-    username = settings.runtime_ssh_username.strip()
-    if not host or not username:
-        raise RuntimeError(
-            "Runtime SSH is not configured. Set SENTINEL_RUNTIME_SSH_HOST and "
-            "SENTINEL_RUNTIME_SSH_USERNAME."
-        )
-    key_path_raw = settings.runtime_ssh_key_path.strip()
-    password = settings.runtime_ssh_password or None
-    credentials = SSHCredentials(
-        host=host,
-        port=int(settings.runtime_ssh_port),
-        username=username,
-        key_path=Path(key_path_raw).expanduser() if key_path_raw else None,
-        password=password,
-    )
-    _manager = RuntimeTerminalManager(
-        SSHClient(credentials),
-        workspaces_root=settings.runtime_workspaces_dir,
-    )
-    return _manager
+def instance_name_from_session_factory(session_factory: async_sessionmaker | None) -> str | None:
+    if session_factory is None:
+        return None
+    context = instance_runtime_context_registry.find_by_session_factory(session_factory)
+    return context.name if context is not None else None
 
 
-def get_runtime_workspace_files() -> RuntimeWorkspaceFiles:
-    global _files
-    if _files is not None:
-        return _files
-    manager = get_runtime_terminal_manager()
-    _files = RuntimeWorkspaceFiles(manager.ssh, workspaces_root=settings.runtime_workspaces_dir)
-    return _files
+async def runtime_configured(
+    *,
+    instance_name: str | None = None,
+    session_factory: async_sessionmaker | None = None,
+) -> bool:
+    try:
+        await _resolve_target(instance_name=instance_name, session_factory=session_factory)
+    except (InstanceRuntimeTargetNotConfigured, RuntimeTargetNotFound):
+        return False
+    return True
 
 
-def get_runtime_port_forward_manager() -> RuntimePortForwardManager:
-    global _forwards
-    if _forwards is not None:
-        return _forwards
-    manager = get_runtime_terminal_manager()
-    _forwards = RuntimePortForwardManager(manager.ssh)
-    return _forwards
+async def get_runtime_terminal_manager(
+    *,
+    instance_name: str | None = None,
+    session_factory: async_sessionmaker | None = None,
+) -> RuntimeTerminalManager:
+    return (
+        await _get_bundle(instance_name=instance_name, session_factory=session_factory)
+    ).terminal
 
 
-def get_runtime_desktop_manager() -> RuntimeDesktopManager:
-    global _desktop
-    if _desktop is not None:
-        return _desktop
-    manager = get_runtime_terminal_manager()
-    _desktop = RuntimeDesktopManager(manager, workspaces_root=settings.runtime_workspaces_dir)
-    return _desktop
+async def get_runtime_workspace_files(
+    *,
+    instance_name: str | None = None,
+    session_factory: async_sessionmaker | None = None,
+) -> RuntimeWorkspaceFiles:
+    return (await _get_bundle(instance_name=instance_name, session_factory=session_factory)).files
+
+
+async def get_runtime_port_forward_manager(
+    *,
+    instance_name: str | None = None,
+    session_factory: async_sessionmaker | None = None,
+) -> RuntimePortForwardManager:
+    return (await _get_bundle(instance_name=instance_name, session_factory=session_factory)).forwards
+
+
+async def get_runtime_desktop_manager(
+    *,
+    instance_name: str | None = None,
+    session_factory: async_sessionmaker | None = None,
+) -> RuntimeDesktopManager:
+    return (await _get_bundle(instance_name=instance_name, session_factory=session_factory)).desktop
+
+
+async def invalidate_runtime_for_instance(instance_name: str) -> None:
+    key = _normalize_required_instance_name(instance_name)
+    async with _lock:
+        bundle = _bundles.pop(key, None)
+    if bundle is not None:
+        await _close_bundle(bundle)
 
 
 async def close_runtime_terminal_manager() -> None:
-    global _manager, _files, _forwards, _desktop
-    if _desktop is not None:
-        await _desktop.close_all()
-        _desktop = None
-    if _forwards is not None:
-        await _forwards.close_all()
-        _forwards = None
-    if _manager is not None:
-        await _manager.close()
-        _manager = None
-    _files = None
+    async with _lock:
+        bundles = list(_bundles.values())
+        _bundles.clear()
+    for bundle in bundles:
+        await _close_bundle(bundle)
+
+
+async def _get_bundle(
+    *,
+    instance_name: str | None,
+    session_factory: async_sessionmaker | None,
+) -> _RuntimeBundle:
+    target = await _resolve_target(instance_name=instance_name, session_factory=session_factory)
+    key = _normalize_required_instance_name(instance_name or instance_name_from_session_factory(session_factory))
+    async with _lock:
+        existing = _bundles.get(key)
+        if (
+            existing is not None
+            and existing.target_id == str(target.id)
+            and existing.updated_at_marker == target.updated_at_marker
+        ):
+            return existing
+        if existing is not None:
+            await _close_bundle(existing)
+        bundle = _build_bundle(target)
+        _bundles[key] = bundle
+        return bundle
+
+
+async def _resolve_target(
+    *,
+    instance_name: str | None,
+    session_factory: async_sessionmaker | None,
+) -> ResolvedRuntimeTarget:
+    resolved_name = _normalize_required_instance_name(
+        instance_name or instance_name_from_session_factory(session_factory)
+    )
+    async with ManagerSessionLocal() as db:
+        return await resolve_instance_runtime_target(db, instance_name=resolved_name)
+
+
+def _build_bundle(target: ResolvedRuntimeTarget) -> _RuntimeBundle:
+    ssh = SSHClient(target.credentials())
+    terminal = RuntimeTerminalManager(ssh, workspaces_root=target.workspaces_dir)
+    files = RuntimeWorkspaceFiles(ssh, workspaces_root=target.workspaces_dir)
+    forwards = RuntimePortForwardManager(ssh)
+    desktop = RuntimeDesktopManager(terminal, workspaces_root=target.workspaces_dir)
+    return _RuntimeBundle(
+        target_id=str(target.id),
+        updated_at_marker=target.updated_at_marker,
+        terminal=terminal,
+        files=files,
+        forwards=forwards,
+        desktop=desktop,
+    )
+
+
+async def _close_bundle(bundle: _RuntimeBundle) -> None:
+    await bundle.desktop.close_all()
+    await bundle.forwards.close_all()
+    await bundle.terminal.close()
+
+
+def _normalize_required_instance_name(instance_name: str | None) -> str:
+    if not instance_name:
+        raise InstanceRuntimeTargetNotConfigured("No runtime target selected for this instance.")
+    return instance_name.strip().lower()

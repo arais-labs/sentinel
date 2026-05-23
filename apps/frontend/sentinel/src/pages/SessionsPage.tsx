@@ -30,6 +30,9 @@ import {
   GitBranch,
   CheckCircle2,
   AlertCircle,
+  XCircle,
+  Copy,
+  HelpCircle,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -81,8 +84,6 @@ import type {
   ModelsResponse,
   RuntimeActionResponse,
   RuntimeLiveView,
-  RuntimeRepairResponse,
-  RuntimeStatusCheck,
   RuntimeStatusResponse,
   Session,
   SessionContextUsage,
@@ -129,48 +130,6 @@ function taskStatusTone(status: string): 'default' | 'good' | 'warn' | 'danger' 
       return 'danger';
     default:
       return 'default';
-  }
-}
-
-function runtimeStatusTone(status: RuntimeStatusResponse['status'] | undefined): 'default' | 'good' | 'warn' | 'danger' | 'info' {
-  switch (status) {
-    case 'ready':
-      return 'good';
-    case 'degraded':
-      return 'warn';
-    case 'unreachable':
-    case 'failed':
-      return 'danger';
-    case 'not_configured':
-      return 'default';
-    default:
-      return 'default';
-  }
-}
-
-function runtimeCheckTone(status: RuntimeStatusCheck['status']): 'good' | 'warn' | 'danger' | 'default' {
-  switch (status) {
-    case 'pass':
-      return 'good';
-    case 'warn':
-      return 'warn';
-    case 'fail':
-      return 'danger';
-    default:
-      return 'default';
-  }
-}
-
-function runtimeCheckDotClass(status: RuntimeStatusCheck['status']): string {
-  switch (status) {
-    case 'pass':
-      return 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.35)]';
-    case 'warn':
-      return 'bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.28)]';
-    case 'fail':
-      return 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.3)]';
-    default:
-      return 'bg-[color:var(--text-muted)]';
   }
 }
 
@@ -230,6 +189,7 @@ interface SentinelInstance {
   name: string;
   database_name: string;
   display_name: string | null;
+  runtime_target_id: string | null;
 }
 
 // Top-level right-rail tabs. `runtime` is a composite tab that contains
@@ -772,7 +732,8 @@ export function SessionsPage() {
   const [runtimeFilesRefreshKey, setRuntimeFilesRefreshKey] = useState(0);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
   const [runtimeStatusLoading, setRuntimeStatusLoading] = useState(false);
-  const [runtimeRepairing, setRuntimeRepairing] = useState(false);
+  const [showPassingRuntimeChecks, setShowPassingRuntimeChecks] = useState(false);
+  const [showOptionalRuntimeWarnings, setShowOptionalRuntimeWarnings] = useState(false);
 
   const [runtimePath, setRuntimePath] = useState('');
   const [runtimeRepoChangesByRoot, setRuntimeRepoChangesByRoot] = useState<Record<string, SessionRuntimeGitChangedFilesResponse | null>>({});
@@ -1774,25 +1735,6 @@ export function SessionsPage() {
       setRuntimeStatus(null);
     } finally {
       setRuntimeStatusLoading(false);
-    }
-  }
-
-  async function repairRuntime() {
-    if (runtimeRepairing) return;
-    setRuntimeRepairing(true);
-    try {
-      const payload = await api.post<RuntimeRepairResponse>('/runtime/repair', {}, { timeoutMs: 900_000 });
-      if (payload.ok) {
-        toast.success('Runtime repair completed');
-      } else {
-        toast.error(payload.detail || 'Runtime repair did not complete');
-      }
-      await fetchRuntimeStatus();
-      await fetchLiveView();
-    } catch {
-      toast.error('Runtime repair failed');
-    } finally {
-      setRuntimeRepairing(false);
     }
   }
 
@@ -4449,146 +4391,262 @@ export function SessionsPage() {
                       </div>
                     </section>
 
-                    <section>
-                      <div className="flex items-center justify-between mb-2.5 px-1">
-                        <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Runtime Provider</div>
-                        <button
-                          type="button"
-                          onClick={() => void fetchRuntimeStatus()}
-                          disabled={runtimeStatusLoading}
-                          className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] disabled:opacity-50"
-                          title="Refresh runtime diagnostics"
-                        >
-                          <RefreshCw size={12} className={runtimeStatusLoading ? 'animate-spin' : ''} />
-                        </button>
-                      </div>
-                      <div className="space-y-1.5">
-                        <div className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)]">
-                                {liveView?.provider?.label || 'SSH'}
-                              </div>
-                              <div className="mt-1 text-[10px] text-[color:var(--text-muted)] leading-relaxed">
-                                {runtimeStatus?.summary || liveView?.provider?.summary || 'Provider details unavailable.'}
-                              </div>
-                            </div>
-                            <StatusChip
-                              label={runtimeStatus?.status || liveView?.provider?.status || 'unknown'}
-                              tone={runtimeStatusTone(runtimeStatus?.status)}
-                              className="shrink-0"
-                            />
-                          </div>
-                        </div>
-                        <div className="space-y-1.5">
-                          {[
-                            {
-                              key: 'host',
-                              label: 'Host',
-                              value: runtimeStatus?.target.host
-                                ? `${runtimeStatus.target.host}:${runtimeStatus.target.port ?? 22}`
-                                : liveView?.provider?.items?.find((item) => item.key === 'host')?.value,
-                            },
-                            {
-                              key: 'user',
-                              label: 'User',
-                              value: runtimeStatus?.target.username,
-                            },
-                            {
-                              key: 'workspaces',
-                              label: 'Workspaces',
-                              value:
-                                runtimeStatus?.target.workspaces_dir ||
-                                liveView?.provider?.items?.find((item) => item.key === 'workspaces')?.value,
-                            },
-                          ].map((item) => (
-                            <div
-                              key={item.key}
-                              className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]"
-                            >
-                              <div className="flex items-center justify-between gap-3">
-                                <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">
-                                  {item.label}
-                                </span>
-                                <div className="flex-1 min-w-0 font-mono text-[10px] text-[color:var(--text-secondary)] truncate text-right">
-                                  {item.value || '—'}
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </section>
+                    {(() => {
+                      const overall = runtimeStatus?.status;
+                      const allChecks = runtimeStatus?.checks ?? [];
+                      const failed = allChecks.filter((c) => c.status === 'fail' || c.status === 'warn');
+                      const requiredFailures = failed.filter((c) => c.required);
+                      const optionalWarnings = failed.filter((c) => !c.required);
+                      const passed = allChecks.filter((c) => c.status === 'pass');
+                      const skipped = allChecks.filter((c) => c.status === 'skip');
+                      const totalPassMs = passed.reduce((sum, c) => sum + (c.duration_ms ?? 0), 0);
+                      const primaryFailure = requiredFailures[0] ?? null;
+                      const remainingRequiredFailures = requiredFailures.slice(1);
+                      const suppressPassedRollup = overall === 'unreachable' || overall === 'failed';
+                      type CheckEntry = (typeof allChecks)[number];
 
-                    <section>
-                      <div className="flex items-center justify-between mb-2.5 px-1">
-                        <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Runtime Diagnostics</div>
-                        {runtimeStatus && runtimeStatus.capabilities.desktop !== 'available' ? (
-                          <button
-                            type="button"
-                            onClick={() => void repairRuntime()}
-                            disabled={runtimeRepairing}
-                            className="inline-flex h-6 items-center gap-1.5 rounded-md border border-amber-500/25 px-2 text-[9px] font-bold uppercase tracking-widest text-amber-400 transition-colors hover:bg-amber-500/10 disabled:opacity-50"
-                          >
-                            {runtimeRepairing ? <Loader2 size={10} className="animate-spin" /> : <Wrench size={10} />}
-                            Repair
-                          </button>
-                        ) : null}
-                      </div>
-                      {runtimeStatus ? (
-                        <div className="space-y-1.5">
-                          {runtimeStatus.checks.map((check) => (
-                            <div
-                              key={check.id}
-                              className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]"
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="flex min-w-0 items-start gap-2.5">
-                                  <div className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${runtimeCheckDotClass(check.status)}`} />
-                                  <div className="min-w-0">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)]">
-                                        {check.label}
-                                      </span>
-                                      {!check.required ? (
-                                        <span className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                                          Optional
-                                        </span>
-                                      ) : null}
+                      const heroIcon =
+                        overall === 'ready' ? <CheckCircle2 size={16} className="text-emerald-400 shrink-0 mt-0.5" /> :
+                        overall === 'degraded' ? <AlertCircle size={16} className="text-amber-400 shrink-0 mt-0.5" /> :
+                        overall === 'unreachable' || overall === 'failed' ? <XCircle size={16} className="text-rose-500 shrink-0 mt-0.5" /> :
+                        overall === 'not_configured' ? <HelpCircle size={16} className="text-[color:var(--text-muted)] shrink-0 mt-0.5" /> :
+                        <Loader2 size={16} className="text-[color:var(--text-muted)] animate-spin shrink-0 mt-0.5" />;
+
+                      const heroLabel =
+                        overall === 'ready' ? 'Ready' :
+                        overall === 'degraded' ? 'Degraded' :
+                        overall === 'unreachable' ? 'Unreachable' :
+                        overall === 'failed' ? 'Failed' :
+                        overall === 'not_configured' ? 'Not configured' :
+                        runtimeStatusLoading ? 'Checking…' : 'Unknown';
+
+                      const heroBorder =
+                        overall === 'ready' ? 'border-emerald-500/30 bg-emerald-500/5' :
+                        overall === 'degraded' ? 'border-amber-500/30 bg-amber-500/5' :
+                        overall === 'unreachable' || overall === 'failed' ? 'border-rose-500/30 bg-rose-500/5' :
+                        'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50';
+
+                      const targetLine = runtimeStatus?.target
+                        ? [
+                            runtimeStatus.target.name,
+                            runtimeStatus.target.host && `${runtimeStatus.target.host}:${runtimeStatus.target.port ?? 22}`,
+                          ].filter(Boolean).join(' · ')
+                        : null;
+
+                      const settingsHref = instanceRouteFromPath(location.pathname, 'settings');
+                      const looksLikeCommand = (text: string) =>
+                        /^(sudo |mkdir |chown |chmod |systemctl |service |brew |apt |apt-get |yum |dnf |pacman |scp |ssh |docker |npm |pip |uv |cargo |go )/.test(text.trim());
+
+                      const renderFixCallout = (check: CheckEntry) => {
+                        const isConfigFailure = check.id.startsWith('config_');
+                        const hintIsCommand = check.hint ? looksLikeCommand(check.hint) : false;
+                        if (!check.hint && !isConfigFailure) return null;
+                        return (
+                          <div className="rounded-md border-l-2 border-amber-500/50 bg-[color:var(--surface-1)]/40 pl-2 pr-1.5 py-1.5 space-y-1.5">
+                            {check.hint && hintIsCommand ? (
+                              <div className="flex items-start gap-1.5">
+                                <code className="flex-1 font-mono text-[10px] text-[color:var(--text-primary)] break-all leading-snug">{check.hint}</code>
+                                <button
+                                  type="button"
+                                  onClick={() => { navigator.clipboard.writeText(check.hint ?? ''); toast.success('Copied'); }}
+                                  className="shrink-0 p-0.5 rounded text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)] transition-colors"
+                                  title="Copy to clipboard"
+                                >
+                                  <Copy size={10} />
+                                </button>
+                              </div>
+                            ) : check.hint ? (
+                              <div className="text-[10px] leading-snug text-[color:var(--text-secondary)]">{check.hint}</div>
+                            ) : null}
+                            {isConfigFailure && (
+                              <button
+                                type="button"
+                                onClick={() => navigate(settingsHref)}
+                                className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-70 transition-opacity"
+                              >
+                                Open Settings <ExternalLink size={9} />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      };
+
+                      return (
+                        <section className="space-y-2">
+                          {/* Hero card — absorbs the primary required failure when one exists */}
+                          <div className={`rounded-lg border px-2.5 py-2 ${heroBorder}`}>
+                            <div className="flex items-start gap-2">
+                              {heroIcon}
+                              <div className="flex-1 min-w-0 space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-[12px] font-bold text-[color:var(--text-primary)]">{heroLabel}</span>
+                                  {targetLine && (
+                                    <span className="text-[10px] font-mono text-[color:var(--text-muted)] truncate">{targetLine}</span>
+                                  )}
+                                </div>
+                                {primaryFailure ? (
+                                  <>
+                                    <div className="text-[10px] text-[color:var(--text-secondary)] leading-snug">
+                                      <span className="font-semibold text-[color:var(--text-primary)]">{primaryFailure.label}</span> failed
+                                      {typeof primaryFailure.duration_ms === 'number' && primaryFailure.duration_ms >= 500 && (
+                                        <span className="font-mono text-[color:var(--text-muted)]"> · {primaryFailure.duration_ms}ms</span>
+                                      )}
                                     </div>
-                                    {check.detail ? (
-                                      <div className="mt-1 max-w-full break-words font-mono text-[9px] leading-relaxed text-[color:var(--text-muted)]">
-                                        {check.detail}
+                                    {primaryFailure.detail && (
+                                      <div className="font-mono text-[10px] leading-snug text-[color:var(--text-secondary)] break-words">
+                                        {primaryFailure.detail}
                                       </div>
-                                    ) : null}
+                                    )}
+                                    {renderFixCallout(primaryFailure)}
+                                  </>
+                                ) : (
+                                  (runtimeStatus?.summary || runtimeStatusLoading) && (
+                                    <div className="text-[10px] text-[color:var(--text-secondary)] leading-snug">
+                                      {runtimeStatus?.summary ?? 'Checking runtime status…'}
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => void fetchRuntimeStatus()}
+                                disabled={runtimeStatusLoading}
+                                className="inline-flex h-5 w-5 items-center justify-center rounded text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] disabled:opacity-50 shrink-0"
+                                title="Refresh runtime diagnostics"
+                              >
+                                <RefreshCw size={11} className={runtimeStatusLoading ? 'animate-spin' : ''} />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Additional required failures, if any (rare — usually there's just one). */}
+                          {remainingRequiredFailures.length > 0 && (
+                            <div className="space-y-1.5">
+                              {remainingRequiredFailures.map((check) => (
+                                <div key={check.id} className="rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-2">
+                                  <div className="flex items-start gap-2">
+                                    <XCircle size={13} className="text-rose-500 shrink-0 mt-0.5" />
+                                    <div className="min-w-0 flex-1 space-y-1">
+                                      <div className="text-[11px] font-bold text-[color:var(--text-primary)]">{check.label}</div>
+                                      {check.detail && (
+                                        <div className="font-mono text-[10px] leading-snug text-[color:var(--text-secondary)] break-words">{check.detail}</div>
+                                      )}
+                                      {renderFixCallout(check)}
+                                    </div>
                                   </div>
                                 </div>
-                                <div className="flex shrink-0 flex-col items-end gap-1">
-                                  <StatusChip
-                                    label={check.status}
-                                    tone={runtimeCheckTone(check.status)}
-                                    className="px-1.5 py-0 text-[8px]"
-                                  />
-                                  {typeof check.duration_ms === 'number' ? (
-                                    <span className="font-mono text-[8px] text-[color:var(--text-muted)]">
-                                      {check.duration_ms}ms
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
-                      ) : runtimeStatusLoading ? (
-                        <div className="py-8 text-center text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] opacity-50">
-                          Checking runtime...
-                        </div>
-                      ) : (
-                        <div className="py-8 text-center text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] opacity-40">
-                          No diagnostics yet.
-                        </div>
-                      )}
-                    </section>
+                          )}
+
+                          {/* Optional warnings — collapsed roll-up */}
+                          {optionalWarnings.length > 0 && (
+                            <div className="space-y-1">
+                              <button
+                                type="button"
+                                onClick={() => setShowOptionalRuntimeWarnings((v) => !v)}
+                                className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/10 transition-all text-left"
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <AlertCircle size={11} className="text-amber-400 shrink-0" />
+                                  <span className="text-[10px] font-medium text-[color:var(--text-secondary)]">
+                                    {optionalWarnings.length} optional capabilit{optionalWarnings.length === 1 ? 'y' : 'ies'} missing
+                                  </span>
+                                </div>
+                                <ChevronDown size={11} className={`text-[color:var(--text-muted)] shrink-0 transition-transform ${showOptionalRuntimeWarnings ? 'rotate-180' : ''}`} />
+                              </button>
+                              {showOptionalRuntimeWarnings && (
+                                <div className="space-y-1 px-2 py-1.5 rounded-lg bg-[color:var(--surface-1)]/30">
+                                  {optionalWarnings.map((check) => (
+                                    <div key={check.id} className="flex items-start gap-1.5 py-0.5">
+                                      <div className="h-1 w-1 rounded-full bg-amber-400 shrink-0 mt-1.5" />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-baseline gap-1.5">
+                                          <span className="text-[10px] font-semibold text-[color:var(--text-secondary)]">{check.label}</span>
+                                          {check.detail && <span className="text-[9px] text-[color:var(--text-muted)] font-mono truncate">{check.detail}</span>}
+                                        </div>
+                                        {check.hint && (
+                                          <div className="text-[9px] text-[color:var(--text-muted)] leading-snug">{check.hint}</div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Passing checks collapsed — hidden when the runtime is unreachable/failed */}
+                          {passed.length > 0 && !suppressPassedRollup && (
+                            <div className="space-y-1">
+                              <button
+                                type="button"
+                                onClick={() => setShowPassingRuntimeChecks((v) => !v)}
+                                className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 hover:bg-[color:var(--surface-1)] transition-all text-left"
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <CheckCircle2 size={11} className="text-emerald-400 shrink-0" />
+                                  <span className="text-[10px] font-medium text-[color:var(--text-secondary)]">
+                                    {passed.length} check{passed.length === 1 ? '' : 's'} passed
+                                    {totalPassMs > 0 ? ` · ${totalPassMs}ms` : ''}
+                                  </span>
+                                </div>
+                                <ChevronDown size={11} className={`text-[color:var(--text-muted)] shrink-0 transition-transform ${showPassingRuntimeChecks ? 'rotate-180' : ''}`} />
+                              </button>
+                              {showPassingRuntimeChecks && (
+                                <div className="space-y-0.5 px-2 py-1.5 rounded-lg bg-[color:var(--surface-1)]/30">
+                                  {passed.map((check) => (
+                                    <div key={check.id} className="flex items-center gap-1.5 py-0.5">
+                                      <div className="h-1 w-1 rounded-full bg-emerald-500 shrink-0" />
+                                      <span className="text-[10px] text-[color:var(--text-secondary)] flex-1 min-w-0 truncate">{check.label}</span>
+                                      {typeof check.duration_ms === 'number' && check.duration_ms >= 100 && (
+                                        <span className="font-mono text-[9px] text-[color:var(--text-muted)] shrink-0">{check.duration_ms}ms</span>
+                                      )}
+                                    </div>
+                                  ))}
+                                  {skipped.map((check) => (
+                                    <div key={check.id} className="flex items-center gap-1.5 py-0.5 opacity-50">
+                                      <div className="h-1 w-1 rounded-full bg-[color:var(--text-muted)] shrink-0" />
+                                      <span className="text-[10px] text-[color:var(--text-muted)] flex-1 min-w-0 truncate">{check.label} (skipped)</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Empty / loading states */}
+                          {!runtimeStatus && runtimeStatusLoading && allChecks.length === 0 && (
+                            <div className="py-3 text-center text-[10px] text-[color:var(--text-muted)] opacity-60">
+                              Checking runtime…
+                            </div>
+                          )}
+                          {!runtimeStatus && !runtimeStatusLoading && (
+                            <div className="py-3 text-center text-[10px] text-[color:var(--text-muted)] opacity-40">
+                              No diagnostics yet.
+                            </div>
+                          )}
+
+                          {/* Footer metadata */}
+                          {runtimeStatus?.target && (runtimeStatus.target.username || runtimeStatus.target.workspaces_dir) && (
+                            <div className="pt-0.5 px-1 space-y-0 text-[9px] text-[color:var(--text-muted)] font-mono">
+                              <div className="truncate">
+                                {[
+                                  runtimeStatus.os !== 'unknown' ? runtimeStatus.os : null,
+                                  runtimeStatus.sandbox !== 'unknown' && runtimeStatus.sandbox !== 'unavailable' ? `${runtimeStatus.sandbox} sandbox` : null,
+                                  runtimeStatus.target.username && runtimeStatus.target.host
+                                    ? `${runtimeStatus.target.username}@${runtimeStatus.target.host}:${runtimeStatus.target.port ?? 22}`
+                                    : null,
+                                ].filter(Boolean).join(' · ')}
+                              </div>
+                              {runtimeStatus.target.workspaces_dir && (
+                                <div className="truncate">{runtimeStatus.target.workspaces_dir}</div>
+                              )}
+                            </div>
+                          )}
+                        </section>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>

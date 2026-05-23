@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from uuid import UUID
 
+from app.services.runtime.environment import RuntimeEnvironment, detect_runtime_environment
 from app.services.runtime.remote_commands import load_remote_command
 from app.services.runtime.ssh_client import SSHClient
 from app.services.runtime.workspace import workspace_paths
@@ -22,6 +23,10 @@ class RuntimePathIsDirectoryError(IsADirectoryError):
     pass
 
 
+class RuntimeSandboxUnavailableError(RuntimePathInvalidError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeDownload:
     content: bytes
@@ -33,6 +38,7 @@ class RuntimeWorkspaceFiles:
     def __init__(self, ssh: SSHClient, *, workspaces_root: str | None = None) -> None:
         self._ssh = ssh
         self._workspaces_root = workspaces_root
+        self._environment: RuntimeEnvironment | None = None
 
     async def list_files(self, session_id: UUID | str, *, path: str = "", limit: int = 400) -> dict:
         return await self._run_json(
@@ -133,6 +139,7 @@ class RuntimeWorkspaceFiles:
         timeout: int,
     ) -> dict:
         paths = workspace_paths(str(session_id), root=self._workspaces_root)
+        await self._require_supported_environment()
         request = {
             "operation": operation,
             "session_id": paths.session_id,
@@ -141,7 +148,7 @@ class RuntimeWorkspaceFiles:
             "payload": payload,
         }
         result = await self._ssh.run_script(
-            load_remote_command("workspace/files.sh"),
+            load_remote_command("common/workspace/files.sh"),
             args=[json.dumps(request, separators=(",", ":"))],
             timeout=timeout,
         )
@@ -158,6 +165,18 @@ class RuntimeWorkspaceFiles:
             _raise_remote_error(str(response.get("error") or "runtime_error"), str(response.get("detail") or ""))
         data = response.get("data")
         return data if isinstance(data, dict) else {}
+
+    async def _require_supported_environment(self) -> RuntimeEnvironment:
+        environment = self._environment
+        if environment is None:
+            environment = await detect_runtime_environment(self._ssh)
+            self._environment = environment
+        if not environment.supported:
+            raise RuntimeSandboxUnavailableError(
+                "Runtime target must be Linux with bubblewrap or macOS with sandbox-exec "
+                f"(detected os={environment.os}, sandbox={environment.sandbox})."
+            )
+        return environment
 
 
 def _raise_remote_error(error: str, detail: str) -> None:

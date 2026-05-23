@@ -11,13 +11,11 @@ from app.schemas.runtime import (
     RuntimeActionResponse,
     RuntimeDesktopResolutionRequest,
     RuntimeLiveViewResponse,
-    RuntimeRepairResponse,
     RuntimeStatusResponse,
 )
 from app.services.runtime.control import (
     bridge_runtime_desktop_rfb,
     live_view_response,
-    repair_runtime_response,
     reset_runtime_browser_action,
     restart_runtime_desktop_action,
     set_live_view_resolution_response,
@@ -40,9 +38,10 @@ DESKTOP_RESOLUTION_PRESETS = {
 
 @router.get("/status", response_model=RuntimeStatusResponse)
 async def get_runtime_status(
+    request: Request,
     _user: TokenPayload = Depends(require_auth),
 ) -> RuntimeStatusResponse:
-    return RuntimeStatusResponse(**(await runtime_status_payload()))
+    return RuntimeStatusResponse(**(await runtime_status_payload(instance_name=_request_instance_name(request))))
 
 
 @router.get("/live-view", response_model=RuntimeLiveViewResponse)
@@ -90,31 +89,32 @@ async def set_live_view_resolution(
     )
 
 
-@router.post("/repair", response_model=RuntimeRepairResponse)
-async def repair_runtime(
-    _user: TokenPayload = Depends(require_auth),
-) -> RuntimeRepairResponse:
-    return await repair_runtime_response()
-
-
 @router.post("/browser/reset", response_model=RuntimeActionResponse)
 async def reset_runtime_browser(
+    request: Request,
     session_id: str = Query(..., description="Session UUID"),
     user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> RuntimeActionResponse:
-    return await reset_runtime_browser_action(session_id=session_id, user=user, db=db)
+    return await reset_runtime_browser_action(
+        session_id=session_id,
+        instance_name=_request_instance_name(request),
+        user=user,
+        db=db,
+    )
 
 
 @router.post("/desktop/restart", response_model=RuntimeActionResponse)
 async def restart_runtime_desktop(
     payload: RuntimeDesktopResolutionRequest,
+    request: Request,
     session_id: str = Query(..., description="Session UUID"),
     user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> RuntimeActionResponse:
     return await restart_runtime_desktop_action(
         session_id=session_id,
+        instance_name=_request_instance_name(request),
         user=user,
         db=db,
         geometry=payload.geometry,
@@ -124,8 +124,18 @@ async def restart_runtime_desktop(
 
 @router.post("/workspace/wipe", response_model=RuntimeActionResponse)
 async def wipe_runtime_workspace(
+    request: Request,
     session_id: str = Query(..., description="Session UUID"),
     user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> RuntimeActionResponse:
-    return await wipe_runtime_workspace_action(session_id=session_id, user=user, db=db)
+    return await wipe_runtime_workspace_action(
+        session_id=session_id,
+        instance_name=_request_instance_name(request),
+        user=user,
+        db=db,
+    )
+
+
+def _request_instance_name(request: Request) -> str:
+    return str(getattr(request.state, "instance_name", request.path_params.get("instance_name", "")))

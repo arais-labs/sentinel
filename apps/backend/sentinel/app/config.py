@@ -1,19 +1,11 @@
-import platform
-from pathlib import Path
 from urllib.parse import quote
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal
 
 from app.services.llm.ids import ProviderChoice
 from app.services.onboarding.onboarding_defaults import DEFAULT_SYSTEM_PROMPT
-
-
-def _default_runtime_workspaces_dir() -> str:
-    if platform.system() == "Darwin":
-        return str(Path.home() / "Library" / "Application Support" / "Sentinel" / "runtime" / "workspaces")
-    return str(Path.home() / ".local" / "share" / "sentinel" / "runtime" / "workspaces")
 
 
 class Settings(BaseSettings):
@@ -109,16 +101,6 @@ class Settings(BaseSettings):
     session_auto_rename_every_messages: int = 10
     session_auto_rename_context_messages: int = 24
     session_auto_rename_model_tier: str = "fast"
-    runtime_workspaces_dir: str = Field(
-        default_factory=_default_runtime_workspaces_dir,
-        validation_alias=AliasChoices("SENTINEL_RUNTIME_WORKSPACES_DIR", "RUNTIME_WORKSPACES_HOST_DIR"),
-    )
-    runtime_ssh_host: str = Field(default="", validation_alias="SENTINEL_RUNTIME_SSH_HOST")
-    runtime_ssh_port: int = Field(default=22, validation_alias="SENTINEL_RUNTIME_SSH_PORT")
-    runtime_ssh_username: str = Field(default="", validation_alias="SENTINEL_RUNTIME_SSH_USERNAME")
-    runtime_ssh_key_path: str = Field(default="", validation_alias="SENTINEL_RUNTIME_SSH_KEY_PATH")
-    runtime_ssh_password: str = Field(default="", validation_alias="SENTINEL_RUNTIME_SSH_PASSWORD")
-
     # --- Telegram ---
     telegram_bot_token: str | None = None
     telegram_owner_user_id: str | None = None

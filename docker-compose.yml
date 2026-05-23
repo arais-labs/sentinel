@@ -36,17 +36,9 @@ services:
       JWT_SECRET_KEY: ${SENTINEL_JWT_SECRET_KEY:?Set SENTINEL_JWT_SECRET_KEY to a long random value before using docker-compose.yml}
       SENTINEL_AUTH_USERNAME: ${SENTINEL_AUTH_USERNAME:?Set SENTINEL_AUTH_USERNAME before using docker-compose.yml}
       SENTINEL_AUTH_PASSWORD: ${SENTINEL_AUTH_PASSWORD:?Set SENTINEL_AUTH_PASSWORD before using docker-compose.yml}
-      SENTINEL_RUNTIME_SSH_HOST: ${SENTINEL_RUNTIME_SSH_HOST:?Set SENTINEL_RUNTIME_SSH_HOST before using docker-compose.yml}
-      SENTINEL_RUNTIME_SSH_PORT: ${SENTINEL_RUNTIME_SSH_PORT:-22}
-      SENTINEL_RUNTIME_SSH_USERNAME: ${SENTINEL_RUNTIME_SSH_USERNAME:?Set SENTINEL_RUNTIME_SSH_USERNAME before using docker-compose.yml}
-      SENTINEL_RUNTIME_SSH_KEY_PATH: ${SENTINEL_RUNTIME_SSH_KEY_PATH:-}
-      SENTINEL_RUNTIME_SSH_PASSWORD: ${SENTINEL_RUNTIME_SSH_PASSWORD:-}
-      SENTINEL_RUNTIME_WORKSPACES_DIR: ${SENTINEL_RUNTIME_WORKSPACES_DIR:?Set SENTINEL_RUNTIME_WORKSPACES_DIR before using docker-compose.yml}
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - ${SENTINEL_RUNTIME_SSH_KEY_PATH}:${SENTINEL_RUNTIME_SSH_KEY_PATH}:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

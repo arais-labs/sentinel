@@ -8,7 +8,6 @@ from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect, stat
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.database import ManagerSessionLocal
 from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, TokenPayload, decode_and_validate_token
 from app.models import Session
@@ -17,10 +16,9 @@ from app.schemas.runtime import (
     RuntimeLiveViewResponse,
     RuntimeProviderInfoItemResponse,
     RuntimeProviderInfoResponse,
-    RuntimeRepairResponse,
 )
 from app.services.araios.runtime_services import get_browser_pool
-from app.services.runtime.desktop import RuntimeDesktopError, run_ansible_repair
+from app.services.runtime.desktop import RuntimeDesktopError
 from app.services.runtime.ssh_runtime import (
     get_runtime_desktop_manager,
     get_runtime_port_forward_manager,
@@ -46,35 +44,19 @@ def validated_desktop_resolution(value: str | None, presets: set[str]) -> str | 
 
 
 def runtime_provider_info(*, configured: bool) -> RuntimeProviderInfoResponse:
-    items: list[RuntimeProviderInfoItemResponse] = []
-    if settings.runtime_ssh_host.strip():
-        items.append(
-            RuntimeProviderInfoItemResponse(
-                key="host",
-                label="Host",
-                value=f"{settings.runtime_ssh_host.strip()}:{int(settings.runtime_ssh_port)}",
-            )
-        )
-    if settings.runtime_workspaces_dir.strip():
-        items.append(
-            RuntimeProviderInfoItemResponse(
-                key="workspaces",
-                label="Workspaces",
-                value=settings.runtime_workspaces_dir,
-            )
-        )
     return RuntimeProviderInfoResponse(
         id="ssh",
         label="SSH",
         status="configured" if configured else "not_configured",
-        summary="SSH/tmux runtime is configured." if configured else "SSH/tmux runtime is not configured.",
-        items=items,
+        summary="SSH/tmux runtime target is selected." if configured else "No runtime target is selected.",
+        items=[],
     )
 
 
 async def require_runtime_session(
     session_id: str,
     *,
+    instance_name: str,
     user: TokenPayload,
     db: AsyncSession,
 ) -> UUID:
@@ -85,9 +67,13 @@ async def require_runtime_session(
     result = await db.execute(select(Session.id).where(Session.id == sid, Session.user_id == user.sub))
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
-    if not runtime_configured():
+    if not await runtime_configured(instance_name=instance_name):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="SSH runtime is not configured.")
     return sid
+
+
+def _request_instance_name(request: Request) -> str:
+    return str(getattr(request.state, "instance_name", request.path_params.get("instance_name", "")))
 
 
 async def live_view_response(
@@ -99,7 +85,8 @@ async def live_view_response(
     geometry: str | None,
     resolution_presets: set[str],
 ) -> RuntimeLiveViewResponse:
-    configured = runtime_configured()
+    instance_name = _request_instance_name(request)
+    configured = await runtime_configured(instance_name=instance_name)
     provider = runtime_provider_info(configured=configured)
     desktop_geometry = validated_desktop_resolution(geometry, resolution_presets)
     if geometry is not None and desktop_geometry is None:
@@ -138,7 +125,8 @@ async def live_view_response(
             provider=provider,
         )
     try:
-        desktop = await get_runtime_desktop_manager().ensure_session_desktop(str(sid), geometry=desktop_geometry)
+        desktop_manager = await get_runtime_desktop_manager(instance_name=instance_name)
+        desktop = await desktop_manager.ensure_session_desktop(str(sid), geometry=desktop_geometry)
     except RuntimeDesktopError as exc:
         return RuntimeLiveViewResponse(
             enabled=True,
@@ -178,7 +166,8 @@ async def set_live_view_resolution_response(
     geometry: str,
     resolution_presets: set[str],
 ) -> RuntimeLiveViewResponse:
-    configured = runtime_configured()
+    instance_name = _request_instance_name(request)
+    configured = await runtime_configured(instance_name=instance_name)
     provider = runtime_provider_info(configured=configured)
     desktop_geometry = validated_desktop_resolution(geometry, resolution_presets)
     try:
@@ -217,7 +206,8 @@ async def set_live_view_resolution_response(
             provider=provider,
         )
     try:
-        desktop = await get_runtime_desktop_manager().ensure_session_desktop(str(sid), geometry=desktop_geometry)
+        desktop_manager = await get_runtime_desktop_manager(instance_name=instance_name)
+        desktop = await desktop_manager.ensure_session_desktop(str(sid), geometry=desktop_geometry)
     except RuntimeDesktopError as exc:
         return RuntimeLiveViewResponse(
             enabled=True,
@@ -270,7 +260,10 @@ async def bridge_runtime_desktop_rfb(
         return
 
     try:
-        desktop = await get_runtime_desktop_manager().get_session_desktop(str(session_id))
+        desktop_manager = await get_runtime_desktop_manager(
+            instance_name=str(websocket.path_params["instance_name"])
+        )
+        desktop = await desktop_manager.get_session_desktop(str(session_id))
     except Exception:
         logger.warning("runtime desktop websocket prepare failed for session %s", session_id, exc_info=True)
         await websocket.close(code=4005, reason="Runtime desktop unavailable")
@@ -333,21 +326,15 @@ async def bridge_runtime_desktop_rfb(
                 pass
 
 
-async def repair_runtime_response() -> RuntimeRepairResponse:
-    try:
-        return RuntimeRepairResponse(**(await run_ansible_repair()))
-    except RuntimeDesktopError as exc:
-        return RuntimeRepairResponse(ok=False, status="unavailable", detail=str(exc))
-
-
 async def reset_runtime_browser_action(
     *,
     session_id: str,
+    instance_name: str,
     user: TokenPayload,
     db: AsyncSession,
 ) -> RuntimeActionResponse:
-    sid = await require_runtime_session(session_id, user=user, db=db)
-    result = await get_browser_pool().reset(str(sid))
+    sid = await require_runtime_session(session_id, instance_name=instance_name, user=user, db=db)
+    result = await get_browser_pool().reset(str(sid), instance_name=instance_name)
     return RuntimeActionResponse(
         ok=True,
         action="browser_reset",
@@ -359,21 +346,23 @@ async def reset_runtime_browser_action(
 async def restart_runtime_desktop_action(
     *,
     session_id: str,
+    instance_name: str,
     user: TokenPayload,
     db: AsyncSession,
     geometry: str,
     resolution_presets: set[str],
 ) -> RuntimeActionResponse:
-    sid = await require_runtime_session(session_id, user=user, db=db)
+    sid = await require_runtime_session(session_id, instance_name=instance_name, user=user, db=db)
     desktop_geometry = validated_desktop_resolution(geometry, resolution_presets)
     if desktop_geometry is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unsupported desktop resolution: {geometry}",
         )
-    await get_browser_pool().remove(str(sid))
-    await get_runtime_desktop_manager().close_session(str(sid))
-    desktop = await get_runtime_desktop_manager().ensure_session_desktop(str(sid), geometry=desktop_geometry)
+    await get_browser_pool().remove(str(sid), instance_name=instance_name)
+    desktop_manager = await get_runtime_desktop_manager(instance_name=instance_name)
+    await desktop_manager.close_session(str(sid))
+    desktop = await desktop_manager.ensure_session_desktop(str(sid), geometry=desktop_geometry)
     return RuntimeActionResponse(
         ok=True,
         action="desktop_restart",
@@ -389,14 +378,17 @@ async def restart_runtime_desktop_action(
 async def wipe_runtime_workspace_action(
     *,
     session_id: str,
+    instance_name: str,
     user: TokenPayload,
     db: AsyncSession,
 ) -> RuntimeActionResponse:
-    sid = await require_runtime_session(session_id, user=user, db=db)
-    await get_browser_pool().remove(str(sid))
-    await get_runtime_port_forward_manager().close_session(str(sid))
-    await get_runtime_desktop_manager().close_session(str(sid))
-    manager = get_runtime_terminal_manager()
+    sid = await require_runtime_session(session_id, instance_name=instance_name, user=user, db=db)
+    await get_browser_pool().remove(str(sid), instance_name=instance_name)
+    forwards = await get_runtime_port_forward_manager(instance_name=instance_name)
+    await forwards.close_session(str(sid))
+    desktop = await get_runtime_desktop_manager(instance_name=instance_name)
+    await desktop.close_session(str(sid))
+    manager = await get_runtime_terminal_manager(instance_name=instance_name)
     await manager.delete_workspace(str(sid))
     await manager.prepare_workspace(str(sid))
     return RuntimeActionResponse(

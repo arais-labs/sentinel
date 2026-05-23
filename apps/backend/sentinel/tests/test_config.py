@@ -1,25 +1,6 @@
 from app.config import Settings
 
 
-def test_settings_accept_empty_optional_runtime_strings():
-    settings = Settings(
-        _env_file=None,
-        jwt_secret_key="test-secret",
-        runtime_ssh_key_path="",
-    )
-
-    assert settings.runtime_ssh_key_path == ""
-
-
-def test_settings_accept_empty_optional_runtime_env(monkeypatch):
-    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret")
-    monkeypatch.setenv("SENTINEL_RUNTIME_SSH_KEY_PATH", "")
-
-    settings = Settings(_env_file=None)
-
-    assert settings.runtime_ssh_key_path == ""
-
-
 def test_codex_defaults_use_current_codex_slugs():
     settings = Settings(_env_file=None, jwt_secret_key="test-secret")
 

@@ -7,11 +7,13 @@ import { AppShell } from '../components/AppShell';
 import { Panel } from '../components/ui/Panel';
 import { api } from '../lib/api';
 import { useAuthStore } from '../store/auth-store';
+import type { RuntimeSSHTarget } from '../types/api';
 
 interface SentinelInstance {
   name: string;
   database_name: string;
   display_name: string | null;
+  runtime_target_id: string | null;
 }
 
 interface AuditEvent {
@@ -41,6 +43,7 @@ export function InstancePickerPage() {
   const logout = useAuthStore((s) => s.logout);
   const desktopApi = typeof window !== 'undefined' ? window.sentinelDesktop : undefined;
   const [instances, setInstances] = useState<SentinelInstance[]>([]);
+  const [runtimeTargets, setRuntimeTargets] = useState<RuntimeSSHTarget[]>([]);
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -64,6 +67,7 @@ export function InstancePickerPage() {
     setLoading(true);
     try {
       setInstances(await api.get<SentinelInstance[]>('/instances'));
+      setRuntimeTargets(await api.get<RuntimeSSHTarget[]>('/runtime-targets'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to load instances');
     } finally {
@@ -294,6 +298,7 @@ export function InstancePickerPage() {
               {instances.map((instance) => {
                 const isRenaming = renamingName === instance.name;
                 const primaryLabel = instance.display_name || instance.name;
+                const runtimeTarget = runtimeTargets.find((target) => target.id === instance.runtime_target_id);
                 return (
                   <li
                     key={instance.database_name}
@@ -370,6 +375,8 @@ export function InstancePickerPage() {
                             <span className="truncate font-mono">{instance.name}</span>
                             <span>·</span>
                             <span className="truncate font-mono">{instance.database_name}</span>
+                            <span>·</span>
+                            <span className="truncate">{runtimeTarget ? `Runtime: ${runtimeTarget.name}` : 'No runtime target'}</span>
                           </div>
                         </>
                       )}

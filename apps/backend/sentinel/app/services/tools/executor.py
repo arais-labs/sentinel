@@ -44,23 +44,28 @@ class ToolExecutor:
         approval_result_recorder: ToolApprovalResultRecorderFn | None = None,
         db_session_factory: async_sessionmaker[AsyncSession] | None = None,
         sub_agent_orchestrator: Any | None = None,
+        instance_name: str | None = None,
     ) -> None:
         self._registry = registry
         self._approval_waiter = approval_waiter
         self._approval_result_recorder = approval_result_recorder
         self._db_session_factory = db_session_factory
         self._sub_agent_orchestrator = sub_agent_orchestrator
+        self._instance_name = instance_name
 
     def set_runtime_defaults(
         self,
         *,
         db_session_factory: async_sessionmaker[AsyncSession] | None = None,
         sub_agent_orchestrator: Any | None = None,
+        instance_name: str | None = None,
     ) -> None:
         if db_session_factory is not None:
             self._db_session_factory = db_session_factory
         if sub_agent_orchestrator is not None:
             self._sub_agent_orchestrator = sub_agent_orchestrator
+        if instance_name is not None:
+            self._instance_name = instance_name
 
     async def execute(
         self,
@@ -82,6 +87,8 @@ class ToolExecutor:
             runtime_context.db_session_factory = self._db_session_factory
         if runtime_context.sub_agent_orchestrator is None:
             runtime_context.sub_agent_orchestrator = self._sub_agent_orchestrator
+        if runtime_context.instance_name is None:
+            runtime_context.instance_name = self._instance_name
         self._validate_payload(tool, payload)
         with runtime_db_session_factory(runtime_context.db_session_factory):
             mode_definition = get_agent_mode_definition(agent_mode)

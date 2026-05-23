@@ -79,17 +79,13 @@ function renderRuntime(status: DesktopStatus): void {
   root.innerHTML = [
     detailRow('Provider', '<span class="mono">ssh</span>'),
     detailRow('Connection', stateDot(overallLabel, overallVariant)),
-    detailRow('Host', `<span class="mono">${escapeHtml(formatRuntimeHost(status))}</span>`),
-    detailRow('User', `<span class="mono">${escapeHtml(status.runtime.username || '-')}</span>`),
     detailRow('Auth', `<span class="mono">${escapeHtml(status.runtime.authMethod)}</span>`),
-    detailRow('Workspaces', `<span class="mono">${escapeHtml(shortPath(status.runtime.workspacesDir))}</span>`),
     detailRow('Phase', `<span class="mono">${escapeHtml(runtimePhase(status))}</span>`),
   ].join('');
 }
 
 function formatRuntimeHost(status: DesktopStatus): string {
-  if (!status.runtime.host) return '-';
-  return `${status.runtime.host}:${status.runtime.port || 22}`;
+  return status.runtime.message || '-';
 }
 
 function detailRow(label: string, value: string): string {
@@ -275,7 +271,7 @@ api.onStatus((status: DesktopStatus) => {
   const backend = status.services.find((s: ManagedServiceStatus) => s.name === 'backend');
   if (backend && backend.state === 'running' && lastBackendState !== 'running') {
     void refreshVersion();
-    hideBootstrapOverlay();
+    hideOverlay();
   }
   lastBackendState = backend?.state;
 });
@@ -335,9 +331,6 @@ function setOverlayProgress(phase: string, message: string, fraction?: number): 
     fill.classList.add('indeterminate');
   }
 }
-
-// Back-compat alias kept for the onStatus dismiss hook.
-const hideBootstrapOverlay = hideOverlay;
 
 api.onBootstrapProgress((progress: BootstrapProgress) => {
   showOverlay('Setting up Sentinel');

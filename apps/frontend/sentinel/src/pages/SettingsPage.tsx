@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import {
   LogOut, ShieldAlert, User, Cpu, Hash, Info, ChevronRight,
-  Bot, Eye, EyeOff, Check, Loader2, RefreshCw, HelpCircle, X, KeyRound,
+  Bot, Eye, EyeOff, Check, Loader2, RefreshCw, HelpCircle, X, KeyRound, Pencil, Plus,
+  Trash2, Server, Wifi,
 } from 'lucide-react';
 import { Link as RouterLink, useLocation } from 'react-router-dom';
 
@@ -13,6 +14,7 @@ import { APP_VERSION } from '../lib/env';
 import { api } from '../lib/api';
 import { instanceRouteFromPath } from '../lib/routes';
 import { useAuthStore } from '../store/auth-store';
+import type { RuntimeSSHTarget, RuntimeSSHTargetTestResponse } from '../types/api';
 
 // ── types ───────────────────────────────────────────────────────────────────
 
@@ -35,6 +37,31 @@ interface DesktopCodexOauthStatus {
   enabled: boolean;
   auth_file_found: boolean;
 }
+
+interface SentinelInstance {
+  name: string;
+  database_name: string;
+  display_name: string | null;
+  runtime_target_id: string | null;
+}
+
+const emptyRuntimeTargetForm = {
+  name: '',
+  host: '',
+  port: '22',
+  username: '',
+  workspaces_dir: '',
+  auth_type: 'private_key' as 'private_key' | 'password',
+  private_key: '',
+  password: '',
+};
+
+const RUNTIME_VERIFICATION_FIELDS = new Set<keyof typeof emptyRuntimeTargetForm>([
+  'host', 'port', 'username', 'workspaces_dir', 'auth_type', 'private_key', 'password',
+]);
+
+const runtimeInputClass = 'h-10 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs font-medium text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] outline-none transition-colors focus:border-[color:var(--accent-solid)]';
+const runtimeTextAreaClass = 'min-h-28 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 py-2 font-mono text-[10px] font-medium leading-relaxed text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] outline-none transition-colors focus:border-[color:var(--accent-solid)]';
 
 // ── OAuth help content ──────────────────────────────────────────────────────
 
@@ -291,6 +318,32 @@ export function SettingsPage() {
   const [savingProvider, setSavingProvider] = useState<string | null>(null);
   const [codexOauthImportAvailable, setCodexOauthImportAvailable] = useState(false);
   const [importingCodexOauth, setImportingCodexOauth] = useState(false);
+  const [runtimeTargets, setRuntimeTargets] = useState<RuntimeSSHTarget[]>([]);
+  const [currentInstance, setCurrentInstance] = useState<SentinelInstance | null>(null);
+  const [loadingRuntimeTargets, setLoadingRuntimeTargets] = useState(true);
+  const [savingRuntimeTarget, setSavingRuntimeTarget] = useState(false);
+  const [testingRuntimeTarget, setTestingRuntimeTarget] = useState(false);
+  const [runtimeForm, setRuntimeForm] = useState(emptyRuntimeTargetForm);
+  const [editingRuntimeTargetId, setEditingRuntimeTargetId] = useState<string | null>(null);
+  const [addingNewTarget, setAddingNewTarget] = useState(false);
+  const [confirmDeleteTargetId, setConfirmDeleteTargetId] = useState<string | null>(null);
+  const [deletingRuntimeTarget, setDeletingRuntimeTarget] = useState(false);
+  const [runtimeVerified, setRuntimeVerified] = useState(false);
+  const [runtimeResolvedHome, setRuntimeResolvedHome] = useState<string | null>(null);
+
+  function updateRuntimeForm(updates: Partial<typeof emptyRuntimeTargetForm>) {
+    setRuntimeForm((f) => ({ ...f, ...updates }));
+    const touchesVerification = (Object.keys(updates) as Array<keyof typeof emptyRuntimeTargetForm>)
+      .some((k) => RUNTIME_VERIFICATION_FIELDS.has(k));
+    if (touchesVerification) {
+      setRuntimeVerified(false);
+      setRuntimeResolvedHome(null);
+    }
+  }
+
+  const instanceName = location.pathname.match(/^\/instances\/([^/]+)/)?.[1]
+    ? decodeURIComponent(location.pathname.match(/^\/instances\/([^/]+)/)?.[1] || '')
+    : null;
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -304,6 +357,25 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
+
+  const fetchRuntimeTargets = useCallback(async () => {
+    if (!instanceName) return;
+    setLoadingRuntimeTargets(true);
+    try {
+      const [targets, instance] = await Promise.all([
+        api.get<RuntimeSSHTarget[]>('/runtime-targets'),
+        api.get<SentinelInstance>(`/instances/${encodeURIComponent(instanceName)}`),
+      ]);
+      setRuntimeTargets(targets);
+      setCurrentInstance(instance);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to load runtime targets');
+    } finally {
+      setLoadingRuntimeTargets(false);
+    }
+  }, [instanceName]);
+
+  useEffect(() => { void fetchRuntimeTargets(); }, [fetchRuntimeTargets]);
 
   useEffect(() => {
     let cancelled = false;
@@ -379,7 +451,415 @@ export function SettingsPage() {
     }
   }
 
+  function startEditingRuntimeTarget(target: RuntimeSSHTarget) {
+    setAddingNewTarget(false);
+    setConfirmDeleteTargetId(null);
+    setEditingRuntimeTargetId(target.id);
+    setRuntimeForm({
+      name: target.name,
+      host: target.host,
+      port: String(target.port),
+      username: target.username,
+      workspaces_dir: target.workspaces_dir,
+      auth_type: target.auth_type,
+      private_key: '',
+      password: '',
+    });
+    setRuntimeVerified(true);
+    setRuntimeResolvedHome(null);
+  }
+
+  function startAddingRuntimeTarget() {
+    setEditingRuntimeTargetId(null);
+    setConfirmDeleteTargetId(null);
+    setRuntimeForm(emptyRuntimeTargetForm);
+    setAddingNewTarget(true);
+    setRuntimeVerified(false);
+    setRuntimeResolvedHome(null);
+  }
+
+  function resetRuntimeForm() {
+    setEditingRuntimeTargetId(null);
+    setAddingNewTarget(false);
+    setRuntimeForm(emptyRuntimeTargetForm);
+    setRuntimeVerified(false);
+    setRuntimeResolvedHome(null);
+  }
+
+  async function handleDeleteRuntimeTarget(targetId: string) {
+    setDeletingRuntimeTarget(true);
+    try {
+      await api.delete(`/runtime-targets/${targetId}`);
+      toast.success('Runtime target removed');
+      setConfirmDeleteTargetId(null);
+      if (editingRuntimeTargetId === targetId) resetRuntimeForm();
+      await fetchRuntimeTargets();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to remove runtime target');
+    } finally {
+      setDeletingRuntimeTarget(false);
+    }
+  }
+
+  async function handleSaveRuntimeTarget(testOnly = false) {
+    const isEditing = editingRuntimeTargetId !== null;
+    const secretValue = runtimeForm.auth_type === 'private_key'
+      ? runtimeForm.private_key.trim()
+      : runtimeForm.password;
+    const body = {
+      name: runtimeForm.name.trim(),
+      host: runtimeForm.host.trim(),
+      port: Number(runtimeForm.port || 22),
+      username: runtimeForm.username.trim(),
+      workspaces_dir: runtimeForm.workspaces_dir.trim(),
+      ...(isEditing && !secretValue ? {} : { auth_type: runtimeForm.auth_type }),
+      private_key: runtimeForm.auth_type === 'private_key' && secretValue ? runtimeForm.private_key : undefined,
+      password: runtimeForm.auth_type === 'password' && secretValue ? runtimeForm.password : undefined,
+    };
+    if (testOnly) {
+      if (!body.host || !body.username) {
+        toast.error('Host and username are required to test');
+        return;
+      }
+      if (!isEditing && !secretValue) {
+        toast.error(runtimeForm.auth_type === 'private_key' ? 'Private key is required' : 'SSH password is required');
+        return;
+      }
+      if (!secretValue) {
+        toast.error('Enter the SSH secret to test this target');
+        return;
+      }
+      setTestingRuntimeTarget(true);
+      try {
+        const result = await api.post<RuntimeSSHTargetTestResponse>(
+          '/runtime-targets/test',
+          { ...body, auth_type: runtimeForm.auth_type },
+          { timeoutMs: 20_000 },
+        );
+        if (result.ok) {
+          if (result.resolved_workspaces_dir) {
+            setRuntimeForm((f) => ({ ...f, workspaces_dir: result.resolved_workspaces_dir as string }));
+          }
+          setRuntimeVerified(true);
+          setRuntimeResolvedHome(result.resolved_home ?? null);
+          toast.success(result.detail);
+        } else {
+          setRuntimeVerified(false);
+          setRuntimeResolvedHome(null);
+          toast.error(result.detail);
+        }
+      } catch (error) {
+        setRuntimeVerified(false);
+        setRuntimeResolvedHome(null);
+        toast.error(error instanceof Error ? error.message : 'Runtime target test failed');
+      } finally {
+        setTestingRuntimeTarget(false);
+      }
+      return;
+    }
+    if (!body.name || !body.host || !body.username || !body.workspaces_dir) {
+      toast.error('Runtime target name, host, username, and workspace root are required');
+      return;
+    }
+    if (!isEditing && !secretValue) {
+      toast.error(runtimeForm.auth_type === 'private_key' ? 'Private key is required' : 'SSH password is required');
+      return;
+    }
+    setSavingRuntimeTarget(true);
+    try {
+      const target = isEditing
+        ? await api.patch<RuntimeSSHTarget>(`/runtime-targets/${editingRuntimeTargetId}`, body)
+        : await api.post<RuntimeSSHTarget>('/runtime-targets', body);
+      resetRuntimeForm();
+      await fetchRuntimeTargets();
+      if (!isEditing && instanceName) {
+        await assignRuntimeTarget(target.id);
+      }
+      toast.success(isEditing ? 'Runtime target updated' : 'Runtime target saved');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to save runtime target');
+    } finally {
+      setSavingRuntimeTarget(false);
+    }
+  }
+
+  async function assignRuntimeTarget(targetId: string | null) {
+    if (!instanceName) return;
+    try {
+      const instance = await api.patch<SentinelInstance>(
+        `/instances/${encodeURIComponent(instanceName)}/runtime-target`,
+        { runtime_target_id: targetId },
+      );
+      setCurrentInstance(instance);
+      toast.success(targetId ? 'Runtime target selected' : 'Runtime target cleared');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to assign runtime target');
+    }
+  }
+
   const primaryProvider = providerStatus?.primary_provider ?? 'anthropic';
+  const activeRuntimeTargetId = currentInstance?.runtime_target_id ?? null;
+
+  function renderRuntimeForm() {
+    const isEditing = editingRuntimeTargetId !== null;
+    const suggestedWorkspaceRoot = runtimeResolvedHome
+      ? `${runtimeResolvedHome.replace(/\/+$/, '')}/sentinel/workspaces`
+      : null;
+    const canShowSuggestion = !!(
+      suggestedWorkspaceRoot && runtimeForm.workspaces_dir.trim() !== suggestedWorkspaceRoot
+    );
+    return (
+      <div className="rounded-xl border border-[color:var(--accent-solid)]/40 bg-[color:var(--surface-0)] p-4 space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)]">
+            {isEditing ? 'Edit runtime target' : 'New runtime target'}
+          </span>
+          {runtimeVerified ? (
+            <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+              <Check size={10} /> Verified
+            </span>
+          ) : (
+            <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400">
+              Not verified
+            </span>
+          )}
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={resetRuntimeForm}
+            className="p-1 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
+            title="Cancel"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="space-y-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Name</span>
+            <input
+              value={runtimeForm.name}
+              onChange={(e) => updateRuntimeForm({ name: e.target.value })}
+              className={`${runtimeInputClass} w-full`}
+            />
+          </label>
+          <label className="space-y-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Username</span>
+            <input
+              value={runtimeForm.username}
+              onChange={(e) => updateRuntimeForm({ username: e.target.value })}
+              className={`${runtimeInputClass} w-full`}
+            />
+          </label>
+          <label className="space-y-1 sm:col-span-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Host</span>
+            <input
+              value={runtimeForm.host}
+              onChange={(e) => updateRuntimeForm({ host: e.target.value })}
+              placeholder="hostname or IP"
+              className={`${runtimeInputClass} w-full font-mono`}
+            />
+          </label>
+          <label className="space-y-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Port</span>
+            <input
+              value={runtimeForm.port}
+              onChange={(e) => updateRuntimeForm({ port: e.target.value })}
+              className={`${runtimeInputClass} w-full font-mono`}
+            />
+          </label>
+        </div>
+
+        <label className="block space-y-1">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Workspace root</span>
+          <input
+            value={runtimeForm.workspaces_dir}
+            onChange={(e) => updateRuntimeForm({ workspaces_dir: e.target.value })}
+            className={`${runtimeInputClass} w-full font-mono`}
+          />
+          {canShowSuggestion && (
+            <button
+              type="button"
+              onClick={() => updateRuntimeForm({ workspaces_dir: suggestedWorkspaceRoot! })}
+              className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-70 transition-opacity"
+            >
+              <Check size={11} />
+              Use <span className="font-mono normal-case tracking-normal">{suggestedWorkspaceRoot}</span>
+            </button>
+          )}
+          <p className="text-[10px] text-[color:var(--text-muted)]">
+            Leave blank to use <span className="font-mono">$HOME/sentinel/workspaces</span>.
+          </p>
+        </label>
+
+        <div className="space-y-2">
+          <span className="block text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Authentication</span>
+          <div className="flex rounded-lg bg-[color:var(--surface-2)] p-0.5 w-fit">
+            {(['private_key', 'password'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => updateRuntimeForm({ auth_type: mode })}
+                className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                  runtimeForm.auth_type === mode
+                    ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
+                    : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
+                }`}
+              >
+                {mode === 'private_key' ? 'Private key' : 'Password'}
+              </button>
+            ))}
+          </div>
+          {runtimeForm.auth_type === 'private_key' ? (
+            <textarea
+              value={runtimeForm.private_key}
+              onChange={(e) => updateRuntimeForm({ private_key: e.target.value })}
+              placeholder={isEditing ? '' : '-----BEGIN OPENSSH PRIVATE KEY-----'}
+              className={`${runtimeTextAreaClass} w-full`}
+            />
+          ) : (
+            <input
+              type="password"
+              value={runtimeForm.password}
+              onChange={(e) => updateRuntimeForm({ password: e.target.value })}
+              className={`${runtimeInputClass} w-full`}
+            />
+          )}
+          {isEditing && (
+            <p className="text-[10px] leading-relaxed text-[color:var(--text-muted)]">
+              Leave the SSH secret empty to keep the existing credential.
+            </p>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[color:var(--border-subtle)]">
+          <button
+            type="button"
+            onClick={resetRuntimeForm}
+            className="btn-secondary h-10 px-3 text-[10px] font-bold uppercase tracking-widest"
+          >
+            Cancel
+          </button>
+          <div className="flex-1" />
+          {!runtimeVerified && (
+            <span className="text-[10px] text-amber-400 font-medium">
+              Test connection to enable save
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => void handleSaveRuntimeTarget(true)}
+            disabled={testingRuntimeTarget || savingRuntimeTarget}
+            className="btn-secondary h-10 px-3 gap-2 text-[10px] font-bold uppercase tracking-widest"
+          >
+            {testingRuntimeTarget ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
+            Test connection
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSaveRuntimeTarget(false)}
+            disabled={savingRuntimeTarget || testingRuntimeTarget || !runtimeVerified}
+            title={!runtimeVerified ? 'Run Test connection successfully before saving' : undefined}
+            className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {savingRuntimeTarget ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+            {isEditing ? 'Save changes' : 'Save target'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderTargetCard(target: RuntimeSSHTarget) {
+    const isActive = activeRuntimeTargetId === target.id;
+    const isConfirmingDelete = confirmDeleteTargetId === target.id;
+
+    return (
+      <div
+        key={target.id}
+        className={`group relative rounded-xl border transition-all ${
+          isActive
+            ? 'border-[color:var(--accent-solid)] bg-[color:var(--surface-1)] ring-1 ring-[color:var(--accent-solid)]/30'
+            : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-1)]'
+        }`}
+      >
+        <div className="flex items-stretch">
+          <button
+            type="button"
+            onClick={() => { if (!isActive) void assignRuntimeTarget(target.id); }}
+            disabled={isActive}
+            className={`flex-1 min-w-0 text-left px-4 py-3 flex items-start gap-3 ${isActive ? 'cursor-default' : 'cursor-pointer'}`}
+            title={isActive ? 'This target is currently active for this instance' : 'Click to set as active runtime target'}
+          >
+            <div className={`mt-1 h-2.5 w-2.5 rounded-full shrink-0 ${isActive ? 'bg-emerald-500' : 'bg-[color:var(--text-muted)]/40 group-hover:bg-[color:var(--text-muted)]'}`} />
+            <div className="flex-1 min-w-0 space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-bold truncate">{target.name}</span>
+                {isActive && (
+                  <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                    Active
+                  </span>
+                )}
+                <StatusChip
+                  label={target.auth_type === 'private_key' ? 'Key' : 'Password'}
+                  tone="info"
+                  className="scale-90"
+                />
+              </div>
+              <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
+                {target.username}@{target.host}:{target.port}
+              </div>
+              <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
+                {target.workspaces_dir}
+              </div>
+            </div>
+          </button>
+          <div className="flex items-center gap-1 pr-3 shrink-0">
+            {isConfirmingDelete ? (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteRuntimeTarget(target.id)}
+                  disabled={deletingRuntimeTarget}
+                  className="text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:opacity-70 transition-opacity px-2 py-1"
+                >
+                  {deletingRuntimeTarget ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteTargetId(null)}
+                  className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors px-2 py-1"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => startEditingRuntimeTarget(target)}
+                  className="p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                  title="Edit runtime target"
+                >
+                  <Pencil size={13} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteTargetId(target.id)}
+                  className="p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-rose-500 hover:bg-rose-500/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                  title="Delete runtime target"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const isFormOpen = editingRuntimeTargetId !== null || addingNewTarget;
 
   return (
     <AppShell
@@ -541,6 +1021,78 @@ export function SettingsPage() {
             <Info size={16} className="text-[color:var(--accent-solid)] shrink-0 mt-0.5" />
             <p className="text-[11px] text-[color:var(--text-secondary)] leading-relaxed font-medium">
               Changes take effect immediately. Each effort level (Fast / Normal / Deep Think) routes to the appropriate model per provider. The primary provider handles requests first; the other is used as fallback.
+            </p>
+          </div>
+        </Panel>
+
+        <Panel className="p-6 space-y-6 md:col-span-2">
+          <div className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] pb-4">
+            <div className="p-2 rounded-lg bg-[color:var(--surface-2)] text-[color:var(--accent-solid)]">
+              <KeyRound size={20} />
+            </div>
+            <div className="flex-1">
+              <h2 className="text-sm font-bold uppercase tracking-widest">Runtime SSH</h2>
+              <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-tighter">Reusable execution targets for this instance</p>
+            </div>
+            {activeRuntimeTargetId && (
+              <button
+                onClick={() => void assignRuntimeTarget(null)}
+                className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-rose-500 transition-colors px-2"
+                title="Detach the active runtime target from this instance"
+              >
+                Clear assignment
+              </button>
+            )}
+            <button onClick={() => void fetchRuntimeTargets()}
+              className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors p-1"
+              title="Refresh">
+              <RefreshCw size={14} className={loadingRuntimeTargets ? 'animate-spin' : ''} />
+            </button>
+          </div>
+
+          {loadingRuntimeTargets && runtimeTargets.length === 0 ? (
+            <div className="flex items-center justify-center py-8 text-[color:var(--text-muted)]">
+              <Loader2 size={20} className="animate-spin" />
+            </div>
+          ) : runtimeTargets.length === 0 && !addingNewTarget ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center gap-4 rounded-xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]">
+              <div className="p-3 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)]">
+                <Server size={24} className="text-[color:var(--text-muted)]" />
+              </div>
+              <div className="space-y-1 max-w-sm">
+                <p className="text-xs font-bold uppercase tracking-widest">No runtime targets yet</p>
+                <p className="text-[11px] text-[color:var(--text-muted)] leading-relaxed">
+                  Connect an SSH host so Sentinel can execute sessions in an isolated remote workspace.
+                </p>
+              </div>
+              <button onClick={startAddingRuntimeTarget} className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest">
+                <Plus size={14} /> Add your first target
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {runtimeTargets.map((target) =>
+                editingRuntimeTargetId === target.id
+                  ? <div key={target.id}>{renderRuntimeForm()}</div>
+                  : renderTargetCard(target),
+              )}
+              {addingNewTarget && renderRuntimeForm()}
+              {!isFormOpen && runtimeTargets.length > 0 && (
+                <button
+                  type="button"
+                  onClick={startAddingRuntimeTarget}
+                  className="w-full h-12 rounded-xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--accent-solid)] hover:bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)] transition-colors flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
+                >
+                  <Plus size={14} /> Add runtime target
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="bg-[color:var(--surface-1)] p-4 rounded-xl border border-[color:var(--border-subtle)] flex items-start gap-3">
+            <Info size={16} className="text-[color:var(--accent-solid)] shrink-0 mt-0.5" />
+            <p className="text-[11px] text-[color:var(--text-secondary)] leading-relaxed font-medium">
+              Click a target to make it the active runtime for this instance. Targets are shared across instances — assigning one here only affects this instance's session execution.
             </p>
           </div>
         </Panel>

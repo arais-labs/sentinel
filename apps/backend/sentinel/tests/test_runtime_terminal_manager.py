@@ -34,6 +34,12 @@ class _SSHStub:
 
     async def run(self, command: str, *, timeout: int = 300, **_: Any) -> RuntimeExecResult:
         self.commands.append(command)
+        if command.startswith("uname -s"):
+            return RuntimeExecResult(exit_status=0, stdout="Linux\n", stderr="")
+        if "command -v bwrap" in command:
+            return RuntimeExecResult(exit_status=0, stdout="yes\n", stderr="")
+        if "command -v sandbox-exec" in command:
+            return RuntimeExecResult(exit_status=0, stdout="no\n", stderr="")
         if self.responses:
             return self.responses.pop(0)
         return RuntimeExecResult(exit_status=0, stdout="", stderr="")

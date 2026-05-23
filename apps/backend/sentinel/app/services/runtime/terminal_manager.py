@@ -10,9 +10,12 @@ from shlex import quote
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
+from app.services.runtime.environment import RuntimeEnvironment, detect_runtime_environment
 from app.services.runtime.remote_commands import load_remote_command
 from app.services.runtime.ssh_client import SSHClient
 from app.services.runtime.tmux import (
+    build_host_tmux_command,
+    build_resolve_host_tmux_script,
     build_close_tmux_script,
     build_open_tmux_script,
     build_tmux_status_script,
@@ -90,6 +93,10 @@ class TerminalUnavailableError(RuntimeError):
         self.detail = detail
 
 
+class RuntimeSandboxUnavailableError(TerminalUnavailableError):
+    pass
+
+
 class RuntimeTerminalManager:
     """Backend-owned workspace and tmux lifecycle over SSH."""
 
@@ -101,12 +108,21 @@ class RuntimeTerminalManager:
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._background_tasks_by_terminal: dict[tuple[str, str], set[asyncio.Task[None]]] = {}
         self._terminal_metadata: dict[tuple[str, str], dict[str, object]] = {}
+        self._environment: RuntimeEnvironment | None = None
 
     @property
     def ssh(self) -> SSHClient:
         return self._ssh
 
+    @property
+    def workspaces_root(self) -> str | None:
+        return self._workspaces_root
+
+    async def runtime_environment(self) -> RuntimeEnvironment:
+        return await self._require_supported_environment()
+
     async def prepare_workspace(self, session_id: str) -> None:
+        await self._require_supported_environment()
         script, args = build_prepare_workspace_script(session_id, root=self._workspaces_root)
         await self._run_required_script(
             script,
@@ -139,7 +155,14 @@ class RuntimeTerminalManager:
         if key in self._running_terminals:
             return TerminalStatus(session_id=session_id, terminal_id=terminal_id, status="running")
         await self.prepare_workspace(session_id)
-        script, args = build_open_tmux_script(session_id, terminal_id=terminal_id, root=self._workspaces_root)
+        environment = await self._require_supported_environment()
+        script, args = build_open_tmux_script(
+            session_id,
+            terminal_id=terminal_id,
+            root=self._workspaces_root,
+            os_name=environment.os,
+            sandbox=environment.sandbox,
+        )
         await self._run_required_script(
             script,
             args,
@@ -161,7 +184,13 @@ class RuntimeTerminalManager:
 
     async def close_terminal(self, session_id: str, *, terminal_id: str = "0") -> TerminalStatus:
         validate_terminal_id(terminal_id)
-        script, args = build_close_tmux_script(session_id, terminal_id=terminal_id, root=self._workspaces_root)
+        environment = await self._require_supported_environment()
+        script, args = build_close_tmux_script(
+            session_id,
+            terminal_id=terminal_id,
+            root=self._workspaces_root,
+            os_name=environment.os,
+        )
         result = await self._ssh.run_script(
             script,
             args=args,
@@ -181,7 +210,13 @@ class RuntimeTerminalManager:
 
     async def status(self, session_id: str, *, terminal_id: str = "0") -> TerminalStatus:
         validate_terminal_id(terminal_id)
-        script, args = build_tmux_status_script(session_id, terminal_id=terminal_id, root=self._workspaces_root)
+        environment = await self._require_supported_environment()
+        script, args = build_tmux_status_script(
+            session_id,
+            terminal_id=terminal_id,
+            root=self._workspaces_root,
+            os_name=environment.os,
+        )
         result = await self._ssh.run_script(
             script,
             args=args,
@@ -385,13 +420,18 @@ class RuntimeTerminalManager:
         socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
         name = tmux_session_name(terminal_id)
         history_lines = max(100, min(5_000, (count // 80) + 100))
-        result = await self._ssh.run(
-            (
-                f"tmux -S {quote(socket)} capture-pane -p -J -t {quote(name)} "
-                f"-S -{history_lines} 2>/dev/null"
-            ),
-            timeout=15,
-        )
+        command = await self._tmux_command([
+            "-S",
+            socket,
+            "capture-pane",
+            "-p",
+            "-J",
+            "-t",
+            name,
+            "-S",
+            f"-{history_lines}",
+        ])
+        result = await self._ssh.run(f"{command} 2>/dev/null", timeout=15)
         if result.exit_status not in {0, None}:
             raise TerminalUnavailableError(
                 "terminal_read_failed",
@@ -405,8 +445,9 @@ class RuntimeTerminalManager:
             await self.open_terminal(session_id, terminal_id=terminal_id)
         socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
         name = tmux_session_name(terminal_id)
+        command = await self._tmux_command(["-S", socket, "-C", "attach-session", "-t", name])
         process = await self._ssh.create_process(
-            f"tmux -S {quote(socket)} -C attach-session -t {quote(name)}",
+            command,
             term_type=None,
             encoding="utf-8",
         )
@@ -531,7 +572,12 @@ class RuntimeTerminalManager:
 
     async def _discover_running_terminal_ids(self, session_id: str) -> set[str]:
         paths = workspace_paths(session_id, root=self._workspaces_root)
-        script = load_remote_command("tmux/discover.sh").replace("__TMUX_DIR__", quote(paths.tmux))
+        environment = await self._require_supported_environment()
+        script = (
+            load_remote_command("common/tmux/discover.sh")
+            .replace("__TMUX_DIR__", quote(paths.tmux))
+            .replace("__RESOLVE_HOST_TMUX__", build_resolve_host_tmux_script(os_name=environment.os))
+        )
         result = await self._ssh.run_script(script, timeout=15)
         if result.exit_status not in {0, None}:
             raise TerminalUnavailableError(
@@ -552,6 +598,21 @@ class RuntimeTerminalManager:
             self._locks[key] = lock
         return lock
 
+    async def _require_supported_environment(self) -> RuntimeEnvironment:
+        environment = self._environment
+        if environment is None:
+            environment = await detect_runtime_environment(self._ssh)
+            self._environment = environment
+        if not environment.supported:
+            raise RuntimeSandboxUnavailableError(
+                "runtime_sandbox_unavailable",
+                detail=(
+                    "Runtime target must be Linux with bubblewrap or macOS with sandbox-exec "
+                    f"(detected os={environment.os}, sandbox={environment.sandbox})."
+                ),
+            )
+        return environment
+
     async def _run_required_script(self, script: str, args: list[str], *, timeout: int, reason: str) -> None:
         result = await self._ssh.run_script(script, args=args, timeout=timeout)
         if result.exit_status not in {0, None}:
@@ -563,8 +624,17 @@ class RuntimeTerminalManager:
     async def _refuse_if_foreground_busy(self, session_id: str, *, terminal_id: str) -> None:
         socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
         name = tmux_session_name(terminal_id)
+        command = await self._tmux_command([
+            "-S",
+            socket,
+            "display-message",
+            "-p",
+            "-t",
+            name,
+            "#{pane_current_command}",
+        ])
         result = await self._ssh.run(
-            f"tmux -S {quote(socket)} display-message -p -t {quote(name)} '#{{pane_current_command}}'",
+            command,
             timeout=10,
         )
         current = (result.stdout or "").strip()
@@ -573,8 +643,14 @@ class RuntimeTerminalManager:
 
     async def _pane_log_size(self, session_id: str, *, terminal_id: str) -> int:
         log_path = tmux_host_log_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
+        environment = await self._require_supported_environment()
+        stat_command = (
+            f"stat -f %z {quote(log_path)} 2>/dev/null || echo 0"
+            if environment.os == "darwin"
+            else f"stat -c %s {quote(log_path)} 2>/dev/null || echo 0"
+        )
         result = await self._ssh.run(
-            f"stat -c %s {quote(log_path)} 2>/dev/null || echo 0",
+            stat_command,
             timeout=10,
         )
         try:
@@ -586,31 +662,35 @@ class RuntimeTerminalManager:
         socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
         name = tmux_session_name(terminal_id)
         await self._ssh.run(
-            f"tmux -S {quote(socket)} send-keys -t {quote(name)} C-u",
+            await self._tmux_command(["-S", socket, "send-keys", "-t", name, "C-u"]),
             timeout=10,
         )
         if "\n" in command:
             await self._ssh.run(
-                f"tmux -S {quote(socket)} send-keys -t {quote(name)} -l $'\\e[200~'",
+                await self._tmux_command(["-S", socket, "send-keys", "-t", name, "-l", "\x1b[200~"]),
                 timeout=10,
             )
             await self._ssh.run(
-                f"tmux -S {quote(socket)} send-keys -t {quote(name)} -l {quote(command)}",
+                await self._tmux_command(["-S", socket, "send-keys", "-t", name, "-l", command]),
                 timeout=15,
             )
             await self._ssh.run(
-                f"tmux -S {quote(socket)} send-keys -t {quote(name)} -l $'\\e[201~'",
+                await self._tmux_command(["-S", socket, "send-keys", "-t", name, "-l", "\x1b[201~"]),
                 timeout=10,
             )
         else:
             await self._ssh.run(
-                f"tmux -S {quote(socket)} send-keys -t {quote(name)} -l {quote(command)}",
+                await self._tmux_command(["-S", socket, "send-keys", "-t", name, "-l", command]),
                 timeout=15,
             )
         await self._ssh.run(
-            f"tmux -S {quote(socket)} send-keys -t {quote(name)} Enter",
+            await self._tmux_command(["-S", socket, "send-keys", "-t", name, "Enter"]),
             timeout=10,
         )
+
+    async def _tmux_command(self, args: list[str]) -> str:
+        environment = await self._require_supported_environment()
+        return build_host_tmux_command(args, os_name=environment.os)
 
     async def _await_command_complete(
         self,
@@ -695,7 +775,7 @@ class RuntimeTerminalManager:
         }
         request = {
             "job_dir": host_job_dir,
-            "runner": load_remote_command("jobs/run.sh"),
+            "runner": load_remote_command("common/jobs/run.sh"),
             "config": {
                 "job_id": job_id,
                 "command": command,
@@ -706,7 +786,7 @@ class RuntimeTerminalManager:
             "manifest": manifest,
         }
         result = await self._ssh.run_script(
-            load_remote_command("jobs/write.sh"),
+            load_remote_command("common/jobs/write.sh"),
             args=[json.dumps(request, separators=(",", ":"))],
             timeout=30,
         )

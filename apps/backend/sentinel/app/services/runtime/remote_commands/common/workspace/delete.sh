@@ -30,4 +30,8 @@ fi
 if [ ! -e "${session_root}" ]; then
   exit 0
 fi
-rm -rf --one-file-system -- "${session_root}"
+if rm --help 2>/dev/null | grep -q -- '--one-file-system'; then
+  rm -rf --one-file-system -- "${session_root}"
+else
+  rm -rf -- "${session_root}"
+fi
