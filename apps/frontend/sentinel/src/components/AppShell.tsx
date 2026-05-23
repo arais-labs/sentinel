@@ -48,7 +48,7 @@ const navItems: NavItem[] = [
   { label: 'Permissions', route: 'permissions', icon: Lock },
   { label: 'Git', route: 'git', icon: GitBranch },
   { label: 'Telegram', route: 'telegram', icon: Send },
-  { label: 'Showcase', route: 'showcase', icon: MonitorPlay },
+  ...(import.meta.env.DEV ? [{ label: 'Showcase', route: 'showcase', icon: MonitorPlay }] : []),
   { label: 'Settings', route: 'settings', icon: Settings },
 ];
 
