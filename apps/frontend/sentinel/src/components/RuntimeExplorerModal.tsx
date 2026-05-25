@@ -16,10 +16,10 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
   const status = runtimeStatus?.status ?? provider?.status ?? null;
   const targetItems = runtimeStatus
     ? [
-        { key: 'target', label: 'Target', value: runtimeStatus.target.name || runtimeStatus.target.host || '-' },
-        { key: 'host', label: 'Host', value: runtimeStatus.target.host || '-' },
-        { key: 'user', label: 'User', value: runtimeStatus.target.username || '-' },
-        { key: 'workspaces', label: 'Workspaces', value: runtimeStatus.target.workspaces_dir || '-' },
+        { key: 'runtime', label: 'Runtime', value: runtimeStatus.runtime.name || runtimeStatus.runtime.host || '-' },
+        { key: 'host', label: 'Host', value: runtimeStatus.runtime.host || '-' },
+        { key: 'user', label: 'User', value: runtimeStatus.runtime.username || '-' },
+        { key: 'workspaces', label: 'Workspaces', value: runtimeStatus.runtime.workspaces_dir || '-' },
         { key: 'os', label: 'OS', value: runtimeStatus.os },
         { key: 'sandbox', label: 'Sandbox', value: runtimeStatus.sandbox },
       ]
@@ -53,7 +53,7 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
               Provider
             </div>
             <div className="mt-2 text-sm font-semibold text-[color:var(--text-primary)]">
-              {provider?.label || runtimeStatus?.target.name || 'Runtime'}
+              {provider?.label || runtimeStatus?.runtime.name || 'Runtime'}
             </div>
             <div className="mt-1 text-xs leading-relaxed text-[color:var(--text-secondary)]">
               {provider?.summary || runtimeStatus?.summary || `Runtime is ${status || 'available'}.`}

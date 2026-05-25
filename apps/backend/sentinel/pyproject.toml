@@ -43,6 +43,9 @@ desktop-build = [
 where = ["."]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+"app.services.runtime.provisioning.ansible" = ["*.cfg", "*.yml"]
+
 [tool.black]
 line-length = 100
 target-version = ["py312"]

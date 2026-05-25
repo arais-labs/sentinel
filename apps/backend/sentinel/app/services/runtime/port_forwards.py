@@ -65,7 +65,7 @@ def normalize_forward_host(value: str | None) -> str:
     if host == "localhost":
         return "127.0.0.1"
     if host != "127.0.0.1":
-        raise RuntimeForwardError("Only loopback runtime targets are supported in v1.")
+        raise RuntimeForwardError("Only loopback runtimes are supported in v1.")
     return host
 
 

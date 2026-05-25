@@ -60,8 +60,9 @@ class RuntimeActionResponse(BaseModel):
     result: dict[str, object] = Field(default_factory=dict)
 
 
-class RuntimeStatusTargetResponse(BaseModel):
+class RuntimeStatusRuntimeResponse(BaseModel):
     name: str | None = None
+    provider: str | None = None
     host: str | None = None
     port: int | None = None
     username: str | None = None
@@ -84,7 +85,7 @@ class RuntimeStatusResponse(BaseModel):
     checked_at: datetime
     os: Literal["linux", "darwin", "unsupported", "unknown"] = "unknown"
     sandbox: Literal["bubblewrap", "seatbelt", "unavailable", "unknown"] = "unknown"
-    target: RuntimeStatusTargetResponse
+    runtime: RuntimeStatusRuntimeResponse
     checks: list[RuntimeStatusCheckResponse] = Field(default_factory=list)
     capabilities: dict[str, str] = Field(default_factory=dict)
 

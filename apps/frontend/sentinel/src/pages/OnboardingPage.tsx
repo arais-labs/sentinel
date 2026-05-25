@@ -4,9 +4,10 @@ import { toast } from 'sonner';
 import {
   Zap, ArrowRight, ArrowLeft, Check, Bot, User, Flag, Cpu,
   Eye, EyeOff, Loader2, KeyRound, Plus, X, Wifi, Server, SkipForward,
+  Container, Copy, RefreshCw,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import type { RuntimeSSHTarget, RuntimeSSHTargetTestResponse } from '../types/api';
+import type { Runtime, RuntimeTestResponse, RuntimeCapabilitiesResponse, RuntimeLifecycleResponse, RuntimeJob } from '../types/api';
 import {
   buildAgentIdentityMemoryContent,
   buildUserProfileMemoryContent,
@@ -38,10 +39,10 @@ interface SentinelInstance {
   name: string;
   database_name: string;
   display_name: string | null;
-  runtime_target_id: string | null;
+  runtime_id: string | null;
 }
 
-const emptyRuntimeTargetForm = {
+const emptyRuntimeForm = {
   name: '',
   host: '',
   port: '22',
@@ -52,9 +53,17 @@ const emptyRuntimeTargetForm = {
   password: '',
 };
 
-const RUNTIME_VERIFICATION_FIELDS = new Set<keyof typeof emptyRuntimeTargetForm>([
+const RUNTIME_VERIFICATION_FIELDS = new Set<keyof typeof emptyRuntimeForm>([
   'host', 'port', 'username', 'workspaces_dir', 'auth_type', 'private_key', 'password',
 ]);
+
+const RUNTIME_INSTALL_HINTS: Record<string, string | null> = {
+  Lima: 'brew install lima',
+  Docker: 'brew install --cask docker',
+  'Provisioning engine': 'brew install ansible',
+  'Runtime provisioning profile': null,
+  'Lima runtime profile': null,
+};
 
 const STEPS: StepMeta[] = [
   { id: 'welcome',  label: 'Welcome',       icon: <Zap size={14} /> },
@@ -127,12 +136,19 @@ function RuntimeStep({
   setFormOpen,
   verified,
   resolvedHome,
+  capabilities,
+  selectedProvider,
+  onPickProvider,
+  onCreateManaged,
+  onRefreshCapabilities,
+  creatingProvider,
+  creatingJobMessage,
 }: {
-  targets: RuntimeSSHTarget[];
+  targets: Runtime[];
   selectedTargetId: string;
   onSelect: (targetId: string) => void;
-  form: typeof emptyRuntimeTargetForm;
-  updateForm: (updates: Partial<typeof emptyRuntimeTargetForm>) => void;
+  form: typeof emptyRuntimeForm;
+  updateForm: (updates: Partial<typeof emptyRuntimeForm>) => void;
   onTest: () => void;
   onCreate: () => void;
   testing: boolean;
@@ -141,6 +157,13 @@ function RuntimeStep({
   setFormOpen: Dispatch<SetStateAction<boolean>>;
   verified: boolean;
   resolvedHome: string | null;
+  capabilities: RuntimeCapabilitiesResponse | null;
+  selectedProvider: 'lima' | 'docker' | 'ssh' | null;
+  onPickProvider: (provider: 'lima' | 'docker' | 'ssh' | null) => void;
+  onCreateManaged: (provider: 'lima' | 'docker') => Promise<void>;
+  onRefreshCapabilities: () => void;
+  creatingProvider: string | null;
+  creatingJobMessage: string | null;
 }) {
   const hasTargets = targets.length > 0;
   const effectiveFormOpen = !hasTargets || formOpen;
@@ -149,12 +172,160 @@ function RuntimeStep({
     : null;
   const canShowSuggestion = !!(suggestedWorkspaceRoot && form.workspaces_dir.trim() !== suggestedWorkspaceRoot);
 
-  function renderForm() {
+  function renderChooser() {
+    const capByProvider = new Map((capabilities?.providers ?? []).map((p) => [p.provider, p]));
+    const tiles: Array<{ id: 'lima' | 'docker' | 'ssh'; label: string; description: string; icon: typeof Cpu }> = [
+      { id: 'lima', label: 'Lima VM', description: 'Provisioned Linux VM via Lima.', icon: Cpu },
+      { id: 'docker', label: 'Docker', description: 'Provisioned Linux container via Docker.', icon: Container },
+      { id: 'ssh', label: 'Custom SSH', description: 'Bring your own SSH host.', icon: KeyRound },
+    ];
+    return (
+      <div className="rounded-xl border border-[color:var(--accent-solid)]/40 bg-[color:var(--surface-1)] p-4 space-y-3 animate-in fade-in slide-in-from-top-1 duration-200">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)]">Choose how to add a runtime</span>
+          {hasTargets && (
+            <button type="button" onClick={() => setFormOpen(false)} className="p-1 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors" title="Cancel">
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          {tiles.map((tile) => {
+            const cap = capByProvider.get(tile.id);
+            const isSsh = tile.id === 'ssh';
+            const available = isSsh ? true : (cap?.available ?? false);
+            const Icon = tile.icon;
+            return (
+              <button
+                key={tile.id}
+                type="button"
+                onClick={() => onPickProvider(tile.id)}
+                className="group text-left rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--accent-solid)] hover:bg-[color:var(--surface-2)] transition-all p-3 space-y-1.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <Icon size={16} className="text-[color:var(--text-secondary)] group-hover:text-[color:var(--accent-solid)] transition-colors" />
+                  {isSsh ? null : available ? (
+                    <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">Ready</span>
+                  ) : (
+                    <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400">Setup needed</span>
+                  )}
+                </div>
+                <div className="text-[11px] font-bold text-[color:var(--text-primary)]">{tile.label}</div>
+                <div className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">{tile.description}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  function renderManagedForm(provider: 'lima' | 'docker') {
+    const cap = capabilities?.providers.find((p) => p.provider === provider);
+    const available = cap?.available ?? false;
+    const isCreating = creatingProvider === provider;
+    const providerLabel = provider === 'lima' ? 'Lima VM' : 'Docker';
+    const installSteps = (cap?.missing ?? [])
+      .filter((m) => RUNTIME_INSTALL_HINTS[m] !== undefined)
+      .map((m) => ({ key: m, command: RUNTIME_INSTALL_HINTS[m] }));
+    return (
+      <div className="rounded-xl border border-[color:var(--accent-solid)]/40 bg-[color:var(--surface-1)] p-4 space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)]">New {providerLabel} runtime</span>
+          <button type="button" onClick={() => onPickProvider(null)} disabled={isCreating} className="p-1 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors disabled:opacity-40" title="Back to chooser">
+            <X size={14} />
+          </button>
+        </div>
+        {!available ? (
+          <div className="space-y-3">
+            <div className="text-[11px] text-amber-400 leading-relaxed">
+              {providerLabel} setup is incomplete on this machine. Install the missing tools below, then recheck.
+            </div>
+            {installSteps.length > 0 ? (
+              <div className="space-y-1.5">
+                {installSteps.map((step) => (
+                  <div key={step.key} className="flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2.5 py-1.5">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] text-[color:var(--text-muted)] uppercase tracking-wider">{step.key}</div>
+                      {step.command ? (
+                        <code className="font-mono text-[11px] text-[color:var(--text-primary)] break-all">{step.command}</code>
+                      ) : (
+                        <span className="text-[10px] text-[color:var(--text-muted)] italic">bundled with Sentinel — reinstall if missing</span>
+                      )}
+                    </div>
+                    {step.command && (
+                      <button
+                        type="button"
+                        onClick={() => { navigator.clipboard.writeText(step.command!); toast.success('Copied'); }}
+                        className="shrink-0 p-1 rounded text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)] transition-colors"
+                        title="Copy to clipboard"
+                      >
+                        <Copy size={12} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[10px] text-[color:var(--text-muted)] italic">Missing: {cap?.missing.join(', ') ?? 'unknown'}</div>
+            )}
+            <div className="flex items-center gap-2 pt-2 border-t border-[color:var(--border-subtle)]">
+              <button type="button" onClick={() => onPickProvider(null)} className="btn-secondary h-10 px-3 text-[10px] font-bold uppercase tracking-widest">Back</button>
+              <div className="flex-1" />
+              <button type="button" onClick={onRefreshCapabilities} className="btn-secondary h-10 px-3 gap-2 text-[10px] font-bold uppercase tracking-widest">
+                <RefreshCw size={14} /> Recheck
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="text-[11px] text-[color:var(--text-muted)] leading-relaxed">
+              {provider === 'lima'
+                ? 'Sentinel will provision a Linux VM via Lima. First run takes a few minutes.'
+                : 'Sentinel will provision a Linux container via Docker. First run takes ~1 minute.'}
+            </p>
+            <label className="block space-y-1">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Name</span>
+              <input
+                value={form.name}
+                onChange={(e) => updateForm({ name: e.target.value })}
+                disabled={isCreating}
+                className={`${onboardingInputClass} w-full disabled:opacity-50`}
+              />
+            </label>
+            {isCreating && (
+              <div className="rounded-md border-l-2 border-amber-500/50 bg-[color:var(--surface-0)]/60 pl-2 pr-1.5 py-1.5">
+                <div className="flex items-center gap-2">
+                  <Loader2 size={12} className="animate-spin text-amber-400 shrink-0" />
+                  <span className="text-[10px] text-[color:var(--text-secondary)] leading-snug">{creatingJobMessage ?? 'Working…'}</span>
+                </div>
+              </div>
+            )}
+            <div className="flex items-center gap-2 pt-2 border-t border-[color:var(--border-subtle)]">
+              <button type="button" onClick={() => onPickProvider(null)} disabled={isCreating} className="btn-secondary h-10 px-3 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">Back</button>
+              <div className="flex-1" />
+              <button
+                type="button"
+                onClick={() => void onCreateManaged(provider)}
+                disabled={isCreating || !form.name.trim()}
+                className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isCreating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                Create runtime
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  function renderSshForm() {
     return (
       <div className="rounded-xl border border-[color:var(--accent-solid)]/40 bg-[color:var(--surface-1)] p-4 space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)]">
-            {hasTargets ? 'New runtime target' : 'Create your first runtime target'}
+            {hasTargets ? 'New SSH runtime' : 'Connect your first SSH runtime'}
           </span>
           {verified ? (
             <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
@@ -166,11 +337,9 @@ function RuntimeStep({
             </span>
           )}
           <div className="flex-1" />
-          {hasTargets && (
-            <button type="button" onClick={() => setFormOpen(false)} className="p-1 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors" title="Cancel">
-              <X size={14} />
-            </button>
-          )}
+          <button type="button" onClick={() => onPickProvider(null)} className="p-1 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors" title="Back to chooser">
+            <X size={14} />
+          </button>
         </div>
 
         <p className="text-[11px] leading-relaxed text-[color:var(--text-muted)]">
@@ -237,11 +406,9 @@ function RuntimeStep({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[color:var(--border-subtle)]">
-          {hasTargets && (
-            <button type="button" onClick={() => setFormOpen(false)} className="btn-secondary h-10 px-3 text-[10px] font-bold uppercase tracking-widest">
-              Cancel
-            </button>
-          )}
+          <button type="button" onClick={() => onPickProvider(null)} className="btn-secondary h-10 px-3 text-[10px] font-bold uppercase tracking-widest">
+            Back
+          </button>
           <div className="flex-1" />
           {!verified && (
             <span className="text-[10px] text-amber-400 font-medium">
@@ -270,14 +437,18 @@ function RuntimeStep({
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-2xl font-black tracking-tight mb-1">Runtime target</h2>
+        <h2 className="text-2xl font-black tracking-tight mb-1">Runtime</h2>
         <p className="text-sm text-[color:var(--text-muted)]">
           Select the SSH machine where Sentinel will create session workspaces and run tools. You can change or add more from Settings later.
         </p>
       </div>
 
       {!hasTargets && !effectiveFormOpen ? null : !hasTargets ? (
-        renderForm()
+        selectedProvider === null
+          ? renderChooser()
+          : selectedProvider === 'ssh'
+            ? renderSshForm()
+            : renderManagedForm(selectedProvider)
       ) : (
         <div className="space-y-2">
           {targets.map((target) => {
@@ -303,14 +474,14 @@ function RuntimeStep({
                       </span>
                     )}
                     <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-[color:var(--surface-2)] text-[color:var(--text-muted)]">
-                      {target.auth_type === 'private_key' ? 'Key' : 'Password'}
+                      {target.provider === 'ssh' ? (target.auth_type === 'private_key' ? 'Key' : 'Password') : target.provider}
                     </span>
                   </div>
                   <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
-                    {target.username}@{target.host}:{target.port}
+                    {target.username && target.host ? `${target.username}@${target.host}:${target.port ?? 22}` : 'SSH details pending'}
                   </div>
                   <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
-                    {target.workspaces_dir}
+                    {target.workspaces_dir ?? 'Workspace root pending'}
                   </div>
                 </div>
               </button>
@@ -333,20 +504,24 @@ function RuntimeStep({
                 <span className="text-xs font-bold">Skip for now</span>
               </div>
               <div className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">
-                Continue without a runtime target. You can configure one later from Settings.
+                Continue without a runtime. You can configure one later from Settings.
               </div>
             </div>
           </button>
 
           {effectiveFormOpen ? (
-            renderForm()
+            selectedProvider === null
+              ? renderChooser()
+              : selectedProvider === 'ssh'
+                ? renderSshForm()
+                : renderManagedForm(selectedProvider)
           ) : (
             <button
               type="button"
               onClick={() => setFormOpen(true)}
               className="w-full h-12 rounded-xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--accent-solid)] hover:bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)] transition-colors flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
             >
-              <Plus size={14} /> Add another runtime target
+              <Plus size={14} /> Add another runtime
             </button>
           )}
         </div>
@@ -362,7 +537,7 @@ function RuntimeStep({
           <div className="flex-1">
             <div className="text-xs font-bold">Skip for now</div>
             <div className="text-[10px] text-[color:var(--text-muted)] leading-relaxed mt-0.5">
-              Continue without a runtime target. You can configure one later from Settings.
+              Continue without a runtime. You can configure one later from Settings.
             </div>
           </div>
         </button>
@@ -807,18 +982,108 @@ export function OnboardingPage() {
   // LLM keys — Gemini
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [geminiOauthCredentials, setGeminiOauthCredentials] = useState('');
-  const [runtimeTargets, setRuntimeTargets] = useState<RuntimeSSHTarget[]>([]);
-  const [selectedRuntimeTargetId, setSelectedRuntimeTargetId] = useState('');
-  const [runtimeForm, setRuntimeForm] = useState(emptyRuntimeTargetForm);
-  const [testingRuntimeTarget, setTestingRuntimeTarget] = useState(false);
-  const [savingRuntimeTarget, setSavingRuntimeTarget] = useState(false);
+  const [runtimes, setRuntimes] = useState<Runtime[]>([]);
+  const [selectedRuntimeId, setSelectedRuntimeId] = useState('');
+  const [runtimeForm, setRuntimeForm] = useState(emptyRuntimeForm);
+  const [testingRuntime, setTestingRuntime] = useState(false);
+  const [savingRuntime, setSavingRuntime] = useState(false);
   const [runtimeFormOpen, setRuntimeFormOpen] = useState(false);
   const [runtimeVerified, setRuntimeVerified] = useState(false);
   const [runtimeResolvedHome, setRuntimeResolvedHome] = useState<string | null>(null);
+  const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilitiesResponse | null>(null);
+  const [selectedRuntimeProvider, setSelectedRuntimeProvider] = useState<'lima' | 'docker' | 'ssh' | null>(null);
+  const [creatingManagedProvider, setCreatingManagedProvider] = useState<string | null>(null);
+  const [creatingManagedJobMessage, setCreatingManagedJobMessage] = useState<string | null>(null);
 
-  function updateRuntimeForm(updates: Partial<typeof emptyRuntimeTargetForm>) {
+  function autoSuggestRuntimeName(provider: 'lima' | 'docker' | 'ssh'): string {
+    const taken = new Set(runtimes.map((r) => r.name));
+    for (let n = 1; n < 999; n++) {
+      const candidate = `${provider}-${n}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return `${provider}-new`;
+  }
+
+  function pickRuntimeProvider(provider: 'lima' | 'docker' | 'ssh' | null) {
+    setSelectedRuntimeProvider(provider);
+    if (provider) {
+      setRuntimeForm((f) => ({ ...f, name: f.name || autoSuggestRuntimeName(provider) }));
+      if (provider !== 'ssh') {
+        setRuntimeVerified(false);
+        setRuntimeResolvedHome(null);
+      }
+    }
+  }
+
+  const fetchRuntimeCapabilities = async () => {
+    try {
+      const caps = await api.get<RuntimeCapabilitiesResponse>('/runtimes/capabilities');
+      setRuntimeCapabilities(caps);
+    } catch {
+      setRuntimeCapabilities(null);
+    }
+  };
+
+  async function handleCreateManagedRuntime(provider: 'lima' | 'docker') {
+    const name = runtimeForm.name.trim();
+    if (!name) {
+      toast.error('Runtime name is required');
+      return;
+    }
+    setCreatingManagedProvider(provider);
+    setCreatingManagedJobMessage('Submitting…');
+    try {
+      const response = await api.post<RuntimeLifecycleResponse>(
+        '/runtimes',
+        {
+          provider,
+          name,
+          profile: provider === 'lima' ? 'sentinel-linux-xfce' : 'sentinel-docker-linux',
+          provider_config: { desktop: 'xfce' },
+        },
+        { timeoutMs: 30_000 },
+      );
+      // Refresh list to include the just-created runtime row.
+      const rows = await api.get<Runtime[]>('/runtimes');
+      setRuntimes(rows);
+      setSelectedRuntimeId(response.runtime.id);
+      // Poll the job to terminal status.
+      let jobId: string | null = response.job.id;
+      let lastStatus: 'queued' | 'running' | 'succeeded' | 'failed' = response.job.status;
+      while (jobId && (lastStatus === 'queued' || lastStatus === 'running')) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          const job = await api.get<Pick<RuntimeJob, 'id' | 'status' | 'events' | 'error'>>(`/runtimes/jobs/${jobId}`);
+          lastStatus = job.status;
+          const latest = job.events.length > 0 ? job.events[job.events.length - 1].message : null;
+          setCreatingManagedJobMessage(latest ?? (lastStatus === 'queued' ? 'Queued…' : 'Working…'));
+          if (lastStatus === 'failed') {
+            toast.error(job.error ?? 'Runtime creation failed');
+          } else if (lastStatus === 'succeeded') {
+            toast.success(`Runtime ${name} ready`);
+          }
+        } catch {
+          // polling glitch — keep trying
+        }
+      }
+      const finalRows = await api.get<Runtime[]>('/runtimes');
+      setRuntimes(finalRows);
+      if (lastStatus === 'succeeded') {
+        setRuntimeForm(emptyRuntimeForm);
+        setRuntimeFormOpen(false);
+        setSelectedRuntimeProvider(null);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to create runtime');
+    } finally {
+      setCreatingManagedProvider(null);
+      setCreatingManagedJobMessage(null);
+    }
+  }
+
+  function updateRuntimeForm(updates: Partial<typeof emptyRuntimeForm>) {
     setRuntimeForm((f) => ({ ...f, ...updates }));
-    const touchesVerification = (Object.keys(updates) as Array<keyof typeof emptyRuntimeTargetForm>)
+    const touchesVerification = (Object.keys(updates) as Array<keyof typeof emptyRuntimeForm>)
       .some((k) => RUNTIME_VERIFICATION_FIELDS.has(k));
     if (touchesVerification) {
       setRuntimeVerified(false);
@@ -865,16 +1130,18 @@ export function OnboardingPage() {
     if (!instanceName) return;
     let cancelled = false;
     Promise.all([
-      api.get<RuntimeSSHTarget[]>('/runtime-targets'),
+      api.get<Runtime[]>('/runtimes'),
       api.get<SentinelInstance>(`/instances/${encodeURIComponent(instanceName)}`),
+      api.get<RuntimeCapabilitiesResponse>('/runtimes/capabilities'),
     ])
-      .then(([targets, instance]) => {
+      .then(([targets, instance, caps]) => {
         if (cancelled) return;
-        setRuntimeTargets(targets);
-        setSelectedRuntimeTargetId(instance.runtime_target_id ?? '');
+        setRuntimes(targets);
+        setSelectedRuntimeId(instance.runtime_id ?? '');
+        setRuntimeCapabilities(caps);
       })
       .catch(() => {
-        if (!cancelled) setRuntimeTargets([]);
+        if (!cancelled) setRuntimes([]);
       });
     return () => {
       cancelled = true;
@@ -897,6 +1164,7 @@ export function OnboardingPage() {
   function runtimeTargetBody() {
     return {
       name: runtimeForm.name.trim(),
+      provider: 'ssh',
       host: runtimeForm.host.trim(),
       port: Number(runtimeForm.port || 22),
       username: runtimeForm.username.trim(),
@@ -907,7 +1175,7 @@ export function OnboardingPage() {
     };
   }
 
-  function validateRuntimeTargetBody(body: ReturnType<typeof runtimeTargetBody>, opts: { requireWorkspaceDir: boolean; requireName: boolean }) {
+  function validateRuntimeBody(body: ReturnType<typeof runtimeTargetBody>, opts: { requireWorkspaceDir: boolean; requireName: boolean }) {
     if (!body.host || !body.username) {
       toast.error('Host and username are required');
       return false;
@@ -931,12 +1199,13 @@ export function OnboardingPage() {
     return true;
   }
 
-  async function handleTestRuntimeTarget() {
+  async function handleTestRuntime() {
     const body = runtimeTargetBody();
-    if (!validateRuntimeTargetBody(body, { requireWorkspaceDir: false, requireName: false })) return;
-    setTestingRuntimeTarget(true);
+    if (!validateRuntimeBody(body, { requireWorkspaceDir: false, requireName: false })) return;
+    setTestingRuntime(true);
     try {
-      const result = await api.post<RuntimeSSHTargetTestResponse>('/runtime-targets/test', body, { timeoutMs: 20_000 });
+      const { provider: _provider, ...testBody } = body;
+      const result = await api.post<RuntimeTestResponse>('/runtimes/test', testBody, { timeoutMs: 20_000 });
       if (result.ok) {
         if (result.resolved_workspaces_dir) {
           setRuntimeForm((f) => ({ ...f, workspaces_dir: result.resolved_workspaces_dir as string }));
@@ -952,29 +1221,29 @@ export function OnboardingPage() {
     } catch (error) {
       setRuntimeVerified(false);
       setRuntimeResolvedHome(null);
-      toast.error(error instanceof Error ? error.message : 'Runtime target test failed');
+      toast.error(error instanceof Error ? error.message : 'Runtime test failed');
     } finally {
-      setTestingRuntimeTarget(false);
+      setTestingRuntime(false);
     }
   }
 
-  async function handleCreateRuntimeTarget() {
+  async function handleCreateRuntime() {
     const body = runtimeTargetBody();
-    if (!validateRuntimeTargetBody(body, { requireWorkspaceDir: true, requireName: true })) return;
-    setSavingRuntimeTarget(true);
+    if (!validateRuntimeBody(body, { requireWorkspaceDir: true, requireName: true })) return;
+    setSavingRuntime(true);
     try {
-      const target = await api.post<RuntimeSSHTarget>('/runtime-targets', body);
-      setRuntimeTargets((items) => [...items.filter((item) => item.id !== target.id), target]);
-      setSelectedRuntimeTargetId(target.id);
-      setRuntimeForm(emptyRuntimeTargetForm);
+      const target = await api.post<Runtime>('/runtimes', body);
+      setRuntimes((items) => [...items.filter((item) => item.id !== target.id), target]);
+      setSelectedRuntimeId(target.id);
+      setRuntimeForm(emptyRuntimeForm);
       setRuntimeFormOpen(false);
       setRuntimeVerified(false);
       setRuntimeResolvedHome(null);
-      toast.success('Runtime target saved');
+      toast.success('Runtime saved');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to save runtime target');
+      toast.error(error instanceof Error ? error.message : 'Failed to save runtime');
     } finally {
-      setSavingRuntimeTarget(false);
+      setSavingRuntime(false);
     }
   }
 
@@ -1011,11 +1280,11 @@ export function OnboardingPage() {
         setCompletedItems([...items]);
       }
 
-      if (instanceName && selectedRuntimeTargetId) {
-        await api.patch(`/instances/${encodeURIComponent(instanceName)}/runtime-target`, {
-          runtime_target_id: selectedRuntimeTargetId,
+      if (instanceName && selectedRuntimeId) {
+        await api.patch(`/instances/${encodeURIComponent(instanceName)}/runtime`, {
+          runtime_id: selectedRuntimeId,
         });
-        items.push('Runtime target selected');
+        items.push('Runtime selected');
         setCompletedItems([...items]);
       }
 
@@ -1090,19 +1359,26 @@ export function OnboardingPage() {
               {step === 1 && <LLMStep apiKey={apiKey} setApiKey={setApiKey} oauthToken={oauthToken} setOauthToken={setOauthToken} openaiApiKey={openaiApiKey} setOpenaiApiKey={setOpenaiApiKey} openaiOauthToken={openaiOauthToken} setOpenaiOauthToken={setOpenaiOauthToken} geminiApiKey={geminiApiKey} setGeminiApiKey={setGeminiApiKey} geminiOauthCredentials={geminiOauthCredentials} setGeminiOauthCredentials={setGeminiOauthCredentials} codexOauthImportAvailable={codexOauthImportAvailable} openaiOauthImported={openaiOauthImported} importingCodexOauth={importingCodexOauth} onImportCodexOauth={handleImportCodexOauth} />}
               {step === 2 && (
                 <RuntimeStep
-                  targets={runtimeTargets}
-                  selectedTargetId={selectedRuntimeTargetId}
-                  onSelect={setSelectedRuntimeTargetId}
+                  targets={runtimes}
+                  selectedTargetId={selectedRuntimeId}
+                  onSelect={setSelectedRuntimeId}
                   form={runtimeForm}
                   updateForm={updateRuntimeForm}
-                  onTest={() => void handleTestRuntimeTarget()}
-                  onCreate={() => void handleCreateRuntimeTarget()}
-                  testing={testingRuntimeTarget}
-                  saving={savingRuntimeTarget}
+                  onTest={() => void handleTestRuntime()}
+                  onCreate={() => void handleCreateRuntime()}
+                  testing={testingRuntime}
+                  saving={savingRuntime}
                   formOpen={runtimeFormOpen}
                   setFormOpen={setRuntimeFormOpen}
                   verified={runtimeVerified}
                   resolvedHome={runtimeResolvedHome}
+                  capabilities={runtimeCapabilities}
+                  selectedProvider={selectedRuntimeProvider}
+                  onPickProvider={pickRuntimeProvider}
+                  onCreateManaged={handleCreateManagedRuntime}
+                  onRefreshCapabilities={() => void fetchRuntimeCapabilities()}
+                  creatingProvider={creatingManagedProvider}
+                  creatingJobMessage={creatingManagedJobMessage}
                 />
               )}
               {step === 3 && <AgentStep name={agentName} setName={setAgentName} role={agentRole} setRole={setAgentRole} personality={agentPersonality} setPersonality={setAgentPersonality} />}

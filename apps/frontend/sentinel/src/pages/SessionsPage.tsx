@@ -189,7 +189,7 @@ interface SentinelInstance {
   name: string;
   database_name: string;
   display_name: string | null;
-  runtime_target_id: string | null;
+  runtime_id: string | null;
 }
 
 // Top-level right-rail tabs. `runtime` is a composite tab that contains
@@ -4426,10 +4426,10 @@ export function SessionsPage() {
                         overall === 'unreachable' || overall === 'failed' ? 'border-rose-500/30 bg-rose-500/5' :
                         'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50';
 
-                      const targetLine = runtimeStatus?.target
+                      const targetLine = runtimeStatus?.runtime
                         ? [
-                            runtimeStatus.target.name,
-                            runtimeStatus.target.host && `${runtimeStatus.target.host}:${runtimeStatus.target.port ?? 22}`,
+                            runtimeStatus.runtime.name,
+                            runtimeStatus.runtime.host && `${runtimeStatus.runtime.host}:${runtimeStatus.runtime.port ?? 22}`,
                           ].filter(Boolean).join(' · ')
                         : null;
 
@@ -4628,19 +4628,19 @@ export function SessionsPage() {
                           )}
 
                           {/* Footer metadata */}
-                          {runtimeStatus?.target && (runtimeStatus.target.username || runtimeStatus.target.workspaces_dir) && (
+                          {runtimeStatus?.runtime && (runtimeStatus.runtime.username || runtimeStatus.runtime.workspaces_dir) && (
                             <div className="pt-0.5 px-1 space-y-0 text-[9px] text-[color:var(--text-muted)] font-mono">
                               <div className="truncate">
                                 {[
                                   runtimeStatus.os !== 'unknown' ? runtimeStatus.os : null,
                                   runtimeStatus.sandbox !== 'unknown' && runtimeStatus.sandbox !== 'unavailable' ? `${runtimeStatus.sandbox} sandbox` : null,
-                                  runtimeStatus.target.username && runtimeStatus.target.host
-                                    ? `${runtimeStatus.target.username}@${runtimeStatus.target.host}:${runtimeStatus.target.port ?? 22}`
+                                  runtimeStatus.runtime.username && runtimeStatus.runtime.host
+                                    ? `${runtimeStatus.runtime.username}@${runtimeStatus.runtime.host}:${runtimeStatus.runtime.port ?? 22}`
                                     : null,
                                 ].filter(Boolean).join(' · ')}
                               </div>
-                              {runtimeStatus.target.workspaces_dir && (
-                                <div className="truncate">{runtimeStatus.target.workspaces_dir}</div>
+                              {runtimeStatus.runtime.workspaces_dir && (
+                                <div className="truncate">{runtimeStatus.runtime.workspaces_dir}</div>
                               )}
                             </div>
                           )}

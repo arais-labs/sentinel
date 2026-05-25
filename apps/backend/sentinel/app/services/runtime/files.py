@@ -173,7 +173,7 @@ class RuntimeWorkspaceFiles:
             self._environment = environment
         if not environment.supported:
             raise RuntimeSandboxUnavailableError(
-                "Runtime target must be Linux with bubblewrap or macOS with sandbox-exec "
+                "Runtime must be Linux with bubblewrap or macOS with sandbox-exec "
                 f"(detected os={environment.os}, sandbox={environment.sandbox})."
             )
         return environment

@@ -447,8 +447,9 @@ export interface RuntimeStatusResponse {
   checked_at: string;
   os: 'linux' | 'darwin' | 'unsupported' | 'unknown';
   sandbox: 'bubblewrap' | 'seatbelt' | 'unavailable' | 'unknown';
-  target: {
+  runtime: {
     name?: string | null;
+    provider?: 'ssh' | 'lima' | 'docker' | null;
     host: string | null;
     port: number | null;
     username: string | null;
@@ -458,23 +459,73 @@ export interface RuntimeStatusResponse {
   capabilities: Record<string, string>;
 }
 
-export interface RuntimeSSHTarget {
+export type RuntimeProvider = 'ssh' | 'lima' | 'docker';
+export type RuntimeStatus = 'unknown' | 'creating' | 'stopped' | 'running' | 'ready' | 'error' | 'deleted';
+
+export interface Runtime {
   id: string;
   name: string;
-  host: string;
-  port: number;
-  username: string;
-  workspaces_dir: string;
-  auth_type: 'private_key' | 'password';
+  provider: RuntimeProvider;
+  status: RuntimeStatus;
+  profile: string | null;
+  host: string | null;
+  port: number | null;
+  username: string | null;
+  workspaces_dir: string | null;
+  auth_type: 'private_key' | 'password' | null;
+  provider_config: {
+    desktop: string;
+    cpus: number | null;
+    memory: string | null;
+    disk: string | null;
+  };
+  provider_state: {
+    ssh_config?: string | null;
+    lima_name?: string | null;
+    container_name?: string | null;
+    workspace_volume?: string | null;
+    desktop?: string | null;
+  } & Record<string, unknown>;
+  last_job_id: string | null;
+  last_job_status: 'queued' | 'running' | 'succeeded' | 'failed' | null;
   created_at: string | null;
   updated_at: string | null;
 }
 
-export interface RuntimeSSHTargetTestResponse {
+export interface RuntimeTestResponse {
   ok: boolean;
   detail: string;
   resolved_home: string | null;
   resolved_workspaces_dir: string | null;
+}
+
+export interface RuntimeProviderCapability {
+  provider: RuntimeProvider;
+  available: boolean;
+  label: string;
+  detail: string;
+  missing: string[];
+}
+
+export interface RuntimeCapabilitiesResponse {
+  providers: RuntimeProviderCapability[];
+}
+
+export interface RuntimeJob {
+  id: string;
+  runtime_id: string | null;
+  provider: RuntimeProvider;
+  action: 'create' | 'start' | 'stop' | 'delete' | 'rebuild';
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  events: Array<{ timestamp: string; level: 'info' | 'error'; message: string }>;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface RuntimeLifecycleResponse {
+  runtime: Runtime;
+  job: RuntimeJob;
 }
 
 export interface ConfigResponse {

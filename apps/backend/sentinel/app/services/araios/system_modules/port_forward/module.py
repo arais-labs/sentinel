@@ -33,7 +33,7 @@ MODULE = ModuleDefinition(
                     },
                     "host": {
                         "type": "string",
-                        "description": "Runtime target host. V1 only allows 127.0.0.1 or localhost.",
+                        "description": "Runtime host. V1 only allows 127.0.0.1 or localhost.",
                     },
                     "protocol": {
                         "type": "string",

@@ -25,4 +25,4 @@ def decrypt_runtime_secret(value: str) -> str:
     try:
         return _fernet().decrypt(value.encode("ascii")).decode("utf-8")
     except (InvalidToken, UnicodeError) as exc:
-        raise RuntimeSecretError("Runtime target secret could not be decrypted.") from exc
+        raise RuntimeSecretError("Runtime secret could not be decrypted.") from exc

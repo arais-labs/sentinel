@@ -48,12 +48,6 @@ API_BASE="${STACK_URL%/}/api/v1"
 HEALTH_READY_URL="${STACK_URL%/}/health/ready"
 READY_TIMEOUT="${SENTINEL_READY_TIMEOUT:-60}"
 CACHE_TTL="${SENTINEL_STATUS_TTL:-5}"
-SENTINEL_RUNTIME_WORKSPACES_DIR="${SENTINEL_RUNTIME_WORKSPACES_DIR:-}"
-SENTINEL_RUNTIME_SSH_HOST="${SENTINEL_RUNTIME_SSH_HOST:-}"
-SENTINEL_RUNTIME_SSH_PORT="${SENTINEL_RUNTIME_SSH_PORT:-}"
-SENTINEL_RUNTIME_SSH_USERNAME="${SENTINEL_RUNTIME_SSH_USERNAME:-}"
-SENTINEL_RUNTIME_SSH_KEY_PATH="${SENTINEL_RUNTIME_SSH_KEY_PATH:-}"
-SENTINEL_RUNTIME_SSH_PASSWORD="${SENTINEL_RUNTIME_SSH_PASSWORD:-}"
 SENTINEL_AUTH_USERNAME="${SENTINEL_AUTH_USERNAME:-}"
 SENTINEL_AUTH_PASSWORD="${SENTINEL_AUTH_PASSWORD:-}"
 
@@ -264,14 +258,11 @@ Usage:
   ./sentinel-cli.sh sessions transcript <session-id> [instance] [--json]
 
 Configuration:
-  Root .env is the source of truth for stack credentials, SSH runtime,
-  workspace path, COMPOSE_PROJECT_NAME, and STACK_PORT. The CLI creates or
+  Root .env is the source of truth for stack credentials,
+  COMPOSE_PROJECT_NAME, and STACK_PORT. The CLI creates or
   reconciles it on startup before showing the menu or running commands.
 
   COMPOSE_PROJECT_NAME       Compose project name (default: sentinel).
-  SENTINEL_RUNTIME_WORKSPACES_DIR
-                             Absolute remote directory on the SSH target for runtime
-                             session workspaces.
   SENTINEL_AUTH_USERNAME     App admin username from root .env.
                              Required in both modes; prod rejects defaults.
   SENTINEL_AUTH_PASSWORD     App admin password from root .env.
@@ -330,32 +321,8 @@ resolve_compose_file() {
   esac
 }
 
-is_absolute_path() {
-  [[ "$1" == /* ]]
-}
-
-resolve_runtime_workspace_dir() {
-  if [[ -z "$SENTINEL_RUNTIME_WORKSPACES_DIR" && "$SENTINEL_MODE" == "dev" ]]; then
-    SENTINEL_RUNTIME_WORKSPACES_DIR="/srv/sentinel/runtime-workspaces"
-  fi
-  export SENTINEL_RUNTIME_WORKSPACES_DIR
-}
-
 resolve_auth_config() {
   export SENTINEL_AUTH_USERNAME SENTINEL_AUTH_PASSWORD
-}
-
-ensure_runtime_workspace_config() {
-  resolve_runtime_workspace_dir
-  if [[ -z "$SENTINEL_RUNTIME_WORKSPACES_DIR" ]]; then
-    err "SENTINEL_RUNTIME_WORKSPACES_DIR is required in prod mode."
-    err "Set it to an absolute host path in .env before using docker-compose.yml."
-    return 1
-  fi
-  if ! is_absolute_path "$SENTINEL_RUNTIME_WORKSPACES_DIR"; then
-    err "SENTINEL_RUNTIME_WORKSPACES_DIR must be an absolute host path: ${SENTINEL_RUNTIME_WORKSPACES_DIR}"
-    return 1
-  fi
 }
 
 is_placeholder_value() {
@@ -423,15 +390,6 @@ env_value_invalid() {
     STACK_PORT)
       [[ "$value" =~ ^[0-9]+$ ]] || return 0
       ;;
-    SENTINEL_RUNTIME_WORKSPACES_DIR)
-      is_absolute_path "$value" || return 0
-      ;;
-    SENTINEL_RUNTIME_SSH_PORT)
-      [[ "$value" =~ ^[0-9]+$ ]] || return 0
-      ;;
-    SENTINEL_RUNTIME_SSH_KEY_PATH)
-      [[ -z "$value" || -f "$value" ]] || return 0
-      ;;
   esac
   if [[ "$SENTINEL_MODE" == "prod" ]]; then
     case "$key" in
@@ -470,12 +428,7 @@ collect_env_errors() {
     SENTINEL_POSTGRES_PASSWORD \
     SENTINEL_JWT_SECRET_KEY \
     SENTINEL_AUTH_USERNAME \
-    SENTINEL_AUTH_PASSWORD \
-    SENTINEL_RUNTIME_SSH_HOST \
-    SENTINEL_RUNTIME_SSH_PORT \
-    SENTINEL_RUNTIME_SSH_USERNAME \
-    SENTINEL_RUNTIME_SSH_KEY_PATH \
-    SENTINEL_RUNTIME_WORKSPACES_DIR
+    SENTINEL_AUTH_PASSWORD
   do
     value="${!key:-}"
     if ! root_env_has_key "$key"; then
@@ -491,21 +444,12 @@ collect_env_errors() {
 
 reload_env_config() {
   unset COMPOSE_PROJECT_NAME STACK_PORT SENTINEL_POSTGRES_PASSWORD SENTINEL_JWT_SECRET_KEY
-  unset SENTINEL_AUTH_USERNAME SENTINEL_AUTH_PASSWORD SENTINEL_RUNTIME_WORKSPACES_DIR
-  unset SENTINEL_RUNTIME_SSH_HOST SENTINEL_RUNTIME_SSH_PORT SENTINEL_RUNTIME_SSH_USERNAME
-  unset SENTINEL_RUNTIME_SSH_KEY_PATH SENTINEL_RUNTIME_SSH_PASSWORD
+  unset SENTINEL_AUTH_USERNAME SENTINEL_AUTH_PASSWORD
   load_root_env true
   COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-sentinel}"
   STACK_PORT="${STACK_PORT:-4747}"
-  SENTINEL_RUNTIME_WORKSPACES_DIR="${SENTINEL_RUNTIME_WORKSPACES_DIR:-}"
-  SENTINEL_RUNTIME_SSH_HOST="${SENTINEL_RUNTIME_SSH_HOST:-}"
-  SENTINEL_RUNTIME_SSH_PORT="${SENTINEL_RUNTIME_SSH_PORT:-}"
-  SENTINEL_RUNTIME_SSH_USERNAME="${SENTINEL_RUNTIME_SSH_USERNAME:-}"
-  SENTINEL_RUNTIME_SSH_KEY_PATH="${SENTINEL_RUNTIME_SSH_KEY_PATH:-}"
-  SENTINEL_RUNTIME_SSH_PASSWORD="${SENTINEL_RUNTIME_SSH_PASSWORD:-}"
   SENTINEL_AUTH_USERNAME="${SENTINEL_AUTH_USERNAME:-}"
   SENTINEL_AUTH_PASSWORD="${SENTINEL_AUTH_PASSWORD:-}"
-  resolve_runtime_workspace_dir
   resolve_auth_config
   refresh_urls
 }
@@ -526,7 +470,6 @@ validate_prod_stack_config() {
 
 prepare_stack_config() {
   ensure_cli_env_ready || return 1
-  ensure_runtime_workspace_config || return 1
   validate_auth_config || return 1
   validate_prod_stack_config || return 1
 }
@@ -538,27 +481,17 @@ write_dev_env_defaults() {
   upsert_root_env_value "SENTINEL_JWT_SECRET_KEY" "$(env_value_or_default "SENTINEL_JWT_SECRET_KEY" "sentinel-local-dev-secret-change-me")" || return 1
   upsert_root_env_value "SENTINEL_AUTH_USERNAME" "$(env_value_or_default "SENTINEL_AUTH_USERNAME" "admin")" || return 1
   upsert_root_env_value "SENTINEL_AUTH_PASSWORD" "$(env_value_or_default "SENTINEL_AUTH_PASSWORD" "admin")" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_SSH_HOST" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_HOST" "host.docker.internal")" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_SSH_PORT" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_PORT" "22")" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_SSH_USERNAME" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_USERNAME" "sentinel")" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_SSH_KEY_PATH" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_KEY_PATH" "$HOME/.ssh/id_ed25519")" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_WORKSPACES_DIR" "$(env_value_or_default "SENTINEL_RUNTIME_WORKSPACES_DIR" "/srv/sentinel/runtime-workspaces")" || return 1
   reload_env_config
 }
 
 write_prod_env_interactive() {
-  local compose_project stack_port db_password jwt_secret auth_username auth_password workspace_dir ssh_host ssh_port ssh_username ssh_key_path
+  local compose_project stack_port db_password jwt_secret auth_username auth_password
   compose_project="$(prompt_default "Compose project name" "$(env_value_or_default "COMPOSE_PROJECT_NAME" "sentinel")")"
   stack_port="$(prompt_default "Stack port" "$(env_value_or_default "STACK_PORT" "4747")")"
   db_password="$(prompt_default "Database password" "$(env_value_or_default "SENTINEL_POSTGRES_PASSWORD" "$(generate_secret)")")"
   jwt_secret="$(prompt_default "JWT secret" "$(env_value_or_default "SENTINEL_JWT_SECRET_KEY" "$(generate_secret)")")"
   auth_username="$(prompt_default "Admin username" "$(env_value_or_default "SENTINEL_AUTH_USERNAME" "sentinel-admin")")"
   auth_password="$(prompt_default "Admin password" "$(env_value_or_default "SENTINEL_AUTH_PASSWORD" "$(generate_secret)")")"
-  ssh_host="$(prompt_default "Runtime SSH host" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_HOST" "host.docker.internal")")"
-  ssh_port="$(prompt_default "Runtime SSH port" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_PORT" "22")")"
-  ssh_username="$(prompt_default "Runtime SSH username" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_USERNAME" "sentinel")")"
-  ssh_key_path="$(prompt_default "Runtime SSH key path" "$(env_value_or_default "SENTINEL_RUNTIME_SSH_KEY_PATH" "$HOME/.ssh/id_ed25519")")"
-  workspace_dir="$(prompt_default "Runtime remote workspaces directory" "$(env_value_or_default "SENTINEL_RUNTIME_WORKSPACES_DIR" "/srv/sentinel/runtime-workspaces")")"
 
   upsert_root_env_value "COMPOSE_PROJECT_NAME" "$compose_project" || return 1
   upsert_root_env_value "STACK_PORT" "$stack_port" || return 1
@@ -566,11 +499,6 @@ write_prod_env_interactive() {
   upsert_root_env_value "SENTINEL_JWT_SECRET_KEY" "$jwt_secret" || return 1
   upsert_root_env_value "SENTINEL_AUTH_USERNAME" "$auth_username" || return 1
   upsert_root_env_value "SENTINEL_AUTH_PASSWORD" "$auth_password" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_SSH_HOST" "$ssh_host" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_SSH_PORT" "$ssh_port" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_SSH_USERNAME" "$ssh_username" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_SSH_KEY_PATH" "$ssh_key_path" || return 1
-  upsert_root_env_value "SENTINEL_RUNTIME_WORKSPACES_DIR" "$workspace_dir" || return 1
   reload_env_config
 }
 
@@ -615,7 +543,6 @@ ensure_cli_env_ready() {
 }
 
 compose() {
-  ensure_runtime_workspace_config || return 1
   resolve_auth_config
   docker compose --project-name "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" "$@"
 }
@@ -1464,12 +1391,12 @@ confirm_stack_reset() {
       return 0
     fi
     warn "This will delete the prod stack database and compose volumes for '${COMPOSE_PROJECT_NAME}'."
-    warn "It keeps .env and runtime workspaces at ${SENTINEL_RUNTIME_WORKSPACES_DIR:-<unset>}."
+    warn "It keeps .env. Runtime targets and workspaces are managed in the app database."
     expected="RESET SENTINEL PROD"
   else
     [[ "$assume_yes" == "true" ]] && return 0
     warn "This will delete the dev stack database and compose volumes for '${COMPOSE_PROJECT_NAME}'."
-    warn "It keeps .env and runtime workspaces at ${SENTINEL_RUNTIME_WORKSPACES_DIR:-<unset>}."
+    warn "It keeps .env. Runtime targets and workspaces are managed in the app database."
     expected="RESET"
   fi
   show_cursor
@@ -1502,7 +1429,6 @@ stack_reset() {
     err "docker is not installed."
     return 1
   fi
-  ensure_runtime_workspace_config || return 1
   if ! confirm_stack_reset "$assume_yes" "$prod_confirm"; then
     ui_note_warn "Reset aborted."
     return 1
@@ -1514,8 +1440,8 @@ stack_reset() {
     return 1
   fi
   invalidate_status_cache
-  ok "Sentinel stack reset. .env and runtime workspaces were preserved."
-  ui_note_ok "Stack reset complete. .env and runtime workspaces were preserved."
+  ok "Sentinel stack reset. .env was preserved."
+  ui_note_ok "Stack reset complete. .env was preserved."
 }
 
 stack_logs() {

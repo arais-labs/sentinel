@@ -607,7 +607,7 @@ class RuntimeTerminalManager:
             raise RuntimeSandboxUnavailableError(
                 "runtime_sandbox_unavailable",
                 detail=(
-                    "Runtime target must be Linux with bubblewrap or macOS with sandbox-exec "
+                    "Runtime must be Linux with bubblewrap or macOS with sandbox-exec "
                     f"(detected os={environment.os}, sandbox={environment.sandbox})."
                 ),
             )

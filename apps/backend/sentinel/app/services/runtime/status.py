@@ -9,10 +9,10 @@ from app.database import ManagerSessionLocal
 from app.services.runtime.environment import expected_sandbox_for_os
 from app.services.runtime.remote_commands import load_remote_command
 from app.services.runtime.ssh_runtime import get_runtime_terminal_manager, runtime_configured
-from app.services.runtime.targets import (
-    InstanceRuntimeTargetNotConfigured,
-    RuntimeTargetError,
-    resolve_instance_runtime_target,
+from app.services.runtime.runtimes import (
+    InstanceRuntimeNotConfigured,
+    RuntimeErrorBase,
+    resolve_instance_runtime,
 )
 from app.services.runtime.workspace import normalize_workspaces_root
 
@@ -41,55 +41,56 @@ class RuntimeStatusCheck:
         }
 
 
-def _target_payload(target: object | None) -> dict[str, object | None]:
-    if target is None:
+def _runtime_payload(runtime: object | None) -> dict[str, object | None]:
+    if runtime is None:
         return {"host": None, "port": None, "username": None, "workspaces_dir": None}
     return {
-        "name": getattr(target, "name", None),
-        "host": getattr(target, "host", None),
-        "port": getattr(target, "port", None),
-        "username": getattr(target, "username", None),
-        "workspaces_dir": getattr(target, "workspaces_dir", None),
+        "name": getattr(runtime, "name", None),
+        "provider": getattr(runtime, "provider", None),
+        "host": getattr(runtime, "host", None),
+        "port": getattr(runtime, "port", None),
+        "username": getattr(runtime, "username", None),
+        "workspaces_dir": getattr(runtime, "workspaces_dir", None),
     }
 
 
-def _config_checks(target: object | None, error: str | None) -> list[RuntimeStatusCheck]:
-    if target is None:
+def _config_checks(runtime: object | None, error: str | None) -> list[RuntimeStatusCheck]:
+    if runtime is None:
         return [
             RuntimeStatusCheck(
-                id="config_runtime_target",
-                label="Runtime target selected",
+                id="config_runtime",
+                label="Runtime selected",
                 status="fail",
-                detail=error or "No runtime target selected for this instance.",
+                detail=error or "No runtime selected for this instance.",
             )
         ]
     checks: list[RuntimeStatusCheck] = []
     checks.append(
         RuntimeStatusCheck(
-            id="config_runtime_target",
-            label="Runtime target selected",
+            id="config_runtime",
+            label="Runtime selected",
             status="pass",
-            detail=getattr(target, "name", None),
+            detail=getattr(runtime, "name", None),
         )
     )
     checks.append(
         RuntimeStatusCheck(
             id="config_ssh_host",
             label="SSH host configured",
-            status="pass" if str(getattr(target, "host", "")).strip() else "fail",
-            detail=str(getattr(target, "host", "")).strip() or "Runtime target host is empty",
+            status="pass" if str(getattr(runtime, "host", "")).strip() else "fail",
+            detail=str(getattr(runtime, "host", "")).strip() or "Runtime host is empty",
         )
     )
     checks.append(
         RuntimeStatusCheck(
             id="config_ssh_username",
             label="SSH username configured",
-            status="pass" if str(getattr(target, "username", "")).strip() else "fail",
-            detail=str(getattr(target, "username", "")).strip() or "Runtime target username is empty",
+            status="pass" if str(getattr(runtime, "username", "")).strip() else "fail",
+            detail=str(getattr(runtime, "username", "")).strip() or "Runtime username is empty",
         )
     )
     try:
-        workspaces_root = normalize_workspaces_root(str(getattr(target, "workspaces_dir", "")))
+        workspaces_root = normalize_workspaces_root(str(getattr(runtime, "workspaces_dir", "")))
         checks.append(
             RuntimeStatusCheck(
                 id="config_workspaces_dir",
@@ -111,8 +112,8 @@ def _config_checks(target: object | None, error: str | None) -> list[RuntimeStat
         RuntimeStatusCheck(
             id="config_auth",
             label="SSH authentication configured",
-            status="pass" if getattr(target, "auth_type", "") in {"private_key", "password"} else "fail",
-            detail=str(getattr(target, "auth_type", "") or "No SSH auth configured"),
+            status="pass" if getattr(runtime, "auth_type", "") in {"private_key", "password"} else "fail",
+            detail=str(getattr(runtime, "auth_type", "") or "No SSH auth configured"),
         )
     )
     return checks
@@ -214,20 +215,20 @@ def _summary(status: str) -> str:
 
 
 async def runtime_status_payload(*, instance_name: str) -> dict[str, object]:
-    target = None
-    target_error = None
+    runtime = None
+    runtime_error = None
     try:
         async with ManagerSessionLocal() as db:
-            target = await resolve_instance_runtime_target(db, instance_name=instance_name)
-    except InstanceRuntimeTargetNotConfigured as exc:
-        target_error = str(exc)
-    except RuntimeTargetError as exc:
-        target_error = str(exc)
-    checks = _config_checks(target, target_error)
+            runtime = await resolve_instance_runtime(db, instance_name=instance_name)
+    except InstanceRuntimeNotConfigured as exc:
+        runtime_error = str(exc)
+    except RuntimeErrorBase as exc:
+        runtime_error = str(exc)
+    checks = _config_checks(runtime, runtime_error)
     configured = await runtime_configured(instance_name=instance_name) and all(
         item.status == "pass"
         for item in checks
-        if item.id in {"config_runtime_target", "config_ssh_host", "config_ssh_username", "config_workspaces_dir", "config_auth"}
+        if item.id in {"config_runtime", "config_ssh_host", "config_ssh_username", "config_workspaces_dir", "config_auth"}
     )
     unreachable = False
     if configured:
@@ -240,11 +241,11 @@ async def runtime_status_payload(*, instance_name: str) -> dict[str, object]:
                     id="ssh_connect",
                     label="SSH connection",
                     status="pass",
-                    detail=f"{target.host}:{int(target.port)}" if target is not None else None,
+                    detail=f"{runtime.host}:{int(runtime.port)}" if runtime is not None else None,
                     duration_ms=int((time.perf_counter() - started) * 1000),
                 )
             )
-            script, args = _remote_probe_script(normalize_workspaces_root(target.workspaces_dir if target else ""))
+            script, args = _remote_probe_script(normalize_workspaces_root(runtime.workspaces_dir if runtime else ""))
             result = await manager.ssh.run_script(script, args=args, timeout=15)
             if result.exit_status in {0, None}:
                 checks.extend(_parse_remote_checks(result.stdout))
@@ -275,7 +276,7 @@ async def runtime_status_payload(*, instance_name: str) -> dict[str, object]:
         "checked_at": datetime.now(UTC),
         "os": _detected_os(checks),
         "sandbox": _detected_sandbox(checks),
-        "target": _target_payload(target),
+        "runtime": _runtime_payload(runtime),
         "checks": [item.to_dict() for item in checks],
         "capabilities": _capabilities(checks),
     }

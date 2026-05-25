@@ -507,7 +507,7 @@ def _build_hidden_runtime_command(paths: RemoteWorkspacePaths, *, os_name: str, 
             ["/bin/bash", "--noprofile", "--norc", "-lc", shell_command],
         )
         return "/bin/sh -c " + quote(prelude + "\nexec " + sandbox_command)
-    raise ToolValidationError("Git tool requires a runtime target with a supported sandbox.")
+    raise ToolValidationError("Git tool requires a runtime with a supported sandbox.")
 
 
 async def _run_hidden_runtime_command(

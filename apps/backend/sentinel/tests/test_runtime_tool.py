@@ -89,7 +89,9 @@ class _TerminalManagerStub:
         )
 
     async def list_terminals(self, session_id: str, *, terminal_ids: list[str] | None = None):
-        self.calls.append({"session_id": session_id, "terminal_ids": terminal_ids, "action": "list"})
+        self.calls.append(
+            {"session_id": session_id, "terminal_ids": terminal_ids, "action": "list"}
+        )
 
         class _Descriptor:
             def __init__(self, terminal_id: str) -> None:
@@ -109,7 +111,9 @@ class _TerminalManagerStub:
 
         return [_Descriptor(item) for item in (terminal_ids or ["0", "bg-test"])]
 
-    async def read_tails(self, session_id: str, *, terminal_ids: list[str], tail_bytes: int = 8_000):
+    async def read_tails(
+        self, session_id: str, *, terminal_ids: list[str], tail_bytes: int = 8_000
+    ):
         self.calls.append(
             {
                 "session_id": session_id,
@@ -118,11 +122,26 @@ class _TerminalManagerStub:
                 "action": "read",
             }
         )
-        return [{"terminal_id": item, "ok": True, "output": f"tail:{item}"} for item in terminal_ids]
+        return [
+            {"terminal_id": item, "ok": True, "output": f"tail:{item}"} for item in terminal_ids
+        ]
 
     async def close_terminals(self, session_id: str, *, terminal_ids: list[str]):
-        self.calls.append({"session_id": session_id, "terminal_ids": terminal_ids, "action": "close"})
-        return [{"terminal_id": item, "ok": True, "closed": True, "status": "stopped"} for item in terminal_ids]
+        self.calls.append(
+            {"session_id": session_id, "terminal_ids": terminal_ids, "action": "close"}
+        )
+        return [
+            {"terminal_id": item, "ok": True, "closed": True, "status": "stopped"}
+            for item in terminal_ids
+        ]
+
+
+async def _runtime_configured_stub(**_kwargs) -> bool:
+    return True
+
+
+async def _terminal_manager_stub(manager: _TerminalManagerStub, **_kwargs) -> _TerminalManagerStub:
+    return manager
 
 
 @pytest.mark.asyncio
@@ -146,8 +165,12 @@ async def test_runtime_tool_runs_command_through_terminal_manager(monkeypatch) -
     from app.services.araios.system_modules.runtime import handlers
 
     stub = _TerminalManagerStub()
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", lambda: stub)
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(
+        handlers,
+        "get_runtime_terminal_manager",
+        lambda **kwargs: _terminal_manager_stub(stub, **kwargs),
+    )
     monkeypatch.setattr(handlers, "get_ws_manager", lambda: None)
 
     registry = build_default_registry()
@@ -186,8 +209,12 @@ async def test_runtime_tool_starts_background_command(monkeypatch) -> None:
     from app.services.araios.system_modules.runtime import handlers
 
     stub = _TerminalManagerStub()
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", lambda: stub)
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(
+        handlers,
+        "get_runtime_terminal_manager",
+        lambda **kwargs: _terminal_manager_stub(stub, **kwargs),
+    )
     monkeypatch.setattr(handlers, "get_ws_manager", lambda: None)
 
     registry = build_default_registry()
@@ -232,8 +259,12 @@ async def test_runtime_tool_allows_shell_control_operators(monkeypatch) -> None:
     from app.services.araios.system_modules.runtime import handlers
 
     stub = _TerminalManagerStub()
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", lambda: stub)
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(
+        handlers,
+        "get_runtime_terminal_manager",
+        lambda **kwargs: _terminal_manager_stub(stub, **kwargs),
+    )
     monkeypatch.setattr(handlers, "get_ws_manager", lambda: None)
 
     registry = build_default_registry()
@@ -269,8 +300,12 @@ async def test_runtime_tool_lists_selected_terminals(monkeypatch) -> None:
     from app.services.araios.system_modules.runtime import handlers
 
     stub = _TerminalManagerStub()
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", lambda: stub)
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(
+        handlers,
+        "get_runtime_terminal_manager",
+        lambda **kwargs: _terminal_manager_stub(stub, **kwargs),
+    )
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -287,7 +322,9 @@ async def test_runtime_tool_lists_selected_terminals(monkeypatch) -> None:
 
     assert result["ok"] is True
     assert [item["terminal_id"] for item in result["items"]] == ["0", "bg-test"]
-    assert stub.calls == [{"session_id": str(session_id), "terminal_ids": ["0", "bg-test"], "action": "list"}]
+    assert stub.calls == [
+        {"session_id": str(session_id), "terminal_ids": ["0", "bg-test"], "action": "list"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -295,8 +332,12 @@ async def test_runtime_tool_reads_multiple_terminals(monkeypatch) -> None:
     from app.services.araios.system_modules.runtime import handlers
 
     stub = _TerminalManagerStub()
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", lambda: stub)
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(
+        handlers,
+        "get_runtime_terminal_manager",
+        lambda **kwargs: _terminal_manager_stub(stub, **kwargs),
+    )
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -331,8 +372,12 @@ async def test_runtime_tool_closes_multiple_terminals_including_main(monkeypatch
     from app.services.araios.system_modules.runtime import handlers
 
     stub = _TerminalManagerStub()
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", lambda: stub)
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(
+        handlers,
+        "get_runtime_terminal_manager",
+        lambda **kwargs: _terminal_manager_stub(stub, **kwargs),
+    )
     monkeypatch.setattr(handlers, "get_ws_manager", lambda: None)
 
     registry = build_default_registry()
@@ -351,4 +396,6 @@ async def test_runtime_tool_closes_multiple_terminals_including_main(monkeypatch
     assert result["ok"] is True
     assert [item["terminal_id"] for item in result["items"]] == ["0", "bg-test"]
     assert all(item["closed"] for item in result["items"])
-    assert stub.calls == [{"session_id": str(session_id), "terminal_ids": ["0", "bg-test"], "action": "close"}]
+    assert stub.calls == [
+        {"session_id": str(session_id), "terminal_ids": ["0", "bg-test"], "action": "close"}
+    ]

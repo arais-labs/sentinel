@@ -34,7 +34,7 @@ def _response(instance: SentinelInstance) -> InstanceResponse:
         name=instance.name,
         database_name=instance.database_name,
         display_name=instance.display_name,
-        runtime_target_id=instance.runtime_target_id,
+        runtime_id=instance.runtime_id,
         created_at=instance.created_at,
         updated_at=instance.updated_at,
     )

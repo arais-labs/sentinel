@@ -39,7 +39,7 @@ from app.routers import (
     models,
     onboarding,
     runtime,
-    runtime_targets,
+    runtimes,
     settings as settings_router,
     sessions,
     sessions_compaction,
@@ -537,7 +537,7 @@ app.include_router(health.router, tags=["health"])
 app.include_router(version_router.router, tags=["version"])
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(instances.router, prefix="/api/v1/instances", tags=["instances"])
-app.include_router(runtime_targets.router, prefix="/api/v1", tags=["runtime-targets"])
+app.include_router(runtimes.router, prefix="/api/v1", tags=["runtimes"])
 app.include_router(admin_manager.router, prefix="/api/v1/admin", tags=["admin"])
 _instance_api_prefix = "/api/v1/instances/{instance_name}"
 app.include_router(sessions.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"])

@@ -48,7 +48,7 @@ def runtime_provider_info(*, configured: bool) -> RuntimeProviderInfoResponse:
         id="ssh",
         label="SSH",
         status="configured" if configured else "not_configured",
-        summary="SSH/tmux runtime target is selected." if configured else "No runtime target is selected.",
+        summary="SSH/tmux runtime is selected." if configured else "No runtime is selected.",
         items=[],
     )
 

@@ -48,7 +48,7 @@ The shared stack uses deterministic defaults. Process-level overrides are availa
 The CLI reconciles the managed stack settings from simple `KEY=value` entries
 in the root `.env`. Shell variables are still useful for launch/debug knobs such
 as `SENTINEL_MODE`, `SENTINEL_COMPOSE_FILE`, `SENTINEL_URL`, and
-`SENTINEL_TOKEN`, but the stack credentials and workspace path are written to
+`SENTINEL_TOKEN`, but the stack credentials are written to
 and reloaded from `.env`.
 
 Changing `COMPOSE_PROJECT_NAME` only changes Compose project metadata and

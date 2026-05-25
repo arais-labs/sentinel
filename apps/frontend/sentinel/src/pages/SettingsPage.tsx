@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import {
   LogOut, ShieldAlert, User, Cpu, Hash, Info, ChevronRight,
   Bot, Eye, EyeOff, Check, Loader2, RefreshCw, HelpCircle, X, KeyRound, Pencil, Plus,
-  Trash2, Server, Wifi,
+  Trash2, Server, Wifi, Container, Power, Square, RotateCcw, Copy, Unlink,
 } from 'lucide-react';
 import { Link as RouterLink, useLocation } from 'react-router-dom';
 
@@ -14,7 +14,13 @@ import { APP_VERSION } from '../lib/env';
 import { api } from '../lib/api';
 import { instanceRouteFromPath } from '../lib/routes';
 import { useAuthStore } from '../store/auth-store';
-import type { RuntimeSSHTarget, RuntimeSSHTargetTestResponse } from '../types/api';
+import type {
+  Runtime,
+  RuntimeLifecycleResponse,
+  RuntimeCapabilitiesResponse,
+  RuntimeJob,
+  RuntimeTestResponse,
+} from '../types/api';
 
 // ── types ───────────────────────────────────────────────────────────────────
 
@@ -42,10 +48,10 @@ interface SentinelInstance {
   name: string;
   database_name: string;
   display_name: string | null;
-  runtime_target_id: string | null;
+  runtime_id: string | null;
 }
 
-const emptyRuntimeTargetForm = {
+const emptyRuntimeForm = {
   name: '',
   host: '',
   port: '22',
@@ -56,9 +62,17 @@ const emptyRuntimeTargetForm = {
   password: '',
 };
 
-const RUNTIME_VERIFICATION_FIELDS = new Set<keyof typeof emptyRuntimeTargetForm>([
+const RUNTIME_VERIFICATION_FIELDS = new Set<keyof typeof emptyRuntimeForm>([
   'host', 'port', 'username', 'workspaces_dir', 'auth_type', 'private_key', 'password',
 ]);
+
+const RUNTIME_INSTALL_HINTS: Record<string, string | null> = {
+  Lima: 'brew install lima',
+  Docker: 'brew install --cask docker',
+  'Provisioning engine': 'brew install ansible',
+  'Runtime provisioning profile': null,
+  'Lima runtime profile': null,
+};
 
 const runtimeInputClass = 'h-10 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs font-medium text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] outline-none transition-colors focus:border-[color:var(--accent-solid)]';
 const runtimeTextAreaClass = 'min-h-28 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 py-2 font-mono text-[10px] font-medium leading-relaxed text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] outline-none transition-colors focus:border-[color:var(--accent-solid)]';
@@ -318,22 +332,26 @@ export function SettingsPage() {
   const [savingProvider, setSavingProvider] = useState<string | null>(null);
   const [codexOauthImportAvailable, setCodexOauthImportAvailable] = useState(false);
   const [importingCodexOauth, setImportingCodexOauth] = useState(false);
-  const [runtimeTargets, setRuntimeTargets] = useState<RuntimeSSHTarget[]>([]);
+  const [runtimes, setRuntimes] = useState<Runtime[]>([]);
   const [currentInstance, setCurrentInstance] = useState<SentinelInstance | null>(null);
-  const [loadingRuntimeTargets, setLoadingRuntimeTargets] = useState(true);
-  const [savingRuntimeTarget, setSavingRuntimeTarget] = useState(false);
-  const [testingRuntimeTarget, setTestingRuntimeTarget] = useState(false);
-  const [runtimeForm, setRuntimeForm] = useState(emptyRuntimeTargetForm);
-  const [editingRuntimeTargetId, setEditingRuntimeTargetId] = useState<string | null>(null);
+  const [loadingRuntimes, setLoadingRuntimes] = useState(true);
+  const [savingRuntime, setSavingRuntime] = useState(false);
+  const [testingRuntime, setTestingRuntime] = useState(false);
+  const [runtimeForm, setRuntimeForm] = useState(emptyRuntimeForm);
+  const [editingRuntimeId, setEditingRuntimeId] = useState<string | null>(null);
   const [addingNewTarget, setAddingNewTarget] = useState(false);
   const [confirmDeleteTargetId, setConfirmDeleteTargetId] = useState<string | null>(null);
-  const [deletingRuntimeTarget, setDeletingRuntimeTarget] = useState(false);
+  const [deletingRuntime, setDeletingRuntime] = useState(false);
   const [runtimeVerified, setRuntimeVerified] = useState(false);
   const [runtimeResolvedHome, setRuntimeResolvedHome] = useState<string | null>(null);
+  const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilitiesResponse | null>(null);
+  const [creatingProvider, setCreatingProvider] = useState<string | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<'lima' | 'docker' | 'ssh' | null>(null);
+  const [creatingJobMessage, setCreatingJobMessage] = useState<string | null>(null);
 
-  function updateRuntimeForm(updates: Partial<typeof emptyRuntimeTargetForm>) {
+  function updateRuntimeForm(updates: Partial<typeof emptyRuntimeForm>) {
     setRuntimeForm((f) => ({ ...f, ...updates }));
-    const touchesVerification = (Object.keys(updates) as Array<keyof typeof emptyRuntimeTargetForm>)
+    const touchesVerification = (Object.keys(updates) as Array<keyof typeof emptyRuntimeForm>)
       .some((k) => RUNTIME_VERIFICATION_FIELDS.has(k));
     if (touchesVerification) {
       setRuntimeVerified(false);
@@ -358,24 +376,26 @@ export function SettingsPage() {
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
-  const fetchRuntimeTargets = useCallback(async () => {
+  const fetchRuntimes = useCallback(async () => {
     if (!instanceName) return;
-    setLoadingRuntimeTargets(true);
+    setLoadingRuntimes(true);
     try {
-      const [targets, instance] = await Promise.all([
-        api.get<RuntimeSSHTarget[]>('/runtime-targets'),
+      const [capabilities, rows, instance] = await Promise.all([
+        api.get<RuntimeCapabilitiesResponse>('/runtimes/capabilities'),
+        api.get<Runtime[]>('/runtimes'),
         api.get<SentinelInstance>(`/instances/${encodeURIComponent(instanceName)}`),
       ]);
-      setRuntimeTargets(targets);
+      setRuntimeCapabilities(capabilities);
+      setRuntimes(rows);
       setCurrentInstance(instance);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to load runtime targets');
+      toast.error(error instanceof Error ? error.message : 'Failed to load runtimes');
     } finally {
-      setLoadingRuntimeTargets(false);
+      setLoadingRuntimes(false);
     }
   }, [instanceName]);
 
-  useEffect(() => { void fetchRuntimeTargets(); }, [fetchRuntimeTargets]);
+  useEffect(() => { void fetchRuntimes(); }, [fetchRuntimes]);
 
   useEffect(() => {
     let cancelled = false;
@@ -451,17 +471,18 @@ export function SettingsPage() {
     }
   }
 
-  function startEditingRuntimeTarget(target: RuntimeSSHTarget) {
+  function startEditingRuntime(target: Runtime) {
     setAddingNewTarget(false);
+    setSelectedProvider('ssh');
     setConfirmDeleteTargetId(null);
-    setEditingRuntimeTargetId(target.id);
+    setEditingRuntimeId(target.id);
     setRuntimeForm({
       name: target.name,
-      host: target.host,
-      port: String(target.port),
-      username: target.username,
-      workspaces_dir: target.workspaces_dir,
-      auth_type: target.auth_type,
+      host: target.host ?? '',
+      port: String(target.port ?? 22),
+      username: target.username ?? '',
+      workspaces_dir: target.workspaces_dir ?? '',
+      auth_type: target.auth_type ?? 'private_key',
       private_key: '',
       password: '',
     });
@@ -469,45 +490,68 @@ export function SettingsPage() {
     setRuntimeResolvedHome(null);
   }
 
-  function startAddingRuntimeTarget() {
-    setEditingRuntimeTargetId(null);
+  function startAddingRuntime() {
+    setEditingRuntimeId(null);
     setConfirmDeleteTargetId(null);
-    setRuntimeForm(emptyRuntimeTargetForm);
+    setRuntimeForm(emptyRuntimeForm);
     setAddingNewTarget(true);
+    setSelectedProvider(null);
     setRuntimeVerified(false);
     setRuntimeResolvedHome(null);
   }
 
-  function resetRuntimeForm() {
-    setEditingRuntimeTargetId(null);
-    setAddingNewTarget(false);
-    setRuntimeForm(emptyRuntimeTargetForm);
-    setRuntimeVerified(false);
-    setRuntimeResolvedHome(null);
+  function autoSuggestName(provider: 'lima' | 'docker' | 'ssh'): string {
+    const prefix = provider;
+    const taken = new Set(runtimes.map((r) => r.name));
+    for (let n = 1; n < 999; n++) {
+      const candidate = `${prefix}-${n}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return `${prefix}-new`;
   }
 
-  async function handleDeleteRuntimeTarget(targetId: string) {
-    setDeletingRuntimeTarget(true);
-    try {
-      await api.delete(`/runtime-targets/${targetId}`);
-      toast.success('Runtime target removed');
-      setConfirmDeleteTargetId(null);
-      if (editingRuntimeTargetId === targetId) resetRuntimeForm();
-      await fetchRuntimeTargets();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to remove runtime target');
-    } finally {
-      setDeletingRuntimeTarget(false);
+  function pickProvider(provider: 'lima' | 'docker' | 'ssh') {
+    setSelectedProvider(provider);
+    setRuntimeForm((f) => ({ ...f, name: f.name || autoSuggestName(provider) }));
+    if (provider !== 'ssh') {
+      setRuntimeVerified(false);
+      setRuntimeResolvedHome(null);
     }
   }
 
-  async function handleSaveRuntimeTarget(testOnly = false) {
-    const isEditing = editingRuntimeTargetId !== null;
+  function resetRuntimeForm() {
+    setEditingRuntimeId(null);
+    setAddingNewTarget(false);
+    setSelectedProvider(null);
+    setRuntimeForm(emptyRuntimeForm);
+    setRuntimeVerified(false);
+    setRuntimeResolvedHome(null);
+    setCreatingJobMessage(null);
+  }
+
+  async function handleDeleteRuntime(targetId: string) {
+    setDeletingRuntime(true);
+    try {
+      await api.delete(`/runtimes/${targetId}`);
+      toast.success('Runtime removed');
+      setConfirmDeleteTargetId(null);
+      if (editingRuntimeId === targetId) resetRuntimeForm();
+      await fetchRuntimes();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to remove runtime');
+    } finally {
+      setDeletingRuntime(false);
+    }
+  }
+
+  async function handleSaveRuntime(testOnly = false) {
+    const isEditing = editingRuntimeId !== null;
     const secretValue = runtimeForm.auth_type === 'private_key'
       ? runtimeForm.private_key.trim()
       : runtimeForm.password;
     const body = {
       name: runtimeForm.name.trim(),
+      provider: 'ssh',
       host: runtimeForm.host.trim(),
       port: Number(runtimeForm.port || 22),
       username: runtimeForm.username.trim(),
@@ -526,14 +570,15 @@ export function SettingsPage() {
         return;
       }
       if (!secretValue) {
-        toast.error('Enter the SSH secret to test this target');
+        toast.error('Enter the SSH secret to test this runtime');
         return;
       }
-      setTestingRuntimeTarget(true);
+      setTestingRuntime(true);
       try {
-        const result = await api.post<RuntimeSSHTargetTestResponse>(
-          '/runtime-targets/test',
-          { ...body, auth_type: runtimeForm.auth_type },
+        const { provider: _provider, ...testBody } = body;
+        const result = await api.post<RuntimeTestResponse>(
+          '/runtimes/test',
+          { ...testBody, auth_type: runtimeForm.auth_type },
           { timeoutMs: 20_000 },
         );
         if (result.ok) {
@@ -551,57 +596,122 @@ export function SettingsPage() {
       } catch (error) {
         setRuntimeVerified(false);
         setRuntimeResolvedHome(null);
-        toast.error(error instanceof Error ? error.message : 'Runtime target test failed');
+        toast.error(error instanceof Error ? error.message : 'Runtime test failed');
       } finally {
-        setTestingRuntimeTarget(false);
+        setTestingRuntime(false);
       }
       return;
     }
     if (!body.name || !body.host || !body.username || !body.workspaces_dir) {
-      toast.error('Runtime target name, host, username, and workspace root are required');
+      toast.error('Runtime name, host, username, and workspace root are required');
       return;
     }
     if (!isEditing && !secretValue) {
       toast.error(runtimeForm.auth_type === 'private_key' ? 'Private key is required' : 'SSH password is required');
       return;
     }
-    setSavingRuntimeTarget(true);
+    setSavingRuntime(true);
     try {
       const target = isEditing
-        ? await api.patch<RuntimeSSHTarget>(`/runtime-targets/${editingRuntimeTargetId}`, body)
-        : await api.post<RuntimeSSHTarget>('/runtime-targets', body);
+        ? await api.patch<Runtime>(`/runtimes/${editingRuntimeId}`, body)
+        : await api.post<Runtime>('/runtimes', body);
       resetRuntimeForm();
-      await fetchRuntimeTargets();
+      await fetchRuntimes();
       if (!isEditing && instanceName) {
-        await assignRuntimeTarget(target.id);
+        await assignRuntime(target.id);
       }
-      toast.success(isEditing ? 'Runtime target updated' : 'Runtime target saved');
+      toast.success(isEditing ? 'Runtime updated' : 'Runtime saved');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to save runtime target');
+      toast.error(error instanceof Error ? error.message : 'Failed to save runtime');
     } finally {
-      setSavingRuntimeTarget(false);
+      setSavingRuntime(false);
     }
   }
 
-  async function assignRuntimeTarget(targetId: string | null) {
+  async function assignRuntime(targetId: string | null) {
     if (!instanceName) return;
     try {
       const instance = await api.patch<SentinelInstance>(
-        `/instances/${encodeURIComponent(instanceName)}/runtime-target`,
-        { runtime_target_id: targetId },
+        `/instances/${encodeURIComponent(instanceName)}/runtime`,
+        { runtime_id: targetId },
       );
       setCurrentInstance(instance);
-      toast.success(targetId ? 'Runtime target selected' : 'Runtime target cleared');
+      toast.success(targetId ? 'Runtime selected' : 'Runtime cleared');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to assign runtime target');
+      toast.error(error instanceof Error ? error.message : 'Failed to assign runtime');
+    }
+  }
+
+  async function createRuntime(provider: 'lima' | 'docker') {
+    const name = runtimeForm.name.trim();
+    if (!name) {
+      toast.error('Runtime name is required');
+      return;
+    }
+    setCreatingProvider(provider);
+    setCreatingJobMessage('Submitting…');
+    try {
+      const response = await api.post<RuntimeLifecycleResponse>(
+        '/runtimes',
+        {
+          provider,
+          name,
+          profile: provider === 'lima' ? 'sentinel-linux-xfce' : 'sentinel-docker-linux',
+          provider_config: { desktop: 'xfce' },
+        },
+        { timeoutMs: 30_000 },
+      );
+      await fetchRuntimes();
+      // Poll the job until terminal status, showing the latest event message.
+      let jobId: string | null = response.job.id;
+      let lastStatus: 'queued' | 'running' | 'succeeded' | 'failed' = response.job.status;
+      while (jobId && (lastStatus === 'queued' || lastStatus === 'running')) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          const job = await api.get<Pick<RuntimeJob, 'id' | 'status' | 'events' | 'error'>>(`/runtimes/jobs/${jobId}`);
+          lastStatus = job.status;
+          const latest = job.events.length > 0 ? job.events[job.events.length - 1].message : null;
+          setCreatingJobMessage(latest ?? (lastStatus === 'queued' ? 'Queued…' : 'Working…'));
+          if (lastStatus === 'failed') {
+            toast.error(job.error ?? 'Runtime creation failed');
+          } else if (lastStatus === 'succeeded') {
+            toast.success(`Runtime ${name} ready`);
+          }
+        } catch {
+          // Polling glitch — keep trying for the next interval, but don't spam toasts.
+        }
+      }
+      await fetchRuntimes();
+      if (lastStatus === 'succeeded') {
+        resetRuntimeForm();
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to create runtime');
+    } finally {
+      setCreatingProvider(null);
+      setCreatingJobMessage(null);
+    }
+  }
+
+  async function runRuntimeAction(runtime: Runtime, action: 'start' | 'stop' | 'rebuild' | 'delete') {
+    try {
+      const response = await api.post<RuntimeLifecycleResponse>(
+        `/runtimes/${runtime.id}/${action}`,
+        undefined,
+        { timeoutMs: 30_000 },
+      );
+      toast.success(`Runtime job started: ${response.job.action}`);
+      await fetchRuntimes();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : `Failed to ${action} runtime`);
     }
   }
 
   const primaryProvider = providerStatus?.primary_provider ?? 'anthropic';
-  const activeRuntimeTargetId = currentInstance?.runtime_target_id ?? null;
+  const activeRuntimeId = currentInstance?.runtime_id ?? null;
 
   function renderRuntimeForm() {
-    const isEditing = editingRuntimeTargetId !== null;
+    const isEditing = editingRuntimeId !== null;
     const suggestedWorkspaceRoot = runtimeResolvedHome
       ? `${runtimeResolvedHome.replace(/\/+$/, '')}/sentinel/workspaces`
       : null;
@@ -612,7 +722,7 @@ export function SettingsPage() {
       <div className="rounded-xl border border-[color:var(--accent-solid)]/40 bg-[color:var(--surface-0)] p-4 space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)]">
-            {isEditing ? 'Edit runtime target' : 'New runtime target'}
+            {isEditing ? 'Edit runtime' : 'New runtime'}
           </span>
           {runtimeVerified ? (
             <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
@@ -748,30 +858,30 @@ export function SettingsPage() {
           )}
           <button
             type="button"
-            onClick={() => void handleSaveRuntimeTarget(true)}
-            disabled={testingRuntimeTarget || savingRuntimeTarget}
+            onClick={() => void handleSaveRuntime(true)}
+            disabled={testingRuntime || savingRuntime}
             className="btn-secondary h-10 px-3 gap-2 text-[10px] font-bold uppercase tracking-widest"
           >
-            {testingRuntimeTarget ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
+            {testingRuntime ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
             Test connection
           </button>
           <button
             type="button"
-            onClick={() => void handleSaveRuntimeTarget(false)}
-            disabled={savingRuntimeTarget || testingRuntimeTarget || !runtimeVerified}
+            onClick={() => void handleSaveRuntime(false)}
+            disabled={savingRuntime || testingRuntime || !runtimeVerified}
             title={!runtimeVerified ? 'Run Test connection successfully before saving' : undefined}
             className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {savingRuntimeTarget ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-            {isEditing ? 'Save changes' : 'Save target'}
+            {savingRuntime ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+            {isEditing ? 'Save changes' : 'Save runtime'}
           </button>
         </div>
       </div>
     );
   }
 
-  function renderTargetCard(target: RuntimeSSHTarget) {
-    const isActive = activeRuntimeTargetId === target.id;
+  function renderTargetCard(target: Runtime) {
+    const isActive = activeRuntimeId === target.id;
     const isConfirmingDelete = confirmDeleteTargetId === target.id;
 
     return (
@@ -786,10 +896,10 @@ export function SettingsPage() {
         <div className="flex items-stretch">
           <button
             type="button"
-            onClick={() => { if (!isActive) void assignRuntimeTarget(target.id); }}
+            onClick={() => { if (!isActive) void assignRuntime(target.id); }}
             disabled={isActive}
             className={`flex-1 min-w-0 text-left px-4 py-3 flex items-start gap-3 ${isActive ? 'cursor-default' : 'cursor-pointer'}`}
-            title={isActive ? 'This target is currently active for this instance' : 'Click to set as active runtime target'}
+            title={isActive ? 'This target is currently active for this instance' : 'Click to set as active runtime'}
           >
             <div className={`mt-1 h-2.5 w-2.5 rounded-full shrink-0 ${isActive ? 'bg-emerald-500' : 'bg-[color:var(--text-muted)]/40 group-hover:bg-[color:var(--text-muted)]'}`} />
             <div className="flex-1 min-w-0 space-y-1">
@@ -801,16 +911,21 @@ export function SettingsPage() {
                   </span>
                 )}
                 <StatusChip
-                  label={target.auth_type === 'private_key' ? 'Key' : 'Password'}
+                  label={target.provider === 'ssh' ? (target.auth_type === 'private_key' ? 'Key' : 'Password') : target.provider}
                   tone="info"
+                  className="scale-90"
+                />
+                <StatusChip
+                  label={target.status}
+                  tone={target.status === 'ready' || target.status === 'running' ? 'good' : target.status === 'error' ? 'danger' : 'default'}
                   className="scale-90"
                 />
               </div>
               <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
-                {target.username}@{target.host}:{target.port}
+                {target.username && target.host ? `${target.username}@${target.host}:${target.port ?? 22}` : 'SSH details pending'}
               </div>
               <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
-                {target.workspaces_dir}
+                {target.workspaces_dir ?? 'Workspace root pending'}
               </div>
             </div>
           </button>
@@ -819,11 +934,11 @@ export function SettingsPage() {
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => void handleDeleteRuntimeTarget(target.id)}
-                  disabled={deletingRuntimeTarget}
+                  onClick={() => void handleDeleteRuntime(target.id)}
+                  disabled={deletingRuntime}
                   className="text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:opacity-70 transition-opacity px-2 py-1"
                 >
-                  {deletingRuntimeTarget ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
+                  {deletingRuntime ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
                 </button>
                 <button
                   type="button"
@@ -835,19 +950,44 @@ export function SettingsPage() {
               </div>
             ) : (
               <>
-                <button
-                  type="button"
-                  onClick={() => startEditingRuntimeTarget(target)}
-                  className="p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
-                  title="Edit runtime target"
-                >
-                  <Pencil size={13} />
-                </button>
+                {isActive && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); void assignRuntime(null); }}
+                    className="p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-rose-500 hover:bg-rose-500/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                    title="Detach from this instance"
+                  >
+                    <Unlink size={13} />
+                  </button>
+                )}
+                {target.provider === 'ssh' && (
+                  <button
+                    type="button"
+                    onClick={() => startEditingRuntime(target)}
+                    className="p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                    title="Edit runtime"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                )}
+                {target.provider !== 'ssh' && (
+                  <>
+                    <button type="button" onClick={() => void runRuntimeAction(target, 'start')} className="p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-emerald-400 hover:bg-[color:var(--surface-2)] transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100" title="Start runtime">
+                      <Power size={13} />
+                    </button>
+                    <button type="button" onClick={() => void runRuntimeAction(target, 'stop')} className="p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100" title="Stop runtime">
+                      <Square size={13} />
+                    </button>
+                    <button type="button" onClick={() => void runRuntimeAction(target, 'rebuild')} className="p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100" title="Rebuild runtime">
+                      <RotateCcw size={13} />
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   onClick={() => setConfirmDeleteTargetId(target.id)}
                   className="p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-rose-500 hover:bg-rose-500/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
-                  title="Delete runtime target"
+                  title="Delete runtime"
                 >
                   <Trash2 size={13} />
                 </button>
@@ -859,7 +999,7 @@ export function SettingsPage() {
     );
   }
 
-  const isFormOpen = editingRuntimeTargetId !== null || addingNewTarget;
+  const isFormOpen = editingRuntimeId !== null || addingNewTarget;
 
   return (
     <AppShell
@@ -1025,74 +1165,224 @@ export function SettingsPage() {
           </div>
         </Panel>
 
-        <Panel className="p-6 space-y-6 md:col-span-2">
+        <Panel className="p-6 space-y-4 md:col-span-2">
           <div className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] pb-4">
             <div className="p-2 rounded-lg bg-[color:var(--surface-2)] text-[color:var(--accent-solid)]">
               <KeyRound size={20} />
             </div>
             <div className="flex-1">
-              <h2 className="text-sm font-bold uppercase tracking-widest">Runtime SSH</h2>
-              <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-tighter">Reusable execution targets for this instance</p>
+              <h2 className="text-sm font-bold uppercase tracking-widest">Runtimes</h2>
+              <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-tighter">Where Sentinel executes sessions for this instance</p>
             </div>
-            {activeRuntimeTargetId && (
-              <button
-                onClick={() => void assignRuntimeTarget(null)}
-                className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-rose-500 transition-colors px-2"
-                title="Detach the active runtime target from this instance"
-              >
-                Clear assignment
-              </button>
-            )}
-            <button onClick={() => void fetchRuntimeTargets()}
+            <button onClick={() => { void fetchRuntimes(); }}
               className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors p-1"
-              title="Refresh">
-              <RefreshCw size={14} className={loadingRuntimeTargets ? 'animate-spin' : ''} />
+              title="Refresh runtimes">
+              <RefreshCw size={14} className={loadingRuntimes ? 'animate-spin' : ''} />
             </button>
           </div>
 
-          {loadingRuntimeTargets && runtimeTargets.length === 0 ? (
+          {/* Existing runtimes list */}
+          {loadingRuntimes && runtimes.length === 0 ? (
             <div className="flex items-center justify-center py-8 text-[color:var(--text-muted)]">
               <Loader2 size={20} className="animate-spin" />
             </div>
-          ) : runtimeTargets.length === 0 && !addingNewTarget ? (
+          ) : runtimes.length === 0 && !addingNewTarget ? (
             <div className="flex flex-col items-center justify-center py-12 text-center gap-4 rounded-xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]">
               <div className="p-3 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)]">
                 <Server size={24} className="text-[color:var(--text-muted)]" />
               </div>
               <div className="space-y-1 max-w-sm">
-                <p className="text-xs font-bold uppercase tracking-widest">No runtime targets yet</p>
+                <p className="text-xs font-bold uppercase tracking-widest">No runtimes yet</p>
                 <p className="text-[11px] text-[color:var(--text-muted)] leading-relaxed">
-                  Connect an SSH host so Sentinel can execute sessions in an isolated remote workspace.
+                  Provision a Lima VM, Docker container, or connect an SSH host you already manage.
                 </p>
               </div>
-              <button onClick={startAddingRuntimeTarget} className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest">
-                <Plus size={14} /> Add your first target
+              <button onClick={startAddingRuntime} className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest">
+                <Plus size={14} /> Add your first runtime
               </button>
             </div>
           ) : (
-            <div className="space-y-3">
-              {runtimeTargets.map((target) =>
-                editingRuntimeTargetId === target.id
+            <div className="space-y-2">
+              {runtimes.map((target) =>
+                editingRuntimeId === target.id
                   ? <div key={target.id}>{renderRuntimeForm()}</div>
                   : renderTargetCard(target),
-              )}
-              {addingNewTarget && renderRuntimeForm()}
-              {!isFormOpen && runtimeTargets.length > 0 && (
-                <button
-                  type="button"
-                  onClick={startAddingRuntimeTarget}
-                  className="w-full h-12 rounded-xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--accent-solid)] hover:bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)] transition-colors flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
-                >
-                  <Plus size={14} /> Add runtime target
-                </button>
               )}
             </div>
           )}
 
-          <div className="bg-[color:var(--surface-1)] p-4 rounded-xl border border-[color:var(--border-subtle)] flex items-start gap-3">
-            <Info size={16} className="text-[color:var(--accent-solid)] shrink-0 mt-0.5" />
-            <p className="text-[11px] text-[color:var(--text-secondary)] leading-relaxed font-medium">
-              Click a target to make it the active runtime for this instance. Targets are shared across instances — assigning one here only affects this instance's session execution.
+          {/* Add-runtime affordance — collapses chooser/form */}
+          {addingNewTarget && !selectedProvider && (() => {
+            const capByProvider = new Map((runtimeCapabilities?.providers ?? []).map((p) => [p.provider, p]));
+            const tiles: Array<{ id: 'lima' | 'docker' | 'ssh'; label: string; description: string; icon: typeof Cpu }> = [
+              { id: 'lima', label: 'Lima VM', description: 'Provisioned Linux VM via Lima.', icon: Cpu },
+              { id: 'docker', label: 'Docker', description: 'Provisioned Linux container via Docker.', icon: Container },
+              { id: 'ssh', label: 'Custom SSH', description: 'Bring your own SSH host.', icon: KeyRound },
+            ];
+            return (
+              <div className="rounded-xl border border-[color:var(--accent-solid)]/40 bg-[color:var(--surface-0)] p-4 space-y-3 animate-in fade-in slide-in-from-top-1 duration-200">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)]">Choose how to add a runtime</span>
+                  <button type="button" onClick={resetRuntimeForm} className="p-1 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors" title="Cancel">
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {tiles.map((tile) => {
+                    const cap = capByProvider.get(tile.id);
+                    const isSsh = tile.id === 'ssh';
+                    const available = isSsh ? true : (cap?.available ?? false);
+                    const Icon = tile.icon;
+                    return (
+                      <button
+                        key={tile.id}
+                        type="button"
+                        onClick={() => pickProvider(tile.id)}
+                        className="group text-left rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:border-[color:var(--accent-solid)] hover:bg-[color:var(--surface-2)] transition-all p-3 space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <Icon size={16} className="text-[color:var(--text-secondary)] group-hover:text-[color:var(--accent-solid)] transition-colors" />
+                          {isSsh ? null : available ? (
+                            <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">Ready</span>
+                          ) : (
+                            <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400">Setup needed</span>
+                          )}
+                        </div>
+                        <div className="text-[11px] font-bold text-[color:var(--text-primary)]">{tile.label}</div>
+                        <div className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">{tile.description}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* SSH form — selected from chooser */}
+          {addingNewTarget && selectedProvider === 'ssh' && renderRuntimeForm()}
+
+          {/* Lima/Docker contextual form — selected from chooser */}
+          {addingNewTarget && (selectedProvider === 'lima' || selectedProvider === 'docker') && (() => {
+            const cap = runtimeCapabilities?.providers.find((p) => p.provider === selectedProvider);
+            const available = cap?.available ?? false;
+            const isCreating = creatingProvider === selectedProvider;
+            const providerLabel = selectedProvider === 'lima' ? 'Lima VM' : 'Docker';
+            const installSteps = (cap?.missing ?? [])
+              .filter((m) => RUNTIME_INSTALL_HINTS[m] !== undefined)
+              .map((m) => ({ key: m, command: RUNTIME_INSTALL_HINTS[m] }));
+            return (
+              <div className="rounded-xl border border-[color:var(--accent-solid)]/40 bg-[color:var(--surface-0)] p-4 space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)]">New {providerLabel} runtime</span>
+                  <button type="button" onClick={resetRuntimeForm} disabled={isCreating} className="p-1 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors disabled:opacity-40" title="Cancel">
+                    <X size={14} />
+                  </button>
+                </div>
+
+                {!available ? (
+                  <div className="space-y-3">
+                    <div className="text-[11px] text-amber-400 leading-relaxed">
+                      {providerLabel} setup is incomplete on this machine. Install the missing tools below, then refresh.
+                    </div>
+                    {installSteps.length > 0 ? (
+                      <div className="space-y-1.5">
+                        {installSteps.map((step) => (
+                          <div key={step.key} className="flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2.5 py-1.5">
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[10px] text-[color:var(--text-muted)] uppercase tracking-wider">{step.key}</div>
+                              {step.command ? (
+                                <code className="font-mono text-[11px] text-[color:var(--text-primary)] break-all">{step.command}</code>
+                              ) : (
+                                <span className="text-[10px] text-[color:var(--text-muted)] italic">bundled with Sentinel — reinstall if missing</span>
+                              )}
+                            </div>
+                            {step.command && (
+                              <button
+                                type="button"
+                                onClick={() => { navigator.clipboard.writeText(step.command!); toast.success('Copied'); }}
+                                className="shrink-0 p-1 rounded text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)] transition-colors"
+                                title="Copy to clipboard"
+                              >
+                                <Copy size={12} />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-[color:var(--text-muted)] italic">
+                        Missing: {cap?.missing.join(', ') ?? 'unknown'}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2 pt-2 border-t border-[color:var(--border-subtle)]">
+                      <button type="button" onClick={resetRuntimeForm} className="btn-secondary h-10 px-3 text-[10px] font-bold uppercase tracking-widest">Close</button>
+                      <div className="flex-1" />
+                      <button type="button" onClick={() => { void fetchRuntimes(); }} className="btn-secondary h-10 px-3 gap-2 text-[10px] font-bold uppercase tracking-widest">
+                        <RefreshCw size={14} /> Recheck
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-[11px] text-[color:var(--text-muted)] leading-relaxed">
+                      {selectedProvider === 'lima'
+                        ? 'Sentinel will provision a Linux VM via Lima. First run takes a few minutes.'
+                        : 'Sentinel will provision a Linux container via Docker. First run takes ~1 minute.'}
+                    </p>
+
+                    <label className="block space-y-1">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Name</span>
+                      <input
+                        value={runtimeForm.name}
+                        onChange={(e) => updateRuntimeForm({ name: e.target.value })}
+                        disabled={isCreating}
+                        className={`${runtimeInputClass} w-full disabled:opacity-50`}
+                      />
+                    </label>
+
+                    {isCreating && (
+                      <div className="rounded-md border-l-2 border-amber-500/50 bg-[color:var(--surface-1)]/40 pl-2 pr-1.5 py-1.5">
+                        <div className="flex items-center gap-2">
+                          <Loader2 size={12} className="animate-spin text-amber-400 shrink-0" />
+                          <span className="text-[10px] text-[color:var(--text-secondary)] leading-snug">{creatingJobMessage ?? 'Working…'}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2 pt-2 border-t border-[color:var(--border-subtle)]">
+                      <button type="button" onClick={resetRuntimeForm} disabled={isCreating} className="btn-secondary h-10 px-3 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">Cancel</button>
+                      <div className="flex-1" />
+                      <button
+                        type="button"
+                        onClick={() => void createRuntime(selectedProvider)}
+                        disabled={isCreating || !runtimeForm.name.trim()}
+                        className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {isCreating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                        Create runtime
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Add button — visible only when no flow is active */}
+          {!addingNewTarget && editingRuntimeId === null && runtimes.length > 0 && (
+            <button
+              type="button"
+              onClick={startAddingRuntime}
+              className="w-full h-12 rounded-xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--accent-solid)] hover:bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)] transition-colors flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
+            >
+              <Plus size={14} /> Add runtime
+            </button>
+          )}
+
+          <div className="bg-[color:var(--surface-1)] p-3 rounded-xl border border-[color:var(--border-subtle)] flex items-start gap-2.5">
+            <Info size={14} className="text-[color:var(--accent-solid)] shrink-0 mt-0.5" />
+            <p className="text-[10px] text-[color:var(--text-secondary)] leading-relaxed">
+              Click a runtime to make it active for this instance. Runtimes are shared across instances; assigning one here only affects this instance.
             </p>
           </div>
         </Panel>

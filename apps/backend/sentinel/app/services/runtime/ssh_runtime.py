@@ -11,18 +11,18 @@ from app.services.runtime.desktop import RuntimeDesktopManager
 from app.services.runtime.files import RuntimeWorkspaceFiles
 from app.services.runtime.port_forwards import RuntimePortForwardManager
 from app.services.runtime.ssh_client import SSHClient
-from app.services.runtime.targets import (
-    InstanceRuntimeTargetNotConfigured,
-    RuntimeTargetNotFound,
-    ResolvedRuntimeTarget,
-    resolve_instance_runtime_target,
+from app.services.runtime.runtimes import (
+    InstanceRuntimeNotConfigured,
+    ResolvedRuntime,
+    RuntimeNotFound,
+    resolve_instance_runtime,
 )
 from app.services.runtime.terminal_manager import RuntimeTerminalManager
 
 
 @dataclass(slots=True)
 class _RuntimeBundle:
-    target_id: str
+    runtime_id: str
     updated_at_marker: str
     terminal: RuntimeTerminalManager
     files: RuntimeWorkspaceFiles
@@ -47,8 +47,8 @@ async def runtime_configured(
     session_factory: async_sessionmaker | None = None,
 ) -> bool:
     try:
-        await _resolve_target(instance_name=instance_name, session_factory=session_factory)
-    except (InstanceRuntimeTargetNotConfigured, RuntimeTargetNotFound):
+        await _resolve_runtime(instance_name=instance_name, session_factory=session_factory)
+    except (InstanceRuntimeNotConfigured, RuntimeNotFound):
         return False
     return True
 
@@ -108,44 +108,44 @@ async def _get_bundle(
     instance_name: str | None,
     session_factory: async_sessionmaker | None,
 ) -> _RuntimeBundle:
-    target = await _resolve_target(instance_name=instance_name, session_factory=session_factory)
+    runtime = await _resolve_runtime(instance_name=instance_name, session_factory=session_factory)
     key = _normalize_required_instance_name(instance_name or instance_name_from_session_factory(session_factory))
     async with _lock:
         existing = _bundles.get(key)
         if (
             existing is not None
-            and existing.target_id == str(target.id)
-            and existing.updated_at_marker == target.updated_at_marker
+            and existing.runtime_id == str(runtime.id)
+            and existing.updated_at_marker == runtime.updated_at_marker
         ):
             return existing
         if existing is not None:
             await _close_bundle(existing)
-        bundle = _build_bundle(target)
+        bundle = _build_bundle(runtime)
         _bundles[key] = bundle
         return bundle
 
 
-async def _resolve_target(
+async def _resolve_runtime(
     *,
     instance_name: str | None,
     session_factory: async_sessionmaker | None,
-) -> ResolvedRuntimeTarget:
+) -> ResolvedRuntime:
     resolved_name = _normalize_required_instance_name(
         instance_name or instance_name_from_session_factory(session_factory)
     )
     async with ManagerSessionLocal() as db:
-        return await resolve_instance_runtime_target(db, instance_name=resolved_name)
+        return await resolve_instance_runtime(db, instance_name=resolved_name)
 
 
-def _build_bundle(target: ResolvedRuntimeTarget) -> _RuntimeBundle:
-    ssh = SSHClient(target.credentials())
-    terminal = RuntimeTerminalManager(ssh, workspaces_root=target.workspaces_dir)
-    files = RuntimeWorkspaceFiles(ssh, workspaces_root=target.workspaces_dir)
+def _build_bundle(runtime: ResolvedRuntime) -> _RuntimeBundle:
+    ssh = SSHClient(runtime.credentials())
+    terminal = RuntimeTerminalManager(ssh, workspaces_root=runtime.workspaces_dir)
+    files = RuntimeWorkspaceFiles(ssh, workspaces_root=runtime.workspaces_dir)
     forwards = RuntimePortForwardManager(ssh)
-    desktop = RuntimeDesktopManager(terminal, workspaces_root=target.workspaces_dir)
+    desktop = RuntimeDesktopManager(terminal, workspaces_root=runtime.workspaces_dir)
     return _RuntimeBundle(
-        target_id=str(target.id),
-        updated_at_marker=target.updated_at_marker,
+        runtime_id=str(runtime.id),
+        updated_at_marker=runtime.updated_at_marker,
         terminal=terminal,
         files=files,
         forwards=forwards,
@@ -161,5 +161,5 @@ async def _close_bundle(bundle: _RuntimeBundle) -> None:
 
 def _normalize_required_instance_name(instance_name: str | None) -> str:
     if not instance_name:
-        raise InstanceRuntimeTargetNotConfigured("No runtime target selected for this instance.")
+        raise InstanceRuntimeNotConfigured("No runtime selected for this instance.")
     return instance_name.strip().lower()

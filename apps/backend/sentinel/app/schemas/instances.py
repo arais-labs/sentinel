@@ -29,6 +29,6 @@ class InstanceResponse(BaseModel):
     name: str
     database_name: str
     display_name: str | None
-    runtime_target_id: UUID | None = None
+    runtime_id: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None

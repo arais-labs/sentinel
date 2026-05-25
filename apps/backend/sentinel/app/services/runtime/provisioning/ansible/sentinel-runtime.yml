@@ -6,8 +6,10 @@
 
   vars:
     sentinel_desktop: xfce
+    sentinel_runtime_container: false
     sentinel_user: "{{ ansible_user | default(ansible_ssh_user) | default(lookup('env', 'USER')) }}"
     sentinel_home: "{{ sentinel_home_override | default('/home/' ~ sentinel_user ~ '.guest') }}"
+    sentinel_workspaces_dir: "{{ sentinel_home }}/sentinel/workspaces"
     sentinel_vnc_display: ":1"
     sentinel_vnc_geometry: "1440x900"
     sentinel_vnc_depth: 24
@@ -76,6 +78,7 @@
         enabled: false
         state: stopped
         daemon_reload: true
+      when: not (sentinel_runtime_container | bool)
 
   tasks:
     - name: Install terminal runtime packages
@@ -173,7 +176,7 @@
 
     - name: Create Sentinel session root
       ansible.builtin.file:
-        path: /srv/sentinel/sessions
+        path: "{{ sentinel_workspaces_dir }}"
         state: directory
         owner: "{{ sentinel_user }}"
         group: "{{ sentinel_user }}"
@@ -295,6 +298,7 @@
           [Install]
           WantedBy=multi-user.target
       notify: stop sentinel vnc
+      when: not (sentinel_runtime_container | bool)
       tags:
         - vnc
 
@@ -304,6 +308,7 @@
         enabled: false
         state: stopped
         daemon_reload: true
+      when: not (sentinel_runtime_container | bool)
       tags:
         - vnc
 
@@ -344,7 +349,7 @@
           tmux has-session -t sentinel-smoke
           tmux kill-session -t sentinel-smoke
 
-          smoke_root="$(mktemp -d /srv/sentinel/sessions/bwrap-smoke.XXXXXX)"
+          smoke_root="$(mktemp -d "{{ sentinel_workspaces_dir }}/bwrap-smoke.XXXXXX")"
           cleanup() {
             rm -rf "${smoke_root}"
           }
