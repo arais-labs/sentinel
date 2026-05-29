@@ -14,6 +14,7 @@ from app.services.runtime.ssh_client import SSHClient
 from app.services.runtime.runtimes import (
     InstanceRuntimeNotConfigured,
     ResolvedRuntime,
+    RuntimeErrorBase,
     RuntimeNotFound,
     resolve_instance_runtime,
 )
@@ -48,7 +49,7 @@ async def runtime_configured(
 ) -> bool:
     try:
         await _resolve_runtime(instance_name=instance_name, session_factory=session_factory)
-    except (InstanceRuntimeNotConfigured, RuntimeNotFound):
+    except (InstanceRuntimeNotConfigured, RuntimeNotFound, RuntimeErrorBase):
         return False
     return True
 
@@ -76,7 +77,9 @@ async def get_runtime_port_forward_manager(
     instance_name: str | None = None,
     session_factory: async_sessionmaker | None = None,
 ) -> RuntimePortForwardManager:
-    return (await _get_bundle(instance_name=instance_name, session_factory=session_factory)).forwards
+    return (
+        await _get_bundle(instance_name=instance_name, session_factory=session_factory)
+    ).forwards
 
 
 async def get_runtime_desktop_manager(
@@ -109,7 +112,9 @@ async def _get_bundle(
     session_factory: async_sessionmaker | None,
 ) -> _RuntimeBundle:
     runtime = await _resolve_runtime(instance_name=instance_name, session_factory=session_factory)
-    key = _normalize_required_instance_name(instance_name or instance_name_from_session_factory(session_factory))
+    key = _normalize_required_instance_name(
+        instance_name or instance_name_from_session_factory(session_factory)
+    )
     async with _lock:
         existing = _bundles.get(key)
         if (

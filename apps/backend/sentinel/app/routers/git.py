@@ -16,6 +16,7 @@ from app.schemas.git import (
     GitAccountResponse,
     UpdateGitAccountRequest,
 )
+from app.services.secrets import is_invalid_secret
 
 router = APIRouter()
 
@@ -27,8 +28,11 @@ async def list_git_accounts(
 ) -> GitAccountListResponse:
     result = await db.execute(select(GitAccount))
     items = result.scalars().all()
+    items = await _delete_invalid_accounts(db, items)
     items.sort(key=lambda item: item.updated_at or datetime.min.replace(tzinfo=UTC), reverse=True)
-    return GitAccountListResponse(items=[_account_response(item) for item in items], total=len(items))
+    return GitAccountListResponse(
+        items=[_account_response(item) for item in items], total=len(items)
+    )
 
 
 @router.post("/accounts", status_code=status.HTTP_201_CREATED)
@@ -72,7 +76,9 @@ async def update_git_account(
     if payload.name is not None:
         normalized_name = payload.name.strip()
         existing = await db.execute(
-            select(GitAccount).where(GitAccount.name == normalized_name, GitAccount.id != account_id)
+            select(GitAccount).where(
+                GitAccount.name == normalized_name, GitAccount.id != account_id
+            )
         )
         if existing.scalars().first() is not None:
             raise HTTPException(status_code=409, detail="Git account name already exists")
@@ -123,3 +129,17 @@ def _account_response(item: GitAccount) -> GitAccountResponse:
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
+
+
+async def _delete_invalid_accounts(db: AsyncSession, items: list[GitAccount]) -> list[GitAccount]:
+    valid: list[GitAccount] = []
+    deleted = False
+    for item in items:
+        if is_invalid_secret(item.token_read) or is_invalid_secret(item.token_write):
+            await db.delete(item)
+            deleted = True
+            continue
+        valid.append(item)
+    if deleted:
+        await db.commit()
+    return valid

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.services.secrets import SecretDecryptionError, decrypt_secret, encrypt_secret
-from app.services.secrets.types import EncryptedText
+from app.services.secrets.types import EncryptedText, InvalidSecretValue
 
 
 def test_round_trip() -> None:
@@ -42,3 +42,11 @@ def test_column_type_passes_through_none() -> None:
     column = EncryptedText()
     assert column.process_bind_param(None, dialect=None) is None
     assert column.process_result_value(None, dialect=None) is None
+
+
+def test_column_type_marks_invalid_stored_values() -> None:
+    column = EncryptedText()
+    value = column.process_result_value("plain-value", dialect=None)
+    assert isinstance(value, InvalidSecretValue)
+    assert not value
+    assert value.strip() == ""

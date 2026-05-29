@@ -1,4 +1,5 @@
 """Native module: module_manager — manage dynamic modules, records, and actions."""
+
 from __future__ import annotations
 
 import logging
@@ -21,7 +22,9 @@ from app.services.araios.dynamic_modules import (
 )
 from app.services.araios.executor import execute_action
 from app.services.araios.runtime_services import get_app_state
+from app.services.secrets import is_invalid_secret
 from app.services.tools.runtime_registry import rebuild_runtime_registry
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,12 +83,11 @@ def _normalize_record_ids_payload(payload: dict[str, Any]) -> list[str]:
 
 
 async def _require_module_exists(
-    db: AsyncSession, module_name: str,
+    db: AsyncSession,
+    module_name: str,
 ) -> AraiosModule:
     """Return the module or raise."""
-    result = await db.execute(
-        select(AraiosModule).where(AraiosModule.name == module_name)
-    )
+    result = await db.execute(select(AraiosModule).where(AraiosModule.name == module_name))
     mod = result.scalars().first()
     if not mod:
         raise ValueError(f"Module '{module_name}' not found")
@@ -154,9 +156,7 @@ async def handle_get_module(payload: dict[str, Any]) -> dict[str, Any]:
     if not name:
         raise ValueError("'name' is required for get_module")
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(AraiosModule).where(AraiosModule.name == name)
-        )
+        result = await db.execute(select(AraiosModule).where(AraiosModule.name == name))
         mod = result.scalars().first()
         if not mod:
             raise ValueError(f"Module '{name}' not found")
@@ -183,8 +183,16 @@ async def handle_get_module(payload: dict[str, Any]) -> dict[str, Any]:
 
 _FIELD_EXAMPLE = '{"key": "email", "label": "Email", "type": "email"}'
 _VALID_FIELD_TYPES = {
-    "text", "textarea", "email", "url", "number", "date",
-    "select", "badge", "tags", "readonly",
+    "text",
+    "textarea",
+    "email",
+    "url",
+    "number",
+    "date",
+    "select",
+    "badge",
+    "tags",
+    "readonly",
 }
 
 
@@ -203,7 +211,9 @@ def _validate_fields(fields: Any) -> list[dict]:
         if not isinstance(f.get("key"), str) or not f["key"].strip():
             raise ValueError(f"Field at index {i} is missing required 'key' (non-empty string)")
         if not isinstance(f.get("label"), str) or not f["label"].strip():
-            raise ValueError(f"Field at index {i} (key={f.get('key')!r}) is missing required 'label' (non-empty string)")
+            raise ValueError(
+                f"Field at index {i} (key={f.get('key')!r}) is missing required 'label' (non-empty string)"
+            )
         field_type = f.get("type", "text")
         if field_type not in _VALID_FIELD_TYPES:
             raise ValueError(
@@ -228,9 +238,7 @@ async def handle_create_module(payload: dict[str, Any]) -> dict[str, Any]:
         if registry is not None and registry.get(name) is not None:
             raise ValueError(f"Module '{name}' conflicts with an existing tool")
     async with AsyncSessionLocal() as db:
-        existing = await db.execute(
-            select(AraiosModule).where(AraiosModule.name == name)
-        )
+        existing = await db.execute(select(AraiosModule).where(AraiosModule.name == name))
         if existing.scalars().first():
             raise ValueError(f"Module '{name}' already exists")
         fields = _validate_fields(payload.get("fields"))
@@ -270,18 +278,12 @@ async def handle_delete_module(payload: dict[str, Any]) -> dict[str, Any]:
     if not name:
         raise ValueError("'name' is required for delete_module")
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(AraiosModule).where(AraiosModule.name == name)
-        )
+        result = await db.execute(select(AraiosModule).where(AraiosModule.name == name))
         mod = result.scalars().first()
         if not mod:
             raise ValueError(f"Module '{name}' not found")
-        await db.execute(
-            delete(AraiosModuleRecord).where(AraiosModuleRecord.module_name == name)
-        )
-        await db.execute(
-            delete(AraiosModuleSecret).where(AraiosModuleSecret.module_name == name)
-        )
+        await db.execute(delete(AraiosModuleRecord).where(AraiosModuleRecord.module_name == name))
+        await db.execute(delete(AraiosModuleSecret).where(AraiosModuleSecret.module_name == name))
         await db.delete(mod)
         await db.commit()
         await delete_dynamic_module_permissions(db, module_name=name)
@@ -371,10 +373,7 @@ async def handle_update_records(payload: dict[str, Any]) -> dict[str, Any]:
                 AraiosModuleRecord.id.in_(update_ids),
             )
         )
-        records_by_id = {
-            record.id: record
-            for record in result.scalars().all()
-        }
+        records_by_id = {record.id: record for record in result.scalars().all()}
         missing = [record_id for record_id in update_ids if record_id not in records_by_id]
         if missing:
             raise ValueError(f"Record(s) not found: {', '.join(missing)}")
@@ -407,10 +406,7 @@ async def handle_delete_records(payload: dict[str, Any]) -> dict[str, Any]:
                 AraiosModuleRecord.id.in_(record_ids),
             )
         )
-        records_by_id = {
-            record.id: record
-            for record in result.scalars().all()
-        }
+        records_by_id = {record.id: record for record in result.scalars().all()}
         missing = [record_id for record_id in record_ids if record_id not in records_by_id]
         if missing:
             raise ValueError(f"Record(s) not found: {', '.join(missing)}")
@@ -443,7 +439,8 @@ async def handle_run_action(payload: dict[str, Any]) -> dict[str, Any]:
         mod = await _require_module_exists(db, module_name)
 
         action_def = next(
-            (a for a in (mod.actions or []) if a.get("id") == action_id), None,
+            (a for a in (mod.actions or []) if a.get("id") == action_id),
+            None,
         )
         if not action_def:
             raise ValueError(f"Action '{action_id}' not found in module '{module_name}'")
@@ -453,22 +450,26 @@ async def handle_run_action(payload: dict[str, Any]) -> dict[str, Any]:
 
         # Resolve secrets
         sec_result = await db.execute(
-            select(AraiosModuleSecret).where(
-                AraiosModuleSecret.module_name == module_name
-            )
+            select(AraiosModuleSecret).where(AraiosModuleSecret.module_name == module_name)
         )
-        secrets = {s.key: s.value for s in sec_result.scalars().all()}
+        secret_rows = sec_result.scalars().all()
+        secrets: dict[str, str] = {}
+        deleted_secret = False
+        for secret in secret_rows:
+            if is_invalid_secret(secret.value):
+                await db.delete(secret)
+                deleted_secret = True
+                continue
+            secrets[secret.key] = secret.value
+        if deleted_secret:
+            await db.commit()
 
         # Check required secrets
         missing = [
-            s["key"]
-            for s in (mod.secrets or [])
-            if s.get("required") and not secrets.get(s["key"])
+            s["key"] for s in (mod.secrets or []) if s.get("required") and not secrets.get(s["key"])
         ]
         if missing:
-            raise ValueError(
-                f"Module '{module_name}' is missing required secrets: {missing}"
-            )
+            raise ValueError(f"Module '{module_name}' is missing required secrets: {missing}")
 
         # Build context
         context: dict[str, Any] = {"params": params, "secrets": secrets}

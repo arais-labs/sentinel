@@ -18,6 +18,7 @@ from app.schemas.runtimes import (
 )
 from app.services.instances import normalize_instance_name
 from app.services.runtime.ssh_client import SSHClient, SSHCredentials
+from app.services.secrets import is_invalid_secret
 
 
 class RuntimeErrorBase(RuntimeError):
@@ -196,6 +197,12 @@ async def resolve_instance_runtime(
     if instance.runtime_id is None:
         raise InstanceRuntimeNotConfigured("No runtime selected for this instance.")
     runtime = await get_runtime(db, instance.runtime_id)
+    if is_invalid_secret(runtime.encrypted_secret):
+        runtime.encrypted_secret = None
+        runtime.auth_type = None
+        runtime.status = "failed"
+        await db.commit()
+        raise RuntimeErrorBase("Runtime credentials were invalid and have been cleared.")
     return resolve_runtime_secret(runtime)
 
 

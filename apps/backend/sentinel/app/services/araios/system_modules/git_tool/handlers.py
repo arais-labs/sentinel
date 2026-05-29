@@ -28,6 +28,7 @@ from app.services.runtime.darwin_seatbelt import (
 from app.services.runtime.linux_bubblewrap import build_bubblewrap_command
 from app.services.runtime.ssh_runtime import get_runtime_terminal_manager, runtime_configured
 from app.services.runtime.workspace import RemoteWorkspacePaths, workspace_paths
+from app.services.secrets import is_invalid_secret
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 
@@ -104,13 +105,17 @@ def _account_selector_from_payload(payload: dict[str, Any]) -> _AccountSelector 
     account_name: str | None = None
     if account_name_raw is not None:
         if not isinstance(account_name_raw, str) or not account_name_raw.strip():
-            raise ToolValidationError("Field 'git_account_name' must be a non-empty string when provided")
+            raise ToolValidationError(
+                "Field 'git_account_name' must be a non-empty string when provided"
+            )
         account_name = account_name_raw.strip()
 
     account_id: UUID | None = None
     if account_id_raw is not None:
         if not isinstance(account_id_raw, str) or not account_id_raw.strip():
-            raise ToolValidationError("Field 'git_account_id' must be a non-empty UUID string when provided")
+            raise ToolValidationError(
+                "Field 'git_account_id' must be a non-empty UUID string when provided"
+            )
         try:
             account_id = UUID(account_id_raw.strip())
         except ValueError as exc:
@@ -163,7 +168,19 @@ def _validate_no_forbidden_global_flags(tokens: list[str]) -> None:
 def _git_branch_is_write(subargs: list[str]) -> bool:
     if not subargs:
         return False
-    write_flags = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--set-upstream-to", "--unset-upstream"}
+    write_flags = {
+        "-d",
+        "-D",
+        "-m",
+        "-M",
+        "-c",
+        "-C",
+        "--delete",
+        "--move",
+        "--copy",
+        "--set-upstream-to",
+        "--unset-upstream",
+    }
     return any(part in write_flags or part.startswith("--set-upstream-to=") for part in subargs)
 
 
@@ -171,7 +188,9 @@ def _git_tag_is_write(subargs: list[str]) -> bool:
     if not subargs:
         return False
     write_flags = {"-a", "-s", "-u", "-d", "-f", "--annotate", "--sign", "--delete", "--force"}
-    return any(part in write_flags for part in subargs) or any(not part.startswith("-") for part in subargs)
+    return any(part in write_flags for part in subargs) or any(
+        not part.startswith("-") for part in subargs
+    )
 
 
 def _network_mode_for_command(subcommand: str) -> str | None:
@@ -277,10 +296,32 @@ def _sandbox_cwd(cwd_raw: Any) -> str:
 
 def _positional_arguments(args: list[str]) -> list[str]:
     options_with_value = {
-        "-b", "--branch", "-o", "--origin", "--depth", "--shallow-since", "--recurse-submodules",
-        "--jobs", "--config", "--upload-pack", "--limit", "-L", "--json", "--jq", "--template",
-        "--hostname", "-R", "--repo", "-X", "--method", "-f", "-F", "--field", "--raw-field",
-        "-H", "--header",
+        "-b",
+        "--branch",
+        "-o",
+        "--origin",
+        "--depth",
+        "--shallow-since",
+        "--recurse-submodules",
+        "--jobs",
+        "--config",
+        "--upload-pack",
+        "--limit",
+        "-L",
+        "--json",
+        "--jq",
+        "--template",
+        "--hostname",
+        "-R",
+        "--repo",
+        "-X",
+        "--method",
+        "-f",
+        "-F",
+        "--field",
+        "--raw-field",
+        "-H",
+        "--header",
     }
     positionals: list[str] = []
     idx = 0
@@ -378,7 +419,7 @@ async def _resolve_git_account(
 ) -> _ResolvedAccount | None:
     repo = _parse_repo_ref(repo_url)
     result = await db.execute(select(GitAccount))
-    accounts = result.scalars().all()
+    accounts = await _delete_invalid_git_accounts(db, result.scalars().all())
 
     if selector is not None:
         requested = _find_requested_account(accounts, selector)
@@ -440,7 +481,9 @@ async def _resolve_selected_git_account_for_host(
     selector: _AccountSelector,
 ) -> GitAccount:
     result = await db.execute(select(GitAccount))
-    account = _find_requested_account(result.scalars().all(), selector)
+    account = _find_requested_account(
+        await _delete_invalid_git_accounts(db, result.scalars().all()), selector
+    )
     normalized_host = host.strip().lower()
     account_host = (account.host or "").strip().lower()
     if account_host != normalized_host:
@@ -453,6 +496,22 @@ async def _resolve_selected_git_account_for_host(
         missing_kind = "write token" if require_write else "read token"
         raise ToolValidationError(f"Requested git account is missing required {missing_kind}")
     return account
+
+
+async def _delete_invalid_git_accounts(
+    db: AsyncSession, accounts: list[GitAccount]
+) -> list[GitAccount]:
+    valid: list[GitAccount] = []
+    deleted = False
+    for account in accounts:
+        if is_invalid_secret(account.token_read) or is_invalid_secret(account.token_write):
+            await db.delete(account)
+            deleted = True
+            continue
+        valid.append(account)
+    if deleted:
+        await db.commit()
+    return valid
 
 
 def _truncate_output(value: str | None) -> str:
@@ -477,7 +536,9 @@ def _remote_workspace_cwd(paths: RemoteWorkspacePaths, cwd: str) -> str:
     return (PurePosixPath(paths.workspace) / suffix).as_posix()
 
 
-def _build_hidden_runtime_command(paths: RemoteWorkspacePaths, *, os_name: str, sandbox: str, cwd: str, tokens: list[str]) -> str:
+def _build_hidden_runtime_command(
+    paths: RemoteWorkspacePaths, *, os_name: str, sandbox: str, cwd: str, tokens: list[str]
+) -> str:
     if os_name == "linux" and sandbox == "bubblewrap":
         shell_command = "cd " + quote(cwd) + " && exec " + " ".join(quote(part) for part in tokens)
         return build_bubblewrap_command(paths, ["bash", "-lc", shell_command])
@@ -485,12 +546,18 @@ def _build_hidden_runtime_command(paths: RemoteWorkspacePaths, *, os_name: str, 
         profile_path = (PurePosixPath(paths.runtime) / "git.sb").as_posix()
         remote_cwd = _remote_workspace_cwd(paths, cwd)
         shell_command = (
-            "cd " + quote(remote_cwd)
-            + " && export HOME=" + quote(paths.home)
-            + " TMPDIR=" + quote(paths.tmp)
-            + " XDG_CONFIG_HOME=" + quote((PurePosixPath(paths.home) / ".config").as_posix())
-            + " XDG_RUNTIME_DIR=" + quote(paths.runtime)
-            + " && exec " + " ".join(quote(part) for part in tokens)
+            "cd "
+            + quote(remote_cwd)
+            + " && export HOME="
+            + quote(paths.home)
+            + " TMPDIR="
+            + quote(paths.tmp)
+            + " XDG_CONFIG_HOME="
+            + quote((PurePosixPath(paths.home) / ".config").as_posix())
+            + " XDG_RUNTIME_DIR="
+            + quote(paths.runtime)
+            + " && exec "
+            + " ".join(quote(part) for part in tokens)
         )
         prelude = "\n".join(
             [
@@ -498,7 +565,9 @@ def _build_hidden_runtime_command(paths: RemoteWorkspacePaths, *, os_name: str, 
                 f"cat > {quote(profile_path)} <<'SENTINEL_SEATBELT'",
                 build_seatbelt_profile(paths),
                 "SENTINEL_SEATBELT",
-                build_append_seatbelt_tool_roots_script(paths, profile_path, tools=["/bin/bash", "bash", "git", "gh", "ssh"]),
+                build_append_seatbelt_tool_roots_script(
+                    paths, profile_path, tools=["/bin/bash", "bash", "git", "gh", "ssh"]
+                ),
             ]
         )
         sandbox_command = build_seatbelt_command(
@@ -522,9 +591,13 @@ async def _run_hidden_runtime_command(
 ) -> dict[str, Any]:
     if runtime.instance_name is None:
         raise ToolValidationError("Git tool requires an active instance context.")
-    if not await runtime_configured(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory):
+    if not await runtime_configured(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    ):
         raise ToolValidationError("Runtime SSH target is not configured.")
-    terminal_manager = await get_runtime_terminal_manager(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory)
+    terminal_manager = await get_runtime_terminal_manager(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    )
     environment = await terminal_manager.runtime_environment()
     await terminal_manager.prepare_workspace(session_id)
     paths = workspace_paths(session_id, root=terminal_manager.workspaces_root)
@@ -584,7 +657,9 @@ async def _resolve_origin_url(
                 "Run `git clone <repo>` first or set `cwd` to an existing repository in the session workspace."
             )
         if "no such remote" in lowered or "could not get url" in lowered:
-            raise ToolValidationError(f"Git remote '{remote_name}' was not found in this repository.")
+            raise ToolValidationError(
+                f"Git remote '{remote_name}' was not found in this repository."
+            )
         detail = stderr.splitlines()[0] if stderr else ""
         raise ToolValidationError(
             "Unable to resolve repository remote URL for account matching."
@@ -612,7 +687,9 @@ async def _resolve_network_repo_url(
             return candidate
     if subcommand == "request-pull":
         repo_url, remote_name = _extract_request_pull_repo_url(subargs)
-        return repo_url or await _resolve_origin_url(runtime, session_id, run_dir, remote_name=remote_name)
+        return repo_url or await _resolve_origin_url(
+            runtime, session_id, run_dir, remote_name=remote_name
+        )
     remote_name = _first_positional_argument(subargs) or "origin"
     return await _resolve_origin_url(runtime, session_id, run_dir, remote_name=remote_name)
 
@@ -662,7 +739,10 @@ async def _run_network_git(
         cwd=run_dir,
         env=env,
         timeout_seconds=timeout_seconds,
-        redactions=[token, base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")],
+        redactions=[
+            token,
+            base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii"),
+        ],
     )
     result["network_mode"] = mode
     result["account"] = _account_payload(account.account)
@@ -770,7 +850,9 @@ def _validate_gh_clone_destination(*, tokens: list[str]) -> None:
     if len(positionals) < 2:
         return
     destination = positionals[1].strip()
-    candidate = posixpath.normpath(destination if destination.startswith("/") else posixpath.join("/workspace", destination))
+    candidate = posixpath.normpath(
+        destination if destination.startswith("/") else posixpath.join("/workspace", destination)
+    )
     if candidate != "/workspace" and not candidate.startswith("/workspace/"):
         raise ToolValidationError("gh repo clone destination must stay inside /workspace")
 
@@ -792,7 +874,9 @@ async def _execute_gh_command(
         )
     _validate_gh_clone_destination(tokens=tokens)
     host = _extract_gh_host(tokens)
-    owner = await _extract_gh_owner(runtime=runtime, session_id=session_id, run_dir=run_dir, tokens=tokens)
+    owner = await _extract_gh_owner(
+        runtime=runtime, session_id=session_id, run_dir=run_dir, tokens=tokens
+    )
     async with AsyncSessionLocal() as db:
         if owner:
             resolved = await _resolve_git_account(
@@ -986,7 +1070,7 @@ async def handle_accounts(payload: dict[str, Any]) -> dict[str, Any]:
     repo_ref = _parse_accounts_repo_ref(repo_url_raw) if isinstance(repo_url_raw, str) else None
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(GitAccount))
-        accounts = result.scalars().all()
+        accounts = await _delete_invalid_git_accounts(db, result.scalars().all())
 
     accounts.sort(
         key=lambda item: (

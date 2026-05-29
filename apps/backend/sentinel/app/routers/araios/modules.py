@@ -1,4 +1,5 @@
 """Generic module registry + record CRUD router (async SQLAlchemy port)."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -22,6 +23,7 @@ from app.services.araios.dynamic_modules import (
 )
 from app.services.araios.executor import execute_action
 from app.services.instance_runtime_context import instance_runtime_context_registry
+from app.services.secrets import is_invalid_secret
 
 router = APIRouter()
 
@@ -51,9 +53,7 @@ def _native_tool_icon(tool_name: str) -> str:
 
 
 async def _module_or_404(name: str, db: AsyncSession) -> AraiosModule:
-    result = await db.execute(
-        select(AraiosModule).where(AraiosModule.name == name)
-    )
+    result = await db.execute(select(AraiosModule).where(AraiosModule.name == name))
     mod = result.scalars().first()
     if not mod:
         raise HTTPException(status_code=404, detail=f"Module '{name}' not found")
@@ -66,6 +66,7 @@ async def _module_or_404_any(name: str, db: AsyncSession) -> None:
     if result.scalars().first():
         return
     from app.services.araios.system_modules import get_system_modules
+
     if any(m.name == name for m in get_system_modules()):
         return
     raise HTTPException(status_code=404, detail=f"Module '{name}' not found")
@@ -93,8 +94,16 @@ def _normalize_module_name(value: Any) -> str:
 
 _FIELD_EXAMPLE = '{"key": "email", "label": "Email", "type": "email"}'
 _VALID_FIELD_TYPES = {
-    "text", "textarea", "email", "url", "number", "date",
-    "select", "badge", "tags", "readonly",
+    "text",
+    "textarea",
+    "email",
+    "url",
+    "number",
+    "date",
+    "select",
+    "badge",
+    "tags",
+    "readonly",
 }
 
 
@@ -102,7 +111,9 @@ def _validate_fields(value: Any) -> list[dict[str, Any]]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise HTTPException(status_code=400, detail=f"'fields' must be an array. Example item: {_FIELD_EXAMPLE}")
+        raise HTTPException(
+            status_code=400, detail=f"'fields' must be an array. Example item: {_FIELD_EXAMPLE}"
+        )
     validated: list[dict[str, Any]] = []
     for i, f in enumerate(value):
         if not isinstance(f, dict):
@@ -114,9 +125,15 @@ def _validate_fields(value: Any) -> list[dict[str, Any]]:
                 ),
             )
         if not isinstance(f.get("key"), str) or not f["key"].strip():
-            raise HTTPException(status_code=400, detail=f"Field at index {i} is missing required 'key' (non-empty string)")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Field at index {i} is missing required 'key' (non-empty string)",
+            )
         if not isinstance(f.get("label"), str) or not f["label"].strip():
-            raise HTTPException(status_code=400, detail=f"Field at index {i} (key={f.get('key')!r}) is missing required 'label' (non-empty string)")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Field at index {i} (key={f.get('key')!r}) is missing required 'label' (non-empty string)",
+            )
         field_type = f.get("type", "text")
         if field_type not in _VALID_FIELD_TYPES:
             raise HTTPException(
@@ -157,7 +174,9 @@ def _normalize_seed_records(value: Any) -> list[dict[str, Any]]:
     return records
 
 
-def _normalize_module_package(body: Any) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+def _normalize_module_package(
+    body: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Package body must be an object")
     schema_version = body.get("schema_version")
@@ -304,9 +323,7 @@ def _apply_module_updates(mod: AraiosModule, updates: dict[str, Any]) -> None:
         setattr(mod, field, value)
 
 
-async def _record_or_404(
-    module_name: str, record_id: str, db: AsyncSession
-) -> AraiosModuleRecord:
+async def _record_or_404(module_name: str, record_id: str, db: AsyncSession) -> AraiosModuleRecord:
     result = await db.execute(
         select(AraiosModuleRecord).where(
             AraiosModuleRecord.module_name == module_name,
@@ -315,9 +332,7 @@ async def _record_or_404(
     )
     rec = result.scalars().first()
     if not rec:
-        raise HTTPException(
-            status_code=404, detail=f"Record '{record_id}' not found"
-        )
+        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
     return rec
 
 
@@ -373,6 +388,23 @@ def _latest_by_module(
     return latest
 
 
+async def _delete_invalid_secret_rows(
+    db: AsyncSession,
+    rows: list[AraiosModuleSecret],
+) -> list[AraiosModuleSecret]:
+    valid: list[AraiosModuleSecret] = []
+    deleted = False
+    for row in rows:
+        if is_invalid_secret(row.value):
+            await db.delete(row)
+            deleted = True
+            continue
+        valid.append(row)
+    if deleted:
+        await db.commit()
+    return valid
+
+
 def _sort_serialized_modules_by_activity(modules: list[dict]) -> list[dict]:
     ordered = sorted(
         modules,
@@ -390,19 +422,16 @@ def _sort_serialized_modules_by_activity(modules: list[dict]) -> list[dict]:
 
 async def _resolve_secrets(module_name: str, db: AsyncSession) -> dict:
     result = await db.execute(
-        select(AraiosModuleSecret).where(
-            AraiosModuleSecret.module_name == module_name
-        )
+        select(AraiosModuleSecret).where(AraiosModuleSecret.module_name == module_name)
     )
     rows = result.scalars().all()
+    rows = await _delete_invalid_secret_rows(db, rows)
     return {r.key: r.value for r in rows}
 
 
 def _check_required_secrets(mod: AraiosModule, secrets: dict) -> None:
     missing = [
-        s["key"]
-        for s in (mod.secrets or [])
-        if s.get("required") and not secrets.get(s["key"])
+        s["key"] for s in (mod.secrets or []) if s.get("required") and not secrets.get(s["key"])
     ]
     if missing:
         raise HTTPException(
@@ -444,14 +473,14 @@ def _normalize_action_params(body: dict | None) -> dict:
 async def list_modules(
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(AraiosModule).order_by(AraiosModule.order, AraiosModule.name)
-    )
+    result = await db.execute(select(AraiosModule).order_by(AraiosModule.order, AraiosModule.name))
     mods = result.scalars().all()
     records_result = await db.execute(select(AraiosModuleRecord))
     secrets_result = await db.execute(select(AraiosModuleSecret))
     latest_records = _latest_by_module(records_result.scalars().all())
-    latest_secrets = _latest_by_module(secrets_result.scalars().all())
+    latest_secrets = _latest_by_module(
+        await _delete_invalid_secret_rows(db, secrets_result.scalars().all())
+    )
     user_modules = _sort_serialized_modules_by_activity(
         [
             _serialize_module(
@@ -468,6 +497,7 @@ async def list_modules(
 
     # Inject system modules from their ModuleDefinition (preserves actions, fields, etc.)
     from app.services.araios.system_modules import get_system_modules
+
     skip = {"module_manager"}
     user_module_names = {m["name"] for m in user_modules}
     native_modules = [
@@ -531,6 +561,7 @@ async def get_module(
     if mod:
         return _serialize_module(mod)
     from app.services.araios.system_modules import get_system_modules
+
     for system_mod in get_system_modules():
         if system_mod.name == name:
             return {**system_mod.to_dict(), "native": True}
@@ -548,7 +579,11 @@ async def update_module(
     permissions = body.get("permissions")
     if permissions is not None and not isinstance(permissions, dict):
         raise HTTPException(status_code=400, detail="'permissions' must be an object")
-    updates = _extract_module_updates(body) if any(field in body for field in _MODULE_MUTABLE_FIELDS) else {}
+    updates = (
+        _extract_module_updates(body)
+        if any(field in body for field in _MODULE_MUTABLE_FIELDS)
+        else {}
+    )
     if updates:
         _apply_module_updates(mod, updates)
     await db.commit()
@@ -610,9 +645,7 @@ async def list_records(
     records = result.scalars().all()
     serialized = [_serialize_record(r) for r in records]
     if filter_field and filter_value and filter_value != "all":
-        serialized = [
-            r for r in serialized if str(r.get(filter_field, "")) == filter_value
-        ]
+        serialized = [r for r in serialized if str(r.get(filter_field, "")) == filter_value]
     return {"records": serialized}
 
 
@@ -624,9 +657,7 @@ async def create_record(
 ):
     await _module_or_404(name, db)
     data = {
-        k: v
-        for k, v in body.items()
-        if k not in ("id", "module_name", "created_at", "updated_at")
+        k: v for k, v in body.items() if k not in ("id", "module_name", "created_at", "updated_at")
     }
     rec = AraiosModuleRecord(id=araios_gen_id(), module_name=name, data=data)
     db.add(rec)
@@ -688,6 +719,7 @@ async def secrets_status(
         secrets_def = mod_row.secrets or []
     else:
         from app.services.araios.system_modules import get_system_modules
+
         sys_mod = next((m for m in get_system_modules() if m.name == name), None)
         if sys_mod is None:
             raise HTTPException(status_code=404, detail=f"Module '{name}' not found")
@@ -695,7 +727,7 @@ async def secrets_status(
     result = await db.execute(
         select(AraiosModuleSecret).where(AraiosModuleSecret.module_name == name)
     )
-    stored = {r.key for r in result.scalars().all()}
+    stored = {r.key for r in await _delete_invalid_secret_rows(db, result.scalars().all())}
     status = {s["key"]: s["key"] in stored for s in secrets_def}
     return {"secrets": status}
 
@@ -756,18 +788,12 @@ async def run_record_action(
     params = _normalize_action_params(body)
     mod = await _module_or_404(name, db)
     rec = await _record_or_404(name, record_id, db)
-    action = next(
-        (a for a in (mod.actions or []) if a.get("id") == action_id), None
-    )
+    action = next((a for a in (mod.actions or []) if a.get("id") == action_id), None)
     if not action:
-        raise HTTPException(
-            status_code=404, detail=f"Action '{action_id}' not found"
-        )
+        raise HTTPException(status_code=404, detail=f"Action '{action_id}' not found")
     code = action.get("code", "")
     if not code:
-        raise HTTPException(
-            status_code=400, detail="Action has no executable code"
-        )
+        raise HTTPException(status_code=400, detail="Action has no executable code")
     secrets = await _resolve_secrets(name, db)
     _check_required_secrets(mod, secrets)
     return await execute_action(
@@ -785,20 +811,12 @@ async def run_module_action(
 ):
     params = _normalize_action_params(body)
     mod = await _module_or_404(name, db)
-    action = next(
-        (a for a in (mod.actions or []) if a.get("id") == action_id), None
-    )
+    action = next((a for a in (mod.actions or []) if a.get("id") == action_id), None)
     if not action:
-        raise HTTPException(
-            status_code=404, detail=f"Action '{action_id}' not found"
-        )
+        raise HTTPException(status_code=404, detail=f"Action '{action_id}' not found")
     code = action.get("code", "")
     if not code:
-        raise HTTPException(
-            status_code=400, detail="Action has no executable code"
-        )
+        raise HTTPException(status_code=400, detail="Action has no executable code")
     secrets = await _resolve_secrets(name, db)
     _check_required_secrets(mod, secrets)
-    return await execute_action(
-        code, {"params": params, "secrets": secrets}
-    )
+    return await execute_action(code, {"params": params, "secrets": secrets})

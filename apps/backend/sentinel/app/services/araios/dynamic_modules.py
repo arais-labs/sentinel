@@ -5,9 +5,16 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
-from app.models.araios import AraiosModule, AraiosModuleRecord, AraiosModuleSecret, AraiosPermission, araios_gen_id
+from app.models.araios import (
+    AraiosModule,
+    AraiosModuleRecord,
+    AraiosModuleSecret,
+    AraiosPermission,
+    araios_gen_id,
+)
 from app.services.araios.executor import execute_action
 from app.services.araios.module_types import ActionDefinition, ModuleDefinition, ParamDefinition
+from app.services.secrets import is_invalid_secret
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -253,7 +260,9 @@ def build_dynamic_module_permission_levels(
     existing: dict[str, str] | None = None,
 ) -> dict[str, str]:
     commands = set(RESERVED_DYNAMIC_MODULE_COMMANDS)
-    commands.update(str(action["id"]).strip().lower() for action in _custom_action_commands(actions))
+    commands.update(
+        str(action["id"]).strip().lower() for action in _custom_action_commands(actions)
+    )
 
     overrides = {
         str(key).strip().lower(): _normalize_permission_level(value)
@@ -261,14 +270,10 @@ def build_dynamic_module_permission_levels(
     }
     invalid_override = next((key for key, value in overrides.items() if value is None), None)
     if invalid_override is not None:
-        raise ValueError(
-            f"Permission '{invalid_override}' must be one of: allow, approval, deny."
-        )
+        raise ValueError(f"Permission '{invalid_override}' must be one of: allow, approval, deny.")
     legacy_override_commands = set(_LEGACY_COMMAND_ALIASES.values())
     unknown_override = sorted(
-        key
-        for key in overrides
-        if key not in commands and key not in legacy_override_commands
+        key for key in overrides if key not in commands and key not in legacy_override_commands
     )
     if unknown_override:
         raise ValueError(
@@ -309,7 +314,8 @@ async def sync_dynamic_module_permissions(
     existing_rows = [
         row
         for row in result.scalars().all()
-        if isinstance(getattr(row, "action", None), str) and row.action.startswith(f"{module_name}.")
+        if isinstance(getattr(row, "action", None), str)
+        and row.action.startswith(f"{module_name}.")
     ]
     existing = {
         row.action[len(module_name) + 1 :]: str(row.level or "").strip().lower()
@@ -335,7 +341,14 @@ async def sync_dynamic_module_permissions(
         legacy_command = _LEGACY_COMMAND_ALIASES.get(command)
         legacy_key = f"{module_name}.{legacy_command}" if legacy_command else None
         if legacy_key and legacy_key in existing_actions:
-            row = next((existing_row for existing_row in existing_rows if existing_row.action == legacy_key), None)
+            row = next(
+                (
+                    existing_row
+                    for existing_row in existing_rows
+                    if existing_row.action == legacy_key
+                ),
+                None,
+            )
             if row is not None:
                 row.action = action_key
                 row.level = level
@@ -378,7 +391,9 @@ async def load_dynamic_module_tool_definitions(
         if not isinstance(action_key, str) or "." not in action_key:
             continue
         module_name, command = action_key.split(".", 1)
-        permissions_by_module.setdefault(module_name, {})[command] = str(getattr(row, "level", "") or "").strip().lower()
+        permissions_by_module.setdefault(module_name, {})[command] = (
+            str(getattr(row, "level", "") or "").strip().lower()
+        )
 
     tool_defs = []
     for module in modules:
@@ -480,7 +495,9 @@ def _serialize_record(record: AraiosModuleRecord) -> dict[str, Any]:
     return data
 
 
-def _normalize_record_objects(payload: dict[str, Any], *, key: str = "records") -> list[dict[str, Any]]:
+def _normalize_record_objects(
+    payload: dict[str, Any], *, key: str = "records"
+) -> list[dict[str, Any]]:
     records = payload.get(key)
     if not isinstance(records, list) or not records:
         raise ValueError(f"'{key}' must be a non-empty array of objects")
@@ -539,8 +556,21 @@ async def _load_secrets(
     module_name: str,
 ) -> dict[str, str]:
     async with session_factory() as db:
-        result = await db.execute(select(AraiosModuleSecret).where(AraiosModuleSecret.module_name == module_name))
+        result = await db.execute(
+            select(AraiosModuleSecret).where(AraiosModuleSecret.module_name == module_name)
+        )
         secrets = result.scalars().all()
+        valid: list[AraiosModuleSecret] = []
+        deleted = False
+        for secret in secrets:
+            if is_invalid_secret(secret.value):
+                await db.delete(secret)
+                deleted = True
+                continue
+            valid.append(secret)
+        if deleted:
+            await db.commit()
+        secrets = valid
     return {secret.key: secret.value for secret in secrets}
 
 
@@ -548,13 +578,17 @@ def _check_required_secrets(module: AraiosModule, secrets: dict[str, str]) -> No
     missing = [
         secret["key"]
         for secret in (module.secrets or [])
-        if isinstance(secret, dict) and secret.get("required") and not secrets.get(secret.get("key"))
+        if isinstance(secret, dict)
+        and secret.get("required")
+        and not secrets.get(secret.get("key"))
     ]
     if missing:
         raise ValueError(f"Module '{module.name}' is missing required secrets: {missing}")
 
 
-def _make_list_records_handler(module_name: str, session_factory: "async_sessionmaker[AsyncSession]"):
+def _make_list_records_handler(
+    module_name: str, session_factory: "async_sessionmaker[AsyncSession]"
+):
     async def _handler(_payload: dict[str, Any]) -> dict[str, Any]:
         async with session_factory() as db:
             result = await db.execute(
@@ -588,7 +622,9 @@ def _make_get_record_handler(module_name: str, session_factory: "async_sessionma
     return _handler
 
 
-def _make_create_records_handler(module_name: str, session_factory: "async_sessionmaker[AsyncSession]"):
+def _make_create_records_handler(
+    module_name: str, session_factory: "async_sessionmaker[AsyncSession]"
+):
     async def _handler(payload: dict[str, Any]) -> dict[str, Any]:
         records_data = _normalize_record_objects(payload)
         async with session_factory() as db:
@@ -605,7 +641,9 @@ def _make_create_records_handler(module_name: str, session_factory: "async_sessi
     return _handler
 
 
-def _make_update_records_handler(module_name: str, session_factory: "async_sessionmaker[AsyncSession]"):
+def _make_update_records_handler(
+    module_name: str, session_factory: "async_sessionmaker[AsyncSession]"
+):
     async def _handler(payload: dict[str, Any]) -> dict[str, Any]:
         updates = _normalize_record_updates(payload)
         record_ids = [entry["record_id"] for entry in updates]
@@ -630,12 +668,17 @@ def _make_update_records_handler(module_name: str, session_factory: "async_sessi
             await db.commit()
             for record in updated_records:
                 await db.refresh(record)
-        return {"records": [_serialize_record(record) for record in updated_records], "count": len(updated_records)}
+        return {
+            "records": [_serialize_record(record) for record in updated_records],
+            "count": len(updated_records),
+        }
 
     return _handler
 
 
-def _make_delete_records_handler(module_name: str, session_factory: "async_sessionmaker[AsyncSession]"):
+def _make_delete_records_handler(
+    module_name: str, session_factory: "async_sessionmaker[AsyncSession]"
+):
     async def _handler(payload: dict[str, Any]) -> dict[str, Any]:
         record_ids = _normalize_record_ids(payload)
         async with session_factory() as db:
