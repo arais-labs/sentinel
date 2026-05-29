@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from uuid import UUID
 
 import app.services.browser.pool as browser_pool_module
@@ -206,11 +207,12 @@ class _StubBrowserPool:
         self._manager = manager or _StubBrowserManager()
         self.reset_called = False
 
-    async def get(self, session_id):
+    async def get(self, session_id, *, instance_name: str | None = None):
+        _ = instance_name
         return self._manager
 
-    async def reset(self, session_id):
-        _ = session_id
+    async def reset(self, session_id, *, instance_name: str | None = None):
+        _ = session_id, instance_name
         self.reset_called = True
         return {
             "reset": True,
@@ -220,8 +222,8 @@ class _StubBrowserPool:
             "cdp_endpoint": "http://127.0.0.1:9223",
         }
 
-    async def remove(self, session_id):
-        pass
+    async def remove(self, session_id, *, instance_name: str | None = None):
+        _ = session_id, instance_name
 
     async def close_all(self):
         pass
@@ -248,9 +250,18 @@ class _FakeSSH:
         _ = timeout
         self.scripts.append(script)
         self.script_args.append(args or [])
-        if "profile_dir = browser_dir / \"chromium\"" in script and "shutil.rmtree(profile_dir)" in script:
-            return RuntimeExecResult(exit_status=0, stdout='{"ok":true,"profile_dir":"/tmp/profile"}', stderr="")
-        if "metadata_path = Path(request[\"runtime\"])" in script and "browser.json" in script and "kill_pid(pid)" in script:
+        if (
+            'profile_dir = browser_dir / "chromium"' in script
+            and "shutil.rmtree(profile_dir)" in script
+        ):
+            return RuntimeExecResult(
+                exit_status=0, stdout='{"ok":true,"profile_dir":"/tmp/profile"}', stderr=""
+            )
+        if (
+            'metadata_path = Path(request["runtime"])' in script
+            and "browser.json" in script
+            and "kill_pid(pid)" in script
+        ):
             return RuntimeExecResult(exit_status=0, stdout='{"ok":true}', stderr="")
         return RuntimeExecResult(
             exit_status=0,
@@ -258,7 +269,9 @@ class _FakeSSH:
             stderr="",
         )
 
-    async def forward_local_port(self, listen_host: str, listen_port: int, target_host: str, target_port: int):
+    async def forward_local_port(
+        self, listen_host: str, listen_port: int, target_host: str, target_port: int
+    ):
         _ = listen_host, listen_port, target_host, target_port
         listener = _FakeListener()
         self.listeners.append(listener)
@@ -266,8 +279,9 @@ class _FakeSSH:
 
 
 class _FakeTerminalManager:
-    def __init__(self):
+    def __init__(self, workspaces_root: str | None = "/runtime/workspaces"):
         self.ssh = _FakeSSH()
+        self.workspaces_root = workspaces_root
         self.prepared: list[str] = []
 
     async def prepare_workspace(self, session_id: str):
@@ -435,6 +449,8 @@ def test_browser_pool_restarts_remote_browser_when_cdp_is_unavailable():
     assert manager.instance_number == 1
     assert len(terminal_manager.ssh.listeners) == 2
     assert terminal_manager.ssh.listeners[0].closed is True
+    request = json.loads(terminal_manager.ssh.script_args[-1][0])
+    assert request["browser"] == f"/runtime/workspaces/{_SID}/state/browser"
 
 
 def test_browser_pool_recreates_unhealthy_cached_manager():
@@ -648,7 +664,36 @@ def test_browser_pool_reset_restarts_remote_browser():
     assert result["reset"] is True
     assert result["url"] == "about:blank"
     assert result["cdp_endpoint"].startswith("http://127.0.0.1:")
+    assert result["profile_dir"] == f"/runtime/workspaces/{_SID}/state/browser/chromium"
     assert any("shutil.rmtree(profile_dir)" in script for script in terminal_manager.ssh.scripts)
+
+
+def test_browser_pool_keeps_handles_separate_by_instance():
+    class _FakeBrowserManager:
+        instances: list["_FakeBrowserManager"] = []
+
+        def __init__(self, *, cdp_endpoint: str | None = None, **kwargs):
+            _ = kwargs
+            self.cdp_endpoint = cdp_endpoint
+            _FakeBrowserManager.instances.append(self)
+
+        async def ensure_connected(self):
+            return None
+
+        async def close(self):
+            return None
+
+    terminal_manager = _FakeTerminalManager()
+    pool = browser_pool_module.BrowserPool(
+        terminal_manager=terminal_manager,
+        desktop_manager=_FakeDesktopManager(),
+        manager_cls=_FakeBrowserManager,
+    )
+    first = _run(pool.get(_SID, instance_name="main"))
+    second = _run(pool.get(_SID, instance_name="other"))
+
+    assert first is not second
+    assert len(_FakeBrowserManager.instances) == 2
 
 
 def test_browser_tabs_tool_executes():
@@ -742,7 +787,12 @@ def test_browser_wait_for_accepts_conditions():
     result, _ = _run(
         executor.execute(
             "browser",
-            {"command": "wait_for", "selector": "button: Next", "condition": "enabled", "timeout_ms": 4000},
+            {
+                "command": "wait_for",
+                "selector": "button: Next",
+                "condition": "enabled",
+                "timeout_ms": 4000,
+            },
             runtime=_RUNTIME,
         )
     )

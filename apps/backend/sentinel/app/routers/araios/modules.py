@@ -1,6 +1,7 @@
 """Generic module registry + record CRUD router (async SQLAlchemy port)."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -320,7 +321,25 @@ async def _record_or_404(
     return rec
 
 
-def _serialize_module(m: AraiosModule) -> dict:
+def _isoformat(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _module_base_changed_at(m: AraiosModule) -> datetime | None:
+    return m.updated_at or m.created_at
+
+
+def _max_datetime(*values: datetime | None) -> datetime | None:
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
+
+
+def _serialize_module(
+    m: AraiosModule,
+    *,
+    last_changed_at: datetime | None = None,
+) -> dict:
+    resolved_last_changed_at = last_changed_at or _module_base_changed_at(m)
     return {
         "name": m.name,
         "label": m.label,
@@ -334,7 +353,39 @@ def _serialize_module(m: AraiosModule) -> dict:
         "page_content": m.page_content,
         "system": m.system,
         "order": m.order,
+        "created_at": _isoformat(m.created_at),
+        "updated_at": _isoformat(m.updated_at),
+        "last_changed_at": _isoformat(resolved_last_changed_at),
     }
+
+
+def _latest_by_module(
+    rows: list[AraiosModuleRecord] | list[AraiosModuleSecret],
+) -> dict[str, datetime]:
+    latest: dict[str, datetime] = {}
+    for row in rows:
+        timestamp = row.updated_at or getattr(row, "created_at", None)
+        if timestamp is None:
+            continue
+        current = latest.get(row.module_name)
+        if current is None or timestamp > current:
+            latest[row.module_name] = timestamp
+    return latest
+
+
+def _sort_serialized_modules_by_activity(modules: list[dict]) -> list[dict]:
+    ordered = sorted(
+        modules,
+        key=lambda module: (
+            int(module.get("order") or 100),
+            str(module.get("name") or ""),
+        ),
+    )
+    return sorted(
+        ordered,
+        key=lambda module: str(module.get("last_changed_at") or ""),
+        reverse=True,
+    )
 
 
 async def _resolve_secrets(module_name: str, db: AsyncSession) -> dict:
@@ -397,19 +448,41 @@ async def list_modules(
         select(AraiosModule).order_by(AraiosModule.order, AraiosModule.name)
     )
     mods = result.scalars().all()
-    user_modules = [_serialize_module(m) for m in mods]
+    records_result = await db.execute(select(AraiosModuleRecord))
+    secrets_result = await db.execute(select(AraiosModuleSecret))
+    latest_records = _latest_by_module(records_result.scalars().all())
+    latest_secrets = _latest_by_module(secrets_result.scalars().all())
+    user_modules = _sort_serialized_modules_by_activity(
+        [
+            _serialize_module(
+                m,
+                last_changed_at=_max_datetime(
+                    _module_base_changed_at(m),
+                    latest_records.get(m.name),
+                    latest_secrets.get(m.name),
+                ),
+            )
+            for m in mods
+        ]
+    )
 
     # Inject system modules from their ModuleDefinition (preserves actions, fields, etc.)
     from app.services.araios.system_modules import get_system_modules
     skip = {"module_manager"}
     user_module_names = {m["name"] for m in user_modules}
     native_modules = [
-        {**mod.to_dict(), "native": True}
+        {
+            **mod.to_dict(),
+            "native": True,
+            "created_at": None,
+            "updated_at": None,
+            "last_changed_at": None,
+        }
         for mod in get_system_modules()
         if mod.name not in skip and mod.name not in user_module_names
     ]
 
-    return {"modules": native_modules + user_modules}
+    return {"modules": user_modules + native_modules}
 
 
 @router.post("", status_code=201)
