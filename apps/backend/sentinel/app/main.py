@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
-from app.config import settings
+from app.config import settings, app_version
 from app.database import AsyncSessionLocal, ensure_database_exists, init_db, init_instance_db
 from app.database.instance_sessions import instance_session_registry
 from app.middleware import (
@@ -32,6 +32,7 @@ from app.routers import (
     agent_modes as agent_modes_router,
     approvals as approvals_router,
     auth,
+    backup,
     git as git_router,
     health,
     instances,
@@ -51,7 +52,10 @@ from app.routers import (
     webhooks,
 )
 from app.routers.araios import api_router as araios_api_router
-from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter, runtime_event_to_sentinel_event
+from app.services.agent_runtime_adapters import (
+    SentinelLoopRuntimeAdapter,
+    runtime_event_to_sentinel_event,
+)
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.araios.runtime_services import configure_runtime_services
 from app.services.memory.embeddings import EmbeddingService
@@ -215,11 +219,7 @@ async def lifespan(app: FastAPI):
                             ConversationItem(
                                 id=f"server-wakeup-{uuid4().hex}",
                                 role="user",
-                                content=[
-                                    TextBlock(
-                                        text=prompt
-                                    )
-                                ],
+                                content=[TextBlock(text=prompt)],
                             )
                         ],
                         config=GenerationConfig(
@@ -250,9 +250,9 @@ async def lifespan(app: FastAPI):
                 try:
                     from app.services.sessions.compaction import CompactionService
 
-                    await CompactionService(provider=agent_runtime_support.provider).auto_compact_if_needed(
-                        db, session_id=sid
-                    )
+                    await CompactionService(
+                        provider=agent_runtime_support.provider
+                    ).auto_compact_if_needed(db, session_id=sid)
                 except Exception:  # noqa: BLE001
                     pass
                 try:
@@ -349,7 +349,13 @@ async def lifespan(app: FastAPI):
             ConversationItem(
                 id=f"runtime-job-report-{str(job.get('id') or uuid4().hex)}",
                 role="system",
-                content=[TextBlock(text=_runtime_job_report_text(job, stdout_tail=stdout_tail, stderr_tail=stderr_tail))],
+                content=[
+                    TextBlock(
+                        text=_runtime_job_report_text(
+                            job, stdout_tail=stdout_tail, stderr_tail=stderr_tail
+                        )
+                    )
+                ],
                 metadata={
                     "source": "runtime_job_completion",
                     "job_id": str(job.get("id") or ""),
@@ -477,7 +483,9 @@ async def lifespan(app: FastAPI):
             try:
                 await asyncio.wait_for(coro, timeout=timeout)
             except asyncio.TimeoutError:
-                logger.warning("shutdown step %r exceeded %.1fs deadline; abandoning", name, timeout)
+                logger.warning(
+                    "shutdown step %r exceeded %.1fs deadline; abandoning", name, timeout
+                )
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
@@ -505,7 +513,9 @@ async def lifespan(app: FastAPI):
 
         # 3. Cooperative loops (all use stop_event); bound just in case.
         await _bounded("rate_limit_cleanup", cleanup_task, timeout=2.0)
-        await _bounded("instance_contexts", instance_runtime_context_registry.stop_all(), timeout=5.0)
+        await _bounded(
+            "instance_contexts", instance_runtime_context_registry.stop_all(), timeout=5.0
+        )
 
         # 4. External resources.
         from app.services.telegram import stop_telegram_bridge
@@ -516,7 +526,7 @@ async def lifespan(app: FastAPI):
         await _bounded("instance_db_engines", instance_session_registry.dispose_all(), timeout=3.0)
 
 
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version=app_version(), lifespan=lifespan)
 # Runtime singletons initialized up-front for deterministic app.state shape.
 app.state.ws_manager = ConnectionManager()
 app.state.agent_run_registry = AgentRunRegistry()
@@ -541,19 +551,30 @@ app.include_router(runtimes.router, prefix="/api/v1", tags=["runtimes"])
 app.include_router(admin_manager.router, prefix="/api/v1/admin", tags=["admin"])
 _instance_api_prefix = "/api/v1/instances/{instance_name}"
 app.include_router(sessions.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"])
-app.include_router(sessions_compaction.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"])
+app.include_router(
+    sessions_compaction.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"]
+)
 app.include_router(memory.router, prefix=f"{_instance_api_prefix}/memory", tags=["memory"])
-app.include_router(sub_agents.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sub-agents"])
+app.include_router(
+    sub_agents.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sub-agents"]
+)
 app.include_router(triggers.router, prefix=f"{_instance_api_prefix}/triggers", tags=["triggers"])
 app.include_router(webhooks.router, prefix=f"{_instance_api_prefix}/webhooks", tags=["webhooks"])
 app.include_router(git_router.router, prefix=f"{_instance_api_prefix}/git", tags=["git"])
-app.include_router(approvals_router.router, prefix=f"{_instance_api_prefix}/approvals", tags=["approvals"])
+app.include_router(
+    approvals_router.router, prefix=f"{_instance_api_prefix}/approvals", tags=["approvals"]
+)
 app.include_router(admin.router, prefix=f"{_instance_api_prefix}/admin", tags=["admin"])
 app.include_router(models.router, prefix=f"{_instance_api_prefix}/models", tags=["models"])
 app.include_router(agent_modes_router.router, prefix="/api/v1/agent-modes", tags=["agent-modes"])
-app.include_router(onboarding.router, prefix=f"{_instance_api_prefix}/onboarding", tags=["onboarding"])
-app.include_router(settings_router.router, prefix=f"{_instance_api_prefix}/settings", tags=["settings"])
+app.include_router(
+    onboarding.router, prefix=f"{_instance_api_prefix}/onboarding", tags=["onboarding"]
+)
+app.include_router(
+    settings_router.router, prefix=f"{_instance_api_prefix}/settings", tags=["settings"]
+)
 app.include_router(telegram.router, prefix=f"{_instance_api_prefix}/telegram", tags=["telegram"])
+app.include_router(backup.router, prefix=f"{_instance_api_prefix}/backup", tags=["backup"])
 app.include_router(runtime.router, prefix=f"{_instance_api_prefix}/runtime", tags=["runtime"])
 app.include_router(ws.router, prefix="/ws/instances/{instance_name}/sessions", tags=["ws"])
 

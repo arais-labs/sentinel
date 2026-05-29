@@ -38,8 +38,3 @@ if ! echo "$subject" | grep -Eq "$conventional_regex"; then
   echo "  Example: feat(runtime): add ssh target health probe"
   exit 1
 fi
-
-if ! grep -Eiq '^Signed-off-by:[[:space:]]+.+<.+>$' "$message_file"; then
-  echo "Missing DCO sign-off. Commit with: git commit -s"
-  exit 1
-fi

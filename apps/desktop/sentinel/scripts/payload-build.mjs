@@ -23,7 +23,6 @@ const desktopDir = path.resolve(scriptDir, '..');
 const repoRoot = path.resolve(desktopDir, '../../..');
 const backendDir = path.join(repoRoot, 'apps/backend/sentinel');
 const frontendDir = path.join(repoRoot, 'apps/frontend/sentinel');
-const packageJsonPath = path.join(desktopDir, 'package.json');
 const distRoot = path.join(desktopDir, 'dist');
 // The shell build stages the interpreter here; the payload must be frozen
 // against THIS python so the wheels are ABI/platform-correct.
@@ -67,8 +66,14 @@ function resolveChannel() {
 }
 
 async function readVersion() {
-  const pkg = JSON.parse(await readFile(packageJsonPath, 'utf8'));
-  return pkg.version;
+  // Single source of truth: the root VERSION file. scripts/sync-version.sh
+  // mirrors it into package.json et al., but the manifest reads it directly so
+  // the shipped version can never disagree with the repo's canonical number.
+  const version = (await readFile(path.join(repoRoot, 'VERSION'), 'utf8')).trim();
+  if (!version) {
+    throw new Error('Root VERSION file is empty.');
+  }
+  return version;
 }
 
 // Heads = revisions that no other revision lists as its down_revision. We parse

@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from urllib.parse import quote
 
 from pydantic import Field
@@ -146,6 +148,50 @@ settings = Settings()
 
 def is_desktop_app() -> bool:
     return (settings.app_env or "").strip().lower() == "desktop"
+
+
+# ── app version / build identity ──
+# The released number lives in the root VERSION file (propagated everywhere else
+# by scripts/sync-version.sh). Production payloads also ship a manifest.json at
+# the payload root carrying version + channel + the commit the payload was built
+# from; when present it is authoritative. Running from source (dev) there is no
+# manifest, so the version falls back to VERSION and there is no release
+# commit/channel.
+def _walk_up_for_marker(name: str) -> str | None:
+    cursor = Path(__file__).resolve().parent
+    for _ in range(8):
+        candidate = cursor / name
+        if candidate.is_file():
+            value = candidate.read_text(encoding="utf-8").strip()
+            return value or None
+        if cursor.parent == cursor:
+            break
+        cursor = cursor.parent
+    return None
+
+
+def _read_manifest() -> dict:
+    raw = _walk_up_for_marker("manifest.json")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def app_version() -> str:
+    return _read_manifest().get("version") or _walk_up_for_marker("VERSION") or "0.0.0"
+
+
+def build_identity() -> dict[str, str | None]:
+    manifest = _read_manifest()
+    return {
+        "version": manifest.get("version") or _walk_up_for_marker("VERSION"),
+        "commit": manifest.get("commit"),
+        "channel": manifest.get("channel"),
+    }
 
 
 CHAT_MAX_ITERATIONS = max(1, int(settings.chat_max_iterations))

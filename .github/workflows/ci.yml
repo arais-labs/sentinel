@@ -18,6 +18,42 @@ permissions:
   contents: read
 
 jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.bump.outputs.bumped }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Drift guard
+        # Every derived copy of the version must match the root VERSION file.
+        run: scripts/sync-version.sh --check
+
+      - name: Detect version bump
+        id: bump
+        # Publishing happens only when VERSION changed in this push (or a manual
+        # dispatch). Plain pushes still run the gate above but never ship, so a
+        # given version is published exactly once — on the commit that bumped it.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          before="${{ github.event.before }}"
+          if [ -z "$before" ] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            # New branch / unknown base: can't diff, so don't publish.
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$before" "${{ github.sha }}" | grep -qx VERSION; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
   compose-validate:
     name: Compose Validate
     runs-on: ubuntu-latest
@@ -103,10 +139,14 @@ jobs:
 
   desktop-release:
     name: Build DMG + payload and publish
-    needs: [compose-validate, backend-tests, desktop-typecheck, frontend-build]
-    # Only ship from main/beta pushes or a manual dispatch; PRs and feature
-    # branches run the gate above but never publish.
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta'
+    needs: [version, compose-validate, backend-tests, desktop-typecheck, frontend-build]
+    # Ship only when VERSION was bumped on a main/beta push (stable from main,
+    # beta from beta), or on a manual dispatch. Pushes that don't change VERSION
+    # run the full gate but never publish — so each version ships exactly once.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      ((github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta') &&
+       needs.version.outputs.bumped == 'true')
     runs-on: macos-15
     permissions:
       contents: write

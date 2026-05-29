@@ -107,4 +107,13 @@ if [[ -n "$desktop_changed" ]]; then
   ( cd apps/desktop/sentinel && npx tsc -p tsconfig.json --noEmit )
 fi
 
+# 7) Version drift guard: every derived copy must match the root VERSION file.
+if [[ -x scripts/sync-version.sh ]]; then
+  if ! scripts/sync-version.sh --check; then
+    echo
+    echo "Pre-commit failed: run 'scripts/sync-version.sh' and re-stage."
+    exit 1
+  fi
+fi
+
 echo "Pre-commit checks passed."
