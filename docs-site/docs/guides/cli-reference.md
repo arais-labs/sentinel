@@ -74,5 +74,6 @@ these variables are present:
 |---|---|
 | `SENTINEL_POSTGRES_PASSWORD` | Postgres password used by the database and backend |
 | `SENTINEL_JWT_SECRET_KEY` | JWT signing secret |
+| `SENTINEL_DATA_ENCRYPTION_KEY` | Encryption key for runtime secrets stored in the database |
 | `SENTINEL_AUTH_PASSWORD` | App admin password synced into the manager database on backend startup |
 | `SENTINEL_AUTH_USERNAME` | App admin username synced into the manager database on backend startup |

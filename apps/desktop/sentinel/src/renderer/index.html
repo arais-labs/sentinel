@@ -25,7 +25,7 @@
       </header>
 
       <main class="app-content">
-        <div class="status-grid reveal delay-1">
+        <div class="reveal delay-1">
           <section class="panel">
             <div class="panel-header">
               <div class="panel-title-block">
@@ -36,30 +36,18 @@
             </div>
             <div id="services" class="service-list"></div>
           </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div class="panel-title-block">
-                <h2 class="panel-title">Runtime</h2>
-                <p class="panel-subtitle">SSH runtime connection used by agent tools</p>
-              </div>
-              <span id="runtimeOverall" class="pill">Unknown</span>
-            </div>
-            <div id="runtimeDetails" class="detail-list"></div>
-          </section>
         </div>
 
         <section class="panel updates-panel reveal delay-2">
           <div class="panel-header">
             <div class="panel-title-block">
-              <h2 class="panel-title">App Payload</h2>
-              <p class="panel-subtitle">Installed Sentinel app code and release channel</p>
+              <h2 class="panel-title">Updates</h2>
+              <p class="panel-subtitle">Version and release channel</p>
             </div>
             <div class="panel-actions">
               <span id="updateStatusPill" class="pill">Idle</span>
-              <button id="installFromFileBtn">Install from File…</button>
               <button id="checkUpdatesBtn">Check for Updates</button>
-              <button id="applyUpdateBtn" class="primary" hidden>Apply Update</button>
+              <button id="applyUpdateBtn" class="primary" hidden>Update</button>
             </div>
           </div>
           <div class="updates-grid">

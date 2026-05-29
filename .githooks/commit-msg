@@ -29,6 +29,16 @@ if echo "$subject" | grep -Eiq '^(wip|fixup!|squash!)'; then
   exit 1
 fi
 
+# Enforce Conventional Commits: type(optional scope)(optional !): description
+conventional_regex='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9._/-]+\))?(!)?: .+'
+if ! echo "$subject" | grep -Eq "$conventional_regex"; then
+  echo "Commit message must follow Conventional Commits."
+  echo "  Format: <type>(<optional scope>): <description>"
+  echo "  Types:  build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test"
+  echo "  Example: feat(runtime): add ssh target health probe"
+  exit 1
+fi
+
 if ! grep -Eiq '^Signed-off-by:[[:space:]]+.+<.+>$' "$message_file"; then
   echo "Missing DCO sign-off. Commit with: git commit -s"
   exit 1

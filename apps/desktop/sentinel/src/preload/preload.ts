@@ -30,7 +30,6 @@ const api: DesktopApi = {
   openLogFolder: () => ipcRenderer.invoke(IPC.openLogFolder),
   getLogs: () => ipcRenderer.invoke(IPC.getLogs),
   getPayload: () => ipcRenderer.invoke(IPC.getPayload),
-  installFromFile: () => ipcRenderer.invoke(IPC.installFromFile),
   checkForUpdate: (channel?: ReleaseChannel) => ipcRenderer.invoke(IPC.checkForUpdate, channel),
   applyUpdate: (update) => ipcRenderer.invoke(IPC.applyUpdate, update),
   onStatus: (listener: (status: DesktopStatus) => void) => subscribe(IPC.statusChanged, listener),

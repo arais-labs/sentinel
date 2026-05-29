@@ -39,7 +39,7 @@ class _WorkspaceFilesStub:
 
 
 def test_parse_str_replace_output_accepts_last_json_line() -> None:
-    payload = _parse_str_replace_output("\nnoise\n{\"ok\":true,\"path\":\"a\"}\n")
+    payload = _parse_str_replace_output('\nnoise\n{"ok":true,"path":"a"}\n')
     assert payload["ok"] is True
     assert payload["path"] == "a"
 
@@ -62,8 +62,15 @@ async def test_str_replace_editor_runs_through_runtime_workspace(monkeypatch) ->
     from app.services.araios.system_modules.str_replace_editor import handlers
 
     stub = _WorkspaceFilesStub()
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_workspace_files", lambda: stub)
+
+    async def _runtime_configured(**_kwargs: object) -> bool:
+        return True
+
+    async def _get_workspace_files(**_kwargs: object) -> _WorkspaceFilesStub:
+        return stub
+
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured)
+    monkeypatch.setattr(handlers, "get_runtime_workspace_files", _get_workspace_files)
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)

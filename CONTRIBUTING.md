@@ -17,7 +17,8 @@ docker compose -f docker-compose.dev.yml up --build
 
 The development compose file uses local-only defaults. The production-shaped
 `docker-compose.yml` requires explicit `SENTINEL_POSTGRES_PASSWORD`,
-`SENTINEL_JWT_SECRET_KEY`, and `SENTINEL_AUTH_PASSWORD` values.
+`SENTINEL_JWT_SECRET_KEY`, `SENTINEL_DATA_ENCRYPTION_KEY`, and
+`SENTINEL_AUTH_PASSWORD` values.
 
 Install Python formatting tooling:
 
@@ -47,6 +48,7 @@ For CLI, Compose, or documentation cleanup, run:
 bash -n sentinel-cli.sh
 SENTINEL_POSTGRES_PASSWORD=test-postgres-password \
   SENTINEL_JWT_SECRET_KEY=test-jwt-secret-at-least-local-config \
+  SENTINEL_DATA_ENCRYPTION_KEY=test-data-encryption-key-at-least-32 \
   SENTINEL_AUTH_PASSWORD=test-admin-password \
   docker compose config -q
 docker compose -f docker-compose.dev.yml config -q

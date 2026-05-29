@@ -397,7 +397,7 @@ env_value_invalid() {
         is_weak_prod_value "$value" && return 0
         (( ${#value} >= 12 )) || return 0
         ;;
-      SENTINEL_JWT_SECRET_KEY)
+      SENTINEL_JWT_SECRET_KEY|SENTINEL_DATA_ENCRYPTION_KEY)
         is_weak_prod_value "$value" && return 0
         (( ${#value} >= 32 )) || return 0
         ;;
@@ -427,6 +427,7 @@ collect_env_errors() {
     STACK_PORT \
     SENTINEL_POSTGRES_PASSWORD \
     SENTINEL_JWT_SECRET_KEY \
+    SENTINEL_DATA_ENCRYPTION_KEY \
     SENTINEL_AUTH_USERNAME \
     SENTINEL_AUTH_PASSWORD
   do
@@ -444,7 +445,7 @@ collect_env_errors() {
 
 reload_env_config() {
   unset COMPOSE_PROJECT_NAME STACK_PORT SENTINEL_POSTGRES_PASSWORD SENTINEL_JWT_SECRET_KEY
-  unset SENTINEL_AUTH_USERNAME SENTINEL_AUTH_PASSWORD
+  unset SENTINEL_DATA_ENCRYPTION_KEY SENTINEL_AUTH_USERNAME SENTINEL_AUTH_PASSWORD
   load_root_env true
   COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-sentinel}"
   STACK_PORT="${STACK_PORT:-4747}"
@@ -458,6 +459,7 @@ validate_prod_stack_config() {
   [[ "$SENTINEL_MODE" == "prod" ]] || return 0
   validate_prod_required_value "SENTINEL_POSTGRES_PASSWORD" "database password" || return 1
   validate_prod_required_value "SENTINEL_JWT_SECRET_KEY" "JWT secret" || return 1
+  validate_prod_required_value "SENTINEL_DATA_ENCRYPTION_KEY" "data encryption key" || return 1
   if is_placeholder_value "$SENTINEL_AUTH_USERNAME" || [[ "$SENTINEL_AUTH_USERNAME" == "admin" ]]; then
     err "SENTINEL_AUTH_USERNAME must be changed from the default before using prod mode."
     return 1
@@ -479,17 +481,19 @@ write_dev_env_defaults() {
   upsert_root_env_value "STACK_PORT" "$(env_value_or_default "STACK_PORT" "4747")" || return 1
   upsert_root_env_value "SENTINEL_POSTGRES_PASSWORD" "$(env_value_or_default "SENTINEL_POSTGRES_PASSWORD" "sentinel")" || return 1
   upsert_root_env_value "SENTINEL_JWT_SECRET_KEY" "$(env_value_or_default "SENTINEL_JWT_SECRET_KEY" "sentinel-local-dev-secret-change-me")" || return 1
+  upsert_root_env_value "SENTINEL_DATA_ENCRYPTION_KEY" "$(env_value_or_default "SENTINEL_DATA_ENCRYPTION_KEY" "sentinel-local-dev-data-key-change-me")" || return 1
   upsert_root_env_value "SENTINEL_AUTH_USERNAME" "$(env_value_or_default "SENTINEL_AUTH_USERNAME" "admin")" || return 1
   upsert_root_env_value "SENTINEL_AUTH_PASSWORD" "$(env_value_or_default "SENTINEL_AUTH_PASSWORD" "admin")" || return 1
   reload_env_config
 }
 
 write_prod_env_interactive() {
-  local compose_project stack_port db_password jwt_secret auth_username auth_password
+  local compose_project stack_port db_password jwt_secret data_encryption_key auth_username auth_password
   compose_project="$(prompt_default "Compose project name" "$(env_value_or_default "COMPOSE_PROJECT_NAME" "sentinel")")"
   stack_port="$(prompt_default "Stack port" "$(env_value_or_default "STACK_PORT" "4747")")"
   db_password="$(prompt_default "Database password" "$(env_value_or_default "SENTINEL_POSTGRES_PASSWORD" "$(generate_secret)")")"
   jwt_secret="$(prompt_default "JWT secret" "$(env_value_or_default "SENTINEL_JWT_SECRET_KEY" "$(generate_secret)")")"
+  data_encryption_key="$(prompt_default "Data encryption key" "$(env_value_or_default "SENTINEL_DATA_ENCRYPTION_KEY" "$(generate_secret)")")"
   auth_username="$(prompt_default "Admin username" "$(env_value_or_default "SENTINEL_AUTH_USERNAME" "sentinel-admin")")"
   auth_password="$(prompt_default "Admin password" "$(env_value_or_default "SENTINEL_AUTH_PASSWORD" "$(generate_secret)")")"
 
@@ -497,6 +501,7 @@ write_prod_env_interactive() {
   upsert_root_env_value "STACK_PORT" "$stack_port" || return 1
   upsert_root_env_value "SENTINEL_POSTGRES_PASSWORD" "$db_password" || return 1
   upsert_root_env_value "SENTINEL_JWT_SECRET_KEY" "$jwt_secret" || return 1
+  upsert_root_env_value "SENTINEL_DATA_ENCRYPTION_KEY" "$data_encryption_key" || return 1
   upsert_root_env_value "SENTINEL_AUTH_USERNAME" "$auth_username" || return 1
   upsert_root_env_value "SENTINEL_AUTH_PASSWORD" "$auth_password" || return 1
   reload_env_config

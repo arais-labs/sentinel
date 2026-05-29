@@ -1,4 +1,4 @@
-import { app, shell } from 'electron';
+import { app, safeStorage, shell } from 'electron';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -178,7 +178,8 @@ export class DesktopManager {
       ],
       { env: this.postgresEnv() },
     );
-    this.secrets = await this.createDesktopSecrets();
+    await this.rotateJwtSecret();
+    this.secrets = await this.loadDesktopSecrets();
     await this.supervisor.stopAndWait('backend');
     await this.startBackend();
     await this.waitForBackend();
@@ -289,12 +290,6 @@ export class DesktopManager {
       appUrl,
       appSupportPath: appSupportRoot(),
       payload: await payload.readPayloadInfo(),
-      runtime: {
-        provider: 'ssh',
-        configured: true,
-        authMethod: 'db',
-        message: 'Runtime is ready.',
-      },
       services: this.supervisor.status(),
     };
   }
@@ -325,6 +320,33 @@ export class DesktopManager {
     } finally {
       await rm(scratch, { force: true });
     }
+  }
+
+  // First-launch bootstrap for a fresh shell with no payload: download and
+  // install the latest published release, preferring stable and falling back
+  // to beta. Progress is emitted so the renderer shows the install overlay.
+  // Returns true once a payload is installed.
+  async autoInstallLatest(): Promise<boolean> {
+    if (!app.isPackaged || payload.isInstalled()) return false;
+    const channels: ReleaseChannel[] = ['stable', 'beta'];
+    for (const channel of channels) {
+      let update: PayloadUpdate | null = null;
+      try {
+        update = await payload.checkForUpdate(channel);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.supervisor.appendManagerLog(`Auto-install: ${channel} channel check failed: ${reason}`);
+        continue;
+      }
+      if (!update) continue;
+      this.supervisor.appendManagerLog(
+        `Auto-install: installing latest ${channel} release (${update.version}).`,
+      );
+      await this.applyUpdate(update);
+      return true;
+    }
+    this.supervisor.appendManagerLog('Auto-install: no published release found on stable or beta.');
+    return false;
   }
 
   // Installs a payload tarball already on disk (the "Install from file" path).
@@ -751,23 +773,49 @@ export class DesktopManager {
     }
   }
 
-  private async loadDesktopSecrets(): Promise<DesktopSecrets> {
-    const filePath = path.join(appSupportRoot(), 'config', 'secrets.json');
-    const existing = await readJsonFile<DesktopSecretsFile>(filePath);
-    if (existing?.jwtSecretKey && existing.jwtSecretKey.trim()) {
-      return { jwtSecretKey: existing.jwtSecretKey.trim() };
-    }
-    return this.createDesktopSecrets();
+  private jwtSecretPath(): string {
+    return path.join(appSupportRoot(), 'config', 'secrets.json');
   }
 
-  private async createDesktopSecrets(): Promise<DesktopSecrets> {
-    const filePath = path.join(appSupportRoot(), 'config', 'secrets.json');
-    const secrets: DesktopSecrets = {
-      jwtSecretKey: randomBytes(32).toString('hex'),
+  private dataEncryptionKeyPath(): string {
+    return path.join(appSupportRoot(), 'config', 'data-encryption-key.bin');
+  }
+
+  private async loadDesktopSecrets(): Promise<DesktopSecrets> {
+    return {
+      jwtSecretKey: await this.loadOrCreateJwtSecret(),
+      dataEncryptionKey: await this.loadOrCreateDataEncryptionKey(),
     };
+  }
+
+  private async loadOrCreateJwtSecret(): Promise<string> {
+    const existing = await readJsonFile<DesktopSecretsFile>(this.jwtSecretPath());
+    if (existing?.jwtSecretKey && existing.jwtSecretKey.trim()) {
+      return existing.jwtSecretKey.trim();
+    }
+    return this.rotateJwtSecret();
+  }
+
+  private async rotateJwtSecret(): Promise<string> {
+    const filePath = this.jwtSecretPath();
+    const jwtSecretKey = randomBytes(32).toString('hex');
     await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-    await writeFile(filePath, `${JSON.stringify(secrets, null, 2)}\n`, { mode: 0o600 });
-    return secrets;
+    await writeFile(filePath, `${JSON.stringify({ jwtSecretKey }, null, 2)}\n`, { mode: 0o600 });
+    return jwtSecretKey;
+  }
+
+  private async loadOrCreateDataEncryptionKey(): Promise<string> {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('OS keychain is unavailable; cannot load the data encryption key.');
+    }
+    const filePath = this.dataEncryptionKeyPath();
+    if (existsSync(filePath)) {
+      return safeStorage.decryptString(await readFile(filePath));
+    }
+    const key = randomBytes(32).toString('hex');
+    await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    await writeFile(filePath, safeStorage.encryptString(key), { mode: 0o600 });
+    return key;
   }
 
   private async emitStatus(): Promise<DesktopStatus> {

@@ -30,12 +30,6 @@ export interface DesktopStatus {
   appUrl?: string;
   appSupportPath: string;
   payload: PayloadInfo;
-  runtime: {
-    provider: 'ssh';
-    configured: boolean;
-    authMethod: 'db';
-    message?: string;
-  };
   services: ManagedServiceStatus[];
 }
 
@@ -94,9 +88,6 @@ export interface DesktopApi {
   openLogFolder(): Promise<void>;
   getLogs(): Promise<LogEntry[]>;
   getPayload(): Promise<PayloadInfo>;
-  // Opens a native file picker in the main process and installs the chosen
-  // payload tarball. Resolves false if the user cancels the picker.
-  installFromFile(): Promise<boolean>;
   checkForUpdate(channel?: ReleaseChannel): Promise<PayloadUpdate | null>;
   applyUpdate(update: PayloadUpdate): Promise<void>;
   onStatus(listener: (status: DesktopStatus) => void): () => void;
@@ -117,7 +108,6 @@ export const IPC = {
   openLogFolder: 'desktop:openLogFolder',
   getLogs: 'desktop:getLogs',
   getPayload: 'desktop:getPayload',
-  installFromFile: 'desktop:installFromFile',
   checkForUpdate: 'desktop:checkForUpdate',
   applyUpdate: 'desktop:applyUpdate',
   statusChanged: 'desktop:statusChanged',

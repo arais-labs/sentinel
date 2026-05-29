@@ -101,8 +101,15 @@ async def test_port_forward_tool_open_list_close(monkeypatch) -> None:
     from app.services.araios.system_modules.port_forward import handlers
 
     manager = RuntimePortForwardManager(_SSHStub())  # type: ignore[arg-type]
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_port_forward_manager", lambda: manager)
+
+    async def _runtime_configured(**_kwargs: object) -> bool:
+        return True
+
+    async def _get_manager(**_kwargs: object) -> RuntimePortForwardManager:
+        return manager
+
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured)
+    monkeypatch.setattr(handlers, "get_runtime_port_forward_manager", _get_manager)
 
     executor = ToolExecutor(build_default_registry())
     session_id = uuid4()
@@ -145,8 +152,15 @@ async def test_port_forward_tool_rejects_non_loopback_target(monkeypatch) -> Non
     from app.services.araios.system_modules.port_forward import handlers
 
     manager = RuntimePortForwardManager(_SSHStub())  # type: ignore[arg-type]
-    monkeypatch.setattr(handlers, "runtime_configured", lambda: True)
-    monkeypatch.setattr(handlers, "get_runtime_port_forward_manager", lambda: manager)
+
+    async def _runtime_configured(**_kwargs: object) -> bool:
+        return True
+
+    async def _get_manager(**_kwargs: object) -> RuntimePortForwardManager:
+        return manager
+
+    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured)
+    monkeypatch.setattr(handlers, "get_runtime_port_forward_manager", _get_manager)
 
     executor = ToolExecutor(build_default_registry())
 

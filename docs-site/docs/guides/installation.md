@@ -29,7 +29,8 @@ cp .env.example .env
 ```
 
 Then replace the placeholder values for `SENTINEL_POSTGRES_PASSWORD`,
-`SENTINEL_JWT_SECRET_KEY`, and `SENTINEL_AUTH_PASSWORD`.
+`SENTINEL_JWT_SECRET_KEY`, `SENTINEL_DATA_ENCRYPTION_KEY`, and
+`SENTINEL_AUTH_PASSWORD`.
 
 For local development defaults, use explicit dev mode:
 

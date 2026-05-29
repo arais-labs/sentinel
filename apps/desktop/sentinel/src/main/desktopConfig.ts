@@ -10,6 +10,7 @@ export interface DesktopPorts {
 
 export interface DesktopSecrets {
   jwtSecretKey: string;
+  dataEncryptionKey: string;
 }
 
 export function postgresDataDir(): string {
@@ -85,6 +86,7 @@ export function buildBackendEnv(
     DATABASE_MAINTENANCE_NAME: 'postgres',
     DATABASE_MANAGER_NAME: 'sentinel_manager',
     JWT_SECRET_KEY: secrets.jwtSecretKey,
+    DATA_ENCRYPTION_KEY: secrets.dataEncryptionKey,
     SESSION_RUNTIME_BASE_DIR: desktopWorkspaceRoot(),
     AUTH_COOKIE_SECURE: 'false',
     AUTH_COOKIE_SAMESITE: 'lax',

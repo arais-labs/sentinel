@@ -13,7 +13,7 @@ class RuntimeSecretError(RuntimeError):
 
 
 def _fernet() -> Fernet:
-    digest = hashlib.sha256(settings.jwt_secret_key.encode("utf-8")).digest()
+    digest = hashlib.sha256(settings.data_encryption_key.encode("utf-8")).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
 
 

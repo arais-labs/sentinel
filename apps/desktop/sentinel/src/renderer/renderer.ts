@@ -39,7 +39,6 @@ function escapeHtml(value: string): string {
 function render(status: DesktopStatus): void {
   el('supportPath').textContent = status.appSupportPath;
   renderServices(status.services);
-  renderRuntime(status);
   renderPayload(status.payload);
 }
 
@@ -70,28 +69,6 @@ function renderServices(services: ManagedServiceStatus[]): void {
     .join('');
 }
 
-function renderRuntime(status: DesktopStatus): void {
-  const root = el('runtimeDetails');
-  const overallVariant = status.runtime.configured ? 'ok' : 'missing';
-  const overallLabel = status.runtime.configured ? 'Configured' : 'Missing';
-  setPill('runtimeOverall', overallLabel, overallVariant);
-  root.innerHTML = [
-    detailRow('Provider', '<span class="mono">ssh</span>'),
-    detailRow('Connection', stateDot(overallLabel, overallVariant)),
-    detailRow('Auth', `<span class="mono">${escapeHtml(status.runtime.authMethod)}</span>`),
-    detailRow('Phase', `<span class="mono">${escapeHtml(runtimePhase(status))}</span>`),
-  ].join('');
-}
-
-function detailRow(label: string, value: string): string {
-  return `
-    <div class="detail-row">
-      <div class="detail-label">${escapeHtml(label)}</div>
-      <div class="detail-value">${value}</div>
-    </div>
-  `;
-}
-
 function serviceDescription(name: ManagedServiceStatus['name']): string {
   switch (name) {
     case 'backend':
@@ -119,10 +96,6 @@ function stateVariant(state: ManagedServiceStatus['state']): string {
   if (state === 'starting' || state === 'stopping') return 'starting';
   if (state === 'failed') return 'missing';
   return '';
-}
-
-function runtimePhase(status: DesktopStatus): string {
-  return status.runtime.message || (status.runtime.configured ? 'SSH runtime configured' : 'SSH runtime not configured');
 }
 
 function selectedFactoryResetScopes(): FactoryResetScopes {
@@ -302,17 +275,19 @@ api.onLog((entry: LogEntry) => {
 // ---- Payload version, install & updates ----
 let pendingUpdate: PayloadUpdate | null = null;
 let payloadBusy = false;
+let payloadInstalled = false;
 
 function setUpdateStatusPill(text: string, variant = ''): void {
   setPill('updateStatusPill', text, variant);
 }
 
 function renderPayload(payload: PayloadInfo): void {
+  payloadInstalled = payload.installed;
   if (!payload.installed) {
     el('currentVersion').textContent = 'not installed';
     if (!payloadBusy) {
-      setUpdateStatusPill('No payload', 'missing');
-      showUpdateBanner('No app payload installed. Use “Install from File…” to load one, or “Check for Updates” to download.');
+      setUpdateStatusPill('Not installed', 'missing');
+      showUpdateBanner('No version installed yet. Checking for the latest release — or click “Check for Updates”.');
     }
     return;
   }
@@ -334,42 +309,15 @@ function hideUpdateBanner(): void {
 
 function setPayloadUiBusy(busy: boolean): void {
   payloadBusy = busy;
-  el<HTMLButtonElement>('installFromFileBtn').disabled = busy;
   el<HTMLButtonElement>('checkUpdatesBtn').disabled = busy;
   el<HTMLButtonElement>('applyUpdateBtn').disabled = busy;
   el<HTMLSelectElement>('channelSelect').disabled = busy;
 }
 
-el('installFromFileBtn').addEventListener('click', async () => {
-  if (payloadBusy) return;
-  setPayloadUiBusy(true);
-  hideUpdateBanner();
-  setUpdateStatusPill('Installing…', 'pending');
-  showOverlay('Installing Sentinel');
-  setOverlayProgress('Starting…', '');
-  try {
-    const installed = await api.installFromFile();
-    if (!installed) {
-      hideOverlay();
-      setUpdateStatusPill('Idle', '');
-      render(await api.getStatus());
-    }
-  } catch (error) {
-    hideOverlay();
-    setUpdateStatusPill('Install failed', 'error');
-    showUpdateBanner(error instanceof Error ? error.message : String(error));
-  } finally {
-    setPayloadUiBusy(false);
-  }
-});
-
 function presentUpdate(result: PayloadUpdate): void {
   pendingUpdate = result;
-  const migrationNote = result.hasNewMigrations ? ' (includes database migrations)' : '';
-  showUpdateBanner(`Update available · ${result.version} · ${result.commit.slice(0, 12)}${migrationNote}`);
-  const applyBtn = el<HTMLButtonElement>('applyUpdateBtn');
-  applyBtn.hidden = false;
-  applyBtn.textContent = result.hasNewMigrations ? 'Apply Update (migrations)' : 'Apply Update';
+  showUpdateBanner(`Update available · ${result.version} · ${result.commit.slice(0, 12)}`);
+  el<HTMLButtonElement>('applyUpdateBtn').hidden = false;
   setUpdateStatusPill('Update available', 'ready');
 }
 
@@ -390,9 +338,15 @@ async function runUpdateCheck(silent: boolean): Promise<void> {
     const result = await api.checkForUpdate(channel);
     if (result) {
       presentUpdate(result);
-    } else if (!silent) {
+    } else if (!silent && payloadInstalled) {
+      // A null result with a payload installed means we're already current.
       setUpdateStatusPill('Up to date', 'ok');
-      showUpdateBanner('You are running the latest payload on this channel.');
+      showUpdateBanner('You are running the latest version on this channel.');
+    } else if (!silent) {
+      // Nothing installed and no update returned: the channel has no published
+      // release we can reach (404 or unreachable index) — not "up to date".
+      setUpdateStatusPill('Not installed', 'missing');
+      showUpdateBanner('No release is available on this channel yet.');
     }
   } catch (error) {
     if (!silent) {
@@ -470,4 +424,10 @@ el<HTMLSelectElement>('channelSelect').addEventListener('change', (event) => {
 
 restoreChannel();
 
+// Background update checks: once on launch, then on a timer while the window
+// stays open. Both are silent — they surface an available update but stay quiet
+// when nothing is new. A check already in flight (manual) is skipped.
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+
 void refresh().then(() => runUpdateCheck(true));
+setInterval(() => void runUpdateCheck(true), UPDATE_CHECK_INTERVAL_MS);

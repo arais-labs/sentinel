@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     database_maintenance_name: str = "postgres"
     database_manager_name: str = "sentinel_manager"
     jwt_secret_key: str = Field(min_length=1)
+    data_encryption_key: str = Field(min_length=1)
     jwt_algorithm: str = "HS256"
     access_token_ttl_seconds: int = 3600
     refresh_token_ttl_seconds: int = 604800
@@ -36,15 +37,25 @@ class Settings(BaseSettings):
     # validation_alias here points at a sentinel name that no real env var
     # uses, which disables env-var loading for the field while keeping the
     # attribute available for DB hydration via setattr/model_copy.
-    anthropic_oauth_token: str | None = Field(default=None, validation_alias="_db_only_anthropic_oauth_token")
-    anthropic_api_key: str | None = Field(default=None, validation_alias="_db_only_anthropic_api_key")
-    openai_oauth_token: str | None = Field(default=None, validation_alias="_db_only_openai_oauth_token")
+    anthropic_oauth_token: str | None = Field(
+        default=None, validation_alias="_db_only_anthropic_oauth_token"
+    )
+    anthropic_api_key: str | None = Field(
+        default=None, validation_alias="_db_only_anthropic_api_key"
+    )
+    openai_oauth_token: str | None = Field(
+        default=None, validation_alias="_db_only_openai_oauth_token"
+    )
     openai_api_key: str | None = Field(default=None, validation_alias="_db_only_openai_api_key")
     openai_base_url: str = "https://api.openai.com/v1"
     gemini_api_key: str | None = Field(default=None, validation_alias="_db_only_gemini_api_key")
-    gemini_oauth_credentials: str | None = Field(default=None, validation_alias="_db_only_gemini_oauth_credentials")
+    gemini_oauth_credentials: str | None = Field(
+        default=None, validation_alias="_db_only_gemini_oauth_credentials"
+    )
     primary_provider: ProviderChoice = ProviderChoice.ANTHROPIC
-    embedding_api_key: str | None = Field(default=None, validation_alias="_db_only_embedding_api_key")
+    embedding_api_key: str | None = Field(
+        default=None, validation_alias="_db_only_embedding_api_key"
+    )
     embedding_model: str = "text-embedding-3-small"
     embedding_base_url: str = "https://api.openai.com/v1"
     memory_embedding_backfill_on_start: bool = True

@@ -136,8 +136,6 @@ function installMenu(): void {
         { label: 'Control Center', click: () => void showControlCenter() },
         { label: 'Open Sentinel', click: () => void showSentinel() },
         { type: 'separator' },
-        { label: 'Install Payload from File…', click: () => void installPayloadFromFile() },
-        { type: 'separator' },
         { role: 'quit' },
       ],
     },
@@ -145,11 +143,17 @@ function installMenu(): void {
       label: 'View',
       submenu: [
         { role: 'reload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },
         { role: 'zoomOut' },
+      ],
+    },
+    {
+      label: 'Developer',
+      submenu: [
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { label: 'Install Payload from File…', click: () => void installPayloadFromFile() },
       ],
     },
     {
@@ -183,7 +187,6 @@ function registerIpc(): void {
   ipcMain.handle(IPC.openLogFolder, () => manager.openLogFolder());
   ipcMain.handle(IPC.getLogs, () => manager.logs());
   ipcMain.handle(IPC.getPayload, () => manager.getPayload());
-  ipcMain.handle(IPC.installFromFile, () => installPayloadFromFile());
   ipcMain.handle(IPC.checkForUpdate, async (_event, channel?: ReleaseChannel) =>
     manager.checkForUpdate(channel),
   );
@@ -223,7 +226,15 @@ if (!singleInstanceLock) {
       installMenu();
       await createWindow();
       void manager.initialize()
-        .then((status) => showSentinel(status))
+        .then(async (status) => {
+          // Fresh shell with no payload: pull and install the latest release
+          // automatically (stable, then beta) before opening Sentinel.
+          if (!status.appUrl && !status.payload.installed) {
+            const installed = await manager.autoInstallLatest();
+            if (installed) return showSentinel();
+          }
+          return showSentinel(status);
+        })
         .catch((error) => {
           const message = String(error?.stack || error);
           console.error(message);
