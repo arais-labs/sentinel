@@ -10,7 +10,6 @@ const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
 const desktopDir = path.resolve(scriptDir, '..');
 const repoRoot = path.resolve(desktopDir, '../../..');
-const frontendDir = path.join(repoRoot, 'apps/frontend/sentinel');
 const lockPath = path.join(desktopDir, 'runtime.lock.json');
 const packageJsonPath = path.join(desktopDir, 'package.json');
 const buildRoot = path.join(desktopDir, 'build');
@@ -159,7 +158,6 @@ function componentRuntimeDir(target, componentName) {
 function buildPaths(target) {
   return {
     desktopDir,
-    frontendDir,
     repoRoot,
     packageJsonPath,
     buildRoot,
@@ -170,32 +168,32 @@ function buildPaths(target) {
 }
 
 async function installNodeDependencies() {
-  for (const directory of [frontendDir, desktopDir]) {
-    const lockPath = path.join(directory, 'package-lock.json');
-    if (!existsSync(lockPath)) {
-      throw new Error(`Missing package-lock.json in ${path.relative(repoRoot, directory)}; desktop builds require deterministic npm ci installs.`);
-    }
-    // Skip npm ci when the lockfile hash matches the last successful install
-    // AND node_modules already exists. Massive win on cached builds.
-    const lockHash = await hashFile(lockPath);
-    const nodeModulesDir = path.join(directory, 'node_modules');
-    const stampPath = path.join(nodeModulesDir, '.npm-ci-stamp');
-    const haveNodeModules = existsSync(nodeModulesDir);
-    let cachedHash = null;
-    if (haveNodeModules && existsSync(stampPath)) {
-      try {
-        cachedHash = (await readFile(stampPath, 'utf8')).trim();
-      } catch {
-        cachedHash = null;
-      }
-    }
-    if (cachedHash === lockHash) {
-      console.log(`npm dependencies in ${path.relative(repoRoot, directory)} are current; skipping npm ci.`);
-      continue;
-    }
-    run('npm', ['ci'], { cwd: directory });
-    await writeFile(stampPath, `${lockHash}\n`);
+  // Only the Electron shell's own deps. The web frontend is built into the
+  // payload, not the shell DMG.
+  const directory = desktopDir;
+  const lockFile = path.join(directory, 'package-lock.json');
+  if (!existsSync(lockFile)) {
+    throw new Error(`Missing package-lock.json in ${path.relative(repoRoot, directory)}; desktop builds require deterministic npm ci installs.`);
   }
+  // Skip npm ci when the lockfile hash matches the last successful install
+  // AND node_modules already exists. Massive win on cached builds.
+  const lockHash = await hashFile(lockFile);
+  const nodeModulesDir = path.join(directory, 'node_modules');
+  const stampPath = path.join(nodeModulesDir, '.npm-ci-stamp');
+  let cachedHash = null;
+  if (existsSync(nodeModulesDir) && existsSync(stampPath)) {
+    try {
+      cachedHash = (await readFile(stampPath, 'utf8')).trim();
+    } catch {
+      cachedHash = null;
+    }
+  }
+  if (cachedHash === lockHash) {
+    console.log(`npm dependencies in ${path.relative(repoRoot, directory)} are current; skipping npm ci.`);
+    return;
+  }
+  run('npm', ['ci'], { cwd: directory });
+  await writeFile(stampPath, `${lockHash}\n`);
 }
 
 async function readLock(target) {
@@ -302,10 +300,6 @@ async function writeElectronBuilderConfig(target, platform) {
   return configPath;
 }
 
-function buildFrontend() {
-  run('npm', ['run', 'build'], { cwd: frontendDir });
-}
-
 async function verifyRuntime(target, platform) {
   if (platform.verifyRuntime) {
     await platform.verifyRuntime({ target, paths: buildPaths(target) });
@@ -336,7 +330,6 @@ async function buildDesktop(args) {
   } else {
     console.log('◆ verify-runtime: skipped (all components cached)');
   }
-  await time('build-frontend (vite)', () => buildFrontend());
   await time('compile-typescript (tsc)', () => run('npx', ['tsc', '-p', 'tsconfig.json']));
   if (platform.preparePackageAssets) {
     await time('prepare-package-assets (icns)', () =>

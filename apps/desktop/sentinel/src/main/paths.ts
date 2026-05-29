@@ -27,19 +27,44 @@ export function desktopAppRoot(): string {
   return path.resolve(__dirname, '../..');
 }
 
+// The updatable app payload lives in writable userData (not read-only
+// Resources) so it can be replaced without touching the signed .app shell.
+export function payloadRoot(): string {
+  return path.join(appSupportRoot(), 'payload');
+}
+
+// Extraction target for a pending install; swapped over payloadRoot() once the
+// tarball is fully extracted and validated.
+export function payloadStagingRoot(): string {
+  return path.join(appSupportRoot(), 'payload.next');
+}
+
+export function payloadBackendDir(): string {
+  return path.join(payloadRoot(), 'backend');
+}
+
+export function payloadSitePackagesDir(): string {
+  return path.join(payloadRoot(), 'site-packages');
+}
+
+export function payloadFrontendDistDir(): string {
+  return path.join(payloadRoot(), 'frontend/dist');
+}
+
+export function payloadManifestPath(): string {
+  return path.join(payloadRoot(), 'manifest.json');
+}
+
 export function frontendDistPath(): string {
   if (!app.isPackaged) {
     return path.join(repoRoot(), 'apps/frontend/sentinel/dist');
   }
-  // In packaged mode the frontend dist is built at first launch into the
-  // userData source tree (see desktopManager.bootstrapRuntime).
-  return path.join(appSupportRoot(), 'source/apps/frontend/sentinel/dist');
+  return payloadFrontendDistDir();
 }
 
 export function backendPath(): string {
   if (!app.isPackaged) {
     return path.join(repoRoot(), 'apps/backend/sentinel');
   }
-  // In packaged mode the backend lives inside the userData source tree.
-  return path.join(appSupportRoot(), 'source/apps/backend/sentinel');
+  return payloadBackendDir();
 }

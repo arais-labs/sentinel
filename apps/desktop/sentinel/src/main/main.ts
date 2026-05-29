@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DesktopManager } from './desktopManager.js';
-import { IPC, type DesktopStatus, type ReleaseChannel, type RuntimeVersion } from '../shared/ipc.js';
+import { IPC, type DesktopStatus, type PayloadUpdate, type ReleaseChannel } from '../shared/ipc.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,29 +45,21 @@ async function createWindow(): Promise<void> {
   };
   const unsubscribeStatus = manager.onStatus((status) => sendToWindow(IPC.statusChanged, status));
   const unsubscribeLog = manager.onLog((entry) => sendToWindow(IPC.logEntry, entry));
-  const unsubscribeBootstrap = manager.onBootstrapProgress((progress) =>
-    sendToWindow(IPC.bootstrapProgress, progress),
+  const unsubscribePayloadProgress = manager.onPayloadProgress((progress) =>
+    sendToWindow(IPC.payloadProgress, progress),
   );
-  const unsubscribeUpdateAvailable = manager.onUpdateAvailable((info) =>
-    sendToWindow(IPC.updateAvailable, info),
+  const unsubscribePayloadInstalled = manager.onPayloadInstalled((info) =>
+    sendToWindow(IPC.payloadInstalled, info),
   );
-  const unsubscribeUpdateProgress = manager.onUpdateProgress((progress) =>
-    sendToWindow(IPC.updateProgress, progress),
-  );
-  const unsubscribeUpdateApplied = manager.onUpdateApplied((version) =>
-    sendToWindow(IPC.updateApplied, version),
-  );
-  const unsubscribeUpdateFailed = manager.onUpdateFailed((failure) =>
-    sendToWindow(IPC.updateFailed, failure),
+  const unsubscribePayloadFailed = manager.onPayloadFailed((failure) =>
+    sendToWindow(IPC.payloadFailed, failure),
   );
   window.once('closed', () => {
     unsubscribeStatus();
     unsubscribeLog();
-    unsubscribeBootstrap();
-    unsubscribeUpdateAvailable();
-    unsubscribeUpdateProgress();
-    unsubscribeUpdateApplied();
-    unsubscribeUpdateFailed();
+    unsubscribePayloadProgress();
+    unsubscribePayloadInstalled();
+    unsubscribePayloadFailed();
     if (mainWindow === window) mainWindow = undefined;
   });
 
@@ -92,13 +84,29 @@ async function showControlCenter(): Promise<void> {
 
 async function showSentinel(status?: DesktopStatus): Promise<DesktopStatus> {
   const nextStatus = status?.appUrl ? status : await manager.startServices();
+  // No payload installed yet (fresh shell): there is nothing to open, so fall
+  // back to the Control Center where the user can install one from file.
   if (!nextStatus.appUrl) {
-    throw new Error('Sentinel is not running yet.');
+    await showControlCenter();
+    return nextStatus;
   }
   activeSentinelOrigin = new URL(nextStatus.appUrl).origin;
   await ensureWindow();
   await mainWindow!.loadURL(nextStatus.appUrl);
   return nextStatus;
+}
+
+// Opens a native picker for a locally-built payload tarball and installs it.
+// Returns false when the user cancels.
+async function installPayloadFromFile(): Promise<boolean> {
+  const result = await dialog.showOpenDialog({
+    title: 'Install Sentinel Payload',
+    properties: ['openFile'],
+    filters: [{ name: 'Payload archive', extensions: ['gz', 'tgz', 'tar.gz'] }],
+  });
+  if (result.canceled || result.filePaths.length === 0) return false;
+  await manager.installPayloadFromFile(result.filePaths[0]);
+  return true;
 }
 
 async function ensureWindow(): Promise<void> {
@@ -127,6 +135,8 @@ function installMenu(): void {
       submenu: [
         { label: 'Control Center', click: () => void showControlCenter() },
         { label: 'Open Sentinel', click: () => void showSentinel() },
+        { type: 'separator' },
+        { label: 'Install Payload from File…', click: () => void installPayloadFromFile() },
         { type: 'separator' },
         { role: 'quit' },
       ],
@@ -172,15 +182,13 @@ function registerIpc(): void {
   ipcMain.handle(IPC.revealAppSupport, () => manager.revealAppSupport());
   ipcMain.handle(IPC.openLogFolder, () => manager.openLogFolder());
   ipcMain.handle(IPC.getLogs, () => manager.logs());
-  ipcMain.handle(IPC.getVersion, async (): Promise<RuntimeVersion> => manager.getVersion());
-  ipcMain.handle(IPC.checkForUpdates, async (_event, channel?: ReleaseChannel) =>
-    manager.checkForUpdates(channel),
+  ipcMain.handle(IPC.getPayload, () => manager.getPayload());
+  ipcMain.handle(IPC.installFromFile, () => installPayloadFromFile());
+  ipcMain.handle(IPC.checkForUpdate, async (_event, channel?: ReleaseChannel) =>
+    manager.checkForUpdate(channel),
   );
-  ipcMain.handle(IPC.applyUpdate, async (_event, targetCommit: string) =>
-    manager.applyUpdate(targetCommit),
-  );
-  ipcMain.handle(IPC.switchChannel, async (_event, channel: ReleaseChannel) =>
-    manager.switchChannel(channel),
+  ipcMain.handle(IPC.applyUpdate, async (_event, update: PayloadUpdate) =>
+    manager.applyUpdate(update),
   );
 }
 

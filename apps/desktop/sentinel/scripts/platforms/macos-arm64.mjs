@@ -1,9 +1,9 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-export const runtimeBuildVersion = 2;
+export const runtimeBuildVersion = 3;
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -49,8 +49,8 @@ export function resolveBuildTools() {
 }
 
 export function verifyBuildTools() {
-  // `git` is needed to clone the source bundle; the native build tools are
-  // for Postgres/pgvector, which still build from source on the VM.
+  // `git` clones pgvector; the native build tools are for Postgres/pgvector,
+  // which still build from source on the VM.
   const required = ['clang', 'curl', 'ditto', 'git', 'make', 'ninja', 'pkg-config', 'shasum', 'tar'];
   const missing = required.filter((command) => !commandExists(command));
   if (missing.length) {
@@ -62,14 +62,8 @@ export function runtimeRequirements() {
   return {
     'runtime-seed': [
       'python/bin/python3',
-      'node/bin/node',
-      'node/bin/npm',
       'git/bin/git',
       'gh/bin/gh',
-      'uv',
-      'source.git.tar',
-      'wheels/.complete',
-      'node_modules-cache.tar.gz',
     ],
     postgres: [
       'bin/postgres',
@@ -86,28 +80,18 @@ export function runtimeRequirements() {
   };
 }
 
-export function runtimeComponents({ config, paths }) {
+export function runtimeComponents({ config }) {
   const requirements = runtimeRequirements();
-  const backendDir = path.join(paths.repoRoot, 'apps/backend/sentinel');
-  const frontendDir = path.join(paths.repoRoot, 'apps/frontend/sentinel');
   return [
     {
       name: 'runtime-seed',
       config: {
         python: pythonRuntimeConfig(config),
-        node: nodeRuntimeConfig(config),
-        uv: uvRuntimeConfig(config),
         git: gitRuntimeConfig(config),
         gh: ghRuntimeConfig(config),
-        sourceClone: sourceCloneConfig(config, paths),
       },
       required: requirements['runtime-seed'],
-      inputs: [
-        path.join(backendDir, 'pyproject.toml'),
-        path.join(backendDir, 'uv.lock'),
-        path.join(frontendDir, 'package.json'),
-        path.join(frontendDir, 'package-lock.json'),
-      ],
+      inputs: [],
       build: buildRuntimeSeed,
     },
     {
@@ -130,26 +114,6 @@ function pythonRuntimeConfig(config) {
     if (!config.python[key]) throw new Error(`macos-arm64 runtime lock is missing python.${key}.`);
   }
   return config.python;
-}
-
-function nodeRuntimeConfig(config) {
-  if (!config.node || typeof config.node !== 'object') {
-    throw new Error('macos-arm64 runtime lock must define node.{version,sourceUrl,sourceSha256}.');
-  }
-  for (const key of ['version', 'sourceUrl', 'sourceSha256']) {
-    if (!config.node[key]) throw new Error(`macos-arm64 runtime lock is missing node.${key}.`);
-  }
-  return config.node;
-}
-
-function uvRuntimeConfig(config) {
-  if (!config.uv || typeof config.uv !== 'object') {
-    throw new Error('macos-arm64 runtime lock must define uv.{version,sourceUrl,sourceSha256}.');
-  }
-  for (const key of ['version', 'sourceUrl', 'sourceSha256']) {
-    if (!config.uv[key]) throw new Error(`macos-arm64 runtime lock is missing uv.${key}.`);
-  }
-  return config.uv;
 }
 
 function gitRuntimeConfig(config) {
@@ -175,73 +139,6 @@ function ghRuntimeConfig(config) {
   return config.gh;
 }
 
-function sourceCloneConfig(config, paths) {
-  if (!config.sourceClone || typeof config.sourceClone !== 'object') {
-    throw new Error('macos-arm64 runtime lock must define sourceClone.{url,depth,channels}.');
-  }
-  if (!config.sourceClone.url) throw new Error('macos-arm64 runtime lock is missing sourceClone.url.');
-  // Folded into the cache key so upstream pushes bust the snapshot.
-  const heads = resolveUpstreamHeads(config.sourceClone, paths);
-  return { ...config.sourceClone, heads };
-}
-
-// Mirrors stampDir/runtimeStampPath in desktop-build.mjs.
-function runtimeSeedStampPath(paths) {
-  return path.join(paths.targetDir, 'stamps', 'runtime-runtime-seed.json');
-}
-
-function readPreviousUpstreamHeads(paths) {
-  if (!paths || !paths.targetDir) return null;
-  const stampPath = runtimeSeedStampPath(paths);
-  if (!existsSync(stampPath)) return null;
-  try {
-    const stamp = JSON.parse(readFileSync(stampPath, 'utf8'));
-    const heads = stamp?.config?.sourceClone?.heads;
-    if (heads && typeof heads === 'object' && Object.keys(heads).length > 0) {
-      return heads;
-    }
-  } catch {
-    // corrupt stamp
-  }
-  return null;
-}
-
-function resolveUpstreamHeads(sourceCfg, paths) {
-  const channels = Array.isArray(sourceCfg.channels) ? sourceCfg.channels : [];
-  if (channels.length === 0) return {};
-  const refs = channels.map((channel) => `refs/heads/${channel}`);
-  const result = spawnSync('git', ['ls-remote', sourceCfg.url, ...refs], {
-    encoding: 'utf8',
-    maxBuffer: 1024 * 1024,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' },
-    timeout: 10_000,
-  });
-  if (result.status !== 0) {
-    const reason = result.error?.message || result.stderr?.trim() || `exit ${result.status}`;
-    // Offline: reuse prior stamp so the cache key matches the last online build.
-    const prevHeads = readPreviousUpstreamHeads(paths);
-    if (prevHeads) {
-      console.warn(
-        `[runtime-seed] git ls-remote ${sourceCfg.url} failed (${reason}). ` +
-          `Reusing upstream HEADs from the previous build's stamp; the bundled source snapshot may be stale.`,
-      );
-      return prevHeads;
-    }
-    throw new Error(
-      `git ls-remote ${sourceCfg.url} failed (${reason}) and no previous runtime-seed stamp exists at ${runtimeSeedStampPath(paths)}. ` +
-        `Run an online build first to populate the cache, then offline builds can reuse it.`,
-    );
-  }
-  const heads = {};
-  for (const line of result.stdout.split('\n')) {
-    const [sha, ref] = line.trim().split(/\s+/);
-    if (!sha || !ref) continue;
-    const channel = ref.replace(/^refs\/heads\//, '');
-    if (channels.includes(channel)) heads[channel] = sha;
-  }
-  return heads;
-}
-
 function verifyArchiveSha256(archivePath, expected, label) {
   const actual = output('shasum', ['-a', '256', archivePath]).split(/\s+/)[0];
   if (actual !== expected) {
@@ -250,13 +147,13 @@ function verifyArchiveSha256(archivePath, expected, label) {
 }
 
 async function buildRuntimeSeed({ config, paths }) {
+  // The shell DMG bundles only version-independent tools: the Python
+  // interpreter (runs the frozen payload), git + gh (agent runtime tools).
+  // The updatable app code lives in the payload, not here.
   const cfg = {
     python: pythonRuntimeConfig(config),
-    node: nodeRuntimeConfig(config),
-    uv: uvRuntimeConfig(config),
     git: gitRuntimeConfig(config),
     gh: ghRuntimeConfig(config),
-    sourceClone: sourceCloneConfig(config, paths),
   };
   const workDir = path.join(paths.targetDir, 'work/runtime-seed');
   const downloadCacheDir = path.join(paths.targetDir, 'work/runtime-seed-cache');
@@ -268,13 +165,8 @@ async function buildRuntimeSeed({ config, paths }) {
   await mkdir(outputDir, { recursive: true });
 
   await stagePython(cfg.python, outputDir, downloadCacheDir, workDir);
-  await stageNode(cfg.node, outputDir, downloadCacheDir, workDir);
-  await stageUv(cfg.uv, outputDir, downloadCacheDir, workDir);
   await stageGit(cfg.git, outputDir);
   await stageGh(cfg.gh, outputDir, downloadCacheDir, workDir);
-  await stageSourceClone(cfg.sourceClone, outputDir, workDir);
-  await stageWheels(cfg.python, outputDir, paths);
-  await stageNodeModulesCache(outputDir, paths, workDir);
 }
 
 async function stagePython(pythonCfg, outputDir, cacheDir, workDir) {
@@ -304,60 +196,45 @@ async function stagePython(pythonCfg, outputDir, cacheDir, workDir) {
   assertNoExternalDylibs(path.join(outputDir, 'python'), 'Python runtime');
 }
 
-async function stageNode(nodeCfg, outputDir, cacheDir, workDir) {
-  const archive = await downloadWithSha(
-    nodeCfg.sourceUrl,
-    nodeCfg.sourceSha256,
-    path.join(cacheDir, `node-${nodeCfg.version}.tar.xz`),
-    'Node.js',
-  );
-  const extractDir = path.join(workDir, 'node-extract');
-  await rm(extractDir, { recursive: true, force: true });
-  await mkdir(extractDir, { recursive: true });
-  run('tar', ['-xJf', archive, '-C', extractDir]);
-  // Node tarball ships as node-vXX.YY.ZZ-darwin-arm64/
-  const entries = await readdir(extractDir);
-  const inner = entries.find((entry) => entry.startsWith('node-'));
-  if (!inner) throw new Error('Node tarball did not contain expected `node-*` directory.');
-  await cp(path.join(extractDir, inner), path.join(outputDir, 'node'), {
-    recursive: true,
-    dereference: false,
-    verbatimSymlinks: true,
-  });
-  run(path.join(outputDir, 'node/bin/node'), ['--version']);
-  run(path.join(outputDir, 'node/bin/npm'), ['--version']);
-  assertNoExternalDylibs(path.join(outputDir, 'node'), 'Node runtime');
-}
-
-async function stageUv(uvCfg, outputDir, cacheDir, workDir) {
-  const archive = await downloadWithSha(
-    uvCfg.sourceUrl,
-    uvCfg.sourceSha256,
-    path.join(cacheDir, `uv-${uvCfg.version}.tar.gz`),
-    'uv',
-  );
-  const extractDir = path.join(workDir, 'uv-extract');
-  await rm(extractDir, { recursive: true, force: true });
-  await mkdir(extractDir, { recursive: true });
-  run('tar', ['-xzf', archive, '-C', extractDir]);
-  // uv tarball ships `uv-aarch64-apple-darwin/uv` (newer releases) or just `uv` at top level.
-  const candidates = [
-    path.join(extractDir, 'uv'),
-    path.join(extractDir, 'uv-aarch64-apple-darwin', 'uv'),
-  ];
-  const uvBinary = candidates.find((candidate) => existsSync(candidate));
-  if (!uvBinary) {
-    throw new Error(`uv binary not found in tarball; expected one of: ${candidates.join(', ')}`);
+// runtime.lock.json pins git to the Command Line Tools layout. GitHub's macOS
+// runners ship full Xcode whose active developer dir is elsewhere (and the bare
+// CLT path may be absent), so when the pinned paths don't exist we fall back to
+// `xcode-select -p`. Both layouts expose the same usr/{bin,libexec,share} tree
+// of system-linked git binaries, so vendoring stays fully relocatable.
+function resolveGitPaths(gitCfg) {
+  if (existsSync(gitCfg.systemBinPath)) {
+    return {
+      bin: gitCfg.systemBinPath,
+      libexec: gitCfg.systemLibexecPath,
+      share: gitCfg.systemSharePath,
+    };
   }
-  await cp(uvBinary, path.join(outputDir, 'uv'), { dereference: false });
-  run(path.join(outputDir, 'uv'), ['--version']);
+  const devDir = outputMaybe('xcode-select', ['-p']);
+  const candidateBin = devDir ? path.join(devDir, 'usr/bin/git') : '';
+  if (!candidateBin || !existsSync(candidateBin)) {
+    throw new Error(
+      `Cannot vendor git: ${gitCfg.systemBinPath} not found and no git under the active ` +
+      `developer dir (${devDir || 'xcode-select -p returned nothing'}). ` +
+      `Install Xcode Command Line Tools (\`xcode-select --install\`).`,
+    );
+  }
+  return {
+    bin: candidateBin,
+    libexec: path.join(devDir, 'usr/libexec/git-core'),
+    share: path.join(devDir, 'usr/share/git-core'),
+  };
 }
 
 async function stageGit(gitCfg, outputDir) {
   // Apple's Command Line Tools git only links system dylibs (libz, libiconv,
   // libSystem, CoreServices, CoreFoundation — all in /usr/lib or /System), so
   // copying it straight is fully relocatable. No download, no dylib vendoring.
-  for (const sourcePath of [gitCfg.systemBinPath, gitCfg.systemLibexecPath, gitCfg.systemSharePath]) {
+  const gitPaths = resolveGitPaths(gitCfg);
+  // bin + libexec/git-core (the subcommands) are essential. share/git-core only
+  // holds commit-message templates and localized strings — git runs fine
+  // without it, and Xcode's developer dir doesn't always ship it — so it's
+  // best-effort below rather than required here.
+  for (const sourcePath of [gitPaths.bin, gitPaths.libexec]) {
     if (!existsSync(sourcePath)) {
       throw new Error(
         `Cannot vendor git: ${sourcePath} not found on build host. ` +
@@ -382,16 +259,18 @@ async function stageGit(gitCfg, outputDir) {
   // We copy individual entries from bin (rather than the whole CLT bin dir,
   // which would drag in ~500 MB of unrelated tools). `cp -RP` on the
   // explicit list preserves the symlinks within the set.
-  const cltBinDir = path.dirname(gitCfg.systemBinPath);
+  const cltBinDir = path.dirname(gitPaths.bin);
   const wantedBin = (await readdir(cltBinDir)).filter(
     (name) => name === 'git' || name.startsWith('git-') || name === 'scalar',
   );
   if (!wantedBin.includes('git')) {
-    throw new Error(`Cannot vendor git: ${gitCfg.systemBinPath} not found.`);
+    throw new Error(`Cannot vendor git: ${gitPaths.bin} not found.`);
   }
   run('cp', ['-RP', ...wantedBin.map((n) => path.join(cltBinDir, n)), path.join(gitOut, 'bin/')]);
-  run('ditto', [gitCfg.systemLibexecPath, path.join(gitOut, 'libexec/git-core')]);
-  run('ditto', [gitCfg.systemSharePath, path.join(gitOut, 'share/git-core')]);
+  run('ditto', [gitPaths.libexec, path.join(gitOut, 'libexec/git-core')]);
+  if (existsSync(gitPaths.share)) {
+    run('ditto', [gitPaths.share, path.join(gitOut, 'share/git-core')]);
+  }
   const versionLine = output(path.join(gitOut, 'bin/git'), ['--version']).split('\n')[0] || '';
   if (!versionLine.startsWith(gitCfg.expectedVersionPrefix)) {
     throw new Error(`Vendored git version mismatch. Expected prefix "${gitCfg.expectedVersionPrefix}", got: ${versionLine}`);
@@ -424,115 +303,6 @@ async function stageGh(ghCfg, outputDir, cacheDir, workDir) {
   await cp(ghBinary, path.join(ghOut, 'bin/gh'), { dereference: false });
   run(path.join(ghOut, 'bin/gh'), ['--version']);
   assertNoExternalDylibs(ghOut, 'GitHub CLI runtime');
-}
-
-async function stageSourceClone(sourceCfg, outputDir, workDir) {
-  const cloneDir = path.join(outputDir, 'source.git');
-  await rm(cloneDir, { recursive: true, force: true });
-  // --no-local --no-hardlinks because we're cloning from a URL, not a local path,
-  // but the flags make the intent explicit and harmless. --bare keeps the clone
-  // free of a working tree (we'll materialize one at first launch).
-  run('git', [
-    'clone',
-    '--bare',
-    '--no-local',
-    `--depth=${sourceCfg.depth ?? 50}`,
-    sourceCfg.url,
-    cloneDir,
-  ], { cwd: workDir });
-  // Also fetch the other release branches so channel switching works offline-fast.
-  if (Array.isArray(sourceCfg.channels)) {
-    for (const channel of sourceCfg.channels) {
-      run('git', ['fetch', '--depth=' + (sourceCfg.depth ?? 50), 'origin', `${channel}:${channel}`], { cwd: cloneDir });
-    }
-  }
-  await sanitizeBareClone(cloneDir);
-  run('git', ['gc', '--aggressive', '--prune=now'], { cwd: cloneDir });
-  // Ship the bare clone as a single tar archive. Two reasons:
-  //   1. electron-builder's extraResources copy strips empty directories, and
-  //      a bare repo after `git gc` has empty refs/ and hooks/. Without those
-  //      git refuses to recognize the directory as a repo ("fatal: not a git
-  //      repository"). Tar preserves them.
-  //   2. The supervisor's bootstrap is agnostic to repo internals — it just
-  //      extracts the archive and proceeds.
-  const archivePath = path.join(outputDir, 'source.git.tar');
-  run('tar', ['-cf', archivePath, '-C', outputDir, 'source.git']);
-  await rm(cloneDir, { recursive: true, force: true });
-  // Stamp which release channel this build defaults to on first bootstrap.
-  // Channel name (stable|beta), not git branch. The supervisor maps channel→
-  // branch (stable→main, beta→beta) when cloning.
-  const defaultChannel = process.env.SENTINEL_BUILD_CHANNEL || 'stable';
-  if (defaultChannel !== 'stable' && defaultChannel !== 'beta') {
-    throw new Error(`SENTINEL_BUILD_CHANNEL must be "stable" or "beta", got "${defaultChannel}".`);
-  }
-  await writeFile(path.join(outputDir, 'default-channel'), `${defaultChannel}\n`);
-  // Stamp the canonical upstream URL so the supervisor can redirect the
-  // working tree's `origin` to it after the local clone — otherwise `git
-  // fetch` would hit the frozen bundled bare instead of the live remote.
-  await writeFile(path.join(outputDir, 'upstream-url'), `${sourceCfg.url}\n`);
-}
-
-async function sanitizeBareClone(cloneDir) {
-  // Strip developer identity, hooks, and reflog so the shipped clone has no
-  // ties to whatever account ran the build.
-  await rm(path.join(cloneDir, 'hooks'), { recursive: true, force: true });
-  await mkdir(path.join(cloneDir, 'hooks'), { recursive: true });
-  await rm(path.join(cloneDir, 'logs'), { recursive: true, force: true });
-  for (const key of ['user.name', 'user.email', 'user.signingkey', 'commit.gpgsign']) {
-    spawnSync('git', ['config', '--unset', key], { cwd: cloneDir });
-  }
-  // Drop any credential entries that might have been copied via global config inheritance.
-  spawnSync('git', ['config', '--remove-section', 'credential'], { cwd: cloneDir });
-}
-
-async function stageWheels(pythonCfg, outputDir, paths) {
-  const backendDir = path.join(paths.repoRoot, 'apps/backend/sentinel');
-  const wheelsDir = path.join(outputDir, 'wheels');
-  const bundledPython = path.join(outputDir, 'python/bin/python3');
-  await rm(wheelsDir, { recursive: true, force: true });
-  await mkdir(wheelsDir, { recursive: true });
-  // uv export collapses the lockfile into a flat requirements.txt with hashes.
-  // --no-emit-project drops the editable install of the backend itself (pip
-  // can't combine editables with hash-pinned requirements).
-  run(path.join(outputDir, 'uv'), [
-    'export',
-    '--frozen',
-    '--no-dev',
-    '--no-emit-project',
-    '--format', 'requirements-txt',
-    '--output-file', path.join(wheelsDir, 'requirements.txt'),
-  ], { cwd: backendDir });
-  // uv 0.5 has no `pip download` subcommand; use bundled python's pip directly.
-  // The bundled python (python-build-standalone) ships with pip preinstalled.
-  run(bundledPython, [
-    '-m', 'pip', 'download',
-    '--no-cache-dir',
-    '--dest', wheelsDir,
-    '-r', path.join(wheelsDir, 'requirements.txt'),
-  ], { cwd: backendDir });
-  await writeFile(path.join(wheelsDir, '.complete'), `${new Date().toISOString()}\n`);
-}
-
-async function stageNodeModulesCache(outputDir, paths, workDir) {
-  const frontendDir = path.join(paths.repoRoot, 'apps/frontend/sentinel');
-  const stagingDir = path.join(workDir, 'frontend-cache');
-  await rm(stagingDir, { recursive: true, force: true });
-  await mkdir(stagingDir, { recursive: true });
-  // Copy only what npm ci needs to reproduce a deterministic install.
-  for (const file of ['package.json', 'package-lock.json']) {
-    await cp(path.join(frontendDir, file), path.join(stagingDir, file), { dereference: true });
-  }
-  // Use the bundled npm so the lockfile resolves against the same engine.
-  const npmPath = path.join(outputDir, 'node/bin/npm');
-  run(npmPath, ['ci', '--no-audit', '--no-fund', '--ignore-scripts'], { cwd: stagingDir });
-  // Strip any auth files that might have been generated.
-  await rm(path.join(stagingDir, '.npmrc'), { force: true });
-  await rm(path.join(stagingDir, 'node_modules', '.package-lock.json'), { force: true });
-  // gzip (not zstd) so BSD tar on the client can extract natively without
-  // needing the zstd binary on PATH (which we don't ship and macOS doesn't
-  // include by default).
-  const archivePath = path.join(outputDir, 'node_modules-cache.tar.gz');
-  run('tar', ['-czf', archivePath, '-C', stagingDir, 'node_modules']);
 }
 
 async function downloadWithSha(url, expectedSha, archivePath, label) {
@@ -742,7 +512,6 @@ export async function verifyRuntime({ paths }) {
   // root-level check below catches anything escaping the bundle.
   const components = [
     ['Runtime seed (python)', path.join(runtimeDir, 'runtime-seed/python')],
-    ['Runtime seed (node)', path.join(runtimeDir, 'runtime-seed/node')],
     ['Runtime seed (git)', path.join(runtimeDir, 'runtime-seed/git')],
     ['Runtime seed (gh)', path.join(runtimeDir, 'runtime-seed/gh')],
     ['Postgres runtime', path.join(runtimeDir, 'postgres')],

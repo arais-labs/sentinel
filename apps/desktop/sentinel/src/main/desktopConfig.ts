@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { appSupportRoot, resourceRoot } from './paths.js';
+import { appSupportRoot, payloadSitePackagesDir, resourceRoot } from './paths.js';
 import { commandSearchPath } from './shell.js';
 
 export interface DesktopPorts {
@@ -32,60 +32,17 @@ export function postgresSharePath(): string {
   return path.join(resourceRoot(), 'postgres/share');
 }
 
+// Version-independent tools bundled in the read-only .app Resources. These
+// never change with an app update — only the payload does.
 export function runtimeSeedRoot(): string {
   return path.join(resourceRoot(), 'runtime-seed');
 }
 
-export function seedPythonDir(): string {
-  return path.join(runtimeSeedRoot(), 'python');
-}
-
-export function seedNodeDir(): string {
-  return path.join(runtimeSeedRoot(), 'node');
-}
-
-export function pythonHome(): string {
-  return path.join(appSupportRoot(), 'python');
-}
-
-export function nodeHome(): string {
-  return path.join(appSupportRoot(), 'node');
-}
-
-export function bundledPythonBinary(): string {
-  return path.join(pythonHome(), 'bin/python3');
-}
-
-export function bundledWheelsDir(): string {
-  return path.join(runtimeSeedRoot(), 'wheels');
-}
-
-export function bundledNodeModulesArchive(): string {
-  return path.join(runtimeSeedRoot(), 'node_modules-cache.tar.gz');
-}
-
-export function bundledSourceBareArchive(): string {
-  return path.join(runtimeSeedRoot(), 'source.git.tar');
-}
-
-export function userDataBareSourceDir(): string {
-  return path.join(appSupportRoot(), 'source.git');
-}
-
-export function sourceRoot(): string {
-  return path.join(appSupportRoot(), 'source');
-}
-
-export function backendSourceDir(): string {
-  return path.join(sourceRoot(), 'apps/backend/sentinel');
-}
-
-export function frontendSourceDir(): string {
-  return path.join(sourceRoot(), 'apps/frontend/sentinel');
-}
-
-export function venvPython(): string {
-  return path.join(backendSourceDir(), '.venv/bin/python');
+// The interpreter that runs the frozen payload. Run straight from Resources;
+// no copy into userData. python-build-standalone tolerates a read-only prefix
+// (it just skips writing .pyc for the stdlib).
+export function shellPythonBinary(): string {
+  return path.join(runtimeSeedRoot(), 'python/bin/python3');
 }
 
 export function bundledGitBinary(): string {
@@ -96,30 +53,11 @@ export function bundledGhBinary(): string {
   return path.join(runtimeSeedRoot(), 'gh/bin/gh');
 }
 
-export function bundledUvBinary(): string {
-  return path.join(runtimeSeedRoot(), 'uv');
-}
-
-export function bundledNodeBinary(): string {
-  return path.join(nodeHome(), 'bin/node');
-}
-
-export function bundledNpmBinary(): string {
-  return path.join(nodeHome(), 'bin/npm');
-}
-
-export function runtimeCommitMarkerPath(): string {
-  return path.join(sourceRoot(), '.runtime-commit');
-}
-
-export function runtimeChannelMarkerPath(): string {
-  return path.join(sourceRoot(), '.runtime-channel');
-}
-
 export function runtimeCommandPath(pathValue = process.env.PATH || ''): string {
   return commandSearchPath(
     [
       path.join(resourceRoot(), 'postgres/bin'),
+      path.join(runtimeSeedRoot(), 'python/bin'),
       path.dirname(bundledGitBinary()),
       path.dirname(bundledGhBinary()),
       pathValue,
@@ -133,6 +71,9 @@ export function buildBackendEnv(
 ): NodeJS.ProcessEnv {
   return {
     PATH: runtimeCommandPath(''),
+    // Frozen dependencies live alongside the payload; the backend source is on
+    // cwd (payload/backend), so `app.*` resolves without an editable install.
+    PYTHONPATH: payloadSitePackagesDir(),
     LANG: 'C',
     LC_ALL: 'C',
     LC_CTYPE: 'C',

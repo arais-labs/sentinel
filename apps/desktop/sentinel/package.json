@@ -12,7 +12,8 @@
   "scripts": {
     "desktop:build": "node scripts/desktop-build.mjs build",
     "desktop:clean": "node scripts/desktop-build.mjs clean",
-    "desktop:verify": "node scripts/desktop-build.mjs verify"
+    "desktop:verify": "node scripts/desktop-build.mjs verify",
+    "payload:build": "node scripts/payload-build.mjs build"
   },
   "dependencies": {
     "http-proxy": "^1.18.1",

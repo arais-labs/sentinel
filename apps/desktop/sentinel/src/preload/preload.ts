@@ -1,14 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
-  BootstrapProgress,
   DesktopApi,
   DesktopStatus,
   LogEntry,
+  PayloadFailure,
+  PayloadInfo,
+  PayloadProgress,
   ReleaseChannel,
-  RuntimeVersion,
-  UpdateAvailable,
-  UpdateFailure,
-  UpdateProgress,
 } from '../shared/ipc.js';
 import { IPC } from '../shared/ipc.js';
 
@@ -31,22 +29,18 @@ const api: DesktopApi = {
   revealAppSupport: () => ipcRenderer.invoke(IPC.revealAppSupport),
   openLogFolder: () => ipcRenderer.invoke(IPC.openLogFolder),
   getLogs: () => ipcRenderer.invoke(IPC.getLogs),
-  getVersion: () => ipcRenderer.invoke(IPC.getVersion),
-  checkForUpdates: (channel?: ReleaseChannel) => ipcRenderer.invoke(IPC.checkForUpdates, channel),
-  applyUpdate: (targetCommit: string) => ipcRenderer.invoke(IPC.applyUpdate, targetCommit),
-  switchChannel: (channel: ReleaseChannel) => ipcRenderer.invoke(IPC.switchChannel, channel),
+  getPayload: () => ipcRenderer.invoke(IPC.getPayload),
+  installFromFile: () => ipcRenderer.invoke(IPC.installFromFile),
+  checkForUpdate: (channel?: ReleaseChannel) => ipcRenderer.invoke(IPC.checkForUpdate, channel),
+  applyUpdate: (update) => ipcRenderer.invoke(IPC.applyUpdate, update),
   onStatus: (listener: (status: DesktopStatus) => void) => subscribe(IPC.statusChanged, listener),
   onLog: (listener: (entry: LogEntry) => void) => subscribe(IPC.logEntry, listener),
-  onBootstrapProgress: (listener: (progress: BootstrapProgress) => void) =>
-    subscribe(IPC.bootstrapProgress, listener),
-  onUpdateAvailable: (listener: (info: UpdateAvailable) => void) =>
-    subscribe(IPC.updateAvailable, listener),
-  onUpdateProgress: (listener: (progress: UpdateProgress) => void) =>
-    subscribe(IPC.updateProgress, listener),
-  onUpdateApplied: (listener: (version: RuntimeVersion) => void) =>
-    subscribe(IPC.updateApplied, listener),
-  onUpdateFailed: (listener: (failure: UpdateFailure) => void) =>
-    subscribe(IPC.updateFailed, listener),
+  onPayloadProgress: (listener: (progress: PayloadProgress) => void) =>
+    subscribe(IPC.payloadProgress, listener),
+  onPayloadInstalled: (listener: (info: PayloadInfo) => void) =>
+    subscribe(IPC.payloadInstalled, listener),
+  onPayloadFailed: (listener: (failure: PayloadFailure) => void) =>
+    subscribe(IPC.payloadFailed, listener),
 };
 
 contextBridge.exposeInMainWorld('sentinelDesktop', api);

@@ -1,16 +1,14 @@
 import type {
-  BootstrapPhase,
-  BootstrapProgress,
   DesktopStatus,
   FactoryResetScopes,
   LogEntry,
   ManagedServiceStatus,
+  PayloadFailure,
+  PayloadInfo,
+  PayloadPhase,
+  PayloadProgress,
+  PayloadUpdate,
   ReleaseChannel,
-  RuntimeVersion,
-  UpdateAvailable,
-  UpdateFailure,
-  UpdatePhase,
-  UpdateProgress,
 } from '../shared/ipc.js';
 
 const api = window.sentinelDesktop;
@@ -42,6 +40,7 @@ function render(status: DesktopStatus): void {
   el('supportPath').textContent = status.appSupportPath;
   renderServices(status.services);
   renderRuntime(status);
+  renderPayload(status.payload);
 }
 
 function renderServices(services: ManagedServiceStatus[]): void {
@@ -84,10 +83,6 @@ function renderRuntime(status: DesktopStatus): void {
   ].join('');
 }
 
-function formatRuntimeHost(status: DesktopStatus): string {
-  return status.runtime.message || '-';
-}
-
 function detailRow(label: string, value: string): string {
   return `
     <div class="detail-row">
@@ -128,16 +123,6 @@ function stateVariant(state: ManagedServiceStatus['state']): string {
 
 function runtimePhase(status: DesktopStatus): string {
   return status.runtime.message || (status.runtime.configured ? 'SSH runtime configured' : 'SSH runtime not configured');
-}
-
-function summarizeLogLine(line: string): string {
-  return line.length > 92 ? `${line.slice(0, 89)}...` : line;
-}
-
-function shortPath(value: string): string {
-  const marker = '/sentinel-desktop/';
-  const index = value.indexOf(marker);
-  return index >= 0 ? value.slice(index + marker.length) : value;
 }
 
 function selectedFactoryResetScopes(): FactoryResetScopes {
@@ -234,8 +219,6 @@ el<HTMLSelectElement>('logServiceFilter').addEventListener('change', (event) => 
   renderLogs();
 });
 el('resetAuthBtn').addEventListener('click', async () => {
-  const confirmed = window.confirm('Reset desktop auth? You will need to create a new admin account on the next login screen.');
-  if (!confirmed) return;
   render(await api.resetAuth());
 });
 el('factoryResetBtn').addEventListener('click', openFactoryResetDialog);
@@ -265,43 +248,19 @@ el('factoryResetConfirmBtn').addEventListener('click', async () => {
   }
 });
 
-let lastBackendState: string | undefined;
 api.onStatus((status: DesktopStatus) => {
   render(status);
-  const backend = status.services.find((s: ManagedServiceStatus) => s.name === 'backend');
-  if (backend && backend.state === 'running' && lastBackendState !== 'running') {
-    void refreshVersion();
-    hideOverlay();
-  }
-  lastBackendState = backend?.state;
 });
 
-// ---- Full-screen lock overlay (bootstrap + updates) ----
-const BOOTSTRAP_PHASE_LABELS: Record<BootstrapPhase, string> = {
-  'extract-python': 'Installing Python runtime',
-  'extract-node': 'Installing Node runtime',
-  'extract-source': 'Unpacking Sentinel source',
-  'extract-node-modules': 'Restoring frontend packages',
-  'uv-sync': 'Setting up Python environment',
-  'npm-build': 'Building frontend',
-  'done': 'Starting Sentinel',
-};
-const UPDATE_PHASE_LABELS: Record<UpdatePhase, string> = {
-  snapshot: 'Snapshotting state',
-  fetch: 'Fetching changes',
-  checkout: 'Checking out new version',
-  'uv-sync': 'Syncing Python dependencies',
-  'npm-ci': 'Installing frontend packages',
-  'npm-build': 'Building frontend',
-  restart: 'Restarting backend',
+// ---- Full-screen lock overlay (payload install/update) ----
+const PAYLOAD_PHASE_LABELS: Record<PayloadPhase, string> = {
+  download: 'Downloading payload',
+  verify: 'Verifying download',
+  extract: 'Installing app files',
+  swap: 'Swapping payload',
+  restart: 'Restarting Sentinel',
   'health-check': 'Verifying backend',
   done: 'Done',
-  rollback: 'Rolling back',
-  'rollback-checkout': 'Rolling back: checkout',
-  'rollback-uv-sync': 'Rolling back: Python dependencies',
-  'rollback-npm-build': 'Rolling back: frontend',
-  'rollback-restart': 'Rolling back: backend',
-  'rollback-failed': 'Rollback failed',
 };
 
 let overlayVisible = false;
@@ -332,11 +291,6 @@ function setOverlayProgress(phase: string, message: string, fraction?: number): 
   }
 }
 
-api.onBootstrapProgress((progress: BootstrapProgress) => {
-  showOverlay('Setting up Sentinel');
-  const label = BOOTSTRAP_PHASE_LABELS[progress.phase] ?? progress.phase;
-  setOverlayProgress(label, progress.message, progress.phase === 'done' ? undefined : progress.fractionComplete);
-});
 api.onLog((entry: LogEntry) => {
   logs.push(entry);
   if (logs.length > 2000) logs = logs.slice(-2000);
@@ -345,23 +299,28 @@ api.onLog((entry: LogEntry) => {
   renderLogs();
 });
 
-// ---- Version & Updates ----
-let pendingUpdate: UpdateAvailable | null = null;
-let updateInProgress = false;
-let currentChannel: ReleaseChannel | 'dev' = 'dev';
+// ---- Payload version, install & updates ----
+let pendingUpdate: PayloadUpdate | null = null;
+let payloadBusy = false;
 
 function setUpdateStatusPill(text: string, variant = ''): void {
   setPill('updateStatusPill', text, variant);
 }
 
-function renderVersion(version: RuntimeVersion): void {
-  const short = version.commit ? version.commit.slice(0, 12) : 'unknown';
-  const channel = version.channel || 'dev';
-  el('currentVersion').textContent = `${short} · ${channel}`;
-  currentChannel = version.channel;
-  if (version.channel === 'stable' || version.channel === 'beta') {
-    el<HTMLSelectElement>('channelSelect').value = version.channel;
+function renderPayload(payload: PayloadInfo): void {
+  if (!payload.installed) {
+    el('currentVersion').textContent = 'not installed';
+    if (!payloadBusy) {
+      setUpdateStatusPill('No payload', 'missing');
+      showUpdateBanner('No app payload installed. Use “Install from File…” to load one, or “Check for Updates” to download.');
+    }
+    return;
   }
+  const short = payload.commit ? payload.commit.slice(0, 12) : 'unknown';
+  const channel = payload.channel ?? 'stable';
+  el('currentVersion').textContent = `${payload.version ?? short} · ${channel}`;
+  // The dropdown reflects the user's chosen *update* channel (persisted), which
+  // may differ from the installed payload's channel, so we don't override it.
 }
 
 function showUpdateBanner(text: string): void {
@@ -373,188 +332,142 @@ function hideUpdateBanner(): void {
   el('updateBanner').hidden = true;
 }
 
-function showUpdateProgress(progress: UpdateProgress): void {
-  el('updateProgress').hidden = false;
-  el('updateProgressPhase').textContent = progress.phase.toUpperCase();
-  el('updateProgressMessage').textContent = progress.message;
-}
-
-function hideUpdateProgress(): void {
-  el('updateProgress').hidden = true;
-}
-
-function setUpdateUiBusy(busy: boolean): void {
-  updateInProgress = busy;
+function setPayloadUiBusy(busy: boolean): void {
+  payloadBusy = busy;
+  el<HTMLButtonElement>('installFromFileBtn').disabled = busy;
   el<HTMLButtonElement>('checkUpdatesBtn').disabled = busy;
   el<HTMLButtonElement>('applyUpdateBtn').disabled = busy;
   el<HTMLSelectElement>('channelSelect').disabled = busy;
 }
 
-async function refreshVersion(): Promise<void> {
-  try {
-    const version = await api.getVersion();
-    renderVersion(version);
-  } catch {
-    el('currentVersion').textContent = 'unavailable';
-  }
-}
-
-el('checkUpdatesBtn').addEventListener('click', async () => {
-  if (updateInProgress) return;
-  const channel = el<HTMLSelectElement>('channelSelect').value as ReleaseChannel;
+el('installFromFileBtn').addEventListener('click', async () => {
+  if (payloadBusy) return;
+  setPayloadUiBusy(true);
   hideUpdateBanner();
-  el<HTMLButtonElement>('applyUpdateBtn').hidden = true;
-  pendingUpdate = null;
-  setUpdateUiBusy(true);
-  setUpdateStatusPill('Checking…', 'pending');
+  setUpdateStatusPill('Installing…', 'pending');
+  showOverlay('Installing Sentinel');
+  setOverlayProgress('Starting…', '');
   try {
-    const result = await api.checkForUpdates(channel);
-    if (result) {
-      pendingUpdate = result;
-      showUpdateBanner(`Update available · ${result.targetCommit.slice(0, 12)} — ${result.subject}`);
-      el<HTMLButtonElement>('applyUpdateBtn').hidden = false;
-      setUpdateStatusPill('Update available', 'ready');
-    } else {
-      setUpdateStatusPill('Up to date', 'ok');
-      showUpdateBanner('You are running the latest commit on this channel.');
+    const installed = await api.installFromFile();
+    if (!installed) {
+      hideOverlay();
+      setUpdateStatusPill('Idle', '');
+      render(await api.getStatus());
     }
   } catch (error) {
-    setUpdateStatusPill('Check failed', 'error');
+    hideOverlay();
+    setUpdateStatusPill('Install failed', 'error');
     showUpdateBanner(error instanceof Error ? error.message : String(error));
   } finally {
-    setUpdateUiBusy(false);
+    setPayloadUiBusy(false);
   }
 });
 
-el('applyUpdateBtn').addEventListener('click', async () => {
-  if (updateInProgress || !pendingUpdate) return;
-  const target = pendingUpdate.targetCommit;
-  if (pendingUpdate.hasNewMigrations) {
-    const proceed = window.confirm(
-      `This update includes database schema changes.\n\n` +
-        `If the update fails after the schema migrates, automatic rollback ` +
-        `may not be able to restore a working backend, and you may need to ` +
-        `use Factory Reset > Database to recover (this will lose instance data).\n\n` +
-        `Continue with the update?`,
-    );
-    if (!proceed) {
-      setUpdateStatusPill('Cancelled', 'ready');
-      return;
-    }
+function presentUpdate(result: PayloadUpdate): void {
+  pendingUpdate = result;
+  const migrationNote = result.hasNewMigrations ? ' (includes database migrations)' : '';
+  showUpdateBanner(`Update available · ${result.version} · ${result.commit.slice(0, 12)}${migrationNote}`);
+  const applyBtn = el<HTMLButtonElement>('applyUpdateBtn');
+  applyBtn.hidden = false;
+  applyBtn.textContent = result.hasNewMigrations ? 'Apply Update (migrations)' : 'Apply Update';
+  setUpdateStatusPill('Update available', 'ready');
+}
+
+// silent=true is the launch auto-check: it surfaces an available update but
+// stays quiet (no pill flicker, no "up to date" banner) when there's nothing
+// new, so it never stomps the no-payload guidance.
+async function runUpdateCheck(silent: boolean): Promise<void> {
+  if (payloadBusy) return;
+  const channel = el<HTMLSelectElement>('channelSelect').value as ReleaseChannel;
+  if (!silent) {
+    hideUpdateBanner();
+    el<HTMLButtonElement>('applyUpdateBtn').hidden = true;
+    pendingUpdate = null;
+    setPayloadUiBusy(true);
+    setUpdateStatusPill('Checking…', 'pending');
   }
-  setUpdateUiBusy(true);
+  try {
+    const result = await api.checkForUpdate(channel);
+    if (result) {
+      presentUpdate(result);
+    } else if (!silent) {
+      setUpdateStatusPill('Up to date', 'ok');
+      showUpdateBanner('You are running the latest payload on this channel.');
+    }
+  } catch (error) {
+    if (!silent) {
+      setUpdateStatusPill('Check failed', 'error');
+      showUpdateBanner(error instanceof Error ? error.message : String(error));
+    }
+  } finally {
+    if (!silent) setPayloadUiBusy(false);
+  }
+}
+
+el('checkUpdatesBtn').addEventListener('click', () => void runUpdateCheck(false));
+
+el('applyUpdateBtn').addEventListener('click', async () => {
+  if (payloadBusy || !pendingUpdate) return;
+  const update = pendingUpdate;
+  setPayloadUiBusy(true);
   hideUpdateBanner();
   setUpdateStatusPill('Updating…', 'pending');
   showOverlay('Updating Sentinel');
   setOverlayProgress('Starting…', '');
   try {
-    await api.applyUpdate(target);
+    await api.applyUpdate(update);
   } catch (error) {
     hideOverlay();
     setUpdateStatusPill('Update failed', 'error');
     showUpdateBanner(error instanceof Error ? error.message : String(error));
-    setUpdateUiBusy(false);
+    setPayloadUiBusy(false);
   }
 });
 
-el<HTMLSelectElement>('channelSelect').addEventListener('change', async (event) => {
-  if (updateInProgress) return;
-  const select = event.target as HTMLSelectElement;
-  const channel = select.value as ReleaseChannel;
-  if (currentChannel === channel) return;
-
-  const revertSelect = () => {
-    if (currentChannel === 'stable' || currentChannel === 'beta') {
-      select.value = currentChannel;
-    }
-  };
-
-  setUpdateStatusPill('Checking channel…', 'pending');
-  let probe: UpdateAvailable | null;
-  try {
-    probe = await api.checkForUpdates(channel);
-  } catch (error) {
-    setUpdateStatusPill('Check failed', 'error');
-    showUpdateBanner(error instanceof Error ? error.message : String(error));
-    revertSelect();
-    return;
-  }
-
-  const migrationWarning =
-    probe?.hasNewMigrations
-      ? `\n\nThis switch includes database schema changes. If the switch fails ` +
-        `after the schema migrates, automatic rollback may not be able to ` +
-        `restore a working backend, and you may need to use Factory Reset > ` +
-        `Database to recover (this will lose instance data).`
-      : '';
-  const confirmed = window.confirm(
-    `Switch to ${channel} channel? Sentinel will fetch and apply the latest ` +
-      `${channel} commit, restarting the backend.${migrationWarning}\n\nContinue?`,
-  );
-  if (!confirmed) {
-    revertSelect();
-    setUpdateStatusPill('Cancelled', 'ready');
-    return;
-  }
-
-  setUpdateUiBusy(true);
-  hideUpdateBanner();
-  setUpdateStatusPill('Switching channel…', 'pending');
-  showOverlay(`Switching to ${channel}`);
-  setOverlayProgress('Starting…', '');
-  try {
-    await api.switchChannel(channel);
-  } catch (error) {
+api.onPayloadProgress((progress: PayloadProgress) => {
+  // The terminal 'done' event can arrive after onPayloadInstalled already hid
+  // the overlay; treat it as a hide so we never re-show a finished install.
+  if (progress.phase === 'done') {
     hideOverlay();
-    setUpdateStatusPill('Switch failed', 'error');
-    showUpdateBanner(error instanceof Error ? error.message : String(error));
-    setUpdateUiBusy(false);
+    return;
   }
+  showOverlay(payloadBusy ? 'Updating Sentinel' : 'Installing Sentinel');
+  const label = PAYLOAD_PHASE_LABELS[progress.phase] ?? progress.phase;
+  setOverlayProgress(label, progress.message, progress.fractionComplete);
 });
 
-// Set on initial failure, cleared on rollback's terminal event. Keeps
-// controls disabled so a second update can't race the rollback.
-let rollbackInProgress = false;
-
-api.onUpdateProgress((progress: UpdateProgress) => {
-  showUpdateProgress(progress);
-  const isRollback = progress.phase.startsWith('rollback');
-  showOverlay(isRollback ? 'Rolling back' : 'Updating Sentinel');
-  const label = UPDATE_PHASE_LABELS[progress.phase] ?? progress.phase;
-  setOverlayProgress(label, progress.message);
-});
-
-api.onUpdateApplied(async (version: RuntimeVersion) => {
-  hideUpdateProgress();
+api.onPayloadInstalled(async (info: PayloadInfo) => {
   hideOverlay();
   pendingUpdate = null;
   el<HTMLButtonElement>('applyUpdateBtn').hidden = true;
-  if (rollbackInProgress) {
-    setUpdateStatusPill('Rolled back', 'error');
-    rollbackInProgress = false;
-  } else {
-    setUpdateStatusPill('Up to date', 'ok');
-    showUpdateBanner(`Updated to ${version.commit?.slice(0, 12) ?? 'unknown'} on ${version.channel}.`);
-  }
-  renderVersion(version);
-  setUpdateUiBusy(false);
+  setUpdateStatusPill('Up to date', 'ok');
+  showUpdateBanner(`Installed ${info.version ?? 'app'}${info.channel ? ` on ${info.channel}` : ''}.`);
+  setPayloadUiBusy(false);
+  render(await api.getStatus());
 });
 
-api.onUpdateFailed((failure: UpdateFailure) => {
-  if (failure.phase === 'rollback-failed') {
-    hideUpdateProgress();
-    hideOverlay();
-    setUpdateStatusPill('Rollback failed', 'error');
-    showUpdateBanner(`${failure.reason} Use Factory Reset to recover.`);
-    rollbackInProgress = false;
-    setUpdateUiBusy(false);
-    return;
-  }
-  setUpdateStatusPill('Update failed', 'error');
-  showUpdateBanner(`Update failed during ${failure.phase}: ${failure.reason} Rolling back...`);
-  rollbackInProgress = true;
+api.onPayloadFailed((failure: PayloadFailure) => {
+  hideOverlay();
+  setUpdateStatusPill('Failed', 'error');
+  showUpdateBanner(`Payload ${failure.phase} failed: ${failure.reason}`);
+  setPayloadUiBusy(false);
 });
 
-void refreshVersion();
+// Persist the chosen update channel so it survives relaunch and drives the
+// launch auto-check.
+const CHANNEL_STORAGE_KEY = 'sentinel.updateChannel';
 
-void refresh();
+function restoreChannel(): void {
+  const stored = localStorage.getItem(CHANNEL_STORAGE_KEY);
+  if (stored === 'stable' || stored === 'beta') {
+    el<HTMLSelectElement>('channelSelect').value = stored;
+  }
+}
+
+el<HTMLSelectElement>('channelSelect').addEventListener('change', (event) => {
+  localStorage.setItem(CHANNEL_STORAGE_KEY, (event.target as HTMLSelectElement).value);
+});
+
+restoreChannel();
+
+void refresh().then(() => runUpdateCheck(true));

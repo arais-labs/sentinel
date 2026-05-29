@@ -52,11 +52,12 @@
         <section class="panel updates-panel reveal delay-2">
           <div class="panel-header">
             <div class="panel-title-block">
-              <h2 class="panel-title">Version &amp; Updates</h2>
-              <p class="panel-subtitle">Current Sentinel build and release channel</p>
+              <h2 class="panel-title">App Payload</h2>
+              <p class="panel-subtitle">Installed Sentinel app code and release channel</p>
             </div>
             <div class="panel-actions">
               <span id="updateStatusPill" class="pill">Idle</span>
+              <button id="installFromFileBtn">Install from File…</button>
               <button id="checkUpdatesBtn">Check for Updates</button>
               <button id="applyUpdateBtn" class="primary" hidden>Apply Update</button>
             </div>
@@ -145,8 +146,8 @@
           <label class="reset-option">
             <input id="factoryResetAppRuntime" type="checkbox" />
             <span>
-              <strong>App runtime</strong>
-              <small>Re-bootstrap the Sentinel app: drop the cached source tree, Python venv, and frontend build. Triggers a fresh first-launch on next start.</small>
+              <strong>App payload</strong>
+              <small>Remove the installed Sentinel app payload. The app returns to the no-payload state; reinstall from file or apply an update afterwards.</small>
             </span>
           </label>
           <label class="reset-option">

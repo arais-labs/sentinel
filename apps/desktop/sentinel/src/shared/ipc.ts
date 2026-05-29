@@ -13,9 +13,23 @@ export interface ManagedServiceStatus {
   exitCode?: number | null;
 }
 
+export type ReleaseChannel = 'stable' | 'beta';
+
+// Describes the app payload currently installed in userData. The shell DMG
+// ships no payload, so a fresh install reports installed=false until one is
+// loaded from file or downloaded.
+export interface PayloadInfo {
+  installed: boolean;
+  version: string | null;
+  channel: ReleaseChannel | null;
+  commit: string | null;
+  builtAt: string | null;
+}
+
 export interface DesktopStatus {
   appUrl?: string;
   appSupportPath: string;
+  payload: PayloadInfo;
   runtime: {
     provider: 'ssh';
     configured: boolean;
@@ -38,62 +52,35 @@ export interface FactoryResetScopes {
   logs: boolean;
 }
 
-export type ReleaseChannel = 'stable' | 'beta';
-
-export interface RuntimeVersion {
-  commit: string | null;
-  channel: ReleaseChannel | 'dev';
-}
-
-export interface UpdateAvailable {
+// A newer payload available on a release channel, discovered by comparing the
+// installed manifest against the channel's release index.
+export interface PayloadUpdate {
   channel: ReleaseChannel;
-  currentCommit: string;
-  targetCommit: string;
-  subject: string;
+  version: string;
+  commit: string;
+  url: string;
+  sha256: string;
   hasNewMigrations: boolean;
 }
 
-export type UpdatePhase =
-  | 'snapshot'
-  | 'fetch'
-  | 'checkout'
-  | 'uv-sync'
-  | 'npm-ci'
-  | 'npm-build'
+export type PayloadPhase =
+  | 'download'
+  | 'verify'
+  | 'extract'
+  | 'swap'
   | 'restart'
   | 'health-check'
-  | 'done'
-  | 'rollback-checkout'
-  | 'rollback-uv-sync'
-  | 'rollback-npm-build'
-  | 'rollback-restart'
-  | 'rollback-failed'
-  | 'rollback';
-
-export interface UpdateProgress {
-  phase: UpdatePhase;
-  message: string;
-}
-
-export type BootstrapPhase =
-  | 'extract-python'
-  | 'extract-node'
-  | 'extract-source'
-  | 'extract-node-modules'
-  | 'uv-sync'
-  | 'npm-build'
   | 'done';
 
-export interface BootstrapProgress {
-  phase: BootstrapPhase;
+export interface PayloadProgress {
+  phase: PayloadPhase;
   message: string;
   fractionComplete?: number;
 }
 
-export interface UpdateFailure {
-  phase: UpdatePhase;
+export interface PayloadFailure {
+  phase: PayloadPhase;
   reason: string;
-  rolledBackTo?: string;
 }
 
 export interface DesktopApi {
@@ -106,17 +93,17 @@ export interface DesktopApi {
   revealAppSupport(): Promise<void>;
   openLogFolder(): Promise<void>;
   getLogs(): Promise<LogEntry[]>;
-  getVersion(): Promise<RuntimeVersion>;
-  checkForUpdates(channel?: ReleaseChannel): Promise<UpdateAvailable | null>;
-  applyUpdate(targetCommit: string): Promise<void>;
-  switchChannel(channel: ReleaseChannel): Promise<void>;
+  getPayload(): Promise<PayloadInfo>;
+  // Opens a native file picker in the main process and installs the chosen
+  // payload tarball. Resolves false if the user cancels the picker.
+  installFromFile(): Promise<boolean>;
+  checkForUpdate(channel?: ReleaseChannel): Promise<PayloadUpdate | null>;
+  applyUpdate(update: PayloadUpdate): Promise<void>;
   onStatus(listener: (status: DesktopStatus) => void): () => void;
   onLog(listener: (entry: LogEntry) => void): () => void;
-  onBootstrapProgress(listener: (progress: BootstrapProgress) => void): () => void;
-  onUpdateAvailable(listener: (info: UpdateAvailable) => void): () => void;
-  onUpdateProgress(listener: (progress: UpdateProgress) => void): () => void;
-  onUpdateApplied(listener: (version: RuntimeVersion) => void): () => void;
-  onUpdateFailed(listener: (failure: UpdateFailure) => void): () => void;
+  onPayloadProgress(listener: (progress: PayloadProgress) => void): () => void;
+  onPayloadInstalled(listener: (info: PayloadInfo) => void): () => void;
+  onPayloadFailed(listener: (failure: PayloadFailure) => void): () => void;
 }
 
 export const IPC = {
@@ -129,15 +116,13 @@ export const IPC = {
   revealAppSupport: 'desktop:revealAppSupport',
   openLogFolder: 'desktop:openLogFolder',
   getLogs: 'desktop:getLogs',
-  getVersion: 'desktop:getVersion',
-  checkForUpdates: 'desktop:checkForUpdates',
+  getPayload: 'desktop:getPayload',
+  installFromFile: 'desktop:installFromFile',
+  checkForUpdate: 'desktop:checkForUpdate',
   applyUpdate: 'desktop:applyUpdate',
-  switchChannel: 'desktop:switchChannel',
   statusChanged: 'desktop:statusChanged',
   logEntry: 'desktop:logEntry',
-  bootstrapProgress: 'desktop:bootstrapProgress',
-  updateAvailable: 'desktop:updateAvailable',
-  updateProgress: 'desktop:updateProgress',
-  updateApplied: 'desktop:updateApplied',
-  updateFailed: 'desktop:updateFailed',
+  payloadProgress: 'desktop:payloadProgress',
+  payloadInstalled: 'desktop:payloadInstalled',
+  payloadFailed: 'desktop:payloadFailed',
 } as const;
