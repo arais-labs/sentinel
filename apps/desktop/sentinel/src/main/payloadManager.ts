@@ -6,7 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import type { PayloadInfo, PayloadUpdate, ReleaseChannel } from '../shared/ipc.js';
 import { execFileText } from './shell.js';
 import {
-  appSupportRoot,
+  hostStateRoot,
   payloadManifestPath,
   payloadRoot,
   payloadStagingRoot,
@@ -46,7 +46,7 @@ const GITHUB_REPO = 'arais-labs/sentinel';
 const GITHUB_DOWNLOAD_BASE = `https://github.com/${GITHUB_REPO}/releases/download`;
 
 function payloadOldRoot(): string {
-  return path.join(appSupportRoot(), 'payload.old');
+  return path.join(hostStateRoot(), 'payload.old');
 }
 
 async function readJson<T>(filePath: string): Promise<T | null> {
@@ -100,7 +100,7 @@ export async function installFromTarball(tarPath: string): Promise<void> {
     throw new Error(`Payload archive not found at ${tarPath}.`);
   }
   const staging = payloadStagingRoot();
-  await mkdir(appSupportRoot(), { recursive: true });
+  await mkdir(hostStateRoot(), { recursive: true });
   await rm(staging, { recursive: true, force: true });
   await rm(payloadOldRoot(), { recursive: true, force: true });
   await mkdir(staging, { recursive: true });
@@ -202,5 +202,5 @@ export async function downloadTarball(url: string, destPath: string): Promise<vo
 }
 
 export function downloadScratchPath(): string {
-  return path.join(appSupportRoot(), 'payload.download.tar.gz');
+  return path.join(hostStateRoot(), 'payload.download.tar.gz');
 }

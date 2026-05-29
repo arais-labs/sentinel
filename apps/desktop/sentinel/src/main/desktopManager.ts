@@ -16,7 +16,7 @@ import type {
 } from '../shared/ipc.js';
 import * as payload from './payloadManager.js';
 import {
-  appSupportRoot,
+  hostStateRoot,
   backendPath,
   frontendDistPath,
   payloadRoot,
@@ -200,7 +200,7 @@ export class DesktopManager {
     await this.stopServices();
     await this.releaseDesktopOwnership();
     if (resetScopes.db) {
-      await rm(path.join(appSupportRoot(), 'postgres'), { recursive: true, force: true });
+      await rm(path.join(hostStateRoot(), 'postgres'), { recursive: true, force: true });
     }
     if (resetScopes.runtimeData) {
       await rm(desktopWorkspaceRoot(), { recursive: true, force: true });
@@ -211,7 +211,7 @@ export class DesktopManager {
       // returns to the no-payload state; the user reinstalls from file/update.
       await rm(payloadRoot(), { recursive: true, force: true });
       await rm(payloadStagingRoot(), { recursive: true, force: true });
-      await rm(path.join(appSupportRoot(), 'payload.old'), { recursive: true, force: true });
+      await rm(path.join(hostStateRoot(), 'payload.old'), { recursive: true, force: true });
     }
     if (resetScopes.logs) {
       await this.logWriter?.flush();
@@ -288,7 +288,7 @@ export class DesktopManager {
     const appUrl = this.ports && this.localServer.running ? this.appUrl() : undefined;
     return {
       appUrl,
-      appSupportPath: appSupportRoot(),
+      appSupportPath: hostStateRoot(),
       payload: await payload.readPayloadInfo(),
       services: this.supervisor.status(),
     };
@@ -381,7 +381,7 @@ export class DesktopManager {
   }
 
   async revealAppSupport(): Promise<void> {
-    await shell.openPath(appSupportRoot());
+    await shell.openPath(hostStateRoot());
   }
 
   async openLogFolder(): Promise<void> {
@@ -646,8 +646,8 @@ export class DesktopManager {
       if (command.includes(`-D ${dataDir}`) || command.includes(`-D${dataDir}`)) {
         return true;
       }
-      // A backend launched from our payload (cwd under appSupportRoot).
-      if (command.includes('app.desktop_entry') && command.includes(appSupportRoot())) {
+      // A backend launched from our payload (cwd under hostStateRoot).
+      if (command.includes('app.desktop_entry') && command.includes(hostStateRoot())) {
         return true;
       }
       return false;
@@ -774,11 +774,11 @@ export class DesktopManager {
   }
 
   private jwtSecretPath(): string {
-    return path.join(appSupportRoot(), 'config', 'secrets.json');
+    return path.join(hostStateRoot(), 'config', 'secrets.json');
   }
 
   private dataEncryptionKeyPath(): string {
-    return path.join(appSupportRoot(), 'config', 'data-encryption-key.bin');
+    return path.join(hostStateRoot(), 'config', 'data-encryption-key.bin');
   }
 
   private async loadDesktopSecrets(): Promise<DesktopSecrets> {

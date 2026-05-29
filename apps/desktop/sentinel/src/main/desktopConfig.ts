@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { appSupportRoot, payloadSitePackagesDir, resourceRoot } from './paths.js';
+import { hostStateRoot, payloadSitePackagesDir, resourceRoot } from './paths.js';
 import { commandSearchPath } from './shell.js';
 
 export interface DesktopPorts {
@@ -14,15 +14,15 @@ export interface DesktopSecrets {
 }
 
 export function postgresDataDir(): string {
-  return path.join(appSupportRoot(), 'postgres/data');
+  return path.join(hostStateRoot(), 'postgres/data');
 }
 
 export function desktopWorkspaceRoot(): string {
-  return path.join(appSupportRoot(), 'workspaces');
+  return path.join(hostStateRoot(), 'workspaces');
 }
 
 export function desktopRunRoot(): string {
-  return path.join(appSupportRoot(), 'run');
+  return path.join(hostStateRoot(), 'run');
 }
 
 export function postgresBinaryPath(name: string): string {

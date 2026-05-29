@@ -19,8 +19,8 @@ export function resourceRoot(): string {
   return process.resourcesPath;
 }
 
-export function appSupportRoot(): string {
-  return path.join(app.getPath('userData'), 'runtime');
+export function hostStateRoot(): string {
+  return path.join(app.getPath('userData'), 'state');
 }
 
 export function desktopAppRoot(): string {
@@ -30,13 +30,13 @@ export function desktopAppRoot(): string {
 // The updatable app payload lives in writable userData (not read-only
 // Resources) so it can be replaced without touching the signed .app shell.
 export function payloadRoot(): string {
-  return path.join(appSupportRoot(), 'payload');
+  return path.join(hostStateRoot(), 'payload');
 }
 
 // Extraction target for a pending install; swapped over payloadRoot() once the
 // tarball is fully extracted and validated.
 export function payloadStagingRoot(): string {
-  return path.join(appSupportRoot(), 'payload.next');
+  return path.join(hostStateRoot(), 'payload.next');
 }
 
 export function payloadBackendDir(): string {

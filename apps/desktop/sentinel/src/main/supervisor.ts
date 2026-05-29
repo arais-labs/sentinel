@@ -5,7 +5,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import type { LogEntry, ManagedServiceStatus, ServiceName, ServiceState } from '../shared/ipc.js';
-import { appSupportRoot } from './paths.js';
+import { hostStateRoot } from './paths.js';
 
 export interface ManagedProcessOptions {
   name: ServiceName;
@@ -55,7 +55,7 @@ exit "$STATUS"
 `;
 
 function ensureWrapperScript(): string {
-  const scriptPath = path.join(appSupportRoot(), 'bin/spawn-watch.sh');
+  const scriptPath = path.join(hostStateRoot(), 'bin/spawn-watch.sh');
   // Overwrite each launch so DMG upgrades pick up new script content.
   mkdirSync(path.dirname(scriptPath), { recursive: true });
   writeFileSync(scriptPath, SPAWN_WATCH_SCRIPT, { mode: 0o755 });
