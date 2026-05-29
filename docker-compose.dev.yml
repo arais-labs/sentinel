@@ -44,7 +44,7 @@ services:
   sentinel-frontend:
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "if [ ! -d node_modules ]; then npm ci; fi && npm run dev -- --host --port 5173"
+    command: sh -c "if [ ! -x node_modules/.bin/vite ]; then npm ci; fi && npm run dev -- --host --port 5173"
     environment:
       VITE_BASE_PATH: /
       VITE_ROUTER_BASENAME: /
@@ -53,15 +53,15 @@ services:
     ports:
       - "${STACK_PORT:-4747}:5173"
     volumes:
-      # TODO: split hot-reloaded source from container-owned node_modules so
-      # local macOS installs cannot shadow Linux-native optional dependencies.
       - ./apps/frontend/sentinel:/app
+      - frontend_node_modules:/app/node_modules
     depends_on:
       sentinel-backend:
         condition: service_started
 
 volumes:
   pgdata_dev:
+  frontend_node_modules:
 
 networks:
   default:
