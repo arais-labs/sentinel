@@ -88,9 +88,12 @@ export interface DesktopApi {
   openLogFolder(): Promise<void>;
   getLogs(): Promise<LogEntry[]>;
   getPayload(): Promise<PayloadInfo>;
+  installPayloadFromFile(): Promise<boolean>;
+  getDevMode(): Promise<boolean>;
   checkForUpdate(channel?: ReleaseChannel): Promise<PayloadUpdate | null>;
   applyUpdate(update: PayloadUpdate): Promise<void>;
   onStatus(listener: (status: DesktopStatus) => void): () => void;
+  onDevModeChanged(listener: (devMode: boolean) => void): () => void;
   onLog(listener: (entry: LogEntry) => void): () => void;
   onPayloadProgress(listener: (progress: PayloadProgress) => void): () => void;
   onPayloadInstalled(listener: (info: PayloadInfo) => void): () => void;
@@ -108,9 +111,12 @@ export const IPC = {
   openLogFolder: 'desktop:openLogFolder',
   getLogs: 'desktop:getLogs',
   getPayload: 'desktop:getPayload',
+  installPayloadFromFile: 'desktop:installPayloadFromFile',
+  getDevMode: 'desktop:getDevMode',
   checkForUpdate: 'desktop:checkForUpdate',
   applyUpdate: 'desktop:applyUpdate',
   statusChanged: 'desktop:statusChanged',
+  devModeChanged: 'desktop:devModeChanged',
   logEntry: 'desktop:logEntry',
   payloadProgress: 'desktop:payloadProgress',
   payloadInstalled: 'desktop:payloadInstalled',

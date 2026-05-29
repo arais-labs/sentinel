@@ -186,7 +186,14 @@ function stripLogLevel(line: string): string {
 
 el('openBtn').addEventListener('click', () => void api.openSentinel());
 el('revealBtn').addEventListener('click', () => void api.revealAppSupport());
+el('installPayloadBtn').addEventListener('click', () => void api.installPayloadFromFile());
 el('openLogFolderBtn').addEventListener('click', () => void api.openLogFolder());
+
+function applyDevMode(devMode: boolean): void {
+  document.body.classList.toggle('dev-mode', devMode);
+}
+
+api.onDevModeChanged(applyDevMode);
 el<HTMLSelectElement>('logServiceFilter').addEventListener('change', (event) => {
   logServiceFilter = (event.target as HTMLSelectElement).value;
   renderLogs();
@@ -423,6 +430,8 @@ el<HTMLSelectElement>('channelSelect').addEventListener('change', (event) => {
 });
 
 restoreChannel();
+
+void api.getDevMode().then(applyDevMode);
 
 // Background update checks: once on launch, then on a timer while the window
 // stays open. Both are silent — they surface an available update but stay quiet

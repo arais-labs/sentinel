@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DesktopManager } from './desktopManager.js';
@@ -13,6 +14,35 @@ let activeSentinelOrigin: string | undefined;
 let isQuitting = false;
 const singleInstanceLock = app.requestSingleInstanceLock();
 app.setAppLogsPath();
+
+// Developer Mode is a UI-only preference (toggled from the OS menu) that reveals
+// the per-service detail, state-folder path, and payload-from-file install. It
+// lives in a small settings file in userData so it survives restarts.
+let devMode = loadDevMode();
+
+function devSettingsPath(): string {
+  return path.join(app.getPath('userData'), 'desktop-settings.json');
+}
+
+function loadDevMode(): boolean {
+  try {
+    return JSON.parse(readFileSync(devSettingsPath(), 'utf8')).devMode === true;
+  } catch {
+    return false;
+  }
+}
+
+function setDevMode(value: boolean): void {
+  devMode = value;
+  try {
+    writeFileSync(devSettingsPath(), JSON.stringify({ devMode: value }));
+  } catch {
+    // A failed write only means the preference won't persist; keep the session value.
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IPC.devModeChanged, value);
+  }
+}
 
 function rendererIndexPath(): string {
   return path.resolve(__dirname, '../../src/renderer/index.html');
@@ -153,7 +183,12 @@ function installMenu(): void {
       submenu: [
         { role: 'toggleDevTools' },
         { type: 'separator' },
-        { label: 'Install Payload from File…', click: () => void installPayloadFromFile() },
+        {
+          label: 'Developer Mode',
+          type: 'checkbox',
+          checked: devMode,
+          click: (item) => setDevMode(item.checked),
+        },
       ],
     },
     {
@@ -187,6 +222,8 @@ function registerIpc(): void {
   ipcMain.handle(IPC.openLogFolder, () => manager.openLogFolder());
   ipcMain.handle(IPC.getLogs, () => manager.logs());
   ipcMain.handle(IPC.getPayload, () => manager.getPayload());
+  ipcMain.handle(IPC.installPayloadFromFile, () => installPayloadFromFile());
+  ipcMain.handle(IPC.getDevMode, () => devMode);
   ipcMain.handle(IPC.checkForUpdate, async (_event, channel?: ReleaseChannel) =>
     manager.checkForUpdate(channel),
   );

@@ -1,5 +1,11 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
+/* Developer-only UI is hidden unless the body carries .dev-mode (toggled from
+   the OS Developer menu). Normal mode shows only the aggregate operator view. */
+body:not(.dev-mode) .dev-only {
+  display: none !important;
+}
+
 :root {
   color-scheme: dark;
   --app-bg: #09090b;

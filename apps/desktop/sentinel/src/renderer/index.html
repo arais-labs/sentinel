@@ -20,6 +20,7 @@
         </div>
         <div class="header-actions">
           <button id="resetAuthBtn" class="danger">Reset Auth</button>
+          <button id="factoryResetBtn" class="danger">Factory Reset</button>
           <button id="openBtn" class="primary">Open Sentinel</button>
         </div>
       </header>
@@ -34,7 +35,7 @@
               </div>
               <span id="servicesOverall" class="pill">Unknown</span>
             </div>
-            <div id="services" class="service-list"></div>
+            <div id="services" class="service-list dev-only"></div>
           </section>
         </div>
 
@@ -72,15 +73,15 @@
           </div>
         </section>
 
-        <section class="panel support-panel reveal delay-3">
+        <section class="panel support-panel reveal delay-3 dev-only">
           <div class="support-row">
             <div>
-              <span class="detail-label">App Support</span>
+              <span class="detail-label">State Folder</span>
               <span id="supportPath" class="mono">-</span>
             </div>
             <div class="support-actions">
+              <button id="installPayloadBtn">Install from File…</button>
               <button id="revealBtn">Reveal Folder</button>
-              <button id="factoryResetBtn" class="danger">Factory Reset</button>
             </div>
           </div>
         </section>
