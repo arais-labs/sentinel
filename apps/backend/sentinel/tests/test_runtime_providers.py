@@ -9,7 +9,6 @@ from app.config import settings
 from app.models.manager import Runtime
 from app.schemas.runtimes import RuntimeProviderConfig
 from app.services.runtime.providers import CommandResult, DockerRuntimeProvider, RuntimeJob
-from app.services.runtime.target_secrets import decrypt_runtime_secret
 
 
 class _DockerRunner:
@@ -83,7 +82,7 @@ async def test_docker_runtime_create_uses_volume_and_packaged_ansible(
     assert runtime.username == "sentinel"
     assert runtime.workspaces_dir == "/home/sentinel/sentinel/workspaces"
     assert runtime.provider_state["workspace_volume"] == "sentinel-runtime-runtime-one-workspaces"
-    assert decrypt_runtime_secret(runtime.encrypted_secret or "") == "PRIVATE KEY\n"
+    assert runtime.encrypted_secret == "PRIVATE KEY\n"
     job_event_text = "\n".join(event.message for event in job.events)
     assert "Preparing runtime SSH access" in job_event_text
     assert "Provisioning runtime environment" in job_event_text

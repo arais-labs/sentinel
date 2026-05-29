@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.models.audit import AuditLogColumns
+from app.services.secrets import EncryptedText
 
 
 class ManagerBase(DeclarativeBase):
@@ -67,7 +68,7 @@ class Runtime(ManagerBase):
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
     workspaces_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
     auth_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
-    encrypted_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_secret: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
     profile: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_job_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     last_job_status: Mapped[str | None] = mapped_column(String(32), nullable=True)

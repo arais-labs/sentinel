@@ -30,7 +30,6 @@ from app.schemas.runtimes import (
 )
 from app.services.runtime.runtimes import create_runtime, runtime_response
 from app.services.runtime.provisioning.assets import ansible_config_path, ansible_playbook_path
-from app.services.runtime.target_secrets import encrypt_runtime_secret
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +283,7 @@ class LimaRuntimeProvider(LocalProviderBase):
         runtime.username = ssh["username"]
         runtime.workspaces_dir = f"/home/{runtime.username}/sentinel/workspaces"
         runtime.auth_type = "private_key"
-        runtime.encrypted_secret = encrypt_runtime_secret(Path(ssh["identity_file"]).read_text())
+        runtime.encrypted_secret = Path(ssh["identity_file"]).read_text()
         runtime.provider_state = {
             "lima_name": runtime.name,
             "ssh_config": ssh_config,
@@ -486,7 +485,7 @@ class DockerRuntimeProvider(LocalProviderBase):
         runtime.username = "sentinel"
         runtime.workspaces_dir = workspace_dir
         runtime.auth_type = "private_key"
-        runtime.encrypted_secret = encrypt_runtime_secret(key_path.read_text())
+        runtime.encrypted_secret = key_path.read_text()
         runtime.provider_state = {
             "container_name": runtime.name,
             "workspace_volume": workspace_volume,

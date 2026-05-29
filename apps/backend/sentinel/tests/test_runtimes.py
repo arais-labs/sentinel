@@ -11,12 +11,11 @@ from app.services.runtime.runtimes import (
     runtime_response,
     update_runtime,
 )
-from app.services.runtime.target_secrets import decrypt_runtime_secret
 from tests.fake_db import FakeDB
 
 
 @pytest.mark.asyncio
-async def test_runtime_secrets_are_encrypted() -> None:
+async def test_runtime_secret_is_stored() -> None:
     db = FakeDB()
 
     runtime = await create_runtime(
@@ -33,8 +32,7 @@ async def test_runtime_secrets_are_encrypted() -> None:
         ),
     )
 
-    assert runtime.encrypted_secret != "PRIVATE KEY TEXT"
-    assert decrypt_runtime_secret(runtime.encrypted_secret or "") == "PRIVATE KEY TEXT"
+    assert runtime.encrypted_secret == "PRIVATE KEY TEXT"
     response = runtime_response(runtime)
     assert not hasattr(response, "private_key")
 
@@ -90,4 +88,4 @@ async def test_runtime_update_rotates_secret() -> None:
         RuntimeUpdateRequest(auth_type="password", password="new"),
     )
 
-    assert decrypt_runtime_secret(updated.encrypted_secret or "") == "new"
+    assert updated.encrypted_secret == "new"

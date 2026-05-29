@@ -18,7 +18,6 @@ from app.schemas.runtimes import (
 )
 from app.services.instances import normalize_instance_name
 from app.services.runtime.ssh_client import SSHClient, SSHCredentials
-from app.services.runtime.target_secrets import decrypt_runtime_secret, encrypt_runtime_secret
 
 
 class RuntimeErrorBase(RuntimeError):
@@ -108,7 +107,7 @@ async def create_runtime(
         workspaces_dir=payload.workspaces_dir.strip() if payload.workspaces_dir else None,
         auth_type=payload.auth_type,
         encrypted_secret=(
-            encrypt_runtime_secret(_payload_secret(payload.auth_type, payload.private_key, payload.password))
+            _payload_secret(payload.auth_type, payload.private_key, payload.password)
             if payload.auth_type is not None
             else None
         ),
@@ -147,8 +146,8 @@ async def update_runtime(
         runtime.provider_config = payload.provider_config.model_dump(mode="json")
     if payload.auth_type is not None:
         runtime.auth_type = payload.auth_type
-        runtime.encrypted_secret = encrypt_runtime_secret(
-            _payload_secret(payload.auth_type, payload.private_key, payload.password)
+        runtime.encrypted_secret = _payload_secret(
+            payload.auth_type, payload.private_key, payload.password
         )
     try:
         await db.commit()
@@ -226,7 +225,7 @@ def resolve_runtime_secret(runtime: Runtime) -> ResolvedRuntime:
         username=str(runtime.username),
         workspaces_dir=str(runtime.workspaces_dir),
         auth_type=str(runtime.auth_type),
-        secret=decrypt_runtime_secret(str(runtime.encrypted_secret)),
+        secret=str(runtime.encrypted_secret),
         updated_at_marker=str(runtime.updated_at or ""),
     )
 
@@ -242,7 +241,11 @@ async def test_runtime(payload: RuntimeTestRequest) -> RuntimeTestResult:
         host=payload.host.strip(),
         port=int(payload.port),
         username=payload.username.strip(),
-        private_key=payload.private_key.strip() if payload.auth_type == "private_key" and payload.private_key else None,
+        private_key=(
+            payload.private_key.strip()
+            if payload.auth_type == "private_key" and payload.private_key
+            else None
+        ),
         password=payload.password if payload.auth_type == "password" else None,
     )
     client = SSHClient(credentials)
@@ -251,7 +254,7 @@ async def test_runtime(payload: RuntimeTestRequest) -> RuntimeTestResult:
 
         resolved_home: str | None = None
         try:
-            home_result = await client.run("printf %s \"$HOME\"", timeout=5)
+            home_result = await client.run('printf %s "$HOME"', timeout=5)
             if home_result.exit_status in {0, None}:
                 resolved_home = (home_result.stdout or "").strip() or None
         except Exception:  # noqa: BLE001
@@ -260,17 +263,21 @@ async def test_runtime(payload: RuntimeTestRequest) -> RuntimeTestResult:
         target_path = payload.workspaces_dir.strip()
         if not target_path:
             if not resolved_home:
-                raise RuntimeErrorBase("Could not resolve $HOME on remote. Enter a workspace root manually.")
+                raise RuntimeErrorBase(
+                    "Could not resolve $HOME on remote. Enter a workspace root manually."
+                )
             target_path = f"{resolved_home.rstrip('/')}/sentinel/workspaces"
 
         result = await client.run(
-            "test -d \"$SENTINEL_WORKSPACES_DIR\" || mkdir -p \"$SENTINEL_WORKSPACES_DIR\"; "
-            "test -w \"$SENTINEL_WORKSPACES_DIR\"",
+            'test -d "$SENTINEL_WORKSPACES_DIR" || mkdir -p "$SENTINEL_WORKSPACES_DIR"; '
+            'test -w "$SENTINEL_WORKSPACES_DIR"',
             timeout=15,
             env={"SENTINEL_WORKSPACES_DIR": target_path},
         )
         if result.exit_status not in {0, None}:
-            detail = (result.stderr or result.stdout or "Workspace directory is not writable.").strip()
+            detail = (
+                result.stderr or result.stdout or "Workspace directory is not writable."
+            ).strip()
             raise RuntimeErrorBase(detail)
 
         return RuntimeTestResult(
