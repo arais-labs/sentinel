@@ -17,10 +17,6 @@ export function postgresDataDir(): string {
   return path.join(hostStateRoot(), 'postgres/data');
 }
 
-export function desktopWorkspaceRoot(): string {
-  return path.join(hostStateRoot(), 'workspaces');
-}
-
 export function desktopRunRoot(): string {
   return path.join(hostStateRoot(), 'run');
 }
@@ -87,7 +83,6 @@ export function buildBackendEnv(
     DATABASE_MANAGER_NAME: 'sentinel_manager',
     JWT_SECRET_KEY: secrets.jwtSecretKey,
     DATA_ENCRYPTION_KEY: secrets.dataEncryptionKey,
-    SESSION_RUNTIME_BASE_DIR: desktopWorkspaceRoot(),
     AUTH_COOKIE_SECURE: 'false',
     AUTH_COOKIE_SAMESITE: 'lax',
   };

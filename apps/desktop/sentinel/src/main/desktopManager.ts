@@ -32,7 +32,6 @@ import {
   type DesktopPorts,
   buildBackendEnv,
   desktopRunRoot,
-  desktopWorkspaceRoot,
   postgresDataDir,
   postgresBinaryPath,
   postgresSharePath,
@@ -44,10 +43,6 @@ import { DailyLogWriter } from './logWriter.js';
 interface PostgresProcessInfo {
   pid: number;
   port: number;
-}
-
-interface DesktopSecretsFile {
-  jwtSecretKey?: string;
 }
 
 interface DesktopOwnerFile {
@@ -190,11 +185,11 @@ export class DesktopManager {
   async factoryReset(scopes: FactoryResetScopes | undefined): Promise<DesktopStatus> {
     const resetScopes: FactoryResetScopes = {
       db: Boolean(scopes?.db),
-      runtimeData: Boolean(scopes?.runtimeData),
-      appRuntime: Boolean(scopes?.appRuntime),
+      runState: Boolean(scopes?.runState),
+      appPayload: Boolean(scopes?.appPayload),
       logs: Boolean(scopes?.logs),
     };
-    if (!resetScopes.db && !resetScopes.runtimeData && !resetScopes.appRuntime && !resetScopes.logs) {
+    if (!resetScopes.db && !resetScopes.runState && !resetScopes.appPayload && !resetScopes.logs) {
       throw new Error('Select at least one factory reset scope.');
     }
     await this.stopServices();
@@ -202,11 +197,10 @@ export class DesktopManager {
     if (resetScopes.db) {
       await rm(path.join(hostStateRoot(), 'postgres'), { recursive: true, force: true });
     }
-    if (resetScopes.runtimeData) {
-      await rm(desktopWorkspaceRoot(), { recursive: true, force: true });
+    if (resetScopes.runState) {
       await rm(desktopRunRoot(), { recursive: true, force: true });
     }
-    if (resetScopes.appRuntime) {
+    if (resetScopes.appPayload) {
       // Drop the installed payload (and any half-applied swap state). The app
       // returns to the no-payload state; the user reinstalls from file/update.
       await rm(payloadRoot(), { recursive: true, force: true });
@@ -224,8 +218,8 @@ export class DesktopManager {
       this.supervisor.appendManagerLog(
         `Factory reset complete; removed ${[
           resetScopes.db ? 'db' : undefined,
-          resetScopes.runtimeData ? 'runtime data' : undefined,
-          resetScopes.appRuntime ? 'app runtime' : undefined,
+          resetScopes.runState ? 'run state' : undefined,
+          resetScopes.appPayload ? 'app payload' : undefined,
           resetScopes.logs ? 'logs' : undefined,
         ]
           .filter(Boolean)
@@ -239,7 +233,6 @@ export class DesktopManager {
     if (this.ports) return;
     this.logWriter = this.logWriter || new DailyLogWriter(app.getPath('logs'));
     await mkdir(desktopRunRoot(), { recursive: true });
-    await mkdir(desktopWorkspaceRoot(), { recursive: true });
     await mkdir(postgresDataDir(), { recursive: true });
     await this.acquireDesktopOwnership();
     await this.reapStaleDesktopProcesses();
@@ -774,7 +767,7 @@ export class DesktopManager {
   }
 
   private jwtSecretPath(): string {
-    return path.join(hostStateRoot(), 'config', 'secrets.json');
+    return path.join(hostStateRoot(), 'config', 'jwt-secret.bin');
   }
 
   private dataEncryptionKeyPath(): string {
@@ -789,33 +782,38 @@ export class DesktopManager {
   }
 
   private async loadOrCreateJwtSecret(): Promise<string> {
-    const existing = await readJsonFile<DesktopSecretsFile>(this.jwtSecretPath());
-    if (existing?.jwtSecretKey && existing.jwtSecretKey.trim()) {
-      return existing.jwtSecretKey.trim();
-    }
-    return this.rotateJwtSecret();
+    return this.loadOrCreateKeychainSecret(this.jwtSecretPath());
   }
 
+  // Reset Auth path: mint a fresh key, invalidating existing sessions.
   private async rotateJwtSecret(): Promise<string> {
-    const filePath = this.jwtSecretPath();
     const jwtSecretKey = randomBytes(32).toString('hex');
-    await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-    await writeFile(filePath, `${JSON.stringify({ jwtSecretKey }, null, 2)}\n`, { mode: 0o600 });
+    await this.writeKeychainSecret(this.jwtSecretPath(), jwtSecretKey);
     return jwtSecretKey;
   }
 
   private async loadOrCreateDataEncryptionKey(): Promise<string> {
+    return this.loadOrCreateKeychainSecret(this.dataEncryptionKeyPath());
+  }
+
+  // Both the JWT secret and the data-encryption key are 32-byte values wrapped
+  // by the OS keychain (safeStorage), so neither sits in plaintext next to the
+  // database it protects. Loading is fail-closed: no keychain, no secrets.
+  private async loadOrCreateKeychainSecret(filePath: string): Promise<string> {
     if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('OS keychain is unavailable; cannot load the data encryption key.');
+      throw new Error('OS keychain is unavailable; cannot load encrypted secrets.');
     }
-    const filePath = this.dataEncryptionKeyPath();
     if (existsSync(filePath)) {
       return safeStorage.decryptString(await readFile(filePath));
     }
-    const key = randomBytes(32).toString('hex');
+    const value = randomBytes(32).toString('hex');
+    await this.writeKeychainSecret(filePath, value);
+    return value;
+  }
+
+  private async writeKeychainSecret(filePath: string, value: string): Promise<void> {
     await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-    await writeFile(filePath, safeStorage.encryptString(key), { mode: 0o600 });
-    return key;
+    await writeFile(filePath, safeStorage.encryptString(value), { mode: 0o600 });
   }
 
   private async emitStatus(): Promise<DesktopStatus> {

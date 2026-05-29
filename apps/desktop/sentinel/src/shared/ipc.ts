@@ -41,8 +41,8 @@ export interface LogEntry {
 
 export interface FactoryResetScopes {
   db: boolean;
-  runtimeData: boolean;
-  appRuntime: boolean;
+  runState: boolean;
+  appPayload: boolean;
   logs: boolean;
 }
 

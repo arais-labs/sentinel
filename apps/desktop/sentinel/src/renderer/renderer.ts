@@ -101,14 +101,14 @@ function stateVariant(state: ManagedServiceStatus['state']): string {
 function selectedFactoryResetScopes(): FactoryResetScopes {
   return {
     db: el<HTMLInputElement>('factoryResetDb').checked,
-    runtimeData: el<HTMLInputElement>('factoryResetRuntime').checked,
-    appRuntime: el<HTMLInputElement>('factoryResetAppRuntime').checked,
+    runState: el<HTMLInputElement>('factoryResetRunState').checked,
+    appPayload: el<HTMLInputElement>('factoryResetAppPayload').checked,
     logs: el<HTMLInputElement>('factoryResetLogs').checked,
   };
 }
 
 function hasFactoryResetScope(scopes = selectedFactoryResetScopes()): boolean {
-  return scopes.db || scopes.runtimeData || scopes.appRuntime || scopes.logs;
+  return scopes.db || scopes.runState || scopes.appPayload || scopes.logs;
 }
 
 function updateFactoryResetConfirm(): void {
@@ -117,8 +117,8 @@ function updateFactoryResetConfirm(): void {
 
 function openFactoryResetDialog(): void {
   el<HTMLInputElement>('factoryResetDb').checked = false;
-  el<HTMLInputElement>('factoryResetRuntime').checked = false;
-  el<HTMLInputElement>('factoryResetAppRuntime').checked = false;
+  el<HTMLInputElement>('factoryResetRunState').checked = false;
+  el<HTMLInputElement>('factoryResetAppPayload').checked = false;
   el<HTMLInputElement>('factoryResetLogs').checked = false;
   el('factoryResetError').hidden = true;
   el('factoryResetModal').hidden = false;
@@ -207,7 +207,7 @@ el('factoryResetCancelBtn').addEventListener('click', closeFactoryResetDialog);
 el('factoryResetModal').addEventListener('click', (event) => {
   if (event.target === event.currentTarget) closeFactoryResetDialog();
 });
-for (const id of ['factoryResetDb', 'factoryResetRuntime', 'factoryResetAppRuntime', 'factoryResetLogs']) {
+for (const id of ['factoryResetDb', 'factoryResetRunState', 'factoryResetAppPayload', 'factoryResetLogs']) {
   el<HTMLInputElement>(id).addEventListener('change', updateFactoryResetConfirm);
 }
 el('factoryResetConfirmBtn').addEventListener('click', async () => {
