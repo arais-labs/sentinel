@@ -134,24 +134,27 @@ async function main() {
     ]);
   }
 
-  // 2. Pointer release: one stable URL per channel the app polls. Clobber its
-  // index asset so it always names the newest versioned build.
+  // 2. Pointer release: one stable URL per channel. The app polls the index
+  // here; humans land here for "the latest" and grab the DMG installer. Both
+  // are clobbered each push so the pointer always reflects the newest build.
+  // The heavy payload tarball stays off the pointer — the app fetches it via
+  // the index's absolute `url`, so re-uploading it here would only add churn.
   if (!releaseExists(pointerTag)) {
     run('gh', [
       'release', 'create', pointerTag,
-      pointerIndexPath,
+      dmgPath, pointerIndexPath,
       '--repo', repoSlug,
       '--target', commit,
-      '--title', `Latest ${channel} payload`,
-      '--notes', `Pointer to the newest ${channel} payload. Updated automatically.`,
+      '--title', `Latest ${channel} build`,
+      '--notes', `Latest ${channel} installer (DMG) + payload pointer. Updated automatically.`,
       '--prerelease',
     ]);
   } else {
-    run('gh', ['release', 'upload', pointerTag, pointerIndexPath, '--clobber', '--repo', repoSlug]);
+    run('gh', ['release', 'upload', pointerTag, dmgPath, pointerIndexPath, '--clobber', '--repo', repoSlug]);
   }
 
   console.log(`\n✓ Published ${versionedTag}`);
-  console.log(`✓ Pointer ${pointerTag} → ${tarUrl}`);
+  console.log(`✓ Pointer ${pointerTag} → DMG + ${tarUrl}`);
 }
 
 main().catch((error) => {
