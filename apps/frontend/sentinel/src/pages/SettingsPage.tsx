@@ -4,6 +4,7 @@ import {
   LogOut, ShieldAlert, User, Cpu, Hash, Info, ChevronRight,
   Bot, Eye, EyeOff, Check, Loader2, RefreshCw, HelpCircle, X, KeyRound, Pencil, Plus,
   Trash2, Server, Wifi, Container, Power, Square, RotateCcw, Copy, Unlink,
+  Archive, Download, Upload, Lock,
 } from 'lucide-react';
 import { Link as RouterLink, useLocation } from 'react-router-dom';
 
@@ -11,7 +12,7 @@ import { AppShell } from '../components/AppShell';
 import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { APP_VERSION } from '../lib/env';
-import { api } from '../lib/api';
+import { api, requestBlob } from '../lib/api';
 import { instanceRouteFromPath } from '../lib/routes';
 import { useAuthStore } from '../store/auth-store';
 import type {
@@ -49,6 +50,30 @@ interface SentinelInstance {
   database_name: string;
   display_name: string | null;
   runtime_id: string | null;
+}
+
+interface BackupItemInfo {
+  key: string;
+  label: string;
+}
+
+interface BackupItemsResponse {
+  items: BackupItemInfo[];
+}
+
+interface BackupInfoResponse {
+  source_instance: string | null;
+  created_at: string | null;
+  created_by_version: string | null;
+  items: string[];
+  restorable: boolean;
+  compatibility: string | null;
+}
+
+interface BackupImportResponse {
+  imported: number;
+  skipped: number;
+  by_table: Record<string, Record<string, number>>;
 }
 
 const emptyRuntimeForm = {
@@ -349,6 +374,19 @@ export function SettingsPage() {
   const [selectedProvider, setSelectedProvider] = useState<'lima' | 'docker' | 'ssh' | null>(null);
   const [creatingJobMessage, setCreatingJobMessage] = useState<string | null>(null);
 
+  // ── backup & restore ──
+  const [backupItems, setBackupItems] = useState<BackupItemInfo[]>([]);
+  const [backupSelection, setBackupSelection] = useState<Set<string>>(new Set());
+  const [backupPassphrase, setBackupPassphrase] = useState('');
+  const [creatingBackup, setCreatingBackup] = useState(false);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoreData, setRestoreData] = useState<string | null>(null);
+  const [restorePassphrase, setRestorePassphrase] = useState('');
+  const [restoreInfo, setRestoreInfo] = useState<BackupInfoResponse | null>(null);
+  const [restoreSelection, setRestoreSelection] = useState<Set<string>>(new Set());
+  const [inspectingBackup, setInspectingBackup] = useState(false);
+  const [restoringBackup, setRestoringBackup] = useState(false);
+
   function updateRuntimeForm(updates: Partial<typeof emptyRuntimeForm>) {
     setRuntimeForm((f) => ({ ...f, ...updates }));
     const touchesVerification = (Object.keys(updates) as Array<keyof typeof emptyRuntimeForm>)
@@ -410,6 +448,153 @@ export function SettingsPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<BackupItemsResponse>('/backup/items')
+      .then((res) => {
+        if (cancelled) return;
+        setBackupItems(res.items);
+        setBackupSelection(new Set(res.items.map((i) => i.key)));
+      })
+      .catch(() => {
+        if (!cancelled) setBackupItems([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const backupItemLabel = useCallback(
+    (key: string) => backupItems.find((i) => i.key === key)?.label ?? key,
+    [backupItems],
+  );
+
+  function toggleBackupItem(key: string) {
+    setBackupSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleRestoreItem(key: string) {
+    setRestoreSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function resetRestore() {
+    setRestoreFile(null);
+    setRestoreData(null);
+    setRestoreInfo(null);
+    setRestoreSelection(new Set());
+    setRestorePassphrase('');
+  }
+
+  async function handleRestoreFileSelected(file: File | null) {
+    setRestoreInfo(null);
+    setRestoreSelection(new Set());
+    setRestoreFile(file);
+    if (!file) {
+      setRestoreData(null);
+      return;
+    }
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+      setRestoreData(btoa(binary));
+    } catch {
+      toast.error('Could not read backup file');
+      setRestoreData(null);
+    }
+  }
+
+  async function handleCreateBackup() {
+    if (backupSelection.size === 0) {
+      toast.error('Select at least one item to back up');
+      return;
+    }
+    if (!backupPassphrase) {
+      toast.error('Enter a passphrase to encrypt the backup');
+      return;
+    }
+    setCreatingBackup(true);
+    try {
+      const { blob, filename } = await requestBlob('/backup/export', {
+        method: 'POST',
+        body: { items: Array.from(backupSelection), passphrase: backupPassphrase },
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename ?? 'sentinel-backup.sntl';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      toast.success('Backup created');
+      setBackupPassphrase('');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to create backup');
+    } finally {
+      setCreatingBackup(false);
+    }
+  }
+
+  async function handleInspectBackup() {
+    if (!restoreData) {
+      toast.error('Select a backup file');
+      return;
+    }
+    if (!restorePassphrase) {
+      toast.error('Enter the backup passphrase');
+      return;
+    }
+    setInspectingBackup(true);
+    try {
+      const info = await api.post<BackupInfoResponse>('/backup/inspect', {
+        data: restoreData,
+        passphrase: restorePassphrase,
+      });
+      setRestoreInfo(info);
+      setRestoreSelection(new Set(info.items));
+    } catch (error) {
+      setRestoreInfo(null);
+      setRestoreSelection(new Set());
+      toast.error(error instanceof Error ? error.message : 'Failed to read backup');
+    } finally {
+      setInspectingBackup(false);
+    }
+  }
+
+  async function handleRestoreBackup() {
+    if (!restoreData || !restoreInfo) return;
+    if (restoreSelection.size === 0) {
+      toast.error('Select at least one item to restore');
+      return;
+    }
+    setRestoringBackup(true);
+    try {
+      const result = await api.post<BackupImportResponse>('/backup/import', {
+        data: restoreData,
+        passphrase: restorePassphrase,
+        items: Array.from(restoreSelection),
+      });
+      toast.success(`Restored ${result.imported} record(s), skipped ${result.skipped}`);
+      resetRestore();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to restore backup');
+    } finally {
+      setRestoringBackup(false);
+    }
+  }
 
   async function handleSaveProvider(provider: 'anthropic' | 'openai' | 'gemini', data: { apiKey?: string; oauthToken?: string }) {
     setSavingProvider(provider);
@@ -1383,6 +1568,180 @@ export function SettingsPage() {
             <Info size={14} className="text-[color:var(--accent-solid)] shrink-0 mt-0.5" />
             <p className="text-[10px] text-[color:var(--text-secondary)] leading-relaxed">
               Click a runtime to make it active for this instance. Runtimes are shared across instances; assigning one here only affects this instance.
+            </p>
+          </div>
+        </Panel>
+
+        {/* Backup & Restore Panel — full width */}
+        <Panel className="p-6 space-y-6 md:col-span-2">
+          <div className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] pb-4">
+            <div className="p-2 rounded-lg bg-[color:var(--surface-2)] text-[color:var(--accent-solid)]">
+              <Archive size={20} />
+            </div>
+            <div className="flex-1">
+              <h2 className="text-sm font-bold uppercase tracking-widest">Backup &amp; Restore</h2>
+              <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-tighter">Export &amp; import this instance</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Backup */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <Download size={14} className="text-[color:var(--accent-solid)]" />
+                <h3 className="text-xs font-bold uppercase tracking-widest">Create Backup</h3>
+              </div>
+              <p className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">
+                Select what to include, set a passphrase, and download an encrypted archive.
+              </p>
+
+              <div className="space-y-1.5">
+                {backupItems.length === 0 ? (
+                  <div className="text-[10px] text-[color:var(--text-muted)] uppercase tracking-widest py-2">No items available</div>
+                ) : (
+                  backupItems.map((item) => (
+                    <label
+                      key={item.key}
+                      className="w-full flex items-center gap-3 p-2.5 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--border-strong)] transition-colors cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 shrink-0 accent-[color:var(--accent-solid)]"
+                        checked={backupSelection.has(item.key)}
+                        onChange={() => toggleBackupItem(item.key)}
+                      />
+                      <span className="text-xs font-medium">{item.label}</span>
+                    </label>
+                  ))
+                )}
+              </div>
+
+              <div className="relative">
+                <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                <input
+                  type="password"
+                  value={backupPassphrase}
+                  onChange={(e) => setBackupPassphrase(e.target.value)}
+                  placeholder="Encryption passphrase"
+                  className={`${runtimeInputClass} w-full pl-9`}
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void handleCreateBackup()}
+                disabled={creatingBackup || backupSelection.size === 0 || !backupPassphrase}
+                className="btn-primary w-full h-10 gap-2 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {creatingBackup ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                Create backup
+              </button>
+            </div>
+
+            {/* Restore */}
+            <div className="space-y-4 md:border-l md:border-[color:var(--border-subtle)] md:pl-6">
+              <div className="flex items-center gap-2">
+                <Upload size={14} className="text-[color:var(--accent-solid)]" />
+                <h3 className="text-xs font-bold uppercase tracking-widest">Restore Backup</h3>
+              </div>
+              <p className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">
+                Upload an archive, unlock it, then choose what to restore. Existing records are never overwritten.
+              </p>
+
+              <label className="flex items-center gap-3 p-2.5 rounded-lg border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--accent-solid)] transition-colors cursor-pointer">
+                <Upload size={14} className="text-[color:var(--text-muted)]" />
+                <span className="text-xs font-medium truncate">{restoreFile ? restoreFile.name : 'Choose backup file…'}</span>
+                <input
+                  type="file"
+                  accept=".sntl,application/octet-stream"
+                  className="hidden"
+                  onChange={(e) => void handleRestoreFileSelected(e.target.files?.[0] ?? null)}
+                />
+              </label>
+
+              <div className="relative">
+                <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                <input
+                  type="password"
+                  value={restorePassphrase}
+                  onChange={(e) => setRestorePassphrase(e.target.value)}
+                  placeholder="Backup passphrase"
+                  className={`${runtimeInputClass} w-full pl-9`}
+                />
+              </div>
+
+              {!restoreInfo ? (
+                <button
+                  type="button"
+                  onClick={() => void handleInspectBackup()}
+                  disabled={inspectingBackup || !restoreData || !restorePassphrase}
+                  className="btn-secondary w-full h-10 gap-2 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {inspectingBackup ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}
+                  Unlock backup
+                </button>
+              ) : (
+                <div className="space-y-4">
+                  <div className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">
+                    {restoreInfo.source_instance && <div>Source: <span className="font-mono text-[color:var(--text-secondary)]">{restoreInfo.source_instance}</span></div>}
+                    {restoreInfo.created_at && <div>Created: <span className="font-mono text-[color:var(--text-secondary)]">{restoreInfo.created_at}</span></div>}
+                    {restoreInfo.created_by_version && <div>Made by Sentinel <span className="font-mono text-[color:var(--text-secondary)]">{restoreInfo.created_by_version}</span></div>}
+                  </div>
+
+                  {!restoreInfo.restorable && restoreInfo.compatibility && (
+                    <div className="text-[11px] leading-relaxed p-3 rounded-lg border border-[color:var(--danger-border,#7f1d1d)] bg-[color:var(--danger-surface,rgba(127,29,29,0.12))] text-[color:var(--danger-text,#fca5a5)]">
+                      {restoreInfo.compatibility}
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    {restoreInfo.items.length === 0 ? (
+                      <div className="text-[10px] text-[color:var(--text-muted)] uppercase tracking-widest py-2">Backup contains no items</div>
+                    ) : (
+                      restoreInfo.items.map((key) => (
+                        <label
+                          key={key}
+                          className="w-full flex items-center gap-3 p-2.5 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:border-[color:var(--border-strong)] transition-colors cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 shrink-0 accent-[color:var(--accent-solid)]"
+                            checked={restoreSelection.has(key)}
+                            onChange={() => toggleRestoreItem(key)}
+                          />
+                          <span className="text-xs font-medium">{backupItemLabel(key)}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={resetRestore}
+                      className="btn-secondary h-10 px-3 text-[10px] font-bold uppercase tracking-widest"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleRestoreBackup()}
+                      disabled={restoringBackup || restoreSelection.size === 0 || !restoreInfo.restorable}
+                      className="btn-primary flex-1 h-10 gap-2 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {restoringBackup ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                      Restore selected
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-[color:var(--surface-1)] p-3 rounded-xl border border-[color:var(--border-subtle)] flex items-start gap-2.5">
+            <Info size={14} className="text-[color:var(--accent-solid)] shrink-0 mt-0.5" />
+            <p className="text-[10px] text-[color:var(--text-secondary)] leading-relaxed">
+              Backups are encrypted with your passphrase and contain decrypted secrets — store them securely. The passphrase cannot be recovered if lost.
             </p>
           </div>
         </Panel>

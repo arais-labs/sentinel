@@ -264,38 +264,6 @@ export interface MemoryStats {
   categories: Record<string, number>;
 }
 
-export type MemoryBackupImportMode = 'merge' | 'replace_non_system' | 'replace_all';
-
-export interface MemoryBackupNode {
-  external_id: string;
-  parent_external_id: string | null;
-  content: string;
-  title: string | null;
-  summary: string | null;
-  category: 'core' | 'preference' | 'project' | 'correction';
-  importance: number;
-  pinned: boolean;
-  is_system: boolean;
-  system_key: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string | null;
-  updated_at: string | null;
-}
-
-export interface MemoryBackupDocument {
-  schema_version: 'memory_backup_v1';
-  exported_at: string;
-  nodes: MemoryBackupNode[];
-}
-
-export interface MemoryBackupImportResponse {
-  total_in_backup: number;
-  created: number;
-  updated: number;
-  deleted: number;
-  skipped: number;
-}
-
 export interface Trigger {
   id: string;
   name: string;

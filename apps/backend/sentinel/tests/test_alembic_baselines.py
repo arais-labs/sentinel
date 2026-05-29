@@ -23,6 +23,20 @@ def test_alembic_histories_are_linear_from_v1_baseline() -> None:
         assert script_dir.get_bases() == [baseline]
 
 
+def test_backup_verified_head_matches_instance_head() -> None:
+    # Dead-man's-switch: any new instance migration moves the head, reddening
+    # this test until a commit re-affirms backup compatibility (and raises
+    # MIN_RESTORABLE_VERSION if the change breaks older backups).
+    from app.services.backup.engine import VERIFIED_INSTANCE_ALEMBIC_HEAD
+
+    script_dir = _script_dir("alembic.instance.ini", "db/alembic/instance")
+    assert script_dir.get_heads() == [VERIFIED_INSTANCE_ALEMBIC_HEAD], (
+        "Instance migration head changed. A schema change can break backup "
+        "restore: review compatibility, raise MIN_RESTORABLE_VERSION if older "
+        "backups no longer restore, then re-pin VERIFIED_INSTANCE_ALEMBIC_HEAD."
+    )
+
+
 def test_alembic_templates_do_not_generate_downgrades() -> None:
     for template in (
         BACKEND_ROOT / "db/alembic/manager/script.py.mako",

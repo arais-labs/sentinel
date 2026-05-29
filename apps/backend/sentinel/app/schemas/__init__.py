@@ -6,9 +6,6 @@ from app.schemas.admin import (
 from app.schemas.auth import RefreshRequest, TokenPairResponse
 from app.schemas.compaction import CompactionResponse
 from app.schemas.memory import (
-    MemoryBackupDocument,
-    MemoryBackupImportRequest,
-    MemoryBackupImportResponse,
     MemoryListResponse,
     MemoryResponse,
     MemoryStatsResponse,
@@ -50,9 +47,6 @@ __all__ = [
     "CreateSubAgentTaskRequest",
     "CreateTriggerRequest",
     "FireTriggerRequest",
-    "MemoryBackupDocument",
-    "MemoryBackupImportRequest",
-    "MemoryBackupImportResponse",
     "MemoryListResponse",
     "MemoryResponse",
     "MemoryStatsResponse",
