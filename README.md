@@ -19,6 +19,8 @@
 Sentinel is a self hosted AI operator that turns intent into execution.
 It combines an agent runtime, browser automation, scheduling, memory, approvals, and tool access in one product.
 
+One deployment hosts multiple isolated **instances** — each with its own database, agent runtime, and LLM provider — managed from a single control plane (the CLI or the desktop app).
+
 Built by [ARAIS](https://arais.us).
 
 ## Quick links
@@ -180,13 +182,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## Runtime Exec Security Model
 
-`runtime_exec` supports two explicit modes:
+The agent runs shell commands through the `runtime` system module, which executes
+on each instance's managed **SSH/tmux runtime target** inside an OS-level sandbox —
+**Bubblewrap** on Linux runtimes and **macOS Seatbelt** (`sandbox-exec`) on macOS.
+All commands run confined; there is no unconfined or "root" execution mode.
 
-- `privilege=user` (default): confined execution with write access limited to the session workspace and runtime temp mounts
-- `privilege=root`: unconfined execution, approval-gated before command execution
-
-For long-running commands, use `detached=true`.
-Inline timeout results include a detached-mode hint.
+The module exposes four actions: `runtime.user` (run a command in the session
+workspace) plus `runtime.terminal_list`, `runtime.terminal_read`, and
+`runtime.terminal_close` for managing tmux-backed terminals. Use `background=true`
+for long-running commands. See
+[Runtime Exec Security](docs-site/docs/guides/runtime-exec-security.md).
 
 ## License
 
