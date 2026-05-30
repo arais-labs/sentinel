@@ -60,7 +60,7 @@ class ResolvedRuntime:
         )
 
 
-def runtime_response(runtime: Runtime) -> RuntimeResponse:
+def runtime_response(runtime: Runtime, *, status_detail: str | None = None) -> RuntimeResponse:
     return RuntimeResponse(
         id=runtime.id,
         name=runtime.name,
@@ -74,11 +74,20 @@ def runtime_response(runtime: Runtime) -> RuntimeResponse:
         auth_type=runtime.auth_type,  # type: ignore[arg-type]
         provider_config=RuntimeProviderConfig.model_validate(runtime.provider_config or {}),
         provider_state=RuntimeProviderState.model_validate(runtime.provider_state or {}),
+        status_detail=status_detail,
         last_job_id=runtime.last_job_id,
         last_job_status=runtime.last_job_status,  # type: ignore[arg-type]
         created_at=runtime.created_at,
         updated_at=runtime.updated_at,
     )
+
+
+def runtime_config_status_detail(runtime: Runtime) -> str | None:
+    try:
+        resolve_runtime_secret(runtime)
+    except RuntimeErrorBase as exc:
+        return str(exc)
+    return None
 
 
 async def list_runtimes(db: AsyncSession) -> list[Runtime]:
@@ -197,18 +206,14 @@ async def resolve_instance_runtime(
     if instance.runtime_id is None:
         raise InstanceRuntimeNotConfigured("No runtime selected for this instance.")
     runtime = await get_runtime(db, instance.runtime_id)
-    if is_invalid_secret(runtime.encrypted_secret):
-        runtime.encrypted_secret = None
-        runtime.auth_type = None
-        runtime.status = "failed"
-        await db.commit()
-        raise RuntimeErrorBase("Runtime credentials were invalid and have been cleared.")
     return resolve_runtime_secret(runtime)
 
 
 def resolve_runtime_secret(runtime: Runtime) -> ResolvedRuntime:
     if runtime.provider not in {"ssh", "lima", "docker"}:
         raise RuntimeErrorBase(f"Unsupported runtime provider: {runtime.provider}")
+    if is_invalid_secret(runtime.encrypted_secret):
+        raise RuntimeErrorBase("Runtime credentials could not be decrypted.")
     missing = [
         name
         for name, value in {

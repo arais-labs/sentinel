@@ -28,7 +28,11 @@ from app.schemas.runtimes import (
     RuntimeProviderCapability,
     RuntimeProviderConfig,
 )
-from app.services.runtime.runtimes import create_runtime, runtime_response
+from app.services.runtime.runtimes import (
+    create_runtime,
+    runtime_config_status_detail,
+    runtime_response,
+)
 from app.services.runtime.provisioning.assets import ansible_config_path, ansible_playbook_path
 
 logger = logging.getLogger(__name__)
@@ -147,6 +151,9 @@ class RuntimeProviderBackend:
     ) -> None:
         await self.delete(runtime, job)
         await self.create(runtime, config, job)
+
+    async def status_detail(self, runtime: Runtime) -> str | None:
+        return None
 
 
 class LocalProviderBase(RuntimeProviderBackend):
@@ -333,6 +340,23 @@ class LimaRuntimeProvider(LocalProviderBase):
             "username": options.get("User", "lima"),
             "identity_file": options.get("IdentityFile", ""),
         }
+
+    async def status_detail(self, runtime: Runtime) -> str | None:
+        name = str((runtime.provider_state or {}).get("lima_name") or runtime.name)
+        try:
+            result = await self._runner.run(
+                ["limactl", "list", "--format", "{{.Status}}", name],
+                timeout=30,
+            )
+        except OSError as exc:
+            return str(exc)
+        output = (result.stderr or result.stdout).strip()
+        if result.returncode != 0:
+            return None if runtime.status == "deleted" else output or None
+        status = result.stdout.strip()
+        if status and status.lower() != "running" and runtime.status not in {"stopped", "deleted"}:
+            return f"limactl status={status}"
+        return None
 
 
 class DockerRuntimeProvider(LocalProviderBase):
@@ -521,6 +545,32 @@ class DockerRuntimeProvider(LocalProviderBase):
         first = result.stdout.strip().splitlines()[0]
         return int(first.rsplit(":", 1)[-1])
 
+    async def status_detail(self, runtime: Runtime) -> str | None:
+        name = str((runtime.provider_state or {}).get("container_name") or runtime.name)
+        try:
+            result = await self._runner.run(
+                [
+                    "docker",
+                    "container",
+                    "inspect",
+                    "--format",
+                    "{{.State.Status}}\t{{.State.Error}}",
+                    name,
+                ],
+                timeout=30,
+            )
+        except OSError as exc:
+            return str(exc)
+        output = (result.stderr or result.stdout).strip()
+        if result.returncode != 0:
+            return None if runtime.status == "deleted" else output or None
+        status, _separator, error = result.stdout.strip().partition("\t")
+        if error.strip():
+            return error.strip()
+        if status and status.lower() != "running" and runtime.status not in {"stopped", "deleted"}:
+            return f"docker inspect State.Status={status}"
+        return None
+
     async def _ensure_sshd(self, name: str, job: RuntimeJob) -> None:
         await self._run(
             [
@@ -627,6 +677,18 @@ class RuntimeProviderService:
         if job is None:
             raise RuntimeJobNotFound("Runtime job not found.")
         return job.response()
+
+    async def runtime_response(self, runtime: Runtime) -> RuntimeResponse:
+        status_detail = await self.runtime_status_detail(runtime)
+        if status_detail is None:
+            status_detail = runtime_config_status_detail(runtime)
+        return runtime_response(runtime, status_detail=status_detail)
+
+    async def runtime_status_detail(self, runtime: Runtime) -> str | None:
+        provider = self._providers.get(runtime.provider)
+        if provider is None:
+            return None
+        return await provider.status_detail(runtime)
 
     async def delete_managed_resources(self, runtime: Runtime) -> None:
         provider = self._providers.get(runtime.provider)

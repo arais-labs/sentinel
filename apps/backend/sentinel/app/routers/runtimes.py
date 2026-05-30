@@ -19,7 +19,11 @@ from app.schemas.runtimes import (
     RuntimeTestResponse,
     RuntimeUpdateRequest,
 )
-from app.services.runtime.providers import RuntimeJobNotFound, RuntimeProviderError, runtime_provider_service
+from app.services.runtime.providers import (
+    RuntimeJobNotFound,
+    RuntimeProviderError,
+    runtime_provider_service,
+)
 from app.services.runtime.runtimes import (
     RuntimeConflict,
     RuntimeErrorBase,
@@ -29,11 +33,13 @@ from app.services.runtime.runtimes import (
     delete_runtime,
     get_runtime,
     list_runtimes,
-    runtime_response,
     test_runtime,
     update_runtime,
 )
-from app.services.runtime.ssh_runtime import close_runtime_terminal_manager, invalidate_runtime_for_instance
+from app.services.runtime.ssh_runtime import (
+    close_runtime_terminal_manager,
+    invalidate_runtime_for_instance,
+)
 
 router = APIRouter()
 
@@ -43,10 +49,17 @@ async def list_runtime_rows(
     _user: TokenPayload = Depends(require_admin),
     db: AsyncSession = Depends(get_manager_db),
 ) -> list[RuntimeResponse]:
-    return [runtime_response(runtime) for runtime in await list_runtimes(db)]
+    return [
+        await runtime_provider_service.runtime_response(runtime)
+        for runtime in await list_runtimes(db)
+    ]
 
 
-@router.post("/runtimes", response_model=RuntimeResponse | RuntimeActionResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/runtimes",
+    response_model=RuntimeResponse | RuntimeActionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_runtime_row(
     payload: RuntimeCreateRequest,
     _user: TokenPayload = Depends(require_admin),
@@ -60,7 +73,7 @@ async def create_runtime_row(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except RuntimeProviderError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return runtime_response(runtime)
+    return await runtime_provider_service.runtime_response(runtime)
 
 
 @router.get("/runtimes/capabilities", response_model=RuntimeCapabilitiesResponse)
@@ -88,7 +101,7 @@ async def get_runtime_row(
     db: AsyncSession = Depends(get_manager_db),
 ) -> RuntimeResponse:
     try:
-        return runtime_response(await get_runtime(db, runtime_id))
+        return await runtime_provider_service.runtime_response(await get_runtime(db, runtime_id))
     except RuntimeNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -107,7 +120,7 @@ async def update_runtime_row(
     except RuntimeConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     await close_runtime_terminal_manager()
-    return runtime_response(runtime)
+    return await runtime_provider_service.runtime_response(runtime)
 
 
 @router.delete("/runtimes/{runtime_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -136,7 +149,9 @@ async def runtime_action(
     db: AsyncSession = Depends(get_manager_db),
 ) -> RuntimeActionResponse:
     if action not in {"start", "stop", "rebuild", "delete"}:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unsupported runtime action.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Unsupported runtime action."
+        )
     try:
         runtime = await get_runtime(db, runtime_id)
         if runtime.provider == "ssh":

@@ -102,6 +102,13 @@ const RUNTIME_INSTALL_HINTS: Record<string, string | null> = {
 const runtimeInputClass = 'h-10 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs font-medium text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] outline-none transition-colors focus:border-[color:var(--accent-solid)]';
 const runtimeTextAreaClass = 'min-h-28 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 py-2 font-mono text-[10px] font-medium leading-relaxed text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] outline-none transition-colors focus:border-[color:var(--accent-solid)]';
 
+function runtimeProviderLabel(runtime: Runtime): string {
+  if (runtime.provider !== 'ssh') return runtime.provider;
+  if (runtime.auth_type === 'private_key') return 'Key';
+  if (runtime.auth_type === 'password') return 'Password';
+  return 'SSH';
+}
+
 // ── OAuth help content ──────────────────────────────────────────────────────
 
 const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: string }> = {
@@ -1096,7 +1103,7 @@ export function SettingsPage() {
                   </span>
                 )}
                 <StatusChip
-                  label={target.provider === 'ssh' ? (target.auth_type === 'private_key' ? 'Key' : 'Password') : target.provider}
+                  label={runtimeProviderLabel(target)}
                   tone="info"
                   className="scale-90"
                 />
@@ -1112,6 +1119,12 @@ export function SettingsPage() {
               <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
                 {target.workspaces_dir ?? 'Workspace root pending'}
               </div>
+              {target.status_detail && (
+                <div className="mt-2 flex items-start gap-2 rounded-md border border-rose-500/20 bg-rose-500/10 px-2.5 py-2 text-[10px] leading-relaxed text-rose-300">
+                  <ShieldAlert size={12} className="mt-0.5 shrink-0" />
+                  <span className="min-w-0">{target.status_detail}</span>
+                </div>
+              )}
             </div>
           </button>
           <div className="flex items-center gap-1 pr-3 shrink-0">

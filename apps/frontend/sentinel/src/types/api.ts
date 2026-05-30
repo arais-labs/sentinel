@@ -454,6 +454,7 @@ export interface Runtime {
     workspace_volume?: string | null;
     desktop?: string | null;
   } & Record<string, unknown>;
+  status_detail: string | null;
   last_job_id: string | null;
   last_job_status: 'queued' | 'running' | 'succeeded' | 'failed' | null;
   created_at: string | null;

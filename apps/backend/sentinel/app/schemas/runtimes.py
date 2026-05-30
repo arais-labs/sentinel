@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
@@ -8,10 +9,19 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 RuntimeProvider = Literal["ssh", "lima", "docker"]
-RuntimeStatus = Literal["unknown", "creating", "stopped", "running", "ready", "error", "deleted"]
 RuntimeJobStatus = Literal["queued", "running", "succeeded", "failed"]
 RuntimeAuthType = Literal["private_key", "password"]
 RuntimeAction = Literal["start", "stop", "rebuild", "delete"]
+
+
+class RuntimeStatus(StrEnum):
+    UNKNOWN = "unknown"
+    CREATING = "creating"
+    STOPPED = "stopped"
+    RUNNING = "running"
+    READY = "ready"
+    ERROR = "error"
+    DELETED = "deleted"
 
 
 class RuntimeProviderConfig(BaseModel):
@@ -119,6 +129,7 @@ class RuntimeResponse(BaseModel):
     auth_type: RuntimeAuthType | None = None
     provider_config: RuntimeProviderConfig = Field(default_factory=RuntimeProviderConfig)
     provider_state: RuntimeProviderState = Field(default_factory=RuntimeProviderState)
+    status_detail: str | None = None
     last_job_id: UUID | None = None
     last_job_status: RuntimeJobStatus | None = None
     created_at: datetime | None = None
@@ -193,7 +204,9 @@ def _validate_ssh_fields(
     _validate_secret(auth_type, private_key, password)
 
 
-def _validate_secret(auth_type: RuntimeAuthType, private_key: str | None, password: str | None) -> None:
+def _validate_secret(
+    auth_type: RuntimeAuthType, private_key: str | None, password: str | None
+) -> None:
     key = (private_key or "").strip()
     pw = password or ""
     if auth_type == "private_key":

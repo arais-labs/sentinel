@@ -26,7 +26,11 @@ class _DockerRunner:
         if command[:3] == ["docker", "port", "runtime-one"]:
             return CommandResult(returncode=0, stdout="127.0.0.1:49154\n", stderr="")
         if command[:3] == ["docker", "container", "inspect"]:
-            return CommandResult(returncode=1, stdout="", stderr="")
+            return CommandResult(
+                returncode=1,
+                stdout="",
+                stderr="Error: No such container: runtime-one",
+            )
         if command[:3] == ["docker", "volume", "inspect"]:
             return CommandResult(returncode=1, stdout="", stderr="")
         return CommandResult(returncode=0, stdout="", stderr="")
@@ -109,3 +113,21 @@ async def test_docker_runtime_rebuild_preserves_workspace_volume() -> None:
     await provider.rebuild(runtime, RuntimeProviderConfig(desktop="xfce"), job)
 
     assert not any(command[:3] == ["docker", "volume", "rm"] for command in runner.commands)
+
+
+@pytest.mark.asyncio
+async def test_docker_runtime_status_detail_uses_docker_inspect_output() -> None:
+    runner = _DockerRunner()
+    provider = DockerRuntimeProvider(runner=runner)  # type: ignore[arg-type]
+    runtime = Runtime(
+        id=uuid4(),
+        name="runtime-one",
+        provider="docker",
+        status="error",
+        provider_config={},
+        provider_state={"container_name": "runtime-one"},
+    )
+
+    detail = await provider.status_detail(runtime)
+
+    assert detail == "Error: No such container: runtime-one"
