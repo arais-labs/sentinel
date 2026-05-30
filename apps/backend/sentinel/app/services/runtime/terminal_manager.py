@@ -740,6 +740,12 @@ class RuntimeTerminalManager:
                 if not key:
                     continue
                 parts.append(f"export {key}={quote(str(value))}")
+        if "\n" in command:
+            setup = list(parts)
+            if cwd:
+                setup[0] = f"cd {quote(cwd)} || exit"
+            body = command.rstrip("\n")
+            return "(\n" + "\n".join([*setup, body, ")"])
         if cwd:
             prefix = parts[0] + " && " + "; ".join(parts[1:] + [command])
         else:
