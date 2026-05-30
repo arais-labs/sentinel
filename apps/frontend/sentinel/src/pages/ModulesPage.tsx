@@ -521,7 +521,7 @@ function DetailFieldView({ field, value, onBlur }: { field: any; value: any; onB
    ApiModule — tool module view with actions, secrets, run
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: boolean }) {
+function ApiModule({ config, hideHeader = false, onModuleChanged }: { config: any; hideHeader?: boolean; onModuleChanged?: () => Promise<void> | void }) {
   const [secretsStatus, setSecretsStatus] = useState<Record<string, boolean>>({});
   const [records, setRecords] = useState<any[]>([]);
   const [search, setSearch] = useState('');
@@ -638,7 +638,7 @@ function ApiModule({ config, hideHeader = false }: { config: any; hideHeader?: b
           {(config.actions || []).filter((a: any) =>
             !search.trim() || a.label.toLowerCase().includes(search.toLowerCase()) || (a.description || '').toLowerCase().includes(search.toLowerCase())
           ).map((action: any) => (
-            <ActionCard key={action.id} action={action} moduleName={config.name} secretsStatus={secretsStatus} requiredSecrets={config.secrets || []} records={records} fieldsConfig={config.fields_config} />
+            <ActionCard key={action.id} action={action} moduleName={config.name} secretsStatus={secretsStatus} requiredSecrets={config.secrets || []} records={records} fieldsConfig={config.fields_config} onModuleChanged={onModuleChanged} />
           ))}
         </div>
       </div>
@@ -726,9 +726,9 @@ function deriveParamsFromSchema(schema: any): any[] {
   });
 }
 
-function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, records, fieldsConfig }: {
+function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, records, fieldsConfig, onModuleChanged }: {
   action: any; moduleName: string; secretsStatus: Record<string, boolean>; requiredSecrets: any[];
-  records?: any[]; fieldsConfig?: any;
+  records?: any[]; fieldsConfig?: any; onModuleChanged?: () => Promise<void> | void;
 }) {
   const params = (action.params?.length ? action.params : deriveParamsFromSchema(action.parameters_schema)) ?? [];
   const [form, setForm] = useState<Record<string, string>>(() => Object.fromEntries(params.map((p: any) => [p.key, ''])));
@@ -736,9 +736,16 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; data?: any; error?: string } | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [editingCode, setEditingCode] = useState(false);
+  const [codeDraft, setCodeDraft] = useState(typeof action.code === 'string' ? action.code : '');
+  const [savingCode, setSavingCode] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
 
   const actionType = action.type || action.placement || 'standalone';
   const isRecordAction = actionType === 'record' || actionType === 'detail';
+  const hasActionCode = typeof action.code === 'string';
+  const codeDirty = hasActionCode && codeDraft !== action.code;
   const missingSecrets = requiredSecrets.filter((s: any) => s.required && !secretsStatus[s.key]);
   const needsRecord = isRecordAction && !selectedRecordId;
   const disabled = missingSecrets.length > 0 || needsRecord;
@@ -746,6 +753,12 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
   const titleField = fieldsConfig?.titleField || 'id';
 
   const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+
+  useEffect(() => {
+    setCodeDraft(typeof action.code === 'string' ? action.code : '');
+    setEditingCode(false);
+    setCodeError(null);
+  }, [action.id, action.code]);
 
   const run = async () => {
     const missing = params.filter((p: any) => p.required && !String(form[p.key] ?? '').trim());
@@ -768,6 +781,40 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
       setRunning(false);
       setExpanded(true);
     }
+  };
+
+  const copyCode = async () => {
+    if (!hasActionCode) return;
+    try {
+      await navigator.clipboard.writeText(action.code);
+      toast.success('Code copied');
+    } catch {
+      toast.error('Could not copy code');
+    }
+  };
+
+  const saveCode = async () => {
+    if (!hasActionCode || !codeDirty) return;
+    try {
+      setSavingCode(true);
+      setCodeError(null);
+      await api.patch(`/modules/${moduleName}`, { actions: [{ ...action, code: codeDraft }] });
+      toast.success('Action code saved');
+      setEditingCode(false);
+      await onModuleChanged?.();
+    } catch (err: any) {
+      const message = err?.message || 'Could not save action code';
+      setCodeError(message);
+      toast.error(message);
+    } finally {
+      setSavingCode(false);
+    }
+  };
+
+  const cancelCodeEdit = () => {
+    setCodeDraft(typeof action.code === 'string' ? action.code : '');
+    setEditingCode(false);
+    setCodeError(null);
   };
 
   return (
@@ -816,6 +863,73 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {hasActionCode && (
+        <div className="border-t border-[color:var(--border-subtle)]">
+          <div className="flex items-center justify-between gap-3 px-4 py-2">
+            <button
+              className="flex min-w-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
+              onClick={() => setCodeOpen(open => !open)}
+            >
+              {codeOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              <FileCode size={12} />
+              <span>Code</span>
+            </button>
+            {codeOpen && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-1.5"
+                  onClick={copyCode}
+                >
+                  <Copy size={11} /> Copy
+                </button>
+                {editingCode ? (
+                  <>
+                    <button
+                      className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+                      onClick={cancelCodeEdit}
+                      disabled={savingCode}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity disabled:opacity-40"
+                      onClick={saveCode}
+                      disabled={savingCode || !codeDirty}
+                    >
+                      {savingCode ? 'Saving...' : 'Save'}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-1.5"
+                    onClick={() => setEditingCode(true)}
+                  >
+                    <Pencil size={11} /> Edit
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {codeOpen && (
+            <div className="px-4 pb-4 space-y-2">
+              {editingCode ? (
+                <textarea
+                  className="w-full min-h-[260px] rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-3 text-[11px] leading-relaxed text-[color:var(--text-primary)] font-mono placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] resize-y transition-colors"
+                  spellCheck={false}
+                  value={codeDraft}
+                  onChange={e => setCodeDraft(e.target.value)}
+                />
+              ) : (
+                <pre className="max-h-[360px] overflow-auto rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-3 text-[11px] leading-relaxed text-[color:var(--text-secondary)] font-mono whitespace-pre">
+                  {action.code}
+                </pre>
+              )}
+              {codeError && <p className="text-[11px] text-rose-400">{codeError}</p>}
+            </div>
+          )}
         </div>
       )}
 
@@ -1141,7 +1255,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
       {/* Actions tab */}
       {effectiveTab === 'actions' && (
         <div className="flex-1 min-h-0">
-          <ApiModule config={config} hideHeader />
+          <ApiModule config={config} hideHeader onModuleChanged={() => loadAll(true)} />
         </div>
       )}
 
