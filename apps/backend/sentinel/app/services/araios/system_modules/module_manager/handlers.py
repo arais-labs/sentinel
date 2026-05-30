@@ -21,7 +21,8 @@ from app.services.araios.dynamic_modules import (
     normalize_dynamic_module_actions,
     sync_dynamic_module_permissions,
 )
-from app.schemas.modules import ModuleCreateRequest
+from app.services.araios.module_updates import apply_module_updates, fold_ops_into_delta
+from app.schemas.modules import EditModuleRequest, ModuleCreateRequest
 from app.services.araios.executor import execute_action
 from app.services.araios.runtime_services import get_app_state
 from app.services.secrets import is_invalid_secret
@@ -253,6 +254,83 @@ async def handle_delete_module(payload: dict[str, Any]) -> dict[str, Any]:
     app_state = get_app_state()
     await _refresh_current_runtime_after_module_change(app_state)
     return {"ok": True, "message": f"Module '{name}' deleted"}
+
+
+def _validate_module_edit_payload(payload: dict[str, Any]) -> EditModuleRequest:
+    try:
+        return EditModuleRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+async def _apply_record_data_migration(
+    db: AsyncSession,
+    *,
+    module_name: str,
+    renames: list[tuple[str, str]],
+    purge_keys: set[str],
+) -> None:
+    if not renames and not purge_keys:
+        return
+    result = await db.execute(
+        select(AraiosModuleRecord).where(AraiosModuleRecord.module_name == module_name)
+    )
+    for record in result.scalars().all():
+        data = dict(record.data or {})
+        changed = False
+        for old_key, new_key in renames:
+            if old_key in data:
+                data[new_key] = data.pop(old_key)
+                changed = True
+        for key in purge_keys:
+            if key in data:
+                data.pop(key)
+                changed = True
+        if changed:
+            record.data = data  # reassign so SQLAlchemy flags the JSON column dirty
+
+
+async def handle_edit_module(payload: dict[str, Any]) -> dict[str, Any]:
+    request = _validate_module_edit_payload(payload)
+    name = request.name
+    app_state = get_app_state()
+    async with AsyncSessionLocal() as db:
+        mod = await _require_module_exists(db, name)
+        if mod.system:
+            raise ValueError(f"Module '{name}' is a system module and cannot be edited")
+        delta = fold_ops_into_delta(mod, request)
+        apply_module_updates(mod, delta.updates)
+        if delta.final_actions is not None:
+            mod.actions = delta.final_actions
+        await _apply_record_data_migration(
+            db,
+            module_name=name,
+            renames=delta.record_renames,
+            purge_keys=delta.record_purge_keys,
+        )
+        for secret_key in delta.secret_purge_keys:
+            await db.execute(
+                delete(AraiosModuleSecret).where(
+                    AraiosModuleSecret.module_name == name,
+                    AraiosModuleSecret.key == secret_key,
+                )
+            )
+        await db.commit()
+        await db.refresh(mod)
+        permission_levels = await sync_dynamic_module_permissions(
+            db,
+            module_name=name,
+            actions=normalize_dynamic_module_actions(list(mod.actions or [])),
+            permissions=delta.permissions,
+        )
+    await _refresh_current_runtime_after_module_change(app_state)
+    return {
+        "ok": True,
+        "module": name,
+        "applied_ops": len(request.ops),
+        "permissions": permission_levels,
+        "message": f"Module '{name}' updated ({len(request.ops)} op(s) applied)",
+    }
 
 
 # ── Record handlers ──

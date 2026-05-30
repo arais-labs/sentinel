@@ -11,6 +11,7 @@ from .handlers import (
     handle_create_records,
     handle_delete_module,
     handle_delete_records,
+    handle_edit_module,
     handle_get_module,
     handle_get_record,
     handle_list_modules,
@@ -49,6 +50,103 @@ def _get_module_parameters_schema() -> dict:
 
 def _create_module_parameters_schema() -> dict:
     return module_create_tool_parameters_schema()
+
+
+_EDIT_MODULE_OPS = [
+    "set_meta",
+    "add_field",
+    "update_field",
+    "rename_field",
+    "remove_field",
+    "set_action",
+    "patch_action",
+    "remove_action",
+    "set_fields_config",
+    "patch_fields_config",
+    "upsert_secret",
+    "remove_secret",
+    "set_permissions",
+]
+
+
+def _edit_module_parameters_schema() -> dict:
+    # All per-op fields live INSIDE ops.items so they never participate in the grouped-tool
+    # top-level property merge (module_types._build_grouped_parameters_schema). The only new
+    # top-level keys are 'name' (reused verbatim) and 'ops'. Per-op shape is enforced by the
+    # EditModuleRequest Pydantic model at execution time, not by the shallow runtime validator.
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["name", "ops"],
+        "properties": {
+            "name": _name_prop(),
+            "ops": {
+                "type": "array",
+                "minItems": 1,
+                "description": "Ordered list of edit operations, applied atomically (all-or-nothing).",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["op"],
+                    "properties": {
+                        "op": {"type": "string", "enum": list(_EDIT_MODULE_OPS)},
+                        # set_meta
+                        "label": {"type": "string"},
+                        "icon": {"type": "string"},
+                        "description": {"type": "string"},
+                        "order": {"type": "integer"},
+                        "page_title": {"type": "string"},
+                        "page_content": {"type": "string"},
+                        # field ops
+                        "field": {
+                            "type": "object",
+                            "description": "Field object {key,label,type,required,options} for add_field.",
+                        },
+                        "position": {"type": "integer"},
+                        "key": {"type": "string"},
+                        "changes": {
+                            "type": "object",
+                            "description": "Field props to overwrite for update_field (cannot include 'key').",
+                        },
+                        "from_key": {"type": "string"},
+                        "to_key": {"type": "string"},
+                        "migrate_record_data": {"type": "boolean"},
+                        "purge_record_data": {
+                            "type": "boolean",
+                            "description": "remove_field: if true, ALSO delete that field's data from every record. Warn the user first.",
+                        },
+                        # action ops
+                        "action": {
+                            "type": "object",
+                            "description": "Full action object {id,label,code,type,params,...} for set_action.",
+                        },
+                        "id": {"type": "string"},
+                        "set": {
+                            "type": "object",
+                            "description": "patch_action: keys to overwrite (e.g. {code: '...'}); omitted keys are preserved.",
+                        },
+                        # fields_config ops
+                        "fields_config": {"type": "object"},
+                        "config": {"type": "object"},
+                        # secret ops
+                        "secret": {
+                            "type": "object",
+                            "description": "Secret definition {key,label,required,hint} for upsert_secret.",
+                        },
+                        "purge_value": {
+                            "type": "boolean",
+                            "description": "remove_secret: if true, also delete the stored secret value.",
+                        },
+                        # set_permissions
+                        "permissions": {
+                            "type": "object",
+                            "description": "Map of command -> allow|approval|deny.",
+                        },
+                    },
+                },
+            },
+        },
+    }
 
 
 def _delete_module_parameters_schema() -> dict:
@@ -188,10 +286,36 @@ MODULE = ModuleDefinition(
                 "'required' (boolean), 'options' (array of strings, only for type=select). "
                 'Example: {"key": "company", "label": "Company", "type": "text", "required": true}. '
                 "fields_config controls display: titleField (record title), subtitleField, badgeField (status chip), filterField (sidebar filter). "
-                "All field keys referenced in fields_config must exist in fields."
+                "All field keys referenced in fields_config must exist in fields. "
+                "To CHANGE an EXISTING module, use command=edit_module — never delete+recreate "
+                "(that destroys records, secret values, and permissions)."
             ),
             handler=handle_create_module,
             parameters_schema=_create_module_parameters_schema(),
+        ),
+        ActionDefinition(
+            id="edit_module",
+            label="Edit Module",
+            description=(
+                "Apply surgical edits to an EXISTING module in one atomic (all-or-nothing) call. "
+                "Prefer this over delete+recreate, which destroys records, secret values, and permissions. "
+                "'ops' is an ordered list; each op object has an 'op' key. Key idioms: "
+                "fix one action's code → {op: 'patch_action', id: '<action_id>', set: {code: '...'}} "
+                "(only keys in 'set' change; omit a key to PRESERVE it; params/parameters_schema replace wholesale). "
+                "Add a field → {op: 'add_field', field: {key, label, type, ...}} (do NOT re-send the other fields). "
+                "Rename a field → {op: 'rename_field', from_key, to_key} (record data migrates by default; "
+                "set migrate_record_data: false to skip). "
+                "Remove a field → {op: 'remove_field', key} leaves existing record data intact; pass "
+                "purge_record_data: true to ALSO delete that data from every record — WARN THE USER before purging. "
+                "Other ops: set_meta (label/icon/description/order/page_title/page_content), "
+                "set_action (add/replace a whole action), remove_action, set_fields_config, patch_fields_config, "
+                "upsert_secret, remove_secret (purge_value: true also deletes the stored value), set_permissions "
+                "(command → allow|approval|deny). The module name is immutable; all fields_config refs must point to "
+                "existing fields."
+            ),
+            handler=handle_edit_module,
+            approval=True,
+            parameters_schema=_edit_module_parameters_schema(),
         ),
         ActionDefinition(
             id="delete_module",

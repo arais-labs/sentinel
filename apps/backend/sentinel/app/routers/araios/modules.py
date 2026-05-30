@@ -27,6 +27,12 @@ from app.services.araios.dynamic_modules import (
     normalize_dynamic_module_actions,
     sync_dynamic_module_permissions,
 )
+from app.services.araios.module_updates import (
+    MODULE_MUTABLE_FIELDS,
+    apply_module_updates,
+    extract_module_updates,
+    validate_action_updates,
+)
 from app.services.araios.executor import execute_action
 from app.services.instance_runtime_context import instance_runtime_context_registry
 from app.services.secrets import is_invalid_secret
@@ -78,18 +84,7 @@ async def _module_or_404_any(name: str, db: AsyncSession) -> None:
     raise HTTPException(status_code=404, detail=f"Module '{name}' not found")
 
 
-_MODULE_MUTABLE_FIELDS = (
-    "label",
-    "icon",
-    "fields",
-    "fields_config",
-    "actions",
-    "secrets",
-    "description",
-    "order",
-    "page_title",
-    "page_content",
-)
+_MODULE_MUTABLE_FIELDS = MODULE_MUTABLE_FIELDS
 
 
 def _validate_permissions_payload(value: Any) -> dict[str, Any]:
@@ -189,65 +184,20 @@ async def _create_dynamic_module(
 
 
 def _extract_module_updates(body: ModuleUpdateRequest) -> dict[str, Any]:
-    updates: dict[str, Any] = {}
-    update_values = body.module_updates()
-    for field in _MODULE_MUTABLE_FIELDS:
-        if field in update_values:
-            value = update_values[field]
-            if field == "actions":
-                value = _validate_action_updates(value)
-            updates[field] = value
-    if not updates:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "At least one editable module field is required "
-                f"({', '.join(_MODULE_MUTABLE_FIELDS)})"
-            ),
-        )
-    return updates
-
-
-def _validate_action_updates(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        raise HTTPException(status_code=400, detail="'actions' must be a list")
     try:
-        return normalize_dynamic_module_actions(value)
+        return extract_module_updates(body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-def _merge_action_updates(
-    existing_actions: list[Any], patch_actions: list[dict[str, Any]]
-) -> list[Any]:
-    merged: list[Any] = list(existing_actions)
-    action_index: dict[str, int] = {}
-    for idx, action in enumerate(merged):
-        if not isinstance(action, dict):
-            continue
-        action_id = action.get("id")
-        if isinstance(action_id, str) and action_id and action_id not in action_index:
-            action_index[action_id] = idx
-    for action in patch_actions:
-        action_id = action["id"]
-        existing_idx = action_index.get(action_id)
-        if existing_idx is None:
-            action_index[action_id] = len(merged)
-            merged.append(action)
-            continue
-        merged[existing_idx] = action
-    return merged
+def _validate_action_updates(value: Any) -> list[dict[str, Any]]:
+    try:
+        return validate_action_updates(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
-def _apply_module_updates(mod: AraiosModule, updates: dict[str, Any]) -> None:
-    resolved_updates = dict(updates)
-    if "actions" in resolved_updates:
-        resolved_updates["actions"] = _merge_action_updates(
-            list(mod.actions or []),
-            resolved_updates["actions"],
-        )
-    for field, value in resolved_updates.items():
-        setattr(mod, field, value)
+_apply_module_updates = apply_module_updates
 
 
 async def _record_or_404(module_name: str, record_id: str, db: AsyncSession) -> AraiosModuleRecord:
