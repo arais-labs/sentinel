@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +21,7 @@ from app.services.araios.dynamic_modules import (
     normalize_dynamic_module_actions,
     sync_dynamic_module_permissions,
 )
+from app.schemas.modules import ModuleCreateRequest
 from app.services.araios.executor import execute_action
 from app.services.araios.runtime_services import get_app_state
 from app.services.secrets import is_invalid_secret
@@ -181,57 +183,19 @@ async def handle_get_module(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-_FIELD_EXAMPLE = '{"key": "email", "label": "Email", "type": "email"}'
-_VALID_FIELD_TYPES = {
-    "text",
-    "textarea",
-    "email",
-    "url",
-    "number",
-    "date",
-    "select",
-    "badge",
-    "tags",
-    "readonly",
-}
-
-
-def _validate_fields(fields: Any) -> list[dict]:
-    if fields is None:
-        return []
-    if not isinstance(fields, list):
-        raise ValueError(f"'fields' must be an array. Example item: {_FIELD_EXAMPLE}")
-    validated = []
-    for i, f in enumerate(fields):
-        if not isinstance(f, dict):
-            raise ValueError(
-                f"Field at index {i} must be an object, got {type(f).__name__!r}. "
-                f"Each field requires 'key' and 'label' strings. Example: {_FIELD_EXAMPLE}"
-            )
-        if not isinstance(f.get("key"), str) or not f["key"].strip():
-            raise ValueError(f"Field at index {i} is missing required 'key' (non-empty string)")
-        if not isinstance(f.get("label"), str) or not f["label"].strip():
-            raise ValueError(
-                f"Field at index {i} (key={f.get('key')!r}) is missing required 'label' (non-empty string)"
-            )
-        field_type = f.get("type", "text")
-        if field_type not in _VALID_FIELD_TYPES:
-            raise ValueError(
-                f"Field {f['key']!r} has invalid type {field_type!r}. "
-                f"Valid types: {sorted(_VALID_FIELD_TYPES)}"
-            )
-        validated.append(f)
-    return validated
+def _validate_module_create_payload(payload: dict[str, Any]) -> ModuleCreateRequest:
+    try:
+        return ModuleCreateRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 async def handle_create_module(payload: dict[str, Any]) -> dict[str, Any]:
-    name = (payload.get("name") or "").strip().lower()
-    if not name:
-        raise ValueError("'name' is required for create_module")
-    actions = normalize_dynamic_module_actions(list(payload.get("actions") or []))
-    permissions = payload.get("permissions", {})
-    if permissions is not None and not isinstance(permissions, dict):
-        raise ValueError("'permissions' must be an object")
+    request = _validate_module_create_payload(payload)
+    name = request.name
+    module_values = request.module_values()
+    actions = normalize_dynamic_module_actions(list(module_values.get("actions") or []))
+    permissions = request.permissions
     app_state = get_app_state()
     if app_state is not None:
         registry = getattr(app_state, "tool_registry", None)
@@ -241,20 +205,19 @@ async def handle_create_module(payload: dict[str, Any]) -> dict[str, Any]:
         existing = await db.execute(select(AraiosModule).where(AraiosModule.name == name))
         if existing.scalars().first():
             raise ValueError(f"Module '{name}' already exists")
-        fields = _validate_fields(payload.get("fields"))
         mod = AraiosModule(
             name=name,
-            label=payload.get("label", name.title()),
-            description=payload.get("description", ""),
-            icon=payload.get("icon", "box"),
-            fields=fields,
-            fields_config=payload.get("fields_config", {}),
+            label=module_values["label"],
+            description=module_values.get("description", ""),
+            icon=module_values.get("icon", "box"),
+            fields=module_values.get("fields", []),
+            fields_config=module_values.get("fields_config", {}),
             actions=actions,
-            secrets=payload.get("secrets", []),
-            page_title=payload.get("page_title"),
-            page_content=payload.get("page_content"),
+            secrets=module_values.get("secrets", []),
+            page_title=module_values.get("page_title"),
+            page_content=module_values.get("page_content"),
             system=False,
-            order=payload.get("order", 100),
+            order=module_values.get("order", 100),
         )
         db.add(mod)
         await db.commit()

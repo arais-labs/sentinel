@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from app.schemas.modules import (
+    module_create_tool_parameters_schema,
+    module_name_parameter_schema,
+)
 from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import (
@@ -17,7 +21,7 @@ from .handlers import (
 
 
 def _name_prop() -> dict:
-    return {"type": "string", "description": "Module name."}
+    return module_name_parameter_schema()
 
 
 def _module_prop() -> dict:
@@ -26,6 +30,8 @@ def _module_prop() -> dict:
 
 def _record_id_prop() -> dict:
     return {"type": "string", "description": "Record ID."}
+
+
 def _list_modules_parameters_schema() -> dict:
     return {"type": "object", "additionalProperties": False, "properties": {}}
 
@@ -42,37 +48,7 @@ def _get_module_parameters_schema() -> dict:
 
 
 def _create_module_parameters_schema() -> dict:
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["name", "label"],
-        "properties": {
-            "name": _name_prop(),
-            "label": {"type": "string"},
-            "description": {"type": "string"},
-            "icon": {"type": "string"},
-            "fields": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["key", "label"],
-                    "properties": {
-                        "key": {"type": "string", "description": "snake_case field identifier"},
-                        "label": {"type": "string", "description": "Human-readable field name"},
-                        "type": {"type": "string", "enum": ["text", "textarea", "email", "url", "number", "date", "select", "tags", "readonly"]},
-                        "required": {"type": "boolean"},
-                        "options": {"type": "array", "items": {"type": "string"}, "description": "Only for type=select"},
-                    },
-                },
-            },
-            "fields_config": {"type": "object"},
-            "actions": {"type": "array"},
-            "permissions": {"type": "object"},
-            "secrets": {"type": "array"},
-            "page_title": {"type": "string"},
-            "page_content": {"type": "string"},
-        },
-    }
+    return module_create_tool_parameters_schema()
 
 
 def _delete_module_parameters_schema() -> dict:
@@ -210,7 +186,7 @@ MODULE = ModuleDefinition(
                 "Each field object requires 'key' (snake_case string) and 'label' (human-readable string). "
                 "Optional per-field: 'type' (text|textarea|email|url|number|date|select|tags, default: text), "
                 "'required' (boolean), 'options' (array of strings, only for type=select). "
-                "Example: {\"key\": \"company\", \"label\": \"Company\", \"type\": \"text\", \"required\": true}. "
+                'Example: {"key": "company", "label": "Company", "type": "text", "required": true}. '
                 "fields_config controls display: titleField (record title), subtitleField, badgeField (status chip), filterField (sidebar filter). "
                 "All field keys referenced in fields_config must exist in fields."
             ),

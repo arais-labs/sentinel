@@ -260,9 +260,13 @@ def build_dynamic_module_permission_levels(
     existing: dict[str, str] | None = None,
 ) -> dict[str, str]:
     commands = set(RESERVED_DYNAMIC_MODULE_COMMANDS)
-    commands.update(
-        str(action["id"]).strip().lower() for action in _custom_action_commands(actions)
-    )
+    custom_actions = _custom_action_commands(actions)
+    commands.update(str(action["id"]).strip().lower() for action in custom_actions)
+    custom_defaults = {
+        str(action["id"]).strip().lower(): level
+        for action in custom_actions
+        if (level := _normalize_permission_level(action.get("permission_default"))) is not None
+    }
 
     overrides = {
         str(key).strip().lower(): _normalize_permission_level(value)
@@ -298,6 +302,9 @@ def build_dynamic_module_permission_levels(
             continue
         if legacy_command and legacy_command in existing_levels:
             levels[command] = existing_levels[legacy_command]
+            continue
+        if command in custom_defaults:
+            levels[command] = custom_defaults[command]
             continue
         levels[command] = _DEFAULT_COMMAND_PERMISSION_LEVELS.get(command, "allow")
     return levels

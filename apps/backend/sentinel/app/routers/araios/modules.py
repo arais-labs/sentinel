@@ -16,6 +16,12 @@ from app.models.araios import (
     AraiosModuleSecret,
     araios_gen_id,
 )
+from app.schemas.modules import (
+    ModuleCreateRequest,
+    ModuleDefinitionPayload,
+    ModuleImportRequest,
+    ModuleUpdateRequest,
+)
 from app.services.araios.dynamic_modules import (
     delete_dynamic_module_permissions,
     normalize_dynamic_module_actions,
@@ -86,64 +92,6 @@ _MODULE_MUTABLE_FIELDS = (
 )
 
 
-def _normalize_module_name(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    return value.strip().lower()
-
-
-_FIELD_EXAMPLE = '{"key": "email", "label": "Email", "type": "email"}'
-_VALID_FIELD_TYPES = {
-    "text",
-    "textarea",
-    "email",
-    "url",
-    "number",
-    "date",
-    "select",
-    "badge",
-    "tags",
-    "readonly",
-}
-
-
-def _validate_fields(value: Any) -> list[dict[str, Any]]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise HTTPException(
-            status_code=400, detail=f"'fields' must be an array. Example item: {_FIELD_EXAMPLE}"
-        )
-    validated: list[dict[str, Any]] = []
-    for i, f in enumerate(value):
-        if not isinstance(f, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Field at index {i} must be an object, got {type(f).__name__!r}. "
-                    f"Each field must have 'key' and 'label' strings. Example: {_FIELD_EXAMPLE}"
-                ),
-            )
-        if not isinstance(f.get("key"), str) or not f["key"].strip():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Field at index {i} is missing required 'key' (non-empty string)",
-            )
-        if not isinstance(f.get("label"), str) or not f["label"].strip():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Field at index {i} (key={f.get('key')!r}) is missing required 'label' (non-empty string)",
-            )
-        field_type = f.get("type", "text")
-        if field_type not in _VALID_FIELD_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Field {f['key']!r} has invalid type {field_type!r}. Valid types: {sorted(_VALID_FIELD_TYPES)}",
-            )
-        validated.append(f)
-    return validated
-
-
 def _validate_permissions_payload(value: Any) -> dict[str, Any]:
     if value is None:
         return {}
@@ -174,26 +122,6 @@ def _normalize_seed_records(value: Any) -> list[dict[str, Any]]:
     return records
 
 
-def _normalize_module_package(
-    body: Any,
-) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="Package body must be an object")
-    schema_version = body.get("schema_version")
-    if schema_version != 1:
-        raise HTTPException(status_code=400, detail="Unsupported schema_version")
-    module_payload = body.get("module")
-    if not isinstance(module_payload, dict):
-        raise HTTPException(status_code=400, detail="'module' is required and must be an object")
-    if module_payload.get("system") is True:
-        raise HTTPException(status_code=400, detail="Imported modules may not set system=true")
-    return (
-        module_payload,
-        _normalize_seed_records(body.get("records")),
-        _validate_permissions_payload(body.get("permissions")),
-    )
-
-
 async def _all_module_names(db: AsyncSession) -> set[str]:
     from app.services.araios.system_modules import get_system_modules
 
@@ -212,32 +140,32 @@ async def _ensure_module_name_available(name: str, db: AsyncSession) -> None:
 
 async def _create_dynamic_module(
     *,
-    body: dict[str, Any],
+    body: ModuleDefinitionPayload,
     request: Request,
     db: AsyncSession,
     seed_records: list[dict[str, Any]] | None = None,
     permissions: dict[str, Any] | None = None,
 ) -> tuple[AraiosModule, dict[str, str], int]:
-    name = _normalize_module_name(body.get("name"))
+    name = body.name
     await _ensure_module_name_available(name, db)
-    actions = _validate_action_updates(body.get("actions", []))
+    module_values = body.module_values()
+    actions = _validate_action_updates(module_values.get("actions", []))
     permissions = _validate_permissions_payload(permissions)
     records = _normalize_seed_records(seed_records)
-    fields = _validate_fields(body.get("fields"))
 
     mod = AraiosModule(
         name=name,
-        label=body.get("label", name.title()),
-        description=body.get("description", ""),
-        icon=body.get("icon", "box"),
-        fields=fields,
-        fields_config=body.get("fields_config", {}),
+        label=module_values["label"],
+        description=module_values.get("description", ""),
+        icon=module_values.get("icon", "box"),
+        fields=module_values.get("fields", []),
+        fields_config=module_values.get("fields_config", {}),
         actions=actions,
-        secrets=body.get("secrets", []),
-        page_title=body.get("page_title"),
-        page_content=body.get("page_content"),
+        secrets=module_values.get("secrets", []),
+        page_title=module_values.get("page_title"),
+        page_content=module_values.get("page_content"),
         system=False,
-        order=body.get("order", 100),
+        order=module_values.get("order", 100),
     )
     db.add(mod)
     await db.commit()
@@ -260,15 +188,14 @@ async def _create_dynamic_module(
     return mod, permission_levels, imported_records
 
 
-def _extract_module_updates(body: dict[str, Any]) -> dict[str, Any]:
+def _extract_module_updates(body: ModuleUpdateRequest) -> dict[str, Any]:
     updates: dict[str, Any] = {}
+    update_values = body.module_updates()
     for field in _MODULE_MUTABLE_FIELDS:
-        if field in body:
-            value = body[field]
+        if field in update_values:
+            value = update_values[field]
             if field == "actions":
                 value = _validate_action_updates(value)
-            elif field == "fields":
-                value = _validate_fields(value)
             updates[field] = value
     if not updates:
         raise HTTPException(
@@ -517,7 +444,7 @@ async def list_modules(
 
 @router.post("", status_code=201)
 async def create_module(
-    body: dict,
+    body: ModuleCreateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
@@ -525,24 +452,23 @@ async def create_module(
         body=body,
         request=request,
         db=db,
-        permissions=body.get("permissions"),
+        permissions=body.permissions,
     )
     return _serialize_module(mod)
 
 
 @router.post("/import", status_code=201)
 async def import_module_package(
-    body: dict,
+    body: ModuleImportRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    module_payload, records, permissions = _normalize_module_package(body)
     mod, permission_levels, imported_records = await _create_dynamic_module(
-        body=module_payload,
+        body=body.module,
         request=request,
         db=db,
-        seed_records=records,
-        permissions=permissions,
+        seed_records=body.records,
+        permissions=body.permissions,
     )
     return {
         "module": _serialize_module(mod),
@@ -571,17 +497,17 @@ async def get_module(
 @router.patch("/{name}")
 async def update_module(
     name: str,
-    body: dict,
+    body: ModuleUpdateRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     mod = await _module_or_404(name, db)
-    permissions = body.get("permissions")
+    permissions = body.permissions
     if permissions is not None and not isinstance(permissions, dict):
         raise HTTPException(status_code=400, detail="'permissions' must be an object")
     updates = (
         _extract_module_updates(body)
-        if any(field in body for field in _MODULE_MUTABLE_FIELDS)
+        if any(field in body.model_fields_set for field in _MODULE_MUTABLE_FIELDS)
         else {}
     )
     if updates:
