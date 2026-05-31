@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from app.services.llm.providers.anthropic import AnthropicProvider
     from app.services.llm.providers.codex import CodexProvider
     from app.services.llm.providers.gemini import GeminiProvider
+    from app.services.llm.providers.gemini_oauth import GeminiOAuthProvider
     from app.services.llm.providers.openai import OpenAIProvider
 
 __all__ = [
@@ -43,6 +44,7 @@ __all__ = [
     "AnthropicProvider",
     "CodexProvider",
     "GeminiProvider",
+    "GeminiOAuthProvider",
     "OpenAIProvider",
     "ReliableProvider",
     "RouterProvider",
@@ -91,6 +93,10 @@ def __getattr__(name: str) -> Any:
         from app.services.llm.providers.gemini import GeminiProvider
 
         return GeminiProvider
+    if name == "GeminiOAuthProvider":
+        from app.services.llm.providers.gemini_oauth import GeminiOAuthProvider
+
+        return GeminiOAuthProvider
     if name == "OpenAIProvider":
         from app.services.llm.providers.openai import OpenAIProvider
 

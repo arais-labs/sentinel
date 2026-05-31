@@ -3,23 +3,43 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Awaitable, Callable
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.services.llm.generic.types import ToolSchema
 
 
-ToolExecutorFn = Callable[[dict[str, Any]], Awaitable[Any]]
-ToolApprovalEvaluatorFn = Callable[
-    [dict[str, Any]],
-    "ToolApprovalEvaluation" | Awaitable["ToolApprovalEvaluation"],
-]
+@dataclass(slots=True)
+class ToolRuntimeContext:
+    session_id: UUID | None = None
+    runtime_session_id: UUID | None = None
+    instance_name: str | None = None
+    db_session_factory: async_sessionmaker[AsyncSession] | None = None
+    sub_agent_orchestrator: Any | None = None
+
+
+ToolExecutorFn = Callable[[dict[str, Any], ToolRuntimeContext], Awaitable[Any]]
+ToolApprovalCheckFn = (
+    Callable[[], "ToolApprovalEvaluation" | Awaitable["ToolApprovalEvaluation"]]
+    | Callable[[dict[str, Any]], "ToolApprovalEvaluation" | Awaitable["ToolApprovalEvaluation"]]
+    | Callable[
+        [dict[str, Any], ToolRuntimeContext],
+        "ToolApprovalEvaluation" | Awaitable["ToolApprovalEvaluation"],
+    ]
+)
+ToolApprovalPendingFn = Callable[[dict[str, Any]], Awaitable[None]]
 ToolApprovalWaiterFn = Callable[
-    [str, dict[str, Any], "ToolApprovalRequirement"],
+    [
+        str,
+        dict[str, Any],
+        ToolRuntimeContext,
+        "ToolApprovalRequirement",
+        ToolApprovalPendingFn | None,
+    ],
     "Awaitable[ToolApprovalOutcome]",
 ]
-
-
-class ToolApprovalMode(StrEnum):
-    NONE = "none"
-    REQUIRED = "required"
-    CONDITIONAL = "conditional"
+ToolApprovalResultRecorderFn = Callable[[str, Any], Awaitable[None]]
 
 
 class ToolApprovalDecision(StrEnum):
@@ -40,7 +60,6 @@ class ToolApprovalRequirement:
     action: str
     description: str
     timeout_seconds: int = 600
-    match_key: str | None = None
     metadata: dict[str, Any] | None = None
     requested_by: str | None = None
 
@@ -72,22 +91,13 @@ class ToolApprovalOutcome:
 
 
 @dataclass(slots=True)
-class ToolApprovalGate:
-    mode: ToolApprovalMode
-    evaluator: ToolApprovalEvaluatorFn | None = None
-    waiter: ToolApprovalWaiterFn | None = None
-    required: ToolApprovalRequirement | None = None
-
-
-@dataclass(slots=True)
 class ToolDefinition:
     name: str
     description: str
-    risk_level: str
     parameters_schema: dict[str, Any]
     execute: ToolExecutorFn
     enabled: bool = True
-    approval_gate: ToolApprovalGate | None = None
+    approval_check: ToolApprovalCheckFn | None = None
 
 
 class ToolRegistry:
@@ -106,3 +116,20 @@ class ToolRegistry:
     def is_allowed(self, name: str) -> bool:
         tool = self.get(name)
         return bool(tool and tool.enabled)
+
+    def list_schemas(self) -> list[ToolSchema]:
+        """Snapshot the enabled tools as the schema records the agent loop
+        feeds to the LLM. Living here (next to the registry it walks) means a
+        single source of truth — the previous home on ``ToolAdapter`` was
+        only used by ``SentinelRuntimeSupport`` and the rest of that class
+        had become dead code.
+        """
+        return [
+            ToolSchema(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters_schema,
+            )
+            for tool in self.list_all()
+            if tool.enabled
+        ]

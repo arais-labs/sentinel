@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "platforms": {
+    "macos-arm64": {
+      "python": {
+        "version": "3.12.13",
+        "buildTag": "20260510",
+        "sourceUrl": "https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-3.12.13+20260510-aarch64-apple-darwin-install_only.tar.gz",
+        "sourceSha256": "5a30271f8d345a5b02b0c9e4e31e0f1e1455a8e4a04fba95cd9762472abc3b17"
+      },
+      "git": {
+        "source": "system-vendored",
+        "systemBinPath": "/Library/Developer/CommandLineTools/usr/bin/git",
+        "systemLibexecPath": "/Library/Developer/CommandLineTools/usr/libexec/git-core",
+        "systemSharePath": "/Library/Developer/CommandLineTools/usr/share/git-core",
+        "expectedVersionPrefix": "git version 2."
+      },
+      "gh": {
+        "version": "2.92.0",
+        "sourceUrl": "https://github.com/cli/cli/releases/download/v2.92.0/gh_2.92.0_macOS_arm64.zip",
+        "sourceSha256": "b11c54f6bd7d15ed6590475079e5b2fcf36f45d3991a80041b29c9d0cc1f1d07"
+      },
+      "postgres": {
+        "version": "17.9",
+        "sourceUrl": "https://ftp.postgresql.org/pub/source/v17.9/postgresql-17.9.tar.gz",
+        "sourceSha256": "70eaebacf5344a0951075a666369d95d25ae4485ad0d6d3df652065277f4943c"
+      },
+      "pgvector": {
+        "version": "0.8.2",
+        "repository": "https://github.com/pgvector/pgvector.git",
+        "tag": "v0.8.2",
+        "commitPrefix": "cab9da7"
+      }
+    }
+  }
+}

@@ -2,13 +2,14 @@ import {
   ArrowDown,
   Bot,
   ChevronDown,
+  Home,
   Expand,
-  History,
   Loader2,
   Plus,
   RefreshCw,
   RotateCcw,
   Send,
+  Settings2,
   Users,
   Square,
   Wand2,
@@ -16,40 +17,44 @@ import {
   X,
   Trash2,
   Terminal,
+  Folder,
   Globe,
   ExternalLink,
-  BadgeCheck,
   Zap,
   Activity,
   Brain,
   Sparkles,
   Paperclip,
-  Folder,
-  FileCode2,
-  ChevronRight,
-  ArrowUp,
-  Clock3,
   Check,
   Pencil,
   GitBranch,
+  CheckCircle2,
+  AlertCircle,
+  XCircle,
+  Copy,
+  HelpCircle,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
-import { SessionMessageCard, buildToolArgumentsByCallId } from '../components/session/SessionMessageCard';
+import { SessionMessageCard, buildToolArgumentsByCallId, ToolPayloadView, ToolPayloadCompactSummary } from '../components/session/SessionMessageCard';
 import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
-import { BrowserPreview } from '../components/session/BrowserPreview';
+import { DesktopPreview } from '../components/session/DesktopPreview';
+import { TerminalPreview } from '../components/session/TerminalPreview';
+import { useSessionDeleteConfirmation } from '../components/session/SessionDeleteConfirmDialog';
+import { getTerminalLabel, summarizeCommand } from '../lib/terminalIdentity';
 import { SubAgentTaskModal } from '../components/SubAgentTaskModal';
 import { SpawnSubAgentModal } from '../components/SpawnSubAgentModal';
-import { JsonBlock } from '../components/ui/JsonBlock';
 import { Markdown } from '../components/ui/Markdown';
+import { WorkbenchExplorerPane } from '../components/workbench/WorkbenchExplorerPane';
+import { Workbench, type WorkbenchTab } from '../components/workbench/Workbench';
 import { StatusChip } from '../components/ui/StatusChip';
-import { WS_BASE_URL } from '../lib/env';
-import { formatCompactDate, toPrettyJson, truncate } from '../lib/format';
-import { extractCriticalToolFields, parsePayloadJson, previewPayloadValue, topLevelPayloadFieldCount, type ToolPayloadKind } from '../lib/toolPayloadPreview';
-import { buildRuntimeCommandRows } from '../lib/runtimeCommands';
+import { SESSION_DEBUG_PANEL_ENABLED, wsSessionsBaseUrl } from '../lib/env';
+import { toPrettyJson, truncate } from '../lib/format';
+import { buildRuntimeGitChangedTree } from '../lib/runtimeGitTree';
 import {
   approvalKey,
   approvalRefFromMetadata,
@@ -57,16 +62,29 @@ import {
   type ApprovalRef,
 } from '../lib/approvals';
 import { api } from '../lib/api';
+import { instanceRouteFromPath } from '../lib/routes';
+import { getSessionDeleteWorkspaceSummary } from '../lib/sessionDeletion';
+import {
+  applyToolcallEnd,
+  applyToolResult,
+  defaultStreamingState,
+  hasVisibleStreamingText,
+  shouldShowThinkingIndicator,
+  streamingCallKey,
+  streamingCallKeyFromParts,
+} from './sessionStreaming';
+import type { StreamingState, StreamingToolCall } from './sessionStreaming';
 import type {
   AgentModeOption,
   AgentModesResponse,
-  ApprovalToolCallMatchResponse,
   Message,
   MessageAttachment,
   MessageListResponse,
   ModelOption,
   ModelsResponse,
-  PlaywrightLiveView,
+  RuntimeActionResponse,
+  RuntimeLiveView,
+  RuntimeStatusResponse,
   Session,
   SessionContextUsage,
   SessionRuntimeFileEntry,
@@ -77,7 +95,6 @@ import type {
   SessionRuntimeGitRoot,
   SessionRuntimeGitRootsResponse,
   SessionListResponse,
-  SessionRuntimeStatus,
   SubAgentTask,
   SubAgentTaskListResponse,
   WsConnectionState,
@@ -85,6 +102,18 @@ import type {
 } from '../types/api';
 
 // --- Utility Functions ---
+
+const DESKTOP_RESOLUTION_PRESETS = [
+  { value: '1280x800', label: '1280 x 800' },
+  { value: '1440x900', label: '1440 x 900' },
+  { value: '1680x1050', label: '1680 x 1050' },
+  { value: '1920x1200', label: '1920 x 1200' },
+  { value: '2560x1600', label: '2560 x 1600' },
+  { value: '2880x1800', label: '2880 x 1800' },
+  { value: '3840x2400', label: '3840 x 2400' },
+];
+
+const DEFAULT_DESKTOP_RESOLUTION = '1920x1200';
 
 function taskStatusTone(status: string): 'default' | 'good' | 'warn' | 'danger' | 'info' {
   switch (status) {
@@ -149,6 +178,40 @@ function toMarkdownCodeFence(content: string, language: string): string {
   return `${fence}${language}\n${content}\n${fence}`;
 }
 
+interface SessionDebugEvent {
+  id: string;
+  at: string;
+  type: string;
+  summary: string;
+}
+
+interface SentinelInstance {
+  name: string;
+  database_name: string;
+  display_name: string | null;
+  runtime_id: string | null;
+}
+
+// Top-level right-rail tabs. `runtime` is a composite tab that contains
+// three sub-views (Desktop / Terminals / Files) selected via an inner
+// segmented control — see `RuntimeView` below. The previous flat enum
+// (desktop / terminals / runtime / …) collapsed those three siblings into
+// one parent so the rail stays under three primary tabs.
+type RightRailTab = 'runtime' | 'sub_agents' | 'sessions' | 'debug';
+type RuntimeView = 'desktop' | 'terminals' | 'files';
+
+interface ActiveTerminal {
+  id: string;
+  /** Backend-supplied label, used only as a fallback for auto-allocated terminals. */
+  label: string | null;
+  createdBy: 'agent' | 'user';
+  createdAt: number;
+  auto: boolean;
+  busy: boolean;
+  /** Most recent command run in this terminal (for tooltip + rail header). */
+  lastCommand: string | null;
+}
+
 function buildRuntimeDiffBaseRefOptions(
   roots: SessionRuntimeGitRoot[],
   currentRef: string | null | undefined,
@@ -168,12 +231,6 @@ function buildRuntimeDiffBaseRefOptions(
     options.add(normalizedCurrent);
   }
   return Array.from(options);
-}
-
-function runtimeStatusLabel(runtime: SessionRuntimeStatus | null): string {
-  if (!runtime) return 'Unavailable';
-  if (!runtime.runtime_exists) return 'Missing';
-  return runtime.active ? 'Active' : 'Idle';
 }
 
 function humanizeAgentError(raw: string): string {
@@ -242,8 +299,6 @@ function hasUnresolvedToolCalls(messages: Message[]): boolean {
   return pendingIds.size > 0;
 }
 
-const APPROVAL_HYDRATION_MAX_ATTEMPTS = 3;
-const APPROVAL_HYDRATION_RETRY_MS = 350;
 const APPROVAL_DEBUG_STORAGE_KEY = 'sentinel.debug.approvals';
 const AGENT_MODE_STORAGE_KEY = 'sentinel-selected-agent-mode';
 
@@ -260,10 +315,6 @@ function isApprovalDebugEnabled(): boolean {
 function approvalDebugLog(event: string, details: Record<string, unknown>): void {
   if (!isApprovalDebugEnabled()) return;
   console.info(`[approval-debug] ${event}`, details);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function parseTier(value: string | null): ModelOption['tier'] | null {
@@ -350,295 +401,7 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function ToolFieldPreviewList({
-  items,
-  extraCount = 0,
-}: {
-  items: Array<{ key: string; text: string; truncated: boolean; redacted?: boolean }>;
-  extraCount?: number;
-}) {
-  return (
-    <div className="space-y-2">
-      {items.map((item) => (
-        <div key={item.key} className="rounded-lg border border-sky-500/10 bg-sky-500/5 p-2">
-          <p className="text-[9px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">{item.key}</p>
-          <p className="mt-1 font-mono text-[12px] break-words text-[color:var(--text-primary)]">{item.text || '""'}</p>
-          {item.redacted ? (
-            <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Sensitive value hidden</p>
-          ) : null}
-          {item.truncated ? (
-            <p className="mt-1 text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">Truncated in preview</p>
-          ) : null}
-        </div>
-      ))}
-      {extraCount > 0 ? (
-        <p className="text-[9px] uppercase tracking-widest text-[color:var(--text-muted)]">+{extraCount} more field{extraCount === 1 ? '' : 's'}</p>
-      ) : null}
-    </div>
-  );
-}
-
-function ToolPayloadView({
-  raw,
-  emptyLabel,
-  showRawJson = true,
-  toolName,
-  payloadKind,
-  criticalOnly = false,
-  maxCriticalFields = 3,
-}: {
-  raw: string;
-  emptyLabel: string;
-  showRawJson?: boolean;
-  toolName?: string;
-  payloadKind?: ToolPayloadKind;
-  criticalOnly?: boolean;
-  maxCriticalFields?: number;
-}) {
-  const parsed = useMemo(() => parsePayloadJson(raw), [raw]);
-  const criticalFields = useMemo(() => {
-    if (!toolName || !payloadKind) return [];
-    return extractCriticalToolFields({
-      toolName,
-      raw,
-      kind: payloadKind,
-      maxFields: maxCriticalFields,
-    });
-  }, [toolName, raw, payloadKind, maxCriticalFields]);
-
-  if (!raw.trim()) {
-    return <p className="text-sky-500/60 italic">{emptyLabel}</p>;
-  }
-
-  if (criticalOnly) {
-    if (criticalFields.length > 0) {
-      const extraCount = Math.max(0, topLevelPayloadFieldCount(raw) - criticalFields.length);
-      return <ToolFieldPreviewList items={criticalFields} extraCount={extraCount} />;
-    }
-    const preview = previewPayloadValue(parsed ?? raw, 220);
-    return (
-      <ToolFieldPreviewList
-        items={[
-          {
-            key: payloadKind ?? 'payload',
-            text: preview.text || '""',
-            truncated: preview.truncated,
-          },
-        ]}
-      />
-    );
-  }
-
-  if (isObjectRecord(parsed)) {
-    const entries = Object.entries(parsed).map(([key, value]) => {
-      const preview = previewPayloadValue(value);
-      return { key, text: preview.text, truncated: preview.truncated };
-    });
-    return (
-      <div className="space-y-2">
-        <ToolFieldPreviewList items={entries} />
-        {showRawJson ? (
-          <details className="group">
-            <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-sky-600/80 dark:text-sky-400/80">
-              <ChevronDown size={12} className="group-open:rotate-180 transition-transform" />
-              Raw JSON
-            </summary>
-            <JsonBlock value={JSON.stringify(parsed, null, 2)} className="mt-2 bg-transparent border-sky-500/10 p-2 max-h-[220px]" />
-          </details>
-        ) : null}
-      </div>
-    );
-  }
-
-  if (parsed !== null) {
-    const preview = previewPayloadValue(parsed, 260);
-    return (
-      <div className="space-y-2">
-        <ToolFieldPreviewList
-          items={[
-            {
-              key: payloadKind ?? 'value',
-              text: preview.text || '""',
-              truncated: preview.truncated,
-            },
-          ]}
-        />
-        {showRawJson ? (
-          <details className="group">
-            <summary className="cursor-pointer list-none flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-sky-600/80 dark:text-sky-400/80">
-              <ChevronDown size={12} className="group-open:rotate-180 transition-transform" />
-              Raw JSON
-            </summary>
-            <JsonBlock value={JSON.stringify(parsed, null, 2)} className="mt-2 bg-transparent border-sky-500/10 p-2 max-h-[220px]" />
-          </details>
-        ) : null}
-      </div>
-    );
-  }
-
-  return (
-    <details className="group">
-      <summary className="cursor-pointer list-none flex items-center gap-2 text-sky-600 dark:text-sky-400">
-        <ChevronDown size={14} className="group-open:rotate-180 transition-transform" />
-        <span className="font-bold uppercase tracking-widest text-[10px]">Execution Telemetry</span>
-      </summary>
-      <div className="mt-3 overflow-auto">
-        <Markdown content={raw} />
-      </div>
-    </details>
-  );
-}
-
-function ToolPayloadCompactSummary({
-  toolName,
-  inputRaw,
-  outputRaw,
-  outputEmptyLabel,
-  outputError = false,
-  hideInput = false,
-}: {
-  toolName: string;
-  inputRaw: string;
-  outputRaw: string;
-  outputEmptyLabel: string;
-  outputError?: boolean;
-  hideInput?: boolean;
-}) {
-  const inputFields = useMemo(
-    () => extractCriticalToolFields({ toolName, raw: inputRaw, kind: 'input', maxFields: 2 }),
-    [toolName, inputRaw],
-  );
-  const outputFields = useMemo(
-    () => extractCriticalToolFields({ toolName, raw: outputRaw, kind: 'output', maxFields: 2 }),
-    [toolName, outputRaw],
-  );
-
-  const compactValue = (value: string): string => {
-    const trimmed = value.replace(/\s+/g, ' ').trim();
-    if (trimmed.length <= 56) return trimmed;
-    return `${trimmed.slice(0, 56)}…`;
-  };
-
-  const renderFieldChips = (items: Array<{ key: string; text: string; redacted?: boolean }>) => {
-    if (!items.length) {
-      return <span className="text-[10px] text-[color:var(--text-muted)] italic">none</span>;
-    }
-    return (
-      <div className="flex flex-wrap items-center gap-1.5">
-        {items.map((item) => (
-          <span
-            key={item.key}
-            className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-500/20 bg-sky-500/8 px-1.5 py-0.5"
-          >
-            <span className="text-[9px] font-bold uppercase tracking-wide text-sky-600 dark:text-sky-400">
-              {item.key}
-            </span>
-            <span className="font-mono text-[10px] text-[color:var(--text-primary)] break-all">
-              {item.redacted ? '[redacted]' : compactValue(item.text || '""')}
-            </span>
-          </span>
-        ))}
-      </div>
-    );
-  };
-
-  return (
-    <div className="mt-2 border-t border-sky-500/10 pt-2 space-y-1.5 animate-in fade-in duration-200 max-w-[620px]">
-      {!hideInput ? (
-        <div className="min-w-0 flex items-start gap-2">
-          <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] pt-0.5 shrink-0">Input</p>
-          <div className="min-w-0 flex-1">{renderFieldChips(inputFields)}</div>
-        </div>
-      ) : null}
-      <div className="min-w-0 flex items-start gap-2">
-        <div className="flex items-center gap-1.5 pt-0.5 shrink-0">
-          <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Output</p>
-          {outputError ? <span className="h-1.5 w-1.5 rounded-full bg-rose-400" title="Error output" /> : null}
-        </div>
-        <div className="min-w-0 flex-1">
-          {outputRaw.trim() ? renderFieldChips(outputFields) : (
-            <span className="text-[10px] text-[color:var(--text-muted)] italic">{outputEmptyLabel}</span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // --- Memoized Components ---
-
-// --- Types ---
-
-interface StreamingToolCall {
-  id: string;
-  name: string;
-  argumentsJson: string;
-  outputJson: string;
-  isError: boolean;
-  metadata: Record<string, unknown>;
-  complete: boolean;
-  contentIndex: number | null;
-}
-
-interface StreamTimelineToolItem {
-  kind: 'tool';
-  key: string;
-  callKey: string;
-}
-
-interface StreamTimelineTextItem {
-  kind: 'text';
-  key: string;
-  text: string;
-}
-
-type StreamTimelineItem = StreamTimelineToolItem | StreamTimelineTextItem;
-
-interface StreamingState {
-  connection: WsConnectionState;
-  isThinking: boolean;
-  isStreaming: boolean;
-  isCompactingContext: boolean;
-  text: string;
-  timeline: StreamTimelineItem[];
-  interimTextSeq: number;
-  activeToolCalls: StreamingToolCall[];
-  completedToolCalls: StreamingToolCall[];
-  agentIteration: number;
-  agentMaxIterations: number;
-}
-
-interface WorkbenchTab {
-  path: string;
-  name: string;
-  size_bytes: number;
-  modified_at: string | null;
-  content: string;
-  truncated: boolean;
-  max_bytes: number;
-}
-
-const defaultStreamingState: StreamingState = {
-  connection: 'disconnected',
-  isThinking: false,
-  isStreaming: false,
-  isCompactingContext: false,
-  text: '',
-  timeline: [],
-  interimTextSeq: 0,
-  activeToolCalls: [],
-  completedToolCalls: [],
-  agentIteration: 0,
-  agentMaxIterations: 0,
-};
-
-function streamingCallKeyFromParts(id: string, contentIndex: number | null): string {
-  return `${id}::${contentIndex ?? 'na'}`;
-}
-
-function streamingCallKey(call: StreamingToolCall): string {
-  return streamingCallKeyFromParts(call.id, call.contentIndex);
-}
 
 // --- Sub-Components ---
 
@@ -647,11 +410,13 @@ function StreamToolCard({
   active,
   onResolveApproval,
   resolvingApprovalKey,
+  onOpenTerminal,
 }: {
   call: StreamingToolCall;
   active: boolean;
   onResolveApproval: (approval: ApprovalRef, decision: 'approve' | 'reject') => void;
   resolvingApprovalKey: string | null;
+  onOpenTerminal?: (terminalId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const isScreenshotCall = call.name.toLowerCase().includes('screenshot');
@@ -660,63 +425,126 @@ function StreamToolCard({
   const canResolveApproval = pendingApproval && approvalRef?.canResolve === true;
   const approvalLinkMissing = pendingApproval && !approvalRef;
   const approvalActionBusy = approvalRef ? resolvingApprovalKey === approvalKey(approvalRef) : false;
+  // When the runtime tool result carries a terminal id, surface a chip in the
+  // card header so the user can jump from "what did the agent run?" to "let
+  // me see/control that terminal" in one click.
+  const terminalIdFromMetadata =
+    typeof call.metadata?.terminal_id === 'string' && call.metadata.terminal_id.length > 0
+      ? (call.metadata.terminal_id as string)
+      : null;
 
   useEffect(() => {
-    if (pendingApproval) {
-      setExpanded(true);
-    }
+    if (pendingApproval) setExpanded(true);
   }, [pendingApproval]);
 
   return (
-      <div className="flex flex-col gap-1.5 animate-in items-start w-full">
-        <div className="flex items-center gap-2 px-1">
-        <span className={`text-[9px] font-bold uppercase tracking-[0.2em] ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
-          {pendingApproval ? 'tool_call • waiting approval' : `tool_call • ${active ? 'running' : 'complete'}`}
+    <div className="flex w-full flex-col gap-1 animate-in items-start">
+      <div className="flex items-center gap-2 px-1">
+        <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)]">
+          tool_call
         </span>
-        </div>
-        <div className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]'} inline-flex flex-col rounded-2xl rounded-tl-none border ${pendingApproval ? 'border-rose-500/35 bg-rose-500/10' : 'border-sky-500/20 bg-sky-500/5'} px-4 py-1.5 text-[12px] shadow-sm`}>
-          <button
-            type="button"
-            onClick={() => setExpanded((prev) => !prev)}
-            className={`${expanded ? 'w-full' : 'w-auto'} flex items-center justify-between gap-3 text-left`}
-          >
-            <div className={`flex items-center gap-2 font-mono font-bold min-w-0 ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'}`}>
-              <Wrench size={14} className="shrink-0" />
-              <span className="truncate">{call.name}</span>
-              {pendingApproval ? (
-                <span className="inline-flex items-center rounded-full border border-rose-500/35 bg-rose-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-300">
-                  Pending
+        {pendingApproval ? (
+          <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-rose-400">• waiting approval</span>
+        ) : active ? (
+          <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-sky-500/70">• running</span>
+        ) : null}
+      </div>
+      <div
+        onClick={!expanded ? () => setExpanded(true) : undefined}
+        className={`${expanded ? 'w-full max-w-[90%]' : 'w-fit max-w-[90%]'} inline-flex flex-col rounded-2xl rounded-tl-none px-4 py-2 text-xs shadow-sm border transition-all duration-300 ease-in-out ${
+          pendingApproval
+            ? 'bg-rose-500/8 border-rose-500/30 shadow-md ring-1 ring-rose-500/20'
+            : `bg-[color:var(--surface-1)] border-[color:var(--border-subtle)] ${expanded ? '' : 'cursor-pointer hover:border-sky-500/30 hover:bg-sky-500/[0.03]'}`
+        } relative group/card`}
+      >
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            setExpanded((value) => !value);
+          }}
+          className={`${expanded ? 'w-full mb-0.5' : 'w-auto'} flex items-center justify-between gap-4 py-0.5 text-left cursor-pointer`}
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className={`flex items-center justify-center w-6 h-6 rounded-lg ${pendingApproval ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' : 'bg-sky-500/10 text-sky-400 border border-sky-500/20'} shrink-0`}>
+              <Wrench size={12} strokeWidth={2.5} />
+            </div>
+            <div className="flex flex-col min-w-0">
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] font-black uppercase tracking-[0.12em] truncate ${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-300'}`}>
+                  {call.name}
                 </span>
-              ) : null}
+                {pendingApproval && (
+                  <span className="inline-flex items-center rounded-full border border-rose-500/35 bg-rose-500/15 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-rose-300 animate-pulse">
+                    Action Required
+                  </span>
+                )}
+                {terminalIdFromMetadata && onOpenTerminal ? (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenTerminal(terminalIdFromMetadata);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-sky-300 hover:bg-sky-500/20 transition-colors"
+                    title={`Open terminal ${terminalIdFromMetadata}`}
+                  >
+                    <Terminal size={9} />
+                    T:{terminalIdFromMetadata}
+                  </button>
+                ) : null}
+              </div>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              {active && <Loader2 size={12} className={`animate-spin ${pendingApproval ? 'text-rose-300' : 'text-sky-500'}`} />}
-              <ChevronDown size={14} className={`${pendingApproval ? 'text-rose-300' : 'text-sky-600 dark:text-sky-400'} transition-transform ${expanded ? 'rotate-180' : ''}`} />
-            </div>
-          </button>
-          {expanded ? (
-            <div className={`mt-3 border-t border-sky-500/10 pt-3 grid ${isScreenshotCall ? 'grid-cols-1' : 'grid-cols-2'} gap-3 animate-in fade-in duration-200`}>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {active && <Loader2 size={12} className={`animate-spin ${pendingApproval ? 'text-rose-300' : 'text-sky-500'}`} />}
+            {expanded || pendingApproval ? (
+              <ChevronDown size={14} strokeWidth={3} className={`${pendingApproval ? 'text-rose-300' : 'text-sky-400'} transition-transform duration-500 ${expanded ? 'rotate-180 opacity-40' : 'opacity-100'}`} />
+            ) : (
+              <div className="inline-flex items-center gap-1 rounded-full border border-sky-500/15 bg-sky-500/[0.05] px-2 py-1 text-[8px] font-bold uppercase tracking-[0.14em] text-sky-400/80 opacity-0 transition-all duration-200 group-hover/card:opacity-100 group-hover/card:border-sky-500/30 group-hover/card:bg-sky-500/[0.08] group-hover/card:text-sky-300">
+                <ChevronDown size={10} strokeWidth={3} />
+                Click to expand
+              </div>
+            )}
+          </div>
+        </button>
+
+        {expanded ? (
+          <div className="mt-0 pt-3 animate-in fade-in slide-in-from-top-1 duration-200">
+            <div className="space-y-6">
               {!isScreenshotCall ? (
-                <div className="min-w-0">
-                  <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Input</p>
-                  <ToolPayloadView
-                    raw={call.argumentsJson}
-                    emptyLabel="No input payload."
-                    toolName={call.name}
-                    payloadKind="input"
-                  />
+                <div>
+                  <div className="mb-2.5 flex items-center gap-2">
+                    <div className="flex items-center justify-center w-7 h-7 rounded-full bg-[color:var(--surface-1)] border border-sky-500/30 text-sky-500/60 shadow-sm shrink-0">
+                      <Terminal size={14} />
+                    </div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-600 dark:text-sky-300">Arguments</p>
+                    <div className="h-px flex-1 bg-gradient-to-r from-sky-500/30 to-transparent" />
+                  </div>
+                  <div className="pl-9">
+                    <ToolPayloadView
+                      raw={call.argumentsJson}
+                      emptyLabel="No input."
+                      toolName={call.name}
+                      payloadKind="input"
+                    />
+                  </div>
                 </div>
               ) : null}
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <p className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Output</p>
+              <div className="pb-2">
+                <div className="mb-2.5 flex items-center gap-2">
+                  <div className={`flex items-center justify-center w-7 h-7 rounded-full border shrink-0 ${call.isError ? 'bg-rose-500/10 border-rose-500/20 text-rose-500/60' : 'bg-[color:var(--surface-1)] border-emerald-500/20 text-emerald-500/60'} shadow-sm`}>
+                    {active ? <Loader2 size={14} className="animate-spin" /> : call.isError ? <X size={14} strokeWidth={3} /> : <Check size={14} strokeWidth={3} />}
+                  </div>
+                  <p className={`text-[10px] font-black uppercase tracking-[0.2em] ${call.isError ? 'text-rose-500/60' : 'text-emerald-500/60'}`}>Result</p>
+                  <div className={`h-px flex-1 bg-gradient-to-r ${call.isError ? 'from-rose-500/20' : 'from-emerald-500/20'} to-transparent`} />
                   {call.isError && (
-                    <span className="inline-flex items-center rounded-full border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest text-rose-500">
+                    <span className="inline-flex items-center rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[7px] font-black uppercase tracking-widest text-rose-500">
                       Error
                     </span>
                   )}
                 </div>
-                <div className="space-y-2">
+                <div className="pl-9 space-y-4">
                   <ToolPayloadView
                     raw={call.outputJson}
                     emptyLabel={active ? 'Running tool...' : 'No output payload.'}
@@ -725,47 +553,51 @@ function StreamToolCard({
                     payloadKind="output"
                   />
                   {canResolveApproval && approvalRef ? (
-                    <div className="flex items-center gap-2 pt-1">
+                    <div className="flex items-center gap-3 pt-1">
                       <button
                         type="button"
                         onClick={() => onResolveApproval(approvalRef, 'reject')}
                         disabled={approvalActionBusy}
-                        className="inline-flex items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-rose-300 hover:bg-rose-500/20 disabled:opacity-60"
+                        className="inline-flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-rose-400 hover:bg-rose-500/15 transition-all"
                       >
-                        {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
-                        Reject
+                        {approvalActionBusy ? <Loader2 size={10} className="animate-spin" /> : <X size={10} strokeWidth={3} />}
+                        Deny
                       </button>
                       <button
                         type="button"
                         onClick={() => onResolveApproval(approvalRef, 'approve')}
                         disabled={approvalActionBusy}
-                        className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-60"
+                        className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/5 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-500/15 transition-all"
                       >
-                        {approvalActionBusy ? <Loader2 size={11} className="animate-spin" /> : null}
-                        Approve
+                        {approvalActionBusy ? <Loader2 size={10} className="animate-spin" /> : <CheckCircle2 size={10} strokeWidth={3} />}
+                        Confirm
                       </button>
                     </div>
                   ) : null}
                   {approvalLinkMissing ? (
-                    <p className="text-[10px] leading-relaxed text-amber-300">
-                      Pending approval detected but controls are unavailable. Refresh and stop/retry this run if it remains stuck.
-                    </p>
+                    <div className="flex items-start gap-2 p-2 rounded-lg bg-amber-500/5 border border-amber-500/20">
+                      <AlertCircle size={12} className="text-amber-500 shrink-0 mt-0.5" />
+                      <p className="text-[9px] leading-relaxed text-amber-400/80 font-medium">
+                        Action required but controls are detached.
+                      </p>
+                    </div>
                   ) : null}
                 </div>
               </div>
             </div>
-          ) : (
-            <ToolPayloadCompactSummary
-              toolName={call.name}
-              inputRaw={call.argumentsJson}
-              outputRaw={call.outputJson}
-              outputEmptyLabel={active ? 'Running tool...' : 'No output payload.'}
-              outputError={call.isError}
-              hideInput={isScreenshotCall}
-            />
-          )}
-        </div>
+          </div>
+        ) : (
+          <ToolPayloadCompactSummary
+            toolName={call.name}
+            inputRaw={call.argumentsJson}
+            outputRaw={call.outputJson}
+            outputEmptyLabel={active ? 'Running tool...' : 'No output payload.'}
+            outputError={call.isError}
+            hideInput={isScreenshotCall}
+          />
+        )}
       </div>
+    </div>
   );
 }
 
@@ -775,10 +607,20 @@ export function SessionsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { id: routeSessionId } = useParams<{ id: string }>();
+  const sessionRoute = useCallback(
+    (sessionId?: string | null) => instanceRouteFromPath(location.pathname, sessionId ? `sessions/${sessionId}` : 'sessions'),
+    [location.pathname],
+  );
+  const activeInstanceName = useMemo(() => {
+    const match = location.pathname.match(/^\/instances\/([^/]+)/);
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
+  }, [location.pathname]);
 
+  const [instances, setInstances] = useState<SentinelInstance[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const { confirmSessionDelete, sessionDeleteConfirmDialog } = useSessionDeleteConfirmation();
   const [settingMainSessionId, setSettingMainSessionId] = useState<string | null>(null);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -795,6 +637,8 @@ export function SessionsPage() {
     const raw = localStorage.getItem(AGENT_MODE_STORAGE_KEY);
     return raw && raw.trim() ? raw.trim() : null;
   });
+  const [isSessionDropdownOpen, setIsSessionDropdownOpen] = useState(false);
+  const [sessionDropdownRect, setSessionDropdownRect] = useState<{ left: number; top: number; width: number } | null>(null);
   const [selectedTier, setSelectedTier] = useState(
     () => parseTier(localStorage.getItem('sentinel-selected-tier')) ?? 'normal',
   );
@@ -812,25 +656,93 @@ export function SessionsPage() {
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const [composer, setComposer] = useState('');
   const [composerAttachments, setComposerAttachments] = useState<MessageAttachment[]>([]);
+  const [retryCandidate, setRetryCandidate] = useState<{ messageId: string; error: string } | null>(null);
+  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null);
 
   const [streaming, setStreaming] = useState<StreamingState>(defaultStreamingState);
   const [resolvingApprovalKey, setResolvingApprovalKey] = useState<string | null>(null);
 
   const [tasks, setTasks] = useState<SubAgentTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [rightRailTab, setRightRailTab] = useState<'browser' | 'sub_agents' | 'runtime'>('browser');
-  const [runtimeStatus, setRuntimeStatus] = useState<SessionRuntimeStatus | null>(null);
+  const [rightRailTab, setRightRailTab] = useState<RightRailTab>('runtime');
+  // Selected sub-view inside the Runtime tab. Defaults to Desktop (the most
+  // recognizable "what is the agent doing" surface). Auto-promoted to
+  // `terminals` the first time a terminal opens — see the terminal_opened
+  // WS handler below for the rule.
+  const [runtimeView, setRuntimeView] = useState<RuntimeView>('desktop');
+  // Tracks the moment the user last manually picked a runtimeView. Used to
+  // suppress auto-focus when the user has just expressed an intent — we
+  // don't want the agent's activity stealing focus a half-second later.
+  const lastRuntimeViewIntentRef = useRef<number>(0);
+  // Refs to the three runtime sub-tab buttons + the strip container, so the
+  // sliding indicator can size to the *actual* active button instead of a
+  // calc'd third. When the rail is narrow and a button's content (icon +
+  // label + badge) overflows its grid cell, the cell-based indicator falls
+  // out of alignment — measuring offsetLeft/offsetWidth dodges that whole
+  // class of bug.
+  const runtimeTabRefs = useRef<Record<RuntimeView, HTMLButtonElement | null>>({
+    desktop: null,
+    terminals: null,
+    files: null,
+  });
+  const runtimeStripRef = useRef<HTMLDivElement | null>(null);
+  const [runtimeIndicator, setRuntimeIndicator] = useState<{ left: number; width: number } | null>(null);
+  // Centralised predicates so every conditional in the file reads the same
+  // way and a future rename only touches one line. The Runtime tab is a
+  // composite, so individual sub-views are gated on both rightRailTab AND
+  // runtimeView.
+  const isRuntimeTab = rightRailTab === 'runtime';
+  const showDesktopView = isRuntimeTab && runtimeView === 'desktop';
+  const showTerminalsView = isRuntimeTab && runtimeView === 'terminals';
+  const showFilesView = isRuntimeTab && runtimeView === 'files';
+  // Pills above the chat composer surface every tmux-backed terminal the
+  // agent (or the user) has opened in the current chat session. State is
+  // driven by `terminal_opened/closed/busy` WS events plus the initial
+  // `connected` payload that lists already-live terminals on page load.
+  const [activeTerminals, setActiveTerminals] = useState<ActiveTerminal[]>([]);
+  const [focusedTerminalId, setFocusedTerminalId] = useState<string | null>(null);
+
+  // Position the runtime-tabs sliding indicator under the active button.
+  // useLayoutEffect runs before paint, so the indicator never flashes at the
+  // wrong width. We re-measure on view change, on badge changes (since they
+  // mutate button widths), and on rail resize via ResizeObserver below.
+  useLayoutEffect(() => {
+    if (!isRuntimeTab) return;
+    const active = runtimeTabRefs.current[runtimeView];
+    if (!active) return;
+    setRuntimeIndicator({ left: active.offsetLeft, width: active.offsetWidth });
+  }, [isRuntimeTab, runtimeView, activeTerminals.length]);
+
+  useEffect(() => {
+    const strip = runtimeStripRef.current;
+    if (!strip || !isRuntimeTab) return;
+    // Strip width changes when the user resizes the right rail. Reread the
+    // active button's box and reapply. ResizeObserver fires once on attach
+    // too, so this also handles the initial mount cleanly.
+    const observer = new ResizeObserver(() => {
+      const active = runtimeTabRefs.current[runtimeView];
+      if (!active) return;
+      setRuntimeIndicator({ left: active.offsetLeft, width: active.offsetWidth });
+    });
+    observer.observe(strip);
+    return () => observer.disconnect();
+  }, [isRuntimeTab, runtimeView]);
   const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
   const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
-  const [runtimeInspectorTab, setRuntimeInspectorTab] = useState<'files' | 'commands'>('files');
+  const [runtimeFilesRefreshKey, setRuntimeFilesRefreshKey] = useState(0);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
+  const [runtimeStatusLoading, setRuntimeStatusLoading] = useState(false);
+  const [showPassingRuntimeChecks, setShowPassingRuntimeChecks] = useState(false);
+  const [showOptionalRuntimeWarnings, setShowOptionalRuntimeWarnings] = useState(false);
+
   const [runtimePath, setRuntimePath] = useState('');
-  const [runtimeChangedFiles, setRuntimeChangedFiles] = useState<SessionRuntimeGitChangedFilesResponse | null>(null);
-  const [runtimeChangedFilesLoading, setRuntimeChangedFilesLoading] = useState(false);
-  const [runtimeCommandOutputCollapsed, setRuntimeCommandOutputCollapsed] = useState<Record<string, boolean>>({});
+  const [runtimeRepoChangesByRoot, setRuntimeRepoChangesByRoot] = useState<Record<string, SessionRuntimeGitChangedFilesResponse | null>>({});
+  const [runtimeRepoChangesLoadingByRoot, setRuntimeRepoChangesLoadingByRoot] = useState<Record<string, boolean>>({});
+  const [runtimeExpandedGitDirs, setRuntimeExpandedGitDirs] = useState<Record<string, boolean>>({});
   const [workbenchTabs, setWorkbenchTabs] = useState<WorkbenchTab[]>([]);
   const [activeWorkbenchPath, setActiveWorkbenchPath] = useState<string | null>(null);
   const [workbenchLoadingPath, setWorkbenchLoadingPath] = useState<string | null>(null);
-  const [workbenchWidth, setWorkbenchWidth] = useState(520);
+  const [workbenchWidth, setWorkbenchWidth] = useState(442);
   const [isWorkbenchResizing, setIsWorkbenchResizing] = useState(false);
   const [workbenchShowDiffByPath, setWorkbenchShowDiffByPath] = useState<Record<string, boolean>>({});
   const [workbenchDiffBaseRefByPath, setWorkbenchDiffBaseRefByPath] = useState<Record<string, string>>({});
@@ -849,12 +761,30 @@ export function SessionsPage() {
   const [isTerminatingTask, setIsTerminatingTask] = useState(false);
   const [confirmTerminateTaskId, setConfirmTerminateTaskId] = useState<string | null>(null);
 
-  const [liveView, setLiveView] = useState<PlaywrightLiveView | null>(null);
+  const [liveView, setLiveView] = useState<RuntimeLiveView | null>(null);
+  const [runtimeBooting, setRuntimeBooting] = useState(false);
+  const isDesktopRuntimeStarting = Boolean(liveView?.enabled && !liveView.available) || runtimeBooting;
+  const [debugMenuOpen, setDebugMenuOpen] = useState(false);
+  const [debugEvents, setDebugEvents] = useState<SessionDebugEvent[]>([]);
   const [mode, setMode] = useState<'solo' | 'advanced'>(
       () => (localStorage.getItem('sentinel-mode') as 'solo' | 'advanced') ?? 'advanced',
   );
 
   const hasActiveSubAgentTasks = tasks.some((task) => task.status === 'running' || task.status === 'pending');
+  const runtimeRepoChangeSections = useMemo(
+    () =>
+      Object.entries(runtimeRepoChangesByRoot).map(([rootPath, payload]) => ({
+        id: rootPath,
+        title:
+          (payload?.git_root || rootPath)
+            .split('/')
+            .filter(Boolean)
+            .pop() || rootPath || 'repo',
+        tree: buildRuntimeGitChangedTree(payload),
+        loading: Boolean(runtimeRepoChangesLoadingByRoot[rootPath]),
+      })),
+    [runtimeRepoChangesByRoot, runtimeRepoChangesLoadingByRoot],
+  );
 
   useEffect(() => {
     localStorage.setItem('sentinel-mode', mode);
@@ -870,12 +800,15 @@ export function SessionsPage() {
   }, [selectedAgentMode]);
 
   useEffect(() => {
-    if (!isEffortDropdownOpen && !isAgentModeDropdownOpen) return;
+    if (!isSessionDropdownOpen && !isEffortDropdownOpen && !isAgentModeDropdownOpen) return;
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
+      if (sessionDropdownRef.current?.contains(target)) return;
+      if (sessionDropdownMenuRef.current?.contains(target)) return;
       if (effortDropdownRef.current?.contains(target)) return;
       if (agentModeDropdownRef.current?.contains(target)) return;
+      setIsSessionDropdownOpen(false);
       setIsEffortDropdownOpen(false);
       setIsAgentModeDropdownOpen(false);
     };
@@ -883,16 +816,62 @@ export function SessionsPage() {
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
     };
-  }, [isEffortDropdownOpen, isAgentModeDropdownOpen]);
+  }, [isSessionDropdownOpen, isEffortDropdownOpen, isAgentModeDropdownOpen]);
+
+  const updateSessionDropdownRect = useCallback(() => {
+    const button = sessionDropdownButtonRef.current;
+    if (!button) return;
+    const rect = button.getBoundingClientRect();
+    setSessionDropdownRect({
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - 368)),
+      top: rect.bottom + 8,
+      width: rect.width,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isSessionDropdownOpen) return;
+    updateSessionDropdownRect();
+    window.addEventListener('resize', updateSessionDropdownRect);
+    window.addEventListener('scroll', updateSessionDropdownRect, true);
+    return () => {
+      window.removeEventListener('resize', updateSessionDropdownRect);
+      window.removeEventListener('scroll', updateSessionDropdownRect, true);
+    };
+  }, [isSessionDropdownOpen, updateSessionDropdownRect]);
 
   const [isCompacting, setIsCompacting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
-  const [isResettingBrowser, setIsResettingBrowser] = useState(false);
-  const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(false);
+  const [runtimeActionBusy, setRuntimeActionBusy] = useState(false);
+  const [isDesktopResolutionChanging, setIsDesktopResolutionChanging] = useState(false);
+  const [desktopResolution, setDesktopResolutionState] = useState(() => (
+    localStorage.getItem('sentinel-desktop-resolution') || DEFAULT_DESKTOP_RESOLUTION
+  ));
+  const [desktopLayoutNonce, setDesktopLayoutNonce] = useState(0);
+  const [resetMenuOpen, setResetMenuOpen] = useState(false);
+  const resetMenuRef = useRef<HTMLDivElement>(null);
+  const [isDesktopFullscreen, setIsDesktopFullscreen] = useState(false);
   const [rightPanelWidth, setRightPanelWidth] = useState(400);
   const [isResizing, setIsResizing] = useState(false);
 
+  useEffect(() => {
+    if (isDesktopFullscreen) {
+      setResetMenuOpen(false);
+      setIsSessionDropdownOpen(false);
+      setIsEffortDropdownOpen(false);
+      setIsAgentModeDropdownOpen(false);
+    }
+  }, [isDesktopFullscreen]);
+
+  useEffect(() => {
+    if (!DESKTOP_RESOLUTION_PRESETS.some((preset) => preset.value === desktopResolution)) {
+      setDesktopResolutionState(DEFAULT_DESKTOP_RESOLUTION);
+      localStorage.setItem('sentinel-desktop-resolution', DEFAULT_DESKTOP_RESOLUTION);
+    }
+  }, [desktopResolution]);
+
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const messagesRef = useRef<Message[]>([]);
   const shouldAutoScrollRef = useRef(true);
   const lastScrollTopRef = useRef(0);
   const autoScrollRafRef = useRef<number | null>(null);
@@ -903,6 +882,9 @@ export function SessionsPage() {
   const loadingOlderRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const sessionDropdownRef = useRef<HTMLDivElement | null>(null);
+  const sessionDropdownButtonRef = useRef<HTMLButtonElement | null>(null);
+  const sessionDropdownMenuRef = useRef<HTMLDivElement | null>(null);
   const effortDropdownRef = useRef<HTMLDivElement | null>(null);
   const agentModeDropdownRef = useRef<HTMLDivElement | null>(null);
   const fullscreenFrameRef = useRef<HTMLIFrameElement | null>(null);
@@ -912,10 +894,60 @@ export function SessionsPage() {
   const activeSessionIdRef = useRef<string | null>(routeSessionId ?? null);
   const contextUsageRequestRef = useRef(0);
   const wsInstanceRef = useRef(0);
-  const approvalLookupInFlightRef = useRef<Set<string>>(new Set());
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const shouldRestoreComposerFocusRef = useRef(true);
+  const composerFocusTimerRefs = useRef<number[]>([]);
 
   // Keep refs in sync so WS callbacks can read current values
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => {
+    return () => {
+      composerFocusTimerRefs.current.forEach((timer) => window.clearTimeout(timer));
+      composerFocusTimerRefs.current = [];
+    };
+  }, []);
+  useEffect(() => {
+    setRetryCandidate(null);
+    setRetryingMessageId(null);
+    composerFocusTimerRefs.current.forEach((timer) => window.clearTimeout(timer));
+    composerFocusTimerRefs.current = [];
+    shouldRestoreComposerFocusRef.current = true;
+  }, [activeSessionId]);
+
+  const handleDesktopInteract = useCallback(() => {
+    shouldRestoreComposerFocusRef.current = false;
+    composerFocusTimerRefs.current.forEach((timer) => window.clearTimeout(timer));
+    composerFocusTimerRefs.current = [];
+  }, []);
+
+  const handleDesktopFrameLoad = useCallback(() => {
+    if (!shouldRestoreComposerFocusRef.current) return;
+    if (!showDesktopView || isDesktopFullscreen) return;
+
+    composerFocusTimerRefs.current.forEach((timer) => window.clearTimeout(timer));
+    composerFocusTimerRefs.current = [];
+
+    const restoreFocus = () => {
+      if (!shouldRestoreComposerFocusRef.current) return;
+      const activeElement = document.activeElement as HTMLElement | null;
+      const activeTag = activeElement?.tagName;
+      const canRestoreFocus =
+        !activeElement ||
+        activeElement === document.body ||
+        activeElement === document.documentElement ||
+        activeTag === 'IFRAME' ||
+        activeElement === composerRef.current;
+
+      if (!canRestoreFocus) return;
+      composerRef.current?.focus({ preventScroll: true });
+    };
+
+    [0, 100, 400, 900, 1600, 2600].forEach((delay) => {
+      const timer = window.setTimeout(restoreFocus, delay);
+      composerFocusTimerRefs.current.push(timer);
+    });
+  }, [isDesktopFullscreen, showDesktopView]);
 
   const streamBusy =
     streaming.isThinking ||
@@ -924,6 +956,13 @@ export function SessionsPage() {
     streaming.activeToolCalls.length > 0 ||
     streaming.agentIteration > 0 ||
     isCompacting;
+  const hasPendingStreamingApproval =
+    streaming.activeToolCalls.some((call) => isWaitingApproval(call.metadata)) ||
+    streaming.completedToolCalls.some((call) => isWaitingApproval(call.metadata));
+  const showThinkingIndicator = shouldShowThinkingIndicator(streaming, {
+    streamBusy,
+    hasPendingApproval: hasPendingStreamingApproval,
+  });
 
   const activeToolPayloadChars = useMemo(
       () =>
@@ -970,17 +1009,30 @@ export function SessionsPage() {
       () => sessions.find((session) => session.id === activeSessionId) ?? null,
       [sessions, activeSessionId],
   );
-
-  const runtimeCommandActions = useMemo(() => {
-    return buildRuntimeCommandRows(runtimeStatus, { newestFirst: true, limit: 50 });
-  }, [runtimeStatus]);
-
-  const toggleRuntimeCommandOutput = useCallback((rowId: string) => {
-    setRuntimeCommandOutputCollapsed((current) => ({
-      ...current,
-      [rowId]: !(current[rowId] ?? true),
-    }));
-  }, []);
+  const activeInstance = useMemo(
+    () => instances.find((instance) => instance.name === activeInstanceName) ?? null,
+    [instances, activeInstanceName],
+  );
+  const instancePickerLabel = activeInstance?.display_name || activeInstance?.name || activeInstanceName || 'Choose instance';
+  const rightRailTabs = useMemo<Array<{ id: RightRailTab; label: string }>>(
+    () => {
+      // Three primary tabs: Runtime (composite — Desktop/Terminals/Files),
+      // Agents (sub-agent tasks), Sessions (history). The previous five-tab
+      // strip is unflattened here: Desktop/Terminal/Files moved into the
+      // Runtime sub-segmented control rendered below the tab strip.
+      const tabs: Array<{ id: RightRailTab; label: string }> = [
+        { id: 'runtime', label: 'Runtime' },
+        { id: 'sub_agents', label: 'Agents' },
+        { id: 'sessions', label: 'Sessions' },
+      ];
+      if (SESSION_DEBUG_PANEL_ENABLED) {
+        tabs.push({ id: 'debug', label: 'Debug' });
+      }
+      return tabs;
+    },
+    [],
+  );
+  const rightRailActiveIndex = Math.max(0, rightRailTabs.findIndex((tab) => tab.id === rightRailTab));
 
   const workbenchVisible = workbenchTabs.length > 0;
   const activeWorkbenchTab = useMemo(() => {
@@ -1001,20 +1053,6 @@ export function SessionsPage() {
   const activeWorkbenchBaseRefOptions = useMemo(
     () => (activeWorkbenchTab ? buildRuntimeDiffBaseRefOptions(activeWorkbenchGitRoots, activeWorkbenchBaseRef) : ['HEAD']),
     [activeWorkbenchTab, activeWorkbenchGitRoots, activeWorkbenchBaseRef],
-  );
-
-  const browserToolResults = useMemo(
-    () =>
-      messages
-        .filter(
-          (message) =>
-            message.role === 'tool_result' &&
-            typeof message.tool_name === 'string' &&
-            message.tool_name.startsWith('browser_')
-        )
-        .slice(-25)
-        .reverse(),
-    [messages],
   );
 
   const toolArgumentsByCallId = useMemo(() => buildToolArgumentsByCallId(messages), [messages]);
@@ -1140,15 +1178,21 @@ export function SessionsPage() {
     api.post(`/sessions/${sessionId}/read`, {}).catch(() => {/* best-effort */});
   }, []);
 
+  const onInstanceClick = useCallback((instanceName: string) => {
+    if (!instanceName || instanceName === activeInstanceName) return;
+    navigate(`/instances/${encodeURIComponent(instanceName)}/sessions`);
+  }, [activeInstanceName, navigate]);
+
   const onSessionClick = useCallback((id: string) => {
     const previousId = activeSessionIdRef.current;
     if (previousId) {
       markSessionRead(previousId);
     }
+    setRuntimeBooting(true);
     setActiveSessionId(id);
-    navigate(`/sessions/${id}`);
+    navigate(sessionRoute(id));
     markSessionRead(id);
-  }, [markSessionRead, navigate]);
+  }, [markSessionRead, navigate, sessionRoute]);
 
   const startResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1167,15 +1211,17 @@ export function SessionsPage() {
 
   const resize = useCallback((e: MouseEvent) => {
     if (!isResizing) return;
-    const newWidth = window.innerWidth - e.clientX;
-    const clamped = Math.max(300, Math.min(800, newWidth));
+    const workbenchReserve = workbenchVisible ? workbenchWidth : 0;
+    const maxWidth = Math.max(300, window.innerWidth - workbenchReserve - 360);
+    const newWidth = e.clientX;
+    const clamped = Math.max(300, Math.min(maxWidth, newWidth));
     setRightPanelWidth(clamped);
-  }, [isResizing]);
+  }, [isResizing, workbenchVisible, workbenchWidth]);
 
   const resizeWorkbench = useCallback((e: MouseEvent) => {
     if (!isWorkbenchResizing) return;
     const maxWidth = Math.max(420, window.innerWidth - rightPanelWidth - 360);
-    const newWidth = window.innerWidth - rightPanelWidth - e.clientX;
+    const newWidth = e.clientX - rightPanelWidth;
     const clamped = Math.max(360, Math.min(maxWidth, newWidth));
     setWorkbenchWidth(clamped);
   }, [isWorkbenchResizing, rightPanelWidth]);
@@ -1196,6 +1242,7 @@ export function SessionsPage() {
   // Effects
   useEffect(() => {
     if (routeSessionId && routeSessionId !== activeSessionId) {
+      setRuntimeBooting(true);
       setActiveSessionId(routeSessionId);
     }
   }, [routeSessionId, activeSessionId]);
@@ -1214,11 +1261,45 @@ export function SessionsPage() {
   }, [editingSessionId, sessions]);
 
   useEffect(() => {
+    void fetchInstances();
     void fetchSessions({ autoSelectIfEmpty: true });
     void fetchModels();
     void fetchAgentModes();
     void fetchLiveView();
-  }, []);
+    void fetchRuntimeStatus();
+  }, [activeInstanceName]);
+
+  // Re-fetch live view when the active session changes
+  useEffect(() => {
+    setRuntimeBooting(true);
+    void fetchLiveView();
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!activeSessionId || !showDesktopView) return;
+    if (!runtimeBooting && liveView?.enabled && liveView.available) return;
+
+    let cancelled = false;
+    const refresh = async () => {
+      if (cancelled) return;
+      await fetchLiveView();
+    };
+    const interval = window.setInterval(() => {
+      void refresh();
+    }, 2000);
+
+    void refresh();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeSessionId, showDesktopView, runtimeBooting, liveView?.enabled, liveView?.available]);
+
+  useEffect(() => {
+    if (!showDesktopView) return;
+    void fetchRuntimeStatus();
+  }, [showDesktopView, activeInstanceName]);
 
   // Poll sessions every 30s to pick up unread changes
   useEffect(() => {
@@ -1242,11 +1323,11 @@ export function SessionsPage() {
       setContextTokenEstimate(null);
       setContextTokenPercent(null);
       setTasks([]);
-      setRuntimeStatus(null);
       setRuntimeFiles(null);
       setRuntimePath('');
-      setRuntimeChangedFiles(null);
-      setRuntimeChangedFilesLoading(false);
+      setRuntimeRepoChangesByRoot({});
+      setRuntimeRepoChangesLoadingByRoot({});
+      setRuntimeExpandedGitDirs({});
       setWorkbenchTabs([]);
       setActiveWorkbenchPath(null);
       setWorkbenchShowDiffByPath({});
@@ -1270,11 +1351,11 @@ export function SessionsPage() {
     setContextTokenEstimate(null);
     setContextTokenPercent(null);
     setTasks([]);
-    setRuntimeStatus(null);
     setRuntimeFiles(null);
     setRuntimePath('');
-    setRuntimeChangedFiles(null);
-    setRuntimeChangedFilesLoading(false);
+    setRuntimeRepoChangesByRoot({});
+    setRuntimeRepoChangesLoadingByRoot({});
+    setRuntimeExpandedGitDirs({});
     setWorkbenchTabs([]);
     setActiveWorkbenchPath(null);
     setWorkbenchShowDiffByPath({});
@@ -1283,6 +1364,8 @@ export function SessionsPage() {
     setWorkbenchDiffBaseRefByPath({});
     setWorkbenchGitRootsByPath({});
     setStreaming(defaultStreamingState);
+    setActiveTerminals([]);
+    setFocusedTerminalId(null);
     setHasMoreMessages(false);
     oldestServerMessageIdRef.current = null;
     loadingOlderRef.current = false;
@@ -1294,7 +1377,6 @@ export function SessionsPage() {
     void loadMessages(activeSessionId);
     void fetchContextUsage(activeSessionId);
     void fetchTasks(activeSessionId);
-    void fetchRuntimeStatus(activeSessionId);
     void fetchRuntimeFiles(activeSessionId, '');
     void connectWs(activeSessionId);
 
@@ -1314,10 +1396,17 @@ export function SessionsPage() {
   }, [activeSessionId, hasActiveSubAgentTasks]);
 
   useEffect(() => {
-    if (!activeSessionId || rightRailTab !== 'runtime') return;
+    if (!activeSessionId || !showFilesView) return;
+    void fetchRuntimeFiles(activeSessionId, runtimePath, {
+      refreshGit: true,
+      silent: false,
+    });
+  }, [activeSessionId, showFilesView]);
+
+  useEffect(() => {
+    if (!activeSessionId || !showFilesView) return;
     if (streaming.connection !== 'connected') return;
     const timer = window.setInterval(() => {
-      void fetchRuntimeStatus(activeSessionId, 120);
       void fetchRuntimeFiles(activeSessionId, runtimePath, {
         refreshGit: true,
         silent: true,
@@ -1326,12 +1415,7 @@ export function SessionsPage() {
     return () => {
       window.clearInterval(timer);
     };
-  }, [activeSessionId, rightRailTab, runtimePath, streaming.connection]);
-
-  useEffect(() => {
-    if (!activeSessionId || rightRailTab !== 'runtime') return;
-    void fetchRuntimeChangedFilesForExplorer(activeSessionId, runtimePath);
-  }, [activeSessionId, rightRailTab, runtimePath]);
+  }, [activeSessionId, showFilesView, runtimePath, streaming.connection]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -1383,10 +1467,18 @@ export function SessionsPage() {
       if (autoSelectIfEmpty && !activeSessionIdRef.current) {
         setActiveSessionId(defaultSession.id);
         activeSessionIdRef.current = defaultSession.id;
-        navigate(`/sessions/${defaultSession.id}`, { replace: true });
+        navigate(sessionRoute(defaultSession.id), { replace: true });
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to load sessions');
+    }
+  }
+
+  async function fetchInstances() {
+    try {
+      setInstances(await api.get<SentinelInstance[]>('/instances'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to load instances');
     }
   }
 
@@ -1396,12 +1488,19 @@ export function SessionsPage() {
       toast.error('Main session cannot be deleted');
       return;
     }
-    const label = (session.title || 'Session').trim() || 'Session';
-    const confirmed = window.confirm(`Delete "${label}" and all its messages? This cannot be undone.`);
-    if (!confirmed) return;
-
     setDeletingSessionId(session.id);
     try {
+      const label = (session.title || 'Session').trim() || 'Session';
+      const workspaceSummary = await getSessionDeleteWorkspaceSummary(session.id);
+      if (workspaceSummary.needsConfirmation) {
+        const confirmed = await confirmSessionDelete({
+          kind: 'single',
+          label,
+          topLevelEntries: workspaceSummary.topLevelEntries,
+        });
+        if (!confirmed) return;
+      }
+
       await api.delete<{ status: string }>(`/sessions/${session.id}`);
       let remaining: Session[] = [];
       setSessions((current) => {
@@ -1413,13 +1512,13 @@ export function SessionsPage() {
       if (activeSessionId === session.id) {
         const fallbackId =
           (defaultSessionId && defaultSessionId !== session.id
-            ? remaining.find((item) => item.id === defaultSessionId)?.id ?? null
+            ? remaining.find((item) => item.id === defaultSessionId)?.id
             : null) ?? remaining[0]?.id ?? null;
         setActiveSessionId(fallbackId);
         if (fallbackId) {
-          navigate(`/sessions/${fallbackId}`, { replace: true });
+          navigate(sessionRoute(fallbackId), { replace: true });
         } else {
-          navigate('/sessions', { replace: true });
+          navigate(sessionRoute(), { replace: true });
         }
       }
       toast.success('Session deleted');
@@ -1444,7 +1543,7 @@ export function SessionsPage() {
         ),
       );
       setActiveSessionId(updated.id);
-      navigate(`/sessions/${updated.id}`);
+      navigate(sessionRoute(updated.id));
       toast.success('Main session updated');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to set main session');
@@ -1499,11 +1598,26 @@ export function SessionsPage() {
     if (deletingSessionId) return;
     const targetIds = selectedSessionIds.filter((id) => id !== defaultSessionId);
     if (targetIds.length === 0) return;
-    const confirmed = window.confirm(`Delete ${targetIds.length} selected sessions? This cannot be undone.`);
-    if (!confirmed) return;
 
     setDeletingSessionId('bulk');
     try {
+      const workspaceSummaries = await Promise.all(
+        targetIds.map((id) => getSessionDeleteWorkspaceSummary(id)),
+      );
+      const nonEmptyWorkspaceCount = workspaceSummaries.filter((summary) => summary.needsConfirmation).length;
+      if (nonEmptyWorkspaceCount > 0) {
+        const topLevelEntries = Array.from(
+          new Set(workspaceSummaries.flatMap((summary) => summary.topLevelEntries)),
+        ).slice(0, 10);
+        const confirmed = await confirmSessionDelete({
+          kind: 'bulk',
+          sessionCount: targetIds.length,
+          workspaceSessionCount: nonEmptyWorkspaceCount,
+          topLevelEntries,
+        });
+        if (!confirmed) return;
+      }
+
       const results = await Promise.allSettled(
         targetIds.map((id) => api.delete<{ status: string }>(`/sessions/${id}`)),
       );
@@ -1521,13 +1635,13 @@ export function SessionsPage() {
         if (activeSessionId && deletedIds.includes(activeSessionId)) {
           const fallbackId =
             (defaultSessionId && !deletedIds.includes(defaultSessionId)
-              ? remaining.find((session) => session.id === defaultSessionId)?.id ?? null
+              ? remaining.find((session) => session.id === defaultSessionId)?.id
               : null) ?? remaining[0]?.id ?? null;
           setActiveSessionId(fallbackId);
           if (fallbackId) {
-            navigate(`/sessions/${fallbackId}`, { replace: true });
+            navigate(sessionRoute(fallbackId), { replace: true });
           } else {
-            navigate('/sessions', { replace: true });
+            navigate(sessionRoute(), { replace: true });
           }
         }
       }
@@ -1582,32 +1696,143 @@ export function SessionsPage() {
         (defaultMode && available.has(defaultMode) ? defaultMode : null) ??
         items[0].id;
       setSelectedAgentMode(selected);
-    } catch {
+    } catch (error) {
+      console.error('fetchAgentModes failed', error);
       setAgentModes([]);
       setSelectedAgentMode(null);
     }
   }
 
   async function fetchLiveView() {
+    const sid = activeSessionIdRef.current;
+    if (!sid) {
+      setLiveView(null);
+      setRuntimeBooting(false);
+      return;
+    }
     try {
-      const payload = await api.get<PlaywrightLiveView>('/playwright/live-view');
+      const query = new URLSearchParams({ session_id: sid, geometry: desktopResolution });
+      const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?${query.toString()}`);
       setLiveView(payload);
+      if (payload.enabled && payload.available) {
+        setRuntimeBooting(false);
+      } else if (payload.enabled) {
+        setRuntimeBooting(true);
+      } else {
+        setRuntimeBooting(false);
+      }
     } catch {
       setLiveView(null);
     }
   }
 
-  async function resetBrowser() {
-    if (isResettingBrowser) return;
-    setIsResettingBrowser(true);
+  async function fetchRuntimeStatus() {
+    setRuntimeStatusLoading(true);
     try {
-      await api.post('/playwright/reset-browser', {});
-      toast.success('Browser runtime reset successful');
+      const payload = await api.get<RuntimeStatusResponse>('/runtime/status');
+      setRuntimeStatus(payload);
+    } catch {
+      setRuntimeStatus(null);
+    } finally {
+      setRuntimeStatusLoading(false);
+    }
+  }
+
+  async function setDesktopResolution(geometry: string) {
+    if (isDesktopResolutionChanging || geometry === desktopResolution) return;
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    setDesktopResolutionState(geometry);
+    localStorage.setItem('sentinel-desktop-resolution', geometry);
+    setIsDesktopResolutionChanging(true);
+    setRuntimeBooting(true);
+    setDesktopLayoutNonce((value) => value + 1);
+    try {
+      const query = new URLSearchParams({ session_id: sid });
+      const payload = await api.post<RuntimeLiveView>(
+        `/runtime/live-view/resolution?${query.toString()}`,
+        { geometry },
+        { timeoutMs: 60_000 },
+      );
+      setLiveView(payload);
+      if (payload.enabled && payload.available) {
+        setRuntimeBooting(false);
+        setDesktopLayoutNonce((value) => value + 1);
+      } else {
+        toast.error(payload.reason || 'Desktop resolution change failed');
+      }
+    } catch {
+      toast.error('Failed to change desktop resolution');
+      setRuntimeBooting(false);
+    } finally {
+      setIsDesktopResolutionChanging(false);
+    }
+  }
+
+  async function resetBrowser() {
+    if (runtimeActionBusy) return;
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    setRuntimeActionBusy(true);
+    try {
+      await api.post<RuntimeActionResponse>(`/runtime/browser/reset?session_id=${sid}`, {});
+      toast.success('Browser reset');
       await fetchLiveView();
     } catch {
-      toast.error('Failed to reset browser runtime');
+      toast.error('Failed to reset browser');
     } finally {
-      setIsResettingBrowser(false);
+      setRuntimeActionBusy(false);
+    }
+  }
+
+  async function restartDesktop() {
+    if (runtimeActionBusy) return;
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    setRuntimeActionBusy(true);
+    setRuntimeBooting(true);
+    setLiveView(null);
+    try {
+      await api.post<RuntimeActionResponse>(
+        `/runtime/desktop/restart?session_id=${sid}`,
+        { geometry: desktopResolution },
+        { timeoutMs: 60_000 },
+      );
+      toast.success('Desktop restarted');
+      await fetchLiveView();
+    } catch {
+      toast.error('Failed to restart desktop');
+      setRuntimeBooting(false);
+    } finally {
+      setRuntimeActionBusy(false);
+    }
+  }
+
+  async function wipeWorkspace() {
+    if (runtimeActionBusy) return;
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    const label = (activeSession?.title || 'Session').trim() || 'Session';
+    const workspaceSummary = await getSessionDeleteWorkspaceSummary(sid);
+    const confirmed = await confirmSessionDelete({
+      kind: 'workspace_wipe',
+      label,
+      topLevelEntries: workspaceSummary.topLevelEntries,
+    });
+    if (!confirmed) return;
+    setRuntimeActionBusy(true);
+    setRuntimeBooting(true);
+    setLiveView(null);
+    try {
+      await api.post<RuntimeActionResponse>(`/runtime/workspace/wipe?session_id=${sid}`, {}, { timeoutMs: 90_000 });
+      toast.success('Workspace wiped');
+      await fetchLiveView();
+      void fetchRuntimeFiles(sid, '');
+    } catch {
+      toast.error('Failed to wipe workspace');
+      setRuntimeBooting(false);
+    } finally {
+      setRuntimeActionBusy(false);
     }
   }
 
@@ -1625,7 +1850,9 @@ export function SessionsPage() {
         return merged.map((item) => ({ ...item, is_main: item.id === fresh.id }));
       });
       setActiveSessionId(fresh.id);
-      navigate(`/sessions/${fresh.id}`, { replace: true });
+      setRuntimeBooting(true);
+      setLiveView(null);
+      navigate(sessionRoute(fresh.id), { replace: true });
       toast.success('New session started. Memories preserved.');
     } catch {
       toast.error('Failed to reset session');
@@ -1701,6 +1928,9 @@ export function SessionsPage() {
               ...prev,
               isThinking: false,
               isStreaming: false,
+              isCompactingContext: false,
+              agentIteration: 0,
+              agentMaxIterations: 0,
             };
           }
           return {
@@ -1712,6 +1942,9 @@ export function SessionsPage() {
             completedToolCalls: [],
             isThinking: false,
             isStreaming: false,
+            isCompactingContext: false,
+            agentIteration: 0,
+            agentMaxIterations: 0,
           };
         });
       }
@@ -1758,17 +1991,6 @@ export function SessionsPage() {
     finally { setTasksLoading(false); }
   }
 
-  async function fetchRuntimeStatus(sessionId: string, actionLimit = 80) {
-    try {
-      const payload = await api.get<SessionRuntimeStatus>(`/sessions/${sessionId}/runtime?action_limit=${actionLimit}`);
-      if (sessionId !== activeSessionIdRef.current) return;
-      setRuntimeStatus(payload);
-    } catch {
-      if (sessionId !== activeSessionIdRef.current) return;
-      setRuntimeStatus(null);
-    }
-  }
-
   async function fetchRuntimeFiles(
     sessionId: string,
     path = '',
@@ -1787,16 +2009,20 @@ export function SessionsPage() {
       if (sessionId !== activeSessionIdRef.current) return;
       setRuntimeFiles(payload);
       setRuntimePath(payload.path || '');
-      if (options?.refreshGit ?? rightRailTab === 'runtime') {
-        void fetchRuntimeChangedFilesForExplorer(sessionId, payload.path || '', {
-          silent,
+      if (options?.refreshGit ?? showFilesView) {
+        Object.keys(runtimeRepoChangesByRoot).forEach((rootPath) => {
+          void fetchRuntimeChangedFilesForRepo(sessionId, rootPath);
         });
       }
-    } catch {
+    } catch (err) {
       if (sessionId !== activeSessionIdRef.current) return;
-      setRuntimeFiles(null);
-      setRuntimePath(path);
-      setRuntimeChangedFiles(null);
+      // Directory no longer exists — walk up to the nearest valid parent
+      if ((err as { status?: number }).status === 404 && path) {
+        const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+        void fetchRuntimeFiles(sessionId, parent, options);
+        return;
+      }
+      // Preserve the last successful explorer tree on transient refresh failures.
     } finally {
       if (sessionId === activeSessionIdRef.current && !silent) {
         setRuntimeFilesLoading(false);
@@ -1804,29 +2030,58 @@ export function SessionsPage() {
     }
   }
 
-  async function fetchRuntimeChangedFilesForExplorer(
+  async function loadRuntimeDirectoryEntries(path: string): Promise<SessionRuntimeFileEntry[]> {
+    if (!activeSessionId) return [];
+    const query = new URLSearchParams();
+    if (path.trim().length > 0) query.set('path', path.trim());
+    query.set('limit', '400');
+    const suffix = query.toString();
+    const payload = await api.get<SessionRuntimeFilesResponse>(
+      `/sessions/${activeSessionId}/runtime/files${suffix ? `?${suffix}` : ''}`,
+    );
+    if (activeSessionId !== activeSessionIdRef.current) return [];
+    return Array.isArray(payload?.entries) ? payload.entries : [];
+  }
+
+  async function downloadRuntimeEntry(entry: SessionRuntimeFileEntry) {
+    if (!activeSessionId) return;
+    try {
+      const { blob, filename } = await api.download(
+        `/sessions/${activeSessionId}/runtime/download?path=${encodeURIComponent(entry.path)}`,
+        { timeoutMs: 120_000 },
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename || (entry.kind === 'directory' ? `${entry.name}.zip` : entry.name);
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error(entry.kind === 'directory' ? 'Failed to download folder zip' : 'Failed to download file');
+    }
+  }
+
+  async function fetchRuntimeChangedFilesForRepo(
     sessionId: string,
     path: string,
-    options?: { silent?: boolean },
   ): Promise<SessionRuntimeGitChangedFilesResponse | null> {
-    const silent = Boolean(options?.silent);
-    if (!silent) {
-      setRuntimeChangedFilesLoading(true);
-    }
+    setRuntimeRepoChangesLoadingByRoot((current) => ({ ...current, [path]: true }));
     try {
       const payload = await api.get<SessionRuntimeGitChangedFilesResponse>(
         `/sessions/${sessionId}/runtime/git/changed?path=${encodeURIComponent(path)}&limit=200`,
       );
       if (sessionId !== activeSessionIdRef.current) return null;
-      setRuntimeChangedFiles(payload);
+      setRuntimeRepoChangesByRoot((current) => ({ ...current, [path]: payload }));
       return payload;
     } catch {
       if (sessionId !== activeSessionIdRef.current) return null;
-      setRuntimeChangedFiles(null);
+      setRuntimeRepoChangesByRoot((current) => ({ ...current, [path]: null }));
       return null;
     } finally {
-      if (sessionId === activeSessionIdRef.current && !silent) {
-        setRuntimeChangedFilesLoading(false);
+      if (sessionId === activeSessionIdRef.current) {
+        setRuntimeRepoChangesLoadingByRoot((current) => ({ ...current, [path]: false }));
       }
     }
   }
@@ -1841,20 +2096,23 @@ export function SessionsPage() {
       refreshGit: !shouldAutoOpenFirstDiff,
     });
     if (!shouldAutoOpenFirstDiff) return;
-    const changed = await fetchRuntimeChangedFilesForExplorer(activeSessionId, path);
+    const changed = await fetchRuntimeChangedFilesForRepo(activeSessionId, path);
     const firstPath = changed?.entries?.[0]?.path;
     if (!firstPath) return;
     await openRuntimeFileDiff(firstPath);
   }
 
-  async function openRuntimeFile(path: string) {
-    if (!activeSessionId) return;
+  async function openRuntimeFile(
+    path: string,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<boolean> {
+    if (!activeSessionId) return false;
     setWorkbenchLoadingPath(path);
     try {
       const payload = await api.get<SessionRuntimeFilePreviewResponse>(
         `/sessions/${activeSessionId}/runtime/file?path=${encodeURIComponent(path)}&max_bytes=32000`,
       );
-      if (activeSessionId !== activeSessionIdRef.current) return;
+      if (activeSessionId !== activeSessionIdRef.current) return false;
       const nextTab: WorkbenchTab = {
         path: payload.path,
         name: payload.name,
@@ -1882,8 +2140,12 @@ export function SessionsPage() {
           : { ...current, [nextTab.path]: false },
       );
       void fetchRuntimeGitRoots(activeSessionId, nextTab.path);
+      return true;
     } catch {
-      toast.error('Failed to open runtime file');
+      if (!options?.suppressErrorToast) {
+        toast.error('Failed to open runtime file');
+      }
+      return false;
     } finally {
       if (activeSessionId === activeSessionIdRef.current) {
         setWorkbenchLoadingPath((current) => (current === path ? null : current));
@@ -1891,9 +2153,36 @@ export function SessionsPage() {
     }
   }
 
+  function ensureWorkbenchTab(path: string) {
+    const name = path.split('/').pop() || path;
+    setWorkbenchTabs((current) => {
+      if (current.some((tab) => tab.path === path)) return current;
+      return [
+        ...current,
+        {
+          path,
+          name,
+          size_bytes: 0,
+          modified_at: null,
+          content: '',
+          truncated: false,
+          max_bytes: 0,
+        },
+      ];
+    });
+    setActiveWorkbenchPath(path);
+    setWorkbenchDiffBaseRefByPath((current) =>
+      current[path] ? current : { ...current, [path]: 'HEAD' },
+    );
+    setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: null }));
+  }
+
   async function openRuntimeFileDiff(path: string) {
     if (!activeSessionId) return;
-    await openRuntimeFile(path);
+    const opened = await openRuntimeFile(path, { suppressErrorToast: true });
+    if (!opened) {
+      ensureWorkbenchTab(path);
+    }
     setWorkbenchShowDiffByPath((current) => ({ ...current, [path]: true }));
     void fetchRuntimeGitDiff(activeSessionId, path);
   }
@@ -2076,6 +2365,42 @@ export function SessionsPage() {
     });
   }, []);
 
+  const updatePersistedMessageApproval = useCallback((
+    approval: ApprovalRef,
+    updates: { pending?: boolean; approval_status?: string; decision_note?: string },
+  ) => {
+    const targetKey = approvalKey(approval);
+    setMessages((current) =>
+      current.map((message) => {
+        if (message.role !== 'tool_result') return message;
+        const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+        const messageApproval = approvalRefFromMetadata(metadata);
+        if (!messageApproval || approvalKey(messageApproval) !== targetKey) return message;
+        const nextPending = updates.pending ?? messageApproval.pending;
+        const nextStatus = updates.approval_status ?? messageApproval.status;
+        const currentApproval = isObjectRecord(metadata.approval) ? metadata.approval : {};
+        return {
+          ...message,
+          metadata: {
+            ...metadata,
+            pending: nextPending,
+            approval_status: nextStatus,
+            ...updates,
+            approval: {
+              ...currentApproval,
+              provider: approval.provider,
+              approval_id: approval.approvalId,
+              pending: nextPending,
+              status: nextStatus,
+              can_resolve: nextPending,
+              decision_note: updates.decision_note ?? currentApproval.decision_note,
+            },
+          },
+        };
+      }),
+    );
+  }, []);
+
   const resolveApprovalInline = useCallback(async (approval: ApprovalRef, decision: 'approve' | 'reject') => {
     const targetKey = approvalKey(approval);
     setResolvingApprovalKey(targetKey);
@@ -2092,6 +2417,10 @@ export function SessionsPage() {
         pending: false,
         approval_status: decision === 'approve' ? 'approved' : 'rejected',
       });
+      updatePersistedMessageApproval(approval, {
+        pending: false,
+        approval_status: decision === 'approve' ? 'approved' : 'rejected',
+      });
       toast.success(decision === 'approve' ? 'Approval approved' : 'Approval rejected');
       approvalDebugLog('ui.approval.resolve.success', {
         provider: approval.provider,
@@ -2099,113 +2428,30 @@ export function SessionsPage() {
         decision,
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const resolvedMatch = message.match(/already resolved with status '([^']+)'/i);
+      if (resolvedMatch) {
+        const resolvedStatus = resolvedMatch[1].trim().toLowerCase();
+        updateStreamingCallApproval(approval, {
+          pending: false,
+          approval_status: resolvedStatus,
+        });
+        updatePersistedMessageApproval(approval, {
+          pending: false,
+          approval_status: resolvedStatus,
+        });
+      }
       approvalDebugLog('ui.approval.resolve.error', {
         provider: approval.provider,
         approval_id: approval.approvalId,
         decision,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
-      toast.error(error instanceof Error ? error.message : 'Failed to resolve approval');
+      toast.error(message || 'Failed to resolve approval');
     } finally {
       setResolvingApprovalKey(null);
     }
-  }, [updateStreamingCallApproval]);
-
-  async function hydrateApprovalForCall(
-    sessionId: string,
-    callId: string,
-    contentIndex: number | null,
-  ) {
-    if (!callId) return;
-    const lookupKey = streamingCallKeyFromParts(callId, contentIndex);
-    if (approvalLookupInFlightRef.current.has(lookupKey)) return;
-    approvalLookupInFlightRef.current.add(lookupKey);
-    approvalDebugLog('ui.approval.hydrate.start', {
-      session_id: sessionId,
-      tool_call_id: callId,
-      content_index: contentIndex,
-      lookup_key: lookupKey,
-    });
-    try {
-      for (let attempt = 0; attempt < APPROVAL_HYDRATION_MAX_ATTEMPTS; attempt += 1) {
-        try {
-          const query = new URLSearchParams();
-          query.set('session_id', sessionId);
-          query.set('tool_call_id', callId);
-          const toolCallMatch = await api.get<ApprovalToolCallMatchResponse>(
-            `/approvals/match-pending-tool-call?${query.toString()}`,
-          );
-          const matched = toolCallMatch.item;
-          approvalDebugLog('ui.approval.hydrate.tool_call_attempt', {
-            session_id: sessionId,
-            tool_call_id: callId,
-            attempt: attempt + 1,
-            matched: Boolean(matched),
-          });
-          if (matched) {
-            setStreaming((current) => {
-              const patchCall = (call: StreamingToolCall): StreamingToolCall => {
-                if (call.id !== callId) return call;
-                return {
-                  ...call,
-                  metadata: {
-                    ...call.metadata,
-                    pending: true,
-                    approval: {
-                      provider: matched.provider,
-                      approval_id: matched.approval_id,
-                      status: matched.status,
-                      pending: matched.pending,
-                      can_resolve: matched.can_resolve,
-                      label: matched.label,
-                      match_key: matched.match_key,
-                    },
-                  },
-                };
-              };
-              return {
-                ...current,
-                activeToolCalls: current.activeToolCalls.map(patchCall),
-                completedToolCalls: current.completedToolCalls.map(patchCall),
-              };
-            });
-            approvalDebugLog('ui.approval.hydrate.matched', {
-              session_id: sessionId,
-              tool_call_id: callId,
-              attempt: attempt + 1,
-              provider: matched.provider,
-              approval_id: matched.approval_id,
-              status: matched.status,
-              pending: matched.pending,
-            });
-            return;
-          }
-        } catch {
-          approvalDebugLog('ui.approval.hydrate.attempt_error', {
-            session_id: sessionId,
-            tool_call_id: callId,
-            attempt: attempt + 1,
-          });
-          // best-effort retry until attempts are exhausted
-        }
-        if (attempt < APPROVAL_HYDRATION_MAX_ATTEMPTS - 1) {
-          await sleep(APPROVAL_HYDRATION_RETRY_MS);
-        }
-      }
-    } catch {
-      approvalDebugLog('ui.approval.hydrate.error', {
-        session_id: sessionId,
-        tool_call_id: callId,
-      });
-      // best effort hydration
-    } finally {
-      approvalLookupInFlightRef.current.delete(lookupKey);
-      approvalDebugLog('ui.approval.hydrate.done', {
-        session_id: sessionId,
-        tool_call_id: callId,
-      });
-    }
-  }
+  }, [updatePersistedMessageApproval, updateStreamingCallApproval]);
 
   // WebSocket Logic
   function disconnectWs() {
@@ -2235,7 +2481,10 @@ export function SessionsPage() {
     }));
 
     const instanceId = ++wsInstanceRef.current;
-    const ws = new WebSocket(`${WS_BASE_URL}/ws/sessions/${sessionId}/stream`);
+    if (!activeInstanceName) {
+      return;
+    }
+    const ws = new WebSocket(`${wsSessionsBaseUrl(activeInstanceName)}/${sessionId}/stream`);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -2269,9 +2518,110 @@ export function SessionsPage() {
     reconnectTimerRef.current = window.setTimeout(() => connectWs(sessionId), delay * 1000);
   }
 
+  function markLatestUserMessageRetryable(rawError: string) {
+    const latestUserMessage = [...messagesRef.current].reverse().find((message) => message.role === 'user');
+    if (!latestUserMessage) return;
+    setMessages((current) =>
+      current.map((message) => (
+        message.id === latestUserMessage.id
+          ? {
+              ...message,
+              metadata: {
+                ...(isObjectRecord(message.metadata) ? message.metadata : {}),
+                retryable_error: humanizeAgentError(rawError),
+              },
+            }
+          : message
+      ))
+    );
+    setRetryCandidate({
+      messageId: latestUserMessage.id,
+      error: humanizeAgentError(rawError),
+    });
+  }
+
+  async function retryFailedMessage(message: Message) {
+    if (!activeSessionId) return;
+    const fallbackError = retryCandidate?.messageId === message.id ? retryCandidate.error : 'Retry failed';
+    setRetryingMessageId(message.id);
+    setRetryCandidate(null);
+    setMessages((current) =>
+      current.map((item) => (
+        item.id === message.id
+          ? {
+              ...item,
+              metadata: {
+                ...(isObjectRecord(item.metadata) ? item.metadata : {}),
+              },
+            }
+          : item
+      )).map((item) => {
+        if (item.id !== message.id) return item;
+        const metadata = { ...(isObjectRecord(item.metadata) ? item.metadata : {}) };
+        delete metadata.retryable_error;
+        return { ...item, metadata };
+      })
+    );
+    try {
+      await api.post<{ status: string }>(`/sessions/${activeSessionId}/messages/${message.id}/retry`, {});
+      shouldAutoScrollRef.current = true;
+      setIsPinnedToBottom(true);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : fallbackError;
+      setRetryCandidate({
+        messageId: message.id,
+        error: detail || fallbackError,
+      });
+      toast.error(detail || fallbackError);
+    } finally {
+      setRetryingMessageId((current) => (current === message.id ? null : current));
+    }
+  }
+
+  function pushDebugEvent(event: WsEvent) {
+    if (!SESSION_DEBUG_PANEL_ENABLED) return;
+    const summaryParts: string[] = [];
+    if (typeof event.iteration === 'number') summaryParts.push(`iteration=${event.iteration}`);
+    if (typeof event.max_iterations === 'number') summaryParts.push(`max=${event.max_iterations}`);
+    if (typeof event.stop_reason === 'string' && event.stop_reason.trim()) summaryParts.push(`stop=${event.stop_reason}`);
+    if (typeof event.delta === 'string' && event.delta.trim()) summaryParts.push(`delta=${JSON.stringify(truncate(event.delta.trim(), 80))}`);
+
+    const toolCall = (event.tool_call && typeof event.tool_call === 'object')
+      ? event.tool_call as Record<string, unknown>
+      : null;
+    if (toolCall && typeof toolCall.name === 'string') {
+      const toolId = typeof toolCall.id === 'string' ? toolCall.id : '';
+      summaryParts.push(`tool=${toolCall.name}${toolId ? `:${toolId}` : ''}`);
+    }
+
+    const toolResult = (event.tool_result && typeof event.tool_result === 'object')
+      ? event.tool_result as Record<string, unknown>
+      : null;
+    if (toolResult && typeof toolResult.tool_name === 'string') {
+      const toolId = typeof toolResult.tool_call_id === 'string' ? toolResult.tool_call_id : '';
+      const content = typeof toolResult.content === 'string' ? truncate(toolResult.content.trim(), 80) : '';
+      summaryParts.push(`result=${toolResult.tool_name}${toolId ? `:${toolId}` : ''}`);
+      if (content) summaryParts.push(`content=${JSON.stringify(content)}`);
+      if (toolResult.is_error === true) summaryParts.push('error=true');
+    }
+
+    if (typeof event.content_index === 'number') summaryParts.push(`content_index=${event.content_index}`);
+
+    setDebugEvents((current) => [
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        at: new Date().toISOString(),
+        type: event.type,
+        summary: summaryParts.join(' '),
+      },
+      ...current,
+    ].slice(0, 100));
+  }
+
   function onStreamEvent(sessionId: string, event: WsEvent) {
     // Drop events from stale WS connections (e.g. fired after session reset)
     if (sessionId !== activeSessionIdRef.current) return;
+    pushDebugEvent(event);
 
     switch (event.type) {
       case 'connected':
@@ -2287,7 +2637,89 @@ export function SessionsPage() {
           oldestServerMessageIdRef.current = next.length > 0 ? next[0].id : null;
           return next;
         });
+        if (Array.isArray(event.terminals)) {
+          // Initial pill population: server may have terminals alive across a
+          // reload or backend restart. We replace state entirely rather than
+          // merge so stale terminals from the previous session don't linger.
+          const incomingTerminals = event.terminals
+            .map((raw) => {
+              if (!raw || typeof raw !== 'object') return null;
+              const value = raw as Record<string, unknown>;
+              const id = typeof value.terminal_id === 'string' ? value.terminal_id : null;
+              if (!id) return null;
+              return {
+                id,
+                label: typeof value.label === 'string' ? value.label : null,
+                createdBy: value.created_by === 'user' ? 'user' : 'agent',
+                createdAt: typeof value.created_at === 'number' ? value.created_at : Date.now() / 1000,
+                auto: Boolean(value.auto),
+                busy: false,
+                lastCommand: typeof value.last_command === 'string' ? value.last_command : null,
+              } as ActiveTerminal;
+            })
+            .filter((item): item is ActiveTerminal => item !== null);
+          setActiveTerminals(incomingTerminals);
+        }
         break;
+      case 'terminal_opened': {
+        const id = typeof event.terminal_id === 'string' ? event.terminal_id : null;
+        if (!id) break;
+        const label = typeof event.label === 'string' ? event.label : null;
+        const createdBy = event.created_by === 'user' ? 'user' : 'agent';
+        const auto = Boolean(event.auto);
+        // Capture "was the pill row empty before this event?" before we mutate
+        // it. We auto-focus the Terminals sub-view only on the FIRST terminal
+        // of a session, so the user isn't yanked off Files/Desktop every time
+        // the agent spins up another shell.
+        let wasFirstTerminal = false;
+        setActiveTerminals((current) => {
+          if (current.some((t) => t.id === id)) {
+            return current.map((t) => (t.id === id ? { ...t, label: t.label || label } : t));
+          }
+          wasFirstTerminal = current.length === 0;
+          return [
+            ...current,
+            { id, label, createdBy, createdAt: Date.now() / 1000, auto, busy: false, lastCommand: null },
+          ];
+        });
+        // Auto-focus rule: only flip to the Terminals sub-view if we're
+        // already on the Runtime tab AND this is the first terminal AND the
+        // user hasn't manually picked a sub-view in the last 4s. Anything
+        // else would be surprise UI motion. Cross-tab activity (Agents /
+        // Sessions) never steals focus.
+        if (
+          wasFirstTerminal
+          && rightRailTab === 'runtime'
+          && Date.now() - lastRuntimeViewIntentRef.current > 4_000
+        ) {
+          setRuntimeView('terminals');
+        }
+        break;
+      }
+      case 'terminal_closed': {
+        const id = typeof event.terminal_id === 'string' ? event.terminal_id : null;
+        if (!id) break;
+        setActiveTerminals((current) => current.filter((t) => t.id !== id));
+        setFocusedTerminalId((current) => (current === id ? null : current));
+        break;
+      }
+      case 'terminal_busy': {
+        const id = typeof event.terminal_id === 'string' ? event.terminal_id : null;
+        if (!id) break;
+        const busy = Boolean(event.busy);
+        // The same event carries the most-recent command/cwd whenever the
+        // backend has them — that's how the pill tooltip + rail header stay
+        // in sync with what the terminal is actually doing.
+        const lastCommand = typeof event.last_command === 'string' ? event.last_command : undefined;
+        setActiveTerminals((current) =>
+          current.map((t) =>
+            t.id === id
+              ? { ...t, busy, lastCommand: lastCommand !== undefined ? lastCommand : t.lastCommand }
+              : t,
+          ),
+        );
+        break;
+      }
       case 'message_ack':
         setMessages((current) => {
           const messageId = (event.message_id as string | undefined)?.trim();
@@ -2310,6 +2742,7 @@ export function SessionsPage() {
         });
         break;
       case 'agent_thinking':
+        setRetryCandidate(null);
         setStreaming((current) => ({
           ...current,
           isThinking: true,
@@ -2323,12 +2756,58 @@ export function SessionsPage() {
         }));
         break;
       case 'agent_progress':
-        setStreaming((current) => ({ ...current, agentIteration: (event.iteration as number) ?? current.agentIteration, agentMaxIterations: (event.max_iterations as number) ?? current.agentMaxIterations }));
+        setStreaming((current) => {
+          const shouldShowThinking =
+            current.activeToolCalls.length === 0 &&
+            !current.isStreaming &&
+            current.text.trim().length === 0;
+          return {
+            ...current,
+            agentIteration: (event.iteration as number) ?? current.agentIteration,
+            agentMaxIterations: (event.max_iterations as number) ?? current.agentMaxIterations,
+            isThinking: shouldShowThinking ? true : current.isThinking,
+          };
+        });
+        break;
+      case 'start':
+        setStreaming((current) => ({
+          ...current,
+          isThinking:
+            current.activeToolCalls.length === 0 &&
+            !current.isStreaming &&
+            current.text.trim().length === 0
+              ? true
+              : current.isThinking,
+        }));
+        break;
+      case 'thinking_start':
+        setRetryCandidate(null);
+        setStreaming((current) => ({
+          ...current,
+          isThinking: true,
+          isStreaming: false,
+        }));
+        break;
+      case 'thinking_delta':
+        setRetryCandidate(null);
+        setStreaming((current) => ({
+          ...current,
+          isThinking: true,
+          isStreaming: false,
+        }));
+        break;
+      case 'thinking_end':
+        setStreaming((current) => ({
+          ...current,
+          isThinking: false,
+        }));
         break;
       case 'text_delta':
+        setRetryCandidate(null);
         setStreaming((current) => ({ ...current, isThinking: false, isStreaming: true, text: current.text + (event.delta ?? '') }));
         break;
       case 'toolcall_start':
+        setRetryCandidate(null);
         {
           const callId = String((event.tool_call as any)?.id ?? `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
           const contentIndex = typeof event.content_index === 'number' ? event.content_index : null;
@@ -2406,7 +2885,6 @@ export function SessionsPage() {
                 : [...current.timeline, { kind: 'tool', key: `tool-${callKey}`, callKey }],
             };
           });
-          void hydrateApprovalForCall(sessionId, callId, contentIndex);
         }
         break;
       case 'toolcall_delta':
@@ -2424,10 +2902,6 @@ export function SessionsPage() {
             if (targetIndex < 0) targetIndex = next.length - 1;
             const call = next[targetIndex];
             const mergedArguments = mergeStreamingToolArguments(call.argumentsJson, delta);
-            const hasApprovalRef = Boolean(approvalRefFromMetadata(call.metadata));
-            if (!hasApprovalRef && call.id) {
-              void hydrateApprovalForCall(sessionId, call.id, call.contentIndex);
-            }
             next[targetIndex] = {
               ...call,
               argumentsJson: mergedArguments,
@@ -2438,10 +2912,6 @@ export function SessionsPage() {
         break;
       case 'toolcall_end':
         {
-          const hydrationCandidates: Array<{
-            callId: string;
-            contentIndex: number | null;
-          }> = [];
           const eventCallId = String((event.tool_call as any)?.id ?? '');
           const eventContentIndex = typeof event.content_index === 'number' ? event.content_index : null;
           const eventToolName = String((event.tool_call as any)?.name ?? '');
@@ -2452,70 +2922,23 @@ export function SessionsPage() {
             content_index: eventContentIndex,
           });
           setStreaming((current) => {
-            if (!current.activeToolCalls.length) return current;
-            const nextActive = [...current.activeToolCalls];
-            let targetIndex = -1;
-            if (eventCallId) {
-              targetIndex = nextActive.findIndex((item) => item.id === eventCallId);
-            }
-            if (targetIndex < 0 && eventContentIndex !== null) {
-              targetIndex = nextActive.findIndex((item) => item.contentIndex === eventContentIndex);
-            }
-            if (targetIndex < 0) targetIndex = nextActive.length - 1;
-            const doneCall = nextActive[targetIndex];
-            nextActive.splice(targetIndex, 1);
-            const callApprovalRef = approvalRefFromMetadata(doneCall.metadata);
-            const isPendingApproval = Boolean(callApprovalRef?.pending);
+            const next = applyToolcallEnd(current, eventCallId, eventContentIndex);
+            const doneCall = next.activeToolCalls.find((item) => (
+              (eventCallId && item.id === eventCallId) ||
+              (eventContentIndex !== null && item.contentIndex === eventContentIndex)
+            )) ?? next.activeToolCalls[next.activeToolCalls.length - 1];
+            const callApprovalRef = doneCall ? approvalRefFromMetadata(doneCall.metadata) : null;
             approvalDebugLog('ws.toolcall_end.classify', {
               session_id: sessionId,
-              tool_call_id: doneCall.id,
-              tool_name: doneCall.name,
+              tool_call_id: doneCall?.id ?? eventCallId,
+              tool_name: doneCall?.name ?? eventToolName,
               pending_from_metadata: Boolean(callApprovalRef?.pending),
-              pending_final: isPendingApproval,
+              pending_final: Boolean(callApprovalRef?.pending),
               metadata_approval_id: callApprovalRef?.approvalId ?? null,
               metadata_provider: callApprovalRef?.provider ?? null,
             });
-            const hydratedDoneCall: StreamingToolCall = isPendingApproval
-              ? {
-                ...doneCall,
-                outputJson: doneCall.outputJson || '{"status":"pending","message":"Waiting for approval..."}',
-                metadata: {
-                  ...doneCall.metadata,
-                  pending: true,
-                },
-              }
-              : doneCall;
-            const alreadyDone = current.completedToolCalls.some(
-              (item) => item.id === hydratedDoneCall.id && item.contentIndex === hydratedDoneCall.contentIndex,
-            );
-            if (!callApprovalRef && Boolean(hydratedDoneCall.id)) {
-              hydrationCandidates.push({
-                callId: hydratedDoneCall.id,
-                contentIndex: hydratedDoneCall.contentIndex,
-              });
-            }
-            if (alreadyDone) {
-              return { ...current, activeToolCalls: nextActive };
-            }
-            return {
-              ...current,
-              activeToolCalls: nextActive,
-              completedToolCalls: [...current.completedToolCalls, { ...hydratedDoneCall, complete: true }],
-            };
+            return next;
           });
-          const pendingHydration = hydrationCandidates[0];
-          if (pendingHydration) {
-            approvalDebugLog('ws.toolcall_end.hydrate_queue', {
-              session_id: sessionId,
-              tool_call_id: pendingHydration.callId,
-              content_index: pendingHydration.contentIndex,
-            });
-            void hydrateApprovalForCall(
-              sessionId,
-              pendingHydration.callId,
-              pendingHydration.contentIndex,
-            );
-          }
         }
         break;
       case 'tool_result':
@@ -2534,20 +2957,17 @@ export function SessionsPage() {
             metadata_status: metadataApproval?.status ?? null,
           });
           const toolNameForRefresh = String(payload.tool_name ?? (event.tool_call as any)?.name ?? '').trim();
-          if (
-            toolNameForRefresh === 'spawn_sub_agent' ||
-            toolNameForRefresh === 'cancel_sub_agent' ||
-            toolNameForRefresh === 'pythonXagent'
-          ) {
+          if (toolNameForRefresh === 'delegate') {
             void fetchTasks(sessionId);
           }
           if (
-            toolNameForRefresh === 'runtime_exec' ||
-            toolNameForRefresh === 'pythonXagent' ||
-            toolNameForRefresh === 'git_exec'
+            toolNameForRefresh === 'runtime' ||
+            toolNameForRefresh === 'python' ||
+            toolNameForRefresh === 'git' ||
+            toolNameForRefresh === 'str_replace_editor'
           ) {
-            void fetchRuntimeStatus(sessionId, 120);
-            if (rightRailTab === 'runtime') {
+            if (showFilesView) {
+              setRuntimeFilesRefreshKey((current) => current + 1);
               void fetchRuntimeFiles(sessionId, runtimePath);
             }
           }
@@ -2564,65 +2984,20 @@ export function SessionsPage() {
           const fallbackArguments = toolArgumentsFromToolResultPayload(payload);
           const isError = Boolean(payload.is_error);
           const metadata = isObjectRecord(payload.metadata) ? payload.metadata : {};
-
-          const hydrate = (call: StreamingToolCall): StreamingToolCall => ({
-            ...call,
-            argumentsJson: hasMeaningfulToolArguments(call.argumentsJson)
-              ? call.argumentsJson
-              : fallbackArguments,
-            outputJson,
-            isError,
-            metadata,
-          });
-
-          let touched = false;
-          const nextActive = current.activeToolCalls.map((call) => {
-            if (callId && call.id === callId) {
-              touched = true;
-              return hydrate(call);
-            }
-            return call;
-          });
-          const nextCompleted = current.completedToolCalls.map((call) => {
-            if (callId && call.id === callId) {
-              touched = true;
-              return hydrate(call);
-            }
-            return call;
-          });
-
-          if (touched) {
-            return {
-              ...current,
-              activeToolCalls: nextActive,
-              completedToolCalls: nextCompleted,
-            };
-          }
-
-          const syntheticCall: StreamingToolCall = {
-            id: callId || `tool-result-${Date.now()}`,
-            name: toolName,
-            argumentsJson: fallbackArguments,
-            outputJson,
-            isError,
-            metadata,
-            complete: true,
-            contentIndex: null,
-          };
-          const syntheticKey = streamingCallKey(syntheticCall);
-          const hasTimelineItem = current.timeline.some(
-            (item) => item.kind === 'tool' && item.callKey === syntheticKey
+          const approvalRef = approvalRefFromMetadata(metadata);
+          const keepsWaitingState = Boolean(
+            metadata.pending === true ||
+            approvalRef?.pending === true,
           );
-          return {
-            ...current,
-            timeline: hasTimelineItem
-              ? current.timeline
-              : [...current.timeline, { kind: 'tool', key: `tool-${syntheticKey}`, callKey: syntheticKey }],
-            completedToolCalls: [
-              ...nextCompleted,
-              syntheticCall,
-            ],
-          };
+          return applyToolResult(current, {
+            callId,
+            toolName,
+            fallbackArguments,
+            outputJson,
+            isError,
+            metadata,
+            keepsWaitingState,
+          });
         });
         break;
       case 'session_named':
@@ -2659,6 +3034,29 @@ export function SessionsPage() {
         setStreaming((current) => ({ ...current, isCompactingContext: false }));
         toast.error((event.error as string) || 'Auto-compaction failed');
         break;
+      case 'runtime_ready':
+        // noVNC may need a moment after the container reports ready — retry a few times
+        void (async () => {
+          for (let attempt = 0; attempt < 6; attempt++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const sid = activeSessionIdRef.current;
+            if (!sid) break;
+            try {
+              const query = new URLSearchParams({ session_id: sid, geometry: desktopResolution });
+              const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?${query.toString()}`);
+              setLiveView(payload);
+              if (payload.enabled && payload.available) {
+                setRuntimeBooting(false);
+                return;
+              }
+            } catch { /* retry */ }
+          }
+          const sid = activeSessionIdRef.current;
+          if (!sid) {
+            setRuntimeBooting(false);
+          }
+        })();
+        break;
       case 'done': {
         const stopReason = event.stop_reason as string | undefined;
         if (stopReason === 'tool_use') {
@@ -2687,11 +3085,18 @@ export function SessionsPage() {
         }
         break;
       }
-      case 'error':
-      case 'agent_error': {
+      case 'error': {
         const raw = (event.error as string) || (event.message as string) || 'Stream error';
+        markLatestUserMessageRetryable(raw);
         toast.error(humanizeAgentError(raw), { duration: 8000 });
         // Reset streaming state so UI doesn't stay stuck in "thinking" mode
+        setStreaming((current) => ({ ...current, isThinking: false, isStreaming: false, isCompactingContext: false }));
+        break;
+      }
+      case 'agent_error': {
+        const raw = (event.error as string) || (event.message as string) || 'Agent failed';
+        markLatestUserMessageRetryable(raw);
+        toast.error(humanizeAgentError(raw), { duration: 8000 });
         setStreaming((current) => ({ ...current, isThinking: false, isStreaming: false, isCompactingContext: false }));
         break;
       }
@@ -2784,6 +3189,7 @@ export function SessionsPage() {
     if ((!content && composerAttachments.length === 0) || streamBusy || !activeSessionId) return;
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      setRetryCandidate(null);
       // Prepend time context if conversation has been idle for >30 minutes
       const lastMsg = messages.at(-1);
       const idleMs = lastMsg ? Date.now() - new Date(lastMsg.created_at).getTime() : 0;
@@ -2812,22 +3218,48 @@ export function SessionsPage() {
 
   async function stopCurrent() {
     if (!activeSessionId) return;
+    const sessionId = activeSessionId;
     setIsStopping(true);
     try {
-      await api.post(`/sessions/${activeSessionId}/stop`, {});
-      toast.success('Stopping response');
-      setStreaming((current) => ({
-        ...current,
-        isThinking: false,
-        isStreaming: false,
-        isCompactingContext: false,
-      }));
-      void loadMessages(activeSessionId);
-      void fetchContextUsage(activeSessionId);
+      await api.post(`/sessions/${sessionId}/stop`, {});
+      await loadMessages(sessionId);
+      await Promise.allSettled([
+        fetchContextUsage(sessionId),
+        fetchSessions({ autoSelectIfEmpty: false }),
+      ]);
+      toast.success('Response stopped');
     } catch {
       toast.error('Failed to stop');
     }
     finally { setIsStopping(false); }
+  }
+
+  // Switch to the Runtime tab and pick a sub-view in one call. Used by
+  // anything that wants to focus a specific runtime surface — terminal
+  // pill clicks, "Open terminal" links inside tool cards, the segmented
+  // control buttons themselves. Recording the intent timestamp lets the
+  // auto-focus rule (see terminal_opened WS handler) know to back off
+  // when the user has just steered the view manually.
+  function openRuntimeView(view: RuntimeView) {
+    lastRuntimeViewIntentRef.current = Date.now();
+    setRightRailTab('runtime');
+    setRuntimeView(view);
+  }
+
+  // Optimistically drops the pill so the UI reacts immediately, then asks the
+  // backend to kill the tmux session. The authoritative `terminal_closed` WS
+  // event will also fire and is idempotent against the optimistic update.
+  async function closeTerminal(terminalId: string) {
+    if (!activeSessionId) return;
+    setActiveTerminals((current) => current.filter((t) => t.id !== terminalId));
+    setFocusedTerminalId((current) => (current === terminalId ? null : current));
+    try {
+      await api.delete(
+        `/sessions/${activeSessionId}/terminals/${encodeURIComponent(terminalId)}`,
+      );
+    } catch {
+      toast.error(`Failed to close ${terminalId}`);
+    }
   }
 
   async function compactContext() {
@@ -2867,27 +3299,111 @@ export function SessionsPage() {
   return (
       <AppShell
           title={activeSession?.title || 'Untitled Session'}
-          subtitle={activeSession ? `ID: ${activeSession.id.slice(0, 8)}` : 'Operator Workspace'}
+          subtitle={activeSession ? `ID: ${activeSession.id}` : 'Operator Workspace'}
           contentClassName="h-full !p-0 overflow-hidden"
           hideSidebar={mode === 'solo'}
-          hideHeader={mode === 'solo'}
+          hideHeader={mode === 'solo' || isDesktopFullscreen}
           actions={
-            mode === 'advanced' ? (
-              <div className="flex items-center gap-2">
+            mode === 'advanced' && !isDesktopFullscreen ? (
+              <div className="flex min-w-0 items-center gap-2">
+                <div ref={sessionDropdownRef} className="order-5 relative z-[200] hidden min-w-0 sm:block">
+                  <button
+                    ref={sessionDropdownButtonRef}
+                    type="button"
+                    aria-haspopup="listbox"
+                    aria-expanded={isSessionDropdownOpen}
+                    onClick={() => {
+                      setIsEffortDropdownOpen(false);
+                      setIsAgentModeDropdownOpen(false);
+                      updateSessionDropdownRect();
+                      setIsSessionDropdownOpen((open) => !open);
+                    }}
+                    className="flex h-9 w-[min(390px,34vw)] items-center justify-start gap-4 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] pl-4 pr-3 text-left shadow-sm outline-none transition-all hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)] focus:border-[color:var(--accent-solid)] focus:ring-2 focus:ring-[color:var(--accent-solid)]/20"
+                  >
+                    <span className="w-28 shrink-0 text-left text-[9px] font-bold uppercase tracking-[0.12em] text-[color:var(--text-muted)]">
+                      Instance Picker
+                    </span>
+                    <span aria-hidden="true" className="h-4 w-px shrink-0 bg-[color:var(--border-subtle)]" />
+                    <span className="block min-w-0 flex-1 truncate text-left text-xs font-semibold text-[color:var(--text-primary)]">
+                      {instancePickerLabel}
+                    </span>
+                    <ChevronDown
+                      size={13}
+                      aria-hidden="true"
+                      className={`shrink-0 text-[color:var(--text-muted)] transition-transform duration-300 ${isSessionDropdownOpen ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+
+                  {isSessionDropdownOpen && sessionDropdownRect && createPortal(
+                    <div
+                      ref={sessionDropdownMenuRef}
+                      role="listbox"
+                      aria-label="Switch session"
+                      style={{
+                        left: sessionDropdownRect.left,
+                        top: sessionDropdownRect.top,
+                        width: Math.max(sessionDropdownRect.width, 320),
+                      }}
+                      className="fixed z-[10000] max-h-80 overflow-y-auto rounded-2xl border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] py-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-200 origin-top-left"
+                    >
+                      {instances.length === 0 ? (
+                        <div className="px-3 py-3 text-xs text-[color:var(--text-muted)]">No instances</div>
+                      ) : (
+                        instances.map((instance) => {
+                          const title = (instance.display_name || instance.name).trim() || instance.name;
+                          const active = instance.name === activeInstanceName;
+                          return (
+                            <button
+                              key={instance.name}
+                              type="button"
+                              role="option"
+                              aria-selected={active}
+                              onClick={() => {
+                                setIsSessionDropdownOpen(false);
+                                if (!active) onInstanceClick(instance.name);
+                              }}
+                              className={`group flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
+                                active
+                                  ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
+                                  : 'text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)] hover:text-[color:var(--text-primary)]'
+                              }`}
+                            >
+                              <div className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? 'bg-[color:var(--accent-solid)]' : 'bg-[color:var(--text-muted)]/35 group-hover:bg-[color:var(--text-secondary)]'}`} />
+                              <span className="min-w-0 flex-1 truncate text-xs font-semibold">{title}</span>
+                              {active && <Check size={13} className="shrink-0 text-[color:var(--accent-solid)]" />}
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>,
+                    document.body,
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  title="Instance menu"
+                  aria-label="Instance menu"
+                  onClick={() => navigate('/')}
+                  className="order-6 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-secondary)] shadow-sm transition-all hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] active:scale-95"
+                >
+                  <Home size={14} />
+                </button>
+
                 <button
                     onClick={() => setMode('solo')}
-                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+                    className="order-1 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm animate-[focusModePillIn_180ms_cubic-bezier(0.22,1,0.36,1)]"
                 >
                   <Expand size={14} className="text-emerald-500/80" />
                   Focus
                 </button>
 
-                <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
+                <div className="order-2 h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
 
                 <button
                     onClick={resetSession}
                     title="Start fresh (memories preserved)"
-                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+                    className="order-3 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
                 >
                   <RefreshCw size={14} className="text-sky-500/80" />
                   New Chat
@@ -2896,7 +3412,7 @@ export function SessionsPage() {
                 <button
                     onClick={compactContext}
                     disabled={isCompacting}
-                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
+                    className="order-4 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
                 >
                   <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-500/80`} />
                   Compact
@@ -2907,56 +3423,19 @@ export function SessionsPage() {
       >
         <div className="relative flex h-full w-full overflow-hidden">
           {mode === 'solo' ? (
-            <div className="absolute top-4 left-4 z-40">
+            <div className="absolute top-4 right-4 z-20">
               <button
                 type="button"
                 onClick={() => setMode('advanced')}
-                className="inline-flex h-9 items-center gap-2 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)]/90 backdrop-blur px-4 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] hover:bg-[color:var(--surface-1)] transition-all active:scale-95 shadow-xl"
+                className="inline-flex h-9 items-center gap-2 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)]/90 backdrop-blur px-4 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] hover:bg-[color:var(--surface-1)] transition-all active:scale-95 shadow-xl animate-[focusModePillIn_180ms_cubic-bezier(0.22,1,0.36,1)]"
               >
                 <X size={14} className="text-[color:var(--text-muted)]" />
                 Exit Focus
               </button>
             </div>
           ) : null}
-          <aside
-            className={`hidden lg:flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shrink-0 transition-all duration-300 ease-in-out ${
-              mode === 'advanced' ? 'w-64 opacity-100' : 'w-0 opacity-0 pointer-events-none border-none'
-            }`}
-          >
-            <div className={`flex flex-col h-full min-w-[16rem] transition-opacity duration-200 ${mode === 'advanced' ? 'opacity-100' : 'opacity-0'}`}>
-              <SessionHistorySidebar
-                historyTab={historyTab}
-                setHistoryTab={setHistoryTab}
-                sessionFilter={sessionFilter}
-                setSessionFilter={setSessionFilter}
-                isMultiSelectMode={isMultiSelectMode}
-                setIsMultiSelectMode={setIsMultiSelectMode}
-                selectedSessionIds={selectedSessionIds}
-                setSelectedSessionIds={setSelectedSessionIds}
-                allVisibleSelected={allVisibleSelected}
-                selectableVisibleSessionIds={selectableVisibleSessionIds}
-                deleteSelectedSessions={deleteSelectedSessions}
-                deletingSessionId={deletingSessionId}
-                filteredSessions={filteredSessions}
-                activeSessionId={activeSessionId}
-                onSessionClick={onSessionClick}
-                defaultSessionId={defaultSessionId}
-                editingSessionId={editingSessionId}
-                editingSessionTitle={editingSessionTitle}
-                setEditingSessionTitle={setEditingSessionTitle}
-                submitRenameSession={submitRenameSession}
-                cancelRenameSession={cancelRenameSession}
-                startRenameSession={startRenameSession}
-                setMainSession={setMainSession}
-                deleteSession={deleteSession}
-                renamingSessionId={renamingSessionId}
-                loadingSessions={false}
-              />
-            </div>
-          </aside>
-
           {/* Chat Area */}
-          <main className="relative z-0 flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)] overflow-hidden">
+          <main className="order-5 relative z-0 flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)] overflow-hidden">
             {/* Unified Session Toolbar */}
             {mode === 'advanced' ? (
             <div className="flex items-center justify-between px-4 h-12 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/80 backdrop-blur-md sticky top-0 z-30 shrink-0 select-none">
@@ -3223,6 +3702,7 @@ export function SessionsPage() {
                     ))}
                   </select>
                 </div>
+
               </div>
             </div>
             ) : null}
@@ -3263,13 +3743,26 @@ export function SessionsPage() {
                       .filter(m => m.role !== 'system')
                       .filter(m => !(m.role === 'assistant' && !m.content?.trim() && !m.tool_name))
                       .map(m => (
+                        (() => {
+                          const persistedRetryError = isObjectRecord(m.metadata) && typeof m.metadata.retryable_error === 'string'
+                            ? m.metadata.retryable_error
+                            : null;
+                          const retryError = retryCandidate?.messageId === m.id
+                            ? retryCandidate.error
+                            : persistedRetryError;
+                          return (
                         <SessionMessageCard
                           key={m.id}
                           message={m}
                           toolArgumentsByCallId={toolArgumentsByCallId}
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
+                          onRetryMessage={retryError ? retryFailedMessage : undefined}
+                          retryError={retryError}
+                          retrying={retryingMessageId === m.id}
                         />
+                          );
+                        })()
                       ))}
 
                     {streaming.timeline.map((item) => {
@@ -3296,6 +3789,10 @@ export function SessionsPage() {
                           active={activeToolCallKeys.has(item.callKey)}
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
+                          onOpenTerminal={(tid) => {
+                            openRuntimeView('terminals');
+                            setFocusedTerminalId(tid);
+                          }}
                         />
                       );
                     })}
@@ -3309,6 +3806,10 @@ export function SessionsPage() {
                           active={false}
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
+                          onOpenTerminal={(tid) => {
+                            openRuntimeView('terminals');
+                            setFocusedTerminalId(tid);
+                          }}
                         />
                       ))}
                     {streaming.activeToolCalls
@@ -3320,10 +3821,14 @@ export function SessionsPage() {
                           active={true}
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
+                          onOpenTerminal={(tid) => {
+                            openRuntimeView('terminals');
+                            setFocusedTerminalId(tid);
+                          }}
                         />
                       ))}
 
-                    {streaming.text && (
+                    {hasVisibleStreamingText(streaming.text) && (
                         <div className="flex flex-col gap-1.5 animate-in items-start w-full">
                           <div className="flex items-center gap-2 px-1">
                         <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-sky-600 dark:text-sky-400">
@@ -3336,7 +3841,7 @@ export function SessionsPage() {
                         </div>
                     )}
 
-                    {streaming.isThinking && !streaming.text && streaming.activeToolCalls.length === 0 && (
+                    {showThinkingIndicator && (
                         <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] animate-pulse">
                           <Bot size={14} />
                           Sentinel is thinking...
@@ -3352,19 +3857,89 @@ export function SessionsPage() {
                         </div>
                     )}
 
-                    {streaming.agentIteration > 0 || streaming.isThinking || streaming.isStreaming || streaming.activeToolCalls.length > 0 ? (
-                      <div className="sticky bottom-2 z-20 flex justify-center pointer-events-none">
-                        <button
-                          type="button"
-                          onClick={stopCurrent}
-                          disabled={isStopping}
-                          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-rose-500/40 bg-[color:var(--surface-0)]/90 backdrop-blur px-4 h-9 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500 hover:text-white transition-all active:scale-95 shadow-xl disabled:opacity-50"
-                        >
-                          <Square size={12} fill="currentColor" />
-                          {isStopping ? 'Stopping...' : 'Stop Execution'}
-                        </button>
-                      </div>
-                    ) : null}
+                    {(() => {
+                      // Single sticky cluster: terminal pills stack on top,
+                      // Stop button sits just under them (closer to the composer
+                      // so it's the easier target when interrupting). When Stop
+                      // isn't visible the pills sit at the same `bottom-2`
+                      // anchor — no floating gap above the composer.
+                      const stopVisible =
+                        streaming.agentIteration > 0
+                        || streaming.isThinking
+                        || streaming.isStreaming
+                        || streaming.activeToolCalls.length > 0;
+                      if (!stopVisible && activeTerminals.length === 0) return null;
+                      return (
+                        <div className="sticky bottom-2 z-20 flex flex-col items-center gap-1.5 pointer-events-none px-2">
+                          {activeTerminals.length > 0 ? (
+                            <div className="flex flex-wrap items-center justify-center gap-1.5">
+                              {activeTerminals.map((terminal) => {
+                                const isFocused = focusedTerminalId === terminal.id && showTerminalsView;
+                                // Label is derived from terminal_id: '0' → "main",
+                                // 'auto-xxx' / 'bg-…' → first command summary, anything
+                                // else → the agent's chosen name verbatim. Stable
+                                // across backend restarts.
+                                const display = getTerminalLabel(terminal.id, terminal.lastCommand ?? terminal.label);
+                                const tooltip = terminal.lastCommand
+                                  ? `${display} — last: ${summarizeCommand(terminal.lastCommand)}`
+                                  : display;
+                                const closable = true;
+                                const focusedClasses = isFocused
+                                  ? 'border-sky-500 bg-sky-500/20 text-sky-300'
+                                  : 'border-sky-500/30 bg-[color:var(--surface-0)]/90 text-sky-500 hover:bg-sky-500 hover:text-white';
+                                return (
+                                  <div
+                                    key={terminal.id}
+                                    className={`group pointer-events-auto inline-flex items-stretch rounded-full border backdrop-blur transition-all ${focusedClasses}`}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        openRuntimeView('terminals');
+                                        setFocusedTerminalId(terminal.id);
+                                      }}
+                                      className={`inline-flex items-center gap-1.5 ${closable ? 'pl-3 pr-2' : 'px-3'} h-7 text-[10px] font-bold uppercase tracking-wider active:scale-95`}
+                                      title={tooltip}
+                                    >
+                                      <Terminal size={11} />
+                                      <span className="max-w-[140px] truncate normal-case tracking-normal font-medium">
+                                        {display}
+                                      </span>
+                                      {terminal.busy ? <Loader2 size={9} className="animate-spin" /> : null}
+                                    </button>
+                                    {closable ? (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          void closeTerminal(terminal.id);
+                                        }}
+                                        className="inline-flex items-center justify-center pr-2.5 pl-1 h-7 opacity-60 hover:opacity-100 active:scale-90 rounded-r-full"
+                                        title={`Close ${display}`}
+                                        aria-label={`Close terminal ${display}`}
+                                      >
+                                        <X size={11} />
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                          {stopVisible ? (
+                            <button
+                              type="button"
+                              onClick={stopCurrent}
+                              disabled={isStopping}
+                              className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-rose-500/40 bg-[color:var(--surface-0)]/90 backdrop-blur px-4 h-9 text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500 hover:text-white transition-all active:scale-95 shadow-xl disabled:opacity-50"
+                            >
+                              <Square size={12} fill="currentColor" />
+                              {isStopping ? 'Stopping...' : 'Stop Execution'}
+                            </button>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
 
                     {!isPinnedToBottom && (
                       <div className="sticky bottom-4 z-20 flex justify-end pointer-events-none px-4">
@@ -3395,6 +3970,7 @@ export function SessionsPage() {
                         className="hidden"
                     />
                     <textarea
+                        ref={composerRef}
                         value={composer}
                         onChange={(e) => setComposer(e.target.value)}
                         onPaste={onComposerPaste}
@@ -3460,286 +4036,221 @@ export function SessionsPage() {
             </div>
           </main>
 
-          {workbenchVisible ? (
+          {workbenchVisible && !isDesktopFullscreen ? (
+            // While the desktop fullscreen overlay is up, the Workbench panel
+            // would otherwise sit on top of it (its `relative z-30` ends up in
+            // a different stacking context than DesktopPreview's `fixed
+            // z-[1000]`, so the simple z compare doesn't win). Unmounting it
+            // for the duration of the fullscreen state is cleaner than
+            // wrestling with stacking contexts and avoids paint thrash.
             <>
               <div
-                className={`hidden xl:block w-1 cursor-col-resize hover:bg-[color:var(--accent-solid)] transition-colors ${isWorkbenchResizing ? 'bg-[color:var(--accent-solid)]' : 'bg-transparent'}`}
-                onMouseDown={startWorkbenchResizing}
+                className="order-4 relative hidden xl:block w-0 shrink-0"
               />
-              <aside
-                style={{ width: `${workbenchWidth}px` }}
-                className="relative z-30 hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden min-w-[360px] animate-[workbenchDockIn_180ms_ease-out]"
-              >
-                <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Open Files</div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setWorkbenchTabs([]);
-                        setActiveWorkbenchPath(null);
-                        setWorkbenchShowDiffByPath({});
-                        setWorkbenchDiffByPath({});
-                        setWorkbenchDiffErrorByPath({});
-                        setWorkbenchDiffBaseRefByPath({});
-                        setWorkbenchGitRootsByPath({});
-                        setWorkbenchLoadingPath(null);
-                        setWorkbenchDiffLoadingPath(null);
-                      }}
-                      className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-rose-400/50 bg-rose-500/20 text-rose-300 transition-colors hover:bg-rose-500/35 hover:text-rose-100"
-                      title="Close all tabs"
-                      aria-label="Close all tabs"
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
-                    {workbenchTabs.map((tab) => (
-                      <button
-                        key={tab.path}
-                        type="button"
-                        onClick={() => setActiveWorkbenchPath(tab.path)}
-                        className={`group inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-semibold max-w-[240px] shrink-0 ${
-                          activeWorkbenchTab?.path === tab.path
-                            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                            : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] text-[color:var(--text-secondary)]'
-                        }`}
-                        title={tab.path}
-                      >
-                        <span className="truncate">{tab.name}</span>
-                        <span
-                          role="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            closeWorkbenchTab(tab.path);
-                          }}
-                          className="inline-flex h-4 w-4 items-center justify-center rounded hover:bg-rose-500/20 hover:text-rose-300"
-                          title="Close tab"
-                        >
-                          <X size={11} />
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {activeWorkbenchTab ? (
-                  <div className="flex-1 min-h-0 flex flex-col">
-                    <div className="border-b border-[color:var(--border-subtle)] px-3 py-2 space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="text-[11px] font-semibold truncate">{activeWorkbenchTab.name}</div>
-                          <div className="text-[9px] text-[color:var(--text-muted)] font-mono truncate" title={activeWorkbenchTab.path}>
-                            {activeWorkbenchTab.path}
-                          </div>
-                        </div>
-                        <div className="text-[9px] text-[color:var(--text-muted)]">{formatBytes(activeWorkbenchTab.size_bytes)}</div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setWorkbenchShowDiffByPath((current) => ({ ...current, [activeWorkbenchTab.path]: false }))}
-                          className={`rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
-                            !workbenchShowDiffByPath[activeWorkbenchTab.path]
-                              ? 'border-sky-500/40 bg-sky-500/15 text-sky-300'
-                              : 'border-[color:var(--border-subtle)] text-[color:var(--text-muted)]'
-                          }`}
-                        >
-                          Content
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setWorkbenchShowDiffByPath((current) => ({ ...current, [activeWorkbenchTab.path]: true }));
-                            if (activeSessionId) {
-                              void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
-                            }
-                          }}
-                          className={`rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
-                            workbenchShowDiffByPath[activeWorkbenchTab.path]
-                              ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
-                              : 'border-[color:var(--border-subtle)] text-[color:var(--text-muted)]'
-                          }`}
-                        >
-                          Diff
-                        </button>
-                        <div className="ml-auto flex items-center gap-1.5">
-                          <select
-                            value={activeWorkbenchBaseRef}
-                            onChange={(event) => {
-                              const selectedRef = event.target.value || 'HEAD';
-                              setWorkbenchDiffBaseRefByPath((current) => ({
-                                ...current,
-                                [activeWorkbenchTab.path]: selectedRef,
-                              }));
-                              if (activeSessionId && workbenchShowDiffByPath[activeWorkbenchTab.path]) {
-                                void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path, {
-                                  baseRef: selectedRef,
-                                });
-                              }
-                            }}
-                            className="h-7 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 text-[10px] font-mono text-[color:var(--text-secondary)]"
-                            title="Diff base reference"
-                          >
-                            {activeWorkbenchBaseRefOptions.map((ref) => (
-                              <option key={`${activeWorkbenchTab.path}:base-ref:${ref}`} value={ref}>
-                                {ref}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                      {activeWorkbenchGitRoots.length > 0 ? (
-                        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-                          {activeWorkbenchGitRoots.slice(0, 6).map((root) => (
-                            <span
-                              key={`${activeWorkbenchTab.path}:${root.root_path || '.'}:${root.branch ?? 'detached'}`}
-                              className="inline-flex items-center gap-1 rounded-full border border-violet-500/35 bg-violet-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300"
-                            >
-                              <span>{root.root_path || '.'}</span>
-                              <span>{root.detached_head ? 'detached' : root.branch || 'unknown'}</span>
-                            </span>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div className="flex-1 min-h-0 overflow-auto p-3">
-                      <div key={activeWorkbenchViewerKey} className="h-full animate-[workbenchViewerIn_170ms_ease-out]">
-                        {workbenchShowDiffByPath[activeWorkbenchTab.path] ? (
-                        workbenchDiffLoadingPath === activeWorkbenchTab.path ? (
-                          <div className="flex items-center gap-2 text-[11px] text-[color:var(--text-muted)]">
-                            <Loader2 size={13} className="animate-spin" />
-                            Loading diff…
-                          </div>
-                        ) : activeWorkbenchDiff ? (
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between text-[10px] text-[color:var(--text-muted)]">
-                              <span>root: {activeWorkbenchDiff.git_root || '.'}</span>
-                              <span>{activeWorkbenchDiff.truncated ? 'truncated' : 'full'}</span>
-                            </div>
-                            <div className="rounded-lg border border-[color:var(--border-subtle)] p-2">
-                              <Markdown
-                                content={toMarkdownCodeFence(activeWorkbenchDiff.diff || '[no diff output]', 'diff')}
-                                className="!text-[11px] markdown-workbench"
-                              />
-                            </div>
-                          </div>
-                        ) : activeWorkbenchDiffError ? (
-                          <div className="rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-[10px] text-rose-300">
-                            {activeWorkbenchDiffError}
-                          </div>
-                        ) : (
-                          <div className="text-[10px] text-[color:var(--text-muted)] opacity-70">
-                            Open Diff to load the comparison automatically.
-                          </div>
-                        )
-                      ) : (
-                        <div className="rounded-lg border border-[color:var(--border-subtle)] p-2">
-                          <Markdown
-                            content={toMarkdownCodeFence(
-                              activeWorkbenchTab.content || '[empty file]',
-                              inferCodeLanguageFromName(activeWorkbenchTab.name),
-                            )}
-                            className="!text-[11px] markdown-workbench"
-                          />
-                        </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex-1 flex items-center justify-center text-[10px] text-[color:var(--text-muted)]">
-                    No file selected.
-                  </div>
-                )}
-              </aside>
+              <div
+                className={`absolute inset-y-0 z-40 hidden xl:block w-3 -translate-x-1/2 cursor-col-resize transition-colors ${isWorkbenchResizing ? 'bg-[color:var(--accent-solid)]/20' : 'hover:bg-[color:var(--accent-solid)]/10'}`}
+                onMouseDown={startWorkbenchResizing}
+                style={{ left: `${rightPanelWidth + workbenchWidth}px` }}
+              />
+                <Workbench
+                className="order-3 border-l-0"
+                tabs={workbenchTabs}
+                activeTabPath={activeWorkbenchPath}
+                onTabClick={(path) => setActiveWorkbenchPath(path)}
+                onTabClose={closeWorkbenchTab}
+                onCloseAll={() => {
+                  setWorkbenchTabs([]);
+                  setActiveWorkbenchPath(null);
+                  setWorkbenchShowDiffByPath({});
+                  setWorkbenchDiffByPath({});
+                  setWorkbenchDiffErrorByPath({});
+                  setWorkbenchDiffBaseRefByPath({});
+                  setWorkbenchGitRootsByPath({});
+                  setWorkbenchLoadingPath(null);
+                  setWorkbenchDiffLoadingPath(null);
+                }}
+                showExplorer={false}
+                explorerEntries={runtimeFiles?.entries || []}
+                currentExplorerPath={runtimePath}
+                  explorerLoading={runtimeFilesLoading}
+                  onExplorerFileClick={(entry) => void openRuntimeFile(entry.path)}
+                  onExplorerDownload={(entry) => void downloadRuntimeEntry(entry)}
+                  loadExplorerDirectory={loadRuntimeDirectoryEntries}
+                  explorerRefreshKey={runtimeFilesRefreshKey}
+                onExplorerDirectoryToggle={(entry, expanded) => {
+                  if (!activeSessionId || !entry.is_git_root) return;
+                  if (!expanded) {
+                    setRuntimeRepoChangesByRoot((current) => {
+                      const next = { ...current };
+                      delete next[entry.path];
+                      return next;
+                    });
+                    setRuntimeRepoChangesLoadingByRoot((current) => {
+                      const next = { ...current };
+                      delete next[entry.path];
+                      return next;
+                    });
+                    setRuntimeExpandedGitDirs((current) => {
+                      const next = { ...current };
+                      Object.keys(next).forEach((key) => {
+                        if (key === entry.path || key.startsWith(`${entry.path}/`)) delete next[key];
+                      });
+                      return next;
+                    });
+                    return;
+                  }
+                  void fetchRuntimeChangedFilesForRepo(activeSessionId, entry.path);
+                }}
+                repoChangesSections={runtimeRepoChangeSections}
+                expandedGitDirs={runtimeExpandedGitDirs}
+                onToggleGitDir={(path) => {
+                  setRuntimeExpandedGitDirs((current) => ({ ...current, [path]: !(current[path] ?? false) }));
+                }}
+                onGitFileClick={(path) => void openRuntimeFileDiff(path)}
+                diffMode={activeWorkbenchTab ? workbenchShowDiffByPath[activeWorkbenchTab.path] ?? false : false}
+                setDiffMode={(enabled) => {
+                  if (!activeWorkbenchTab) return;
+                  setWorkbenchShowDiffByPath((current) => ({ ...current, [activeWorkbenchTab.path]: enabled }));
+                  if (enabled && activeSessionId) {
+                    void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
+                  }
+                }}
+                diffContent={activeWorkbenchDiff}
+                diffLoading={workbenchDiffLoadingPath === activeWorkbenchTab?.path}
+                diffError={activeWorkbenchDiffError}
+                diffBaseRef={activeWorkbenchBaseRef}
+                onDiffBaseRefChange={(ref) => {
+                  if (!activeWorkbenchTab) return;
+                  setWorkbenchDiffBaseRefByPath((current) => ({
+                    ...current,
+                    [activeWorkbenchTab.path]: ref,
+                  }));
+                  if (activeSessionId && workbenchShowDiffByPath[activeWorkbenchTab.path]) {
+                    void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path, {
+                      baseRef: ref,
+                    });
+                  }
+                }}
+                diffBaseRefOptions={activeWorkbenchBaseRefOptions}
+                width={workbenchWidth}
+              />
             </>
           ) : null}
 
-          {/* Resize Handle */}
+          {/* Left Rail Resize Handle */}
           <div
-              className={`hidden xl:block w-1 cursor-col-resize hover:bg-[color:var(--accent-solid)] transition-colors ${isResizing ? 'bg-[color:var(--accent-solid)]' : 'bg-transparent'}`}
+              className="order-2 relative hidden xl:block w-0 shrink-0"
+          />
+          <div
+              className={`absolute inset-y-0 z-40 hidden xl:block w-3 -translate-x-1/2 cursor-col-resize transition-colors before:absolute before:left-1 before:right-1 before:top-[47px] before:h-px before:bg-[color:var(--border-subtle)] ${isResizing ? 'bg-[color:var(--accent-solid)]/20' : 'hover:bg-[color:var(--accent-solid)]/10'}`}
               onMouseDown={startResizing}
+              style={{ left: `${rightPanelWidth}px` }}
           />
 
-          {/* Right Rail */}
+          {/* Tool Rail */}
           <aside
               style={{ width: `${rightPanelWidth}px` }}
-              className="relative z-30 hidden xl:flex flex-col border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
+              className="order-1 relative z-30 hidden xl:flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
           >
-            <div className="border-b border-[color:var(--border-subtle)] p-3 space-y-2">
-              <div className="relative grid grid-cols-3 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
-                {/* Sliding Indicator */}
+            <div className="relative">
+              <div className="flex h-12 items-center px-3">
                 <div
-                  className={`absolute top-0.5 bottom-0.5 w-[calc(33.333%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
-                    rightRailTab === 'browser'
-                      ? 'left-0.5'
-                      : rightRailTab === 'sub_agents'
-                        ? 'left-[calc(33.333%)]'
-                        : 'left-[calc(66.666%-0.5px)]'
-                  }`}
-                />
+                  className="relative grid w-full gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden"
+                  style={{ gridTemplateColumns: `repeat(${rightRailTabs.length}, minmax(0, 1fr))` }}
+                >
+                  {/* Sliding Indicator */}
+                  <div
+                    className="absolute top-0.5 bottom-0.5 rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out"
+                    style={{
+                      width: `calc(${100 / rightRailTabs.length}% - 1px)`,
+                      left: rightRailActiveIndex === 0 ? '2px' : `calc(${(100 / rightRailTabs.length) * rightRailActiveIndex}% + 1px)`,
+                    }}
+                  />
 
-                <button
-                  type="button"
-                  onClick={() => setRightRailTab('browser')}
-                  className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                    rightRailTab === 'browser'
-                      ? 'text-[color:var(--text-primary)]'
-                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                  }`}
-                >
-                  Browser
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRightRailTab('sub_agents')}
-                  className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                    rightRailTab === 'sub_agents'
-                      ? 'text-[color:var(--text-primary)]'
-                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                  }`}
-                >
-                  Sub-Agents
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRightRailTab('runtime')}
-                  className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                    rightRailTab === 'runtime'
-                      ? 'text-[color:var(--text-primary)]'
-                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                  }`}
-                >
-                  Runtime
-                </button>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                    {rightRailTab === 'browser'
-                      ? 'Live Browser'
-                      : rightRailTab === 'sub_agents'
-                        ? 'Sub-Agent Tasks'
-                        : 'Workspace Runtime'}
-                  </div>
+                  {rightRailTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setRightRailTab(tab.id)}
+                      className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
+                        rightRailTab === tab.id
+                          ? 'text-[color:var(--text-primary)]'
+                          : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
                 </div>
-                {rightRailTab === 'sub_agents' ? (
-                  <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-1.5 py-0.5 rounded font-bold">
-                    {tasks.filter((task) => task.status === 'running' || task.status === 'pending').length} Active
-                  </span>
-                ) : rightRailTab === 'runtime' ? (
-                  <span className="text-[10px] bg-sky-500/10 text-sky-500 px-1.5 py-0.5 rounded font-bold">
-                    {runtimeStatusLabel(runtimeStatus)}
-                  </span>
-                ) : null}
               </div>
             </div>
 
-            {rightRailTab === 'browser' ? (
+            {/* Runtime sub-segmented control: Desktop / Terminals / Files.
+                Only rendered when the Runtime tab is active. Matches the
+                primary tab strip's pill styling so the two reads as a
+                hierarchy without screaming for attention. */}
+            {isRuntimeTab ? (
+              <div className="px-3 pb-2">
+                {/* Flex (not grid) layout: each pill sizes to content, so a
+                    label + icon + badge never overflow its cell. The sliding
+                    indicator is positioned by measured offsetLeft/Width via
+                    a useLayoutEffect above — that's what keeps it locked to
+                    the active button regardless of rail width or badge count.
+                    Buttons get `flex-1 min-w-0` so they share remaining
+                    space evenly when the strip is wider than the natural
+                    content; on narrow widths they shrink toward content. */}
+                <div
+                  ref={runtimeStripRef}
+                  className="relative flex items-stretch gap-1 rounded-full border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-2)]"
+                >
+                  {runtimeIndicator ? (
+                    <div
+                      aria-hidden
+                      className="pointer-events-none absolute top-1 bottom-1 rounded-full bg-[color:var(--surface-0)] shadow-sm transition-[left,width] duration-300 ease-out"
+                      style={{ left: runtimeIndicator.left, width: runtimeIndicator.width }}
+                    />
+                  ) : null}
+                  {([
+                    { id: 'desktop' as const, label: 'Desktop', Icon: Globe },
+                    { id: 'terminals' as const, label: 'Terminals', Icon: Terminal },
+                    { id: 'files' as const, label: 'Files', Icon: Folder },
+                  ]).map(({ id, label, Icon }) => {
+                    const active = runtimeView === id;
+                    const badge = id === 'terminals' && activeTerminals.length > 0
+                      ? activeTerminals.length
+                      : null;
+                    return (
+                      <button
+                        key={id}
+                        ref={(el) => { runtimeTabRefs.current[id] = el; }}
+                        type="button"
+                        onClick={() => openRuntimeView(id)}
+                        className={`relative z-10 flex-1 min-w-0 inline-flex items-center justify-center gap-1.5 h-7 px-2.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
+                          active
+                            ? 'text-[color:var(--text-primary)]'
+                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
+                        }`}
+                        title={label}
+                      >
+                        <Icon size={11} className="shrink-0" />
+                        <span className="truncate">{label}</span>
+                        {badge !== null ? (
+                          <span className="shrink-0 inline-flex items-center justify-center min-w-[16px] h-[15px] px-1 rounded-full bg-sky-500/20 text-sky-300 text-[9px] font-bold tracking-normal leading-none">
+                            {badge}
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {showDesktopView ? (
               <div className="flex-1 min-h-0 flex flex-col">
-                <div className="flex items-center justify-between p-3 border-b border-[color:var(--border-subtle)]">
+                <div className={`relative flex items-center justify-between p-3 border-b border-[color:var(--border-subtle)] ${
+                  isDesktopFullscreen ? 'z-10' : 'z-[110]'
+                }`}>
                   <div className="flex items-center gap-2">
                     <Globe size={15} className="text-sky-500" />
                     <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
@@ -3747,16 +4258,75 @@ export function SessionsPage() {
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => resetBrowser()}
-                      disabled={isResettingBrowser}
-                      className="p-1.5 rounded-md hover:bg-rose-500/10 transition-colors text-rose-500 disabled:opacity-50"
-                      title="Reset browser runtime"
+                    <select
+                      value={desktopResolution}
+                      onChange={(event) => void setDesktopResolution(event.target.value)}
+                      disabled={isDesktopResolutionChanging || isDesktopRuntimeStarting}
+                      className="h-7 max-w-[126px] rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2 font-mono text-[10px] font-bold text-[color:var(--text-secondary)] outline-none transition-colors hover:bg-[color:var(--surface-2)] disabled:opacity-50"
+                      title="Desktop resolution"
                     >
-                      <RotateCcw size={14} className={isResettingBrowser ? 'animate-spin' : ''} />
-                    </button>
+                      {DESKTOP_RESOLUTION_PRESETS.map((preset) => (
+                        <option key={preset.value} value={preset.value}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </select>
+                    {/* Reset dropdown */}
+                    <div className={`relative ${isDesktopFullscreen ? 'z-10' : 'z-[120]'}`} ref={resetMenuRef}>
+                      <button
+                        onClick={() => setResetMenuOpen((o) => !o)}
+                        disabled={runtimeActionBusy}
+                        className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-[color:var(--text-muted)] disabled:opacity-50"
+                        title="Runtime actions"
+                      >
+                        {runtimeActionBusy
+                          ? <RotateCcw size={14} className="animate-spin" />
+                          : <Settings2 size={14} />}
+                      </button>
+                      {resetMenuOpen && (
+                        <div
+                          className={`absolute right-0 top-full mt-1 w-48 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-xl overflow-hidden ${
+                            isDesktopFullscreen ? 'z-10' : 'z-[130]'
+                          }`}
+                          onMouseLeave={() => setResetMenuOpen(false)}
+                        >
+                          <button
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+                            onClick={() => { setResetMenuOpen(false); void resetBrowser(); }}
+                          >
+                            <RotateCcw size={13} className="text-rose-400 shrink-0" />
+                            <div>
+                              <div className="font-semibold">Reset Browser</div>
+                              <div className="text-[9px] text-[color:var(--text-muted)]">Wipe Chrome profile</div>
+                            </div>
+                          </button>
+                          <div className="h-px bg-[color:var(--border-subtle)]" />
+                          <button
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+                            onClick={() => { setResetMenuOpen(false); void restartDesktop(); }}
+                          >
+                            <RefreshCw size={13} className="text-amber-400 shrink-0" />
+                            <div>
+                              <div className="font-semibold">Restart Desktop</div>
+                              <div className="text-[9px] text-[color:var(--text-muted)]">Restart VNC session</div>
+                            </div>
+                          </button>
+                          <div className="h-px bg-[color:var(--border-subtle)]" />
+                          <button
+                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-rose-300 hover:bg-rose-500/10 transition-colors"
+                            onClick={() => { setResetMenuOpen(false); void wipeWorkspace(); }}
+                          >
+                            <Trash2 size={13} className="text-rose-400 shrink-0" />
+                            <div>
+                              <div className="font-semibold">Wipe Workspace</div>
+                              <div className="text-[9px] text-[color:var(--text-muted)]">Delete session files</div>
+                            </div>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     <button
-                      onClick={() => setIsBrowserFullscreen(true)}
+                      onClick={() => setIsDesktopFullscreen(true)}
                       className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-sky-500"
                       title="Open fullscreen"
                     >
@@ -3765,17 +4335,22 @@ export function SessionsPage() {
                   </div>
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto">
-                  <div className="relative w-full aspect-video overflow-hidden border-b border-[color:var(--border-subtle)] bg-black">
-                    <BrowserPreview
-                      url={liveView?.url ?? null}
-                      isFullscreen={isBrowserFullscreen}
-                      onClose={() => setIsBrowserFullscreen(false)}
+                  <div className="relative w-full aspect-[16/10] overflow-hidden border-b border-[color:var(--border-subtle)] bg-black">
+                    <DesktopPreview
+                      url={liveView?.enabled && liveView?.available ? liveView.url : null}
+                      wsUrl={liveView?.enabled && liveView?.available ? liveView.ws_url : null}
+                      isFullscreen={isDesktopFullscreen}
+                      onClose={() => setIsDesktopFullscreen(false)}
+                      isBooting={isDesktopRuntimeStarting && !(liveView?.enabled && liveView?.available)}
+                      layoutKey={`${mode}:${desktopLayoutNonce}:${liveView?.geometry ?? desktopResolution}`}
+                      onFrameLoad={handleDesktopFrameLoad}
+                      onInteract={handleDesktopInteract}
                     />
                   </div>
 
                   <div className="p-3 space-y-4">
                     <section>
-                      <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2.5 px-1">Browser Status</div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2.5 px-1">Desktop Status</div>
                       <div className="space-y-1.5">
                         <div className="flex items-center justify-between p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]">
                           <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)]">Connection</span>
@@ -3784,6 +4359,11 @@ export function SessionsPage() {
                               <>
                                 <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
                                 <span className="text-[10px] font-mono font-bold text-emerald-500">CONNECTED</span>
+                              </>
+                            ) : isDesktopRuntimeStarting ? (
+                              <>
+                                <div className="h-1.5 w-1.5 rounded-full bg-sky-400 animate-pulse" />
+                                <span className="text-[10px] font-mono font-bold text-sky-400">STARTING</span>
                               </>
                             ) : (
                               <>
@@ -3799,7 +4379,7 @@ export function SessionsPage() {
                           <div className="flex items-center justify-between gap-3">
                             <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">Stream URL</span>
                             <div className="flex-1 min-w-0 font-mono text-[10px] text-[color:var(--text-secondary)] truncate text-right">
-                              {liveView?.url || '—'}
+                              {liveView?.ws_url || liveView?.url || '—'}
                             </div>
                           </div>
                           {liveView?.reason && (
@@ -3811,36 +4391,318 @@ export function SessionsPage() {
                       </div>
                     </section>
 
-                    <section>
-                      <div className="flex items-center justify-between mb-2.5 px-1">
-                        <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Recent Browser Actions</div>
-                      </div>
-                      {browserToolResults.length > 0 ? (
-                        <div className="space-y-1">
-                          {browserToolResults.slice(0, 12).map((item) => (
-                            <div
-                              key={item.id}
-                              className="flex items-center justify-between p-2.5 rounded-lg border border-transparent hover:border-[color:var(--border-subtle)] hover:bg-[color:var(--surface-1)] transition-all group active:scale-[0.99]"
-                            >
-                              <div className="flex items-center gap-3 min-0">
-                                <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-solid)] opacity-20 group-hover:opacity-100 transition-opacity" />
-                                <span className="text-[11px] font-bold text-[color:var(--text-primary)] truncate capitalize">
-                                  {item.tool_name?.replace('browser_', '').replaceAll('_', ' ') || 'browser action'}
-                                </span>
+                    {(() => {
+                      const overall = runtimeStatus?.status;
+                      const allChecks = runtimeStatus?.checks ?? [];
+                      const failed = allChecks.filter((c) => c.status === 'fail' || c.status === 'warn');
+                      const requiredFailures = failed.filter((c) => c.required);
+                      const optionalWarnings = failed.filter((c) => !c.required);
+                      const passed = allChecks.filter((c) => c.status === 'pass');
+                      const skipped = allChecks.filter((c) => c.status === 'skip');
+                      const totalPassMs = passed.reduce((sum, c) => sum + (c.duration_ms ?? 0), 0);
+                      const primaryFailure = requiredFailures[0] ?? null;
+                      const remainingRequiredFailures = requiredFailures.slice(1);
+                      const suppressPassedRollup = overall === 'unreachable' || overall === 'failed';
+                      type CheckEntry = (typeof allChecks)[number];
+
+                      const heroIcon =
+                        overall === 'ready' ? <CheckCircle2 size={16} className="text-emerald-400 shrink-0 mt-0.5" /> :
+                        overall === 'degraded' ? <AlertCircle size={16} className="text-amber-400 shrink-0 mt-0.5" /> :
+                        overall === 'unreachable' || overall === 'failed' ? <XCircle size={16} className="text-rose-500 shrink-0 mt-0.5" /> :
+                        overall === 'not_configured' ? <HelpCircle size={16} className="text-[color:var(--text-muted)] shrink-0 mt-0.5" /> :
+                        <Loader2 size={16} className="text-[color:var(--text-muted)] animate-spin shrink-0 mt-0.5" />;
+
+                      const heroLabel =
+                        overall === 'ready' ? 'Ready' :
+                        overall === 'degraded' ? 'Degraded' :
+                        overall === 'unreachable' ? 'Unreachable' :
+                        overall === 'failed' ? 'Failed' :
+                        overall === 'not_configured' ? 'Not configured' :
+                        runtimeStatusLoading ? 'Checking…' : 'Unknown';
+
+                      const heroBorder =
+                        overall === 'ready' ? 'border-emerald-500/30 bg-emerald-500/5' :
+                        overall === 'degraded' ? 'border-amber-500/30 bg-amber-500/5' :
+                        overall === 'unreachable' || overall === 'failed' ? 'border-rose-500/30 bg-rose-500/5' :
+                        'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50';
+
+                      const targetLine = runtimeStatus?.runtime
+                        ? [
+                            runtimeStatus.runtime.name,
+                            runtimeStatus.runtime.host && `${runtimeStatus.runtime.host}:${runtimeStatus.runtime.port ?? 22}`,
+                          ].filter(Boolean).join(' · ')
+                        : null;
+
+                      const settingsHref = instanceRouteFromPath(location.pathname, 'settings');
+                      const looksLikeCommand = (text: string) =>
+                        /^(sudo |mkdir |chown |chmod |systemctl |service |brew |apt |apt-get |yum |dnf |pacman |scp |ssh |docker |npm |pip |uv |cargo |go )/.test(text.trim());
+
+                      const renderFixCallout = (check: CheckEntry) => {
+                        const isConfigFailure = check.id.startsWith('config_');
+                        const hintIsCommand = check.hint ? looksLikeCommand(check.hint) : false;
+                        if (!check.hint && !isConfigFailure) return null;
+                        return (
+                          <div className="rounded-md border-l-2 border-amber-500/50 bg-[color:var(--surface-1)]/40 pl-2 pr-1.5 py-1.5 space-y-1.5">
+                            {check.hint && hintIsCommand ? (
+                              <div className="flex items-start gap-1.5">
+                                <code className="flex-1 font-mono text-[10px] text-[color:var(--text-primary)] break-all leading-snug">{check.hint}</code>
+                                <button
+                                  type="button"
+                                  onClick={() => { navigator.clipboard.writeText(check.hint ?? ''); toast.success('Copied'); }}
+                                  className="shrink-0 p-0.5 rounded text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)] transition-colors"
+                                  title="Copy to clipboard"
+                                >
+                                  <Copy size={10} />
+                                </button>
                               </div>
-                              <span className="text-[9px] font-mono text-[color:var(--text-muted)] shrink-0 opacity-60 group-hover:opacity-100">
-                                {formatCompactDate(item.created_at)}
-                              </span>
+                            ) : check.hint ? (
+                              <div className="text-[10px] leading-snug text-[color:var(--text-secondary)]">{check.hint}</div>
+                            ) : null}
+                            {isConfigFailure && (
+                              <button
+                                type="button"
+                                onClick={() => navigate(settingsHref)}
+                                className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-70 transition-opacity"
+                              >
+                                Open Settings <ExternalLink size={9} />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      };
+
+                      return (
+                        <section className="space-y-2">
+                          {/* Hero card — absorbs the primary required failure when one exists */}
+                          <div className={`rounded-lg border px-2.5 py-2 ${heroBorder}`}>
+                            <div className="flex items-start gap-2">
+                              {heroIcon}
+                              <div className="flex-1 min-w-0 space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-[12px] font-bold text-[color:var(--text-primary)]">{heroLabel}</span>
+                                  {targetLine && (
+                                    <span className="text-[10px] font-mono text-[color:var(--text-muted)] truncate">{targetLine}</span>
+                                  )}
+                                </div>
+                                {primaryFailure ? (
+                                  <>
+                                    <div className="text-[10px] text-[color:var(--text-secondary)] leading-snug">
+                                      <span className="font-semibold text-[color:var(--text-primary)]">{primaryFailure.label}</span> failed
+                                      {typeof primaryFailure.duration_ms === 'number' && primaryFailure.duration_ms >= 500 && (
+                                        <span className="font-mono text-[color:var(--text-muted)]"> · {primaryFailure.duration_ms}ms</span>
+                                      )}
+                                    </div>
+                                    {primaryFailure.detail && (
+                                      <div className="font-mono text-[10px] leading-snug text-[color:var(--text-secondary)] break-words">
+                                        {primaryFailure.detail}
+                                      </div>
+                                    )}
+                                    {renderFixCallout(primaryFailure)}
+                                  </>
+                                ) : (
+                                  (runtimeStatus?.summary || runtimeStatusLoading) && (
+                                    <div className="text-[10px] text-[color:var(--text-secondary)] leading-snug">
+                                      {runtimeStatus?.summary ?? 'Checking runtime status…'}
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => void fetchRuntimeStatus()}
+                                disabled={runtimeStatusLoading}
+                                className="inline-flex h-5 w-5 items-center justify-center rounded text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] disabled:opacity-50 shrink-0"
+                                title="Refresh runtime diagnostics"
+                              >
+                                <RefreshCw size={11} className={runtimeStatusLoading ? 'animate-spin' : ''} />
+                              </button>
                             </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="py-8 text-center text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] opacity-40">
-                          No browser tool activity yet.
-                        </div>
-                      )}
-                    </section>
+                          </div>
+
+                          {/* Additional required failures, if any (rare — usually there's just one). */}
+                          {remainingRequiredFailures.length > 0 && (
+                            <div className="space-y-1.5">
+                              {remainingRequiredFailures.map((check) => (
+                                <div key={check.id} className="rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-2">
+                                  <div className="flex items-start gap-2">
+                                    <XCircle size={13} className="text-rose-500 shrink-0 mt-0.5" />
+                                    <div className="min-w-0 flex-1 space-y-1">
+                                      <div className="text-[11px] font-bold text-[color:var(--text-primary)]">{check.label}</div>
+                                      {check.detail && (
+                                        <div className="font-mono text-[10px] leading-snug text-[color:var(--text-secondary)] break-words">{check.detail}</div>
+                                      )}
+                                      {renderFixCallout(check)}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Optional warnings — collapsed roll-up */}
+                          {optionalWarnings.length > 0 && (
+                            <div className="space-y-1">
+                              <button
+                                type="button"
+                                onClick={() => setShowOptionalRuntimeWarnings((v) => !v)}
+                                className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/10 transition-all text-left"
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <AlertCircle size={11} className="text-amber-400 shrink-0" />
+                                  <span className="text-[10px] font-medium text-[color:var(--text-secondary)]">
+                                    {optionalWarnings.length} optional capabilit{optionalWarnings.length === 1 ? 'y' : 'ies'} missing
+                                  </span>
+                                </div>
+                                <ChevronDown size={11} className={`text-[color:var(--text-muted)] shrink-0 transition-transform ${showOptionalRuntimeWarnings ? 'rotate-180' : ''}`} />
+                              </button>
+                              {showOptionalRuntimeWarnings && (
+                                <div className="space-y-1 px-2 py-1.5 rounded-lg bg-[color:var(--surface-1)]/30">
+                                  {optionalWarnings.map((check) => (
+                                    <div key={check.id} className="flex items-start gap-1.5 py-0.5">
+                                      <div className="h-1 w-1 rounded-full bg-amber-400 shrink-0 mt-1.5" />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-baseline gap-1.5">
+                                          <span className="text-[10px] font-semibold text-[color:var(--text-secondary)]">{check.label}</span>
+                                          {check.detail && <span className="text-[9px] text-[color:var(--text-muted)] font-mono truncate">{check.detail}</span>}
+                                        </div>
+                                        {check.hint && (
+                                          <div className="text-[9px] text-[color:var(--text-muted)] leading-snug">{check.hint}</div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Passing checks collapsed — hidden when the runtime is unreachable/failed */}
+                          {passed.length > 0 && !suppressPassedRollup && (
+                            <div className="space-y-1">
+                              <button
+                                type="button"
+                                onClick={() => setShowPassingRuntimeChecks((v) => !v)}
+                                className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 hover:bg-[color:var(--surface-1)] transition-all text-left"
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <CheckCircle2 size={11} className="text-emerald-400 shrink-0" />
+                                  <span className="text-[10px] font-medium text-[color:var(--text-secondary)]">
+                                    {passed.length} check{passed.length === 1 ? '' : 's'} passed
+                                    {totalPassMs > 0 ? ` · ${totalPassMs}ms` : ''}
+                                  </span>
+                                </div>
+                                <ChevronDown size={11} className={`text-[color:var(--text-muted)] shrink-0 transition-transform ${showPassingRuntimeChecks ? 'rotate-180' : ''}`} />
+                              </button>
+                              {showPassingRuntimeChecks && (
+                                <div className="space-y-0.5 px-2 py-1.5 rounded-lg bg-[color:var(--surface-1)]/30">
+                                  {passed.map((check) => (
+                                    <div key={check.id} className="flex items-center gap-1.5 py-0.5">
+                                      <div className="h-1 w-1 rounded-full bg-emerald-500 shrink-0" />
+                                      <span className="text-[10px] text-[color:var(--text-secondary)] flex-1 min-w-0 truncate">{check.label}</span>
+                                      {typeof check.duration_ms === 'number' && check.duration_ms >= 100 && (
+                                        <span className="font-mono text-[9px] text-[color:var(--text-muted)] shrink-0">{check.duration_ms}ms</span>
+                                      )}
+                                    </div>
+                                  ))}
+                                  {skipped.map((check) => (
+                                    <div key={check.id} className="flex items-center gap-1.5 py-0.5 opacity-50">
+                                      <div className="h-1 w-1 rounded-full bg-[color:var(--text-muted)] shrink-0" />
+                                      <span className="text-[10px] text-[color:var(--text-muted)] flex-1 min-w-0 truncate">{check.label} (skipped)</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Empty / loading states */}
+                          {!runtimeStatus && runtimeStatusLoading && allChecks.length === 0 && (
+                            <div className="py-3 text-center text-[10px] text-[color:var(--text-muted)] opacity-60">
+                              Checking runtime…
+                            </div>
+                          )}
+                          {!runtimeStatus && !runtimeStatusLoading && (
+                            <div className="py-3 text-center text-[10px] text-[color:var(--text-muted)] opacity-40">
+                              No diagnostics yet.
+                            </div>
+                          )}
+
+                          {/* Footer metadata */}
+                          {runtimeStatus?.runtime && (runtimeStatus.runtime.username || runtimeStatus.runtime.workspaces_dir) && (
+                            <div className="pt-0.5 px-1 space-y-0 text-[9px] text-[color:var(--text-muted)] font-mono">
+                              <div className="truncate">
+                                {[
+                                  runtimeStatus.os !== 'unknown' ? runtimeStatus.os : null,
+                                  runtimeStatus.sandbox !== 'unknown' && runtimeStatus.sandbox !== 'unavailable' ? `${runtimeStatus.sandbox} sandbox` : null,
+                                  runtimeStatus.runtime.username && runtimeStatus.runtime.host
+                                    ? `${runtimeStatus.runtime.username}@${runtimeStatus.runtime.host}:${runtimeStatus.runtime.port ?? 22}`
+                                    : null,
+                                ].filter(Boolean).join(' · ')}
+                              </div>
+                              {runtimeStatus.runtime.workspaces_dir && (
+                                <div className="truncate">{runtimeStatus.runtime.workspaces_dir}</div>
+                              )}
+                            </div>
+                          )}
+                        </section>
+                      );
+                    })()}
                   </div>
+                </div>
+              </div>
+            ) : null}
+
+            {showTerminalsView ? (
+              <div className="flex-1 min-h-0 flex flex-col">
+                {activeTerminals.length > 1 ? (
+                  <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar px-3 py-2 border-b border-[color:var(--border-subtle)]">
+                    {activeTerminals.map((terminal) => {
+                      const display = getTerminalLabel(terminal.id, terminal.lastCommand ?? terminal.label);
+                      const isFocused = (focusedTerminalId ?? activeTerminals[0]?.id) === terminal.id;
+                      return (
+                        <button
+                          key={terminal.id}
+                          type="button"
+                          onClick={() => setFocusedTerminalId(terminal.id)}
+                          className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2 h-6 text-[10px] font-medium transition-colors ${
+                            isFocused
+                              ? 'bg-sky-500/20 text-sky-300'
+                              : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                          }`}
+                          title={display}
+                        >
+                          <span className="max-w-[120px] truncate">{display}</span>
+                          {terminal.busy ? <Loader2 size={9} className="animate-spin" /> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                <div className="flex-1 min-h-0">
+                  {activeSessionId && (focusedTerminalId ?? activeTerminals[0]?.id) ? (
+                    // Keyed on the (session, terminal) pair so React tears down
+                    // and re-creates the xterm + WS when the user switches tabs;
+                    // sharing state across terminals would mix scrollback.
+                    <TerminalPreview
+                      key={`${activeSessionId}:${focusedTerminalId ?? activeTerminals[0].id}`}
+                      sessionId={activeSessionId}
+                      terminalId={focusedTerminalId ?? activeTerminals[0].id}
+                      instanceName={activeInstanceName ?? ''}
+                    />
+                  ) : (
+                    // Empty state mirrors the Agents tab's idle treatment —
+                    // muted icon block + short subtitle — so the runtime sub
+                    // views feel like a family even when empty.
+                    <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center text-[color:var(--text-muted)] opacity-60">
+                      <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
+                        <Terminal size={24} strokeWidth={1} />
+                      </div>
+                      <p className="text-[10px] font-medium uppercase tracking-widest">No terminals open</p>
+                      <p className="text-[10px] leading-relaxed max-w-[220px]">
+                        The agent will open one here when it runs a shell command.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : null}
@@ -3898,355 +4760,153 @@ export function SessionsPage() {
               </div>
             ) : null}
 
-            {rightRailTab === 'runtime' ? (
+            {showFilesView ? (
               <div className="flex-1 min-h-0 flex flex-col">
-                <div className="flex-1 min-h-0 flex flex-col">
-                  <div className="border-b border-[color:var(--border-subtle)] px-4 py-2">
-                    <div className="relative grid grid-cols-2 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden">
-                      {/* Sliding Indicator */}
-                      <div
-                        className={`absolute top-0.5 bottom-0.5 w-[calc(50%-1px)] rounded-full bg-[color:var(--surface-0)] shadow-sm transition-all duration-300 ease-out ${
-                          runtimeInspectorTab === 'files'
-                            ? 'left-0.5'
-                            : 'left-[calc(50%)]'
-                        }`}
-                      />
+                <WorkbenchExplorerPane
+                  showTitle={false}
+                  currentPath={runtimePath}
+                  explorerLoading={runtimeFilesLoading}
+                  explorerEntries={runtimeFiles?.entries || []}
+                  onExplorerFileClick={(entry) => void openRuntimeFile(entry.path)}
+                  onExplorerDownload={(entry) => void downloadRuntimeEntry(entry)}
+                  loadExplorerDirectory={loadRuntimeDirectoryEntries}
+                  explorerRefreshKey={runtimeFilesRefreshKey}
+                  onExplorerDirectoryToggle={(entry, expanded) => {
+                    if (!activeSessionId || !entry.is_git_root) return;
+                    if (!expanded) {
+                      setRuntimeRepoChangesByRoot((current) => {
+                        const next = { ...current };
+                        delete next[entry.path];
+                        return next;
+                      });
+                      setRuntimeRepoChangesLoadingByRoot((current) => {
+                        const next = { ...current };
+                        delete next[entry.path];
+                        return next;
+                      });
+                      setRuntimeExpandedGitDirs((current) => {
+                        const next = { ...current };
+                        Object.keys(next).forEach((key) => {
+                          if (key === entry.path || key.startsWith(`${entry.path}/`)) delete next[key];
+                        });
+                        return next;
+                      });
+                      return;
+                    }
+                    void fetchRuntimeChangedFilesForRepo(activeSessionId, entry.path);
+                  }}
+                  repoChangesSections={runtimeRepoChangeSections}
+                  expandedGitDirs={runtimeExpandedGitDirs}
+                  onToggleGitDir={(path) => {
+                    setRuntimeExpandedGitDirs((current) => ({ ...current, [path]: !(current[path] ?? false) }));
+                  }}
+                  onGitFileClick={(path) => void openRuntimeFileDiff(path)}
+                />
+              </div>
+            ) : null}
 
-                      <button
-                        type="button"
-                        onClick={() => setRuntimeInspectorTab('files')}
-                        className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                          runtimeInspectorTab === 'files'
-                            ? 'text-[color:var(--text-primary)]'
-                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                        }`}
-                      >
-                        Files
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setRuntimeInspectorTab('commands')}
-                        className={`relative z-10 h-7 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                          runtimeInspectorTab === 'commands'
-                            ? 'text-[color:var(--text-primary)]'
-                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                        }`}
-                      >
-                        Commands
-                      </button>
-                    </div>
+            {rightRailTab === 'sessions' ? (
+              <div className="flex-1 min-h-0">
+                <SessionHistorySidebar
+                  showHeaderTitle={false}
+                  historyTab={historyTab}
+                  setHistoryTab={setHistoryTab}
+                  sessionFilter={sessionFilter}
+                  setSessionFilter={setSessionFilter}
+                  isMultiSelectMode={isMultiSelectMode}
+                  setIsMultiSelectMode={setIsMultiSelectMode}
+                  selectedSessionIds={selectedSessionIds}
+                  setSelectedSessionIds={setSelectedSessionIds}
+                  allVisibleSelected={allVisibleSelected}
+                  selectableVisibleSessionIds={selectableVisibleSessionIds}
+                  deleteSelectedSessions={deleteSelectedSessions}
+                  deletingSessionId={deletingSessionId}
+                  filteredSessions={filteredSessions}
+                  activeSessionId={activeSessionId}
+                  onSessionClick={onSessionClick}
+                  defaultSessionId={defaultSessionId}
+                  editingSessionId={editingSessionId}
+                  editingSessionTitle={editingSessionTitle}
+                  setEditingSessionTitle={setEditingSessionTitle}
+                  submitRenameSession={submitRenameSession}
+                  cancelRenameSession={cancelRenameSession}
+                  startRenameSession={startRenameSession}
+                  setMainSession={setMainSession}
+                  deleteSession={deleteSession}
+                  renamingSessionId={renamingSessionId}
+                  loadingSessions={false}
+                />
+              </div>
+            ) : null}
+
+            {SESSION_DEBUG_PANEL_ENABLED && rightRailTab === 'debug' ? (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex items-center justify-between p-3 border-b border-[color:var(--border-subtle)]">
+                  <div className="flex items-center gap-2">
+                    <Activity size={15} className="text-amber-400" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                      Session Debug
+                    </span>
                   </div>
-
-                  <div className="flex-1 min-h-0 overflow-y-auto p-4">
-                    {runtimeInspectorTab === 'files' ? (
-                      <div className="space-y-2">
-                        <div className="mb-1 flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!activeSessionId || !runtimeFiles || runtimeFiles.parent_path === null) return;
-                              void openRuntimeDirectory(runtimeFiles.parent_path);
-                            }}
-                            disabled={!runtimeFiles || runtimeFiles.parent_path === null || runtimeFilesLoading}
-                            className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-[color:var(--text-muted)] disabled:opacity-40"
-                          >
-                            <ArrowUp size={11} />
-                            Up
-                          </button>
-                          <div className="min-w-0 flex-1 rounded-md border border-[color:var(--border-subtle)] px-2 py-1 text-[10px] font-mono text-[color:var(--text-secondary)] truncate">
-                            /workspace{runtimePath ? `/${runtimePath}` : ''}
-                          </div>
-                        </div>
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Explorer</div>
-                        {runtimeChangedFiles?.git_root ? (
-                          <div className="rounded-lg border border-violet-500/30 bg-violet-500/10 p-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="min-w-0 flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-violet-700 dark:text-violet-200">
-                                <GitBranch size={11} />
-                                <span className="truncate">
-                                  Repo {runtimeChangedFiles.git_root || '.'}
-                                </span>
-                                <span className="text-violet-600/90 dark:text-violet-300/90">
-                                  {runtimeChangedFiles.detached_head
-                                    ? 'detached'
-                                    : runtimeChangedFiles.branch || 'unknown'}
-                                </span>
-                              </div>
-                              <span className="text-[8px] font-bold uppercase tracking-widest text-violet-600 dark:text-violet-300/80">
-                                auto
-                              </span>
-                            </div>
-                            {runtimeChangedFiles.entries.length > 0 ? (
-                              <div className="relative mt-2">
-                                {runtimeChangedFilesLoading ? (
-                                  <div className="pointer-events-none absolute inset-x-0 -top-1 z-10 mx-auto w-fit rounded-full border border-violet-500/35 bg-violet-50 px-2 py-0.5 text-[8px] font-bold uppercase tracking-widest text-violet-700 dark:bg-violet-900/35 dark:text-violet-100">
-                                    Updating…
-                                  </div>
-                                ) : null}
-                                <div className={`space-y-1 transition-opacity duration-150 ${runtimeChangedFilesLoading ? 'opacity-85' : 'opacity-100'} ${runtimeChangedFilesLoading ? '' : 'animate-[fade-in_160ms_ease-out]'}`}>
-                                  {runtimeChangedFiles.entries.slice(0, 8).map((entry) => (
-                                    <button
-                                      key={`runtime-inline-change:${entry.path}:${entry.status}`}
-                                      type="button"
-                                      onClick={() => void openRuntimeFileDiff(entry.path)}
-                                      className="w-full rounded-md border border-violet-400/30 bg-violet-50/80 px-2 py-1.5 text-left hover:border-violet-500/50 transition-colors dark:bg-violet-950/30"
-                                    >
-                                      <div className="flex items-center gap-2 min-w-0">
-                                        <span className="w-7 shrink-0 text-[9px] font-bold uppercase text-violet-700 dark:text-violet-200">
-                                          {entry.status}
-                                        </span>
-                                        <span className="truncate text-[10px] font-mono text-violet-700/90 dark:text-violet-100/90">
-                                          {entry.path}
-                                        </span>
-                                        <ChevronRight size={11} className="ml-auto shrink-0 text-violet-500 dark:text-violet-200/70" />
-                                      </div>
-                                    </button>
-                                  ))}
-                                  {runtimeChangedFiles.entries.length > 8 ? (
-                                    <div className="text-[9px] uppercase tracking-wider text-violet-600 dark:text-violet-200/80">
-                                      +{runtimeChangedFiles.entries.length - 8} more changed files
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </div>
-                            ) : runtimeChangedFilesLoading ? (
-                              <div className="mt-2 flex items-center gap-1.5 text-[10px] text-violet-600 dark:text-violet-200/80">
-                                <Loader2 size={11} className="animate-spin" />
-                                Scanning changes…
-                              </div>
-                            ) : (
-                              <div className="mt-2 text-[10px] text-violet-600 dark:text-violet-100/80">
-                                No changed files in this repository.
-                              </div>
-                            )}
-                          </div>
-                        ) : null}
-                        {runtimeFiles?.entries?.length ? (
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between px-1">
-                              <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Workspace Explorer</div>
-                              {runtimeFilesLoading && <Loader2 size={10} className="animate-spin text-[color:var(--text-muted)]" />}
-                            </div>
-                            <div className="space-y-1.5">
-                              {runtimeFiles.entries.map((entry: SessionRuntimeFileEntry) => (
-                                <button
-                                  key={`${entry.path}:${entry.kind}`}
-                                  type="button"
-                                  onClick={() => {
-                                    if (entry.kind === 'directory') {
-                                      void openRuntimeDirectory(entry.path, {
-                                        autoOpenFirstDiff: Boolean(entry.is_git_root),
-                                      });
-                                    } else {
-                                      void openRuntimeFile(entry.path);
-                                    }
-                                  }}
-                                  className="w-full group flex items-center justify-between p-2.5 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all active:scale-[0.99]"
-                                >
-                                  <div className="flex items-center gap-3 min-w-0">
-                                    {entry.kind === 'directory' ? (
-                                      <Folder size={14} className="text-sky-500 shrink-0" />
-                                    ) : (
-                                      <FileCode2 size={14} className="text-[color:var(--text-muted)] shrink-0 group-hover:text-[color:var(--text-primary)] transition-colors" />
-                                    )}
-                                    <div className="flex flex-col items-start min-w-0">
-                                      <span className="text-[11px] font-bold text-[color:var(--text-primary)] truncate">{entry.name}</span>
-                                      <div className="flex items-center gap-2 mt-0.5">
-                                        <span className="text-[9px] font-mono text-[color:var(--text-muted)] uppercase tracking-tight">
-                                          {entry.kind === 'directory' ? 'Folder' : formatBytes(entry.size_bytes)}
-                                        </span>
-                                        {entry.modified_at && (
-                                          <>
-                                            <div className="w-0.5 h-0.5 rounded-full bg-[color:var(--border-strong)]" />
-                                            <span className="text-[9px] font-mono text-[color:var(--text-muted)]">
-                                              {formatCompactDate(entry.modified_at)}
-                                            </span>
-                                          </>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    {entry.kind === 'directory' && entry.is_git_root && (
-                                      <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/5 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-violet-500">
-                                        <GitBranch size={9} />
-                                        {entry.git_detached_head ? 'detached' : entry.git_branch || 'repo'}
-                                      </span>
-                                    )}
-                                    <ChevronRight size={12} className="text-[color:var(--text-muted)] opacity-40 group-hover:opacity-100 transition-opacity" />
-                                  </div>
-                                </button>
-                              ))}
-                              {runtimeFiles.truncated && (
-                                <div className="p-3 text-center rounded-lg border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/20">
-                                  <p className="text-[9px] font-bold uppercase tracking-widest text-amber-500/80">List truncated to 400 entries</p>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        ) : runtimeFilesLoading ? (
-                          <div className="py-12 flex flex-col items-center justify-center gap-3 text-[color:var(--text-muted)] animate-pulse">
-                            <Loader2 size={20} className="animate-spin" />
-                            <p className="text-[10px] font-bold uppercase tracking-widest">Mapping Workspace...</p>
-                          </div>
-                        ) : (
-                          <div className="py-12 flex flex-col items-center justify-center gap-3 text-[color:var(--text-muted)] opacity-40">
-                            <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
-                              <FileCode2 size={20} strokeWidth={1.5} />
-                            </div>
-                            <p className="text-[10px] font-bold uppercase tracking-[0.1em]">Workspace is empty</p>
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-
-                    {runtimeInspectorTab === 'commands' ? (
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between px-1">
-                          <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Recent Commands</div>
-                          <span className="text-[9px] font-mono text-[color:var(--text-muted)] opacity-60">Last 25</span>
-                        </div>
-                        {runtimeCommandActions.length > 0 ? (
-                          <div className="space-y-2.5">
-                            {runtimeCommandActions.slice(0, 25).map((entry) => {
-                              const isRunning = entry.state === 'running';
-                              const hasOutput = Boolean(
-                                entry.output &&
-                                  (entry.output.stdout.trim().length > 0 ||
-                                    entry.output.stderr.trim().length > 0 ||
-                                    entry.output.timedOut ||
-                                    entry.output.returncode !== null ||
-                                    entry.output.ok !== null),
-                              );
-                              const isOutputCollapsed = runtimeCommandOutputCollapsed[entry.id] ?? true;
-
-                              return (
-                                <div
-                                  key={entry.id}
-                                  className={`group relative overflow-hidden rounded-xl border transition-all ${
-                                    isRunning
-                                      ? 'border-emerald-500/30 bg-emerald-500/[0.02] shadow-[0_4px_12px_rgba(16,185,129,0.05)]'
-                                      : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)]'
-                                  }`}
-                                >
-                                  <div className="p-3">
-                                    <div className="flex items-center justify-between mb-2">
-                                      <div className="flex items-center gap-2">
-                                        <div className={`h-1.5 w-1.5 rounded-full ${
-                                          entry.state === 'running' ? 'bg-emerald-500 animate-pulse' :
-                                          entry.state === 'failed' || entry.state === 'cancelled' ? 'bg-rose-500' :
-                                          'bg-[color:var(--text-muted)] opacity-40'
-                                        }`} />
-                                        <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                                          {entry.source === 'detached_job' ? 'DETACHED JOB' : 'SHELL'}
-                                        </span>
-                                        <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
-                                        <span className={`text-[8px] font-bold uppercase tracking-wider ${
-                                          entry.state === 'running' ? 'text-emerald-500' :
-                                          entry.state === 'failed' || entry.state === 'cancelled' ? 'text-rose-500' :
-                                          'text-[color:var(--text-muted)]'
-                                        }`}>
-                                          {entry.state}
-                                        </span>
-                                      </div>
-                                      <span className="text-[9px] font-mono text-[color:var(--text-muted)] opacity-60">
-                                        {formatCompactDate(entry.endedAt || entry.startedAt)}
-                                      </span>
-                                    </div>
-
-                                    <div className="rounded-lg bg-black/5 dark:bg-black/40 p-2 border border-black/5">
-                                      <Markdown
-                                        content={toMarkdownCodeFence(entry.command || '[empty command]', 'bash')}
-                                        className="!text-[10px] markdown-command-inline"
-                                      />
-                                    </div>
-
-                                    {hasOutput && (
-                                      <div className="mt-2.5">
-                                        <button
-                                          type="button"
-                                          onClick={() => toggleRuntimeCommandOutput(entry.id)}
-                                          className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-80 transition-opacity"
-                                        >
-                                          {isOutputCollapsed ? 'Show Output' : 'Hide Output'}
-                                          <ChevronDown size={10} className={`transition-transform ${isOutputCollapsed ? '' : 'rotate-180'}`} />
-                                        </button>
-
-                                        {!isOutputCollapsed && entry.output && (
-                                          <div className="mt-2 space-y-2 animate-in slide-in-from-top-1 duration-200">
-                                            <div className="flex gap-2">
-                                              {entry.output.returncode !== null && (
-                                                <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-[color:var(--surface-2)] text-[color:var(--text-muted)]">
-                                                  EXIT: {entry.output.returncode}
-                                                </span>
-                                              )}
-                                              {entry.output.timedOut && (
-                                                <span className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500 uppercase tracking-widest">
-                                                  Timed Out
-                                                </span>
-                                              )}
-                                            </div>
-
-                                            {entry.output.stdout.trim() && (
-                                              <div className="space-y-1">
-                                                <div className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">stdout</div>
-                                                <pre className="p-2 rounded-lg bg-black/5 dark:bg-black/60 font-mono text-[10px] text-[color:var(--text-secondary)] overflow-auto max-h-48 whitespace-pre-wrap">{entry.output.stdout}</pre>
-                                              </div>
-                                            )}
-                                            {entry.output.stderr.trim() && (
-                                              <div className="space-y-1">
-                                                <div className="text-[8px] font-bold uppercase tracking-widest text-rose-500/80 px-1">stderr</div>
-                                                <pre className="p-2 rounded-lg bg-rose-500/5 dark:bg-rose-500/10 font-mono text-[10px] text-rose-600 dark:text-rose-300 overflow-auto max-h-48 whitespace-pre-wrap">{entry.output.stderr}</pre>
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-
-                                    {isRunning && (
-                                      <div className="mt-3 flex justify-end">
-                                        <button
-                                          type="button"
-                                          onClick={() => void stopCurrent()}
-                                          disabled={isStopping}
-                                          className="inline-flex items-center gap-1.5 h-7 px-3 rounded-full border border-rose-500/20 bg-rose-500/5 text-rose-500 text-[9px] font-bold uppercase tracking-wider hover:bg-rose-500 hover:text-white transition-all active:scale-95"
-                                        >
-                                          {isStopping ? 'Stopping...' : 'Stop Execution'}
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="py-12 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-3">
-                            <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
-                              <Terminal size={20} strokeWidth={1.5} />
-                            </div>
-                            <p className="text-[10px] font-bold uppercase tracking-[0.1em]">No shell history</p>
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDebugEvents([])}
+                    className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]"
+                  >
+                    Clear
+                  </button>
                 </div>
-
-                <div className="border-t border-[color:var(--border-subtle)] p-4 bg-[color:var(--surface-2)]/20">
-                  <div className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">Workbench</div>
-                  <div className="text-[10px] text-[color:var(--text-muted)] opacity-80">
-                    {workbenchVisible
-                      ? `${workbenchTabs.length} file tab${workbenchTabs.length === 1 ? '' : 's'} open in the file workbench.`
-                      : 'Open a file from the workspace list to create a file tab in the workbench pane.'}
-                  </div>
-                  {workbenchLoadingPath ? (
-                    <div className="mt-2 flex items-center gap-2 text-[10px] text-[color:var(--text-muted)]">
-                      <Loader2 size={12} className="animate-spin" />
-                      Opening {workbenchLoadingPath}
+                <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4">
+                  <section>
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">
+                      Render Gates
                     </div>
-                  ) : null}
+                    <pre className="overflow-auto rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-3 text-[11px] leading-relaxed text-[color:var(--text-secondary)]">{JSON.stringify({
+                      sessionId: activeSessionId,
+                      connection: streaming.connection,
+                      streamBusy,
+                      showThinkingIndicator,
+                      runtimeBooting,
+                      rightRailTab,
+                      activeToolCalls: streaming.activeToolCalls.length,
+                      completedToolCalls: streaming.completedToolCalls.length,
+                      timelineItems: streaming.timeline.length,
+                      hasVisibleStreamingText: hasVisibleStreamingText(streaming.text),
+                      rawStreamingText: streaming.text,
+                    }, null, 2)}</pre>
+                  </section>
+
+                  <section>
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">
+                      Streaming State
+                    </div>
+                    <pre className="overflow-auto rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-3 text-[11px] leading-relaxed text-[color:var(--text-secondary)]">{JSON.stringify(streaming, null, 2)}</pre>
+                  </section>
+
+                  <section>
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">
+                      Incoming WS Events
+                    </div>
+                    <div className="overflow-auto rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]">
+                      {debugEvents.length === 0 ? (
+                        <div className="px-4 py-3 text-[11px] text-[color:var(--text-muted)]">No events captured yet.</div>
+                      ) : (
+                        <div className="divide-y divide-[color:var(--border-subtle)]">
+                          {debugEvents.map((entry) => (
+                            <div key={entry.id} className="px-4 py-2.5 font-mono text-[11px] leading-relaxed">
+                              <div className="flex items-center gap-2">
+                                <span className="text-amber-400">{entry.type}</span>
+                                <span className="text-[color:var(--text-muted)]">{entry.at.split('T')[1]?.replace('Z', '') ?? entry.at}</span>
+                              </div>
+                              {entry.summary ? (
+                                <div className="mt-1 whitespace-pre-wrap break-words text-[color:var(--text-secondary)]">{entry.summary}</div>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
                 </div>
               </div>
             ) : null}
@@ -4269,6 +4929,8 @@ export function SessionsPage() {
                 isSpawning={isSpawning}
             />
         )}
+
+        {sessionDeleteConfirmDialog}
 
         {confirmTerminateTaskId && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">

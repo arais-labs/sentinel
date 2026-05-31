@@ -6,9 +6,11 @@ from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.tier import TierConfig, TierModelConfig, TierProvider
 from app.services.llm.generic.types import ReasoningConfig
 from app.services.llm.ids import ProviderChoice, TierName, parse_provider_choice
+from app.services.llm.providers.gemini_oauth import GeminiOAuthProvider
 from app.config import Settings
 
 DEFAULT_TIER_NAME = TierName.NORMAL
+
 
 def build_models_response(provider: object | None) -> ModelsResponse:
     if provider is None:
@@ -55,7 +57,9 @@ def build_tier_provider_from_settings(settings: Settings) -> LLMProvider | None:
                 model=anthropic_model,
                 reasoning_config=ReasoningConfig(
                     max_tokens=max_tokens,
-                    thinking_budget=anthropic_thinking_budget if anthropic_thinking_budget > 0 else None,
+                    thinking_budget=(
+                        anthropic_thinking_budget if anthropic_thinking_budget > 0 else None
+                    ),
                 ),
                 temperature=temperature,
             )
@@ -90,7 +94,9 @@ def build_tier_provider_from_settings(settings: Settings) -> LLMProvider | None:
         primary_name = parse_provider_choice(settings.primary_provider)
         if primary_name in candidates:
             primary = candidates[primary_name]
-            fallbacks = [cfg for provider_name, cfg in candidates.items() if provider_name != primary_name]
+            fallbacks = [
+                cfg for provider_name, cfg in candidates.items() if provider_name != primary_name
+            ]
         else:
             ordered = list(candidates.values())
             primary = ordered[0]
@@ -128,7 +134,10 @@ def _build_enabled_providers(settings: Settings) -> tuple[dict[ProviderChoice, L
         )
 
     gemini_api_key = settings.gemini_api_key
-    if gemini_api_key:
+    gemini_oauth_credentials = settings.gemini_oauth_credentials
+    if gemini_oauth_credentials:
+        providers[ProviderChoice.GEMINI] = GeminiOAuthProvider(gemini_oauth_credentials)
+    elif gemini_api_key:
         providers[ProviderChoice.GEMINI] = GeminiProvider(gemini_api_key)
 
     return providers, openai_uses_codex

@@ -1,0 +1,228 @@
+/* Sentinel themed components for HTML artifacts.
+   Auto-injected when the assistant uses the <!-- sentinel:html --> marker.
+   Self-contained, no external dependencies, adapts to OS dark mode. */
+
+:root {
+  --sentinel-bg: #ffffff;
+  --sentinel-surface-0: #ffffff;
+  --sentinel-surface-1: #f8fafc;
+  --sentinel-surface-2: #f1f5f9;
+  --sentinel-surface-3: #e2e8f0;
+  --sentinel-border-subtle: #e2e8f0;
+  --sentinel-border-strong: #cbd5e1;
+  --sentinel-text-primary: #0f172a;
+  --sentinel-text-secondary: #475569;
+  --sentinel-text-muted: #94a3b8;
+  --sentinel-accent: #0f172a;
+  --sentinel-info: #2563eb;
+  --sentinel-success: #16a34a;
+  --sentinel-warning: #d97706;
+  --sentinel-danger: #dc2626;
+  --sentinel-severity-low: #16a34a;
+  --sentinel-severity-medium: #d97706;
+  --sentinel-severity-high: #ea580c;
+  --sentinel-severity-critical: #dc2626;
+  --sentinel-radius-sm: 6px;
+  --sentinel-radius-md: 10px;
+  --sentinel-radius-lg: 14px;
+  --sentinel-space-1: 4px;
+  --sentinel-space-2: 8px;
+  --sentinel-space-3: 12px;
+  --sentinel-space-4: 16px;
+  --sentinel-space-5: 24px;
+  --sentinel-space-6: 32px;
+  --sentinel-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --sentinel-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --sentinel-bg: #09090b;
+    --sentinel-surface-0: #09090b;
+    --sentinel-surface-1: #111113;
+    --sentinel-surface-2: #18181b;
+    --sentinel-surface-3: #27272a;
+    --sentinel-border-subtle: #1f1f22;
+    --sentinel-border-strong: #2e2e32;
+    --sentinel-text-primary: #f4f4f5;
+    --sentinel-text-secondary: #a1a1aa;
+    --sentinel-text-muted: #52525b;
+    --sentinel-accent: #ffffff;
+    --sentinel-info: #60a5fa;
+    --sentinel-success: #4ade80;
+    --sentinel-warning: #fbbf24;
+    --sentinel-danger: #f87171;
+  }
+}
+
+/* overflow:hidden suppresses the iframe-internal scrollbar; height is sized
+   by the host page's resize bridge so content fits exactly. */
+html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+body {
+  font-family: var(--sentinel-font-sans);
+  color: var(--sentinel-text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+* { box-sizing: border-box; }
+
+/* Layout */
+.sentinel-container { width: 100%; }
+.sentinel-stack { display: flex; flex-direction: column; gap: var(--sentinel-space-3); }
+.sentinel-grid { display: grid; gap: var(--sentinel-space-3); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.sentinel-card {
+  background: var(--sentinel-surface-1);
+  border: 1px solid var(--sentinel-border-subtle);
+  border-radius: var(--sentinel-radius-md);
+  padding: var(--sentinel-space-4);
+}
+.sentinel-section-header {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sentinel-text-muted);
+  margin: 0 0 var(--sentinel-space-2);
+}
+
+/* Data */
+.sentinel-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  background: var(--sentinel-surface-0);
+  border: 1px solid var(--sentinel-border-subtle);
+  border-radius: var(--sentinel-radius-md);
+  overflow: hidden;
+}
+.sentinel-table th, .sentinel-table td {
+  text-align: left;
+  padding: var(--sentinel-space-2) var(--sentinel-space-3);
+  border-bottom: 1px solid var(--sentinel-border-subtle);
+}
+.sentinel-table th {
+  background: var(--sentinel-surface-2);
+  font-weight: 600;
+  color: var(--sentinel-text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.sentinel-table tr:last-child td { border-bottom: none; }
+.sentinel-table.is-sortable th { cursor: pointer; user-select: none; }
+.sentinel-table.is-sortable th::after { content: ' ↕'; opacity: 0.4; font-size: 10px; }
+
+.sentinel-kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--sentinel-space-2) var(--sentinel-space-4); font-size: 13px; }
+.sentinel-kv > dt { color: var(--sentinel-text-muted); font-weight: 500; }
+.sentinel-kv > dd { margin: 0; color: var(--sentinel-text-primary); }
+
+.sentinel-stat {
+  display: flex; flex-direction: column; gap: var(--sentinel-space-1);
+  padding: var(--sentinel-space-3);
+  background: var(--sentinel-surface-1);
+  border: 1px solid var(--sentinel-border-subtle);
+  border-radius: var(--sentinel-radius-md);
+}
+.sentinel-stat > .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--sentinel-text-muted); font-weight: 600; }
+.sentinel-stat > .value { font-size: 22px; font-weight: 700; color: var(--sentinel-text-primary); }
+
+/* Inputs */
+.sentinel-input, .sentinel-select, .sentinel-textarea, .sentinel-datetime {
+  width: 100%;
+  padding: var(--sentinel-space-2) var(--sentinel-space-3);
+  font-family: var(--sentinel-font-sans);
+  font-size: 13px;
+  color: var(--sentinel-text-primary);
+  background: var(--sentinel-surface-0);
+  border: 1px solid var(--sentinel-border-strong);
+  border-radius: var(--sentinel-radius-sm);
+  outline: none;
+}
+.sentinel-input:focus, .sentinel-select:focus, .sentinel-textarea:focus, .sentinel-datetime:focus {
+  border-color: var(--sentinel-accent);
+}
+.sentinel-textarea { min-height: 80px; resize: vertical; }
+.sentinel-checkbox, .sentinel-radio { accent-color: var(--sentinel-accent); }
+
+/* Buttons */
+.sentinel-button {
+  display: inline-flex; align-items: center; gap: var(--sentinel-space-2);
+  font-family: var(--sentinel-font-sans);
+  font-weight: 600;
+  border-radius: var(--sentinel-radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  padding: var(--sentinel-space-2) var(--sentinel-space-3);
+  font-size: 13px;
+  transition: filter 0.15s ease;
+}
+.sentinel-button:hover { filter: brightness(0.95); }
+.sentinel-button.is-primary { background: var(--sentinel-accent); color: var(--sentinel-surface-0); }
+.sentinel-button.is-secondary { background: var(--sentinel-surface-2); color: var(--sentinel-text-primary); border-color: var(--sentinel-border-strong); }
+.sentinel-button.is-destructive { background: var(--sentinel-danger); color: #fff; }
+.sentinel-button.is-ghost { background: transparent; color: var(--sentinel-text-primary); }
+.sentinel-button.is-sm { padding: var(--sentinel-space-1) var(--sentinel-space-2); font-size: 12px; }
+.sentinel-button.is-lg { padding: var(--sentinel-space-3) var(--sentinel-space-4); font-size: 14px; }
+
+/* Navigation — CSS-only tabs via <details name="..."> or :target */
+.sentinel-tabs { display: flex; flex-direction: column; gap: var(--sentinel-space-2); }
+.sentinel-tabs > details { border: 1px solid var(--sentinel-border-subtle); border-radius: var(--sentinel-radius-sm); }
+.sentinel-tabs > details > summary { padding: var(--sentinel-space-2) var(--sentinel-space-3); cursor: pointer; font-weight: 600; user-select: none; }
+.sentinel-tabs > details[open] > summary { border-bottom: 1px solid var(--sentinel-border-subtle); }
+.sentinel-tabs > details > div { padding: var(--sentinel-space-3); }
+
+/* Feedback */
+.sentinel-badge {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--sentinel-surface-2);
+  color: var(--sentinel-text-secondary);
+}
+.sentinel-badge.is-info { background: color-mix(in srgb, var(--sentinel-info) 18%, transparent); color: var(--sentinel-info); }
+.sentinel-badge.is-success { background: color-mix(in srgb, var(--sentinel-success) 18%, transparent); color: var(--sentinel-success); }
+.sentinel-badge.is-warning { background: color-mix(in srgb, var(--sentinel-warning) 22%, transparent); color: var(--sentinel-warning); }
+.sentinel-badge.is-danger { background: color-mix(in srgb, var(--sentinel-danger) 18%, transparent); color: var(--sentinel-danger); }
+
+.sentinel-alert {
+  padding: var(--sentinel-space-3);
+  border-radius: var(--sentinel-radius-sm);
+  background: var(--sentinel-surface-1);
+  border-left: 3px solid var(--sentinel-border-strong);
+  font-size: 13px;
+}
+.sentinel-alert.is-info { border-left-color: var(--sentinel-info); }
+.sentinel-alert.is-success { border-left-color: var(--sentinel-success); }
+.sentinel-alert.is-warning { border-left-color: var(--sentinel-warning); }
+.sentinel-alert.is-danger { border-left-color: var(--sentinel-danger); }
+
+.sentinel-progress {
+  width: 100%; height: 6px; background: var(--sentinel-surface-2);
+  border-radius: 999px; overflow: hidden;
+}
+.sentinel-progress > .bar { height: 100%; background: var(--sentinel-accent); transition: width 0.3s ease; }
+
+/* Typography */
+.sentinel-heading-1 { font-size: 22px; font-weight: 700; margin: 0 0 var(--sentinel-space-3); color: var(--sentinel-text-primary); }
+.sentinel-heading-2 { font-size: 18px; font-weight: 700; margin: 0 0 var(--sentinel-space-2); color: var(--sentinel-text-primary); }
+.sentinel-heading-3 { font-size: 15px; font-weight: 600; margin: 0 0 var(--sentinel-space-2); color: var(--sentinel-text-primary); }
+.sentinel-heading-4 { font-size: 13px; font-weight: 600; margin: 0 0 var(--sentinel-space-2); color: var(--sentinel-text-secondary); }
+.sentinel-code { font-family: var(--sentinel-font-mono); background: var(--sentinel-surface-2); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+.sentinel-kbd {
+  font-family: var(--sentinel-font-mono); background: var(--sentinel-surface-2);
+  border: 1px solid var(--sentinel-border-strong); border-bottom-width: 2px;
+  padding: 1px 6px; border-radius: 4px; font-size: 11px;
+}
+.sentinel-link { color: var(--sentinel-info); text-decoration: underline; text-underline-offset: 2px; }
+.sentinel-muted { color: var(--sentinel-text-muted); }
+
+/* Severity helpers — apply to .sentinel-badge or .sentinel-alert */
+.sentinel-severity-low { color: var(--sentinel-severity-low); }
+.sentinel-severity-medium { color: var(--sentinel-severity-medium); }
+.sentinel-severity-high { color: var(--sentinel-severity-high); }
+.sentinel-severity-critical { color: var(--sentinel-severity-critical); }

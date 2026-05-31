@@ -14,7 +14,7 @@ import {
   History,
   Info,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { AppShell } from '../components/AppShell';
@@ -24,6 +24,7 @@ import { StatusChip } from '../components/ui/StatusChip';
 import { Toggle } from '../components/ui/Toggle';
 import { api } from '../lib/api';
 import { formatCompactDate } from '../lib/format';
+import { instanceRouteFromPath } from '../lib/routes';
 import type {
   Session,
   SessionListResponse,
@@ -151,6 +152,7 @@ function formatNextRunRelative(nextFireAt: string | null, nowMs: number): string
 
 export function TriggersPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [triggers, setTriggers] = useState<Trigger[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -407,7 +409,7 @@ export function TriggersPage() {
         toast.success('Trigger invoked');
       }
       if (result.resolved_session_id) {
-        navigate(`/sessions/${result.resolved_session_id}`);
+        navigate(instanceRouteFromPath(location.pathname, `sessions/${result.resolved_session_id}`));
         return;
       }
       await Promise.all([loadModalLogs(modal.triggerId, true), loadData()]);
@@ -436,7 +438,7 @@ export function TriggersPage() {
         toast.success('Trigger invoked');
       }
       if (result.resolved_session_id) {
-        navigate(`/sessions/${result.resolved_session_id}`);
+        navigate(instanceRouteFromPath(location.pathname, `sessions/${result.resolved_session_id}`));
         return;
       }
       await loadData();

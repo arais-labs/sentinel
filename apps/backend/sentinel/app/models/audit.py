@@ -10,11 +10,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 
 
-class AuditLog(Base):
-    __tablename__ = "audit_logs"
+class AuditLogColumns:
+    """Shared schema for instance + manager audit log tables."""
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
     user_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(100), index=True)
     resource_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -25,3 +27,6 @@ class AuditLog(Base):
     request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+
+class AuditLog(AuditLogColumns, Base):
+    __tablename__ = "audit_logs"

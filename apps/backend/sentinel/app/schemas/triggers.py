@@ -6,25 +6,29 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-
 # --- Trigger Configurations ---
+
 
 class CronTriggerConfig(BaseModel):
     expr: str = Field(description="Cron expression (e.g. '0 9 * * *')")
 
+
 class HeartbeatTriggerConfig(BaseModel):
     interval_seconds: int = Field(gt=0, description="Interval between fires in seconds")
+
 
 class WebhookTriggerConfig(BaseModel):
     # Future: add secret_header, allowed_ips, etc.
     pass
 
+
 TriggerConfig = Annotated[
     Union[CronTriggerConfig, HeartbeatTriggerConfig, WebhookTriggerConfig],
-    Field(discriminator="type_hint") # Internal helper for parsing if needed, or we map manually
+    Field(discriminator="type_hint"),  # Internal helper for parsing if needed, or we map manually
 ]
 
 # --- Action Configurations ---
+
 
 class AgentMessageActionConfig(BaseModel):
     message: str = Field(min_length=1)
@@ -34,9 +38,11 @@ class AgentMessageActionConfig(BaseModel):
     session_id: UUID | None = None
     resolved_session_id: UUID | None = None
 
+
 class ToolCallActionConfig(BaseModel):
     name: str = Field(min_length=1, description="Name of the tool to execute")
     arguments: dict[str, Any] = Field(default_factory=dict, description="Arguments for the tool")
+
 
 class HttpRequestActionConfig(BaseModel):
     url: str = Field(min_length=1)
@@ -45,15 +51,21 @@ class HttpRequestActionConfig(BaseModel):
     body: Any | None = None
     timeout_seconds: int = Field(default=10, gt=0)
 
+
 # --- Requests / Responses ---
+
 
 class CreateTriggerRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     user_id: str | None = Field(default=None, max_length=100)
     type: Literal["cron", "webhook", "heartbeat"]
-    config: dict[str, Any] = Field(default_factory=dict, description="Configuration for the trigger entry point")
+    config: dict[str, Any] = Field(
+        default_factory=dict, description="Configuration for the trigger entry point"
+    )
     action_type: Literal["agent_message", "tool_call", "http_request"]
-    action_config: dict[str, Any] = Field(default_factory=dict, description="Configuration for the execution action")
+    action_config: dict[str, Any] = Field(
+        default_factory=dict, description="Configuration for the execution action"
+    )
     enabled: bool = True
 
     @field_validator("name")
@@ -64,6 +76,7 @@ class CreateTriggerRequest(BaseModel):
             raise ValueError("name must not be empty")
         return trimmed
 
+
 class UpdateTriggerRequest(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     type: Literal["cron", "webhook", "heartbeat"] | None = None
@@ -71,6 +84,7 @@ class UpdateTriggerRequest(BaseModel):
     action_type: Literal["agent_message", "tool_call", "http_request"] | None = None
     action_config: dict[str, Any] | None = None
     enabled: bool | None = None
+
 
 class TriggerResponse(BaseModel):
     id: UUID
@@ -86,9 +100,11 @@ class TriggerResponse(BaseModel):
     error_count: int
     created_at: datetime
 
+
 class TriggerListResponse(BaseModel):
     items: list[TriggerResponse]
     total: int
+
 
 class TriggerLogResponse(BaseModel):
     id: UUID
@@ -111,6 +127,7 @@ class FireTriggerResponse(BaseModel):
 class TriggerLogListResponse(BaseModel):
     items: list[TriggerLogResponse]
     total: int
+
 
 class FireTriggerRequest(BaseModel):
     input_payload: dict[str, Any] = Field(default_factory=dict)

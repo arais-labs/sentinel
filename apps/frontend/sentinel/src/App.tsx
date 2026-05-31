@@ -11,11 +11,13 @@ import { MemoryPage } from './pages/MemoryPage';
 import { OnboardingPage } from './pages/OnboardingPage';
 import { TelegramPage } from './pages/TelegramPage';
 import { UiShowcasePage } from './pages/UiShowcasePage';
+import { InstancePickerPage } from './pages/InstancePickerPage';
 import { SessionsPage } from './pages/SessionsPage';
 import { SettingsPage } from './pages/SettingsPage';
-import { ToolsPage } from './pages/ToolsPage';
 import { GitPage } from './pages/GitPage';
 import { TriggersPage } from './pages/TriggersPage';
+import { ModulesPage } from './pages/ModulesPage';
+import { instanceRouteFromPath } from './lib/routes';
 import { useAuthStore } from './store/auth-store';
 import { useThemeStore } from './store/theme-store';
 import { api } from './lib/api';
@@ -39,20 +41,26 @@ function AuthenticatedOutlet() {
 
   useEffect(() => {
     if (status !== 'authenticated') return;
-    // Don't redirect if already on onboarding
-    if (location.pathname === '/onboarding') {
+    const instanceMatch = location.pathname.match(/^\/instances\/([^/]+)/);
+    if (!instanceMatch?.[1]) {
+      setOnboardingChecked(true);
+      return;
+    }
+    const instancePrefix = instanceMatch?.[1] ? `/instances/${instanceMatch[1]}` : '';
+    const onboardingPath = instancePrefix ? `${instancePrefix}/onboarding` : '/onboarding';
+    if (location.pathname === onboardingPath) {
       setOnboardingChecked(true);
       return;
     }
     api.get<{ completed: boolean }>('/onboarding/status')
       .then(res => {
         if (!res.completed) {
-          navigate('/onboarding', { replace: true });
+          navigate(onboardingPath, { replace: true });
         }
       })
       .catch(() => {/* on error, don't block the app */})
       .finally(() => setOnboardingChecked(true));
-  }, [status]);
+  }, [location.pathname, navigate, status]);
 
   if (status === 'loading' || (status === 'authenticated' && !onboardingChecked)) {
     return <FullPageLoader />;
@@ -73,10 +81,15 @@ function PublicLoginRoute() {
   }
 
   if (status === 'authenticated') {
-    return <Navigate to="/sessions" replace />;
+    return <Navigate to="/" replace />;
   }
 
   return <LoginPage />;
+}
+
+function TriggerDetailRedirect() {
+  const location = useLocation();
+  return <Navigate to={instanceRouteFromPath(location.pathname, 'triggers')} replace />;
 }
 
 export default function App() {
@@ -95,22 +108,25 @@ export default function App() {
         <Route path="/login" element={<PublicLoginRoute />} />
 
         <Route element={<AuthenticatedOutlet />}>
-          <Route path="/onboarding" element={<OnboardingPage />} />
-          <Route path="/sessions" element={<SessionsPage />} />
-          <Route path="/sessions/:id" element={<SessionsPage />} />
-          <Route path="/logs" element={<LogsPage />} />
-          <Route path="/memory" element={<MemoryPage />} />
-          <Route path="/triggers" element={<TriggersPage />} />
-          <Route path="/triggers/:id" element={<Navigate to="/triggers" replace />} />
-          <Route path="/tools" element={<ToolsPage />} />
-          <Route path="/git" element={<GitPage />} />
-          <Route path="/telegram" element={<TelegramPage />} />
-          <Route path="/showcase" element={<UiShowcasePage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/settings/admin" element={<AdminPage />} />
+          <Route path="/" element={<InstancePickerPage />} />
+          <Route path="/instances/:instanceName/sessions" element={<SessionsPage />} />
+          <Route path="/instances/:instanceName/sessions/:id" element={<SessionsPage />} />
+          <Route path="/instances/:instanceName/onboarding" element={<OnboardingPage />} />
+          <Route path="/instances/:instanceName/logs" element={<LogsPage />} />
+          <Route path="/instances/:instanceName/memory" element={<MemoryPage />} />
+          <Route path="/instances/:instanceName/triggers" element={<TriggersPage />} />
+          <Route path="/instances/:instanceName/triggers/:id" element={<TriggerDetailRedirect />} />
+          <Route path="/instances/:instanceName/modules" element={<ModulesPage />} />
+          <Route path="/instances/:instanceName/approvals" element={<ModulesPage />} />
+          <Route path="/instances/:instanceName/permissions" element={<ModulesPage />} />
+          <Route path="/instances/:instanceName/git" element={<GitPage />} />
+          <Route path="/instances/:instanceName/telegram" element={<TelegramPage />} />
+          <Route path="/instances/:instanceName/showcase" element={<UiShowcasePage />} />
+          <Route path="/instances/:instanceName/settings" element={<SettingsPage />} />
+          <Route path="/instances/:instanceName/settings/admin" element={<AdminPage />} />
         </Route>
 
-        <Route path="*" element={<Navigate to="/sessions" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Toaster richColors closeButton position="top-right" theme={theme === 'dark' ? 'dark' : 'light'} />
     </>

@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from app.config import Settings
-from app.services.embeddings import EmbeddingService
+from app.services.memory.embeddings import EmbeddingService
 
 
 def _run(coro):
@@ -61,11 +60,3 @@ def test_embedding_service_embed_batch_returns_multiple_vectors_with_chunking():
     assert len(vectors[0]) == 1536
     assert len(vectors[1]) == 1536
     assert len(fake.calls) == 2
-
-
-def test_config_reads_embedding_api_key_from_env(monkeypatch):
-    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-    monkeypatch.setenv("EMBEDDING_API_KEY", "embed-key-123")
-
-    loaded = Settings(_env_file=None)
-    assert loaded.embedding_api_key == "embed-key-123"

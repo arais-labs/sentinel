@@ -9,10 +9,12 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.services.agent.context_builder import ContextBuilder
-    from app.services.agent.loop import AgentLoop, AgentLoopResult
-    from app.services.agent.tool_adapter import ToolAdapter
+    from app.services.agent.runtime_support import (
+        PreparedRuntimeTurnContext,
+        SentinelRuntimeSupport,
+    )
 
-__all__ = ["ContextBuilder", "ToolAdapter", "AgentLoop", "AgentLoopResult"]
+__all__ = ["ContextBuilder", "SentinelRuntimeSupport", "PreparedRuntimeTurnContext"]
 
 
 def __getattr__(name: str) -> Any:
@@ -20,16 +22,12 @@ def __getattr__(name: str) -> Any:
         from app.services.agent.context_builder import ContextBuilder
 
         return ContextBuilder
-    if name == "ToolAdapter":
-        from app.services.agent.tool_adapter import ToolAdapter
+    if name == "SentinelRuntimeSupport":
+        from app.services.agent.runtime_support import SentinelRuntimeSupport
 
-        return ToolAdapter
-    if name == "AgentLoop":
-        from app.services.agent.loop import AgentLoop
+        return SentinelRuntimeSupport
+    if name == "PreparedRuntimeTurnContext":
+        from app.services.agent.runtime_support import PreparedRuntimeTurnContext
 
-        return AgentLoop
-    if name == "AgentLoopResult":
-        from app.services.agent.loop import AgentLoopResult
-
-        return AgentLoopResult
+        return PreparedRuntimeTurnContext
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

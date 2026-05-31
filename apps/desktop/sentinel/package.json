@@ -1,0 +1,57 @@
+{
+  "name": "sentinel-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Sentinel desktop management app",
+  "type": "module",
+  "main": "dist/main/main.js",
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "desktop:build": "node scripts/desktop-build.mjs build",
+    "desktop:clean": "node scripts/desktop-build.mjs clean",
+    "desktop:verify": "node scripts/desktop-build.mjs verify",
+    "payload:build": "node scripts/payload-build.mjs build"
+  },
+  "dependencies": {
+    "http-proxy": "^1.18.1",
+    "sirv": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/http-proxy": "^1.17.16",
+    "@types/node": "^25.9.1",
+    "electron": "^42.3.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^6.0.3"
+  },
+  "build": {
+    "appId": "us.arais.sentinel.desktop",
+    "productName": "Sentinel",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "assets/icon.png",
+      "dist/main/**/*",
+      "dist/preload/**/*",
+      "dist/renderer/**/*",
+      "dist/shared/**/*",
+      "src/renderer/index.html",
+      "src/renderer/styles.css",
+      "package.json"
+    ],
+    "extraResources": [],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.png",
+      "target": [
+        "dmg"
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    }
+  }
+}

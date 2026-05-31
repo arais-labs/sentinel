@@ -1,0 +1,162 @@
+"""Adapters from Sentinel tool infrastructure to standalone runtime contracts."""
+
+from __future__ import annotations
+from collections.abc import Awaitable, Callable
+from typing import Any
+from uuid import UUID
+
+from app.sentral import (
+    ToolDefinition as RuntimeToolDefinition,
+    ToolExecutionResult,
+    ToolRegistry as RuntimeToolRegistry,
+)
+from app.services.agent.agent_modes import AgentMode
+from app.services.agent.attachments import extract_attachments
+from app.services.agent_runtime_adapters.conversions import approval_payload_to_request
+from app.services.tools.approval.extractors import extract_approval_metadata_from_tool_result
+from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
+from app.services.tools.registry import ToolDefinition, ToolRegistry, ToolRuntimeContext
+
+try:
+    from app.services.secrets.resolver import resolve_secrets_in_payload
+except ModuleNotFoundError:  # pragma: no cover - optional until secrets module lands
+
+    async def resolve_secrets_in_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        return payload
+
+
+# Top-level keys stripped from tool results before they reach the model —
+# tools echo these for logging; the model already has them from turn scaffold.
+_RESULT_STRIP_TOP_LEVEL_FIELDS: frozenset[str] = frozenset({"session_id", "metadata"})
+
+
+class SentinelToolRegistryAdapter(RuntimeToolRegistry):
+    """Expose Sentinel's current registry/executor as runtime-neutral tools."""
+
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        executor: ToolExecutor,
+        *,
+        agent_mode: AgentMode | str | None = None,
+        session_id: UUID | str | None = None,
+        runtime_session_id: UUID | str | None = None,
+        on_pending_tool_result: (
+            Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]] | None
+        ) = None,
+    ) -> None:
+        self._registry = registry
+        self._executor = executor
+        self._agent_mode = agent_mode
+        self._session_id = str(session_id) if session_id is not None else None
+        self._runtime_session_id = (
+            str(runtime_session_id) if runtime_session_id is not None else self._session_id
+        )
+        self._on_pending_tool_result = on_pending_tool_result
+
+    def list_tools(self) -> list[RuntimeToolDefinition]:
+        tools: list[RuntimeToolDefinition] = []
+        for tool in self._registry.list_all():
+            if not tool.enabled:
+                continue
+            tools.append(self._wrap_tool(tool))
+        return tools
+
+    def get_tool(self, name: str) -> RuntimeToolDefinition | None:
+        tool = self._registry.get(name)
+        if tool is None or not tool.enabled:
+            return None
+        return self._wrap_tool(tool)
+
+    def _wrap_tool(self, tool: ToolDefinition) -> RuntimeToolDefinition:
+        async def _execute(payload: dict[str, Any]) -> ToolExecutionResult:
+            pending_approval_payload: dict[str, Any] | None = None
+            execution_payload = await resolve_secrets_in_payload(dict(payload))
+            runtime = ToolRuntimeContext(
+                session_id=UUID(self._session_id) if self._session_id is not None else None,
+                runtime_session_id=(
+                    UUID(self._runtime_session_id) if self._runtime_session_id is not None else None
+                ),
+            )
+
+            async def _on_pending_approval(approval_payload: dict[str, Any]) -> None:
+                nonlocal pending_approval_payload
+                pending_approval_payload = dict(approval_payload)
+                if self._on_pending_tool_result is not None:
+                    await self._on_pending_tool_result(
+                        tool.name, execution_payload, approval_payload
+                    )
+
+            try:
+                result, _duration_ms = await self._executor.execute(
+                    tool.name,
+                    execution_payload,
+                    runtime=runtime,
+                    agent_mode=self._agent_mode,
+                    on_pending_approval=_on_pending_approval,
+                )
+            except (ToolExecutionError, ToolValidationError, PermissionError, KeyError) as exc:
+                approval_metadata = getattr(exc, "approval", None)
+                if not isinstance(approval_metadata, dict) and pending_approval_payload is not None:
+                    approval_metadata = pending_approval_payload
+
+                if isinstance(approval_metadata, dict):
+                    approval_status = str(approval_metadata.get("status") or "").strip().lower()
+                    approval_pending = approval_metadata.get(
+                        "pending"
+                    ) is True or approval_status in {"pending", ""}
+                    if approval_pending:
+                        return ToolExecutionResult(
+                            status="pending_approval",
+                            error=str(exc),
+                            approval_request=approval_payload_to_request(
+                                approval_metadata,
+                                payload=execution_payload,
+                            ),
+                        )
+                metadata: dict[str, Any] = {}
+                if isinstance(approval_metadata, dict):
+                    metadata["approval"] = approval_metadata
+                return ToolExecutionResult(
+                    status="error",
+                    error=str(exc),
+                    metadata=metadata,
+                )
+
+            metadata: dict[str, Any] = {}
+            approval = extract_approval_metadata_from_tool_result(
+                tool_name=tool.name,
+                result=result,
+            )
+            if approval is not None:
+                metadata["approval"] = approval
+            if isinstance(result, dict) and isinstance(result.get("metadata"), dict):
+                metadata.update(result["metadata"])
+
+            cleaned_content = result
+            if isinstance(result, (dict, list)):
+                attachments: list[dict[str, Any]] = []
+                cleaned_content = extract_attachments(result, attachments=attachments)
+                if attachments:
+                    metadata["attachments"] = attachments
+
+            if isinstance(cleaned_content, dict):
+                cleaned_content = {
+                    k: v
+                    for k, v in cleaned_content.items()
+                    if k not in _RESULT_STRIP_TOP_LEVEL_FIELDS
+                }
+
+            return ToolExecutionResult(
+                status="ok",
+                content=cleaned_content,
+                metadata=metadata,
+            )
+
+        return RuntimeToolDefinition(
+            name=tool.name,
+            description=tool.description,
+            parameters_schema=tool.parameters_schema,
+            enabled=tool.enabled,
+            execute=_execute,
+        )

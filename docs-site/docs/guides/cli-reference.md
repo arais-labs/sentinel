@@ -5,131 +5,154 @@ title: CLI Reference
 
 # Sentinel CLI reference
 
-This page maps the CLI menu directly to `sentinel-cli.sh` behavior.
+`sentinel-cli.sh` controls the Docker Compose deployment and manages instances.
+A single deployment hosts **multiple logical instances** (one shared stack,
+one manager database, a per-instance database for each instance), so most
+instance operations target the backend manager API by name rather than spinning
+up separate stacks.
 
----
+The CLI is **interactive** when launched without arguments and **scriptable**
+through subcommands. It always runs from the repository root regardless of where
+you invoke it.
+
+:::note Desktop app
+The macOS desktop app (`apps/desktop/sentinel`, shipped as an unsigned DMG)
+manages its own bundled Postgres and backend as child processes and does **not**
+use `sentinel-cli.sh`. This reference applies to the Docker Compose deployment.
+:::
 
 ## Launch
 
 ```bash
+# Interactive control center
 bash ./sentinel-cli.sh
+
+# Local development mode
+bash ./sentinel-cli.sh --dev
 ```
 
-The CLI is interactive and uses TTY controls for menu navigation.
+On startup the CLI loads the root `.env`, reconciles required stack settings,
+then either shows the menu or runs the requested subcommand. Readiness is probed
+with `GET /health/ready`; authenticated manager calls use the `/api/v1` base.
 
-Instance config files are stored in:
+## Commands
 
-- `.instances/<instance>.env`
+All subcommands can be combined with the global flags below (for example
+`./sentinel-cli.sh --dev up`).
 
-Each instance uses compose project name:
+| Command | What it does |
+|---|---|
+| `./sentinel-cli.sh` | Opens the interactive control center |
+| `./sentinel-cli.sh up` | Starts the shared stack |
+| `./sentinel-cli.sh down` | Stops the shared stack |
+| `./sentinel-cli.sh restart` | Restarts the shared stack |
+| `./sentinel-cli.sh reset [--yes] [--prod-confirm]` | Tears down and recreates the stack (destructive). Prod mode requires both confirmation flags |
+| `./sentinel-cli.sh logs [service]` | Follows Compose logs (optionally for one service) |
+| `./sentinel-cli.sh status` | Shows Compose status and registered instances |
+| `./sentinel-cli.sh instances list` | Lists manager DB instances |
+| `./sentinel-cli.sh instances create <name> [display-name]` | Creates an instance: provisions its database, runs the instance schema migrations, and registers it in the manager DB |
+| `./sentinel-cli.sh instances rename <old-name> <new-name>` | Renames the manager registry entry |
+| `./sentinel-cli.sh instances delete <name>` | Deletes the instance database and registry row (`rm` is accepted as an alias) |
+| `./sentinel-cli.sh sessions transcript <session-id> [instance] [--json]` | Exports a session transcript (defaults to the `main` instance; `--json` for machine-readable output) |
+| `./sentinel-cli.sh help` | Prints usage |
 
-- `sentinel-<instance>`
+### Instance names
 
----
+Instance names are normalized to lowercase alphanumeric plus dashes (1–80
+characters). The backing database name is derived from the name plus a short
+hash (`sentinel_{safe}_{hash}`) and is **not** renamed when you rename an
+instance — see [Current limitations](#current-limitations).
 
-## Main menu actions
+## Global flags
 
-| Menu item | Internal action | What it does |
-|---|---|---|
-| New/Edit Instance | `action_create` | creates or overwrites instance env, then starts instance |
-| Start Instance | `action_up` | starts selected instance and runs startup seeding flow |
-| Stop Instance | `action_down` | `docker compose down` for selected instance |
-| Reset Auth (Managed Instance) | `action_reset_auth_managed` | rewrites auth settings in DB |
-| Global Status | `action_list` | shows service count per instance |
-| Tail Logs | `action_logs` | follows compose logs |
-| Delete Instance | `action_delete` | `down -v --remove-orphans` plus env deletion |
-| Advanced Mode | `action_advanced_mode` | dev mode start and custom DB auth path |
+These flags must come before the subcommand:
 
----
+| Flag | Effect |
+|---|---|
+| `--dev` | Switch to development mode (equivalent to `SENTINEL_MODE=dev`) |
+| `--prod` / `--production` | Force production mode |
+| `--compose-file <path>` | Expert override for the Compose file (same as `SENTINEL_COMPOSE_FILE`) |
 
-## New instance flow
+## Modes
 
-`action_create` prompts for:
+The CLI defaults to **production** mode (`docker-compose.yml`). Development mode
+is explicit — run `./sentinel-cli.sh --dev` or set `SENTINEL_MODE=dev` — and
+uses `docker-compose.dev.yml`. In dev mode the CLI can write a complete root
+`.env` populated with local development defaults; in prod mode it rejects
+placeholder/default credentials and requires real values before starting.
 
-- instance name
-- gateway port
-- db name
-- db user
-- db password
-- JWT secret
-- admin username
-- admin password
+## Overrides
 
-Then it writes `.instances/<instance>.env` with core values and calls `action_up`.
+The shared stack uses deterministic defaults. The root `.env` is the source of
+truth for stack credentials, `COMPOSE_PROJECT_NAME`, and `STACK_PORT`; the CLI
+creates or reconciles these before showing the menu or running a subcommand.
+The remaining variables are launch/debug knobs typically passed in the shell:
 
----
+| Variable | Default |
+|---|---|
+| `COMPOSE_PROJECT_NAME` | `sentinel` |
+| `SENTINEL_MODE` | `prod` |
+| `SENTINEL_COMPOSE_FILE` | empty; derived from mode |
+| `STACK_PORT` | `4747` |
+| `SENTINEL_URL` | `http://localhost:$STACK_PORT` |
+| `SENTINEL_TOKEN` | empty; interactive login is used when needed |
+| `SENTINEL_READY_TIMEOUT` | seconds to wait for backend readiness (default `60`) |
+| `SENTINEL_STATUS_TTL` | status cache TTL in seconds |
 
-## Start flow details
+Changing `COMPOSE_PROJECT_NAME` only changes Compose project metadata and
+container or volume names. The Compose default network is explicitly named
+`sentinel_default` so Docker runtime containers can join it deterministically.
 
-`action_up` does more than compose up.
+`SENTINEL_COMPOSE_FILE` is an expert override for stack controls. In normal use,
+prefer `SENTINEL_MODE=prod` / `SENTINEL_MODE=dev` or the `--dev` / `--prod`
+flags.
 
-1. `docker compose up --build -d`
-2. tries managed auth seed into `system_settings`
-3. tries bootstrap araiOS agent token creation via API
-4. seeds cross app URL settings
-5. prints onboarding block with URLs and token hints
+## Stack credentials (root `.env`)
 
-If API based cross app seeding fails, it falls back to DB seeding.
+The CLI treats the root `.env` as the source of truth for the managed stack and
+reconciles missing values on startup. `docker-compose.yml` fails during config
+rendering unless these variables are present:
 
----
+| Variable | Purpose |
+|---|---|
+| `SENTINEL_POSTGRES_PASSWORD` | Postgres password used by the database and backend |
+| `SENTINEL_JWT_SECRET_KEY` | JWT signing secret |
+| `SENTINEL_DATA_ENCRYPTION_KEY` | Encryption key for secrets stored in the database (per-instance Runtime credentials, etc.) |
+| `SENTINEL_AUTH_USERNAME` | App admin username synced into the manager database on backend startup. Required in both modes; prod rejects defaults |
+| `SENTINEL_AUTH_PASSWORD` | App admin password synced into the manager database on backend startup. Required in both modes; prod rejects defaults |
 
-## Auth reset behavior
+:::note LLM provider credentials are not stack secrets
+Provider API keys (Anthropic, OpenAI, Gemini, etc.) are **not** set here and are
+no longer read from environment variables. They are configured per instance and
+stored encrypted in that instance's database. Configure them in the UI or via
+`POST /api/v1/instances/{instance_name}/settings/api-keys`. See
+[Multi-instance](./multi-instance.md) and [Installation](./installation.md).
+:::
 
-Managed reset writes these keys:
+## Interactive control center
 
-Sentinel keys:
+Launched without a subcommand, the CLI opens a menu (the "Stack Control
+Center") for stack lifecycle, instance management, transcripts, status, and
+logs. Navigation:
 
-- `sentinel.auth.username`
-- `sentinel.auth.password_hash`
+| Keys | Action |
+|---|---|
+| `↑`/`↓` or `j`/`k` | Navigate |
+| `1`–`9` | Jump to option |
+| `Enter` / `Space` | Select |
+| `q` or `Esc` | Back / cancel |
 
-araiOS keys:
+Main-menu letter shortcuts jump and select in one keystroke: `u` Start Stack,
+`d` Stop Stack, `r` Restart Stack, `x` Reset Stack, `i` Instances,
+`t` Transcripts, `s` Status, `l` Logs, `f` Refresh, `e` Exit. Inside the
+Instances submenu: `l` List, `c` Create, `r` Rename, `d` Delete, `b` Back.
 
-- `araios.auth.username`
-- `araios.auth.password_hash`
+## Current limitations
 
-You can target both, Sentinel only, or araiOS only.
-
-Password hash generation uses PBKDF2 SHA256 with random salt.
-
----
-
-## Advanced mode
-
-Advanced menu includes:
-
-1. Start instance in dev mode
-   - uses `docker-compose.dev.yml`
-2. Manage custom instance auth
-   - direct Postgres connection inputs
-   - writes same auth setting keys into custom DB
-
----
-
-## Safety checks and prompts
-
-CLI performs:
-
-- docker readiness check
-- port occupancy warning on create
-- delete confirmation requiring literal `DELETE`
-- instance picker for all actions touching existing instances
-
----
-
-## Useful operator sequence
-
-For a fresh machine:
-
-1. New/Edit Instance
-2. Start Instance
-3. Open gateway URL printed by CLI
-4. Sign in with admin credentials you entered
-5. If login fails run Reset Auth and retry
-
-For routine ops:
-
-- Start Instance
-- Global Status
-- Tail Logs
-- Stop Instance
-
+- **Renaming an instance does not rename its database.** The derived database
+  name is fixed at creation; a rename only updates the manager registry entry.
+- **No automatic database cleanup beyond `instances delete`.** Deleting an
+  instance drops its database and registry row, but databases left orphaned by
+  failed operations must be dropped manually in Postgres.
+- **`reset` is destructive.** It recreates the stack and its data; in prod mode
+  it requires both `--yes` and `--prod-confirm`.

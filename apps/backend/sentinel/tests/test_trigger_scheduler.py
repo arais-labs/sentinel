@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from app.models import Session, SessionBinding, Trigger, TriggerLog
-from app.services.agent.loop import AgentLoopResult
-from app.services.agent_run_registry import AgentRunRegistry
-from app.services.llm.generic.types import TokenUsage
-from app.services.trigger_scheduler import TriggerScheduler, compute_next_fire_at
+from app.services.agent import PreparedRuntimeTurnContext
+from app.services.llm.generic.base import LLMProvider
+from app.services.llm.generic.types import AgentEvent, TextContent
+from app.services.sessions.agent_run_registry import AgentRunRegistry
+from app.services.tools.executor import ToolExecutor
+from app.services.tools.registry import ToolRegistry
+from app.services.triggers.trigger_scheduler import TriggerScheduler, compute_next_fire_at
 from tests.fake_db import FakeDB
 
 
@@ -34,45 +38,200 @@ class _SessionFactory:
         return _SessionCtx(self._db)
 
 
-class _AgentLoopStub:
+class _RuntimeSupportStub:
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.context_builder = SimpleNamespace(build=self._build_context)
+        registry = ToolRegistry()
+        self.tool_registry = registry
+        self.tool_executor = ToolExecutor(registry)
+        self.provider = _StreamingProvider()
 
-    async def run(self, db, session_id, user_message, **kwargs):
+    async def prepare_runtime_turn_context(
+        self,
+        db,
+        session_id,
+        *,
+        system_prompt,
+        pending_user_message,
+        agent_mode,
+        model,
+        temperature,
+        max_iterations,
+        stream,
+    ):
+        messages = await self.context_builder.build(
+            db, session_id, system_prompt, pending_user_message, agent_mode
+        )
+        return PreparedRuntimeTurnContext(
+            messages=messages,
+            tools=self.tool_registry.list_schemas(),
+            effective_system_prompt=system_prompt,
+            runtime_context_snapshot=None,
+        )
+
+    async def persist_created_messages(
+        self, db, session_id, created, assistant_iterations, **kwargs
+    ):
+        await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
+
+    async def _build_context(self, db, session_id, system_prompt, pending_user_message, agent_mode):
         self.calls.append(
             {
                 "db": db,
                 "session_id": session_id,
-                "user_message": user_message,
-                "kwargs": kwargs,
+                "user_message": pending_user_message,
+                "kwargs": {
+                    "system_prompt": system_prompt,
+                    "agent_mode": agent_mode,
+                },
             }
         )
-        return AgentLoopResult(
-            final_text="ok",
-            messages_created=1,
-            usage=TokenUsage(input_tokens=3, output_tokens=4),
-            iterations=1,
+        return []
+
+    async def _persist_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+        _ = (db, session_id, created, assistant_iterations, kwargs)
+
+    @staticmethod
+    def _extract_final_text(_messages) -> str:
+        return "ok"
+
+    @staticmethod
+    def _collect_attachments(_messages) -> list[dict]:
+        return []
+
+    def extract_final_text(self, messages) -> str:
+        return self._extract_final_text(messages)
+
+    def collect_attachments(self, messages) -> list[dict]:
+        return self._collect_attachments(messages)
+
+
+class _BlockingRuntimeSupportStub:
+    def __init__(self) -> None:
+        self.context_builder = SimpleNamespace(build=self._build_context)
+        registry = ToolRegistry()
+        self.tool_registry = registry
+        self.tool_executor = ToolExecutor(registry)
+        self.provider = _BlockingProvider()
+
+    async def prepare_runtime_turn_context(
+        self,
+        db,
+        session_id,
+        *,
+        system_prompt,
+        pending_user_message,
+        agent_mode,
+        model,
+        temperature,
+        max_iterations,
+        stream,
+    ):
+        messages = await self.context_builder.build(
+            db, session_id, system_prompt, pending_user_message, agent_mode
+        )
+        return PreparedRuntimeTurnContext(
+            messages=messages,
+            tools=self.tool_registry.list_schemas(),
+            effective_system_prompt=system_prompt,
+            runtime_context_snapshot=None,
         )
 
+    async def persist_created_messages(
+        self, db, session_id, created, assistant_iterations, **kwargs
+    ):
+        await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
 
-class _BlockingAgentLoopStub:
-    async def run(self, db, session_id, user_message, **kwargs):
-        _ = (db, session_id, user_message, kwargs)
+    async def _build_context(
+        self, _db, _session_id, system_prompt, pending_user_message, agent_mode
+    ):
+        _ = (system_prompt, pending_user_message, agent_mode)
+        return []
+
+    async def _persist_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+        _ = (db, session_id, created, assistant_iterations, kwargs)
+
+    @staticmethod
+    def _extract_final_text(_messages) -> str:
+        return ""
+
+    @staticmethod
+    def _collect_attachments(_messages) -> list[dict]:
+        return []
+
+    def extract_final_text(self, messages) -> str:
+        return self._extract_final_text(messages)
+
+    def collect_attachments(self, messages) -> list[dict]:
+        return self._collect_attachments(messages)
+
+
+class _StreamingProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "model": model,
+                "tools": list(tools or []),
+                "temperature": temperature,
+                "stream": False,
+            }
+        )
+        raise AssertionError("Trigger runtime tests expect the streaming provider path")
+
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "model": model,
+                "tools": list(tools or []),
+                "temperature": temperature,
+                "stream": True,
+            }
+        )
+        yield AgentEvent(type="text_delta", delta="ok")
+        yield AgentEvent(type="done", stop_reason="stop")
+
+
+class _BlockingProvider(LLMProvider):
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         await asyncio.sleep(3600)
-        return AgentLoopResult(
-            final_text="never",
-            messages_created=0,
-            usage=TokenUsage(input_tokens=0, output_tokens=0),
-            iterations=0,
-        )
+        raise AssertionError("unreachable")
+
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
+        await asyncio.sleep(3600)
+        if False:
+            yield
 
 
 class _ToolExecutorStub:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def execute(self, name: str, payload: dict, *, allow_high_risk: bool):
-        self.calls.append({"name": name, "payload": payload, "allow_high_risk": allow_high_risk})
+    async def execute(self, name: str, payload: dict, **kwargs):
+        self.calls.append({"name": name, "payload": payload})
         return {"ok": True}, 8
 
 
@@ -82,7 +241,9 @@ class _WSManagerStub:
         self.thinking_events: list[str] = []
         self.agent_events: list[dict] = []
 
-    async def broadcast_message_ack(self, session_key, message_id, content, created_at, metadata=None):
+    async def broadcast_message_ack(
+        self, session_key, message_id, content, created_at, metadata=None
+    ):
         self.message_acks.append(
             {
                 "session_key": session_key,
@@ -109,7 +270,7 @@ def test_compute_next_fire_at_for_cron_and_heartbeat():
     assert heartbeat_next is not None and int((heartbeat_next - now).total_seconds()) == 30
 
 
-def test_scheduler_agent_message_action_calls_agent_loop():
+def test_scheduler_agent_message_action_calls_runtime_support():
     db = FakeDB()
     trigger = Trigger(
         name="agent-job",
@@ -123,9 +284,9 @@ def test_scheduler_agent_message_action_calls_agent_loop():
     )
     db.add(trigger)
 
-    agent = _AgentLoopStub()
+    agent = _RuntimeSupportStub()
     scheduler = TriggerScheduler(
-        agent_loop=agent,
+        agent_runtime_support=agent,
         tool_executor=None,
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
@@ -133,7 +294,9 @@ def test_scheduler_agent_message_action_calls_agent_loop():
     _run(scheduler._fire_trigger(trigger.id))
 
     assert agent.calls and agent.calls[0]["user_message"] == "ping"
-    user_metadata = agent.calls[0]["kwargs"].get("user_metadata")
+    assert agent.provider.calls
+    provider_messages = agent.provider.calls[0]["messages"]
+    user_metadata = provider_messages[-1].metadata
     assert isinstance(user_metadata, dict)
     assert user_metadata.get("source") == "trigger"
     assert user_metadata.get("trigger_name") == "agent-job"
@@ -161,10 +324,10 @@ def test_scheduler_agent_message_ack_uses_plain_content_and_trigger_metadata():
     )
     db.add(trigger)
 
-    agent = _AgentLoopStub()
+    agent = _RuntimeSupportStub()
     ws = _WSManagerStub()
     scheduler = TriggerScheduler(
-        agent_loop=agent,
+        agent_runtime_support=agent,
         tool_executor=None,
         ws_manager=ws,
         db_factory=_SessionFactory(db),
@@ -179,7 +342,7 @@ def test_scheduler_agent_message_ack_uses_plain_content_and_trigger_metadata():
     assert ack["metadata"].get("trigger_name") == "heartbeat-job"
 
 
-def test_scheduler_agent_loop_can_be_updated_after_init():
+def test_scheduler_runtime_support_can_be_updated_after_init():
     db = FakeDB()
     trigger = Trigger(
         name="agent-job",
@@ -194,16 +357,17 @@ def test_scheduler_agent_loop_can_be_updated_after_init():
     db.add(trigger)
 
     scheduler = TriggerScheduler(
-        agent_loop=None,
+        agent_runtime_support=None,
         tool_executor=None,
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
     )
-    agent = _AgentLoopStub()
-    scheduler.set_agent_loop(agent)
+    agent = _RuntimeSupportStub()
+    scheduler.set_agent_runtime_support(agent)
     _run(scheduler._fire_trigger(trigger.id))
 
     assert agent.calls and agent.calls[0]["user_message"] == "ping"
+    assert agent.provider.calls
     assert trigger.fire_count == 1
     assert trigger.last_error is None
 
@@ -223,7 +387,7 @@ def test_scheduler_fire_now_records_signal_payload():
 
     tools = _ToolExecutorStub()
     scheduler = TriggerScheduler(
-        agent_loop=None,
+        agent_runtime_support=None,
         tool_executor=tools,
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
@@ -252,7 +416,7 @@ def test_scheduler_disables_ownerless_agent_trigger_without_session_context():
     db.add(trigger)
 
     scheduler = TriggerScheduler(
-        agent_loop=_AgentLoopStub(),
+        agent_runtime_support=_RuntimeSupportStub(),
         tool_executor=None,
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
@@ -283,9 +447,9 @@ def test_scheduler_routes_agent_message_to_specific_root_session():
     )
     db.add(trigger)
 
-    agent = _AgentLoopStub()
+    agent = _RuntimeSupportStub()
     scheduler = TriggerScheduler(
-        agent_loop=agent,
+        agent_runtime_support=agent,
         tool_executor=None,
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
@@ -319,9 +483,9 @@ def test_scheduler_falls_back_to_main_when_target_session_missing():
     )
     db.add(trigger)
 
-    agent = _AgentLoopStub()
+    agent = _RuntimeSupportStub()
     scheduler = TriggerScheduler(
-        agent_loop=agent,
+        agent_runtime_support=agent,
         tool_executor=None,
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
@@ -364,9 +528,9 @@ def test_scheduler_allows_telegram_route_session_target():
     )
     db.add(trigger)
 
-    agent = _AgentLoopStub()
+    agent = _RuntimeSupportStub()
     scheduler = TriggerScheduler(
-        agent_loop=agent,
+        agent_runtime_support=agent,
         tool_executor=None,
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
@@ -393,7 +557,7 @@ def test_scheduler_tool_call_action_uses_tool_executor():
 
     tools = _ToolExecutorStub()
     scheduler = TriggerScheduler(
-        agent_loop=None,
+        agent_runtime_support=None,
         tool_executor=tools,
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
@@ -402,12 +566,11 @@ def test_scheduler_tool_call_action_uses_tool_executor():
 
     assert tools.calls
     assert tools.calls[0]["name"] == "file_read"
-    assert tools.calls[0]["allow_high_risk"] is True
     assert trigger.fire_count == 1
 
 
 def test_scheduler_http_request_action_executes_outbound_call():
-    from app.services import trigger_scheduler as scheduler_module
+    from app.services.triggers import trigger_scheduler as scheduler_module
 
     db = FakeDB()
     trigger = Trigger(
@@ -445,7 +608,7 @@ def test_scheduler_http_request_action_executes_outbound_call():
     scheduler_module.httpx.AsyncClient = _Client
     try:
         scheduler = TriggerScheduler(
-            agent_loop=None,
+            agent_runtime_support=None,
             tool_executor=None,
             db_factory=_SessionFactory(db),
             poll_interval_seconds=0.01,
@@ -474,7 +637,7 @@ def test_scheduler_auto_disables_after_five_consecutive_errors():
     db.add(trigger)
 
     scheduler = TriggerScheduler(
-        agent_loop=None,
+        agent_runtime_support=None,
         tool_executor=_ToolExecutorStub(),
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
@@ -504,7 +667,7 @@ def test_scheduler_start_polls_due_triggers_and_stops():
 
     tools = _ToolExecutorStub()
     scheduler = TriggerScheduler(
-        agent_loop=None,
+        agent_runtime_support=None,
         tool_executor=tools,
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
@@ -553,7 +716,7 @@ def test_scheduler_ignores_trigger_already_in_flight():
 
     tools = _ToolExecutorStub()
     scheduler = TriggerScheduler(
-        agent_loop=None,
+        agent_runtime_support=None,
         tool_executor=tools,
         db_factory=_SessionFactory(db),
         poll_interval_seconds=0.01,
@@ -581,7 +744,7 @@ def test_scheduler_cancellation_advances_next_fire_and_marks_log_cancelled():
 
     run_registry = AgentRunRegistry()
     scheduler = TriggerScheduler(
-        agent_loop=_BlockingAgentLoopStub(),
+        agent_runtime_support=_BlockingRuntimeSupportStub(),
         tool_executor=None,
         run_registry=run_registry,
         db_factory=_SessionFactory(db),

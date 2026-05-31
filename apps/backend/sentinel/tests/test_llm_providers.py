@@ -12,6 +12,7 @@ from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.errors import TransientProviderError
 from app.services.llm.providers.codex import CodexProvider
 from app.services.llm.providers.gemini import GeminiProvider
+from app.services.llm.providers.gemini_oauth import GeminiOAuthCredentials, GeminiOAuthProvider
 from app.services.llm.providers.gemini_schema_cleaner import clean_schema_for_gemini
 from app.services.llm.providers.openai import OpenAIProvider
 from app.services.llm.generic.reliable import ReliableProvider
@@ -53,10 +54,11 @@ class _FakeResponse:
 
 
 class _FakeStreamResponse:
-    def __init__(self, lines: list[str], status_code: int = 200):
+    def __init__(self, lines: list[str], status_code: int = 200, body: bytes = b""):
         self._lines = lines
         self.status_code = status_code
         self.is_error = status_code >= 400
+        self._body = body
 
     async def __aenter__(self):
         return self
@@ -71,7 +73,7 @@ class _FakeStreamResponse:
             raise httpx.HTTPStatusError("request failed", request=request, response=response)
 
     async def aread(self) -> bytes:
-        return b""
+        return self._body
 
     async def aiter_lines(self):
         for line in self._lines:
@@ -83,11 +85,15 @@ class _FakeAsyncClient:
         self,
         *,
         post_response: _FakeResponse | None = None,
+        post_responses: list[_FakeResponse] | None = None,
         stream_response: _FakeStreamResponse | None = None,
+        stream_responses: list[_FakeStreamResponse] | None = None,
         get_response: _FakeResponse | None = None,
     ):
         self.post_response = post_response or _FakeResponse({})
+        self.post_responses = list(post_responses or [])
         self.stream_response = stream_response or _FakeStreamResponse([])
+        self.stream_responses = list(stream_responses or [])
         self.get_response = get_response or _FakeResponse({})
         self.post_calls: list[dict] = []
         self.stream_calls: list[dict] = []
@@ -99,8 +105,17 @@ class _FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def post(self, url: str, *, json: dict, headers: dict[str, str]):
-        self.post_calls.append({"url": url, "json": json, "headers": headers})
+    async def post(
+        self,
+        url: str,
+        *,
+        json: dict | None = None,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str],
+    ):
+        self.post_calls.append({"url": url, "json": json, "headers": headers, "data": data})
+        if self.post_responses:
+            return self.post_responses.pop(0)
         return self.post_response
 
     async def get(
@@ -114,9 +129,9 @@ class _FakeAsyncClient:
         return self.get_response
 
     def stream(self, method: str, url: str, *, json: dict, headers: dict[str, str]):
-        self.stream_calls.append(
-            {"method": method, "url": url, "json": json, "headers": headers}
-        )
+        self.stream_calls.append({"method": method, "url": url, "json": json, "headers": headers})
+        if self.stream_responses:
+            return self.stream_responses.pop(0)
         return self.stream_response
 
 
@@ -205,7 +220,9 @@ def test_anthropic_stream_emits_all_event_types():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="claude-sonnet-4-20250514"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="claude-sonnet-4-20250514"
+        ):
             events.append(event)
         return events
 
@@ -334,12 +351,28 @@ def test_reliable_provider_fallback_on_429():
         def name(self) -> str:
             return "retry"
 
-        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def chat(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             request = httpx.Request("POST", "https://retry.example")
             response = httpx.Response(429, request=request)
             raise httpx.HTTPStatusError("rate limited", request=request, response=response)
 
-        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def stream(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             if False:
                 yield
             return
@@ -352,16 +385,34 @@ def test_reliable_provider_fallback_on_429():
         def name(self) -> str:
             return "ok"
 
-        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def chat(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             self.called += 1
             return AssistantMessage(content=[TextContent(text="ok")], model=model, provider="ok")
 
-        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def stream(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             yield AgentEvent(type="start")
             yield AgentEvent(type="done", stop_reason="stop")
 
     ok = _OkProvider()
-    provider = ReliableProvider([_RetryProvider(), ok], max_retries=2, sleep_func=lambda _: asyncio.sleep(0))
+    provider = ReliableProvider(
+        [_RetryProvider(), ok], max_retries=2, sleep_func=lambda _: asyncio.sleep(0)
+    )
     result = _run(provider.chat([UserMessage(content="hello")], model="test-model"))
     assert result.content[0].text == "ok"
     assert ok.called == 1
@@ -373,14 +424,32 @@ def test_reliable_provider_stream_attaches_generation_hint_on_first_event():
         def name(self) -> str:
             return "ok"
 
-        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def chat(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             return AssistantMessage(content=[TextContent(text="ok")], model=model, provider="ok")
 
-        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def stream(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             yield AgentEvent(type="start")
             yield AgentEvent(type="done", stop_reason="stop")
 
-    provider = ReliableProvider([_OkProvider()], max_retries=1, sleep_func=lambda _: asyncio.sleep(0))
+    provider = ReliableProvider(
+        [_OkProvider()], max_retries=1, sleep_func=lambda _: asyncio.sleep(0)
+    )
 
     async def _collect():
         events = []
@@ -405,11 +474,29 @@ def test_router_provider_routes_hint_and_passthrough_model():
         def name(self) -> str:
             return self._provider_name
 
-        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def chat(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             self.calls.append(model)
-            return AssistantMessage(content=[TextContent(text=model)], model=model, provider=self._provider_name)
+            return AssistantMessage(
+                content=[TextContent(text=model)], model=model, provider=self._provider_name
+            )
 
-        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def stream(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             self.calls.append(model)
             yield AgentEvent(type="start")
             yield AgentEvent(type="done", stop_reason="stop")
@@ -441,10 +528,28 @@ def test_router_provider_stream_attaches_resolved_generation_metadata():
         def name(self) -> str:
             return self._provider_name
 
-        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
-            return AssistantMessage(content=[TextContent(text=model)], model=model, provider=self._provider_name)
+        async def chat(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
+            return AssistantMessage(
+                content=[TextContent(text=model)], model=model, provider=self._provider_name
+            )
 
-        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def stream(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             yield AgentEvent(type="start")
             yield AgentEvent(type="done", stop_reason="stop")
 
@@ -513,7 +618,7 @@ def test_anthropic_oauth_headers_use_bearer_and_beta():
 
     headers = fake_client.post_calls[0]["headers"]
     assert headers["authorization"] == "Bearer sk-ant-oat01-zF7_HH03KyFWn7D8yZqOWNW7_test"
-    assert headers["anthropic-beta"] == "oauth-2025-04-20"
+    assert "oauth-2025-04-20" in headers["anthropic-beta"]
     assert "x-api-key" not in headers
 
 
@@ -557,7 +662,9 @@ def test_anthropic_oauth_stream_headers():
 
     async def _collect():
         events = []
-        async for event in provider.stream([UserMessage(content="hi")], model="claude-sonnet-4-20250514"):
+        async for event in provider.stream(
+            [UserMessage(content="hi")], model="claude-sonnet-4-20250514"
+        ):
             events.append(event)
         return events
 
@@ -565,7 +672,7 @@ def test_anthropic_oauth_stream_headers():
 
     headers = fake_client.stream_calls[0]["headers"]
     assert headers["authorization"] == "Bearer sk-ant-oat01-stream-test-token"
-    assert headers["anthropic-beta"] == "oauth-2025-04-20"
+    assert "oauth-2025-04-20" in headers["anthropic-beta"]
     assert "x-api-key" not in headers
 
 
@@ -615,7 +722,13 @@ def test_anthropic_chat_sends_thinking_payload_when_budget_set():
         client_factory=lambda: fake_client,
     )
     rc = ReasoningConfig(max_tokens=16384, thinking_budget=32000)
-    _run(provider.chat([UserMessage(content="think hard")], model="claude-sonnet-4-20250514", reasoning_config=rc))
+    _run(
+        provider.chat(
+            [UserMessage(content="think hard")],
+            model="claude-sonnet-4-20250514",
+            reasoning_config=rc,
+        )
+    )
 
     payload = fake_client.post_calls[0]["json"]
     assert payload["max_tokens"] == 40192
@@ -644,7 +757,14 @@ def test_anthropic_chat_no_thinking_when_budget_zero():
         client_factory=lambda: fake_client,
     )
     rc = ReasoningConfig(max_tokens=4096, thinking_budget=None)
-    _run(provider.chat([UserMessage(content="be fast")], model="claude-haiku-4-5-20251001", reasoning_config=rc, temperature=0.3))
+    _run(
+        provider.chat(
+            [UserMessage(content="be fast")],
+            model="claude-haiku-4-5-20251001",
+            reasoning_config=rc,
+            temperature=0.3,
+        )
+    )
 
     payload = fake_client.post_calls[0]["json"]
     assert payload["max_tokens"] == 4096
@@ -673,7 +793,11 @@ def test_anthropic_oauth_with_thinking_combines_betas():
         client_factory=lambda: fake_client,
     )
     rc = ReasoningConfig(max_tokens=8192, thinking_budget=5000)
-    _run(provider.chat([UserMessage(content="hi")], model="claude-sonnet-4-20250514", reasoning_config=rc))
+    _run(
+        provider.chat(
+            [UserMessage(content="hi")], model="claude-sonnet-4-20250514", reasoning_config=rc
+        )
+    )
 
     headers = fake_client.post_calls[0]["headers"]
     beta = headers["anthropic-beta"]
@@ -736,6 +860,7 @@ def test_openai_chat_no_reasoning_effort_when_none():
 
 class _TierCaptureProvider(LLMProvider):
     """Captures model and reasoning_config for assertions."""
+
     def __init__(self, provider_name: str, *, fail_with: Exception | None = None) -> None:
         self._provider_name = provider_name
         self._fail_with = fail_with
@@ -753,13 +878,21 @@ class _TierCaptureProvider(LLMProvider):
         except ValueError:
             return None
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         self.chat_calls.append((model, reasoning_config))
         if self._fail_with:
             raise self._fail_with
-        return AssistantMessage(content=[TextContent(text=f"{self._provider_name}:{model}")], model=model, provider=self._provider_name)
+        return AssistantMessage(
+            content=[TextContent(text=f"{self._provider_name}:{model}")],
+            model=model,
+            provider=self._provider_name,
+        )
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         self.stream_calls.append((model, reasoning_config))
         if self._fail_with:
             raise self._fail_with
@@ -777,16 +910,41 @@ def _make_tier_provider(
 
     tiers = {
         TierName.FAST: TierConfig(
-            primary=TierModelConfig(provider=primary, model="claude-haiku", reasoning_config=fast_rc, temperature=0.3),
-            fallbacks=[TierModelConfig(provider=fallback, model="gpt-4o-mini", reasoning_config=fast_rc, temperature=0.3)] if fallback else [],
+            primary=TierModelConfig(
+                provider=primary, model="claude-haiku", reasoning_config=fast_rc, temperature=0.3
+            ),
+            fallbacks=(
+                [
+                    TierModelConfig(
+                        provider=fallback,
+                        model="gpt-4o-mini",
+                        reasoning_config=fast_rc,
+                        temperature=0.3,
+                    )
+                ]
+                if fallback
+                else []
+            ),
         ),
         TierName.NORMAL: TierConfig(
-            primary=TierModelConfig(provider=primary, model="claude-sonnet", reasoning_config=normal_rc),
-            fallbacks=[TierModelConfig(provider=fallback, model="gpt-4o", reasoning_config=normal_rc)] if fallback else [],
+            primary=TierModelConfig(
+                provider=primary, model="claude-sonnet", reasoning_config=normal_rc
+            ),
+            fallbacks=(
+                [TierModelConfig(provider=fallback, model="gpt-4o", reasoning_config=normal_rc)]
+                if fallback
+                else []
+            ),
         ),
         TierName.HARD: TierConfig(
-            primary=TierModelConfig(provider=primary, model="claude-sonnet", reasoning_config=hard_rc),
-            fallbacks=[TierModelConfig(provider=fallback, model="o3", reasoning_config=hard_rc)] if fallback else [],
+            primary=TierModelConfig(
+                provider=primary, model="claude-sonnet", reasoning_config=hard_rc
+            ),
+            fallbacks=(
+                [TierModelConfig(provider=fallback, model="o3", reasoning_config=hard_rc)]
+                if fallback
+                else []
+            ),
         ),
     }
     return TierProvider(
@@ -879,6 +1037,115 @@ def test_tier_provider_available_tiers_returns_all_tiers():
     normal = next(t for t in tiers if t.tier == TierName.NORMAL)
     assert normal.primary_provider_id == ProviderId.ANTHROPIC
     assert normal.primary_model_id == "claude-sonnet"
+
+
+def test_tier_provider_available_tiers_reports_primary_reasoning_effort():
+    primary = _TierCaptureProvider("openai")
+    fallback = _TierCaptureProvider("anthropic")
+    tp = TierProvider(
+        tiers={
+            TierName.HARD: TierConfig(
+                primary=TierModelConfig(
+                    provider=primary,
+                    model="gpt-5.5",
+                    reasoning_config=ReasoningConfig(
+                        max_tokens=40000,
+                        reasoning_effort="high",
+                    ),
+                ),
+                fallbacks=[
+                    TierModelConfig(
+                        provider=fallback,
+                        model="claude-opus",
+                        reasoning_config=ReasoningConfig(
+                            max_tokens=40000,
+                            thinking_budget=32000,
+                        ),
+                    )
+                ],
+            )
+        },
+        default_tier=TierName.HARD,
+    )
+
+    [hard] = tp.available_tiers()
+
+    assert hard.primary_provider_id == ProviderId.OPENAI
+    assert hard.primary_model_id == "gpt-5.5"
+    assert hard.reasoning_effort == "high"
+    assert hard.thinking_budget is None
+
+
+def test_tier_provider_available_tiers_does_not_leak_fallback_reasoning_effort():
+    primary = _TierCaptureProvider("anthropic")
+    fallback = _TierCaptureProvider("openai")
+    tp = TierProvider(
+        tiers={
+            TierName.HARD: TierConfig(
+                primary=TierModelConfig(
+                    provider=primary,
+                    model="claude-opus",
+                    reasoning_config=ReasoningConfig(
+                        max_tokens=40000,
+                        thinking_budget=32000,
+                    ),
+                ),
+                fallbacks=[
+                    TierModelConfig(
+                        provider=fallback,
+                        model="gpt-5.5",
+                        reasoning_config=ReasoningConfig(
+                            max_tokens=40000,
+                            reasoning_effort="high",
+                        ),
+                    )
+                ],
+            )
+        },
+        default_tier=TierName.HARD,
+    )
+
+    [hard] = tp.available_tiers()
+
+    assert hard.primary_provider_id == ProviderId.ANTHROPIC
+    assert hard.primary_model_id == "claude-opus"
+    assert hard.reasoning_effort is None
+    assert hard.thinking_budget == 32000
+
+
+def test_tier_provider_available_tiers_ignores_conflicting_fallback_reasoning_effort():
+    primary = _TierCaptureProvider("openai")
+    fallback = _TierCaptureProvider("openai-codex")
+    tp = TierProvider(
+        tiers={
+            TierName.NORMAL: TierConfig(
+                primary=TierModelConfig(
+                    provider=primary,
+                    model="gpt-4o",
+                    reasoning_config=ReasoningConfig(
+                        max_tokens=8192,
+                        reasoning_effort="medium",
+                    ),
+                ),
+                fallbacks=[
+                    TierModelConfig(
+                        provider=fallback,
+                        model="gpt-5.5",
+                        reasoning_config=ReasoningConfig(
+                            max_tokens=40000,
+                            reasoning_effort="high",
+                        ),
+                    )
+                ],
+            )
+        },
+        default_tier=TierName.NORMAL,
+    )
+
+    [normal] = tp.available_tiers()
+
+    assert normal.primary_provider_id == ProviderId.OPENAI
+    assert normal.reasoning_effort == "medium"
 
 
 def test_tier_provider_stream_routes_correctly():
@@ -1082,7 +1349,9 @@ def test_gemini_chat_parses_tool_calls():
 
     # Verify URL and headers
     post_call = fake_client.post_calls[0]
-    assert post_call["url"] == "https://gemini.example/v1beta/models/gemini-2.5-flash:generateContent"
+    assert (
+        post_call["url"] == "https://gemini.example/v1beta/models/gemini-2.5-flash:generateContent"
+    )
     assert post_call["headers"]["x-goog-api-key"] == "test-gemini-key"
 
     # Verify system instruction extracted
@@ -1106,6 +1375,324 @@ def test_gemini_chat_parses_tool_calls():
     assert result.content[1].id.startswith("gemini_")
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+def test_gemini_oauth_credentials_parse_gemini_cli_json():
+    credentials = GeminiOAuthCredentials.parse_input(
+        json.dumps(
+            {
+                "access_token": "access-1",
+                "refresh_token": "refresh-1",
+                "client_id": "test-client-id",
+                "client_secret": "test-client-secret",
+                "token_type": "Bearer",
+                "scope": "scope-a scope-b",
+                "expiry_date": 12345,
+            }
+        )
+    )
+
+    assert credentials.access_token == "access-1"
+    assert credentials.refresh_token == "refresh-1"
+    assert credentials.resolved_client_id() == "test-client-id"
+    assert credentials.resolved_client_secret() == "test-client-secret"
+    assert credentials.token_type == "Bearer"
+    assert credentials.mask_secret() == "refr...sh-1"
+
+
+def test_gemini_oauth_credentials_require_client_fields():
+    with pytest.raises(ValueError, match="client_id"):
+        GeminiOAuthCredentials.parse_input(json.dumps({"refresh_token": "refresh-1"}))
+
+    with pytest.raises(ValueError, match="client_secret"):
+        GeminiOAuthCredentials.parse_input(
+            json.dumps({"refresh_token": "refresh-1", "client_id": "test-client-id"})
+        )
+
+
+def test_gemini_oauth_provider_refreshes_and_uses_bearer_token():
+    fake_client = _FakeAsyncClient(
+        post_responses=[
+            _FakeResponse({"access_token": "fresh-access", "expires_in": 3600}),
+            _FakeResponse({"cloudaicompanionProject": "projects/test-project"}),
+            _FakeResponse(
+                {
+                    "response": {
+                        "candidates": [
+                            {
+                                "content": {"parts": [{"text": "hello from code assist"}]},
+                                "finishReason": "STOP",
+                            }
+                        ],
+                        "usageMetadata": {
+                            "promptTokenCount": 4,
+                            "candidatesTokenCount": 5,
+                        },
+                    }
+                }
+            ),
+        ]
+    )
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: fake_client,
+    )
+
+    result = _run(provider.chat([UserMessage(content="hello")], model="gemini-2.5-flash"))
+
+    refresh_call = fake_client.post_calls[0]
+    load_call = fake_client.post_calls[1]
+    request_call = fake_client.post_calls[2]
+    assert refresh_call["url"] == "https://oauth2.googleapis.com/token"
+    assert refresh_call["data"]["grant_type"] == "refresh_token"
+    assert refresh_call["data"]["refresh_token"] == "refresh-token"
+    assert refresh_call["data"]["client_id"] == "test-client-id"
+    assert refresh_call["data"]["client_secret"] == "test-client-secret"
+    assert load_call["url"] == "https://codeassist.example/v1internal:loadCodeAssist"
+    assert load_call["headers"]["authorization"] == "Bearer fresh-access"
+    assert load_call["json"]["metadata"]["pluginType"] == "GEMINI"
+    assert request_call["url"] == "https://codeassist.example/v1internal:generateContent"
+    assert request_call["headers"]["authorization"] == "Bearer fresh-access"
+    assert request_call["json"]["model"] == "gemini-2.5-flash"
+    assert request_call["json"]["project"] == "projects/test-project"
+    assert request_call["json"]["request"]["contents"][0]["parts"][0]["text"] == "hello"
+    assert result.provider == ProviderId.GEMINI
+    assert result.content[0].text == "hello from code assist"
+    assert result.usage.input_tokens == 4
+    assert result.usage.output_tokens == 5
+
+
+def test_gemini_oauth_provider_rejects_missing_code_assist_scope():
+    provider = GeminiOAuthProvider(
+        credentials={
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "scope": "openid https://www.googleapis.com/auth/userinfo.email",
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: _FakeAsyncClient(),
+    )
+
+    with pytest.raises(RuntimeError) as exc:
+        _run(provider.chat([UserMessage(content="hello")], model="gemini-2.5-flash"))
+
+    assert "cloud-platform" in str(exc.value)
+
+
+def test_gemini_oauth_provider_resolves_cli_alias_models():
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: _FakeAsyncClient(),
+    )
+
+    assert provider.resolve_generation_hint("pro") == (
+        ProviderId.GEMINI,
+        "gemini-3-pro-preview",
+    )
+    assert provider._iter_candidate_models("pro") == [
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+    ]
+    assert provider._iter_candidate_models("auto-gemini-2.5") == [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+    ]
+
+
+def test_gemini_oauth_provider_skips_recently_exhausted_model():
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: _FakeAsyncClient(),
+    )
+
+    provider._record_model_capacity("gemini-3.1-pro-preview")
+
+    assert provider._iter_candidate_models("gemini-3.1-pro-preview") == [
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+    ]
+
+
+def test_gemini_oauth_stream_uses_code_assist_sse_wrapper():
+    fake_client = _FakeAsyncClient(
+        post_responses=[
+            _FakeResponse({"access_token": "fresh-access", "expires_in": 3600}),
+            _FakeResponse({"cloudaicompanionProject": "projects/test-project"}),
+        ],
+        stream_response=_FakeStreamResponse(
+            [
+                'data: {"response":{"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}]}}',
+                "",
+            ]
+        ),
+    )
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: fake_client,
+    )
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+
+    assert [event.type for event in events] == [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done",
+    ]
+    assert fake_client.stream_calls[0]["url"] == (
+        "https://codeassist.example/v1internal:streamGenerateContent?alt=sse"
+    )
+    assert fake_client.stream_calls[0]["json"]["project"] == "projects/test-project"
+
+
+def test_gemini_oauth_stream_falls_back_on_capacity_429():
+    fake_client = _FakeAsyncClient(
+        post_responses=[
+            _FakeResponse({"access_token": "fresh-access", "expires_in": 3600}),
+            _FakeResponse({"cloudaicompanionProject": "projects/test-project"}),
+        ],
+        stream_responses=[
+            _FakeStreamResponse(
+                [],
+                status_code=429,
+                body=(
+                    b'{"error":{"code":429,"message":"No capacity available for model '
+                    b'gemini-3.1-pro-preview on the server","status":"RESOURCE_EXHAUSTED"}}'
+                ),
+            ),
+            _FakeStreamResponse(
+                [
+                    'data: {"response":{"candidates":[{"content":{"parts":[{"text":"fallback worked"}]},"finishReason":"STOP"}]}}',
+                    "",
+                ]
+            ),
+        ],
+    )
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: fake_client,
+    )
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-3.1-pro-preview"
+        ):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+
+    assert [event.type for event in events] == [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done",
+    ]
+    assert fake_client.stream_calls[0]["json"]["model"] == "gemini-3.1-pro-preview"
+    assert fake_client.stream_calls[1]["json"]["model"] == "gemini-3-pro-preview"
+
+
+def test_gemini_oauth_stream_empty_stop_chunk_closes_turn():
+    fake_client = _FakeAsyncClient(
+        post_responses=[
+            _FakeResponse({"access_token": "fresh-access", "expires_in": 3600}),
+            _FakeResponse({"cloudaicompanionProject": "projects/test-project"}),
+        ],
+        stream_response=_FakeStreamResponse(
+            [
+                'data: {"response":{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}]}}',
+                "",
+            ]
+        ),
+    )
+    provider = GeminiOAuthProvider(
+        credentials={
+            "refresh_token": "refresh-token",
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "expiry_date": 1,
+        },
+        base_url="https://codeassist.example/v1internal",
+        client_factory=lambda: fake_client,
+    )
+
+    async def _collect():
+        events: list[AgentEvent] = []
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
+            events.append(event)
+        return events
+
+    events = _run(_collect())
+    assert [event.type for event in events] == ["start", "done"]
+    assert events[-1].stop_reason == "stop"
+
+
+def test_regular_gemini_provider_does_not_resolve_cli_alias_models():
+    fake_client = _FakeAsyncClient(
+        post_response=_FakeResponse(
+            {
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+                "usageMetadata": {},
+            }
+        )
+    )
+    provider = GeminiProvider(
+        api_key="test-key",
+        base_url="https://gemini.example/v1beta",
+        client_factory=lambda: fake_client,
+    )
+
+    _run(provider.chat([UserMessage(content="hello")], model="pro"))
+
+    assert fake_client.post_calls[0]["url"] == (
+        "https://gemini.example/v1beta/models/pro:generateContent"
+    )
 
 
 def test_gemini_formats_user_image_blocks():
@@ -1143,7 +1730,9 @@ def test_gemini_stream_events():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
             events.append(event)
         return events
 
@@ -1188,7 +1777,9 @@ def test_gemini_stream_done_keeps_tool_use_across_chunks():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
             events.append(event)
         return events
 
@@ -1211,7 +1802,9 @@ def test_gemini_stream_raises_on_empty_stop_chunk():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
             events.append(event)
         return events
 
@@ -1235,7 +1828,9 @@ def test_gemini_stream_raises_when_no_candidates_or_terminal():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
             events.append(event)
         return events
 
@@ -1250,9 +1845,7 @@ def test_gemini_tool_choice_required_sets_any_mode():
     fake_client = _FakeAsyncClient(
         post_response=_FakeResponse(
             {
-                "candidates": [
-                    {"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}
-                ],
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
                 "usageMetadata": {},
             }
         )
@@ -1321,7 +1914,9 @@ def test_gemini_no_thinking_config_when_zero():
         client_factory=lambda: fake_client,
     )
     rc = ReasoningConfig(max_tokens=4096, thinking_budget=None)
-    _run(provider.chat([UserMessage(content="fast")], model="gemini-2.0-flash", reasoning_config=rc))
+    _run(
+        provider.chat([UserMessage(content="fast")], model="gemini-2.0-flash", reasoning_config=rc)
+    )
 
     payload = fake_client.post_calls[0]["json"]
     assert "thinkingConfig" not in payload["generationConfig"]
@@ -1456,7 +2051,9 @@ def test_gemini_function_call_turn_serialization_is_strict():
             [
                 # Orphan tool-call history from a truncated context window should be dropped.
                 AssistantMessage(
-                    content=[ToolCallContent(id="orphan", name="search_web", arguments={"q": "old"})],
+                    content=[
+                        ToolCallContent(id="orphan", name="search_web", arguments={"q": "old"})
+                    ],
                     model="gemini-2.5-flash",
                     provider="gemini",
                     stop_reason="tool_use",
@@ -1605,6 +2202,35 @@ def test_codex_formats_user_image_blocks():
     assert content[1]["image_url"] == "data:image/png;base64,GGGHHH"
 
 
+def test_codex_input_skips_empty_tool_call_ids() -> None:
+    provider = CodexProvider(oauth_token="test-token")
+    _, input_items = provider._to_codex_input(  # type: ignore[attr-defined]
+        [
+            AssistantMessage(
+                content=[
+                    TextContent(text="Working on it"),
+                    ToolCallContent(id="", name="runtime", arguments={"command": "pwd"}),
+                    ToolCallContent(id="call_1", name="runtime", arguments={"command": "pwd"}),
+                ],
+                model="gpt-5.3-codex",
+                provider="openai-codex",
+                usage=TokenUsage(),
+                stop_reason="tool_use",
+            ),
+            ToolResultMessage(tool_call_id="", tool_name="runtime", content="bad"),
+            ToolResultMessage(tool_call_id="call_1", tool_name="runtime", content="ok"),
+        ]
+    )
+
+    function_calls = [item for item in input_items if item.get("type") == "function_call"]
+    function_outputs = [item for item in input_items if item.get("type") == "function_call_output"]
+
+    assert len(function_calls) == 1
+    assert function_calls[0]["call_id"] == "call_1"
+    assert len(function_outputs) == 1
+    assert function_outputs[0]["call_id"] == "call_1"
+
+
 def test_codex_stream_emits_text_from_output_item_done_when_no_delta():
     stream_lines = [
         'data: {"type":"response.created"}',
@@ -1660,9 +2286,9 @@ def test_codex_stream_does_not_duplicate_text_when_delta_and_output_item_done_bo
 def test_codex_stream_emits_tool_arguments_from_function_call_done():
     stream_lines = [
         'data: {"type":"response.created"}',
-        'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime_exec","arguments":""}}',
-        'data: {"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_1","arguments":"{\\"command\\":\\"echo hello\\"}"}',
-        'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime_exec","arguments":"{\\"command\\":\\"echo hello\\"}"}}',
+        'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime","arguments":""}}',
+        'data: {"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_1","arguments":"{\\"command\\":\\"user\\",\\"shell_command\\":\\"echo hello\\"}"}',
+        'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime","arguments":"{\\"command\\":\\"user\\",\\"shell_command\\":\\"echo hello\\"}"}}',
         'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
@@ -1673,14 +2299,16 @@ def test_codex_stream_emits_tool_arguments_from_function_call_done():
         async for event in provider.stream(
             [UserMessage(content="Run command")],
             model="gpt-5.3-codex-spark",
-            tools=[ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})],
+            tools=[
+                ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})
+            ],
         ):
             events.append(event)
         return events
 
     events = _run(_collect())
     deltas = [event.delta for event in events if event.type == "toolcall_delta"]
-    assert deltas == ['{"command":"echo hello"}']
+    assert deltas == ['{"command":"user","shell_command":"echo hello"}']
     assert events[-1].type == "done"
     assert events[-1].stop_reason == "tool_use"
 
@@ -1688,9 +2316,9 @@ def test_codex_stream_emits_tool_arguments_from_function_call_done():
 def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta():
     stream_lines = [
         'data: {"type":"response.created"}',
-        'data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime_exec","arguments":""}}',
+        'data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime","arguments":""}}',
         'data: {"type":"response.function_call_arguments.done","output_index":2,"item_id":"fc_2"}',
-        'data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime_exec","arguments":"{\\"command\\":\\"pwd\\"}"}}',
+        'data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime","arguments":"{\\"command\\":\\"user\\",\\"shell_command\\":\\"pwd\\"}"}}',
         'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
@@ -1701,14 +2329,16 @@ def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta()
         async for event in provider.stream(
             [UserMessage(content="Run command")],
             model="gpt-5.3-codex-spark",
-            tools=[ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})],
+            tools=[
+                ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})
+            ],
         ):
             events.append(event)
         return events
 
     events = _run(_collect())
     deltas = [event.delta for event in events if event.type == "toolcall_delta"]
-    assert deltas == ['{"command":"pwd"}']
+    assert deltas == ['{"command":"user","shell_command":"pwd"}']
     assert events[-1].type == "done"
     assert events[-1].stop_reason == "tool_use"
 
@@ -1716,8 +2346,8 @@ def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta()
 def test_codex_stream_emits_tool_arguments_when_present_on_output_item_added():
     stream_lines = [
         'data: {"type":"response.created"}',
-        'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime_exec","arguments":"{\\"command\\":\\"ls\\"}"}}',
-        'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime_exec","arguments":"{\\"command\\":\\"ls\\"}"}}',
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime","arguments":"{\\"command\\":\\"user\\",\\"shell_command\\":\\"ls\\"}"}}',
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime","arguments":"{\\"command\\":\\"user\\",\\"shell_command\\":\\"ls\\"}"}}',
         'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
@@ -1728,14 +2358,16 @@ def test_codex_stream_emits_tool_arguments_when_present_on_output_item_added():
         async for event in provider.stream(
             [UserMessage(content="Run command")],
             model="gpt-5.3-codex-spark",
-            tools=[ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})],
+            tools=[
+                ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})
+            ],
         ):
             events.append(event)
         return events
 
     events = _run(_collect())
     deltas = [event.delta for event in events if event.type == "toolcall_delta"]
-    assert deltas == ['{"command":"ls"}']
+    assert deltas == ['{"command":"user","shell_command":"ls"}']
     assert events[-1].type == "done"
     assert events[-1].stop_reason == "tool_use"
 
@@ -1756,7 +2388,7 @@ def test_codex_stream_payload_includes_parity_fields_and_prompt_cache_key():
         ),
     )
     provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
-    tools = [ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})]
+    tools = [ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})]
     rc = ReasoningConfig(reasoning_effort="high")
 
     async def _run_once():
@@ -1808,8 +2440,8 @@ def test_codex_stream_sanitizes_nested_object_tool_schemas():
     }
     tools = [
         ToolSchema(
-            name="araios_api",
-            description="Call AraiOS",
+            name="module_manager",
+            description="Call module API",
             parameters=raw_parameters,
         )
     ]
@@ -1887,7 +2519,9 @@ def test_codex_stream_raises_on_sse_error_event():
         async for event in provider.stream(
             [UserMessage(content="Run command")],
             model="gpt-5.3-codex",
-            tools=[ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})],
+            tools=[
+                ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})
+            ],
         ):
             events.append(event)
         return events
@@ -1919,7 +2553,9 @@ def test_codex_stream_keeps_requested_model_when_catalog_does_not_include_it():
         async for event in provider.stream(
             [UserMessage(content="Run command")],
             model="gpt-5.3-codex",
-            tools=[ToolSchema(name="runtime_exec", description="Run shell", parameters={"type": "object"})],
+            tools=[
+                ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})
+            ],
         ):
             events.append(event)
         return events

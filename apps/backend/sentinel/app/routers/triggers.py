@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
+from app.dependencies import get_db, get_request_instance_runtime_context
 from app.middleware.audit import log_audit
 from app.middleware.auth import TokenPayload, require_auth
 from app.models import Trigger, TriggerLog
@@ -22,7 +22,7 @@ from app.schemas.triggers import (
     TriggerResponse,
     UpdateTriggerRequest,
 )
-from app.services.trigger_scheduler import TriggerScheduler, compute_next_fire_at
+from app.services.triggers.trigger_scheduler import TriggerScheduler, compute_next_fire_at
 from app.services.triggers.routing import resolve_agent_message_route
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,9 @@ async def create_trigger(
     next_fire_at = None
     if payload.enabled:
         try:
-            next_fire_at = compute_next_fire_at(payload.type, payload.config, reference_time=datetime.now(UTC))
+            next_fire_at = compute_next_fire_at(
+                payload.type, payload.config, reference_time=datetime.now(UTC)
+            )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     action_config = payload.action_config
@@ -117,17 +119,27 @@ async def update_trigger(
     if payload.config is not None:
         trigger.config = payload.config
 
-    new_action_type = payload.action_type if payload.action_type is not None else trigger.action_type
+    new_action_type = (
+        payload.action_type if payload.action_type is not None else trigger.action_type
+    )
     if payload.action_config is not None or payload.action_type is not None:
         if new_action_type == "agent_message":
             trigger.action_config = await _normalize_agent_message_action_config(
                 db,
                 user_id=user.sub,
-                action_config=payload.action_config if payload.action_config is not None else trigger.action_config,
+                action_config=(
+                    payload.action_config
+                    if payload.action_config is not None
+                    else trigger.action_config
+                ),
             )
         else:
-            trigger.action_config = payload.action_config if payload.action_config is not None else trigger.action_config
-        
+            trigger.action_config = (
+                payload.action_config
+                if payload.action_config is not None
+                else trigger.action_config
+            )
+
         if payload.action_type is not None:
             trigger.action_type = payload.action_type
 
@@ -136,9 +148,13 @@ async def update_trigger(
         if not payload.enabled:
             trigger.next_fire_at = None
 
-    if trigger.enabled and (payload.config is not None or payload.type is not None or payload.enabled is True):
+    if trigger.enabled and (
+        payload.config is not None or payload.type is not None or payload.enabled is True
+    ):
         try:
-            trigger.next_fire_at = compute_next_fire_at(trigger.type, trigger.config, reference_time=datetime.now(UTC))
+            trigger.next_fire_at = compute_next_fire_at(
+                trigger.type, trigger.config, reference_time=datetime.now(UTC)
+            )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
@@ -167,15 +183,7 @@ async def fire_trigger(
     db: AsyncSession = Depends(get_db),
 ) -> FireTriggerResponse:
     trigger = await _get_trigger_or_404(db, id, user.sub)
-    scheduler: TriggerScheduler | None = getattr(request.app.state, "trigger_scheduler", None)
-    if scheduler is None:
-        scheduler = TriggerScheduler(
-            agent_loop=getattr(request.app.state, "agent_loop", None),
-            tool_executor=getattr(request.app.state, "tool_executor", None),
-            ws_manager=getattr(request.app.state, "ws_manager", None),
-            run_registry=getattr(request.app.state, "agent_run_registry", None),
-            db_factory=None,
-        )
+    scheduler = get_request_instance_runtime_context(request).trigger_scheduler
     outcome = await scheduler.fire_now_nonblocking(
         db,
         trigger_id=trigger.id,
@@ -237,7 +245,9 @@ async def list_trigger_logs(
     total = (await db.execute(count_stmt)).scalar_one()
 
     paged = (await db.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return TriggerLogListResponse(items=[_trigger_log_response(item) for item in paged], total=total)
+    return TriggerLogListResponse(
+        items=[_trigger_log_response(item) for item in paged], total=total
+    )
 
 
 async def _get_trigger_or_404(db: AsyncSession, trigger_id: UUID, user_id: str) -> Trigger:

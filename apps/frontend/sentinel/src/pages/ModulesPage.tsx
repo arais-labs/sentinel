@@ -1,0 +1,1803 @@
+import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { useLocation } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
+import {
+  Loader2,
+  CheckCircle,
+  Lock,
+  FileCode,
+  LayoutGrid,
+  Search,
+  Plus,
+  ArrowLeft,
+  Trash2,
+  Pencil,
+  Play,
+  Copy,
+  X,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  AlertTriangle,
+  icons as lucideIcons,
+  type LucideIcon,
+} from 'lucide-react';
+import { toast } from 'sonner';
+
+import { AppShell } from '../components/AppShell';
+import { api } from '../lib/api';
+
+function resolveIcon(name: string | null | undefined): LucideIcon {
+  if (!name) return LayoutGrid;
+  // lucide icons object uses PascalCase keys (e.g. "Users", "FileText")
+  // but module icons are stored lowercase (e.g. "users", "file-text")
+  // Convert: "file-text" → "FileText", "users" → "Users"
+  const pascal = name.replace(/(^|[-_])([a-z])/g, (_, __, c) => c.toUpperCase());
+  return (lucideIcons as Record<string, LucideIcon>)[pascal] || LayoutGrid;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Utility functions
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function initials(name: string): string {
+  if (!name) return '?';
+  return name.trim().split(/\s+/).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+}
+
+function avatarHue(name: string): number {
+  let h = 0;
+  for (const c of name || 'X') h = (h * 31 + c.charCodeAt(0)) & 0xffff;
+  return h % 360;
+}
+
+function shortDate(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const abs = Math.abs(Date.now() - d.getTime());
+  if (abs < 60000) return 'Now';
+  if (abs < 3600000) return `${Math.round(abs / 60000)}m ago`;
+  if (abs < 86400000) return `${Math.round(abs / 3600000)}h ago`;
+  return d.toLocaleDateString('en', { month: 'short', day: 'numeric' });
+}
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return '\u2014';
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? '\u2014' : d.toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Constants
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const APPROVAL_STATUS: Record<string, { label: string; tone: string }> = {
+  pending: { label: 'Pending', tone: 'warn' },
+  approved: { label: 'Approved', tone: 'success' },
+  rejected: { label: 'Rejected', tone: 'neutral' },
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Shared tiny components
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function Spinner({ className = '' }: { className?: string }) {
+  return <Loader2 className={`animate-spin text-[color:var(--text-muted)] ${className}`} size={20} />;
+}
+
+function EmptyState({ icon: Icon, label }: { icon: typeof LayoutGrid; label: string }) {
+  return (
+    <div className="py-16 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-3">
+      <Icon size={32} strokeWidth={1} />
+      <p className="text-[10px] font-medium uppercase tracking-widest">{label}</p>
+    </div>
+  );
+}
+
+function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: string }) {
+  const colors: Record<string, string> = {
+    neutral: 'bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-[color:var(--border-subtle)]',
+    success: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+    warn: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+    danger: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+    info: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  };
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest border ${colors[tone] || colors.neutral}`}>
+      {children}
+    </span>
+  );
+}
+
+/** Portal-based modal */
+function Modal({ children, onClose, title, maxWidth = '560px' }: { children: ReactNode; onClose: () => void; title: string; maxWidth?: string }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] shadow-2xl animate-in zoom-in-95 duration-150 overflow-hidden" style={{ maxWidth }}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+          <h2 className="text-sm font-bold">{title}</h2>
+          <button onClick={onClose} className="p-1 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ConfirmDialog
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function ConfirmDialog({ title = 'Confirm', message, confirmLabel = 'Delete', onConfirm, onCancel }: {
+  title?: string; message: string; confirmLabel?: string; onConfirm: () => void; onCancel: () => void;
+}) {
+  return (
+    <Modal title={title} onClose={onCancel} maxWidth="400px">
+      <div className="p-5">
+        <p className="text-sm leading-relaxed text-[color:var(--text-secondary)]">{message}</p>
+      </div>
+      <div className="flex items-center gap-3 px-5 py-3 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+        <button className="flex-1 h-9 rounded-lg text-xs font-bold border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={onCancel}>Cancel</button>
+        <button className="flex-1 h-9 rounded-lg text-xs font-bold bg-rose-600 text-white hover:bg-rose-700 transition-colors" onClick={onConfirm}>{confirmLabel}</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ListCard
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function ListCard({ active, onClick, avatarStyle, avatarContent, title, subtitle, meta, badge }: {
+  active: boolean;
+  onClick: () => void;
+  avatarStyle?: React.CSSProperties;
+  avatarContent: ReactNode;
+  title: string;
+  subtitle?: string;
+  meta?: ReactNode;
+  badge?: ReactNode;
+}) {
+  return (
+    <article
+      className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors rounded-lg ${
+        active
+          ? 'bg-[color:var(--surface-accent)] border border-[color:var(--accent-solid)]/20'
+          : 'hover:bg-[color:var(--surface-1)] border border-transparent'
+      }`}
+      onClick={onClick}
+    >
+      <div
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold"
+        style={avatarStyle}
+      >
+        {avatarContent}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-semibold text-[color:var(--text-primary)] truncate">{title}</span>
+          {meta != null && <span className="text-[10px] text-[color:var(--text-muted)] font-mono shrink-0">{meta}</span>}
+        </div>
+        <div className="flex items-center justify-between gap-2 mt-0.5">
+          <span className="text-[11px] text-[color:var(--text-muted)] truncate">{subtitle}</span>
+          {badge}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DynamicForm — modal form for create / edit
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function DynamicForm({ title, fields, initial = {}, saving, onSubmit, onClose }: {
+  title: string;
+  fields: any[];
+  initial?: Record<string, any>;
+  saving: boolean;
+  onSubmit: (data: Record<string, any>) => void;
+  onClose: () => void;
+}) {
+  const formFields = fields.filter((f: any) => f.type !== 'readonly');
+  const [form, setForm] = useState<Record<string, any>>(() =>
+    Object.fromEntries(formFields.map((f: any) => [f.key, initial[f.key] ?? '']))
+  );
+
+  const set = (key: string, val: any) => setForm(prev => ({ ...prev, [key]: val }));
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSubmit(form);
+  };
+
+  return (
+    <Modal title={title} onClose={onClose}>
+      <form onSubmit={handleSubmit} className="p-5 space-y-4">
+        {formFields.map((field: any, i: number) => (
+          <div key={field.key} className="space-y-1.5">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+              {field.label}
+              {field.required && <span className="text-rose-400 ml-1">*</span>}
+            </label>
+            <FormFieldInput field={field} value={form[field.key]} onChange={(val: any) => set(field.key, val)} autoFocus={i === 0} />
+          </div>
+        ))}
+        <div className="flex items-center gap-3 pt-3 border-t border-[color:var(--border-subtle)]">
+          <button type="button" className="flex-1 h-9 rounded-lg text-xs font-bold border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={onClose}>Cancel</button>
+          <button type="submit" className="flex-1 h-9 rounded-lg text-xs font-bold bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity" disabled={saving}>
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function FormFieldInput({ field, value, onChange, autoFocus = false }: { field: any; value: any; onChange: (v: any) => void; autoFocus?: boolean }) {
+  const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+
+  if (field.type === 'textarea') {
+    return (
+      <div className="relative">
+        <textarea
+          className={`${inputCls} min-h-[80px] py-2 resize-y`}
+          value={value ?? ''}
+          onChange={e => onChange(e.target.value)}
+          autoFocus={autoFocus}
+          rows={3}
+        />
+        <div className="absolute top-1.5 right-1.5">
+          <MarkdownPreviewButton
+            getContent={() => String(value ?? '')}
+            title={field.label || 'Preview'}
+          />
+        </div>
+      </div>
+    );
+  }
+  if (field.type === 'select') {
+    return (
+      <select className={inputCls} value={value ?? ''} onChange={e => onChange(e.target.value)} autoFocus={autoFocus}>
+        <option value="">{'\u2014'} select {'\u2014'}</option>
+        {(field.options || []).map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
+      </select>
+    );
+  }
+  const typeMap: Record<string, string> = { email: 'email', url: 'url', number: 'number', date: 'date' };
+  return (
+    <input
+      className={inputCls}
+      type={typeMap[field.type] || 'text'}
+      value={value ?? ''}
+      required={field.required}
+      onChange={e => onChange(e.target.value)}
+      autoFocus={autoFocus}
+    />
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DynamicDetailPane — right-side record detail
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function DynamicDetailPane({ config, record, saving, onPatch, onDelete, onAction, onEdit }: {
+  config: any; record: any; saving: boolean;
+  onPatch: (patch: Record<string, any>) => void;
+  onDelete: () => void;
+  onAction: (actionId: string) => void;
+  onEdit: () => void;
+}) {
+  if (!record) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-[color:var(--text-muted)] gap-2 opacity-50">
+        <ArrowLeft size={24} strokeWidth={1} />
+        <p className="text-xs font-medium">Select a record</p>
+      </div>
+    );
+  }
+
+  const fields = (config.fields || []).filter((f: any) => f.type !== 'readonly' || record[f.key]);
+  const detailActions = (config.actions || []).filter((a: any) => (a.type || a.placement) === 'record' || (a.type || a.placement) === 'detail');
+  const titleField = config.fields_config?.titleField || 'id';
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Hero */}
+      <div className="px-5 py-4 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold text-[color:var(--text-primary)] truncate">{record[titleField] || record.id}</h2>
+            {config.fields_config?.subtitleField && (
+              <p className="text-[11px] text-[color:var(--text-muted)] truncate mt-0.5">{record[config.fields_config.subtitleField]}</p>
+            )}
+          </div>
+          {config.fields_config?.badgeField && record[config.fields_config.badgeField] && (
+            <Badge>{record[config.fields_config.badgeField]}</Badge>
+          )}
+        </div>
+      </div>
+
+      {/* Fields */}
+      <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        {fields.map((field: any) => (
+          <DetailFieldView key={`${record.id}-${field.key}`} field={field} value={record[field.key]} onBlur={(val: any) => onPatch({ [field.key]: val })} />
+        ))}
+
+        {/* Actions */}
+        <div className="flex items-center gap-2 pt-4 border-t border-[color:var(--border-subtle)] flex-wrap">
+          <button
+            className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors"
+            onClick={onEdit}
+            disabled={saving}
+          >
+            <Pencil size={11} className="inline mr-1.5 -mt-0.5" />Edit
+          </button>
+          {detailActions.filter((a: any) => a.type !== 'delete').map((action: any) => (
+            <button key={action.id} className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => onAction(action.id)} disabled={saving}>
+              {action.label}
+            </button>
+          ))}
+          <button
+            className="ml-auto h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-rose-600/10 text-rose-500 hover:bg-rose-600 hover:text-white transition-colors flex items-center gap-1.5"
+            onClick={onDelete}
+            disabled={saving}
+          >
+            <Trash2 size={11} />Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MarkdownFullscreenViewer({
+  title,
+  content,
+  onClose,
+}: {
+  title: string;
+  content: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return createPortal(
+    <div className="fixed inset-0 z-[1200] flex flex-col bg-[color:var(--surface-1)] animate-in fade-in duration-150">
+      <div className="px-4 py-3 border-b border-[color:var(--border-subtle)] flex items-center justify-between gap-3">
+        <div className="min-w-0 flex items-center gap-2">
+          <FileText size={14} className="text-sky-400 shrink-0" />
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+            Markdown Preview
+          </span>
+          {title ? (
+            <span className="text-xs font-bold text-[color:var(--text-primary)] truncate">
+              · {title}
+            </span>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close preview"
+          className="inline-flex items-center justify-center w-7 h-7 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-colors"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 overflow-auto px-6 py-6">
+        <div className="mx-auto max-w-3xl prose prose-invert prose-sm prose-headings:tracking-tight prose-pre:bg-[color:var(--surface-2)] prose-pre:border prose-pre:border-[color:var(--border-subtle)] prose-code:before:hidden prose-code:after:hidden prose-a:text-sky-400">
+          {content.trim() ? (
+            <ReactMarkdown>{content}</ReactMarkdown>
+          ) : (
+            <p className="text-[color:var(--text-muted)] italic">Empty content.</p>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function MarkdownPreviewButton({ getContent, title }: { getContent: () => string; title: string }) {
+  const [open, setOpen] = useState(false);
+  const [snapshot, setSnapshot] = useState('');
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setSnapshot(getContent());
+          setOpen(true);
+        }}
+        title="Preview as Markdown"
+        aria-label="Preview as Markdown"
+        className="inline-flex items-center gap-1 px-2 h-6 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-colors"
+      >
+        <FileText size={10} />
+        MD
+      </button>
+      {open ? (
+        <MarkdownFullscreenViewer
+          title={title}
+          content={snapshot}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function DetailTextareaWithPreview({
+  field,
+  value,
+  onBlur,
+  inputCls,
+  labelCls,
+}: {
+  field: any;
+  value: any;
+  onBlur: (v: any) => void;
+  inputCls: string;
+  labelCls: string;
+}) {
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className={`${labelCls} !mb-0`}>{field.label}</label>
+        <MarkdownPreviewButton
+          getContent={() => taRef.current?.value ?? String(value ?? '')}
+          title={field.label}
+        />
+      </div>
+      <textarea
+        ref={taRef}
+        className={`${inputCls} min-h-[80px] py-2 resize-y`}
+        defaultValue={value}
+        onBlur={e => onBlur(e.target.value)}
+        rows={3}
+      />
+    </div>
+  );
+}
+
+function DetailFieldView({ field, value, onBlur }: { field: any; value: any; onBlur: (v: any) => void }) {
+  if (value == null || value === '') return null;
+
+  const labelCls = 'text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1.5';
+  const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs text-[color:var(--text-primary)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+
+  if (field.type === 'textarea') {
+    return <DetailTextareaWithPreview field={field} value={value} onBlur={onBlur} inputCls={inputCls} labelCls={labelCls} />;
+  }
+  if (field.type === 'select') {
+    return (
+      <div>
+        <label className={labelCls}>{field.label}</label>
+        <select className={inputCls} defaultValue={value} onChange={e => onBlur(e.target.value)}>
+          {(field.options || []).map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
+        </select>
+      </div>
+    );
+  }
+  if (field.type === 'readonly' || field.type === 'badge') {
+    return (
+      <div>
+        <label className={labelCls}>{field.label}</label>
+        <Badge>{value}</Badge>
+      </div>
+    );
+  }
+  if (field.type === 'url') {
+    return (
+      <div>
+        <label className={labelCls}>{field.label}</label>
+        <a href={value} target="_blank" rel="noopener noreferrer" className="text-[color:var(--accent-solid)] text-xs hover:underline break-all">{value}</a>
+      </div>
+    );
+  }
+  const typeMap: Record<string, string> = { email: 'email', url: 'url', number: 'number', date: 'date' };
+  return (
+    <div>
+      <label className={labelCls}>{field.label}</label>
+      <input className={inputCls} type={typeMap[field.type] || 'text'} defaultValue={value} onBlur={e => onBlur(e.target.value)} />
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ApiModule — tool module view with actions, secrets, run
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function ApiModule({ config, hideHeader = false, onModuleChanged }: { config: any; hideHeader?: boolean; onModuleChanged?: () => Promise<void> | void }) {
+  const [secretsStatus, setSecretsStatus] = useState<Record<string, boolean>>({});
+  const [records, setRecords] = useState<any[]>([]);
+  const [search, setSearch] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  // Load records for record-type action pickers
+  const hasRecordActions = (config.actions || []).some((a: any) => {
+    const t = a.type || a.placement || 'standalone';
+    return t === 'record' || t === 'detail';
+  });
+
+  useEffect(() => {
+    if (!hasRecordActions) return;
+    api.get<{ records: any[] }>(`/modules/${config.name}/records`)
+      .then(res => setRecords(res.records || []))
+      .catch(() => {});
+  }, [config.name, hasRecordActions]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadSecrets = useCallback(async () => {
+    if (!(config.secrets || []).length) return;
+    try {
+      const res = await api.get<{ secrets: Record<string, boolean> }>(`/modules/${config.name}/secrets-status`);
+      setSecretsStatus(res.secrets || {});
+    } catch { /* non-fatal */ }
+  }, [config.name, config.secrets]);
+
+  useEffect(() => { loadSecrets(); }, [loadSecrets]);
+
+  const copyPrompt = () => {
+    const BASE_URL = window.location.origin;
+    const instanceMatch = window.location.pathname.match(/^\/instances\/([^/]+)/);
+    const instanceName = instanceMatch?.[1] ?? 'main';
+    const apiBase = `${BASE_URL}/api/v1/instances/${instanceName}`;
+    const lines = [
+      `Module: ${config.label} (${config.name}) \u2014 ${config.description || ''}`,
+      `Type: tool \u2014 call actions via POST, no records stored.`,
+      '', 'Actions:',
+    ];
+    for (const action of (config.actions || [])) {
+      lines.push(`  ${action.id} \u2014 ${action.description || action.label}`);
+      lines.push(`    POST ${apiBase}/modules/${config.name}/action/${action.id}`);
+      lines.push(`    Body: { ${(action.params || []).map((p: any) => `"${p.key}"${p.required ? '*' : ''}: "${p.placeholder || p.type}"`).join(', ')} }`);
+    }
+    navigator.clipboard.writeText(lines.join('\n'));
+    setCopied(true);
+    toast.success('Prompt copied');
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const resetSecret = async (key: string, label: string) => {
+    try {
+      await api.delete(`/modules/${config.name}/secrets/${key}`);
+      toast.success(`${label} cleared`);
+      loadSecrets();
+    } catch { toast.error('Could not clear secret'); }
+  };
+
+  const allRequired = (config.secrets || []).filter((s: any) => s.required);
+  const missingRequired = allRequired.filter((s: any) => !secretsStatus[s.key]);
+
+  return (
+    <div className="flex flex-col h-full">
+      {!hideHeader && (
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-sm font-semibold text-[color:var(--text-secondary)]">{config.label}</span>
+            {(config.secrets || []).map((s: any) =>
+              secretsStatus[s.key] ? (
+                <span key={s.key} className="flex items-center gap-1">
+                  <Badge tone="success">{'\\u2713'} {s.label}</Badge>
+                  <button className="text-xs text-[color:var(--text-muted)] hover:text-rose-400 transition-colors" onClick={() => resetSecret(s.key, s.label)} title="Clear">&times;</button>
+                </span>
+              ) : (
+                <Badge key={s.key} tone="warn">{'\\u2717'} {s.label}</Badge>
+              )
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {(config.actions || []).length > 2 && (
+              <div className="relative">
+                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                <input
+                  className="h-8 w-48 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] pl-8 pr-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)]"
+                  placeholder="Search actions..."
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                />
+              </div>
+            )}
+            <button
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+              onClick={copyPrompt}
+            >
+              <Copy size={12} />
+              <span className="text-[10px] font-bold uppercase tracking-widest">{copied ? 'Copied!' : 'Prompt'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-[720px] mx-auto space-y-4">
+          {/* Secret config cards */}
+          {(config.secrets || []).map((s: any) => (
+            <SecretCard key={s.key} moduleName={config.name} secret={s} isSet={!!secretsStatus[s.key]} onSaved={loadSecrets} />
+          ))}
+          {missingRequired.length > 0 && (config.actions || []).length > 0 && (
+            <div className="text-xs text-[color:var(--text-muted)] py-2 border-t border-[color:var(--border-subtle)]">
+              Configure required secrets above to run actions
+            </div>
+          )}
+
+          {/* Action cards */}
+          {(config.actions || []).filter((a: any) =>
+            !search.trim() || a.label.toLowerCase().includes(search.toLowerCase()) || (a.description || '').toLowerCase().includes(search.toLowerCase())
+          ).map((action: any) => (
+            <ActionCard key={action.id} action={action} moduleName={config.name} secretsStatus={secretsStatus} requiredSecrets={config.secrets || []} records={records} fieldsConfig={config.fields_config} onModuleChanged={onModuleChanged} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SecretCard({ moduleName, secret, isSet, onSaved }: { moduleName: string; secret: any; isSet: boolean; onSaved: () => void }) {
+  const [value, setValue] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!value.trim()) return;
+    try {
+      setSaving(true);
+      await api.put(`/modules/${moduleName}/secrets/${secret.key}`, { value });
+      setValue('');
+      setEditing(false);
+      toast.success(`${secret.label} saved`);
+      onSaved();
+    } catch { toast.error('Could not save secret'); }
+    finally { setSaving(false); }
+  };
+
+  const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+
+  if (isSet && !editing) {
+    return (
+      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+            <span className="text-emerald-400 mr-1">✓</span>
+            {secret.label}
+            {secret.hint && <span className="text-[color:var(--text-muted)] ml-2 font-normal normal-case">{secret.hint}</span>}
+          </p>
+          <p className="text-xs text-[color:var(--text-muted)] mt-0.5">••••••••</p>
+        </div>
+        <button className="h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors shrink-0" onClick={() => setEditing(true)}>
+          Update
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`rounded-xl border p-4 flex items-end gap-3 ${isSet ? 'border-amber-500/30 bg-amber-500/5' : 'border-rose-500/30 bg-rose-500/5'}`}>
+      <div className="flex-1 space-y-1.5">
+        <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+          <span className={`mr-1 ${isSet ? 'text-amber-400' : 'text-rose-400'}`}>{isSet ? '↻' : '✗'}</span>
+          {isSet ? `Update ${secret.label}` : secret.label}
+          {secret.hint && <span className="text-[color:var(--text-muted)] ml-2 font-normal normal-case">{secret.hint}</span>}
+        </label>
+        <input className={inputCls} type="password" placeholder="Paste new value..." value={value} onChange={e => setValue(e.target.value)} onKeyDown={e => e.key === 'Enter' && save()} autoFocus={isSet} />
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {isSet && (
+          <button className="h-9 px-3 rounded-lg text-xs font-bold border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => { setEditing(false); setValue(''); }}>
+            Cancel
+          </button>
+        )}
+        <button className="h-9 px-4 rounded-lg text-xs font-bold bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity" onClick={save} disabled={saving || !value.trim()}>
+          {saving ? 'Saving...' : isSet ? 'Update' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function deriveParamsFromSchema(schema: any): any[] {
+  if (!schema?.properties) return [];
+  const required: string[] = schema.required || [];
+  return Object.entries(schema.properties).map(([key, prop]: [string, any]) => {
+    const t = prop.type;
+    let type = 'text';
+    if (t === 'integer' || t === 'number') type = 'number';
+    else if (t === 'object' || t === 'array') type = 'textarea';
+    return {
+      key,
+      label: key.replace(/_/g, ' '),
+      type,
+      required: required.includes(key),
+      placeholder: prop.description || '',
+    };
+  });
+}
+
+function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, records, fieldsConfig, onModuleChanged }: {
+  action: any; moduleName: string; secretsStatus: Record<string, boolean>; requiredSecrets: any[];
+  records?: any[]; fieldsConfig?: any; onModuleChanged?: () => Promise<void> | void;
+}) {
+  const params = (action.params?.length ? action.params : deriveParamsFromSchema(action.parameters_schema)) ?? [];
+  const [form, setForm] = useState<Record<string, string>>(() => Object.fromEntries(params.map((p: any) => [p.key, ''])));
+  const [selectedRecordId, setSelectedRecordId] = useState('');
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; data?: any; error?: string } | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [editingCode, setEditingCode] = useState(false);
+  const [codeDraft, setCodeDraft] = useState(typeof action.code === 'string' ? action.code : '');
+  const [savingCode, setSavingCode] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
+
+  const actionType = action.type || action.placement || 'standalone';
+  const isRecordAction = actionType === 'record' || actionType === 'detail';
+  const hasActionCode = typeof action.code === 'string';
+  const codeDirty = hasActionCode && codeDraft !== action.code;
+  const missingSecrets = requiredSecrets.filter((s: any) => s.required && !secretsStatus[s.key]);
+  const needsRecord = isRecordAction && !selectedRecordId;
+  const disabled = missingSecrets.length > 0 || needsRecord;
+
+  const titleField = fieldsConfig?.titleField || 'id';
+
+  const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+
+  useEffect(() => {
+    setCodeDraft(typeof action.code === 'string' ? action.code : '');
+    setEditingCode(false);
+    setCodeError(null);
+  }, [action.id, action.code]);
+
+  const run = async () => {
+    const missing = params.filter((p: any) => p.required && !String(form[p.key] ?? '').trim());
+    if (missing.length) { toast.error(`Required: ${missing.map((p: any) => p.label).join(', ')}`); return; }
+    if (isRecordAction && !selectedRecordId) { toast.error('Select a record first'); return; }
+    try {
+      setRunning(true);
+      setResult(null);
+      const url = isRecordAction && selectedRecordId
+        ? `/modules/${moduleName}/records/${selectedRecordId}/action/${action.id}`
+        : `/modules/${moduleName}/action/${action.id}`;
+      const res = await api.post<any>(url, form);
+      const ok = res?.ok !== false;
+      setResult({ ok, data: res });
+      if (!ok) toast.error(res?.error || 'Action returned an error');
+    } catch (err: any) {
+      setResult({ ok: false, error: err.message });
+      toast.error(err.message || 'Action failed');
+    } finally {
+      setRunning(false);
+      setExpanded(true);
+    }
+  };
+
+  const copyCode = async () => {
+    if (!hasActionCode) return;
+    try {
+      await navigator.clipboard.writeText(action.code);
+      toast.success('Code copied');
+    } catch {
+      toast.error('Could not copy code');
+    }
+  };
+
+  const saveCode = async () => {
+    if (!hasActionCode || !codeDirty) return;
+    try {
+      setSavingCode(true);
+      setCodeError(null);
+      await api.patch(`/modules/${moduleName}`, { actions: [{ ...action, code: codeDraft }] });
+      toast.success('Action code saved');
+      setEditingCode(false);
+      await onModuleChanged?.();
+    } catch (err: any) {
+      const message = err?.message || 'Could not save action code';
+      setCodeError(message);
+      toast.error(message);
+    } finally {
+      setSavingCode(false);
+    }
+  };
+
+  const cancelCodeEdit = () => {
+    setCodeDraft(typeof action.code === 'string' ? action.code : '');
+    setEditingCode(false);
+    setCodeError(null);
+  };
+
+  return (
+    <div className={`rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden ${disabled ? 'opacity-50' : ''}`}>
+      <div className="flex items-start justify-between p-4 gap-4">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">{action.label}</h3>
+          {action.description && <p className="text-xs text-[color:var(--text-muted)] mt-0.5">{action.description}</p>}
+        </div>
+        <button className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity shrink-0 flex items-center gap-1.5" onClick={run} disabled={running || disabled}>
+          {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+          {running ? 'Running...' : 'Run'}
+        </button>
+      </div>
+
+      {(isRecordAction || params.length > 0) && (
+        <div className="px-4 pb-4 space-y-3 border-t border-[color:var(--border-subtle)] pt-3">
+          {isRecordAction && (
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                Record <span className="text-rose-400 ml-1">*</span>
+              </label>
+              <select className={inputCls} value={selectedRecordId} onChange={e => setSelectedRecordId(e.target.value)}>
+                <option value="">— select a record —</option>
+                {(records || []).map((rec: any) => (
+                  <option key={rec.id} value={rec.id}>{rec[titleField] || rec.id}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {params.map((param: any) => (
+            <div key={param.key} className="space-y-1.5">
+              <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                {param.label}
+                {param.required && <span className="text-rose-400 ml-1">*</span>}
+              </label>
+              {param.type === 'textarea' ? (
+                <textarea className={`${inputCls} min-h-[80px] py-2 resize-y`} rows={3}
+                  value={form[param.key]} onChange={e => setForm(prev => ({ ...prev, [param.key]: e.target.value }))}
+                  placeholder={param.placeholder || param.description || ''} />
+              ) : (
+                <input className={inputCls}
+                  type={param.type === 'number' ? 'number' : 'text'}
+                  value={form[param.key]} onChange={e => setForm(prev => ({ ...prev, [param.key]: e.target.value }))}
+                  placeholder={param.placeholder || param.description || ''} />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {hasActionCode && (
+        <div className="border-t border-[color:var(--border-subtle)]">
+          <div className="flex items-center justify-between gap-3 px-4 py-2">
+            <button
+              className="flex min-w-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
+              onClick={() => setCodeOpen(open => !open)}
+            >
+              {codeOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              <FileCode size={12} />
+              <span>Code</span>
+            </button>
+            {codeOpen && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-1.5"
+                  onClick={copyCode}
+                >
+                  <Copy size={11} /> Copy
+                </button>
+                {editingCode ? (
+                  <>
+                    <button
+                      className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+                      onClick={cancelCodeEdit}
+                      disabled={savingCode}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity disabled:opacity-40"
+                      onClick={saveCode}
+                      disabled={savingCode || !codeDirty}
+                    >
+                      {savingCode ? 'Saving...' : 'Save'}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-1.5"
+                    onClick={() => setEditingCode(true)}
+                  >
+                    <Pencil size={11} /> Edit
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {codeOpen && (
+            <div className="px-4 pb-4 space-y-2">
+              {editingCode ? (
+                <textarea
+                  className="w-full min-h-[260px] rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-3 text-[11px] leading-relaxed text-[color:var(--text-primary)] font-mono placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] resize-y transition-colors"
+                  spellCheck={false}
+                  value={codeDraft}
+                  onChange={e => setCodeDraft(e.target.value)}
+                />
+              ) : (
+                <pre className="max-h-[360px] overflow-auto rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-3 text-[11px] leading-relaxed text-[color:var(--text-secondary)] font-mono whitespace-pre">
+                  {action.code}
+                </pre>
+              )}
+              {codeError && <p className="text-[11px] text-rose-400">{codeError}</p>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {result && (
+        <div className="border-t border-[color:var(--border-subtle)]">
+          <button className="flex w-full items-center justify-between px-4 py-2 text-xs hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => setExpanded(e => !e)}>
+            <span className={result.ok ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+              {result.ok ? '\u2713 Success' : '\u2717 Error'}
+            </span>
+            <span className="text-[color:var(--text-muted)]">{expanded ? '\u25B2 hide' : '\u25BC show'}</span>
+          </button>
+          {expanded && (
+            <pre className="px-4 pb-4 text-[11px] text-[color:var(--text-secondary)] overflow-x-auto whitespace-pre-wrap break-all font-mono">
+              {JSON.stringify(result.ok ? result.data : { error: result.error }, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PageModule — single editable document page
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function PageModule({ config }: { config: any }) {
+  const [content, setContent] = useState(config.page_content || '');
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  const save = async () => {
+    try {
+      setSaving(true);
+      await api.patch(`/modules/${config.name}`, { page_content: content });
+      toast.success('Page saved');
+      setDirty(false);
+      setEditing(false);
+    } catch { toast.error('Could not save'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+        <span className="text-sm font-medium text-[color:var(--text-secondary)]">{config.page_title}</span>
+        <div className="flex items-center gap-2">
+          {editing ? (
+            <>
+              <button className="h-7 px-3 rounded-lg text-[10px] font-bold text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => { setEditing(false); setContent(config.page_content || ''); setDirty(false); }}>
+                Cancel
+              </button>
+              <button className="h-7 px-3 rounded-lg text-[10px] font-bold bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity disabled:opacity-40" onClick={save} disabled={saving || !dirty}>
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+            </>
+          ) : (
+            <button className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-1.5" onClick={() => setEditing(true)}>
+              <Pencil size={11} /> Edit
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-[720px] mx-auto">
+          {editing ? (
+            <textarea
+              className="w-full min-h-[400px] rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-4 text-sm font-mono text-[color:var(--text-primary)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors resize-y"
+              value={content}
+              onChange={e => { setContent(e.target.value); setDirty(true); }}
+              placeholder="Write markdown content..."
+            />
+          ) : content ? (
+            <div className="space-y-2">
+              <ReactMarkdown components={{
+                h1: ({children}) => <h1 className="text-xl font-bold text-[color:var(--text-primary)] mt-6 mb-3">{children}</h1>,
+                h2: ({children}) => <h2 className="text-lg font-bold text-[color:var(--text-primary)] mt-5 mb-2">{children}</h2>,
+                h3: ({children}) => <h3 className="text-base font-semibold text-[color:var(--text-primary)] mt-4 mb-2">{children}</h3>,
+                p: ({children}) => <p className="text-sm text-[color:var(--text-secondary)] leading-relaxed mb-2">{children}</p>,
+                ul: ({children}) => <ul className="list-disc list-inside text-sm text-[color:var(--text-secondary)] mb-2 space-y-1">{children}</ul>,
+                ol: ({children}) => <ol className="list-decimal list-inside text-sm text-[color:var(--text-secondary)] mb-2 space-y-1">{children}</ol>,
+                li: ({children}) => <li className="text-sm text-[color:var(--text-secondary)]">{children}</li>,
+                code: ({children}) => <code className="bg-[color:var(--surface-2)] text-[color:var(--text-primary)] px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>,
+                pre: ({children}) => <pre className="bg-[color:var(--surface-2)] rounded-lg p-4 overflow-x-auto mb-3 text-xs font-mono text-[color:var(--text-primary)]">{children}</pre>,
+                a: ({href, children}) => <a href={href} className="text-[color:var(--accent-solid)] hover:underline" target="_blank" rel="noopener noreferrer">{children}</a>,
+                strong: ({children}) => <strong className="font-semibold text-[color:var(--text-primary)]">{children}</strong>,
+                em: ({children}) => <em className="italic text-[color:var(--text-secondary)]">{children}</em>,
+                blockquote: ({children}) => <blockquote className="border-l-4 border-[color:var(--border-subtle)] pl-4 italic text-[color:var(--text-muted)] mb-3">{children}</blockquote>,
+                hr: () => <hr className="border-[color:var(--border-subtle)] my-4" />,
+              }}>{content}</ReactMarkdown>
+            </div>
+          ) : (
+            <EmptyState icon={FileText} label="No page content yet" />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ModulePage — full triage view for a single module
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onBack?: () => void; onDeleted?: () => void }) {
+  const [config, setConfig] = useState<any>(null);
+  const [records, setRecords] = useState<any[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteModule, setConfirmDeleteModule] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [activeTab, setActiveTab] = useState<'records' | 'actions' | 'page'>('records');
+
+  const loadAll = useCallback(async (silent = false) => {
+    try {
+      if (!silent) setLoading(true);
+      const [cfgRes, recRes] = await Promise.all([
+        api.get<any>(`/modules/${moduleName}`),
+        api.get<{ records: any[] }>(`/modules/${moduleName}/records`),
+      ]);
+      setConfig(cfgRes);
+      const recs = Array.isArray(recRes?.records) ? recRes.records : [];
+      setRecords(recs);
+      setSelectedId(prev => {
+        if (prev && recs.some((r: any) => r.id === prev)) return prev;
+        return recs[0]?.id || null;
+      });
+    } catch { toast.error(`Failed to load ${moduleName}`); }
+    finally { setLoading(false); }
+  }, [moduleName]);
+
+  useEffect(() => {
+    setSelectedId(null);
+    setFilter('all');
+    setSearch('');
+    setActiveTab('records');
+    loadAll();
+    const timer = setInterval(() => loadAll(true), 30000);
+    return () => clearInterval(timer);
+  }, [moduleName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const filterField = config?.fields_config?.filterField;
+  const titleField = config?.fields_config?.titleField || 'id';
+  const subtitleField = config?.fields_config?.subtitleField;
+  const badgeField = config?.fields_config?.badgeField;
+  const metaField = config?.fields_config?.metaField;
+
+  const filterValues = useMemo(() => {
+    if (!filterField) return [];
+    return [...new Set(records.map((r: any) => r[filterField]).filter(Boolean))] as string[];
+  }, [records, filterField]);
+
+  const filtered = useMemo(() => {
+    let list = records;
+    if (filter !== 'all' && filterField) list = list.filter((r: any) => r[filterField] === filter);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((r: any) => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(q)));
+    }
+    return list;
+  }, [records, filter, filterField, search]);
+
+  const selectedRecord = useMemo(() => records.find((r: any) => r.id === selectedId) || null, [records, selectedId]);
+
+  const standaloneActions = useMemo(() => (config?.actions || []).filter((a: any) => {
+    const t = a.type || a.placement || 'standalone';
+    return t === 'standalone';
+  }), [config]);
+  const hasStandaloneActions = standaloneActions.length > 0;
+  // Data modules always support record creation via the generic CRUD endpoint.
+  // A custom 'create' action only overrides the button label.
+  const createAction = (config?.actions || []).find((a: any) => a.type === 'create');
+
+  // CRUD
+  const handleCreate = async (data: Record<string, any>) => {
+    try {
+      setSaving(true);
+      const rec = await api.post<any>(`/modules/${moduleName}/records`, data);
+      setCreateOpen(false);
+      toast.success('Created');
+      await loadAll(true);
+      setSelectedId(rec.id);
+    } catch { toast.error('Create failed'); }
+    finally { setSaving(false); }
+  };
+
+  const handlePatch = async (patch: Record<string, any>) => {
+    if (!selectedId) return;
+    try {
+      setSaving(true);
+      await api.patch(`/modules/${moduleName}/records/${selectedId}`, patch);
+      toast.success('Saved');
+      await loadAll(true);
+    } catch { toast.error('Save failed'); }
+    finally { setSaving(false); }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      setSaving(true);
+      await api.delete(`/modules/${moduleName}/records/${id}`);
+      setConfirmDeleteId(null);
+      setSelectedId(null);
+      toast.success('Deleted');
+      await loadAll(true);
+    } catch { toast.error('Delete failed'); }
+    finally { setSaving(false); }
+  };
+
+  const handleDeleteModule = async () => {
+    try {
+      await api.delete(`/modules/${moduleName}`);
+      toast.success(`${config?.label || moduleName} deleted`);
+      (onDeleted ?? onBack)?.();
+    } catch { toast.error('Failed to delete module'); }
+  };
+
+  const handleAction = async (actionId: string) => {
+    if (!selectedId) return;
+    try {
+      setSaving(true);
+      const res = await api.post<any>(`/modules/${moduleName}/records/${selectedId}/action/${actionId}`, {});
+      if (res?.ok !== false) toast.success('Action completed');
+      else toast.error(res?.error || 'Action returned an error');
+      await loadAll(true);
+    } catch { toast.error('Action failed'); }
+    finally { setSaving(false); }
+  };
+
+  const copyPrompt = () => {
+    if (!config) return;
+    const BASE_URL = window.location.origin;
+    const instanceMatch = window.location.pathname.match(/^\/instances\/([^/]+)/);
+    const instanceName = instanceMatch?.[1] ?? 'main';
+    const base = `${BASE_URL}/api/v1/instances/${instanceName}/modules/${config.name}`;
+    const flds = (config.fields || []).map((f: any) => `${f.key}${f.required ? '*' : ''} (${f.type}${f.options ? ': ' + f.options.join('|') : ''})`).join(', ');
+    const lines = [`Module: ${config.label} (${config.name})`, `Type: data`, '', 'Endpoints:',
+      `  GET    ${base}/records`, `  POST   ${base}/records`, `  PATCH  ${base}/records/:id`, `  DELETE ${base}/records/:id`, '',
+      `Fields: ${flds || 'none'}`];
+    navigator.clipboard.writeText(lines.join('\n'));
+    setCopied(true);
+    toast.success('Prompt copied');
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Routing
+  if (!config && loading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
+  if (!config) return null;
+
+  // Determine available tabs based on module capabilities
+  const hasFields = (config.fields || []).length > 0;
+  const hasActions = (config.actions || []).length > 0;
+  const hasPage = Boolean(config.page_title);
+  const tabs: Array<'records' | 'actions' | 'page'> = [];
+  if (hasFields) tabs.push('records');
+  if (hasActions) tabs.push('actions');
+  if (hasPage) tabs.push('page');
+  // If no capabilities at all, show records tab (empty state)
+  if (tabs.length === 0) tabs.push('records');
+
+  // Default to first available tab, but respect user's choice if valid
+  const effectiveTab = tabs.includes(activeTab) ? activeTab : tabs[0];
+
+  const inputCls = 'h-7 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header bar */}
+      <div className="flex items-center justify-between px-4 h-10 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] gap-3">
+        <div className="flex items-center gap-3">
+          {onBack && (
+            <button onClick={onBack} className="p-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors">
+              <ArrowLeft size={16} />
+            </button>
+          )}
+          <span className="text-sm font-semibold text-[color:var(--text-secondary)]">{config.label}</span>
+          {tabs.length > 1 && (
+            <div className="flex items-center gap-1 ml-2">
+              {tabs.map(tab => (
+                <button key={tab} onClick={() => setActiveTab(tab)}
+                  className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors ${
+                    effectiveTab === tab
+                      ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
+                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)]'
+                  }`}>{tab}</button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {effectiveTab === 'records' && (
+            <input className={`${inputCls} w-48`} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
+          )}
+          <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={copyPrompt}>
+            <Copy size={12} />
+            <span className="text-[10px] font-bold uppercase tracking-widest">{copied ? 'Copied!' : 'Prompt'}</span>
+          </button>
+          {!config?.system && (
+            <button
+              className="p-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+              title="Delete module"
+              onClick={() => setConfirmDeleteModule(true)}
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+          {effectiveTab === 'records' && (
+            <button className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity flex items-center gap-1.5" onClick={() => setCreateOpen(true)}>
+              <Plus size={12} />{createAction?.label || `New`}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Actions tab */}
+      {effectiveTab === 'actions' && (
+        <div className="flex-1 min-h-0">
+          <ApiModule config={config} hideHeader onModuleChanged={() => loadAll(true)} />
+        </div>
+      )}
+
+      {/* Page tab */}
+      {effectiveTab === 'page' && (
+        <div className="flex-1 min-h-0"><PageModule config={config} /></div>
+      )}
+
+      {/* Records tab */}
+      {effectiveTab === 'records' && (
+        <div className="flex flex-1 min-h-0">
+          {/* Left list */}
+          <div className="w-80 shrink-0 border-r border-[color:var(--border-subtle)] flex flex-col bg-[color:var(--surface-0)]">
+            {filterValues.length > 0 && (
+              <div className="flex items-center gap-1 px-3 py-2 border-b border-[color:var(--border-subtle)] flex-wrap">
+                {['all', ...filterValues].map(v => (
+                  <button key={v} onClick={() => setFilter(v)}
+                    className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors ${
+                      filter === v
+                        ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
+                        : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                    }`}>{v}</button>
+                ))}
+              </div>
+            )}
+            <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
+              {loading && <div className="p-4 text-xs text-[color:var(--text-muted)]">Loading...</div>}
+              {!loading && filtered.length === 0 && <div className="p-4 text-xs text-[color:var(--text-muted)]">No records found.</div>}
+              {filtered.map((rec: any) => {
+                const title = rec[titleField] || rec.id;
+                const hue = avatarHue(title);
+                const badge_ = badgeField && rec[badgeField] ? <Badge>{rec[badgeField]}</Badge> : null;
+                const meta = metaField ? (rec[metaField] ? (shortDate(rec[metaField]) || rec[metaField]) : null) : null;
+                return (
+                  <ListCard
+                    key={rec.id}
+                    active={rec.id === selectedId}
+                    onClick={() => setSelectedId(rec.id)}
+                    avatarStyle={{ backgroundColor: `hsl(${hue}, 50%, 30%)`, color: '#fff' }}
+                    avatarContent={initials(title)}
+                    title={title}
+                    subtitle={subtitleField ? (rec[subtitleField] || '\u2014') : '\u2014'}
+                    meta={meta}
+                    badge={badge_}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Right detail */}
+          <div className="flex-1 min-w-0">
+            <DynamicDetailPane
+              config={config}
+              record={selectedRecord}
+              saving={saving}
+              onPatch={handlePatch}
+              onDelete={() => setConfirmDeleteId(selectedId)}
+              onAction={handleAction}
+              onEdit={() => setEditOpen(true)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Modals */}
+      {createOpen && (
+        <DynamicForm
+          fields={config.fields || []}
+          onSubmit={handleCreate}
+          onClose={() => setCreateOpen(false)}
+          saving={saving}
+          title={`New ${config.label}`}
+        />
+      )}
+      {editOpen && selectedRecord && (
+        <DynamicForm
+          fields={config.fields || []}
+          initial={selectedRecord}
+          onSubmit={async (data) => { await handlePatch(data); setEditOpen(false); }}
+          onClose={() => setEditOpen(false)}
+          saving={saving}
+          title={`Edit ${selectedRecord[titleField] || 'Record'}`}
+        />
+      )}
+      {confirmDeleteId && (
+        <ConfirmDialog
+          message="Delete this record? This cannot be undone."
+          onConfirm={() => handleDelete(confirmDeleteId)}
+          onCancel={() => setConfirmDeleteId(null)}
+        />
+      )}
+      {confirmDeleteModule && (
+        <ConfirmDialog
+          title="Delete Module"
+          message={`Delete the "${config?.label || moduleName}" module and all its records? This cannot be undone.`}
+          confirmLabel="Delete"
+          onConfirm={handleDeleteModule}
+          onCancel={() => setConfirmDeleteModule(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ModulesSection — grid of modules, drill-in to ModulePage
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function ModulesSection() {
+  const [modules, setModules] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeModule, setActiveModule] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [sidebarSearch, setSidebarSearch] = useState('');
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+
+  const filteredModules = useMemo(() => {
+    const q = sidebarSearch.trim().toLowerCase();
+    if (!q) return modules;
+    return modules.filter(m =>
+      m.label?.toLowerCase().includes(q) || m.name?.toLowerCase().includes(q) || m.description?.toLowerCase().includes(q)
+    );
+  }, [modules, sidebarSearch]);
+
+  const load = useCallback(async (keepSelection = false) => {
+    try {
+      setLoading(prev => !keepSelection && prev === true ? true : prev);
+      const data = await api.get<{ modules: any[] }>('/modules');
+      const list = data.modules || [];
+      setModules(list);
+      if (!keepSelection) {
+        setActiveModule(prev => prev ?? (list[0]?.name || null));
+      } else {
+        // After deletion: select first module that isn't the deleted one
+        setActiveModule(prev => list.find((m: any) => m.name === prev) ? prev : (list[0]?.name || null));
+      }
+    } catch { toast.error('Failed to load modules'); }
+    finally { setLoading(false); }
+  }, []);
+
+  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      setImporting(true);
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const response = await api.post<{ module: any; imported_records: number }>('/modules/import', payload);
+      await load(true);
+      if (response?.module?.name) setActiveModule(response.module.name);
+      const importedCount = Number(response?.imported_records || 0);
+      toast.success(importedCount > 0 ? `Imported ${response.module.label} with ${importedCount} records` : `Imported ${response.module.label}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Import failed');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
+
+  return (
+    <div className="flex h-full">
+      {/* Left sidebar — module list */}
+      <div className="w-60 shrink-0 border-r border-[color:var(--border-subtle)] flex flex-col bg-[color:var(--surface-0)]">
+        <div className="flex items-center justify-between px-3 h-10 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+          <span className="text-sm font-semibold text-[color:var(--text-secondary)]">Modules <span className="ml-1 text-xs font-normal text-[color:var(--text-muted)]">{modules.length}</span></span>
+          <div className="flex items-center gap-1">
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,.module.json,application/json"
+              className="hidden"
+              onChange={handleImportFile}
+            />
+            <button
+              onClick={() => importInputRef.current?.click()}
+              disabled={importing}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors disabled:opacity-50"
+            >
+              <FileCode size={12} />
+              <span className="text-[10px] font-bold uppercase tracking-widest">{importing ? 'Importing...' : 'Import'}</span>
+            </button>
+          </div>
+        </div>
+        <div className="px-2 py-2 border-b border-[color:var(--border-subtle)]">
+          <div className="flex items-center gap-1.5 px-2 h-7 rounded-lg bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)]">
+            <Search size={11} className="text-[color:var(--text-muted)] shrink-0" />
+            <input
+              className="flex-1 min-w-0 bg-transparent text-[11px] text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none"
+              placeholder="Search modules..."
+              value={sidebarSearch}
+              onChange={e => setSidebarSearch(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto py-1">
+          {filteredModules.length === 0 ? (
+            <p className="px-3 py-4 text-[11px] text-[color:var(--text-muted)]">No modules found</p>
+          ) : filteredModules.map((mod) => {
+            const Icon = resolveIcon(mod.icon);
+            const isActive = activeModule === mod.name;
+            const hasRecords = (mod.fields || []).length > 0;
+            const hasActions = (mod.actions || []).length > 0;
+            const hasPage = Boolean(mod.page_title);
+            return (
+              <button
+                key={mod.name}
+                onClick={() => setActiveModule(mod.name)}
+                className={`w-full text-left px-3 py-2.5 flex items-start gap-2.5 transition-colors ${
+                  isActive
+                    ? 'bg-[color:var(--surface-2)] border-l-2 border-[color:var(--accent-solid)]'
+                    : 'border-l-2 border-transparent hover:bg-[color:var(--surface-1)]'
+                }`}
+              >
+                <Icon size={14} className={`mt-0.5 shrink-0 ${isActive ? 'text-[color:var(--accent-solid)]' : 'text-[color:var(--text-muted)]'}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-1">
+                    <p className={`text-xs font-semibold truncate ${isActive ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]'}`}>
+                      {mod.label}
+                    </p>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {hasRecords && <span className="text-[8px] font-bold uppercase tracking-widest px-1 py-0.5 rounded bg-blue-500/10 text-blue-400">records</span>}
+                      {hasActions && <span className="text-[8px] font-bold uppercase tracking-widest px-1 py-0.5 rounded bg-amber-500/10 text-amber-400">actions</span>}
+                      {hasPage && <span className="text-[8px] font-bold uppercase tracking-widest px-1 py-0.5 rounded bg-purple-500/10 text-purple-400">page</span>}
+                    </div>
+                  </div>
+                  {mod.description && (
+                    <p className="text-[10px] text-[color:var(--text-muted)] truncate leading-tight mt-0.5">{mod.description}</p>
+                  )}
+                  <p className="text-[10px] text-[color:var(--text-muted)] mt-0.5">
+                    {[
+                      hasRecords && `${(mod.fields || []).length} fields`,
+                      hasActions && `${(mod.actions || []).length} actions`,
+                    ].filter(Boolean).join(' · ') || 'empty'}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Right panel — module explorer */}
+      <div className="flex-1 min-w-0">
+        {activeModule ? (
+          <ModulePage
+            key={activeModule}
+            moduleName={activeModule}
+            onDeleted={() => load(true)}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full">
+            <EmptyState icon={LayoutGrid} label="No modules registered" />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ApprovalsSection
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function ApprovalsSection() {
+  const [approvals, setApprovals] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<'pending' | 'approved' | 'rejected'>('pending');
+  const [processingId, setProcessingId] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const data = await api.get<{ items: any[]; total: number }>('/approvals');
+      setApprovals(data.items || []);
+    } catch { toast.error('Failed to load approvals'); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const filtered = approvals.filter(a => a.status === statusFilter);
+  const counts = { pending: 0, approved: 0, rejected: 0 };
+  approvals.forEach(a => { if (a.status in counts) counts[a.status as keyof typeof counts]++; });
+
+  const handleResolve = async (id: string, action: 'approve' | 'reject') => {
+    try {
+      setProcessingId(id);
+      const approval = approvals.find(a => (a.approval_id ?? a.id) === id);
+      const provider = approval?.provider ?? 'tool';
+      const approvalId = approval?.approval_id ?? id;
+      await api.post(`/approvals/${provider}/${approvalId}/${action}`, {});
+      toast.success(action === 'approve' ? 'Approved' : 'Rejected');
+      load();
+    } catch { toast.error(`Failed to ${action}`); }
+    finally { setProcessingId(''); }
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
+
+  return (
+    <div className="space-y-4">
+      {/* Status filter chips */}
+      <div className="flex items-center gap-2">
+        {(['pending', 'approved', 'rejected'] as const).map(s => {
+          const info = APPROVAL_STATUS[s];
+          return (
+            <button key={s} onClick={() => setStatusFilter(s)}
+              className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-1.5 ${
+                statusFilter === s
+                  ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
+                  : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
+              }`}>
+              {info.label}
+              <span className="text-[9px] opacity-70">({counts[s]})</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState icon={CheckCircle} label={statusFilter === 'pending' ? 'No pending approvals' : `No ${statusFilter} approvals`} />
+      ) : (
+        <div className="max-w-[900px] mx-auto space-y-4">
+          {filtered.map(approval => {
+            const id = approval.approval_id ?? approval.id;
+            const statusInfo = APPROVAL_STATUS[approval.status] || { label: approval.status, tone: 'neutral' };
+            const isProcessing = processingId === id;
+
+            return (
+              <div key={id} className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-5 space-y-4">
+                {/* Header row */}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 flex-1 min-w-0 flex-wrap">
+                    <Badge tone={statusInfo.tone}>{statusInfo.label}</Badge>
+                    <span className="text-xs font-mono font-bold text-[color:var(--text-primary)]">{approval.action}</span>
+                    {approval.label && approval.label !== approval.action && (
+                      <span className="text-[10px] font-bold text-[color:var(--text-muted)] uppercase tracking-widest bg-[color:var(--surface-2)] px-2 py-0.5 rounded">
+                        {approval.label}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[10px] font-mono text-[color:var(--text-muted)] shrink-0">{fmtDate(approval.created_at)}</span>
+                </div>
+
+                {/* Description */}
+                {approval.description && (
+                  <p className="text-sm leading-relaxed text-[color:var(--text-secondary)]">{approval.description}</p>
+                )}
+
+                {/* Payload JSON preview */}
+                {approval.payload && (
+                  <div className="rounded-lg bg-[color:var(--surface-1)] p-3 border border-[color:var(--border-subtle)]">
+                    <pre className="text-[11px] font-mono text-[color:var(--text-secondary)] whitespace-pre-wrap break-all m-0">
+                      {JSON.stringify(approval.payload, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Pending actions */}
+                {approval.status === 'pending' && (
+                  <div className="flex items-center gap-3">
+                    <button
+                      className="flex-1 h-9 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-emerald-500/10 text-emerald-500 hover:bg-emerald-600 hover:text-white transition-colors disabled:opacity-40"
+                      disabled={isProcessing}
+                      onClick={() => handleResolve(id, 'approve')}
+                    >
+                      {isProcessing ? 'Executing...' : 'Authorize Action'}
+                    </button>
+                    <button
+                      className="flex-1 h-9 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors disabled:opacity-40"
+                      disabled={isProcessing}
+                      onClick={() => handleResolve(id, 'reject')}
+                    >
+                      Decline
+                    </button>
+                  </div>
+                )}
+
+                {/* Resolution info */}
+                {(approval.resolvedAt || approval.resolved_at) && (
+                  <div className="pt-3 border-t border-[color:var(--border-subtle)] flex items-center justify-between text-[10px] font-bold text-[color:var(--text-muted)] uppercase tracking-widest">
+                    <span>Resolution complete</span>
+                    <span>{fmtDate(approval.resolvedAt || approval.resolved_at)} {'\u2022'} {(approval.resolvedBy || approval.resolved_by || 'SYSTEM')}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PermissionsSection — grouped, 3-way toggle
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function PermissionsSection() {
+  const [permissions, setPermissions] = useState<{ action: string; level: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [updatingAction, setUpdatingAction] = useState('');
+  const [search, setSearch] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const data = await api.get<{ permissions: { action: string; level: string }[] }>('/permissions');
+      setPermissions(data.permissions || []);
+    } catch { toast.error('Failed to load permissions'); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const LEVELS = ['allow', 'approval', 'deny'] as const;
+
+  const handleToggle = async (action: string, newLevel: string) => {
+    try {
+      setUpdatingAction(action);
+      await api.patch(`/permissions/${action}`, { level: newLevel });
+      setPermissions(prev => prev.map(p => p.action === action ? { ...p, level: newLevel } : p));
+      toast.success(`${action} \u2192 ${newLevel}`);
+    } catch { toast.error('Failed to update permission'); }
+    finally { setUpdatingAction(''); }
+  };
+
+  const filtered = search.trim()
+    ? permissions.filter(p => p.action.toLowerCase().includes(search.toLowerCase()))
+    : permissions;
+
+  // Group by resource
+  const groups: Record<string, typeof filtered> = {};
+  for (const p of filtered) {
+    const dot = p.action.indexOf('.');
+    const resource = dot > 0 ? p.action.slice(0, dot) : p.action;
+    if (!groups[resource]) groups[resource] = [];
+    groups[resource].push(p);
+  }
+
+  if (loading) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
+
+  const inputCls = 'h-7 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h2 className="text-sm font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Permission Rules</h2>
+          <Badge>{permissions.length} policies</Badge>
+        </div>
+        <div className="relative">
+          <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+          <input className={`${inputCls} w-56 pl-8`} placeholder="Search permissions..." value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="max-w-[800px] mx-auto space-y-8">
+        {Object.entries(groups).map(([resource, perms]) => (
+          <section key={resource} className="space-y-3">
+            <h3 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] border-l-[3px] border-[color:var(--accent-solid)] pl-3">
+              {resource.toUpperCase()} PROTOCOLS
+            </h3>
+            <div className="rounded-xl border border-[color:var(--border-subtle)] overflow-hidden">
+              {perms.map((p, i) => (
+                <div key={p.action} className={`flex items-center justify-between px-4 py-3 bg-[color:var(--surface-0)] ${i > 0 ? 'border-t border-[color:var(--border-subtle)]' : ''}`}>
+                  <span className="text-xs font-mono font-bold text-[color:var(--text-primary)]">{p.action}</span>
+                  <div className="flex items-center bg-[color:var(--surface-2)] p-0.5 rounded-lg border border-[color:var(--border-subtle)]">
+                    {LEVELS.map(lvl => {
+                      const active = p.level === lvl;
+                      const isUpdating = updatingAction === p.action;
+                      return (
+                        <button
+                          key={lvl}
+                          disabled={isUpdating}
+                          className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded-md transition-all ${
+                            active
+                              ? lvl === 'allow' ? 'bg-emerald-600 text-white shadow-sm'
+                                : lvl === 'approval' ? 'bg-white text-black shadow-sm'
+                                : 'bg-rose-600 text-white shadow-sm'
+                              : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
+                          }`}
+                          onClick={() => !active && handleToggle(p.action, lvl)}
+                        >
+                          {lvl}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ModulesPage — main exported page component
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+type ModuleSection = 'modules' | 'approvals' | 'permissions';
+
+const SECTION_LABELS: Record<ModuleSection, string> = {
+  modules: 'Modules',
+  approvals: 'Approvals',
+  permissions: 'Permissions',
+};
+
+export function ModulesPage() {
+  const location = useLocation();
+  let activeSection: ModuleSection = 'modules';
+  const sectionPath = location.pathname.replace(/^\/instances\/[^/]+/, '');
+  if (sectionPath.startsWith('/approvals')) activeSection = 'approvals';
+  else if (sectionPath.startsWith('/permissions')) activeSection = 'permissions';
+
+  const isFullHeight = activeSection === 'modules';
+
+  return (
+    <AppShell
+      title={SECTION_LABELS[activeSection] || 'Modules'}
+      subtitle="Module Engine"
+      contentClassName={isFullHeight ? '!p-0 overflow-hidden' : ''}
+    >
+      {isFullHeight ? (
+        <div className="h-full overflow-hidden">
+          <ModulesSection />
+        </div>
+      ) : (
+        <div className="max-w-5xl mx-auto">
+          {activeSection === 'approvals' && <ApprovalsSection />}
+          {activeSection === 'permissions' && <PermissionsSection />}
+        </div>
+      )}
+    </AppShell>
+  );
+}

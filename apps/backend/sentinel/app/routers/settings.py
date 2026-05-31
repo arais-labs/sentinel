@@ -1,65 +1,28 @@
 from __future__ import annotations
 
+from fastapi import HTTPException, status
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import is_desktop_app
 from app.dependencies import (
     get_db,
-    get_runtime_rebuild_service,
+    get_request_instance_runtime_context,
     get_settings_service,
 )
+from app.logging_context import (
+    clear_all_runtime_logger_overrides,
+    clear_runtime_logger_override,
+    get_logging_config_snapshot,
+    set_runtime_logger_override,
+)
 from app.middleware.auth import TokenPayload, require_auth
+from app.services.instance_runtime_context import instance_runtime_context_registry
 from app.services.llm.ids import ProviderChoice
-from app.services.runtime_rebuild import RuntimeRebuildService
-from app.services.settings_service import SettingsService
+from app.services.settings.settings_service import SettingsService
 
 router = APIRouter()
-
-
-class SetAraiOSIntegrationRequest(BaseModel):
-    enabled: bool = True
-    araios_frontend_url: str | None = None
-    araios_backend_url: str | None = None
-    agent_api_key: str | None = None
-
-
-@router.get("/araios")
-async def get_araios_integration(
-    _: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-    settings_service: SettingsService = Depends(get_settings_service),
-) -> dict[str, str | bool | None]:
-    status = await settings_service.get_araios_integration(db)
-    return {
-        "configured": status.configured,
-        "araios_frontend_url": status.araios_frontend_url,
-        "araios_backend_url": status.araios_backend_url,
-        "masked_agent_api_key": status.masked_agent_api_key,
-    }
-
-
-@router.post("/araios")
-async def set_araios_integration(
-    payload: SetAraiOSIntegrationRequest,
-    _: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-    settings_service: SettingsService = Depends(get_settings_service),
-) -> dict[str, str | bool | None]:
-    status = await settings_service.set_araios_integration(
-        db,
-        enabled=payload.enabled,
-        araios_frontend_url=payload.araios_frontend_url,
-        araios_backend_url=payload.araios_backend_url,
-        agent_api_key=payload.agent_api_key,
-    )
-    return {
-        "success": True,
-        "configured": status.configured,
-        "araios_frontend_url": status.araios_frontend_url,
-        "araios_backend_url": status.araios_backend_url,
-        "masked_agent_api_key": status.masked_agent_api_key,
-    }
 
 
 class SetApiKeysRequest(BaseModel):
@@ -68,6 +31,23 @@ class SetApiKeysRequest(BaseModel):
     openai_api_key: str | None = None
     openai_oauth_token: str | None = None
     gemini_api_key: str | None = None
+    gemini_oauth_credentials: str | None = None
+
+
+def _require_desktop_mode() -> None:
+    if not is_desktop_app():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+
+async def _rebuild_current_instance_runtime_context(request: Request) -> None:
+    try:
+        context = get_request_instance_runtime_context(request)
+    except RuntimeError:
+        return
+    await instance_runtime_context_registry.rebuild_context(
+        app_state=request.app.state,
+        context=context,
+    )
 
 
 @router.post("/api-keys")
@@ -77,7 +57,6 @@ async def set_api_keys(
     _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
-    runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
 ) -> dict[str, bool]:
     await settings_service.set_api_keys(
         db,
@@ -86,17 +65,20 @@ async def set_api_keys(
         openai_api_key=payload.openai_api_key,
         openai_oauth_token=payload.openai_oauth_token,
         gemini_api_key=payload.gemini_api_key,
+        gemini_oauth_credentials=payload.gemini_oauth_credentials,
     )
-    runtime_rebuild_service.rebuild_agent_loop(request.app.state)
+    await _rebuild_current_instance_runtime_context(request)
     return {"success": True}
 
 
 @router.get("/api-keys/status")
 async def get_api_keys_status(
     _: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict:
-    status = settings_service.get_api_keys_status()
+    instance_settings = await settings_service.build_instance_settings(db)
+    status = settings_service.get_api_keys_status(instance_settings)
     providers = {
         provider.value: {
             "configured": item.configured,
@@ -111,6 +93,31 @@ async def get_api_keys_status(
     }
 
 
+@router.get("/desktop-codex-oauth/status")
+async def get_desktop_codex_oauth_status(
+    _: TokenPayload = Depends(require_auth),
+    settings_service: SettingsService = Depends(get_settings_service),
+) -> dict[str, bool]:
+    status_result = settings_service.get_desktop_codex_oauth_status()
+    return {
+        "enabled": status_result.enabled,
+        "auth_file_found": status_result.auth_file_found,
+    }
+
+
+@router.post("/desktop-codex-oauth/import")
+async def import_desktop_codex_oauth(
+    request: Request,
+    _: TokenPayload = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+    settings_service: SettingsService = Depends(get_settings_service),
+) -> dict[str, str | bool]:
+    _require_desktop_mode()
+    result = await settings_service.import_desktop_codex_oauth_token(db)
+    await _rebuild_current_instance_runtime_context(request)
+    return {"success": True, "masked_key": result.masked_key}
+
+
 class DeleteProviderRequest(BaseModel):
     provider: ProviderChoice
 
@@ -122,10 +129,9 @@ async def delete_api_keys(
     _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
-    runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
 ) -> dict[str, bool]:
     await settings_service.delete_api_keys(db, provider=payload.provider)
-    runtime_rebuild_service.rebuild_agent_loop(request.app.state)
+    await _rebuild_current_instance_runtime_context(request)
     return {"success": True}
 
 
@@ -140,8 +146,48 @@ async def set_primary_provider(
     _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
-    runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
 ) -> dict[str, str | bool]:
     await settings_service.set_primary_provider(db, provider=payload.provider)
-    runtime_rebuild_service.rebuild_agent_loop(request.app.state)
+    await _rebuild_current_instance_runtime_context(request)
     return {"success": True, "primary_provider": payload.provider.value}
+
+
+class SetLoggerLevelRequest(BaseModel):
+    logger: str
+    level: str
+
+
+@router.get("/logging")
+async def get_logging_config(
+    _: TokenPayload = Depends(require_auth),
+) -> dict:
+    return get_logging_config_snapshot()
+
+
+@router.post("/logging/levels")
+async def set_logging_level(
+    payload: SetLoggerLevelRequest,
+    _: TokenPayload = Depends(require_auth),
+) -> dict:
+    try:
+        return set_runtime_logger_override(payload.logger, payload.level)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/logging/levels")
+async def delete_logging_level(
+    logger: str,
+    _: TokenPayload = Depends(require_auth),
+) -> dict:
+    try:
+        return clear_runtime_logger_override(logger)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/logging/reset")
+async def reset_logging_overrides(
+    _: TokenPayload = Depends(require_auth),
+) -> dict:
+    return clear_all_runtime_logger_overrides()

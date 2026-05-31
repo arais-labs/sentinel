@@ -35,42 +35,34 @@ You will see the interactive menu.
 
 For first run, choose:
 
-1. **New/Edit Instance**
-2. Enter instance config values (or accept defaults)
-   - gateway port (default `4747`)
-   - Postgres settings
-   - JWT secret
-   - admin username and password
-3. CLI auto starts stack for that instance
+1. Let the CLI create or reconcile the root `.env`. Prod mode proposes
+   generated values and rejects placeholders/default credentials. Dev mode is
+   explicit via `./sentinel-cli.sh --dev` and may write local dev defaults.
+2. Choose **Start Stack**
+3. Choose **Instances** -> **Create Instance**
+4. Create a logical instance, for example `main`
 
 What the CLI does during startup:
 
 - runs `docker compose up --build -d`
-- seeds auth credentials in DB
-- tries creating bootstrap araiOS agent token
-- seeds cross app URL settings
-- prints onboarding instructions with login target and token guidance
+- waits for `GET /health/ready`
+- creates and manages logical instances through the manager API
 
 ---
 
-## 3) Open the gateway
+## 3) Open Sentinel
 
 Use the port you configured (default 4747):
 
-- `http://localhost:4747/` gateway
-- `http://localhost:4747/sentinel/` Sentinel UI
-- `http://localhost:4747/araios/` araiOS UI
+- `http://localhost:4747/` Sentinel UI
+- `http://localhost:4747/modules` modules UI
 - `http://localhost:4747/vnc/` live browser view
 
 ---
 
 ## 4) Sign in with admin credentials
 
-Sign in using the admin username and password you set during CLI instance creation.
-
-If auth seeding failed, run CLI action:
-
-- **Reset Auth (Managed Instance)**
+Sign in with the admin username and password from the root `.env`.
 
 ---
 
@@ -78,7 +70,7 @@ If auth seeding failed, run CLI action:
 
 1. Open Sentinel UI
 2. Send a simple message to confirm LLM path
-3. Open araiOS UI and confirm modules and permissions load
+3. Open Modules and confirm modules and permissions load
 4. Optionally open VNC page and run one browser action
 
 ---

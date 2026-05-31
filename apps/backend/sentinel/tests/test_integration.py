@@ -1,33 +1,88 @@
 import os
-import tempfile
-from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
 
-from app.dependencies import get_db
 from app.main import app
-from app.middleware.rate_limit import RateLimitMiddleware
+from app.config import settings
+from app.services.instance_runtime_context import InstanceRuntimeContext
+from app.services.llm.generic.base import LLMProvider
+from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent
+from app.services.sub_agents import SubAgentOrchestrator
+from app.services.tools import ToolExecutor, ToolRegistry
+from app.services.triggers.trigger_scheduler import TriggerScheduler
 from tests.fake_db import FakeDB
+from tests.helpers import FakeSessionFactory, install_fake_db_overrides, restore_test_app
+
+
+class _NoopProvider(LLMProvider):
+    @property
+    def name(self) -> str:
+        return "noop"
+
+    async def chat(
+        self,
+        messages,
+        model,
+        tools=None,
+        temperature=0.7,
+        reasoning_config=None,
+        tool_choice=None,
+    ):
+        return AssistantMessage(
+            content=[TextContent(text="noop")],
+            model=model,
+            provider=self.name,
+        )
+
+    async def stream(
+        self,
+        messages,
+        model,
+        tools=None,
+        temperature=0.7,
+        reasoning_config=None,
+        tool_choice=None,
+    ):
+        yield AgentEvent(type="start")
+        yield AgentEvent(type="done", stop_reason="stop")
 
 
 def test_full_integration_happy_path():
     fake_db = FakeDB()
+    session_factory = FakeSessionFactory(fake_db)
+    tool_registry = ToolRegistry()
+    tool_executor = ToolExecutor(tool_registry)
+    fake_runtime_support = SimpleNamespace(provider=_NoopProvider())
+    instance_context = InstanceRuntimeContext(
+        name="main",
+        database_name="sentinel_main_test",
+        instance_settings=settings,
+        session_factory=session_factory,
+        tool_registry=tool_registry,
+        tool_executor=tool_executor,
+        agent_runtime_support=fake_runtime_support,
+        trigger_scheduler=TriggerScheduler(
+            agent_runtime_support=fake_runtime_support,
+            tool_executor=tool_executor,
+            db_factory=None,
+        ),
+        sub_agent_orchestrator=SubAgentOrchestrator(),
+        background_tasks=[],
+    )
 
-    async def _override_get_db():
-        yield fake_db
+    from app.routers import ws as ws_router
 
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_manager_session = ws_router.ManagerSessionLocal
+    old_init = install_fake_db_overrides(
+        app_db=fake_db,
+        instance_context=instance_context,
+        session_factory=session_factory,
+    )
+    ws_router.ManagerSessionLocal = session_factory
 
     try:
         client = TestClient(app)
@@ -38,14 +93,14 @@ def test_full_integration_happy_path():
         headers = {"Authorization": f"Bearer {token}"}
 
         created_session = client.post(
-            "/api/v1/sessions", json={"title": "integration-e2e"}, headers=headers
+            "/api/v1/instances/main/sessions", json={"title": "integration-e2e"}, headers=headers
         )
         assert created_session.status_code == 200
         session_id = created_session.json()["id"]
 
         for i in range(12):
             sent = client.post(
-                f"/api/v1/sessions/{session_id}/messages",
+                f"/api/v1/instances/main/sessions/{session_id}/messages",
                 json={
                     "role": "user" if i % 2 == 0 else "system",
                     "content": f"integration message {i} " + " ".join(["detail"] * 12),
@@ -55,30 +110,34 @@ def test_full_integration_happy_path():
             )
             assert sent.status_code == 200
 
-        compacted = client.post(f"/api/v1/sessions/{session_id}/compact", headers=headers)
+        compacted = client.post(
+            f"/api/v1/instances/main/sessions/{session_id}/compact", headers=headers
+        )
         assert compacted.status_code == 200
         assert compacted.json()["raw_token_count"] > compacted.json()["compressed_token_count"]
 
         spawned = client.post(
-            f"/api/v1/sessions/{session_id}/sub-agents",
+            f"/api/v1/instances/main/sessions/{session_id}/sub-agents",
             json={"name": "triage blockers", "scope": "recent messages", "max_steps": 4},
             headers=headers,
         )
         assert spawned.status_code == 202
         task_id = spawned.json()["id"]
 
-        task_list = client.get(f"/api/v1/sessions/{session_id}/sub-agents", headers=headers)
+        task_list = client.get(
+            f"/api/v1/instances/main/sessions/{session_id}/sub-agents", headers=headers
+        )
         assert task_list.status_code == 200
         assert any(item["id"] == task_id for item in task_list.json()["items"])
 
         cancelled = client.delete(
-            f"/api/v1/sessions/{session_id}/sub-agents/{task_id}", headers=headers
+            f"/api/v1/instances/main/sessions/{session_id}/sub-agents/{task_id}", headers=headers
         )
         assert cancelled.status_code == 200
         assert cancelled.json()["status"] == "cancelled"
 
         trigger = client.post(
-            "/api/v1/triggers",
+            "/api/v1/instances/main/triggers",
             json={
                 "name": "integration-trigger",
                 "type": "cron",
@@ -92,35 +151,28 @@ def test_full_integration_happy_path():
         trigger_id = trigger.json()["id"]
 
         fired = client.post(
-            f"/api/v1/triggers/{trigger_id}/fire",
+            f"/api/v1/instances/main/triggers/{trigger_id}/fire",
             json={"input_payload": {"source": "integration"}},
             headers=headers,
         )
         assert fired.status_code == 200
 
-        read_base_dir = Path(os.getenv("TOOL_FILE_READ_BASE_DIR", "/tmp")).resolve()
-        with tempfile.NamedTemporaryFile("w", delete=False, dir=read_base_dir) as handle:
-            handle.write("integration tool check")
-            file_path = handle.name
+        modules = client.get("/api/v1/instances/main/modules", headers=headers)
+        assert modules.status_code == 200
+        module_names = {item["name"] for item in modules.json()["modules"]}
+        assert "runtime" in module_names
 
-        tools = client.get("/api/v1/tools", headers=headers)
-        assert tools.status_code == 200
-        tool_names = {item["name"] for item in tools.json()["items"]}
-        assert "file_read" in tool_names
-
-        file_read = client.post(
-            "/api/v1/tools/file_read/execute",
-            json={"input": {"path": file_path}},
+        live_view = client.get(
+            "/api/v1/instances/main/runtime/live-view",
             headers=headers,
+            params={"session_id": session_id},
         )
-        assert file_read.status_code == 200
-        assert "integration tool check" in file_read.json()["result"]["content"]
-
-        live_view = client.get("/api/v1/playwright/live-view", headers=headers)
         assert live_view.status_code == 200
         assert "enabled" in live_view.json()
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={token}") as ws:
+        with client.websocket_connect(
+            f"/ws/instances/main/sessions/{session_id}/stream?token={token}"
+        ) as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             ws.send_json({"type": "message", "content": "integration websocket message"})
@@ -128,15 +180,12 @@ def test_full_integration_happy_path():
             assert ack["type"] == "message_ack"
             assert ack["content"] == "integration websocket message"
 
-        estop = client.post("/api/v1/admin/estop", headers=headers)
-        assert estop.status_code == 200
-
-        config = client.get("/api/v1/admin/config", headers=headers)
+        config = client.get("/api/v1/instances/main/admin/config", headers=headers)
         assert config.status_code == 200
 
         audits = client.get("/api/v1/admin/audit", headers=headers)
         assert audits.status_code == 200
-        assert audits.json()["total"] >= 2
+        assert audits.json()["total"] >= 1
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
+        ws_router.ManagerSessionLocal = old_manager_session

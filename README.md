@@ -14,11 +14,12 @@
   <a href="https://github.com/arais-labs/sentinel/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/arais-labs/sentinel"></a>
   <a href="https://github.com/arais-labs/sentinel/pulls"><img alt="Open pull requests" src="https://img.shields.io/github/issues-pr/arais-labs/sentinel?label=open%20PRs"></a>
   <img alt="Top language" src="https://img.shields.io/github/languages/top/arais-labs/sentinel">
-  <a href="https://sentinel.arais.us"><img alt="Docs" src="https://img.shields.io/badge/docs-sentinel.arais.us-informational"></a>
 </p>
 
 Sentinel is a self hosted AI operator that turns intent into execution.
 It combines an agent runtime, browser automation, scheduling, memory, approvals, and tool access in one product.
+
+One deployment hosts multiple isolated **instances** — each with its own database, agent runtime, and LLM provider — managed from a single control plane (the CLI or the desktop app).
 
 Built by [ARAIS](https://arais.us).
 
@@ -30,7 +31,6 @@ Built by [ARAIS](https://arais.us).
 - [Documentation](#documentation)
 - [Security model](#security-model)
 - [Contributing](#contributing)
-- [Live docs](https://sentinel.arais.us)
 
 ## What Sentinel can do
 
@@ -40,7 +40,7 @@ Built by [ARAIS](https://arais.us).
 - Keep persistent hierarchical memory across sessions.
 - Delegate bounded work to sub agents.
 - Gate risky actions behind human approvals.
-- Connect to custom araiOS modules for data and actions.
+- Connect to custom modules for data and actions.
 - Run git operations freely and only gate at push or PR creation, so the agent moves fast without surprise commits to main.
 - Authenticate with your existing Claude Code or Codex CLI OAuth token, no extra API subscription needed.
 
@@ -49,16 +49,16 @@ Built by [ARAIS](https://arais.us).
 ```text
 User / Telegram / Trigger
         ↓
-  Sentinel UI  ↔  araiOS Workspace
+  Sentinel UI
         ↓
   Agent Runtime (Python)
   ├── Context builder (memory + history)
   ├── LLM provider (Anthropic / OpenAI / failover)
-  ├── Tool adapter (araiOS + browser + runtime + git)
+  ├── Tool adapter (modules + browser + runtime + git)
   ├── Approval gate (pause/resume on sensitive actions)
   └── Estop service (freeze or kill execution at any depth)
         ↓
-  araiOS Control Plane
+  Module Control Plane
   ├── Custom tool modules (sandboxed Python)
   ├── Data modules (persistent record stores)
   ├── Permissions (allow / approval / deny per action)
@@ -84,36 +84,56 @@ bash ./sentinel-cli.sh
 
 For first run:
 
-1. Choose `New/Edit Instance`
-2. Set instance values or accept defaults
-3. Let CLI start services and seed auth
+1. Let the CLI create or reconcile the root `.env`. Prod mode proposes
+   generated values and rejects placeholders/default credentials. Dev mode is
+   explicit via `./sentinel-cli.sh --dev` and may write local dev defaults.
+2. Choose `Start Stack`
+3. Choose `Instances` -> `Create Instance`
+4. Create the default logical instance, for example `main`
 
-### 3) Open gateway
+### 3) Open Sentinel
 
 Default URLs:
 
-- `http://localhost:4747/` gateway
-- `http://localhost:4747/sentinel/` Sentinel
-- `http://localhost:4747/araios/` araiOS
+- `http://localhost:4747/` Sentinel
+- `http://localhost:4747/modules` modules
 - `http://localhost:4747/vnc/` live browser monitor
 
 ### 4) Sign in
 
-Use the admin username and password you configured in CLI.
-If login fails, run `Reset Auth (Managed Instance)` from CLI and retry.
+Use the admin username and password from the root `.env`.
+
+> **Compose / server mode:** admin credentials live in `.env`
+> (`SENTINEL_AUTH_USERNAME` / `SENTINEL_AUTH_PASSWORD`) and are re-applied to the
+> manager database on every backend startup. Rotate by editing `.env` and
+> restarting the backend; the `POST /auth/change-password` endpoint is disabled.
+>
+> **Desktop mode** (`APP_ENV=desktop`): the manager database is the source of
+> truth. `.env` values, if present, are only used to seed credentials on the
+> very first launch. Use the in-app password-change flow to rotate.
 
 ## Installation paths
 
 ### Recommended
 
 - Use `sentinel-cli.sh` for instance lifecycle, auth seeding, startup, status, logs, and cleanup.
+- The CLI defaults to production mode and uses `docker-compose.yml`.
+- Create a root `.env` from `.env.example` for the default production-shaped
+  path.
+- Use `./sentinel-cli.sh --dev` for explicit local development mode. The CLI
+  can write a complete root `.env` with dev-safe defaults.
 
 ### Manual compose
 
 ```bash
 cp .env.example .env
+# edit .env and replace the placeholder secrets
 docker compose up --build -d
 ```
+
+`docker-compose.yml` is the production-shaped compose file and fails clearly
+unless these secrets are provided. For local development defaults, use
+`docker-compose.dev.yml`.
 
 ### Dev mode
 
@@ -121,19 +141,23 @@ docker compose up --build -d
 docker compose -f docker-compose.dev.yml up --build
 ```
 
+### Desktop app
+
+The Electron desktop package is under [`apps/desktop/sentinel`](apps/desktop/sentinel).
+It is a native management shell for local Sentinel instances. The CLI remains
+supported for terminal workflows.
+
 ## Repository layout
 
 - `apps/backend/sentinel` Sentinel backend
+- `apps/desktop/sentinel` Sentinel Electron desktop shell
 - `apps/frontend/sentinel` Sentinel frontend
-- `apps/backend/araios` araiOS backend
-- `apps/frontend/araios` araiOS frontend
 - `infra/` gateway and runtime wiring
 - `docs-site/` full documentation source
 - `docs/` project notes and assets
 
 ## Documentation
 
-- Live docs: [sentinel.arais.us](https://sentinel.arais.us)
 - Docs site source: [`docs-site/`](docs-site)
 - Intro: [`docs-site/docs/introduction.md`](docs-site/docs/introduction.md)
 - Quickstart: [`docs-site/docs/quickstart.md`](docs-site/docs/quickstart.md)
@@ -143,7 +167,7 @@ docker compose -f docker-compose.dev.yml up --build
 
 ## Security model
 
-Sentinel uses explicit policy based controls through araiOS:
+Sentinel uses explicit policy based controls for module actions:
 
 - `allow` executes immediately
 - `approval` pauses and requests human review
@@ -158,13 +182,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## Runtime Exec Security Model
 
-`runtime_exec` supports two explicit modes:
+The agent runs shell commands through the `runtime` system module, which executes
+on each instance's managed **SSH/tmux runtime target** inside an OS-level sandbox —
+**Bubblewrap** on Linux runtimes and **macOS Seatbelt** (`sandbox-exec`) on macOS.
+All commands run confined; there is no unconfined or "root" execution mode.
 
-- `privilege=user` (default): confined execution with write access limited to the session workspace and runtime temp mounts
-- `privilege=root`: unconfined execution, approval-gated before command execution
-
-For long-running commands, use `detached=true`.
-Inline timeout results include a detached-mode hint.
+The module exposes four actions: `runtime.user` (run a command in the session
+workspace) plus `runtime.terminal_list`, `runtime.terminal_read`, and
+`runtime.terminal_close` for managing tmux-backed terminals. Use `background=true`
+for long-running commands. See
+[Runtime Exec Security](docs-site/docs/guides/runtime-exec-security.md).
 
 ## License
 

@@ -1,0 +1,247 @@
+"""Native module: delegate — spawn, status, list, and cancel delegated sub-agent tasks."""
+
+from __future__ import annotations
+
+import contextlib
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import select
+
+from app.services.araios.runtime_services import (
+    get_sub_agent_orchestrator,
+    get_ws_manager,
+)
+from app.database.database import AsyncSessionLocal
+from app.models import SubAgentTask
+from app.services.tools.executor import ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.runtime_context import require_session_id
+
+# ── Helpers ──
+
+
+# ---------------------------------------------------------------------------
+# Handler functions (module-level)
+# ---------------------------------------------------------------------------
+
+
+async def handle_spawn(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    sid = require_session_id(runtime)
+    objective = payload.get("objective")
+    if not isinstance(objective, str) or not objective.strip():
+        raise ToolValidationError("Field 'objective' must be a non-empty string")
+
+    scope = payload.get("scope")
+    if scope is not None and not isinstance(scope, str):
+        raise ToolValidationError("Field 'scope' must be a string")
+
+    allowed_tools = payload.get("allowed_tools", [])
+    if not isinstance(allowed_tools, list):
+        raise ToolValidationError("Field 'allowed_tools' must be an array")
+    normalized_allowed_tools = [str(t) for t in allowed_tools if isinstance(t, str)]
+
+    max_steps = payload.get("max_steps", 10)
+    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
+        raise ToolValidationError("Field 'max_steps' must be a positive integer")
+    max_steps = min(max_steps, 50)
+
+    timeout_seconds = payload.get("timeout_seconds", 300)
+    if (
+        not isinstance(timeout_seconds, int)
+        or isinstance(timeout_seconds, bool)
+        or timeout_seconds < 1
+    ):
+        raise ToolValidationError("Field 'timeout_seconds' must be a positive integer")
+    timeout_seconds = min(timeout_seconds, 3600)
+
+    async with AsyncSessionLocal() as db:
+        # Enforce max 3 concurrent tasks per session
+        result = await db.execute(select(SubAgentTask).where(SubAgentTask.session_id == sid))
+        tasks = result.scalars().all()
+        active = [t for t in tasks if t.status in {"pending", "running"}]
+        if len(active) >= 3:
+            raise ToolValidationError("Max 3 concurrent sub-agent tasks per session")
+
+        task = SubAgentTask(
+            session_id=sid,
+            objective=objective.strip(),
+            context=(scope.strip() if isinstance(scope, str) and scope.strip() else None),
+            constraints=[],
+            allowed_tools=normalized_allowed_tools,
+            max_turns=max_steps,
+            timeout_seconds=timeout_seconds,
+            status="pending",
+        )
+        db.add(task)
+        await db.commit()
+        await db.refresh(task)
+        task_id = task.id
+
+    orchestrator = runtime.sub_agent_orchestrator or get_sub_agent_orchestrator()
+    if orchestrator is None:
+        raise ToolValidationError("Sub-agent orchestrator is not configured")
+    orchestrator.start_task(task_id)
+    ws_manager = get_ws_manager()
+    if ws_manager is not None and hasattr(ws_manager, "broadcast_sub_agent_started"):
+        with contextlib.suppress(Exception):
+            await ws_manager.broadcast_sub_agent_started(
+                str(sid),
+                str(task_id),
+                objective.strip(),
+            )
+    return {
+        "task_id": str(task_id),
+        "status": "pending",
+        "objective": objective.strip(),
+        "timeout_seconds": timeout_seconds,
+        "note": (
+            f"Sub-agent spawned (timeout: {timeout_seconds}s). "
+            "Do not call delegate with command=status immediately in the normal case. "
+            "Default to ending the turn and waiting so the user can steer while it runs. "
+            "The main session will be prompted automatically when results are ready, so immediate polling is usually unnecessary. "
+            "Only continue if you still have other real pending work that does not duplicate the delegated branch. "
+            "Wait until the main session is prompted that results are ready before requesting status in the normal case. "
+            "Use command=status only when the next decision depends on that result, the user explicitly asks for status, or before reporting delegated output as final."
+        ),
+    }
+
+
+async def handle_status(payload: dict[str, Any]) -> dict[str, Any]:
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ToolValidationError("Field 'task_id' must be a non-empty string")
+
+    tid = UUID(task_id.strip())
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(SubAgentTask).where(SubAgentTask.id == tid))
+        task = result.scalars().first()
+        if task is None:
+            raise ToolValidationError("Sub-agent task not found")
+
+        result_payload = task.result if isinstance(task.result, dict) else None
+        status = str(task.status)
+        next_action = (
+            "Do not poll repeatedly. In the normal case, end the turn and wait. "
+            "The main session will be prompted automatically when results are ready. "
+            "Call delegate with command=status later only when you need this result for the next decision or the user asks for status."
+        )
+        retry_recommended = False
+        if status == "completed":
+            next_action = (
+                "Evaluate whether the delegated output fully satisfies the objective. "
+                "If not, call delegate with command=spawn again with a refined objective/scope."
+            )
+            final_text = (
+                result_payload.get("final_text") if isinstance(result_payload, dict) else None
+            )
+            if not isinstance(final_text, str) or not final_text.strip():
+                retry_recommended = True
+        elif status in {"failed", "cancelled"}:
+            retry_recommended = True
+            next_action = (
+                "Retry by spawning a new sub-agent with a refined objective/scope "
+                "or adjusted max_steps/timeout."
+            )
+        turns_used = int(task.turns_used or 0)
+        max_steps = int(task.max_turns or 0)
+        grace_turns_used = max(0, turns_used - max_steps)
+
+        return {
+            "task_id": str(task.id),
+            "objective": task.objective,
+            "status": status,
+            "max_steps": max_steps,
+            "turns_used": turns_used,
+            "grace_turns_used": grace_turns_used,
+            "tokens_used": task.tokens_used or 0,
+            "result": result_payload,
+            "retry_recommended": retry_recommended,
+            "next_action": next_action,
+            "created_at": task.created_at.isoformat() if task.created_at else None,
+            "completed_at": (task.completed_at.isoformat() if task.completed_at else None),
+        }
+
+
+async def handle_list(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    sid = require_session_id(runtime)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(SubAgentTask).where(SubAgentTask.session_id == sid))
+        tasks = result.scalars().all()
+        tasks.sort(key=lambda t: t.created_at, reverse=True)
+
+        return {
+            "tasks": [
+                {
+                    "task_id": str(t.id),
+                    "objective": t.objective,
+                    "status": t.status,
+                    "max_steps": int(t.max_turns or 0),
+                    "turns_used": int(t.turns_used or 0),
+                    "grace_turns_used": max(0, int(t.turns_used or 0) - int(t.max_turns or 0)),
+                    "tokens_used": t.tokens_used or 0,
+                }
+                for t in tasks
+            ],
+            "total": len(tasks),
+        }
+
+
+async def handle_cancel(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ToolValidationError("Field 'task_id' must be a non-empty string")
+
+    sid = require_session_id(runtime)
+    tid = UUID(task_id.strip())
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(SubAgentTask).where(
+                SubAgentTask.id == tid,
+                SubAgentTask.session_id == sid,
+            )
+        )
+        task = result.scalars().first()
+        if task is None:
+            raise ToolValidationError("Sub-agent task not found for this session")
+
+        previous_status = str(task.status)
+        if previous_status in {"completed", "failed", "cancelled"}:
+            result_payload = task.result if isinstance(task.result, dict) else None
+            return {
+                "task_id": str(task.id),
+                "session_id": str(task.session_id),
+                "cancelled": False,
+                "status": previous_status,
+                "previous_status": previous_status,
+                "message": "Task already terminal; no cancellation performed.",
+                "result": result_payload,
+            }
+
+        task.status = "cancelled"
+        task.completed_at = datetime.now(UTC)
+        current_result = task.result if isinstance(task.result, dict) else {}
+        current_result = dict(current_result)
+        current_result.setdefault("cancel_reason", "Cancelled by agent request")
+        task.result = current_result
+        await db.commit()
+        await db.refresh(task)
+
+    cancel_signal_sent = False
+    orchestrator = runtime.sub_agent_orchestrator or get_sub_agent_orchestrator()
+    if orchestrator is not None and hasattr(orchestrator, "cancel_task"):
+        with contextlib.suppress(Exception):
+            cancel_signal_sent = bool(orchestrator.cancel_task(tid))
+
+    return {
+        "task_id": str(task.id),
+        "session_id": str(task.session_id),
+        "cancelled": True,
+        "status": str(task.status),
+        "previous_status": previous_status,
+        "cancel_signal_sent": cancel_signal_sent,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "result": task.result if isinstance(task.result, dict) else None,
+    }

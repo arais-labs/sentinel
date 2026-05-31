@@ -3,6 +3,9 @@ export type ToolPayloadKind = 'input' | 'output';
 export interface ToolFieldPreview {
   key: string;
   text: string;
+  fullText?: string;
+  value?: unknown;
+  fullValue?: unknown;
   truncated: boolean;
   redacted: boolean;
 }
@@ -42,45 +45,49 @@ const GENERIC_OUTPUT_PRIORITY = [
 ];
 
 const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: readonly string[] }> = {
-  araios_api: {
-    input: ['path', 'method', 'body', 'timeout_seconds'],
-    output: ['status_code', 'error', 'message', 'body'],
-  },
   topolix_diagram: {
     input: ['title', 'summary', 'dsl'],
     output: ['share_url', 'url', 'error'],
   },
-  git_exec: {
-    input: ['command', 'workdir'],
-    output: ['status', 'exit_code', 'stdout', 'stderr'],
+  git: {
+    input: ['command', 'cli_command', 'cwd', 'host', 'repo_url'],
+    output: ['ok', 'stdout', 'stderr', 'returncode', 'timed_out', 'total', 'accounts'],
   },
-  runtime_exec: {
-    input: ['command', 'privilege', 'cwd', 'timeout_seconds', 'detached'],
-    output: ['stdout', 'ok', 'returncode', 'timed_out', 'stderr'],
+  coordination: {
+    input: ['command', 'agent', 'message', 'context', 'limit'],
+    output: ['messages', 'id', 'agent', 'message', 'createdAt'],
   },
-  runtime_job_logs: {
-    input: ['job_id', 'limit', 'offset'],
-    output: ['stdout', 'stderr', 'status', 'returncode'],
+  documents: {
+    input: ['command', 'id', 'slug', 'title', 'tag', 'author'],
+    output: ['documents', 'id', 'slug', 'title', 'version', 'ok', 'message'],
   },
-  runtime_job_status: {
-    input: ['job_id'],
-    output: ['status', 'returncode', 'started_at', 'finished_at'],
+  memory: {
+    input: ['command', 'query', 'id', 'parent_id', 'root_id', 'content', 'node_ids', 'target_parent_id'],
+    output: ['items', 'roots', 'total', 'id', 'deleted', 'moved_node_ids', 'expanded_items'],
   },
-  runtime_jobs_list: {
-    input: ['limit', 'offset'],
-    output: ['count', 'items'],
+  module_manager: {
+    input: ['command', 'module', 'name', 'record_id', 'action_id', 'data', 'params'],
+    output: ['modules', 'records', 'count', 'ok', 'message', 'result'],
   },
-  runtime_job_stop: {
-    input: ['job_id'],
-    output: ['ok', 'status', 'message'],
+  delegate: {
+    input: ['command', 'session_id', 'task_id', 'objective', 'scope', 'browser_tab_id'],
+    output: ['task_id', 'status', 'objective', 'result', 'items', 'note'],
   },
-  trigger_create: {
-    input: ['name', 'protocol', 'event', 'filter'],
-    output: ['id', 'status', 'error'],
+  tasks: {
+    input: ['command', 'id', 'title', 'status', 'priority', 'owner'],
+    output: ['tasks', 'id', 'title', 'status', 'priority', 'ok', 'message'],
   },
-  trigger_update: {
-    input: ['trigger_id', 'name', 'protocol', 'event'],
-    output: ['id', 'status', 'error'],
+  runtime: {
+    input: ['command', 'shell_command', 'cwd', 'job_id', 'detached'],
+    output: ['stdout', 'ok', 'returncode', 'timed_out', 'stderr', 'job', 'items'],
+  },
+  triggers: {
+    input: ['command', 'session_id', 'trigger_id', 'name', 'type', 'config', 'action_type', 'action_config', 'enabled', 'enabled_only'],
+    output: ['trigger_id', 'triggers', 'total', 'updated', 'deleted', 'name', 'type', 'action_type', 'enabled', 'next_fire_at'],
+  },
+  telegram: {
+    input: ['command', 'chat_id', 'message', 'session_id', 'bot_token', 'telegram_user_id'],
+    output: ['success', 'chat_id', 'message_sent', 'running', 'bot_username', 'connected_chats', 'main_session_id'],
   },
 };
 
@@ -153,12 +160,38 @@ function valueLooksSensitive(value: unknown): boolean {
   return SENSITIVE_VALUE_PATTERN.test(value);
 }
 
-function redactField(key: string, value: unknown): { text: string; truncated: boolean; redacted: boolean } {
+function isExpandablePreviewValue(value: unknown, truncated: boolean): boolean {
+  if (truncated) return true;
+  if (typeof value === 'string' && /[\r\n]/.test(value)) return true;
+  if (Array.isArray(value)) return true;
+  return isObjectRecord(value);
+}
+
+function redactField(key: string, value: unknown): Omit<ToolFieldPreview, 'key'> {
   if (SENSITIVE_KEY_PATTERN.test(key) || valueLooksSensitive(value)) {
     return { text: '[redacted]', truncated: false, redacted: true };
   }
   const preview = previewPayloadValue(value);
-  return { text: preview.text, truncated: preview.truncated, redacted: false };
+  let fullText: string | undefined;
+  if (preview.truncated) {
+    if (typeof value === 'string') {
+      fullText = value;
+    } else {
+      try {
+        fullText = JSON.stringify(value, null, 2);
+      } catch {
+        fullText = String(value);
+      }
+    }
+  }
+  return {
+    text: preview.text,
+    fullText,
+    value,
+    fullValue: isExpandablePreviewValue(value, preview.truncated) ? value : undefined,
+    truncated: preview.truncated,
+    redacted: false,
+  };
 }
 
 export function topLevelPayloadFieldCount(raw: string): number {
@@ -196,23 +229,25 @@ export function extractCriticalToolFields({
     );
     return ordered.map((key) => {
       const value = parsed[key];
-      const preview = redactField(key, value);
+      const res = redactField(key, value);
       return {
         key,
-        text: preview.text,
-        truncated: preview.truncated,
-        redacted: preview.redacted,
+        text: res.text,
+        fullText: res.fullText,
+        truncated: res.truncated,
+        redacted: res.redacted,
       };
     });
   }
 
   if (parsed !== null) {
-    const preview = redactField(kind === 'input' ? 'input' : 'output', parsed);
+    const res = redactField(kind === 'input' ? 'input' : 'output', parsed);
     return [{
       key: kind === 'input' ? 'input' : 'output',
-      text: preview.text,
-      truncated: preview.truncated,
-      redacted: preview.redacted,
+      text: res.text,
+      fullText: res.fullText,
+      truncated: res.truncated,
+      redacted: res.redacted,
     }];
   }
 

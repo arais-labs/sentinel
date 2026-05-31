@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from app.models import Message, Session, SubAgentTask
-from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport
 from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent, TokenUsage
+from app.services.llm.generic.types import (
+    AgentEvent,
+    AssistantMessage,
+    TextContent,
+    ToolCallContent,
+    TokenUsage,
+)
 from app.services.sub_agents import SubAgentOrchestrator
 from app.services.tools import ToolDefinition, ToolExecutor, ToolRegistry
+from app.services.tools.registry import ToolRuntimeContext
 from tests.fake_db import FakeDB
 
 
@@ -43,28 +51,56 @@ class _SequenceProvider(LLMProvider):
     def name(self) -> str:
         return "sequence"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         idx = min(self.calls, len(self._responses) - 1)
+        _ = tool_choice
         self.calls += 1
         return self._responses[idx]
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
+        _ = tool_choice
         if False:
             yield AgentEvent(type="done", stop_reason="stop")
         return
 
 
-class _SlowLoop:
-    async def run(self, db, session_id, user_message, **kwargs):
+class _SlowProvider(LLMProvider):
+    @property
+    def name(self) -> str:
+        return "slow"
+
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         await asyncio.sleep(2)
+        raise AssertionError("unreachable")
 
-class _NoopLoop:
-    async def run(self, db, session_id, user_message, **kwargs):
-        return None
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
+        await asyncio.sleep(2)
+        if False:
+            yield AgentEvent(type="done", stop_reason="stop")
+        return
 
-def _build_base_loop(provider: LLMProvider, registry: ToolRegistry | None = None) -> AgentLoop:
+
+def _build_base_runtime_support(
+    provider: LLMProvider,
+    registry: ToolRegistry | None = None,
+) -> SentinelRuntimeSupport:
     tool_registry = registry or ToolRegistry()
-    return AgentLoop(provider, ContextBuilder(default_system_prompt="base"), ToolAdapter(tool_registry, ToolExecutor(tool_registry)))
+    return SentinelRuntimeSupport(
+        provider,
+        ContextBuilder(default_system_prompt="base"),
+        tool_registry,
+        ToolExecutor(tool_registry),
+    )
 
 
 def _add_task(db: FakeDB, session: Session, **kwargs) -> SubAgentTask:
@@ -99,8 +135,8 @@ def test_orchestrator_completes_and_creates_child_session_with_usage():
             )
         ]
     )
-    loop = _build_base_loop(provider)
-    orchestrator = SubAgentOrchestrator(loop, _SessionFactory(db), ToolRegistry())
+    runtime_support = _build_base_runtime_support(provider)
+    orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), ToolRegistry())
 
     _run(orchestrator.run_task(task.id))
 
@@ -130,7 +166,6 @@ def test_orchestrator_scopes_allowed_tools():
         ToolDefinition(
             name="allowed_tool",
             description="allowed",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_allowed_exec,
         )
@@ -139,7 +174,6 @@ def test_orchestrator_scopes_allowed_tools():
         ToolDefinition(
             name="blocked_tool",
             description="blocked",
-            risk_level="low",
             parameters_schema={"type": "object", "additionalProperties": True},
             execute=_blocked_exec,
         )
@@ -163,8 +197,8 @@ def test_orchestrator_scopes_allowed_tools():
             ),
         ]
     )
-    loop = _build_base_loop(provider, registry)
-    orchestrator = SubAgentOrchestrator(loop, _SessionFactory(db), registry)
+    runtime_support = _build_base_runtime_support(provider, registry)
+    orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), registry)
 
     _run(orchestrator.run_task(task.id))
 
@@ -175,6 +209,69 @@ def test_orchestrator_scopes_allowed_tools():
     )
     assert tool_result.tool_name == "blocked_tool"
     assert "not registered" in tool_result.content
+
+
+def test_sub_agents_do_not_receive_delegate_tool_or_policy():
+    db = FakeDB()
+    parent = Session(user_id="dev-admin", status="active", title="parent")
+    db.add(parent)
+    task = _add_task(db, parent, max_turns=2)
+
+    registry = ToolRegistry()
+
+    async def _delegate_exec(payload, runtime):
+        return {"unexpected": True, "payload": payload, "session_id": str(runtime.session_id)}
+
+    registry.register(
+        ToolDefinition(
+            name="delegate",
+            description="delegate work",
+            parameters_schema={"type": "object", "additionalProperties": True},
+            execute=_delegate_exec,
+        )
+    )
+
+    provider = _SequenceProvider(
+        [
+            AssistantMessage(
+                content=[
+                    ToolCallContent(
+                        id="call_delegate", name="delegate", arguments={"command": "spawn"}
+                    )
+                ],
+                model="m",
+                provider="p",
+                usage=TokenUsage(),
+                stop_reason="tool_use",
+            ),
+            AssistantMessage(
+                content=[TextContent(text="done")],
+                model="m",
+                provider="p",
+                usage=TokenUsage(),
+                stop_reason="stop",
+            ),
+        ]
+    )
+    runtime_support = _build_base_runtime_support(provider, registry)
+    orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), registry)
+
+    scoped = orchestrator._scoped_runtime_support(task)
+    scoped_tools = {tool.name for tool in scoped.tool_registry.list_schemas()}
+    assert "delegate" not in scoped_tools
+    assert "delegate" not in getattr(scoped.context_builder, "_available_tools", set())
+
+    _run(orchestrator.run_task(task.id))
+
+    assert task.status == "completed"
+    child_id = task.result["child_session_id"]
+    tool_result = next(
+        m for m in db.storage[Message] if str(m.session_id) == child_id and m.role == "tool_result"
+    )
+    assert tool_result.tool_name == "delegate"
+    assert "not registered" in tool_result.content
+    child_session = next(s for s in db.storage[Session] if str(s.id) == child_id)
+    assert "## Delegation Policy" not in (child_session.latest_system_prompt or "")
 
 
 def test_orchestrator_reports_actual_iterations_with_grace():
@@ -211,8 +308,8 @@ def test_orchestrator_reports_actual_iterations_with_grace():
             ),
         ]
     )
-    loop = _build_base_loop(provider)
-    orchestrator = SubAgentOrchestrator(loop, _SessionFactory(db), ToolRegistry())
+    runtime_support = _build_base_runtime_support(provider)
+    orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), ToolRegistry())
 
     _run(orchestrator.run_task(task.id))
     assert task.status == "completed"
@@ -221,13 +318,71 @@ def test_orchestrator_reports_actual_iterations_with_grace():
     assert int(task.result.get("iterations", 0)) == 2
 
 
+def test_orchestrator_uses_parent_runtime_session_for_runtime_bound_tools():
+    db = FakeDB()
+    parent = Session(user_id="dev-admin", status="active", title="parent")
+    db.add(parent)
+    task = _add_task(db, parent, allowed_tools=["inspect_runtime"], max_turns=2)
+
+    registry = ToolRegistry()
+
+    async def _inspect_runtime(_payload: dict, runtime: ToolRuntimeContext):
+        return {
+            "history_session_id": str(runtime.session_id),
+            "runtime_session_id": str(runtime.runtime_session_id),
+        }
+
+    registry.register(
+        ToolDefinition(
+            name="inspect_runtime",
+            description="inspect runtime binding",
+            parameters_schema={"type": "object", "additionalProperties": True},
+            execute=_inspect_runtime,
+        )
+    )
+
+    provider = _SequenceProvider(
+        [
+            AssistantMessage(
+                content=[ToolCallContent(id="call_runtime", name="inspect_runtime", arguments={})],
+                model="m",
+                provider="p",
+                usage=TokenUsage(),
+                stop_reason="tool_use",
+            ),
+            AssistantMessage(
+                content=[TextContent(text="done")],
+                model="m",
+                provider="p",
+                usage=TokenUsage(),
+                stop_reason="stop",
+            ),
+        ]
+    )
+    runtime_support = _build_base_runtime_support(provider, registry)
+    orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), registry)
+
+    _run(orchestrator.run_task(task.id))
+
+    assert task.status == "completed"
+    child_id = task.result["child_session_id"]
+    tool_result = next(
+        m for m in db.storage[Message] if str(m.session_id) == child_id and m.role == "tool_result"
+    )
+    payload = json.loads(tool_result.content)
+    assert payload["history_session_id"] == child_id
+    assert payload["runtime_session_id"] == str(parent.id)
+
+
 def test_orchestrator_timeout_marks_task_failed():
     db = FakeDB()
     parent = Session(user_id="dev-admin", status="active", title="parent")
     db.add(parent)
     task = _add_task(db, parent, timeout_seconds=1)
 
-    orchestrator = SubAgentOrchestrator(_SlowLoop(), _SessionFactory(db), ToolRegistry())
+    orchestrator = SubAgentOrchestrator(
+        _build_base_runtime_support(_SlowProvider()), _SessionFactory(db), ToolRegistry()
+    )
     _run(orchestrator.run_task(task.id))
 
     assert task.status == "failed"
@@ -251,8 +406,8 @@ def test_orchestrator_start_task_returns_true_and_runs():
             )
         ]
     )
-    loop = _build_base_loop(provider)
-    orchestrator = SubAgentOrchestrator(loop, _SessionFactory(db), ToolRegistry())
+    runtime_support = _build_base_runtime_support(provider)
+    orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), ToolRegistry())
 
     async def _scenario():
         started = orchestrator.start_task(task.id)
@@ -269,7 +424,7 @@ def test_orchestrator_complete_task_fallback_sets_completed_result():
     db.add(parent)
     task = _add_task(db, parent, max_turns=3)
 
-    orchestrator = SubAgentOrchestrator(_NoopLoop(), _SessionFactory(db), ToolRegistry())
+    orchestrator = SubAgentOrchestrator(None, _SessionFactory(db), ToolRegistry())
     _run(orchestrator.complete_task(db, task))
 
     assert task.status == "completed"
@@ -283,7 +438,9 @@ def test_orchestrator_cancel_task_marks_cancelled():
     db.add(parent)
     task = _add_task(db, parent, timeout_seconds=5)
 
-    orchestrator = SubAgentOrchestrator(_SlowLoop(), _SessionFactory(db), ToolRegistry())
+    orchestrator = SubAgentOrchestrator(
+        _build_base_runtime_support(_SlowProvider()), _SessionFactory(db), ToolRegistry()
+    )
 
     async def _scenario():
         started = orchestrator.start_task(task.id)
@@ -314,13 +471,18 @@ def test_orchestrator_invokes_completion_callback():
             )
         ]
     )
-    loop = _build_base_loop(provider)
+    runtime_support = _build_base_runtime_support(provider)
     seen: list[tuple[str, str]] = []
 
     async def _on_completed(item: SubAgentTask):
         seen.append((str(item.id), item.status))
 
-    orchestrator = SubAgentOrchestrator(loop, _SessionFactory(db), ToolRegistry(), on_task_completed=_on_completed)
+    orchestrator = SubAgentOrchestrator(
+        runtime_support,
+        _SessionFactory(db),
+        ToolRegistry(),
+        on_task_completed=_on_completed,
+    )
     _run(orchestrator.run_task(task.id))
 
     assert task.status == "completed"

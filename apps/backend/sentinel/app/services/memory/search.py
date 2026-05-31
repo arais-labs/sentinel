@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Memory
-from app.services.embeddings import EmbeddingService
+from app.services.memory.embeddings import EmbeddingService
 
 
 @dataclass(slots=True)

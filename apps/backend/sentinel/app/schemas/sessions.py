@@ -52,118 +52,21 @@ class SessionResponse(BaseModel):
     has_unread: bool = False
 
 
+class SessionListItemResponse(BaseModel):
+    id: UUID
+    user_id: str
+    agent_id: str | None = None
+    parent_session_id: UUID | None = None
+    title: str | None = None
+    started_at: datetime
+    is_running: bool = False
+    is_main: bool = False
+    has_unread: bool = False
+
+
 class SessionListResponse(BaseModel):
-    items: list[SessionResponse]
+    items: list[SessionListItemResponse]
     total: int
-
-
-class SessionRuntimeActionResponse(BaseModel):
-    timestamp: datetime | None = None
-    action: str
-    details: dict = Field(default_factory=dict)
-
-
-class SessionRuntimeResponse(BaseModel):
-    session_id: UUID
-    runtime_exists: bool
-    workspace_exists: bool
-    venv_exists: bool
-    active: bool
-    active_pid: int | None = None
-    last_command: str | None = None
-    created_at: datetime | None = None
-    last_used_at: datetime | None = None
-    last_active_at: datetime | None = None
-    actions: list[SessionRuntimeActionResponse] = Field(default_factory=list)
-
-
-class SessionRuntimeFileEntryResponse(BaseModel):
-    name: str
-    path: str
-    kind: Literal["file", "directory"]
-    size_bytes: int | None = None
-    modified_at: datetime | None = None
-    is_git_root: bool = False
-    git_branch: str | None = None
-    git_detached_head: bool = False
-
-
-class SessionRuntimeFilesResponse(BaseModel):
-    session_id: UUID
-    runtime_exists: bool
-    workspace_exists: bool
-    path: str
-    parent_path: str | None = None
-    entries: list[SessionRuntimeFileEntryResponse] = Field(default_factory=list)
-    truncated: bool = False
-
-
-class SessionRuntimeFilePreviewResponse(BaseModel):
-    session_id: UUID
-    runtime_exists: bool
-    workspace_exists: bool
-    path: str
-    name: str
-    size_bytes: int
-    modified_at: datetime | None = None
-    content: str
-    truncated: bool = False
-    max_bytes: int
-
-
-class SessionRuntimeGitRootResponse(BaseModel):
-    root_path: str
-    branch: str | None = None
-    detached_head: bool = False
-
-
-class SessionRuntimeGitRootsResponse(BaseModel):
-    session_id: UUID
-    runtime_exists: bool
-    workspace_exists: bool
-    path: str
-    roots: list[SessionRuntimeGitRootResponse] = Field(default_factory=list)
-
-
-class SessionRuntimeGitDiffResponse(BaseModel):
-    session_id: UUID
-    runtime_exists: bool
-    workspace_exists: bool
-    path: str
-    git_root: str
-    branch: str | None = None
-    detached_head: bool = False
-    base_ref: str
-    staged: bool = False
-    context_lines: int = 3
-    diff: str
-    truncated: bool = False
-    max_bytes: int
-
-
-class SessionRuntimeGitChangedFileResponse(BaseModel):
-    path: str
-    status: str
-    staged: bool = False
-    unstaged: bool = False
-    untracked: bool = False
-
-
-class SessionRuntimeGitChangedFilesResponse(BaseModel):
-    session_id: UUID
-    runtime_exists: bool
-    workspace_exists: bool
-    path: str
-    git_root: str
-    branch: str | None = None
-    detached_head: bool = False
-    entries: list[SessionRuntimeGitChangedFileResponse] = Field(default_factory=list)
-    truncated: bool = False
-
-
-class SessionRuntimeCleanupResponse(BaseModel):
-    session_id: UUID
-    runtime_removed: bool
 
 
 class SessionContextUsageResponse(BaseModel):

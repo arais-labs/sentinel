@@ -1,0 +1,423 @@
+---
+- name: Prepare Sentinel runtime over SSH
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    sentinel_desktop: xfce
+    sentinel_runtime_container: false
+    sentinel_user: "{{ ansible_user | default(ansible_ssh_user) | default(lookup('env', 'USER')) }}"
+    sentinel_home: "{{ sentinel_home_override | default('/home/' ~ sentinel_user ~ '.guest') }}"
+    sentinel_workspaces_dir: "{{ sentinel_home }}/sentinel/workspaces"
+    sentinel_vnc_display: ":1"
+    sentinel_vnc_geometry: "1440x900"
+    sentinel_vnc_depth: 24
+    sentinel_vnc_password: sentinel
+
+    sentinel_terminal_packages:
+      - bash-completion
+      - bubblewrap
+      - build-essential
+      - ca-certificates
+      - curl
+      - dnsutils
+      - gh
+      - git
+      - iproute2
+      - jq
+      - less
+      - lsof
+      - make
+      - nano
+      - net-tools
+      - openssh-server
+      - pkg-config
+      - procps
+      - python3
+      - python3-pip
+      - python3-venv
+      - ripgrep
+      - sudo
+      - tar
+      - tmux
+      - unzip
+      - vim-tiny
+      - wget
+      - xz-utils
+      - zsh
+
+    sentinel_browser_packages:
+      - chromium
+      - fonts-dejavu
+      - fonts-liberation
+
+    sentinel_vnc_packages:
+      - dbus-x11
+      - tigervnc-common
+      - tigervnc-standalone-server
+      - tigervnc-tools
+      - x11-utils
+      - x11-xserver-utils
+      - xclip
+      - xdotool
+      - xterm
+
+    sentinel_xfce_packages:
+      - xfce4
+      - xfce4-terminal
+
+    sentinel_kde_packages:
+      - kde-plasma-desktop
+      - kwin-x11
+
+  handlers:
+    - name: stop sentinel vnc
+      ansible.builtin.systemd:
+        name: sentinel-vnc.service
+        enabled: false
+        state: stopped
+        daemon_reload: true
+      when: not (sentinel_runtime_container | bool)
+
+  tasks:
+    - name: Install terminal runtime packages
+      ansible.builtin.apt:
+        name: "{{ sentinel_terminal_packages }}"
+        state: present
+        update_cache: true
+        install_recommends: false
+      register: terminal_packages_result
+      retries: 3
+      delay: 10
+      until: terminal_packages_result is succeeded
+      tags:
+        - terminal
+
+    - name: Install browser runtime packages
+      ansible.builtin.apt:
+        name: "{{ sentinel_browser_packages }}"
+        state: present
+        update_cache: true
+        install_recommends: false
+      register: browser_packages_result
+      retries: 3
+      delay: 10
+      until: browser_packages_result is succeeded
+      tags:
+        - browser
+
+    - name: Install VNC support packages
+      ansible.builtin.apt:
+        name: "{{ sentinel_vnc_packages }}"
+        state: present
+        update_cache: true
+        install_recommends: false
+      register: vnc_packages_result
+      retries: 3
+      delay: 10
+      until: vnc_packages_result is succeeded
+      tags:
+        - vnc
+        - desktop
+
+    - name: Install XFCE desktop packages
+      ansible.builtin.apt:
+        name: "{{ sentinel_xfce_packages }}"
+        state: present
+        update_cache: true
+        install_recommends: false
+      register: xfce_packages_result
+      retries: 3
+      delay: 10
+      until: xfce_packages_result is succeeded
+      when: sentinel_desktop == "xfce"
+      tags:
+        - desktop
+        - desktop_xfce
+
+    - name: Install KDE Plasma desktop packages
+      ansible.builtin.apt:
+        name: "{{ sentinel_kde_packages }}"
+        state: present
+        update_cache: true
+        install_recommends: false
+      register: kde_packages_result
+      retries: 3
+      delay: 10
+      until: kde_packages_result is succeeded
+      when: sentinel_desktop == "kde"
+      tags:
+        - desktop
+        - desktop_kde
+
+    - name: Create Sentinel runtime directory
+      ansible.builtin.file:
+        path: /opt/sentinel
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags:
+        - sentinel
+        - smoke
+        - vnc
+
+    - name: Create Sentinel binary directory
+      ansible.builtin.file:
+        path: /opt/sentinel/bin
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags:
+        - sentinel
+        - sandbox
+
+    - name: Create Sentinel session root
+      ansible.builtin.file:
+        path: "{{ sentinel_workspaces_dir }}"
+        state: directory
+        owner: "{{ sentinel_user }}"
+        group: "{{ sentinel_user }}"
+        mode: "0755"
+      tags:
+        - sentinel
+        - sandbox
+
+    - name: Remove stale Sentinel injected runtime helpers
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /opt/sentinel/bin/sentinel-bwrap-run
+        - /opt/sentinel/bin/sentinel-bwrap-smoke
+        - /opt/sentinel/bin/sentinel-exec
+        - /opt/sentinel/runtime-exec
+      tags:
+        - sentinel
+        - sandbox
+        - smoke
+
+    - name: Store experimental VNC password hint
+      ansible.builtin.copy:
+        dest: /opt/sentinel/vnc-password
+        content: "{{ sentinel_vnc_password }}\n"
+        owner: root
+        group: root
+        mode: "0600"
+      tags:
+        - vnc
+
+    - name: Create TigerVNC config directory
+      ansible.builtin.file:
+        path: "{{ sentinel_home }}/.config/tigervnc"
+        state: directory
+        owner: "{{ sentinel_user }}"
+        group: "{{ sentinel_user }}"
+        mode: "0700"
+      tags:
+        - vnc
+
+    - name: Check TigerVNC password file
+      ansible.builtin.stat:
+        path: "{{ sentinel_home }}/.config/tigervnc/passwd"
+      register: sentinel_vnc_password_file
+      tags:
+        - vnc
+
+    - name: Generate TigerVNC password file
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if command -v tigervncpasswd >/dev/null 2>&1; then
+          printf "%s\n" "{{ sentinel_vnc_password }}" | tigervncpasswd -f >"{{ sentinel_home }}/.config/tigervnc/passwd"
+        elif command -v vncpasswd >/dev/null 2>&1; then
+          printf "%s\n" "{{ sentinel_vnc_password }}" | vncpasswd -f >"{{ sentinel_home }}/.config/tigervnc/passwd"
+        else
+          echo "No TigerVNC password helper found" >&2
+          exit 1
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: true
+      when: not sentinel_vnc_password_file.stat.exists
+      notify: stop sentinel vnc
+      tags:
+        - vnc
+
+    - name: Set TigerVNC password ownership
+      ansible.builtin.file:
+        path: "{{ sentinel_home }}/.config/tigervnc/passwd"
+        owner: "{{ sentinel_user }}"
+        group: "{{ sentinel_user }}"
+        mode: "0600"
+      tags:
+        - vnc
+
+    - name: Install TigerVNC xstartup
+      ansible.builtin.copy:
+        dest: "{{ sentinel_home }}/.config/tigervnc/xstartup"
+        owner: "{{ sentinel_user }}"
+        group: "{{ sentinel_user }}"
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+          {% if sentinel_desktop == "kde" %}
+          exec dbus-run-session startplasma-x11
+          {% else %}
+          exec dbus-run-session startxfce4
+          {% endif %}
+      notify: stop sentinel vnc
+      tags:
+        - vnc
+        - desktop
+
+    - name: Install Sentinel VNC systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/sentinel-vnc.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Sentinel {{ sentinel_desktop | upper }} VNC desktop
+          After=network-online.target
+
+          [Service]
+          Type=forking
+          User={{ sentinel_user }}
+          Environment=HOME={{ sentinel_home }}
+          ExecStartPre=-/usr/bin/vncserver -kill {{ sentinel_vnc_display }}
+          ExecStart=/usr/bin/vncserver {{ sentinel_vnc_display }} -localhost yes -geometry {{ sentinel_vnc_geometry }} -depth {{ sentinel_vnc_depth }}
+          ExecStop=/usr/bin/vncserver -kill {{ sentinel_vnc_display }}
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: stop sentinel vnc
+      when: not (sentinel_runtime_container | bool)
+      tags:
+        - vnc
+
+    - name: Disable global Sentinel VNC service
+      ansible.builtin.systemd:
+        name: sentinel-vnc.service
+        enabled: false
+        state: stopped
+        daemon_reload: true
+      when: not (sentinel_runtime_container | bool)
+      tags:
+        - vnc
+
+    - name: Install Sentinel smoke test
+      ansible.builtin.copy:
+        dest: /opt/sentinel/smoke-test.sh
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          set -euo pipefail
+
+          command -v bash
+          command -v zsh
+          command -v sshd
+          command -v tmux
+          command -v git
+          command -v gh
+          command -v rg
+          command -v jq
+          command -v python3
+          command -v bwrap
+          command -v chromium
+          command -v vncserver
+          {% if sentinel_desktop == "kde" %}
+          command -v startplasma-x11
+          command -v kwin_x11
+          {% else %}
+          command -v startxfce4
+          {% endif %}
+
+          python3 --version
+          git --version
+          tmux -V
+
+          tmux new-session -d -s sentinel-smoke 'echo sentinel tmux ok; sleep 2'
+          tmux has-session -t sentinel-smoke
+          tmux kill-session -t sentinel-smoke
+
+          smoke_root="$(mktemp -d "{{ sentinel_workspaces_dir }}/bwrap-smoke.XXXXXX")"
+          cleanup() {
+            rm -rf "${smoke_root}"
+          }
+          trap cleanup EXIT
+          mkdir -p "${smoke_root}/workspace" "${smoke_root}/state/home" "${smoke_root}/state/runtime" "${smoke_root}/state/tmux" "${smoke_root}/tmp"
+
+          bwrap \
+            --unshare-pid \
+            --unshare-ipc \
+            --unshare-uts \
+            --ro-bind /usr /usr \
+            --symlink usr/bin /bin \
+            --symlink usr/lib /lib \
+            --symlink usr/sbin /sbin \
+            --ro-bind /etc /etc \
+            --dev /dev \
+            --proc /proc \
+            --tmpfs /run \
+            --tmpfs /tmp \
+            --dir /tmp/sentinel \
+            --bind "${smoke_root}/workspace" /workspace \
+            --bind "${smoke_root}/state" /state \
+            --bind "${smoke_root}/tmp" /tmp/sentinel \
+            --setenv HOME /state/home \
+            --setenv TMPDIR /tmp/sentinel \
+            --setenv XDG_RUNTIME_DIR /state/runtime \
+            --setenv SENTINEL_SANDBOX bubblewrap \
+            --chdir /workspace \
+            bash -lc '
+              set -euo pipefail
+
+              test "${SENTINEL_SANDBOX}" = "bubblewrap"
+              test "$(pwd)" = "/workspace"
+              echo workspace-ok > /workspace/workspace.txt
+              echo home-ok > "${HOME}/home.txt"
+              echo tmp-ok > "${TMPDIR}/tmp.txt"
+
+              test ! -e /home
+              test ! -e /root
+              test ! -e /srv
+
+              tmux -S /state/tmux/smoke.sock new-session -d -s smoke "echo tmux-ok > /workspace/tmux.txt; sleep 30"
+              tmux -S /state/tmux/smoke.sock has-session -t smoke
+              tmux -S /state/tmux/smoke.sock kill-session -t smoke
+              test "$(cat /workspace/tmux.txt)" = "tmux-ok"
+            '
+
+          test "$(cat "${smoke_root}/workspace/workspace.txt")" = "workspace-ok"
+          test "$(cat "${smoke_root}/state/home/home.txt")" = "home-ok"
+          test "$(cat "${smoke_root}/tmp/tmp.txt")" = "tmp-ok"
+
+          echo "sentinel terminal runtime ok"
+          echo "sentinel {{ sentinel_desktop }} desktop runtime ok"
+      tags:
+        - smoke
+
+    - name: Mark Sentinel runtime provisioned
+      ansible.builtin.copy:
+        dest: /opt/sentinel/provisioned
+        content: "provisioned\n"
+        owner: root
+        group: root
+        mode: "0644"
+      tags:
+        - smoke
+
+    - name: Clean apt package indexes
+      ansible.builtin.apt:
+        autoclean: true
+      tags:
+        - cleanup

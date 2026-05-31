@@ -83,10 +83,16 @@ def normalize_generation_metadata(raw: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     return build_generation_metadata(
         requested_tier=raw.get("requested_tier"),
-        resolved_model=raw.get("resolved_model") if isinstance(raw.get("resolved_model"), str) else None,
+        resolved_model=(
+            raw.get("resolved_model") if isinstance(raw.get("resolved_model"), str) else None
+        ),
         provider=raw.get("provider") if isinstance(raw.get("provider"), str) else None,
-        temperature=raw.get("temperature") if isinstance(raw.get("temperature"), (int, float)) else None,
-        max_iterations=raw.get("max_iterations") if isinstance(raw.get("max_iterations"), int) else None,
+        temperature=(
+            raw.get("temperature") if isinstance(raw.get("temperature"), (int, float)) else None
+        ),
+        max_iterations=(
+            raw.get("max_iterations") if isinstance(raw.get("max_iterations"), int) else None
+        ),
     )
 
 

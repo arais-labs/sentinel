@@ -416,6 +416,21 @@ body {
   border-color: rgb(255 255 255 / 0.28);
 }
 
+.html-artifact {
+  @apply overflow-hidden rounded-2xl;
+  width: min(100%, 980px);
+  background: transparent;
+}
+
+.html-artifact iframe {
+  display: block;
+  width: 100%;
+  min-height: 180px;
+  border: 0;
+  background: transparent;
+  color-scheme: normal;
+}
+
 .animate-in {
   animation: fade-in 200ms ease-out;
 }
@@ -472,5 +487,16 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes focusModePillIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }

@@ -169,9 +169,7 @@ class OpenAIProvider(LLMProvider):
                     body = await response.aread()
                     detail = body.decode("utf-8", errors="replace").strip()
                     snippet = detail[:500] if detail else "<no response body>"
-                    raise RuntimeError(
-                        f"OpenAI stream http_{response.status_code}: {snippet}"
-                    )
+                    raise RuntimeError(f"OpenAI stream http_{response.status_code}: {snippet}")
                 async for raw_line in response.aiter_lines():
                     line = raw_line.strip()
                     if not line.startswith("data:"):
@@ -192,7 +190,11 @@ class OpenAIProvider(LLMProvider):
 
                     if "error" in event:
                         error = event.get("error")
-                        message = error.get("message") if isinstance(error, dict) else "Provider stream error"
+                        message = (
+                            error.get("message")
+                            if isinstance(error, dict)
+                            else "Provider stream error"
+                        )
                         yield AgentEvent(type="error", error=message)
                         continue
 
@@ -211,7 +213,11 @@ class OpenAIProvider(LLMProvider):
                         if not isinstance(tool_delta, dict):
                             continue
                         idx = int(tool_delta.get("index") or 0)
-                        fn = tool_delta.get("function") if isinstance(tool_delta.get("function"), dict) else {}
+                        fn = (
+                            tool_delta.get("function")
+                            if isinstance(tool_delta.get("function"), dict)
+                            else {}
+                        )
                         if idx not in tool_started:
                             tool_started.add(idx)
                             yield AgentEvent(
@@ -238,7 +244,9 @@ class OpenAIProvider(LLMProvider):
                     elif finish_reason:
                         if text_started:
                             yield AgentEvent(type="text_end", content_index=0)
-                        yield AgentEvent(type="done", stop_reason=_map_openai_finish_reason(finish_reason))
+                        yield AgentEvent(
+                            type="done", stop_reason=_map_openai_finish_reason(finish_reason)
+                        )
 
     def _headers(self) -> dict[str, str]:
         return {

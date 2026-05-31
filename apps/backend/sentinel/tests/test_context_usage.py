@@ -1,5 +1,5 @@
 from app.models import Message, Session
-from app.services.context_usage import estimate_db_message_tokens
+from app.services.sessions.context_usage import estimate_db_message_tokens
 
 
 def test_estimate_db_message_tokens_counts_assistant_tool_calls_when_text_empty():
@@ -12,8 +12,8 @@ def test_estimate_db_message_tokens_counts_assistant_tool_calls_when_text_empty(
             "tool_calls": [
                 {
                     "id": "toolu_1",
-                    "name": "araios_api",
-                    "arguments": {"path": "/api/agent", "method": "GET"},
+                    "name": "module_manager",
+                    "arguments": {"command": "list_modules"},
                 }
             ]
         },
@@ -29,7 +29,7 @@ def test_estimate_db_message_tokens_preserves_structural_tool_result_rows():
         role="tool_result",
         content="",
         tool_call_id="toolu_1",
-        tool_name="araios_api",
+        tool_name="module_manager",
         metadata_json={},
     )
 

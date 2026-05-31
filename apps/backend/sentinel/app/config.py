@@ -1,8 +1,13 @@
+import json
+from pathlib import Path
+from urllib.parse import quote
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal
 
 from app.services.llm.ids import ProviderChoice
-from app.services.onboarding_defaults import DEFAULT_SYSTEM_PROMPT
+from app.services.onboarding.onboarding_defaults import DEFAULT_SYSTEM_PROMPT
 
 
 class Settings(BaseSettings):
@@ -10,24 +15,49 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
-    database_url: str = "postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinel"
-    jwt_secret_key: str
+    database_host: str = "localhost"
+    database_port: int = 5432
+    database_user: str = "sentinel"
+    database_password: str = "sentinel"
+    database_maintenance_name: str = "postgres"
+    database_manager_name: str = "sentinel_manager"
+    jwt_secret_key: str = Field(min_length=1)
+    data_encryption_key: str = Field(min_length=1)
     jwt_algorithm: str = "HS256"
     access_token_ttl_seconds: int = 3600
     refresh_token_ttl_seconds: int = 604800
     auth_cookie_secure: bool = False
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
-    sentinel_auth_username: str = "admin"
-    sentinel_auth_password: str = "admin"
+    # Required in server mode (enforced at startup); optional in desktop mode.
+    sentinel_auth_username: str = ""
+    sentinel_auth_password: str = ""
     dev_user_id: str = "dev-admin"
-    anthropic_oauth_token: str | None = None
-    anthropic_api_key: str | None = None
-    openai_oauth_token: str | None = None
-    openai_api_key: str | None = None
+
+    # LLM provider credentials live in the per-instance `system_settings` DB
+    # table and are populated by SettingsService.build_instance_settings at
+    # request time. Env vars are NOT a supported source for these — the
+    # validation_alias here points at a sentinel name that no real env var
+    # uses, which disables env-var loading for the field while keeping the
+    # attribute available for DB hydration via setattr/model_copy.
+    anthropic_oauth_token: str | None = Field(
+        default=None, validation_alias="_db_only_anthropic_oauth_token"
+    )
+    anthropic_api_key: str | None = Field(
+        default=None, validation_alias="_db_only_anthropic_api_key"
+    )
+    openai_oauth_token: str | None = Field(
+        default=None, validation_alias="_db_only_openai_oauth_token"
+    )
+    openai_api_key: str | None = Field(default=None, validation_alias="_db_only_openai_api_key")
     openai_base_url: str = "https://api.openai.com/v1"
-    gemini_api_key: str | None = None
+    gemini_api_key: str | None = Field(default=None, validation_alias="_db_only_gemini_api_key")
+    gemini_oauth_credentials: str | None = Field(
+        default=None, validation_alias="_db_only_gemini_oauth_credentials"
+    )
     primary_provider: ProviderChoice = ProviderChoice.ANTHROPIC
-    embedding_api_key: str | None = None
+    embedding_api_key: str | None = Field(
+        default=None, validation_alias="_db_only_embedding_api_key"
+    )
     embedding_model: str = "text-embedding-3-small"
     embedding_base_url: str = "https://api.openai.com/v1"
     memory_embedding_backfill_on_start: bool = True
@@ -38,7 +68,7 @@ class Settings(BaseSettings):
     # --- Tier: Fast ---
     tier_fast_anthropic_model: str = "claude-haiku-4-5-20251001"
     tier_fast_openai_model: str = "gpt-4o-mini"
-    tier_fast_codex_model: str = "gpt-5.3-codex-spark"
+    tier_fast_codex_model: str = "gpt-5.4-mini"
     tier_fast_gemini_model: str = "gemini-3-flash-preview"
     tier_fast_max_tokens: int = 4096
     tier_fast_temperature: float = 0.3
@@ -60,7 +90,7 @@ class Settings(BaseSettings):
     # --- Tier: Hard ---
     tier_hard_anthropic_model: str = "claude-opus-4-6"
     tier_hard_openai_model: str = "o3"
-    tier_hard_codex_model: str = "gpt-5.3-codex"
+    tier_hard_codex_model: str = "gpt-5.5"
     tier_hard_gemini_model: str = "gemini-3.1-pro-preview"
     tier_hard_max_tokens: int = 40000
     tier_hard_temperature: float = 0.7
@@ -69,7 +99,6 @@ class Settings(BaseSettings):
     tier_hard_gemini_thinking_budget: int = 32000
     default_system_prompt: str = DEFAULT_SYSTEM_PROMPT
     agent_loop_timeout: float = 1080.0
-    agent_loop_cooldown: float = 1.5  # seconds between each agent loop iteration
     tool_image_reinjection_enabled: bool = True
     tool_image_reinjection_max_images: int = 2
     tool_image_reinjection_max_bytes_per_image: int = 2_000_000
@@ -78,41 +107,90 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
     chat_default_iterations: int = 25
     chat_max_iterations: int = 100
-    browser_live_view_enabled: bool = True
-    browser_live_public_url: str | None = None
-    browser_live_host: str = "127.0.0.1"
-    browser_live_port: int = 6080
-    browser_live_path: str = "/vnc.html"
-    browser_live_view_only: bool = False
-    browser_live_autoconnect: bool = True
-    browser_live_resize: str = "scale"
-    browser_live_probe_timeout_ms: int = 500
-    browser_prewarm_on_start: bool = False
-    browser_vnc_password: str | None = None
     context_token_budget: int = 200_000
     stored_tool_result_max_chars: int = 4_000
     stored_tool_call_args_max_chars: int = 1_200
-    compaction_auto_resume_enabled: bool = True
+    runtime_lima_yaml: str = ""
+    runtime_docker_base_image: str = "debian:trixie"
+    runtime_docker_ssh_host: str = "host.docker.internal"
     session_auto_rename_enabled: bool = True
     session_auto_rename_every_messages: int = 10
     session_auto_rename_context_messages: int = 24
     session_auto_rename_model_tier: str = "fast"
-    git_push_approval_timeout_seconds: int = 600
-    runtime_exec_root_approval_timeout_seconds: int = 600
-
     # --- Telegram ---
     telegram_bot_token: str | None = None
     telegram_owner_user_id: str | None = None
     telegram_owner_chat_id: str | None = None
     telegram_owner_telegram_user_id: str | None = None
-    telegram_pairing_code_hash: str | None = None
-    telegram_pairing_code_expires_at: str | None = None
     telegram_enabled: bool = False
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        extra="ignore",
+    )
+
+    def database_url(self, database_name: str) -> str:
+        user = quote(self.database_user, safe="")
+        password = quote(self.database_password, safe="")
+        host = self.database_host
+        port = int(self.database_port)
+        database = quote(database_name, safe="")
+        return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
+
+    @property
+    def manager_database_url(self) -> str:
+        return self.database_url(self.database_manager_name)
 
 
 settings = Settings()
+
+
+def is_desktop_app() -> bool:
+    return (settings.app_env or "").strip().lower() == "desktop"
+
+
+# ── app version / build identity ──
+# The released number lives in the root VERSION file (propagated everywhere else
+# by scripts/sync-version.sh). Production payloads also ship a manifest.json at
+# the payload root carrying version + channel + the commit the payload was built
+# from; when present it is authoritative. Running from source (dev) there is no
+# manifest, so the version falls back to VERSION and there is no release
+# commit/channel.
+def _walk_up_for_marker(name: str) -> str | None:
+    cursor = Path(__file__).resolve().parent
+    for _ in range(8):
+        candidate = cursor / name
+        if candidate.is_file():
+            value = candidate.read_text(encoding="utf-8").strip()
+            return value or None
+        if cursor.parent == cursor:
+            break
+        cursor = cursor.parent
+    return None
+
+
+def _read_manifest() -> dict:
+    raw = _walk_up_for_marker("manifest.json")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def app_version() -> str:
+    return _read_manifest().get("version") or _walk_up_for_marker("VERSION") or "0.0.0"
+
+
+def build_identity() -> dict[str, str | None]:
+    manifest = _read_manifest()
+    return {
+        "version": manifest.get("version") or _walk_up_for_marker("VERSION"),
+        "commit": manifest.get("commit"),
+        "channel": manifest.get("channel"),
+    }
+
 
 CHAT_MAX_ITERATIONS = max(1, int(settings.chat_max_iterations))
 CHAT_DEFAULT_ITERATIONS = max(

@@ -74,7 +74,9 @@ class GeminiProvider(LLMProvider):
         thinking_budget = rc.thinking_budget if rc.thinking_budget and rc.thinking_budget > 0 else 0
         logger.info(
             "Gemini.chat: model=%s thinking_budget=%s tools=%d",
-            model, thinking_budget, len(tools) if tools else 0,
+            model,
+            thinking_budget,
+            len(tools) if tools else 0,
         )
 
         payload = self._build_payload(
@@ -86,9 +88,10 @@ class GeminiProvider(LLMProvider):
             tool_choice=tool_choice,
         )
         url = f"{self._base_url}/models/{model}:generateContent"
+        headers = await self._request_headers()
 
         async with self._client_factory() as client:
-            response = await client.post(url, json=payload, headers=self._headers())
+            response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
 
@@ -111,7 +114,9 @@ class GeminiProvider(LLMProvider):
         thinking_budget = rc.thinking_budget if rc.thinking_budget and rc.thinking_budget > 0 else 0
         logger.info(
             "Gemini.stream: model=%s thinking_budget=%s tools=%d",
-            model, thinking_budget, len(tools) if tools else 0,
+            model,
+            thinking_budget,
+            len(tools) if tools else 0,
         )
 
         payload = self._build_payload(
@@ -123,6 +128,7 @@ class GeminiProvider(LLMProvider):
             tool_choice=tool_choice,
         )
         url = f"{self._base_url}/models/{model}:streamGenerateContent?alt=sse"
+        headers = await self._request_headers()
 
         started = False
         text_started = False
@@ -136,7 +142,7 @@ class GeminiProvider(LLMProvider):
         last_block_reason: str | None = None
 
         async with self._client_factory() as client:
-            async with client.stream("POST", url, json=payload, headers=self._headers()) as response:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
                 if response.is_error:
                     body = await response.aread()
                     detail = body.decode("utf-8", errors="replace").strip()
@@ -162,7 +168,11 @@ class GeminiProvider(LLMProvider):
                     # Check for errors
                     if "error" in chunk:
                         error = chunk["error"]
-                        msg = error.get("message") if isinstance(error, dict) else "Gemini stream error"
+                        msg = (
+                            error.get("message")
+                            if isinstance(error, dict)
+                            else "Gemini stream error"
+                        )
                         yield AgentEvent(type="error", error=msg)
                         continue
 
@@ -193,7 +203,11 @@ class GeminiProvider(LLMProvider):
                                 thinking_started = True
                                 yield AgentEvent(type="thinking_start", content_index=0)
                             signature = part.get("thoughtSignature")
-                            signature_value = signature if isinstance(signature, str) and signature.strip() else None
+                            signature_value = (
+                                signature
+                                if isinstance(signature, str) and signature.strip()
+                                else None
+                            )
                             yield AgentEvent(
                                 type="thinking_delta",
                                 content_index=0,
@@ -250,16 +264,11 @@ class GeminiProvider(LLMProvider):
                             saw_any_output = True
 
                     if finish_reason and not done_emitted:
-                        if (
-                            not response_has_function_call
-                            and not saw_any_output
-                        ):
+                        if not response_has_function_call and not saw_any_output:
                             finish_upper = str(finish_reason).upper()
                             if finish_upper == "SAFETY" or last_block_reason:
                                 reason = last_block_reason or finish_upper
-                                raise RuntimeError(
-                                    f"Gemini blocked response ({reason})"
-                                )
+                                raise RuntimeError(f"Gemini blocked response ({reason})")
                             raise TransientProviderError(
                                 f"Gemini stream finished without content (finishReason={finish_reason})"
                             )
@@ -298,12 +307,8 @@ class GeminiProvider(LLMProvider):
             if last_block_reason:
                 raise RuntimeError(f"Gemini blocked response ({last_block_reason})")
             if saw_any_candidate:
-                raise TransientProviderError(
-                    "Gemini stream ended without terminal content"
-                )
-            raise TransientProviderError(
-                "Gemini stream ended without candidates"
-            )
+                raise TransientProviderError("Gemini stream ended without terminal content")
+            raise TransientProviderError("Gemini stream ended without candidates")
 
     # ------------------------------------------------------------------
     # Payload building
@@ -347,12 +352,16 @@ class GeminiProvider(LLMProvider):
             "content-type": "application/json",
         }
 
+    async def _request_headers(self) -> dict[str, str]:
+        return self._headers()
+
     # ------------------------------------------------------------------
     # Message format conversion
     # ------------------------------------------------------------------
 
     def _to_gemini_contents(
-        self, messages: Sequence[AgentMessage | dict],
+        self,
+        messages: Sequence[AgentMessage | dict],
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """Convert sentinel messages to Gemini contents array + optional system text."""
         system_parts: list[str] = []
@@ -380,17 +389,19 @@ class GeminiProvider(LLMProvider):
 
             # --- ToolResultMessage → user role with functionResponse ---
             if isinstance(message, ToolResultMessage):
-                raw_contents.append({
-                    "role": "user",
-                    "parts": [
-                        {
-                            "functionResponse": {
-                                "name": message.tool_name,
-                                "response": {"result": message.content},
+                raw_contents.append(
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "functionResponse": {
+                                    "name": message.tool_name,
+                                    "response": {"result": message.content},
+                                }
                             }
-                        }
-                    ],
-                })
+                        ],
+                    }
+                )
                 continue
 
             # --- UserMessage ---
@@ -435,7 +446,10 @@ class GeminiProvider(LLMProvider):
                                 "args": block.arguments,
                             }
                             part_payload: dict[str, Any] = {"functionCall": function_call_part}
-                            if isinstance(block.thought_signature, str) and block.thought_signature.strip():
+                            if (
+                                isinstance(block.thought_signature, str)
+                                and block.thought_signature.strip()
+                            ):
                                 part_payload["thoughtSignature"] = block.thought_signature.strip()
                             function_parts.append(part_payload)
                 elif isinstance(content, str) and content.strip():
@@ -466,7 +480,11 @@ class GeminiProvider(LLMProvider):
                 return ("system", text)
             parts = message.get("parts")
             if isinstance(parts, list):
-                text_parts = [p.get("text") for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str)]
+                text_parts = [
+                    p.get("text")
+                    for p in parts
+                    if isinstance(p, dict) and isinstance(p.get("text"), str)
+                ]
                 merged = "\n".join(item for item in text_parts if item.strip()).strip()
                 if merged:
                     return ("system", merged)
@@ -478,7 +496,9 @@ class GeminiProvider(LLMProvider):
             return None
         return ("content", {"role": mapped_role, "parts": normalized_parts})
 
-    def _normalize_dict_parts(self, message: dict[str, Any], mapped_role: str) -> list[dict[str, Any]]:
+    def _normalize_dict_parts(
+        self, message: dict[str, Any], mapped_role: str
+    ) -> list[dict[str, Any]]:
         """Normalize dict message parts to Gemini `parts` payload entries."""
         parts_out: list[dict[str, Any]] = []
         parts = message.get("parts")
@@ -542,7 +562,9 @@ class GeminiProvider(LLMProvider):
                     response = fr.get("response")
                     if not isinstance(response, dict):
                         response = {"result": str(response) if response is not None else ""}
-                    parts_out.append({"functionResponse": {"name": fr["name"], "response": response}})
+                    parts_out.append(
+                        {"functionResponse": {"name": fr["name"], "response": response}}
+                    )
             if parts_out:
                 return parts_out
 
@@ -555,7 +577,11 @@ class GeminiProvider(LLMProvider):
         if mapped_role == "user":
             tool_name = message.get("tool_name") or message.get("name")
             if isinstance(tool_name, str) and tool_name.strip():
-                result_text = self._extract_text(message.get("content")) or self._extract_text(message.get("result")) or ""
+                result_text = (
+                    self._extract_text(message.get("content"))
+                    or self._extract_text(message.get("result"))
+                    or ""
+                )
                 return [
                     {
                         "functionResponse": {
@@ -592,7 +618,16 @@ class GeminiProvider(LLMProvider):
                 )
             ]
             function_response_parts = [
-                {"functionResponse": {"name": p["functionResponse"]["name"], "response": p["functionResponse"].get("response") if isinstance(p["functionResponse"].get("response"), dict) else {"result": str(p["functionResponse"].get("response") or "")}}}
+                {
+                    "functionResponse": {
+                        "name": p["functionResponse"]["name"],
+                        "response": (
+                            p["functionResponse"].get("response")
+                            if isinstance(p["functionResponse"].get("response"), dict)
+                            else {"result": str(p["functionResponse"].get("response") or "")}
+                        ),
+                    }
+                }
                 for p in parts
                 if (
                     isinstance(p, dict)
@@ -602,7 +637,12 @@ class GeminiProvider(LLMProvider):
                 )
             ]
             image_parts = [
-                {"inlineData": {"mimeType": p["inlineData"]["mimeType"], "data": p["inlineData"]["data"]}}
+                {
+                    "inlineData": {
+                        "mimeType": p["inlineData"]["mimeType"],
+                        "data": p["inlineData"]["data"],
+                    }
+                }
                 for p in parts
                 if (
                     isinstance(p, dict)
@@ -635,7 +675,8 @@ class GeminiProvider(LLMProvider):
                         isinstance(p, dict) and "functionCall" in p for p in prev.get("parts", [])
                     )
                     prev_has_fr = prev["role"] == "user" and any(
-                        isinstance(p, dict) and "functionResponse" in p for p in prev.get("parts", [])
+                        isinstance(p, dict) and "functionResponse" in p
+                        for p in prev.get("parts", [])
                     )
                     if prev_has_fc:
                         sanitized.append({"role": "user", "parts": function_response_parts})
@@ -716,16 +757,18 @@ class GeminiProvider(LLMProvider):
             if isinstance(fc, dict):
                 has_function_call = True
                 thought_signature = part.get("thoughtSignature")
-                blocks.append(ToolCallContent(
-                    id=f"gemini_{uuid4().hex[:8]}",
-                    name=fc.get("name") or "",
-                    arguments=fc.get("args") if isinstance(fc.get("args"), dict) else {},
-                    thought_signature=(
-                        thought_signature.strip()
-                        if isinstance(thought_signature, str) and thought_signature.strip()
-                        else None
-                    ),
-                ))
+                blocks.append(
+                    ToolCallContent(
+                        id=f"gemini_{uuid4().hex[:8]}",
+                        name=fc.get("name") or "",
+                        arguments=fc.get("args") if isinstance(fc.get("args"), dict) else {},
+                        thought_signature=(
+                            thought_signature.strip()
+                            if isinstance(thought_signature, str) and thought_signature.strip()
+                            else None
+                        ),
+                    )
+                )
                 continue
             # Text
             if "text" in part:
@@ -766,7 +809,9 @@ class GeminiProvider(LLMProvider):
             return {"functionCall": {"name": "", "args": {}}}
         sanitized: dict[str, Any] = {
             "name": function_call["name"],
-            "args": function_call.get("args") if isinstance(function_call.get("args"), dict) else {},
+            "args": (
+                function_call.get("args") if isinstance(function_call.get("args"), dict) else {}
+            ),
         }
         payload: dict[str, Any] = {"functionCall": sanitized}
         thought_signature = part.get("thoughtSignature")

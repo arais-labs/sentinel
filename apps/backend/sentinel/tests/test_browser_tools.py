@@ -2,14 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+from uuid import UUID
 
-from app.services.tools.builtin import build_default_registry
-from app.services.tools.browser_tool import BrowserManager
+import app.services.browser.pool as browser_pool_module
+from app.schemas.runtime import RuntimeExecResult
+from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
+from app.services.browser.manager import BrowserManager
 from app.services.tools.executor import ToolExecutor, ToolValidationError
+from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.registry_builder import build_default_registry
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+_SID = "00000000-0000-0000-0000-000000000001"
+_RUNTIME = ToolRuntimeContext(session_id=UUID(_SID))
 
 
 class _StubBrowserManager:
@@ -175,30 +185,127 @@ class _StubBrowserManager:
             "active_tab_id": "t1",
         }
 
+    async def scroll(
+        self,
+        *,
+        direction: str = "down",
+        amount: int = 500,
+        selector: str | None = None,
+        tab_id: str | None = None,
+    ):
+        _ = tab_id
+        return {"scrolled": True, "direction": direction, "amount": amount}
 
-def test_browser_tools_registered_with_expected_risk_levels():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
-    by_name = {tool.name: tool for tool in registry.list_all()}
+    async def close(self):
+        pass
 
-    assert by_name["browser_navigate"].risk_level == "medium"
-    assert by_name["browser_screenshot"].risk_level == "medium"
-    assert by_name["browser_click"].risk_level == "medium"
-    assert by_name["browser_type"].risk_level == "medium"
-    assert by_name["browser_select"].risk_level == "medium"
-    assert by_name["browser_wait_for"].risk_level == "low"
-    assert by_name["browser_get_value"].risk_level == "low"
-    assert by_name["browser_fill_form"].risk_level == "medium"
-    assert by_name["browser_get_text"].risk_level == "low"
-    assert by_name["browser_snapshot"].risk_level == "low"
-    assert by_name["browser_reset"].risk_level == "low"
-    assert by_name["browser_tabs"].risk_level == "low"
-    assert by_name["browser_tab_open"].risk_level == "medium"
-    assert by_name["browser_tab_focus"].risk_level == "low"
-    assert by_name["browser_tab_close"].risk_level == "medium"
+
+class _StubBrowserPool:
+    """Wraps a stub manager so it can be used as a BrowserPool."""
+
+    def __init__(self, manager: _StubBrowserManager | None = None):
+        self._manager = manager or _StubBrowserManager()
+        self.reset_called = False
+
+    async def get(self, session_id, *, instance_name: str | None = None):
+        _ = instance_name
+        return self._manager
+
+    async def reset(self, session_id, *, instance_name: str | None = None):
+        _ = session_id, instance_name
+        self.reset_called = True
+        return {
+            "reset": True,
+            "url": "about:blank",
+            "title": "",
+            "tab_id": "t1",
+            "cdp_endpoint": "http://127.0.0.1:9223",
+        }
+
+    async def remove(self, session_id, *, instance_name: str | None = None):
+        _ = session_id, instance_name
+
+    async def close_all(self):
+        pass
+
+
+class _FakeListener:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    async def wait_closed(self):
+        return None
+
+
+class _FakeSSH:
+    def __init__(self):
+        self.scripts: list[str] = []
+        self.script_args: list[list[str]] = []
+        self.listeners: list[_FakeListener] = []
+
+    async def run_script(self, script: str, *, args: list[str] | None = None, timeout: int = 300):
+        _ = timeout
+        self.scripts.append(script)
+        self.script_args.append(args or [])
+        if (
+            'profile_dir = browser_dir / "chromium"' in script
+            and "shutil.rmtree(profile_dir)" in script
+        ):
+            return RuntimeExecResult(
+                exit_status=0, stdout='{"ok":true,"profile_dir":"/tmp/profile"}', stderr=""
+            )
+        if (
+            'metadata_path = Path(request["runtime"])' in script
+            and "browser.json" in script
+            and "kill_pid(pid)" in script
+        ):
+            return RuntimeExecResult(exit_status=0, stdout='{"ok":true}', stderr="")
+        return RuntimeExecResult(
+            exit_status=0,
+            stdout='{"ok":true,"pid":1234,"port":9333,"profile_dir":"/tmp/profile","reused":false}',
+            stderr="",
+        )
+
+    async def forward_local_port(
+        self, listen_host: str, listen_port: int, target_host: str, target_port: int
+    ):
+        _ = listen_host, listen_port, target_host, target_port
+        listener = _FakeListener()
+        self.listeners.append(listener)
+        return listener
+
+
+class _FakeTerminalManager:
+    def __init__(self, workspaces_root: str | None = "/runtime/workspaces"):
+        self.ssh = _FakeSSH()
+        self.workspaces_root = workspaces_root
+        self.prepared: list[str] = []
+
+    async def prepare_workspace(self, session_id: str):
+        self.prepared.append(session_id)
+
+
+class _FakeDesktopManager:
+    async def ensure_session_desktop(self, session_id: str):
+        _ = session_id
+        return type("Desktop", (), {"display": ":75", "geometry": "1920x1200"})()
+
+
+def _stub_pool(manager=None):
+    return _StubBrowserPool(manager)
+
+
+def _browser_registry(manager=None):
+    reset_runtime_services()
+    configure_runtime_services(browser_pool=_stub_pool(manager))
+    return build_default_registry()
 
 
 def test_browser_manager_lazy_init_and_actions():
-    from app.services.tools import browser_tool as browser_tool_module
+    import app.services.browser.manager as browser_manager_module
 
     state = {"launches": 0, "contexts": 0, "stopped": 0}
 
@@ -210,6 +317,10 @@ def test_browser_manager_lazy_init_and_actions():
         def __init__(self):
             self.url = ""
             self.accessibility = _FakeAccessibility()
+            self._handlers = {}
+
+        def on(self, event: str, handler):
+            self._handlers[event] = handler
 
         async def goto(self, url: str, wait_until: str, timeout: int):
             _ = wait_until, timeout
@@ -284,8 +395,8 @@ def test_browser_manager_lazy_init_and_actions():
         async def start(self):
             return _FakePlaywright()
 
-    old_factory = browser_tool_module.async_playwright
-    browser_tool_module.async_playwright = lambda: _FakeContext()
+    old_factory = browser_manager_module.async_playwright
+    browser_manager_module.async_playwright = lambda: _FakeContext()
     try:
         manager = BrowserManager()
         navigate = _run(manager.navigate("https://example.com"))
@@ -294,7 +405,7 @@ def test_browser_manager_lazy_init_and_actions():
         screenshot = _run(manager.screenshot())
         _run(manager.close())
     finally:
-        browser_tool_module.async_playwright = old_factory
+        browser_manager_module.async_playwright = old_factory
 
     assert navigate["title"] == "Fake Title"
     assert text["text"] == "Body Text"
@@ -308,14 +419,84 @@ def test_browser_manager_lazy_init_and_actions():
     assert state["stopped"] == 1
 
 
+def test_browser_pool_restarts_remote_browser_when_cdp_is_unavailable():
+    state = {"created": 0}
+
+    class _FakeBrowserManager:
+        def __init__(self, *, cdp_endpoint: str | None = None, **kwargs):
+            _ = kwargs
+            self.cdp_endpoint = cdp_endpoint
+            self.instance_number = state["created"]
+            state["created"] += 1
+            self.closed = False
+
+        async def ensure_connected(self):
+            if self.instance_number == 0:
+                raise RuntimeError("cdp unavailable")
+
+        async def close(self):
+            self.closed = True
+
+    terminal_manager = _FakeTerminalManager()
+    pool = browser_pool_module.BrowserPool(
+        terminal_manager=terminal_manager,
+        desktop_manager=_FakeDesktopManager(),
+        manager_cls=_FakeBrowserManager,
+    )
+    manager = _run(pool.get(_SID))
+
+    assert isinstance(manager, _FakeBrowserManager)
+    assert manager.instance_number == 1
+    assert len(terminal_manager.ssh.listeners) == 2
+    assert terminal_manager.ssh.listeners[0].closed is True
+    request = json.loads(terminal_manager.ssh.script_args[-1][0])
+    assert request["browser"] == f"/runtime/workspaces/{_SID}/state/browser"
+
+
+def test_browser_pool_recreates_unhealthy_cached_manager():
+    class _FakeBrowserManager:
+        instances: list["_FakeBrowserManager"] = []
+
+        def __init__(self, *, cdp_endpoint: str | None = None, **kwargs):
+            _ = kwargs
+            self.cdp_endpoint = cdp_endpoint
+            self.fail = False
+            self.closed = False
+            _FakeBrowserManager.instances.append(self)
+
+        async def ensure_connected(self):
+            if self.fail:
+                raise RuntimeError("stale connection")
+
+        async def close(self):
+            self.closed = True
+
+    pool = browser_pool_module.BrowserPool(
+        terminal_manager=_FakeTerminalManager(),
+        desktop_manager=_FakeDesktopManager(),
+        manager_cls=_FakeBrowserManager,
+    )
+    first = _run(pool.get(_SID))
+    first.fail = True
+    second = _run(pool.get(_SID))
+
+    assert first is not second
+    assert first.closed is True
+    assert len(_FakeBrowserManager.instances) == 2
+
+
 def test_browser_manager_falls_back_when_profile_is_locked():
-    from app.services.tools import browser_tool as browser_tool_module
+    import app.services.browser.manager as browser_manager_module
 
     state = {"launches": 0}
 
     class _FakePage:
         url = "https://example.com"
         accessibility = None
+        _handlers = {}
+
+        def on(self, event: str, handler):
+            self._handlers[event] = handler
 
         async def goto(self, url: str, wait_until: str, timeout: int):
             _ = url, wait_until, timeout
@@ -364,14 +545,14 @@ def test_browser_manager_falls_back_when_profile_is_locked():
         async def start(self):
             return _FakePlaywright()
 
-    old_factory = browser_tool_module.async_playwright
-    browser_tool_module.async_playwright = lambda: _FakeContext()
+    old_factory = browser_manager_module.async_playwright
+    browser_manager_module.async_playwright = lambda: _FakeContext()
     try:
         manager = BrowserManager(user_data_dir="/tmp/profile")
         result = _run(manager.navigate("https://example.com"))
         _run(manager.close())
     finally:
-        browser_tool_module.async_playwright = old_factory
+        browser_manager_module.async_playwright = old_factory
 
     assert result["title"] == "Fallback Title"
     assert state["launches"] == 1
@@ -412,13 +593,13 @@ def test_browser_click_passes_optional_tab_id_to_manager():
             observed["tab_id"] = tab_id
             return {"clicked": True, "selector": selector}
 
-    registry = build_default_registry(browser_manager=_CaptureManager())
+    registry = _browser_registry(_CaptureManager())
     executor = ToolExecutor(registry)
     result, _ = _run(
         executor.execute(
-            "browser_click",
-            {"selector": "button: Continue", "tab_id": "t7"},
-            allow_high_risk=True,
+            "browser",
+            {"command": "click", "selector": "button: Continue", "tab_id": "t7"},
+            runtime=_RUNTIME,
         )
     )
     assert result["clicked"] is True
@@ -426,12 +607,12 @@ def test_browser_click_passes_optional_tab_id_to_manager():
 
 
 def test_browser_snapshot_rejects_unexpected_payload_fields():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
         _run(
             executor.execute(
-                "browser_snapshot", {"unexpected": True}, allow_high_risk=True
+                "browser", {"command": "snapshot", "unexpected": True}, runtime=_RUNTIME
             )
         )
         raised = False
@@ -440,70 +621,137 @@ def test_browser_snapshot_rejects_unexpected_payload_fields():
     assert raised is True
 
 
-def test_browser_reset_tool_executes_without_payload():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
+def test_browser_reset_tool_executes():
+    pool = _stub_pool()
+    reset_runtime_services()
+    configure_runtime_services(browser_pool=pool)
+    registry = build_default_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser_reset", {}, allow_high_risk=True))
+    result, _ = _run(executor.execute("browser", {"command": "reset"}, runtime=_RUNTIME))
     assert result["reset"] is True
     assert result["url"] == "about:blank"
+    assert pool.reset_called is True
 
 
-def test_browser_tabs_tool_executes_without_payload():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
+def test_browser_pool_reset_restarts_remote_browser():
+    state = {"created": 0}
+
+    class _FakeBrowserManager:
+        def __init__(self, *, cdp_endpoint: str | None = None, **kwargs):
+            _ = kwargs
+            self.cdp_endpoint = cdp_endpoint
+            self.instance_number = state["created"]
+            state["created"] += 1
+            self.closed = False
+
+        async def ensure_connected(self):
+            return None
+
+        async def warmup(self):
+            return {"url": "about:blank", "title": "", "tab_id": "t1"}
+
+        async def close(self):
+            self.closed = True
+
+    terminal_manager = _FakeTerminalManager()
+    pool = browser_pool_module.BrowserPool(
+        terminal_manager=terminal_manager,
+        desktop_manager=_FakeDesktopManager(),
+        manager_cls=_FakeBrowserManager,
+    )
+    result = _run(pool.reset(_SID))
+
+    assert result["reset"] is True
+    assert result["url"] == "about:blank"
+    assert result["cdp_endpoint"].startswith("http://127.0.0.1:")
+    assert result["profile_dir"] == f"/runtime/workspaces/{_SID}/state/browser/chromium"
+    assert any("shutil.rmtree(profile_dir)" in script for script in terminal_manager.ssh.scripts)
+
+
+def test_browser_pool_keeps_handles_separate_by_instance():
+    class _FakeBrowserManager:
+        instances: list["_FakeBrowserManager"] = []
+
+        def __init__(self, *, cdp_endpoint: str | None = None, **kwargs):
+            _ = kwargs
+            self.cdp_endpoint = cdp_endpoint
+            _FakeBrowserManager.instances.append(self)
+
+        async def ensure_connected(self):
+            return None
+
+        async def close(self):
+            return None
+
+    terminal_manager = _FakeTerminalManager()
+    pool = browser_pool_module.BrowserPool(
+        terminal_manager=terminal_manager,
+        desktop_manager=_FakeDesktopManager(),
+        manager_cls=_FakeBrowserManager,
+    )
+    first = _run(pool.get(_SID, instance_name="main"))
+    second = _run(pool.get(_SID, instance_name="other"))
+
+    assert first is not second
+    assert len(_FakeBrowserManager.instances) == 2
+
+
+def test_browser_tabs_tool_executes():
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser_tabs", {}, allow_high_risk=True))
+    result, _ = _run(executor.execute("browser", {"command": "tabs"}, runtime=_RUNTIME))
     assert result["active_tab_id"] == "t1"
     assert result["tabs"][0]["tab_id"] == "t1"
 
 
 def test_browser_tab_open_defaults_to_blank():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser_tab_open", {}, allow_high_risk=True))
+    result, _ = _run(executor.execute("browser", {"command": "tab_open"}, runtime=_RUNTIME))
     assert result["opened"] is True
     assert result["url"] == "about:blank"
 
 
 def test_browser_tab_focus_requires_tab_id():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser_tab_focus", {}, allow_high_risk=True))
+        _run(executor.execute("browser", {"command": "tab_focus"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
     assert raised is True
 
     result, _ = _run(
-        executor.execute("browser_tab_focus", {"tab_id": "t1"}, allow_high_risk=True)
+        executor.execute("browser", {"command": "tab_focus", "tab_id": "t1"}, runtime=_RUNTIME)
     )
     assert result["focused"] is True
     assert result["tab_id"] == "t1"
 
 
 def test_browser_tab_close_requires_tab_id():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser_tab_close", {}, allow_high_risk=True))
+        _run(executor.execute("browser", {"command": "tab_close"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
     assert raised is True
 
     result, _ = _run(
-        executor.execute("browser_tab_close", {"tab_id": "t2"}, allow_high_risk=True)
+        executor.execute("browser", {"command": "tab_close", "tab_id": "t2"}, runtime=_RUNTIME)
     )
     assert result["closed"] is True
     assert result["tab_id"] == "t2"
 
 
 def test_browser_select_requires_selector_and_choice():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
 
     try:
-        _run(executor.execute("browser_select", {}, allow_high_risk=True))
+        _run(executor.execute("browser", {"command": "select"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
@@ -512,9 +760,9 @@ def test_browser_select_requires_selector_and_choice():
     try:
         _run(
             executor.execute(
-                "browser_select",
-                {"selector": "combobox: Month"},
-                allow_high_risk=True,
+                "browser",
+                {"command": "select", "selector": "combobox: Month"},
+                runtime=_RUNTIME,
             )
         )
         raised = False
@@ -524,23 +772,28 @@ def test_browser_select_requires_selector_and_choice():
 
     result, _ = _run(
         executor.execute(
-            "browser_select",
-            {"selector": "combobox: Month", "value": "1"},
-            allow_high_risk=True,
+            "browser",
+            {"command": "select", "selector": "combobox: Month", "value": "1"},
+            runtime=_RUNTIME,
         )
     )
     assert result["selected_values"] == ["1"]
 
 
 def test_browser_wait_for_accepts_conditions():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
 
     result, _ = _run(
         executor.execute(
-            "browser_wait_for",
-            {"selector": "button: Next", "condition": "enabled", "timeout_ms": 4000},
-            allow_high_risk=True,
+            "browser",
+            {
+                "command": "wait_for",
+                "selector": "button: Next",
+                "condition": "enabled",
+                "timeout_ms": 4000,
+            },
+            runtime=_RUNTIME,
         )
     )
     assert result["satisfied"] is True
@@ -548,10 +801,10 @@ def test_browser_wait_for_accepts_conditions():
 
 
 def test_browser_get_value_requires_selector():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser_get_value", {}, allow_high_risk=True))
+        _run(executor.execute("browser", {"command": "get_value"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
@@ -559,11 +812,11 @@ def test_browser_get_value_requires_selector():
 
 
 def test_browser_fill_form_requires_non_empty_steps():
-    registry = build_default_registry(browser_manager=_StubBrowserManager())
+    registry = _browser_registry()
     executor = ToolExecutor(registry)
 
     try:
-        _run(executor.execute("browser_fill_form", {}, allow_high_risk=True))
+        _run(executor.execute("browser", {"command": "fill_form"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
@@ -571,15 +824,16 @@ def test_browser_fill_form_requires_non_empty_steps():
 
     result, _ = _run(
         executor.execute(
-            "browser_fill_form",
+            "browser",
             {
+                "command": "fill_form",
                 "steps": [
                     {"selector": "textbox: Email", "text": "qa@example.com"},
                     {"selector": "button: Continue", "click": True},
                 ],
                 "verify": True,
             },
-            allow_high_risk=True,
+            runtime=_RUNTIME,
         )
     )
     assert result["ok"] is True
@@ -716,6 +970,10 @@ class _SemanticPage:
         self.last_wait = None
         self.actions = []
         self.url = "https://example.com"
+        self._handlers = {}
+
+    def on(self, event: str, handler):
+        self._handlers[event] = handler
 
     def get_by_role(self, role: str, name: str, exact: bool = False):
         _ = exact

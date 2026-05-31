@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Memory
-from app.services.embeddings import EmbeddingService
+from app.services.memory.embeddings import EmbeddingService
 from app.services.memory.repository import MemoryRepository
 from app.services.memory.tree import (
     MIN_TIME,
@@ -18,7 +18,7 @@ from app.services.memory.tree import (
     filter_by_root,
     is_descendant,
 )
-from app.services.memory.search import MemorySearchResult, MemorySearchService
+from app.services.memory.search import MemorySearchService
 
 
 class MemoryServiceError(Exception):
@@ -220,7 +220,9 @@ class MemoryService:
                 (
                     item
                     for item in memories
-                    if item.parent_id is None and item.category == "core" and (item.title or "").strip() == title
+                    if item.parent_id is None
+                    and item.category == "core"
+                    and (item.title or "").strip() == title
                 ),
                 None,
             )
@@ -300,7 +302,9 @@ class MemoryService:
         if not node_ids:
             raise InvalidMemoryOperationError("node_ids must contain at least one node")
         if to_root and target_parent_id is not None:
-            raise InvalidMemoryOperationError("Provide either to_root=true or target_parent_id, not both")
+            raise InvalidMemoryOperationError(
+                "Provide either to_root=true or target_parent_id, not both"
+            )
         if not to_root and target_parent_id is None:
             raise InvalidMemoryOperationError("Provide target_parent_id or set to_root=true")
 
@@ -358,9 +362,7 @@ class MemoryService:
                     node_id=target_parent_id,
                     memories=memories,
                 ):
-                    raise InvalidMemoryOperationError(
-                        "Cannot move a node under its own descendant"
-                    )
+                    raise InvalidMemoryOperationError("Cannot move a node under its own descendant")
 
         destination_parent_id = None if to_root else target_parent_id
         moved: list[Memory] = []
@@ -448,7 +450,9 @@ class MemoryService:
 
         return await self._repo.save(db, memory, commit=commit)
 
-    async def touch_memory(self, db: AsyncSession, memory_id: UUID, *, commit: bool = True) -> Memory:
+    async def touch_memory(
+        self, db: AsyncSession, memory_id: UUID, *, commit: bool = True
+    ) -> Memory:
         memory = await self.get_memory(db, memory_id)
         memory.last_accessed_at = datetime.now(UTC)
         return await self._repo.save(db, memory, commit=commit)
@@ -460,7 +464,9 @@ class MemoryService:
             categories[item.category] = categories.get(item.category, 0) + 1
         return categories
 
-    async def delete_memory(self, db: AsyncSession, memory_id: UUID, *, commit: bool = True) -> None:
+    async def delete_memory(
+        self, db: AsyncSession, memory_id: UUID, *, commit: bool = True
+    ) -> None:
         memory = await self.get_memory(db, memory_id)
         if self._is_system_memory(memory):
             raise ProtectedMemoryOperationError("Cannot delete a protected system memory")
@@ -479,9 +485,7 @@ class MemoryService:
     ) -> int:
         memories = await self._repo.list_all(db)
         delete_ids = {
-            item.id
-            for item in memories
-            if include_system or not self._is_system_memory(item)
+            item.id for item in memories if include_system or not self._is_system_memory(item)
         }
         if not delete_ids:
             return 0
@@ -564,4 +568,6 @@ class MemoryService:
         if "parent_id" in updates and updates.get("parent_id") is not None:
             raise ProtectedMemoryOperationError("System memories must stay at root level")
         if "category" in updates and updates.get("category") != memory.category:
-            raise ProtectedMemoryOperationError("Cannot change category of a protected system memory")
+            raise ProtectedMemoryOperationError(
+                "Cannot change category of a protected system memory"
+            )

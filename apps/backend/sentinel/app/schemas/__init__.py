@@ -2,24 +2,16 @@ from app.schemas.admin import (
     AuditLogListResponse,
     AuditLogResponse,
     ConfigResponse,
-    UpdateConfigRequest,
 )
 from app.schemas.auth import RefreshRequest, TokenPairResponse
 from app.schemas.compaction import CompactionResponse
 from app.schemas.memory import (
-    MemoryBackupDocument,
-    MemoryBackupImportRequest,
-    MemoryBackupImportResponse,
     MemoryListResponse,
     MemoryResponse,
     MemoryStatsResponse,
     StoreMemoryRequest,
 )
 from app.schemas.models import ModelOptionResponse, ModelsResponse
-from app.schemas.playwright import (
-    PlaywrightBrowserResetResponse,
-    PlaywrightLiveViewResponse,
-)
 from app.schemas.sessions import (
     CreateMessageRequest,
     CreateSessionRequest,
@@ -32,13 +24,6 @@ from app.schemas.sub_agents import (
     CreateSubAgentTaskRequest,
     SubAgentTaskListResponse,
     SubAgentTaskResponse,
-)
-from app.schemas.tools import (
-    ToolDetailResponse,
-    ToolExecuteRequest,
-    ToolExecuteResponse,
-    ToolListResponse,
-    ToolSummaryResponse,
 )
 from app.schemas.triggers import (
     CreateTriggerRequest,
@@ -62,9 +47,6 @@ __all__ = [
     "CreateSubAgentTaskRequest",
     "CreateTriggerRequest",
     "FireTriggerRequest",
-    "MemoryBackupDocument",
-    "MemoryBackupImportRequest",
-    "MemoryBackupImportResponse",
     "MemoryListResponse",
     "MemoryResponse",
     "MemoryStatsResponse",
@@ -72,22 +54,14 @@ __all__ = [
     "ModelsResponse",
     "MessageListResponse",
     "MessageResponse",
-    "PlaywrightBrowserResetResponse",
-    "PlaywrightLiveViewResponse",
     "SessionListResponse",
     "SessionResponse",
     "StoreMemoryRequest",
     "SubAgentTaskListResponse",
     "SubAgentTaskResponse",
-    "ToolDetailResponse",
-    "ToolExecuteRequest",
-    "ToolExecuteResponse",
-    "ToolListResponse",
-    "ToolSummaryResponse",
     "TriggerListResponse",
     "TriggerLogListResponse",
     "TriggerLogResponse",
     "TriggerResponse",
-    "UpdateConfigRequest",
     "UpdateTriggerRequest",
 ]

@@ -7,6 +7,11 @@ export interface TokenResponse {
   expires_in: number;
 }
 
+export interface AuthSetupStatus {
+  configured: boolean;
+  bootstrap_available: boolean;
+}
+
 export interface Session {
   id: string;
   user_id: string;
@@ -36,7 +41,6 @@ export interface SessionRuntimeStatus {
   session_id: string;
   runtime_exists: boolean;
   workspace_exists: boolean;
-  venv_exists: boolean;
   active: boolean;
   active_pid: number | null;
   last_command: string | null;
@@ -260,38 +264,6 @@ export interface MemoryStats {
   categories: Record<string, number>;
 }
 
-export type MemoryBackupImportMode = 'merge' | 'replace_non_system' | 'replace_all';
-
-export interface MemoryBackupNode {
-  external_id: string;
-  parent_external_id: string | null;
-  content: string;
-  title: string | null;
-  summary: string | null;
-  category: 'core' | 'preference' | 'project' | 'correction';
-  importance: number;
-  pinned: boolean;
-  is_system: boolean;
-  system_key: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string | null;
-  updated_at: string | null;
-}
-
-export interface MemoryBackupDocument {
-  schema_version: 'memory_backup_v1';
-  exported_at: string;
-  nodes: MemoryBackupNode[];
-}
-
-export interface MemoryBackupImportResponse {
-  total_in_backup: number;
-  created: number;
-  updated: number;
-  deleted: number;
-  skipped: number;
-}
-
 export interface Trigger {
   id: string;
   name: string;
@@ -397,22 +369,137 @@ export interface ApprovalListResponse {
   total: number;
 }
 
-export interface ApprovalToolCallMatchResponse {
-  item: ApprovalRecord | null;
-}
-
-export interface PlaywrightLiveView {
+export interface RuntimeLiveView {
   enabled: boolean;
   available: boolean;
   mode?: string;
   url: string | null;
+  ws_url: string | null;
+  display: string | null;
+  geometry: string | null;
   reason: string | null;
+  provider: {
+    id: string;
+    label: string;
+    status: string | null;
+    summary: string | null;
+    items: Array<{
+      key: string;
+      label: string;
+      value: string;
+    }>;
+  };
+}
+
+export interface RuntimeActionResponse {
+  ok: boolean;
+  action: string;
+  session_id: string;
+  detail: string | null;
+  result: Record<string, unknown>;
+}
+
+export interface RuntimeStatusCheck {
+  id: string;
+  label: string;
+  status: 'pass' | 'fail' | 'warn' | 'skip';
+  detail: string | null;
+  hint: string | null;
+  required: boolean;
+  duration_ms: number | null;
+}
+
+export interface RuntimeStatusResponse {
+  status: 'ready' | 'degraded' | 'not_configured' | 'unreachable' | 'failed';
+  summary: string;
+  checked_at: string;
+  os: 'linux' | 'darwin' | 'unsupported' | 'unknown';
+  sandbox: 'bubblewrap' | 'seatbelt' | 'unavailable' | 'unknown';
+  runtime: {
+    name?: string | null;
+    provider?: 'ssh' | 'lima' | 'docker' | null;
+    host: string | null;
+    port: number | null;
+    username: string | null;
+    workspaces_dir: string | null;
+  };
+  checks: RuntimeStatusCheck[];
+  capabilities: Record<string, string>;
+}
+
+export type RuntimeProvider = 'ssh' | 'lima' | 'docker';
+export type RuntimeStatus = 'unknown' | 'creating' | 'stopped' | 'running' | 'ready' | 'error' | 'deleted';
+
+export interface Runtime {
+  id: string;
+  name: string;
+  provider: RuntimeProvider;
+  status: RuntimeStatus;
+  profile: string | null;
+  host: string | null;
+  port: number | null;
+  username: string | null;
+  workspaces_dir: string | null;
+  auth_type: 'private_key' | 'password' | null;
+  provider_config: {
+    desktop: string;
+    cpus: number | null;
+    memory: string | null;
+    disk: string | null;
+  };
+  provider_state: {
+    ssh_config?: string | null;
+    lima_name?: string | null;
+    container_name?: string | null;
+    workspace_volume?: string | null;
+    desktop?: string | null;
+  } & Record<string, unknown>;
+  status_detail: string | null;
+  last_job_id: string | null;
+  last_job_status: 'queued' | 'running' | 'succeeded' | 'failed' | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface RuntimeTestResponse {
+  ok: boolean;
+  detail: string;
+  resolved_home: string | null;
+  resolved_workspaces_dir: string | null;
+}
+
+export interface RuntimeProviderCapability {
+  provider: RuntimeProvider;
+  available: boolean;
+  label: string;
+  detail: string;
+  missing: string[];
+}
+
+export interface RuntimeCapabilitiesResponse {
+  providers: RuntimeProviderCapability[];
+}
+
+export interface RuntimeJob {
+  id: string;
+  runtime_id: string | null;
+  provider: RuntimeProvider;
+  action: 'create' | 'start' | 'stop' | 'delete' | 'rebuild';
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  events: Array<{ timestamp: string; level: 'info' | 'error'; message: string }>;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface RuntimeLifecycleResponse {
+  runtime: Runtime;
+  job: RuntimeJob;
 }
 
 export interface ConfigResponse {
   app_name: string;
   app_env: string;
-  estop_active: boolean;
   jwt_algorithm: string;
   access_token_ttl_seconds: number;
   refresh_token_ttl_seconds: number;

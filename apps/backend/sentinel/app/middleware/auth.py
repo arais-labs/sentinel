@@ -11,8 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.dependencies import get_db
-from app.models import RevokedToken
+from app.dependencies import get_manager_db
+from app.models.manager import ManagerRevokedToken
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 ACCESS_TOKEN_COOKIE_NAME = "sentinel_access_token"
@@ -50,15 +50,19 @@ def _encode_token(*, identity: Identity, token_type: str, ttl_seconds: int) -> s
 
 
 def create_access_token(identity: Identity) -> str:
-    return _encode_token(identity=identity, token_type="access", ttl_seconds=settings.access_token_ttl_seconds)
+    return _encode_token(
+        identity=identity, token_type="access", ttl_seconds=settings.access_token_ttl_seconds
+    )
 
 
 def create_refresh_token(identity: Identity) -> str:
-    return _encode_token(identity=identity, token_type="refresh", ttl_seconds=settings.refresh_token_ttl_seconds)
+    return _encode_token(
+        identity=identity, token_type="refresh", ttl_seconds=settings.refresh_token_ttl_seconds
+    )
 
 
 async def _is_revoked(db: AsyncSession, jti: str) -> bool:
-    result = await db.execute(select(RevokedToken).where(RevokedToken.jti == jti))
+    result = await db.execute(select(ManagerRevokedToken).where(ManagerRevokedToken.jti == jti))
     return result.scalar_one_or_none() is not None
 
 
@@ -86,7 +90,7 @@ async def decode_and_validate_token(
 
 
 async def get_current_user(
-    request: Request, db: AsyncSession = Depends(get_db)
+    request: Request, manager_db: AsyncSession = Depends(get_manager_db)
 ) -> TokenPayload:
     auth_header = request.headers.get("Authorization", "")
     token = ""
@@ -100,7 +104,7 @@ async def get_current_user(
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return await decode_and_validate_token(token, db, expected_type="access")
+    return await decode_and_validate_token(token, manager_db, expected_type="access")
 
 
 async def require_auth(user: TokenPayload = Depends(get_current_user)) -> TokenPayload:
@@ -115,6 +119,6 @@ async def require_admin(user: TokenPayload = Depends(get_current_user)) -> Token
 
 async def revoke_token(db: AsyncSession, payload: TokenPayload) -> None:
     expires_at = datetime.fromtimestamp(payload.exp, tz=UTC)
-    record = RevokedToken(jti=payload.jti, expires_at=expires_at)
+    record = ManagerRevokedToken(jti=payload.jti, expires_at=expires_at)
     db.add(record)
     await db.commit()

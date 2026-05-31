@@ -1,61 +1,53 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func as sa_func, select
+from sqlalchemy import func as sa_func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.sentral import ConversationItem, GenerationConfig, ImageBlock, RunTurnRequest, TextBlock
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import Memory, Message, Session, ToolApproval
-from app.services.context_usage import (
+from app.services.sessions.context_usage import (
     build_context_usage_metrics,
     estimate_agent_messages_tokens,
     estimate_db_messages_tokens,
     extract_runtime_context_metrics,
     normalize_context_budget,
 )
-from app.services import session_bindings
+from app.services.sessions import session_bindings
 from app.services.agent.agent_modes import AgentMode, get_default_agent_mode
-from app.services.agent_run_registry import AgentRunRegistry
+from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
 from app.services.llm.ids import TierName
 from app.services.memory import MemoryRepository, MemoryService
 from app.services.messages import normalize_generation_metadata, with_generation_metadata
-from app.services.session_runtime import (
-    cleanup_session_runtime,
-    get_session_runtime_snapshot,
-    list_runtime_workspace_git_changed_files,
-    list_runtime_workspace_git_roots,
-    list_runtime_workspace_entries,
-    read_runtime_workspace_git_diff,
-    read_runtime_workspace_file_preview,
-    stop_all_detached_runtime_jobs,
-)
-from app.services.session_naming import (
+from app.services.sessions.session_naming import (
     SessionNamingService,
     apply_conversation_message_delta,
     conversation_delta_for_role,
 )
 from app.services.sessions.errors import (
-    AgentLoopUnavailableError,
+    AgentRuntimeUnavailableError,
     ChatPayloadRequiredError,
     MainSessionDeletionError,
     MainSessionTargetInvalidError,
     MessageNotFoundError,
-    RuntimePathInvalidError,
-    RuntimePathNotFoundError,
     SessionRenameNotAllowedError,
     SessionNotFoundError,
+    SessionWorkspaceCleanupError,
 )
 
 logger = logging.getLogger(__name__)
+
+SessionDeleteCleanup = Callable[[list[UUID]], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -84,11 +76,11 @@ class SessionService:
         self,
         *,
         run_registry: AgentRunRegistry,
-        agent_loop: Any | None = None,
+        agent_runtime_support: Any | None = None,
         db_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._run_registry = run_registry
-        self._agent_loop = agent_loop
+        self._agent_runtime_support = agent_runtime_support
         self._db_factory = db_factory or AsyncSessionLocal
 
     async def list_sessions(
@@ -203,9 +195,7 @@ class SessionService:
             active_only=True,
         )
         if is_telegram_channel:
-            raise MainSessionTargetInvalidError(
-                "Telegram channel sessions cannot be set as main"
-            )
+            raise MainSessionTargetInvalidError("Telegram channel sessions cannot be set as main")
         try:
             session = await session_bindings.set_main_session(
                 db,
@@ -238,9 +228,7 @@ class SessionService:
             active_only=True,
         )
         if is_telegram_channel:
-            raise SessionRenameNotAllowedError(
-                "Telegram channel sessions cannot be renamed"
-            )
+            raise SessionRenameNotAllowedError("Telegram channel sessions cannot be renamed")
         session.title = title
         await db.commit()
         await db.refresh(session)
@@ -254,140 +242,6 @@ class SessionService:
         if session is None:
             raise SessionNotFoundError("Session not found")
         return session
-
-    async def get_runtime_snapshot(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        action_limit: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        return get_session_runtime_snapshot(session.id, action_limit=action_limit)
-
-    async def list_runtime_files(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-        limit: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return list_runtime_workspace_entries(
-                session.id,
-                path=path,
-                limit=limit,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
-        except NotADirectoryError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime path is not a directory") from exc
-
-    async def get_runtime_file_preview(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-        max_bytes: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return read_runtime_workspace_file_preview(
-                session.id,
-                path=path,
-                max_bytes=max_bytes,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
-        except IsADirectoryError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime path is a directory") from exc
-
-    async def list_runtime_git_roots(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-        limit: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return list_runtime_workspace_git_roots(
-                session.id,
-                path=path,
-                limit=limit,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
-        except NotADirectoryError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime path is not a directory") from exc
-
-    async def get_runtime_git_diff(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-        base_ref: str,
-        staged: bool,
-        context_lines: int,
-        max_bytes: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return read_runtime_workspace_git_diff(
-                session.id,
-                path=path,
-                base_ref=base_ref,
-                staged=staged,
-                context_lines=context_lines,
-                max_bytes=max_bytes,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime file not found") from exc
-        except IsADirectoryError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime path is a directory") from exc
-        except RuntimeError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime git diff failed") from exc
-
-    async def get_runtime_git_changed_files(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-        path: str,
-        limit: int,
-    ) -> dict[str, Any]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        try:
-            return list_runtime_workspace_git_changed_files(
-                session.id,
-                path=path,
-                limit=limit,
-            )
-        except ValueError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Invalid runtime path") from exc
-        except FileNotFoundError as exc:
-            raise RuntimePathNotFoundError(str(exc) or "Runtime path not found") from exc
-        except RuntimeError as exc:
-            raise RuntimePathInvalidError(str(exc) or "Runtime git status failed") from exc
 
     async def get_context_usage(
         self,
@@ -418,9 +272,11 @@ class SessionService:
             if str(metadata.get("source") or "").strip().lower() != "runtime_context":
                 continue
             metrics = extract_runtime_context_metrics(
-                metadata.get("run_context")
-                if isinstance(metadata.get("run_context"), dict)
-                else None,
+                (
+                    metadata.get("run_context")
+                    if isinstance(metadata.get("run_context"), dict)
+                    else None
+                ),
                 default_budget=budget,
             )
             if metrics is None:
@@ -475,7 +331,7 @@ class SessionService:
         context_budget: int,
     ):
         """Estimate context using the same builder path used before actual runs."""
-        context_builder = getattr(self._agent_loop, "context_builder", None)
+        context_builder = getattr(self._agent_runtime_support, "context_builder", None)
         if context_builder is None or not hasattr(context_builder, "build"):
             return None
         try:
@@ -492,23 +348,13 @@ class SessionService:
             context_budget=context_budget,
         )
 
-    async def cleanup_runtime(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-    ) -> tuple[UUID, dict[str, bool]]:
-        session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        result = await cleanup_session_runtime(session.id)
-        return session.id, result
-
     async def delete_session(
         self,
         db: AsyncSession,
         *,
         session_id: UUID,
         user_id: str,
+        before_delete: SessionDeleteCleanup | None = None,
     ) -> int:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
         main_session_id = await self._get_main_session_id(db, user_id=user_id)
@@ -517,11 +363,22 @@ class SessionService:
         descendants = await self._get_descendant_sessions(
             db, root_session_id=session.id, user_id=user_id
         )
+        if before_delete is not None:
+            affected_session_ids = [session.id, *(child.id for child in descendants)]
+            try:
+                await before_delete(affected_session_ids)
+            except SessionWorkspaceCleanupError:
+                raise
+            except Exception as exc:
+                detail = str(exc).strip() or exc.__class__.__name__
+                raise SessionWorkspaceCleanupError(
+                    "Runtime workspace cleanup failed; session was not deleted.",
+                    detail=detail,
+                ) from exc
         for child in descendants:
             await db.delete(child)
         await db.delete(session)
         await db.commit()
-        await self._cleanup_runtime_for_session_ids([session.id, *[c.id for c in descendants]])
         return len(descendants)
 
     async def stop_generation(
@@ -532,7 +389,7 @@ class SessionService:
         user_id: str,
     ) -> bool:
         _ = await self.get_session(db, session_id=session_id, user_id=user_id)
-        cancelled = await self._run_registry.cancel(str(session_id))
+        cancelled = await self._run_registry.cancel_and_wait(str(session_id))
         now = datetime.now(UTC)
         has_mutations = False
         tool_pending_result = await db.execute(
@@ -557,7 +414,27 @@ class SessionService:
                     "message": "Tool call cancelled by user via stop.",
                 }
             )
+            call_ids = [
+                str(call.get("id") or "").strip()
+                for call in unresolved_tool_calls
+                if str(call.get("id") or "").strip()
+            ]
+            existing_result = await db.execute(
+                select(Message).where(
+                    Message.session_id == session_id,
+                    Message.role == "tool_result",
+                    Message.tool_call_id.in_(call_ids),
+                )
+            )
+            existing_messages = {
+                str(row.tool_call_id or "").strip(): row
+                for row in existing_result.scalars().all()
+                if str(row.tool_call_id or "").strip()
+            }
             for call in unresolved_tool_calls:
+                call_id = str(call.get("id") or "").strip()
+                if not call_id:
+                    continue
                 generation = normalize_generation_metadata(
                     call.get("generation") if isinstance(call.get("generation"), dict) else None
                 )
@@ -565,13 +442,23 @@ class SessionService:
                     {"pending": False, "cancelled_by_stop": True},
                     generation=generation,
                 )
+                existing_message = existing_messages.get(call_id)
+                if existing_message is not None:
+                    self._apply_terminal_tool_result_update(
+                        existing_message,
+                        content=content,
+                        metadata=metadata,
+                        approval_status="cancelled",
+                        decision_note="Cancelled by user via stop",
+                    )
+                    continue
                 db.add(
                     Message(
                         session_id=session_id,
                         role="tool_result",
                         content=content,
                         metadata_json=metadata,
-                        tool_call_id=call["id"],
+                        tool_call_id=call_id,
                         tool_name=call["name"],
                     )
                 )
@@ -579,11 +466,30 @@ class SessionService:
 
         if has_mutations:
             await db.commit()
-        await stop_all_detached_runtime_jobs(
-            session_id,
-            reason="Cancelled by user via stop",
-        )
         return cancelled
+
+    @staticmethod
+    def _apply_terminal_tool_result_update(
+        message: Message,
+        *,
+        content: str,
+        metadata: dict[str, Any],
+        approval_status: str,
+        decision_note: str,
+    ) -> None:
+        existing_metadata = (
+            dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+        )
+        approval = existing_metadata.get("approval")
+        if isinstance(approval, dict):
+            next_approval = dict(approval)
+            next_approval["status"] = approval_status
+            next_approval["pending"] = False
+            next_approval["can_resolve"] = False
+            next_approval["decision_note"] = decision_note
+            metadata["approval"] = next_approval
+        message.content = content
+        message.metadata_json = metadata
 
     async def _unresolved_tool_calls(
         self,
@@ -592,7 +498,9 @@ class SessionService:
         session_id: UUID,
     ) -> list[dict[str, Any]]:
         result = await db.execute(
-            select(Message).where(Message.session_id == session_id).order_by(Message.created_at.asc())
+            select(Message)
+            .where(Message.session_id == session_id)
+            .order_by(Message.created_at.asc())
         )
         messages = result.scalars().all()
 
@@ -615,7 +523,9 @@ class SessionService:
                         continue
                     call_name = str(raw_call.get("name") or "unknown").strip() or "unknown"
                     generation = normalize_generation_metadata(
-                        metadata.get("generation") if isinstance(metadata.get("generation"), dict) else None
+                        metadata.get("generation")
+                        if isinstance(metadata.get("generation"), dict)
+                        else None
                     )
                     pending[call_id] = {"id": call_id, "name": call_name}
                     pending[call_id]["generation"] = generation
@@ -658,7 +568,10 @@ class SessionService:
         await db.commit()
         await db.refresh(message)
         if role == "user":
-            naming = SessionNamingService(provider=getattr(self._agent_loop, "provider", None))
+            naming = SessionNamingService(
+                provider=getattr(self._agent_runtime_support, "provider", None),
+                db_factory=self._db_factory,
+            )
             await naming.maybe_auto_rename(session_id=session.id)
         return message
 
@@ -674,9 +587,7 @@ class SessionService:
         _ = await self.get_session(db, session_id=session_id, user_id=user_id)
         result = await db.execute(select(Message).where(Message.session_id == session_id))
         messages = result.scalars().all()
-        messages.sort(
-            key=lambda m: m.created_at or datetime.min.replace(tzinfo=UTC), reverse=True
-        )
+        messages.sort(key=lambda m: m.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
 
         if before:
             before_message = next((msg for msg in messages if msg.id == before), None)
@@ -706,51 +617,71 @@ class SessionService:
         max_iterations: int,
     ) -> ChatRunResult:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        if self._agent_loop is None:
-            raise AgentLoopUnavailableError("No LLM provider configured")
+        if self._agent_runtime_support is None:
+            raise AgentRuntimeUnavailableError("No LLM provider configured")
 
         text = content.strip()
         if not text and not attachments:
             raise ChatPayloadRequiredError("content or attachments required")
 
         if attachments:
-            user_blocks: list[TextContent | ImageContent] = []
+            user_blocks: list[TextBlock | ImageBlock] = []
             if text:
-                user_blocks.append(TextContent(text=text))
+                user_blocks.append(TextBlock(text=text))
             for item in attachments:
                 base64_data = item.base64.strip()
                 if ";base64," in base64_data:
                     _, _, base64_data = base64_data.partition(";base64,")
                 user_blocks.append(
-                    ImageContent(
+                    ImageBlock(
                         media_type=item.mime_type,
                         data=base64_data,
                     )
                 )
-            user_payload: str | list[TextContent | ImageContent] = user_blocks
+            user_blocks_payload = user_blocks
         else:
-            user_payload = text
+            user_blocks_payload = [TextBlock(text=text)]
 
-        result = await self._agent_loop.run(
-            db,
-            session.id,
-            user_payload,
-            system_prompt=system_prompt,
-            model=(tier or TierName.NORMAL).value,
-            temperature=temperature,
-            max_iterations=max_iterations,
-            agent_mode=agent_mode or get_default_agent_mode(),
-            allow_high_risk=True,
-            stream=False,
+        mode = agent_mode or get_default_agent_mode()
+        from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
+
+        runtime = SentinelLoopRuntimeAdapter(
+            loop=self._agent_runtime_support,
+            db=db,
+            session_id=session.id,
         )
-        naming = SessionNamingService(provider=getattr(self._agent_loop, "provider", None))
+        result = await runtime.run_turn(
+            RunTurnRequest(
+                conversation_id=str(session.id),
+                new_items=[
+                    ConversationItem(
+                        id="chat-user-input",
+                        role="user",
+                        content=user_blocks_payload,
+                    )
+                ],
+                config=GenerationConfig(
+                    model=(tier or TierName.NORMAL).value,
+                    temperature=temperature,
+                    max_iterations=max_iterations,
+                    stream=False,
+                    system_prompt=system_prompt,
+                    provider_metadata={"agent_mode": mode},
+                ),
+                interjection_source=lambda: self._run_registry.drain_interjections(str(session.id)),
+            )
+        )
+        naming = SessionNamingService(
+            provider=getattr(self._agent_runtime_support, "provider", None),
+            db_factory=self._db_factory,
+        )
         await naming.maybe_auto_rename(session_id=session.id)
         return ChatRunResult(
-            final_text=result.final_text,
+            final_text=str(result.metadata.get("final_text") or ""),
             iterations=result.iterations,
             input_tokens=result.usage.input_tokens,
             output_tokens=result.usage.output_tokens,
-            error=getattr(result, "error", None),
+            error=result.error,
         )
 
     async def is_session_running(self, session_id: UUID) -> bool:
@@ -775,9 +706,7 @@ class SessionService:
             )
             .group_by(Message.session_id)
         )
-        latest_by_session: dict[UUID, datetime] = {
-            row.session_id: row.latest_msg for row in result
-        }
+        latest_by_session: dict[UUID, datetime] = {row.session_id: row.latest_msg for row in result}
         flags: dict[UUID, bool] = {}
         for session in sessions:
             latest_msg = latest_by_session.get(session.id)
@@ -797,7 +726,11 @@ class SessionService:
         user_id: str,
     ) -> Session:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        session.last_read_at = datetime.now(UTC)
+        await db.execute(
+            update(Session)
+            .where(Session.id == session_id, Session.user_id == user_id)
+            .values(last_read_at=datetime.now(UTC), updated_at=Session.updated_at)
+        )
         await db.commit()
         await db.refresh(session)
         return session
@@ -807,7 +740,7 @@ class SessionService:
 
     async def extract_session_memories(self, session_ids: list[UUID], user_id: str) -> None:
         """Summarize prior sessions into memory nodes (fire-and-forget)."""
-        if self._agent_loop is None:
+        if self._agent_runtime_support is None:
             return
         try:
             memory_service = MemoryService(MemoryRepository())
@@ -826,7 +759,7 @@ class SessionService:
                         "and what matters. Focus on facts, not chat pleasantries.\n\n"
                         f"TRANSCRIPT:\n{transcript}"
                     )
-                    result = await self._agent_loop.provider.chat(
+                    result = await self._agent_runtime_support.provider.chat(
                         [UserMessage(content=prompt)],
                         model=TierName.FAST.value,
                         tools=[],
@@ -888,7 +821,9 @@ class SessionService:
         memory_service: MemoryService,
     ) -> Memory:
         roots = await memory_service.list_root_memories(db, category="core")
-        root = next((item for item in roots if (item.title or "").strip() == "Previous Sessions"), None)
+        root = next(
+            (item for item in roots if (item.title or "").strip() == "Previous Sessions"), None
+        )
         if root is not None:
             if not bool(root.pinned):
                 await memory_service.update_memory(
@@ -960,15 +895,3 @@ class SessionService:
                 descendants.append(child)
                 stack.append(child.id)
         return descendants
-
-    async def _cleanup_runtime_for_session_ids(self, session_ids: list[UUID]) -> None:
-        unique_ids = list(dict.fromkeys(session_ids))
-        if not unique_ids:
-            return
-        tasks = [cleanup_session_runtime(session_id) for session_id in unique_ids]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for session_id, result in zip(unique_ids, results, strict=True):
-            if isinstance(result, Exception):
-                logger.warning(
-                    "Runtime cleanup failed for session %s", session_id, exc_info=result
-                )

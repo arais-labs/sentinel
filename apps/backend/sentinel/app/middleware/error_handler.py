@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 def _status_to_code(status_code: int) -> str:
     mapping = {
+        202: "accepted",
         400: "bad_request",
         401: "unauthorized",
         403: "forbidden",
@@ -56,7 +57,9 @@ def register_error_handlers(app: FastAPI) -> None:
         return response
 
     @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
         details = _json_safe(exc.errors())
         response = JSONResponse(
             status_code=422,

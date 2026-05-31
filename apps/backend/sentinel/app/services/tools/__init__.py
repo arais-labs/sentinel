@@ -1,36 +1,16 @@
-from __future__ import annotations
+"""Tool execution framework.
 
-from typing import TYPE_CHECKING, Any
+- registry.py: ToolDefinition, ToolRegistry, approval types
+- executor.py: ToolExecutor
+- approval/: tool approval lifecycle, listing, and extractors
+- registry_builder.py: builds ToolRegistry from system modules
+"""
 
-if TYPE_CHECKING:
-    from app.services.tools.browser_tool import BrowserManager
-    from app.services.tools.executor import ToolExecutor
-    from app.services.tools.registry import ToolDefinition, ToolRegistry
+from app.services.tools.executor import ToolExecutor
+from app.services.tools.registry import ToolDefinition, ToolRegistry
 
 __all__ = [
-    "BrowserManager",
     "ToolDefinition",
     "ToolExecutor",
     "ToolRegistry",
-    "build_default_registry",
 ]
-
-
-def __getattr__(name: str) -> Any:
-    if name == "BrowserManager":
-        from app.services.tools.browser_tool import BrowserManager
-
-        return BrowserManager
-    if name == "ToolExecutor":
-        from app.services.tools.executor import ToolExecutor
-
-        return ToolExecutor
-    if name in {"ToolDefinition", "ToolRegistry"}:
-        from app.services.tools.registry import ToolDefinition, ToolRegistry
-
-        return {"ToolDefinition": ToolDefinition, "ToolRegistry": ToolRegistry}[name]
-    if name == "build_default_registry":
-        from app.services.tools.builtin import build_default_registry
-
-        return build_default_registry
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

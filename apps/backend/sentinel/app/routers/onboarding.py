@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import (
     get_db,
     get_onboarding_service,
-    get_runtime_rebuild_service,
 )
 from app.middleware.auth import TokenPayload, require_auth
-from app.services.onboarding_service import OnboardingService
-from app.services.runtime_rebuild import RuntimeRebuildService
+from app.services.onboarding.onboarding_service import OnboardingService
 
 router = APIRouter()
 
@@ -34,11 +32,9 @@ async def get_status(
 @router.post("/complete")
 async def complete_onboarding(
     payload: CompleteOnboardingRequest,
-    request: Request,
     user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     onboarding_service: OnboardingService = Depends(get_onboarding_service),
-    runtime_rebuild_service: RuntimeRebuildService = Depends(get_runtime_rebuild_service),
 ) -> dict[str, bool]:
     await onboarding_service.complete(
         db,
@@ -47,5 +43,4 @@ async def complete_onboarding(
         agent_role=payload.agent_role,
         agent_personality=payload.agent_personality,
     )
-    runtime_rebuild_service.rebuild_agent_loop(request.app.state)
     return {"completed": True}

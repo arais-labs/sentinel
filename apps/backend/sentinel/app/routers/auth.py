@@ -1,9 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
-from app.dependencies import get_db
-from app.middleware.audit import log_audit
+from app.config import is_desktop_app, settings
+from app.dependencies import get_manager_db
 from app.middleware.auth import (
     Identity,
     ACCESS_TOKEN_COOKIE_NAME,
@@ -15,14 +14,22 @@ from app.middleware.auth import (
     require_auth,
     revoke_token,
 )
+from app.middleware.audit import log_manager_audit
 from app.schemas.auth import (
+    AuthStatusResponse,
+    BootstrapAuthRequest,
     AuthMeResponse,
     ChangePasswordRequest,
     LoginRequest,
     RefreshRequest,
     TokenPairResponse,
 )
-from app.services.auth_service import authenticate_user, change_user_password
+from app.services.auth_service import (
+    auth_is_configured,
+    authenticate_user,
+    bootstrap_auth_settings,
+    change_user_password,
+)
 
 router = APIRouter()
 
@@ -60,7 +67,7 @@ async def login(
     payload: LoginRequest,
     request: Request,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_manager_db),
 ) -> TokenPairResponse:
     auth = await authenticate_user(
         db,
@@ -68,6 +75,14 @@ async def login(
         password=payload.password,
     )
     if auth is None:
+        await log_manager_audit(
+            db,
+            user_id=payload.username,
+            action="auth.login.failed",
+            status_code=401,
+            ip_address=request.client.host if request.client else None,
+            request_id=getattr(request.state, "request_id", None),
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     identity = Identity(user_id=auth[0], role=auth[1], agent_id=None)
@@ -76,7 +91,7 @@ async def login(
     _set_auth_cookies(response, access_token=access_token, refresh_token=refresh_token)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
-    await log_audit(
+    await log_manager_audit(
         db,
         user_id=identity.user_id,
         action="auth.login",
@@ -91,12 +106,66 @@ async def login(
         expires_in=settings.access_token_ttl_seconds,
     )
 
+
+@router.get("/status", response_model=AuthStatusResponse)
+async def auth_status(db: AsyncSession = Depends(get_manager_db)) -> AuthStatusResponse:
+    configured = await auth_is_configured(db)
+    return AuthStatusResponse(
+        configured=configured,
+        bootstrap_available=is_desktop_app() and not configured,
+    )
+
+
+@router.post("/bootstrap", response_model=TokenPairResponse)
+async def bootstrap_auth(
+    payload: BootstrapAuthRequest,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_manager_db),
+) -> TokenPairResponse:
+    if not is_desktop_app():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Auth bootstrap is only available in desktop mode",
+        )
+    created = await bootstrap_auth_settings(
+        db,
+        username=payload.username,
+        password=payload.password,
+    )
+    if not created:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Auth is already configured"
+        )
+
+    identity = Identity(user_id=payload.username.strip().lower(), role="admin", agent_id=None)
+    access_token = create_access_token(identity)
+    refresh_token = create_refresh_token(identity)
+    _set_auth_cookies(response, access_token=access_token, refresh_token=refresh_token)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    await log_manager_audit(
+        db,
+        user_id=identity.user_id,
+        action="auth.bootstrap",
+        status_code=200,
+        ip_address=request.client.host if request.client else None,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return TokenPairResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        expires_in=settings.access_token_ttl_seconds,
+    )
+
+
 @router.post("/refresh", response_model=TokenPairResponse)
 async def refresh_session_token(
     request: Request,
     response: Response,
     payload: RefreshRequest | None = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_manager_db),
 ) -> TokenPairResponse:
     token = ""
     if payload is not None:
@@ -104,10 +173,14 @@ async def refresh_session_token(
     if not token:
         token = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME, "").strip()
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token"
+        )
 
     token_payload = await decode_and_validate_token(token, db, expected_type="refresh")
-    identity = Identity(user_id=token_payload.sub, role=token_payload.role, agent_id=token_payload.agent_id)
+    identity = Identity(
+        user_id=token_payload.sub, role=token_payload.role, agent_id=token_payload.agent_id
+    )
     access_token = create_access_token(identity)
     refresh_token = create_refresh_token(identity)
     _set_auth_cookies(response, access_token=access_token, refresh_token=refresh_token)
@@ -125,8 +198,19 @@ async def refresh_session_token(
 async def change_password(
     payload: ChangePasswordRequest,
     user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_manager_db),
 ) -> dict[str, bool]:
+    # Server/compose mode: env vars are the source of truth and force-sync on
+    # every restart would revert any UI change, so the endpoint is hidden.
+    # Use the env-rotation flow (edit .env + restart) instead.
+    if not is_desktop_app():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "Password change via API is only available in desktop mode. "
+                "Rotate SENTINEL_AUTH_PASSWORD in .env and restart the backend."
+            ),
+        )
     changed = await change_user_password(
         db,
         username=user.sub,
@@ -151,7 +235,7 @@ async def delete_session(
     request: Request,
     response: Response,
     user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_manager_db),
 ) -> dict[str, str]:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
@@ -168,7 +252,7 @@ async def delete_session(
         except Exception:
             pass
     _clear_auth_cookies(response)
-    await log_audit(
+    await log_manager_audit(
         db,
         user_id=user.sub,
         action="auth.logout",

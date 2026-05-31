@@ -77,12 +77,20 @@ const config = {
         style: 'dark',
         links: [
           {
-            title: 'Docs',
+            title: 'Get Started',
             items: [
               { label: 'Introduction', to: '/' },
               { label: 'Quick Start', to: '/quickstart' },
+              { label: 'Installation', to: '/guides/installation' },
+            ],
+          },
+          {
+            title: 'Learn',
+            items: [
               { label: 'What is Sentinel?', to: '/concepts/what-is-sentinel' },
-              { label: 'What is araiOS?', to: '/concepts/what-is-araios' },
+              { label: 'Modules and Permissions', to: '/concepts/modules-and-permissions' },
+              { label: 'Agent Loop', to: '/concepts/agent-loop' },
+              { label: 'API Reference', to: '/reference/api' },
             ],
           },
           {

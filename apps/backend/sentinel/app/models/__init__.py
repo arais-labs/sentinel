@@ -1,3 +1,9 @@
+from app.models.araios import (
+    AraiosModule,
+    AraiosModuleRecord,
+    AraiosModuleSecret,
+    AraiosPermission,
+)
 from app.models.audit import AuditLog
 from app.models.base import Base
 from app.models.git import GitAccount
@@ -7,16 +13,18 @@ from app.models.sessions import Message, Session
 from app.models.sub_agents import SubAgentTask
 from app.models.system import SystemSetting
 from app.models.tool_approvals import ToolApproval
-from app.models.tokens import RevokedToken
 from app.models.triggers import Trigger, TriggerLog
 
 __all__ = [
+    "AraiosModule",
+    "AraiosModuleRecord",
+    "AraiosModuleSecret",
+    "AraiosPermission",
     "AuditLog",
     "Base",
     "GitAccount",
     "Memory",
     "Message",
-    "RevokedToken",
     "Session",
     "SessionBinding",
     "SessionSummary",

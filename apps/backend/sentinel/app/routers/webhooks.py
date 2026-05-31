@@ -28,22 +28,30 @@ async def ingest_webhook(
     if trigger is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trigger not found")
     if trigger.type != "webhook":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Trigger is not a webhook trigger")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Trigger is not a webhook trigger"
+        )
     if not trigger.enabled:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Trigger is disabled")
 
     secret = (trigger.config or {}).get("secret")
     if not secret:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Webhook secret not configured")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Webhook secret not configured"
+        )
 
     signature = request.headers.get("X-Webhook-Signature")
     if not signature:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing webhook signature")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing webhook signature"
+        )
 
     body = await request.body()
     expected_signature = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected_signature):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature"
+        )
 
     now = datetime.now(UTC)
     trigger.last_fired_at = now

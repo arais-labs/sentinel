@@ -17,12 +17,17 @@ class Session(Base):
     user_id: Mapped[str] = mapped_column(String(100), index=True)
     agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     parent_session_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True, index=True
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     initial_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     latest_system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    status: Mapped[str] = mapped_column(
+        String(20), default="active", server_default=text("'active'"), index=True
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -33,7 +38,9 @@ class Session(Base):
     conversation_message_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     last_auto_rename_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
 
-    messages: Mapped[list["Message"]] = relationship(back_populates="session", cascade="all, delete-orphan")
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
     summaries: Mapped[list["SessionSummary"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
@@ -51,7 +58,9 @@ class Message(Base):
     )
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
-    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, server_default=text("'{}'::jsonb"))
+    metadata_json: Mapped[dict] = mapped_column(
+        "metadata", JSONB, server_default=text("'{}'::jsonb")
+    )
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     tool_name: Mapped[str | None] = mapped_column(String(100), nullable=True)

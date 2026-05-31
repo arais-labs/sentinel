@@ -22,6 +22,10 @@ class LoginRequest(BaseModel):
         return trimmed
 
 
+class BootstrapAuthRequest(LoginRequest):
+    pass
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str = Field(min_length=1)
 
@@ -58,3 +62,8 @@ class AuthMeResponse(BaseModel):
     sub: str
     role: str
     agent_id: str | None = None
+
+
+class AuthStatusResponse(BaseModel):
+    configured: bool
+    bootstrap_available: bool

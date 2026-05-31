@@ -1,4 +1,4 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { KeyRound, UserRound, LogIn, Moon, Sun, Loader2 } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
 
@@ -10,26 +10,62 @@ import { Logo } from '../components/ui/Logo';
 export function LoginPage() {
   const status = useAuthStore((state) => state.status);
   const login = useAuthStore((state) => state.login);
+  const bootstrap = useAuthStore((state) => state.bootstrap);
+  const getSetupStatus = useAuthStore((state) => state.getSetupStatus);
   const error = useAuthStore((state) => state.errorMessage);
   const theme = useThemeStore((state) => state.theme);
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [setupMode, setSetupMode] = useState(false);
+  const [setupChecked, setSetupChecked] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSetupStatus()
+      .then((authStatus) => {
+        if (cancelled) return;
+        setSetupMode(authStatus.bootstrap_available);
+        if (authStatus.bootstrap_available) {
+          setUsername('admin');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSetupMode(false);
+      })
+      .finally(() => {
+        if (!cancelled) setSetupChecked(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [getSetupStatus]);
 
   if (status === 'authenticated') {
-    return <Navigate to="/sessions" replace />;
+    return <Navigate to="/" replace />;
   }
 
-  const isLoading = status === 'loading';
+  const isLoading = status === 'loading' || !setupChecked;
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     const normalizedUsername = username.trim();
     const normalizedPassword = password.trim();
     if (!normalizedUsername || !normalizedPassword) return;
+    if (setupMode) {
+      if (normalizedPassword !== confirmPassword.trim()) return;
+      await bootstrap(normalizedUsername, normalizedPassword);
+      return;
+    }
     await login(normalizedUsername, normalizedPassword);
   }
+
+  const passwordMismatch = setupMode && confirmPassword.trim().length > 0 && password.trim() !== confirmPassword.trim();
+  const canSubmit = setupMode
+    ? !!username.trim() && !!password.trim() && password.trim() === confirmPassword.trim()
+    : !!username.trim() && !!password.trim();
 
   return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center p-4 bg-[color:var(--app-bg)] relative overflow-hidden">
@@ -54,10 +90,12 @@ export function LoginPage() {
                 <Logo size={24} />
               </div>
               <h1 className="text-2xl font-bold tracking-tight text-[color:var(--text-primary)]">
-                Welcome to Sentinel
+                {setupMode ? 'Create admin account' : 'Welcome to Sentinel'}
               </h1>
               <p className="text-sm text-[color:var(--text-secondary)]">
-                Sign in with your Sentinel credentials to access the control plane.
+                {setupMode
+                  ? 'Choose the local desktop credentials for this Sentinel install.'
+                  : 'Sign in with your Sentinel credentials to access the control plane.'}
               </p>
             </div>
 
@@ -96,6 +134,30 @@ export function LoginPage() {
               </div>
             </div>
 
+            {setupMode && (
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                  Confirm Password
+                </label>
+                <div className="relative">
+                  <KeyRound size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                  <input
+                    type="password"
+                    className="input-field pl-10 h-12"
+                    placeholder="Confirm your password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    disabled={isLoading}
+                  />
+                </div>
+                {passwordMismatch && (
+                  <div className="text-xs font-medium text-rose-600 dark:text-rose-400">
+                    Passwords do not match.
+                  </div>
+                )}
+              </div>
+            )}
+
             {error && (
               <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-medium animate-in">
                 {error}
@@ -105,11 +167,11 @@ export function LoginPage() {
             <div>
               <button
                 type="submit"
-                disabled={isLoading || !username.trim() || !password.trim()}
+                disabled={isLoading || !canSubmit}
                 className="btn-primary h-12 w-full"
               >
                 {isLoading ? <Loader2 size={18} className="animate-spin" /> : <LogIn size={18} />}
-                Sign In
+                {setupMode ? 'Create Account' : 'Sign In'}
               </button>
             </div>
           </form>

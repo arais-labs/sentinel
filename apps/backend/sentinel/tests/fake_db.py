@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from itertools import product
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList, False_, Null, True_
 from sqlalchemy.sql.functions import FunctionElement
 from sqlalchemy.sql.selectable import Select
@@ -47,10 +48,11 @@ class _FakeResult:
 class FakeDB:
     """Minimal AsyncSession-like in-memory store for router tests."""
 
-    def __init__(self):
+    def __init__(self, *, seed_auth: bool = True):
         self.storage = defaultdict(list)
         self._tx_snapshots: list[dict] = []
-        self._seed_auth_settings()
+        if seed_auth:
+            self._seed_auth_settings()
 
     def _seed_auth_settings(self) -> None:
         # Test-only convenience so login-based tests don't rely on app startup hooks.
@@ -80,7 +82,25 @@ class FakeDB:
         self.storage[type(obj)] = [row for row in rows if row is not obj]
 
     async def commit(self):
+        self._check_unique_constraints()
         return None
+
+    def _check_unique_constraints(self) -> None:
+        for model, rows in self.storage.items():
+            table = getattr(model, "__table__", None)
+            if table is None:
+                continue
+            for column in table.columns:
+                if not getattr(column, "unique", False):
+                    continue
+                values = [getattr(row, column.key, None) for row in rows]
+                non_null = [v for v in values if v is not None]
+                if len(non_null) != len(set(non_null)):
+                    raise IntegrityError(
+                        f"UNIQUE constraint failed: {getattr(model, '__tablename__', model.__name__)}.{column.key}",
+                        params=None,
+                        orig=Exception("duplicate"),
+                    )
 
     async def rollback(self):
         if self._tx_snapshots:
@@ -112,10 +132,15 @@ class FakeDB:
     def begin(self):
         return self._TxContext(self)
 
+    def begin_nested(self):
+        return self._TxContext(self)
+
     async def get(self, model, obj_id):
         rows = self.storage.get(model, [])
         for row in rows:
             if getattr(row, "id", None) == obj_id:
+                return row
+            if not hasattr(row, "id") and getattr(row, "name", None) == obj_id:
                 return row
         return None
 
@@ -142,7 +167,11 @@ class FakeDB:
             filtered = rows
         else:
             referenced_models = self._referenced_models(stmt, primary=model)
-            filtered = [row for row in rows if self._row_matches(stmt, primary=model, row=row, related_models=referenced_models)]
+            filtered = [
+                row
+                for row in rows
+                if self._row_matches(stmt, primary=model, row=row, related_models=referenced_models)
+            ]
 
         limit_clause = getattr(stmt, "_limit_clause", None)
         if limit_clause is not None:
@@ -173,7 +202,9 @@ class FakeDB:
 
     def _row_matches(self, stmt: Select, *, primary: type, row, related_models: list[type]) -> bool:
         if not related_models:
-            return all(self._evaluate({primary: row}, criterion) for criterion in stmt._where_criteria)
+            return all(
+                self._evaluate({primary: row}, criterion) for criterion in stmt._where_criteria
+            )
 
         related_rows = [list(self.storage.get(model, [])) for model in related_models]
         for combo in product(*related_rows):

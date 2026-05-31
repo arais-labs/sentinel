@@ -19,29 +19,41 @@ if ! git diff --cached --check --color=never; then
 fi
 
 # 2) Enforce Black formatting for staged Python files.
-mapfile -t staged_python_files < <(echo "$staged_files" | grep -E '\.pyi?$' || true)
+# Built without `mapfile` so the hook runs on macOS's bash 3.2.
+staged_python_files=()
+while IFS= read -r py_file; do
+  [[ -n "$py_file" ]] && staged_python_files+=("$py_file")
+done < <(echo "$staged_files" | grep -E '\.pyi?$' || true)
+
 if [[ "${#staged_python_files[@]}" -gt 0 ]]; then
-  if ! command -v black >/dev/null 2>&1; then
+  if [[ -x apps/backend/sentinel/.venv/bin/black ]]; then
+    black_cmd=(apps/backend/sentinel/.venv/bin/black)
+  elif command -v black >/dev/null 2>&1; then
+    black_cmd=(black)
+  else
     echo
     echo "Pre-commit failed: 'black' is required for Python formatting checks."
-    echo "Install with: pip install black"
+    echo "Install the backend dev deps (uv sync --group dev) or 'pip install black'."
     exit 1
   fi
 
-  if ! black --check "${staged_python_files[@]}"; then
+  if ! "${black_cmd[@]}" --check "${staged_python_files[@]}"; then
     echo
     echo "Pre-commit failed: run 'black <files>' and re-stage changes."
     exit 1
   fi
 fi
 
-# 3) Block common secret-bearing file names.
+# 3) Block common secret-bearing file names. Committed templates such as
+# .env.example/.env.sample/.env.template are allowlisted — they carry no secrets.
 blocked_paths_regex='(^|/)(\.env(\..*)?|.*\.pem|.*\.key|.*\.p12|.*\.pfx|id_rsa(\..*)?|id_ed25519(\..*)?|credentials\.json|secrets\.(json|ya?ml|toml))$'
-if echo "$staged_files" | grep -Eiq "$blocked_paths_regex"; then
+allowed_paths_regex='(^|/)\.env\.(example|sample|template)$'
+flagged_paths="$(echo "$staged_files" | grep -Ei "$blocked_paths_regex" | grep -Eiv "$allowed_paths_regex" || true)"
+if [[ -n "$flagged_paths" ]]; then
   echo
   echo "Pre-commit failed: staged files include sensitive path patterns."
   echo "Remove secret/cert/key files from the commit."
-  echo "$staged_files" | grep -Ei "$blocked_paths_regex" || true
+  echo "$flagged_paths"
   exit 1
 fi
 
@@ -73,5 +85,35 @@ while IFS= read -r file; do
     exit 1
   fi
 done <<< "$staged_files"
+
+# 6) Mirror CI correctness gates, scoped to what changed so unrelated commits stay fast.
+backend_changed="$(echo "$staged_files" | grep -E '^apps/backend/sentinel/(app|tests)/.*\.py$' || true)"
+if [[ -n "$backend_changed" ]]; then
+  echo "Backend changes detected — running backend test suite (mirrors CI)..."
+  if command -v uv >/dev/null 2>&1; then
+    ( cd apps/backend/sentinel && uv run pytest tests/ -q )
+  elif [[ -x apps/backend/sentinel/.venv/bin/python ]]; then
+    ( cd apps/backend/sentinel && .venv/bin/python -m pytest tests/ -q )
+  else
+    echo
+    echo "Pre-commit failed: need 'uv' or apps/backend/sentinel/.venv to run backend tests."
+    exit 1
+  fi
+fi
+
+desktop_changed="$(echo "$staged_files" | grep -E '^apps/desktop/sentinel/.*\.ts$' || true)"
+if [[ -n "$desktop_changed" ]]; then
+  echo "Desktop changes detected — typechecking (mirrors CI)..."
+  ( cd apps/desktop/sentinel && npx tsc -p tsconfig.json --noEmit )
+fi
+
+# 7) Version drift guard: every derived copy must match the root VERSION file.
+if [[ -x scripts/sync-version.sh ]]; then
+  if ! scripts/sync-version.sh --check; then
+    echo
+    echo "Pre-commit failed: run 'scripts/sync-version.sh' and re-stage."
+    exit 1
+  fi
+fi
 
 echo "Pre-commit checks passed."

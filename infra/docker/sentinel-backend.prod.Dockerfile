@@ -5,41 +5,21 @@ ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        bubblewrap \
         ca-certificates \
+        ansible \
         curl \
-        diffutils \
-        dnsutils \
-        fd-find \
-        file \
-        fluxbox \
-        gawk \
         git \
         gh \
-        iputils-ping \
-        jq \
-        less \
-        moreutils \
-        novnc \
         openssh-client \
-        patch \
-        ripgrep \
-        rsync \
-        tree \
-        wget \
-        websockify \
-        x11vnc \
-        xvfb \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://get.docker.com | sh
 
 WORKDIR /app
 
 COPY apps/backend/sentinel/ ./
 RUN pip install --no-cache-dir .
-RUN playwright install --with-deps chromium
 RUN chmod +x scripts/start-backend.sh
 
 EXPOSE 8000
-EXPOSE 6080
 
 CMD ["./scripts/start-backend.sh"]

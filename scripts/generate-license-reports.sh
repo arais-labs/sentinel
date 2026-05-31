@@ -36,10 +36,8 @@ generate_node_report() {
 }
 
 generate_python_report "sentinel-backend-python-licenses" "$ROOT_DIR/apps/backend/sentinel"
-generate_python_report "araios-backend-python-licenses" "$ROOT_DIR/apps/backend/araios"
 
 generate_node_report "sentinel-frontend-node-licenses" "$ROOT_DIR/apps/frontend/sentinel"
-generate_node_report "araios-frontend-node-licenses" "$ROOT_DIR/apps/frontend/araios"
 
 rm -rf "$WORK_DIR"
 

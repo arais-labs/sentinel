@@ -16,7 +16,7 @@ Report privately by email:
 
 Include:
 
-- affected component(s) (`gateway`, `sentinel-backend`, `sentinel-frontend`, `araios-backend`, `araios-frontend`)
+- affected component(s) (`gateway`, `sentinel-backend`, `sentinel-frontend`, `runtime`)
 - reproduction steps or proof-of-concept
 - impact assessment (what an attacker can do)
 - your suggested fix (if available)

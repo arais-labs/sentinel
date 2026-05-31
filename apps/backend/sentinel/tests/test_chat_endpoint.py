@@ -1,109 +1,176 @@
 import os
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
-from app.dependencies import get_db
+from app.routers import sessions as sessions_router
 from app.main import app
-from app.middleware.rate_limit import RateLimitMiddleware
-from app.services.llm.generic.types import TokenUsage
+from app.services.agent import PreparedRuntimeTurnContext
+from app.services.llm.generic.base import LLMProvider
+from app.services.llm.generic.types import AssistantMessage, TextContent, TokenUsage
+from app.services.tools.executor import ToolExecutor
+from app.services.tools.registry import ToolRegistry
 from tests.fake_db import FakeDB
+from tests.helpers import install_fake_db_overrides, restore_test_app
+
+
+class _FakeProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.calls = []
+
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "model": model,
+                "tools": list(tools or []),
+                "temperature": temperature,
+            }
+        )
+        return AssistantMessage(
+            content=[TextContent(text="Agent response")],
+            model="fake-model",
+            provider="fake",
+            usage=TokenUsage(input_tokens=11, output_tokens=7),
+            stop_reason="stop",
+        )
+
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
+        _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
+        if False:
+            yield
 
 
 class _FakeLoop:
     def __init__(self) -> None:
         self.calls = []
+        self.provider = _FakeProvider()
+        registry = ToolRegistry()
+        self.tool_registry = registry
+        self.tool_executor = ToolExecutor(registry)
 
-    async def run(self, db, session_id, user_message, **kwargs):
-        self.calls.append({"session_id": session_id, "user_message": user_message, **kwargs})
+    async def prepare_runtime_turn_context(
+        self,
+        db,
+        session_id,
+        *,
+        system_prompt,
+        pending_user_message,
+        agent_mode,
+        model,
+        temperature,
+        max_iterations,
+        stream,
+    ):
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "user_message": pending_user_message,
+                "agent_mode": agent_mode,
+                "model": model,
+                "temperature": temperature,
+                "max_iterations": max_iterations,
+                "stream": stream,
+                "system_prompt": system_prompt,
+            }
+        )
+        return PreparedRuntimeTurnContext(
+            messages=[],
+            tools=[],
+            effective_system_prompt=system_prompt,
+            runtime_context_snapshot=None,
+        )
 
-        class _Result:
-            final_text = "Agent response"
-            iterations = 2
-            usage = TokenUsage(input_tokens=11, output_tokens=7)
+    async def persist_created_messages(
+        self, db, session_id, created, assistant_iterations, **kwargs
+    ):
+        _ = (db, session_id, created, assistant_iterations, kwargs)
 
-        return _Result()
+    def extract_final_text(self, _messages) -> str:
+        return "Agent response"
+
+    def collect_attachments(self, _messages) -> list[dict]:
+        return []
 
 
-def test_chat_endpoint_calls_agent_loop_and_returns_response():
+def test_chat_endpoint_calls_runtime_support_and_returns_response():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
     fake_loop = _FakeLoop()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
-        old_agent_loop = getattr(app.state, "agent_loop", None)
-        app.state.agent_loop = fake_loop
+        old_runtime_context = sessions_router.get_request_instance_runtime_context
+        sessions_router.get_request_instance_runtime_context = lambda _request: SimpleNamespace(
+            agent_runtime_support=fake_loop
+        )
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "chat"}, headers=headers)
+        session_resp = client.post(
+            "/api/v1/instances/main/sessions", json={"title": "chat"}, headers=headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        chat = client.post(
-            f"/api/v1/sessions/{session_id}/chat",
-            json={"content": "hello model", "tier": "normal"},
-            headers=headers,
-        )
+        with patch(
+            "app.services.sessions.service.SessionNamingService.maybe_auto_rename",
+            new=AsyncMock(return_value=None),
+        ):
+            chat = client.post(
+                f"/api/v1/instances/main/sessions/{session_id}/chat",
+                json={"content": "hello model", "tier": "normal"},
+                headers=headers,
+            )
         assert chat.status_code == 200
         payload = chat.json()
         assert payload["response"] == "Agent response"
-        assert payload["iterations"] == 2
+        assert payload["iterations"] == 1
         assert payload["usage"] == {"input_tokens": 11, "output_tokens": 7}
         assert fake_loop.calls[0]["user_message"] == "hello model"
         assert fake_loop.calls[0]["agent_mode"] == "normal"
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-        if "old_agent_loop" in locals():
-            app.state.agent_loop = old_agent_loop
+        restore_test_app(old_init)
+        if "old_runtime_context" in locals():
+            sessions_router.get_request_instance_runtime_context = old_runtime_context
 
 
 def test_chat_endpoint_returns_503_when_no_provider_configured():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
-        old_agent_loop = getattr(app.state, "agent_loop", None)
-        app.state.agent_loop = None
+        old_runtime_context = sessions_router.get_request_instance_runtime_context
+        sessions_router.get_request_instance_runtime_context = lambda _request: SimpleNamespace(
+            agent_runtime_support=None
+        )
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "chat"}, headers=headers)
+        session_resp = client.post(
+            "/api/v1/instances/main/sessions", json={"title": "chat"}, headers=headers
+        )
         session_id = session_resp.json()["id"]
 
         chat = client.post(
-            f"/api/v1/sessions/{session_id}/chat",
+            f"/api/v1/instances/main/sessions/{session_id}/chat",
             json={"content": "hello"},
             headers=headers,
         )
@@ -111,7 +178,6 @@ def test_chat_endpoint_returns_503_when_no_provider_configured():
         assert chat.json()["error"]["code"] == "internal_error"
         assert chat.json()["error"]["message"] == "No LLM provider configured"
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-        if "old_agent_loop" in locals():
-            app.state.agent_loop = old_agent_loop
+        restore_test_app(old_init)
+        if "old_runtime_context" in locals():
+            sessions_router.get_request_instance_runtime_context = old_runtime_context

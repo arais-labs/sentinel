@@ -5,93 +5,162 @@ import logging
 import time
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.database.database import runtime_db_session_factory
 from app.services.agent.agent_modes import AgentMode, get_agent_mode_definition
 from app.services.tools.registry import (
     ToolApprovalDecision,
     ToolApprovalEvaluation,
-    ToolApprovalGate,
-    ToolApprovalMode,
     ToolApprovalOutcomeStatus,
     ToolApprovalRequirement,
+    ToolApprovalResultRecorderFn,
+    ToolApprovalWaiterFn,
     ToolDefinition,
     ToolRegistry,
+    ToolRuntimeContext,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class ToolExecutionError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, approval: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.approval = approval
 
 
 class ToolValidationError(ValueError):
-    pass
+    def __init__(self, message: str, *, approval: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.approval = approval
 
 
 class ToolExecutor:
-    def __init__(self, registry: ToolRegistry) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        approval_waiter: ToolApprovalWaiterFn | None = None,
+        approval_result_recorder: ToolApprovalResultRecorderFn | None = None,
+        db_session_factory: async_sessionmaker[AsyncSession] | None = None,
+        sub_agent_orchestrator: Any | None = None,
+        instance_name: str | None = None,
+    ) -> None:
         self._registry = registry
+        self._approval_waiter = approval_waiter
+        self._approval_result_recorder = approval_result_recorder
+        self._db_session_factory = db_session_factory
+        self._sub_agent_orchestrator = sub_agent_orchestrator
+        self._instance_name = instance_name
+
+    def set_runtime_defaults(
+        self,
+        *,
+        db_session_factory: async_sessionmaker[AsyncSession] | None = None,
+        sub_agent_orchestrator: Any | None = None,
+        instance_name: str | None = None,
+    ) -> None:
+        if db_session_factory is not None:
+            self._db_session_factory = db_session_factory
+        if sub_agent_orchestrator is not None:
+            self._sub_agent_orchestrator = sub_agent_orchestrator
+        if instance_name is not None:
+            self._instance_name = instance_name
 
     async def execute(
         self,
         name: str,
         payload: dict[str, Any],
         *,
-        allow_high_risk: bool,
+        runtime: ToolRuntimeContext | None = None,
         agent_mode: AgentMode | str | None = None,
+        on_pending_approval: Any = None,
     ) -> tuple[Any, int]:
         tool = self._registry.get(name)
         if tool is None:
             raise KeyError(name)
         if not self._registry.is_allowed(name):
             raise PermissionError(f"Tool '{name}' is disabled")
-        if tool.risk_level == "high" and not allow_high_risk:
-            raise PermissionError("High-risk tool execution disabled for this run context")
 
+        runtime_context = runtime or ToolRuntimeContext()
+        if runtime_context.db_session_factory is None:
+            runtime_context.db_session_factory = self._db_session_factory
+        if runtime_context.sub_agent_orchestrator is None:
+            runtime_context.sub_agent_orchestrator = self._sub_agent_orchestrator
+        if runtime_context.instance_name is None:
+            runtime_context.instance_name = self._instance_name
         self._validate_payload(tool, payload)
-        mode_definition = get_agent_mode_definition(agent_mode)
-        approved_metadata = await self._resolve_tool_approval(
-            tool,
-            payload,
-            auto_approve_required=mode_definition.auto_approve_tool_gates,
-        )
-        if approved_metadata:
-            payload["__approval_gate"] = approved_metadata
+        with runtime_db_session_factory(runtime_context.db_session_factory):
+            mode_definition = get_agent_mode_definition(agent_mode)
+            approved_metadata = await self._resolve_tool_approval(
+                tool,
+                payload,
+                runtime_context,
+                auto_approve_required=mode_definition.auto_approve_tool_gates,
+                on_pending_approval=on_pending_approval,
+            )
 
-        started = time.perf_counter()
-        try:
-            result = await tool.execute(payload)
-        except ToolValidationError:
-            raise
-        except Exception as exc:  # pragma: no cover - defensive wrapper
-            raise ToolExecutionError(str(exc)) from exc
-        finally:
-            payload.pop("__approval_gate", None)
-        if approved_metadata and isinstance(result, dict) and not isinstance(result.get("approval"), dict):
+            started = time.perf_counter()
+            try:
+                result = await tool.execute(payload, runtime_context)
+            except ToolValidationError as exc:
+                await self._record_approval_result(
+                    approval=approved_metadata,
+                    result={"ok": False, "error": str(exc)},
+                )
+                if approved_metadata and getattr(exc, "approval", None) is None:
+                    exc.approval = approved_metadata
+                raise
+            except Exception as exc:  # pragma: no cover - defensive wrapper
+                await self._record_approval_result(
+                    approval=approved_metadata,
+                    result={"ok": False, "error": str(exc)},
+                )
+                raise ToolExecutionError(str(exc), approval=approved_metadata) from exc
+            await self._record_approval_result(approval=approved_metadata, result=result)
+        if (
+            approved_metadata
+            and isinstance(result, dict)
+            and not isinstance(result.get("approval"), dict)
+        ):
             result["approval"] = approved_metadata
         duration_ms = int((time.perf_counter() - started) * 1000)
         return result, max(duration_ms, 0)
+
+    async def _record_approval_result(
+        self,
+        *,
+        approval: dict[str, Any] | None,
+        result: Any,
+    ) -> None:
+        if self._approval_result_recorder is None or not isinstance(approval, dict):
+            return
+        approval_id = approval.get("approval_id")
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            return
+        await self._approval_result_recorder(approval_id.strip(), result)
 
     async def _resolve_tool_approval(
         self,
         tool: ToolDefinition,
         payload: dict[str, Any],
+        runtime: ToolRuntimeContext,
         *,
         auto_approve_required: bool,
+        on_pending_approval: Any = None,
     ) -> dict[str, Any] | None:
-        gate = tool.approval_gate
-        if gate is None or gate.mode == ToolApprovalMode.NONE:
+        approval_check = tool.approval_check
+        if approval_check is None:
             return None
 
-        evaluation = await self._evaluate_gate(tool.name, gate, payload)
+        evaluation = await self._run_approval_check(tool.name, approval_check, payload, runtime)
         requirement = evaluation.requirement
         logger.info(
-            "tool_approval_eval tool=%s decision=%s action=%s match_key=%s session_id=%s",
+            "tool_approval_eval tool=%s decision=%s action=%s session_id=%s",
             tool.name,
             evaluation.decision.value,
             requirement.action if requirement is not None else None,
-            requirement.match_key if requirement is not None else None,
-            payload.get("session_id"),
+            str(runtime.session_id) if runtime.session_id is not None else None,
         )
         if evaluation.decision == ToolApprovalDecision.ALLOW:
             return None
@@ -101,10 +170,12 @@ class ToolExecutor:
 
         requirement = evaluation.requirement
         if requirement is None:
-            raise ToolExecutionError("Approval gate requires a request descriptor before execution.")
+            raise ToolExecutionError(
+                "Approval gate requires a request descriptor before execution."
+            )
         if auto_approve_required:
             approval_payload = {
-                "provider": "tool",
+                "provider": tool.name,
                 "approval_id": f"auto:{tool.name}:{int(time.time() * 1000)}",
                 "status": ToolApprovalOutcomeStatus.APPROVED.value,
                 "pending": False,
@@ -114,40 +185,41 @@ class ToolExecutor:
                 "description": requirement.description,
                 "decision_note": "Auto-approved by agent mode full_permission",
             }
-            if requirement.match_key:
-                approval_payload["match_key"] = requirement.match_key
             if requirement.requested_by:
                 approval_payload["decision_by"] = requirement.requested_by
             logger.info(
-                "tool_approval_auto_approved tool=%s action=%s match_key=%s",
+                "tool_approval_auto_approved tool=%s action=%s",
                 tool.name,
                 requirement.action,
-                requirement.match_key,
             )
             return approval_payload
         if requirement.timeout_seconds < 1:
             raise ToolExecutionError("Approval timeout must be a positive integer.")
-        if gate.waiter is None:
-            raise ToolExecutionError(f"Tool '{tool.name}' requires approval but no waiter is configured.")
+        if self._approval_waiter is None:
+            raise ToolExecutionError(
+                f"Tool '{tool.name}' requires approval but no waiter is configured."
+            )
 
         logger.info(
-            "tool_approval_wait tool=%s action=%s timeout_seconds=%s requested_by=%s match_key=%s",
+            "tool_approval_wait tool=%s action=%s timeout_seconds=%s requested_by=%s",
             tool.name,
             requirement.action,
             requirement.timeout_seconds,
             requirement.requested_by,
-            requirement.match_key,
         )
-        outcome = await gate.waiter(tool.name, payload, requirement)
+        outcome = await self._approval_waiter(
+            tool.name,
+            payload,
+            runtime,
+            requirement,
+            on_pending_approval,
+        )
         approval_payload = dict(outcome.approval)
         if not isinstance(approval_payload.get("provider"), str):
-            approval_payload["provider"] = "tool"
-        if not isinstance(approval_payload.get("status"), str):
-            approval_payload["status"] = outcome.status.value
-        if "pending" not in approval_payload:
-            approval_payload["pending"] = False
-        if "can_resolve" not in approval_payload:
-            approval_payload["can_resolve"] = False
+            approval_payload["provider"] = tool.name
+        approval_payload["status"] = outcome.status.value
+        approval_payload["pending"] = False
+        approval_payload["can_resolve"] = False
         logger.info(
             "tool_approval_outcome tool=%s status=%s provider=%s approval_id=%s pending=%s can_resolve=%s",
             tool.name,
@@ -159,57 +231,37 @@ class ToolExecutor:
         )
         if outcome.status != ToolApprovalOutcomeStatus.APPROVED:
             message = (outcome.message or "").strip() or f"Approval {outcome.status.value}."
-            raise ToolExecutionError(message)
+            raise ToolExecutionError(message, approval=approval_payload)
         return approval_payload
 
-    async def _evaluate_gate(
+    async def _run_approval_check(
         self,
         tool_name: str,
-        gate: ToolApprovalGate,
+        approval_check: Any,
         payload: dict[str, Any],
+        runtime: ToolRuntimeContext,
     ) -> ToolApprovalEvaluation:
-        if gate.mode == ToolApprovalMode.REQUIRED:
-            evaluated = await self._run_gate_evaluator(tool_name, gate, payload)
-            if evaluated is not None:
-                if evaluated.decision == ToolApprovalDecision.DENY:
-                    return evaluated
-                if evaluated.decision == ToolApprovalDecision.REQUIRE and evaluated.requirement is not None:
-                    return evaluated
-            return ToolApprovalEvaluation.require(
-                gate.required
-                if gate.required is not None
-                else ToolApprovalRequirement(
-                    action=f"{tool_name}.execute",
-                    description=f"{tool_name} execution requires approval.",
-                )
-            )
-
-        if gate.mode == ToolApprovalMode.CONDITIONAL:
-            if gate.evaluator is None:
-                raise ToolExecutionError(f"Tool '{tool_name}' uses conditional approval without evaluator.")
-            evaluated = await self._run_gate_evaluator(tool_name, gate, payload)
-            if evaluated is None:
-                raise ToolExecutionError(
-                    f"Tool '{tool_name}' approval evaluator returned invalid response type."
-                )
-            return evaluated
-
-        return ToolApprovalEvaluation.allow()
-
-    async def _run_gate_evaluator(
-        self,
-        tool_name: str,
-        gate: ToolApprovalGate,
-        payload: dict[str, Any],
-    ) -> ToolApprovalEvaluation | None:
-        if gate.evaluator is None:
-            return None
-        evaluated = gate.evaluator(payload)
+        evaluator_signature = inspect.signature(approval_check)
+        positional_params = [
+            parameter
+            for parameter in evaluator_signature.parameters.values()
+            if parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            }
+        ]
+        if len(positional_params) >= 2:
+            evaluated = approval_check(payload, runtime)
+        elif positional_params:
+            evaluated = approval_check(payload)
+        else:
+            evaluated = approval_check()
         if inspect.isawaitable(evaluated):
             evaluated = await evaluated
         if not isinstance(evaluated, ToolApprovalEvaluation):
             raise ToolExecutionError(
-                f"Tool '{tool_name}' approval evaluator returned invalid response type."
+                f"Tool '{tool_name}' approval check returned invalid response type."
             )
         return evaluated
 
@@ -241,7 +293,9 @@ class ToolExecutor:
         if expected_type:
             if expected_type == "string" and not isinstance(value, str):
                 raise ToolValidationError(f"Field '{field_name}' must be a string")
-            if expected_type == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
+            if expected_type == "integer" and (
+                not isinstance(value, int) or isinstance(value, bool)
+            ):
                 raise ToolValidationError(f"Field '{field_name}' must be an integer")
             if expected_type == "boolean" and not isinstance(value, bool):
                 raise ToolValidationError(f"Field '{field_name}' must be a boolean")
@@ -252,4 +306,6 @@ class ToolExecutor:
 
         enum = field_schema.get("enum")
         if enum and value not in enum:
-            raise ToolValidationError(f"Field '{field_name}' must be one of: {', '.join(map(str, enum))}")
+            raise ToolValidationError(
+                f"Field '{field_name}' must be one of: {', '.join(map(str, enum))}"
+            )

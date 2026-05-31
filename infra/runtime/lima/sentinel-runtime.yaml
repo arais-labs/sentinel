@@ -1,0 +1,43 @@
+# Sentinel Lima runtime VM definition.
+# Provisioning is intentionally handled by Ansible, not by a large embedded
+# Lima shell script. This file only defines the local VM shape and VNC port.
+
+# Use Apple's Virtualization.framework backend on macOS instead of QEMU.
+vmType: vz
+
+# Match Apple Silicon hosts and the Debian ARM64 cloud image below.
+arch: aarch64
+
+# Balanced default for shell work, package installs, desktop, and browser tests.
+cpus: 4
+
+# Enough memory for XFCE plus terminal/dev/browser workflows without going heavy.
+memory: 8GiB
+
+# Persistent VM disk size. This holds the OS, packages, and any files created
+# inside the VM while no host workspace mount is configured.
+disk: 40GiB
+
+# Base cloud image used when creating a new Lima instance from this profile.
+# This is Debian 13 "Trixie" generic cloud ARM64.
+images:
+  - location: "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-arm64.qcow2"
+    arch: aarch64
+
+# Disable Lima's default host home mount for this first isolated runtime test.
+# Workspace sharing will be designed separately after the VM lifecycle works.
+mounts: []
+
+# Do not start Lima's containerd services. Sentinel's current runtime
+# experiments need SSH/shell/desktop behavior, not container execution.
+containerd:
+  system: false
+  user: false
+
+# Expose the in-guest VNC server on localhost. TigerVNC display :1 listens on
+# guest port 5901, so a local VNC client can connect to 127.0.0.1:5901.
+portForwards:
+  - guestPort: 5901
+    hostIP: "127.0.0.1"
+    hostPort: 5901
+    proto: tcp

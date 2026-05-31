@@ -1,93 +1,207 @@
 name: CI
 
+# Every push runs the test gate. Pushes to main/beta (and manual dispatch) also
+# build and publish the desktop release, but only after the gate passes — a red
+# CI never ships a DMG. main publishes stable; beta publishes beta.
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel to publish
+        type: choice
+        options: [beta, stable]
+        default: beta
 
 permissions:
   contents: read
 
 jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.bump.outputs.bumped }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Drift guard
+        # Every derived copy of the version must match the root VERSION file.
+        run: scripts/sync-version.sh --check
+
+      - name: Detect version bump
+        id: bump
+        # Publishing happens only when VERSION changed in this push (or a manual
+        # dispatch). Plain pushes still run the gate above but never ship, so a
+        # given version is published exactly once — on the commit that bumped it.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          before="${{ github.event.before }}"
+          if [ -z "$before" ] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            # New branch / unknown base: can't diff, so don't publish.
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$before" "${{ github.sha }}" | grep -qx VERSION; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
   compose-validate:
     name: Compose Validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Validate production compose
+        env:
+          SENTINEL_POSTGRES_PASSWORD: ci-validate
+          SENTINEL_JWT_SECRET_KEY: ci-validate
+          SENTINEL_DATA_ENCRYPTION_KEY: ci-validate
+          SENTINEL_AUTH_USERNAME: ci-admin
+          SENTINEL_AUTH_PASSWORD: ci-validate
         run: docker compose -f docker-compose.yml config
       - name: Validate dev compose
+        env:
+          SENTINEL_JWT_SECRET_KEY: ci-validate
+          SENTINEL_DATA_ENCRYPTION_KEY: ci-validate
+          SENTINEL_AUTH_USERNAME: ci-admin
+          SENTINEL_AUTH_PASSWORD: ci-validate
         run: docker compose -f docker-compose.dev.yml config
 
   backend-tests:
-    name: Backend Tests (${{ matrix.backend }})
+    name: Backend Tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        backend: [sentinel, araios]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v7
         with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/sentinel/uv.lock
           python-version: '3.12'
 
-      - name: Install sentinel backend deps
-        if: matrix.backend == 'sentinel'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/backend/sentinel[dev]"
+      - name: Install backend deps
+        working-directory: apps/backend/sentinel
+        run: uv sync --group dev
 
-      - name: Test sentinel backend
-        if: matrix.backend == 'sentinel'
-        env:
-          JWT_SECRET_KEY: ci-test-secret-key-with-32-bytes-minimum
-          DEV_TOKEN: sentinel-dev-token
-          PYTHONPATH: .
+      - name: Test backend
+        working-directory: apps/backend/sentinel
         run: |
-          cd apps/backend/sentinel
-          python -m compileall app tests
-          python -m pytest tests/test_auth_flow.py tests/test_validation.py tests/test_memory.py tests/test_tools.py tests/test_onboarding.py tests/test_playwright.py -q
+          uv run python -m compileall app tests
+          uv run pytest tests/ -q
 
-      - name: Install araios backend deps
-        if: matrix.backend == 'araios'
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/backend/araios[dev]"
-
-      - name: Test araios backend
-        if: matrix.backend == 'araios'
-        run: |
-          cd apps/backend/araios
-          python -m compileall app tests main.py
-          python -m pytest tests/test_health.py tests/test_documents.py tests/test_coordination.py tests/test_tasks.py -q
-
-  frontend-build:
-    name: Frontend Build (${{ matrix.frontend.name }})
+  desktop-typecheck:
+    name: Desktop Typecheck
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        frontend:
-          - name: sentinel
-            path: apps/frontend/sentinel
-          - name: araios
-            path: apps/frontend/araios
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: ${{ matrix.frontend.path }}/package-lock.json
+          cache-dependency-path: apps/desktop/sentinel/package-lock.json
 
       - name: Install dependencies
-        working-directory: ${{ matrix.frontend.path }}
+        working-directory: apps/desktop/sentinel
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: apps/desktop/sentinel
+        run: npx tsc -p tsconfig.json --noEmit
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: apps/frontend/sentinel/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/frontend/sentinel
         run: npm ci
 
       - name: Build
-        working-directory: ${{ matrix.frontend.path }}
+        working-directory: apps/frontend/sentinel
         run: npm run build
+
+  desktop-release:
+    name: Build DMG + payload and publish
+    needs: [version, compose-validate, backend-tests, desktop-typecheck, frontend-build]
+    # Ship only when VERSION was bumped on a main/beta push (stable from main,
+    # beta from beta), or on a manual dispatch. Pushes that don't change VERSION
+    # run the full gate but never publish — so each version ships exactly once.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      ((github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta') &&
+       needs.version.outputs.bumped == 'true')
+    runs-on: macos-15
+    permissions:
+      contents: write
+    # Serialize per ref so two pushes don't race on the same pointer release.
+    concurrency:
+      group: desktop-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install native build tools
+        run: brew install ninja pkg-config
+
+      - name: Resolve channel
+        id: channel
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            channel="${{ inputs.channel }}"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            channel="stable"
+          else
+            channel="beta"
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "Publishing channel: $channel"
+
+      - name: Install desktop shell deps
+        working-directory: apps/desktop/sentinel
+        run: npm ci
+
+      - name: Build DMG shell (python + git + gh + postgres)
+        working-directory: apps/desktop/sentinel
+        env:
+          SENTINEL_BUILD_CHANNEL: ${{ steps.channel.outputs.channel }}
+          # No signing certs on CI — produce an ad-hoc signed DMG.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run desktop:build
+
+      - name: Build payload (frozen backend + frontend dist)
+        working-directory: apps/desktop/sentinel
+        env:
+          SENTINEL_BUILD_CHANNEL: ${{ steps.channel.outputs.channel }}
+        run: npm run payload:build
+
+      - name: Publish to GitHub Releases
+        working-directory: apps/desktop/sentinel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/publish-release.mjs "${{ steps.channel.outputs.channel }}"

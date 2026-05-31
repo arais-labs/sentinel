@@ -9,12 +9,21 @@ from starlette.websockets import WebSocketDisconnect
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
-from app.dependencies import get_db
 from app.main import app
-from app.middleware.rate_limit import RateLimitMiddleware
+from app.routers import ws as ws_router
 from app.models import Message, ToolApproval
-from app.services.agent_run_registry import AgentRunRegistry
+from app.services.sessions.agent_run_registry import AgentRunRegistry
+from app.services.ws.ws_stream_service import unresolved_tool_calls_from_history
 from tests.fake_db import FakeDB
+from tests.helpers import FakeSessionFactory, install_fake_db_overrides, restore_test_app
+
+SESSIONS_API = "/api/v1/instances/main/sessions"
+WS_API = "/ws/instances/main/sessions"
+
+
+@pytest.fixture(autouse=True)
+def _use_fake_ws_manager_db(monkeypatch):
+    monkeypatch.setattr(ws_router, "ManagerSessionLocal", FakeSessionFactory(FakeDB()))
 
 
 def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") -> str:
@@ -39,21 +48,17 @@ class _AlwaysRunningRegistry(AgentRunRegistry):
         return True
 
 
+class _ThinkingRunningRegistry(_AlwaysRunningRegistry):
+    async def get_phase(self, session_id: str) -> str | None:  # noqa: ARG002
+        return "thinking"
+
+
 def test_ws_connect_send_ack_and_rejections():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
+    old_agent_runtime_support = getattr(app.state, "agent_runtime_support", None)
+    app.state.agent_runtime_support = None
 
     try:
         client = TestClient(app)
@@ -62,11 +67,11 @@ def test_ws_connect_send_ack_and_rejections():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-test"}, headers=owner_headers)
+        session_resp = client.post(SESSIONS_API, json={"title": "ws-test"}, headers=owner_headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -106,9 +111,12 @@ def test_ws_connect_send_ack_and_rejections():
             assert done["type"] == "done"
             assert done["stop_reason"] == "error"
 
-        messages = client.get(f"/api/v1/sessions/{session_id}/messages", headers=owner_headers)
+        messages = client.get(f"{SESSIONS_API}/{session_id}/messages", headers=owner_headers)
         assert messages.status_code == 200
-        stored = next(item for item in messages.json()["items"] if item["content"] == "hello from ws")
+        matching = [item for item in messages.json()["items"] if item["content"] == "hello from ws"]
+        assert len(matching) == 1
+        stored = matching[0]
+        assert stored["role"] == "user"
         assert stored["metadata"]["source"] == "web"
         assert stored["metadata"]["agent_mode"] == "read_only"
         assert len(stored["metadata"]["attachments"]) == 1
@@ -120,46 +128,35 @@ def test_ws_connect_send_ack_and_rejections():
 
         anon_client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as missing_token:
-            with anon_client.websocket_connect(f"/ws/sessions/{session_id}/stream"):
+            with anon_client.websocket_connect(f"{WS_API}/{session_id}/stream"):
                 pass
         assert missing_token.value.code == 4001
 
         with pytest.raises(WebSocketDisconnect) as bad_token:
-            with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token=invalid-token"):
+            with client.websocket_connect(f"{WS_API}/{session_id}/stream?token=invalid-token"):
                 pass
         assert bad_token.value.code == 4001
 
         other_token = _make_token(sub="other-user")
         with pytest.raises(WebSocketDisconnect) as forbidden:
-            with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={other_token}"):
+            with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={other_token}"):
                 pass
         assert forbidden.value.code == 4004
 
         unknown_session = uuid.uuid4()
         with pytest.raises(WebSocketDisconnect) as unknown:
-            with client.websocket_connect(f"/ws/sessions/{unknown_session}/stream?token={owner_token}"):
+            with client.websocket_connect(f"{WS_API}/{unknown_session}/stream?token={owner_token}"):
                 pass
         assert unknown.value.code == 4004
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
+        app.state.agent_runtime_support = old_agent_runtime_support
 
 
 def test_ws_rejects_invalid_agent_mode_payload():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
         client = TestClient(app)
@@ -168,11 +165,13 @@ def test_ws_rejects_invalid_agent_mode_payload():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-invalid-mode"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-invalid-mode"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             ws.send_json({"type": "message", "content": "hello", "agent_mode": "invalid-mode"})
@@ -180,27 +179,15 @@ def test_ws_rejects_invalid_agent_mode_payload():
             assert error["type"] == "error"
             assert error["code"] == "invalid_payload"
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_ws_connected_rehydrates_unresolved_tool_calls():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     old_run_registry = getattr(app.state, "agent_run_registry", None)
-    app.state.agent_run_registry = _AlwaysRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    app.state.agent_run_registry = _ThinkingRunningRegistry()
 
     try:
         client = TestClient(app)
@@ -209,7 +196,9 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-pending"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-pending"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -222,8 +211,11 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
                     "tool_calls": [
                         {
                             "id": "toolu_pending_1",
-                            "name": "git_exec",
-                            "arguments": {"command": "git push origin main"},
+                            "name": "git",
+                            "arguments": {
+                                "command": "write",
+                                "cli_command": "git push origin main",
+                            },
                         }
                     ]
                 },
@@ -232,24 +224,18 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
         fake_db.add(
             ToolApproval(
                 provider="git",
-                tool_name="git_exec",
+                tool_name="git",
                 session_id=uuid.UUID(session_id),
-                action="git.push",
-                description="Allow write operation: git push origin main",
-                match_key="git push origin main",
+                action="git.write",
+                description="Execute an approval-gated git or supported gh write command inside the session workspace.",
                 status="pending",
                 requested_by="session:test",
-                payload_json={
-                    "account_id": str(uuid.uuid4()),
-                    "repo_url": "https://github.com/ARAI/example",
-                    "remote_name": "origin",
-                    "command": "git push origin main",
-                },
+                payload_json={"tool_name": "git"},
                 expires_at=datetime.now(UTC) + timedelta(minutes=10),
             )
         )
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -257,43 +243,41 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             replay_start = ws.receive_json()
             assert replay_start["type"] == "toolcall_start"
             assert replay_start["tool_call"]["id"] == "toolu_pending_1"
-            assert replay_start["tool_call"]["name"] == "git_exec"
+            assert replay_start["tool_call"]["name"] == "git"
 
             replay_pending = ws.receive_json()
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_1"
-            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "git push origin main"}
+            assert replay_pending["tool_result"]["tool_arguments"] == {
+                "command": "write",
+                "cli_command": "git push origin main",
+            }
+            assert replay_pending["tool_result"]["content"]["status"] == "pending"
+            assert (
+                replay_pending["tool_result"]["content"]["message"] == "Action requires approval."
+            )
             assert replay_pending["tool_result"]["metadata"]["pending"] is True
-            assert "approval_id" not in replay_pending["tool_result"]["metadata"]
             approval = replay_pending["tool_result"]["metadata"].get("approval")
             assert isinstance(approval, dict)
-            assert approval.get("provider") == "git"
+            assert approval["provider"] == "git"
+            assert approval["status"] == "pending"
+            assert approval["pending"] is True
+            assert approval["can_resolve"] is True
+            assert approval["action"] == "git.write"
     finally:
         if old_run_registry is None:
             delattr(app.state, "agent_run_registry")
         else:
             app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
-def test_ws_connected_rehydrates_unresolved_git_call_with_truncated_args_and_hint():
+def test_ws_connected_rehydrates_active_run_as_thinking_when_no_tool_pending():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     old_run_registry = getattr(app.state, "agent_run_registry", None)
     app.state.agent_run_registry = _AlwaysRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -302,12 +286,83 @@ def test_ws_connected_rehydrates_unresolved_git_call_with_truncated_args_and_hin
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-pending-truncated"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-running"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        command = "gh pr create --repo exampleco/exampleco-gitops --title Test --body Body"
-        match_key = command.lower()
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
+            connected = ws.receive_json()
+            assert connected["type"] == "connected"
+            assert connected["session_id"] == session_id
+
+            replay_running = ws.receive_json()
+            assert replay_running["type"] == "thinking_start"
+            assert replay_running["session_id"] == session_id
+    finally:
+        if old_run_registry is None:
+            delattr(app.state, "agent_run_registry")
+        else:
+            app.state.agent_run_registry = old_run_registry
+        restore_test_app(old_init)
+
+
+def test_unresolved_tool_calls_ignore_calls_with_persisted_tool_result():
+    history = [
+        {
+            "id": "assistant-1",
+            "role": "assistant",
+            "metadata": {
+                "tool_calls": [
+                    {
+                        "id": "toolu_pending_1",
+                        "name": "git",
+                        "arguments": {"command": "write", "cli_command": "git push origin main"},
+                    }
+                ]
+            },
+        },
+        {
+            "id": "result-1",
+            "role": "tool_result",
+            "tool_call_id": "toolu_pending_1",
+            "tool_name": "git",
+            "metadata": {
+                "approval": {
+                    "provider": "git",
+                    "approval_id": "approval-1",
+                    "status": "pending",
+                    "pending": True,
+                    "can_resolve": True,
+                }
+            },
+        },
+    ]
+
+    assert unresolved_tool_calls_from_history(history) == []
+
+
+def test_ws_connected_history_includes_pending_tool_result_for_approval():
+    fake_db = FakeDB()
+
+    old_init = install_fake_db_overrides(app_db=fake_db)
+    old_run_registry = getattr(app.state, "agent_run_registry", None)
+    app.state.agent_run_registry = _AlwaysRunningRegistry()
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        owner_token = login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-pending-truncated"}, headers=owner_headers
+        )
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
         fake_db.add(
             Message(
                 session_id=uuid.UUID(session_id),
@@ -317,15 +372,10 @@ def test_ws_connected_rehydrates_unresolved_git_call_with_truncated_args_and_hin
                     "tool_calls": [
                         {
                             "id": "toolu_pending_2",
-                            "name": "git_exec",
+                            "name": "git",
                             "arguments": {
-                                "_truncated": True,
-                                "preview": "{\"command\":\"gh pr create ...\"}",
-                                "original_chars": 5000,
-                            },
-                            "approval_hint": {
-                                "provider": "git",
-                                "match_key": match_key,
+                                "command": "write",
+                                "cli_command": "gh pr create --repo exampleco/exampleco-gitops --title Test --body Body",
                             },
                         }
                     ]
@@ -333,351 +383,51 @@ def test_ws_connected_rehydrates_unresolved_git_call_with_truncated_args_and_hin
             )
         )
         fake_db.add(
-            ToolApproval(
-                provider="git",
-                tool_name="git_exec",
+            Message(
                 session_id=uuid.UUID(session_id),
-                action="gh.pr.create",
-                description=f"Allow write operation: {command}",
-                match_key=match_key,
-                status="pending",
-                requested_by="session:test",
-                payload_json={
-                    "account_id": str(uuid.uuid4()),
-                    "repo_url": "https://github.com/ARAI/example",
-                    "remote_name": "origin",
-                    "command": command,
+                role="tool_result",
+                tool_call_id="toolu_pending_2",
+                tool_name="git",
+                content='{"status":"pending","message":"Action requires approval."}',
+                metadata_json={
+                    "pending": True,
+                    "approval": {
+                        "provider": "git",
+                        "approval_id": str(uuid.uuid4()),
+                        "status": "pending",
+                        "pending": True,
+                        "can_resolve": True,
+                        "label": "Git write approval",
+                    },
                 },
-                expires_at=datetime.now(UTC) + timedelta(minutes=10),
             )
         )
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
-
-            replay_start = ws.receive_json()
-            assert replay_start["type"] == "toolcall_start"
-            assert replay_start["tool_call"]["id"] == "toolu_pending_2"
-            assert replay_start["tool_call"]["name"] == "git_exec"
-
-            replay_pending = ws.receive_json()
-            assert replay_pending["type"] == "tool_result"
-            assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_2"
-            assert replay_pending["tool_result"]["tool_arguments"]["_truncated"] is True
-            assert "approval_id" not in replay_pending["tool_result"]["metadata"]
-            approval = replay_pending["tool_result"]["metadata"].get("approval")
+            history = connected["history"]
+            pending_result = next(item for item in history if item["role"] == "tool_result")
+            assert pending_result["tool_call_id"] == "toolu_pending_2"
+            approval = pending_result["metadata"].get("approval")
             assert isinstance(approval, dict)
             assert approval.get("provider") == "git"
-            assert isinstance(approval.get("approval_id"), str)
-    finally:
-        if old_run_registry is None:
-            delattr(app.state, "agent_run_registry")
-        else:
-            app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-
-
-def test_ws_connected_rehydrates_unresolved_runtime_root_call_with_hint():
-    fake_db = FakeDB()
-
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    old_run_registry = getattr(app.state, "agent_run_registry", None)
-    app.state.agent_run_registry = _AlwaysRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
-
-    try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
-
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-pending-runtime-root"}, headers=owner_headers)
-        assert session_resp.status_code == 200
-        session_id = session_resp.json()["id"]
-
-        command = "echo root-check"
-        match_key = "runtime_exec:root:echo root-check"
-        fake_db.add(
-            Message(
-                session_id=uuid.UUID(session_id),
-                role="assistant",
-                content="",
-                metadata_json={
-                    "tool_calls": [
-                        {
-                            "id": "toolu_pending_runtime_root",
-                            "name": "runtime_exec",
-                            "arguments": {
-                                "_truncated": True,
-                                "preview": "{\"command\":\"echo root-check\",\"privilege\":\"root\"}",
-                                "original_chars": 256,
-                            },
-                            "approval_hint": {
-                                "provider": "tool",
-                                "match_key": match_key,
-                            },
-                        }
-                    ]
-                },
-            )
-        )
-        fake_db.add(
-            ToolApproval(
-                provider="tool",
-                tool_name="runtime_exec",
-                session_id=uuid.UUID(session_id),
-                action="runtime_exec.root",
-                description=f"Allow root runtime command: {command}",
-                match_key=match_key,
-                status="pending",
-                requested_by="session:test",
-                payload_json={
-                    "tool_name": "runtime_exec",
-                    "privilege": "root",
-                    "command": command,
-                },
-                expires_at=datetime.now(UTC) + timedelta(minutes=10),
-            )
-        )
-
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
-            connected = ws.receive_json()
-            assert connected["type"] == "connected"
-            assert connected["session_id"] == session_id
-
-            replay_start = ws.receive_json()
-            assert replay_start["type"] == "toolcall_start"
-            assert replay_start["tool_call"]["id"] == "toolu_pending_runtime_root"
-            assert replay_start["tool_call"]["name"] == "runtime_exec"
-
-            replay_pending = ws.receive_json()
-            assert replay_pending["type"] == "tool_result"
-            assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_runtime_root"
-            approval = replay_pending["tool_result"]["metadata"].get("approval")
-            assert isinstance(approval, dict)
-            assert approval.get("provider") == "tool"
-            assert isinstance(approval.get("approval_id"), str)
-    finally:
-        if old_run_registry is None:
-            delattr(app.state, "agent_run_registry")
-        else:
-            app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-
-
-def test_ws_connected_marks_linkage_missing_as_pending_stub():
-    fake_db = FakeDB()
-
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    old_run_registry = getattr(app.state, "agent_run_registry", None)
-    app.state.agent_run_registry = _AlwaysRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
-
-    try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
-
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-linkage-missing"}, headers=owner_headers)
-        assert session_resp.status_code == 200
-        session_id = session_resp.json()["id"]
-
-        fake_db.add(
-            Message(
-                session_id=uuid.UUID(session_id),
-                role="assistant",
-                content="",
-                metadata_json={
-                    "tool_calls": [
-                        {
-                            "id": "toolu_pending_linkage",
-                            "name": "runtime_exec",
-                            "arguments": {"_truncated": True},
-                            "approval_hint": {
-                                "provider": "tool",
-                                "match_key": "runtime_exec:root:echo missing",
-                            },
-                        }
-                    ]
-                },
-            )
-        )
-
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
-            connected = ws.receive_json()
-            assert connected["type"] == "connected"
-            replay_start = ws.receive_json()
-            assert replay_start["type"] == "toolcall_start"
-            replay_pending = ws.receive_json()
-            assert replay_pending["type"] == "tool_result"
-            metadata = replay_pending["tool_result"]["metadata"]
-            assert metadata.get("pending") is True
-            assert metadata.get("approval_linkage_missing") is True
-            approval = metadata.get("approval")
-            assert isinstance(approval, dict)
-            assert approval.get("provider") == "tool"
             assert approval.get("pending") is True
-            assert "approval_id" not in approval
     finally:
         if old_run_registry is None:
             delattr(app.state, "agent_run_registry")
         else:
             app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-
-
-def test_ws_rehydrate_matches_duplicate_git_approvals_in_call_order():
-    fake_db = FakeDB()
-
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    old_run_registry = getattr(app.state, "agent_run_registry", None)
-    app.state.agent_run_registry = _AlwaysRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
-
-    try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
-
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-pending-order"}, headers=owner_headers)
-        assert session_resp.status_code == 200
-        session_id = session_resp.json()["id"]
-        session_uuid = uuid.UUID(session_id)
-
-        command = "git push origin main"
-        fake_db.add(
-            Message(
-                session_id=session_uuid,
-                role="assistant",
-                content="",
-                metadata_json={
-                    "tool_calls": [
-                        {"id": "toolu_pending_a", "name": "git_exec", "arguments": {"command": command}},
-                        {"id": "toolu_pending_b", "name": "git_exec", "arguments": {"command": command}},
-                    ]
-                },
-            )
-        )
-
-        approval_old = ToolApproval(
-            provider="git",
-            tool_name="git_exec",
-            session_id=session_uuid,
-            action="git.push",
-            description=f"Allow write operation: {command}",
-            match_key=command,
-            status="pending",
-            requested_by="session:test",
-            payload_json={"command": command},
-            expires_at=datetime.now(UTC) + timedelta(minutes=10),
-        )
-        approval_old.created_at = datetime.now(UTC) - timedelta(seconds=20)
-        approval_old.updated_at = approval_old.created_at
-        fake_db.add(approval_old)
-
-        approval_new = ToolApproval(
-            provider="git",
-            tool_name="git_exec",
-            session_id=session_uuid,
-            action="git.push",
-            description=f"Allow write operation: {command}",
-            match_key=command,
-            status="pending",
-            requested_by="session:test",
-            payload_json={"command": command},
-            expires_at=datetime.now(UTC) + timedelta(minutes=10),
-        )
-        approval_new.created_at = datetime.now(UTC) - timedelta(seconds=5)
-        approval_new.updated_at = approval_new.created_at
-        fake_db.add(approval_new)
-
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
-            connected = ws.receive_json()
-            assert connected["type"] == "connected"
-
-            start_a = ws.receive_json()
-            assert start_a["type"] == "toolcall_start"
-            assert start_a["tool_call"]["id"] == "toolu_pending_a"
-
-            result_a = ws.receive_json()
-            assert result_a["type"] == "tool_result"
-            approval_a = result_a["tool_result"]["metadata"]["approval"]
-            assert approval_a["approval_id"] == str(approval_old.id)
-
-            start_b = ws.receive_json()
-            assert start_b["type"] == "toolcall_start"
-            assert start_b["tool_call"]["id"] == "toolu_pending_b"
-
-            result_b = ws.receive_json()
-            assert result_b["type"] == "tool_result"
-            approval_b = result_b["tool_result"]["metadata"]["approval"]
-            assert approval_b["approval_id"] == str(approval_new.id)
-    finally:
-        if old_run_registry is None:
-            delattr(app.state, "agent_run_registry")
-        else:
-            app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
 def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
     old_run_registry = getattr(app.state, "agent_run_registry", None)
     app.state.agent_run_registry = _AlwaysRunningRegistry()
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
 
     try:
         client = TestClient(app)
@@ -686,7 +436,9 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-runtime-pending"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-runtime-pending"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -699,15 +451,15 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
                     "tool_calls": [
                         {
                             "id": "toolu_pending_runtime",
-                            "name": "runtime_exec",
-                            "arguments": {"command": "sleep 10"},
+                            "name": "runtime",
+                            "arguments": {"command": "user", "shell_command": "sleep 10"},
                         }
                     ]
                 },
             )
         )
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -715,12 +467,15 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
             replay_start = ws.receive_json()
             assert replay_start["type"] == "toolcall_start"
             assert replay_start["tool_call"]["id"] == "toolu_pending_runtime"
-            assert replay_start["tool_call"]["name"] == "runtime_exec"
+            assert replay_start["tool_call"]["name"] == "runtime"
 
             replay_pending = ws.receive_json()
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_runtime"
-            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "sleep 10"}
+            assert replay_pending["tool_result"]["tool_arguments"] == {
+                "command": "user",
+                "shell_command": "sleep 10",
+            }
             assert replay_pending["tool_result"]["content"]["status"] == "running"
             assert "pending" not in replay_pending["tool_result"]["metadata"]
             assert "approval_id" not in replay_pending["tool_result"]["metadata"]
@@ -729,25 +484,15 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
             delattr(app.state, "agent_run_registry")
         else:
             app.state.agent_run_registry = old_run_registry
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)
 
 
-def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
+def test_ws_connected_does_not_attach_mismatched_pending_approval():
     fake_db = FakeDB()
 
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
+    old_init = install_fake_db_overrides(app_db=fake_db)
+    old_run_registry = getattr(app.state, "agent_run_registry", None)
+    app.state.agent_run_registry = _AlwaysRunningRegistry()
 
     try:
         client = TestClient(app)
@@ -756,7 +501,80 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post("/api/v1/sessions", json={"title": "ws-stale-pending"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-pending-mismatch"}, headers=owner_headers
+        )
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
+
+        fake_db.add(
+            Message(
+                session_id=uuid.UUID(session_id),
+                role="assistant",
+                content="",
+                metadata_json={
+                    "tool_calls": [
+                        {
+                            "id": "toolu_git_read",
+                            "name": "git",
+                            "arguments": {"command": "read", "cli_command": "git status"},
+                        }
+                    ]
+                },
+            )
+        )
+        fake_db.add(
+            ToolApproval(
+                provider="git",
+                tool_name="git",
+                session_id=uuid.UUID(session_id),
+                action="git.write",
+                description="Execute an approval-gated git or supported gh write command inside the session workspace.",
+                status="pending",
+                requested_by="session:test",
+                payload_json={"tool_name": "git"},
+                expires_at=datetime.now(UTC) + timedelta(minutes=10),
+            )
+        )
+
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
+            connected = ws.receive_json()
+            assert connected["type"] == "connected"
+            assert connected["session_id"] == session_id
+
+            replay_start = ws.receive_json()
+            assert replay_start["type"] == "toolcall_start"
+            assert replay_start["tool_call"]["id"] == "toolu_git_read"
+            assert replay_start["tool_call"]["name"] == "git"
+
+            replay_pending = ws.receive_json()
+            assert replay_pending["type"] == "tool_result"
+            assert replay_pending["tool_result"]["tool_call_id"] == "toolu_git_read"
+            assert replay_pending["tool_result"]["content"]["status"] == "running"
+            assert "approval" not in replay_pending["tool_result"]["metadata"]
+    finally:
+        if old_run_registry is None:
+            delattr(app.state, "agent_run_registry")
+        else:
+            app.state.agent_run_registry = old_run_registry
+        restore_test_app(old_init)
+
+
+def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
+    fake_db = FakeDB()
+
+    old_init = install_fake_db_overrides(app_db=fake_db)
+
+    try:
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        owner_token = login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-stale-pending"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -776,33 +594,30 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
                     "tool_calls": [
                         {
                             "id": "toolu_stale_1",
-                            "name": "git_exec",
-                            "arguments": {"command": "git push origin main"},
+                            "name": "git",
+                            "arguments": {
+                                "command": "write",
+                                "cli_command": "git push origin main",
+                            },
                         }
-                    ]
+                    ],
                 },
             )
         )
         pending_approval = ToolApproval(
             provider="git",
-            tool_name="git_exec",
+            tool_name="git",
             session_id=uuid.UUID(session_id),
-            action="git.push",
-            description="Allow write operation: git push origin main",
-            match_key="git push origin main",
+            action="git.write",
+            description="Execute an approval-gated git or supported gh write command inside the session workspace.",
             status="pending",
             requested_by="session:test",
-            payload_json={
-                "account_id": str(uuid.uuid4()),
-                "repo_url": "https://github.com/ARAI/example",
-                "remote_name": "origin",
-                "command": "git push origin main",
-            },
+            payload_json={"tool_name": "git"},
             expires_at=datetime.now(UTC) + timedelta(minutes=10),
         )
         fake_db.add(pending_approval)
 
-        with client.websocket_connect(f"/ws/sessions/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             history = connected.get("history") or []
@@ -812,7 +627,7 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
                     for item in history
                     if item.get("role") == "tool_result"
                     and item.get("tool_call_id") == "toolu_stale_1"
-                    and item.get("tool_name") == "git_exec"
+                    and item.get("tool_name") == "git"
                 ),
                 None,
             )
@@ -827,5 +642,4 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
         assert pending_approval.status == "cancelled"
         assert pending_approval.resolved_at is not None
     finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
+        restore_test_app(old_init)

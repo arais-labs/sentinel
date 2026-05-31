@@ -4,14 +4,10 @@ import asyncio
 from datetime import UTC, datetime
 
 from app.models import Session, Trigger
+from app.services.araios.system_modules import triggers as triggers_module
+from app.services.araios.system_modules.triggers import handlers as trigger_handlers_module
 from app.services.tools.executor import ToolExecutor, ToolValidationError
-from app.services.tools.registry import ToolRegistry
-from app.services.tools.trigger_tools import (
-    trigger_create_tool,
-    trigger_delete_tool,
-    trigger_list_tool,
-    trigger_update_tool,
-)
+from app.services.tools.registry import ToolRegistry, ToolRuntimeContext
 from tests.fake_db import FakeDB
 
 
@@ -40,11 +36,8 @@ class _SessionFactory:
 
 def _executor_for(db: FakeDB) -> ToolExecutor:
     registry = ToolRegistry()
-    session_factory = _SessionFactory(db)
-    registry.register(trigger_create_tool(session_factory))
-    registry.register(trigger_list_tool(session_factory))
-    registry.register(trigger_update_tool(session_factory))
-    registry.register(trigger_delete_tool(session_factory))
+    trigger_handlers_module.AsyncSessionLocal = _SessionFactory(db)
+    registry.register(triggers_module.MODULE.to_tool_definitions()[0])
     return ToolExecutor(registry)
 
 
@@ -56,16 +49,16 @@ def test_trigger_create_binds_owner_from_context_session():
 
     _run(
         executor.execute(
-            "trigger_create",
+            "triggers",
             {
+                "command": "create",
                 "name": "daily",
                 "type": "heartbeat",
                 "config": {"interval_seconds": 60},
                 "action_type": "tool_call",
-                "action_config": {"name": "memory_roots", "arguments": {}},
-                "session_id": str(session.id),
+                "action_config": {"name": "memory", "arguments": {"command": "roots"}},
             },
-            allow_high_risk=True,
+            runtime=ToolRuntimeContext(session_id=session.id),
         )
     )
 
@@ -85,8 +78,9 @@ def test_trigger_create_invalid_specific_target_falls_back_to_main():
 
     result, _ = _run(
         executor.execute(
-            "trigger_create",
+            "triggers",
             {
+                "command": "create",
                 "name": "daily",
                 "type": "heartbeat",
                 "config": {"interval_seconds": 60},
@@ -96,9 +90,8 @@ def test_trigger_create_invalid_specific_target_falls_back_to_main():
                     "route_mode": "session",
                     "target_session_id": "0fb4e3d8-4238-4fae-a5df-7bf1a615b38b",
                 },
-                "session_id": str(session.id),
             },
-            allow_high_risk=True,
+            runtime=ToolRuntimeContext(session_id=session.id),
         )
     )
 
@@ -116,15 +109,16 @@ def test_trigger_create_rejects_missing_owner_context():
     try:
         _run(
             executor.execute(
-                "trigger_create",
+                "triggers",
                 {
+                    "command": "create",
                     "name": "daily",
                     "type": "heartbeat",
                     "config": {"interval_seconds": 60},
                     "action_type": "tool_call",
-                    "action_config": {"name": "memory_roots", "arguments": {}},
+                    "action_config": {"name": "memory", "arguments": {"command": "roots"}},
                 },
-                allow_high_risk=True,
+                runtime=ToolRuntimeContext(),
             )
         )
         raised = False
@@ -168,16 +162,16 @@ def test_trigger_list_is_owner_scoped_by_session():
 
     user_a_list, _ = _run(
         executor.execute(
-            "trigger_list",
-            {"session_id": str(user_a_session.id)},
-            allow_high_risk=True,
+            "triggers",
+            {"command": "list"},
+            runtime=ToolRuntimeContext(session_id=user_a_session.id),
         )
     )
     user_b_list, _ = _run(
         executor.execute(
-            "trigger_list",
-            {"session_id": str(user_b_session.id)},
-            allow_high_risk=True,
+            "triggers",
+            {"command": "list"},
+            runtime=ToolRuntimeContext(session_id=user_b_session.id),
         )
     )
 

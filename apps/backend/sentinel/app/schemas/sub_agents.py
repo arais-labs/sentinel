@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field, field_validator
 class CreateSubAgentTaskRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     scope: str | None = None
-    browser_tab_id: str | None = None
     max_steps: int = Field(default=5, ge=1, le=50)
     allowed_tools: list[str] = Field(default_factory=list)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
@@ -31,21 +30,12 @@ class CreateSubAgentTaskRequest(BaseModel):
         trimmed = value.strip()
         return trimmed or None
 
-    @field_validator("browser_tab_id")
-    @classmethod
-    def _normalize_tab_id(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        trimmed = value.strip()
-        return trimmed or None
-
 
 class SubAgentTaskResponse(BaseModel):
     id: UUID
     session_id: UUID
     name: str
     scope: str | None = None
-    browser_tab_id: str | None = None
     max_steps: int
     status: str
     allowed_tools: list[str] = Field(default_factory=list)

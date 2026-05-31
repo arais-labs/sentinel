@@ -35,9 +35,7 @@ class SessionBinding(Base):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String(100), index=True)
     binding_type: Mapped[str] = mapped_column(String(40), index=True)
     binding_key: Mapped[str] = mapped_column(String(255))

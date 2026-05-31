@@ -102,6 +102,7 @@ def _try_resolve_ref(ref: str, defs: Defs) -> Any | None:
     if not defs:
         return None
     import re
+
     m = re.match(r"^#/(?:\$defs|definitions)/(.+)$", ref)
     if not m:
         return None
@@ -268,9 +269,7 @@ def _clean(schema: Any, defs: Defs, ref_stack: set[str] | None) -> Any:
             continue
 
         if key == "properties" and isinstance(value, dict):
-            cleaned[key] = {
-                k: _clean(v, next_defs, ref_stack) for k, v in value.items()
-            }
+            cleaned[key] = {k: _clean(v, next_defs, ref_stack) for k, v in value.items()}
         elif key == "items" and value is not None:
             if isinstance(value, list):
                 cleaned[key] = [_clean(entry, next_defs, ref_stack) for entry in value]
@@ -279,13 +278,17 @@ def _clean(schema: Any, defs: Defs, ref_stack: set[str] | None) -> Any:
             else:
                 cleaned[key] = value
         elif key == "anyOf" and isinstance(value, list):
-            cleaned[key] = cleaned_any_of if cleaned_any_of is not None else [
-                _clean(v, next_defs, ref_stack) for v in value
-            ]
+            cleaned[key] = (
+                cleaned_any_of
+                if cleaned_any_of is not None
+                else [_clean(v, next_defs, ref_stack) for v in value]
+            )
         elif key == "oneOf" and isinstance(value, list):
-            cleaned[key] = cleaned_one_of if cleaned_one_of is not None else [
-                _clean(v, next_defs, ref_stack) for v in value
-            ]
+            cleaned[key] = (
+                cleaned_one_of
+                if cleaned_one_of is not None
+                else [_clean(v, next_defs, ref_stack) for v in value]
+            )
         elif key == "allOf" and isinstance(value, list):
             cleaned[key] = [_clean(v, next_defs, ref_stack) for v in value]
         else:

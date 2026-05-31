@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import copy
+import contextlib
 from datetime import UTC, datetime
 from typing import Awaitable, Callable
 from uuid import UUID
@@ -10,36 +10,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
+from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock, TurnResult
 from app.models import Session, SubAgentTask
-from app.services.agent import AgentLoop, ContextBuilder, ToolAdapter
+from app.services.agent import ContextBuilder, SentinelRuntimeSupport
+from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 from app.services.llm.ids import TierName
 from app.services.llm.generic.types import AgentEvent
-from app.services.tools import ToolDefinition, ToolExecutor, ToolRegistry
+from app.services.tools import ToolExecutor, ToolRegistry
 
-_BROWSER_TAB_TARGETABLE_TOOLS = frozenset(
-    {
-        "browser_navigate",
-        "browser_screenshot",
-        "browser_click",
-        "browser_type",
-        "browser_select",
-        "browser_wait_for",
-        "browser_get_value",
-        "browser_fill_form",
-        "browser_press_key",
-        "browser_get_text",
-        "browser_snapshot",
-    }
-)
-_BROWSER_TAB_MANAGEMENT_TOOLS = frozenset(
-    {
-        "browser_tabs",
-        "browser_tab_open",
-        "browser_tab_focus",
-        "browser_tab_close",
-        "browser_reset",
-    }
-)
+_SUB_AGENT_EXCLUDED_TOOLS = frozenset({"delegate"})
 
 
 class SubAgentOrchestrator:
@@ -49,12 +28,12 @@ class SubAgentOrchestrator:
 
     def __init__(
         self,
-        agent_loop: AgentLoop | None = None,
+        agent_runtime_support: SentinelRuntimeSupport | None = None,
         db_factory: async_sessionmaker[AsyncSession] | None = None,
         base_tool_registry: ToolRegistry | None = None,
         on_task_completed: Callable[[SubAgentTask], Awaitable[None] | None] | None = None,
     ) -> None:
-        self._agent_loop = agent_loop
+        self._agent_runtime_support = agent_runtime_support
         self._db_factory = db_factory
         self._base_tool_registry = base_tool_registry
         self._on_task_completed = on_task_completed
@@ -129,8 +108,8 @@ class SubAgentOrchestrator:
             task.started_at = datetime.now(UTC)
             await db.commit()
 
-            if self._agent_loop is None:
-                await self._mark_failed(db, task, "Agent loop unavailable")
+            if self._agent_runtime_support is None:
+                await self._mark_failed(db, task, "Agent runtime support unavailable")
                 return
 
             parent_session = await self._load_parent_session(db, task.session_id)
@@ -157,13 +136,32 @@ class SubAgentOrchestrator:
             task.result = {"child_session_id": str(child_session.id)}
             await db.commit()
 
-            scoped_loop = self._scoped_agent_loop(task)
+            scoped_runtime_support = self._scoped_runtime_support(task)
             prompt = self._sub_agent_system_prompt(task)
 
             key = str(task.id)
             queue: asyncio.Queue[str] = asyncio.Queue()
             self._inject_queues[key] = queue
             last_reported_turn = int(task.turns_used or 0)
+
+            def _drain_interjections() -> list[ConversationItem]:
+                items: list[ConversationItem] = []
+                while True:
+                    try:
+                        text = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    items.append(
+                        ConversationItem(
+                            id=f"interjection-{len(items)}",
+                            role="user",
+                            content=[TextBlock(text=f"[Operator interjection]: {text}")],
+                            metadata={"source": "operator_interjection"},
+                        )
+                    )
+                return items
 
             async def _on_sub_agent_event(event: AgentEvent) -> None:
                 nonlocal last_reported_turn
@@ -179,27 +177,56 @@ class SubAgentOrchestrator:
                 except Exception:
                     await db.rollback()
 
+            runtime_task: asyncio.Task[TurnResult] | None = None
             try:
-                result = await asyncio.wait_for(
-                    scoped_loop.run(
-                        db,
-                        child_session.id,
-                        task.objective,
-                        system_prompt=prompt,
-                        model=self._SUB_AGENT_TIER,
-                        max_iterations=max(1, task.max_turns),
-                        stream=False,
-                        allow_high_risk=True,
-                        inject_queue=queue,
-                        persist_incremental=True,
-                        on_event=_on_sub_agent_event,
-                    ),
+                runtime = SentinelLoopRuntimeAdapter(
+                    loop=scoped_runtime_support,
+                    db=db,
+                    session_id=child_session.id,
+                    runtime_session_id=parent_session.id,
+                    persist_incremental=True,
+                )
+                runtime_task = asyncio.create_task(
+                    runtime.run_turn(
+                        RunTurnRequest(
+                            conversation_id=str(child_session.id),
+                            new_items=[
+                                ConversationItem(
+                                    id="sub-agent-user-input",
+                                    role="user",
+                                    content=[TextBlock(text=task.objective)],
+                                )
+                            ],
+                            config=GenerationConfig(
+                                model=self._SUB_AGENT_TIER,
+                                max_iterations=max(1, task.max_turns),
+                                stream=False,
+                                system_prompt=prompt,
+                            ),
+                            interjection_source=_drain_interjections,
+                        ),
+                        sink=_on_sub_agent_event,
+                    )
+                )
+                done, _pending = await asyncio.wait(
+                    {runtime_task},
                     timeout=max(1, task.timeout_seconds),
                 )
+                if runtime_task not in done:
+                    runtime_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await runtime_task
+                    await self._mark_failed(db, task, "Sub-agent timed out")
+                    return
+                result = await runtime_task
             except asyncio.TimeoutError:
                 await self._mark_failed(db, task, "Sub-agent timed out")
                 return
             except asyncio.CancelledError:
+                if runtime_task is not None:
+                    runtime_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await runtime_task
                 task.status = "cancelled"
                 task.completed_at = datetime.now(UTC)
                 await db.commit()
@@ -211,12 +238,23 @@ class SubAgentOrchestrator:
             finally:
                 self._inject_queues.pop(key, None)
 
+            if result.status == "aborted":
+                task.status = "cancelled"
+                task.completed_at = datetime.now(UTC)
+                task.result = {
+                    "error": result.error or "Sub-agent run aborted",
+                    "child_session_id": str(child_session.id),
+                }
+                await db.commit()
+                await self._notify_task_completed(task)
+                return
+
             task.turns_used = int(result.iterations)
             task.tokens_used = int(result.usage.input_tokens + result.usage.output_tokens)
             task.status = "completed"
             task.completed_at = datetime.now(UTC)
             task.result = {
-                "final_text": result.final_text,
+                "final_text": str(result.metadata.get("final_text") or ""),
                 "iterations": result.iterations,
                 "usage": {
                     "input_tokens": result.usage.input_tokens,
@@ -254,91 +292,55 @@ class SubAgentOrchestrator:
             except Exception:
                 return
 
-    def _scoped_agent_loop(self, task: SubAgentTask) -> AgentLoop:
-        """Build an AgentLoop restricted to task allowlist and optional browser tab scope."""
+    def _scoped_runtime_support(self, task: SubAgentTask) -> SentinelRuntimeSupport:
+        """Build a runtime support object restricted to the task allowlist."""
         if self._base_tool_registry is None:
-            return self._agent_loop
+            return self._agent_runtime_support
 
-        allowed_tools = (
-            task.allowed_tools if isinstance(task.allowed_tools, list) else []
-        )
-        pinned_tab_id = self._pinned_browser_tab_id(task)
-        if not allowed_tools and pinned_tab_id is None:
-            return self._agent_loop
-
+        allowed_tools = task.allowed_tools if isinstance(task.allowed_tools, list) else []
         if allowed_tools:
-            allowed = {str(item) for item in allowed_tools if isinstance(item, str)}
+            allowed = {
+                str(item)
+                for item in allowed_tools
+                if isinstance(item, str) and str(item) not in _SUB_AGENT_EXCLUDED_TOOLS
+            }
         else:
-            allowed = {tool.name for tool in self._base_tool_registry.list_all()}
-
-        if pinned_tab_id is not None:
-            allowed -= _BROWSER_TAB_MANAGEMENT_TOOLS
+            allowed = {
+                tool.name
+                for tool in self._base_tool_registry.list_all()
+                if tool.name not in _SUB_AGENT_EXCLUDED_TOOLS
+            }
 
         scoped_registry = ToolRegistry()
         for tool in self._base_tool_registry.list_all():
             if tool.name not in allowed:
                 continue
-            scoped_registry.register(
-                self._tool_with_optional_tab_scope(tool, pinned_tab_id)
-            )
+            scoped_registry.register(tool)
 
         available_tools = {tool.name for tool in scoped_registry.list_all()}
 
-        base_context = self._agent_loop.context_builder
+        base_context = self._agent_runtime_support.context_builder
         context_builder = ContextBuilder(
-            default_system_prompt=getattr(base_context, "_default_system_prompt", settings.default_system_prompt),
+            default_system_prompt=getattr(
+                base_context, "_default_system_prompt", settings.default_system_prompt
+            ),
             token_budget=getattr(base_context, "_token_budget", settings.context_token_budget),
             available_tools=available_tools,
             memory_search_service=getattr(base_context, "_memory_search_service", None),
         )
-        tool_adapter = ToolAdapter(
+        return SentinelRuntimeSupport(
+            self._agent_runtime_support.provider,
+            context_builder,
             scoped_registry,
-            ToolExecutor(scoped_registry),
-            session_factory=self._db_factory,
+            ToolExecutor(
+                scoped_registry,
+                db_session_factory=self._db_factory,
+                sub_agent_orchestrator=self,
+                instance_name=getattr(
+                    self._agent_runtime_support.tool_executor, "_instance_name", None
+                ),
+            ),
         )
-        return AgentLoop(self._agent_loop.provider, context_builder, tool_adapter)
-
-    def _tool_with_optional_tab_scope(
-        self,
-        tool: ToolDefinition,
-        pinned_tab_id: str | None,
-    ) -> ToolDefinition:
-        if pinned_tab_id is None or tool.name not in _BROWSER_TAB_TARGETABLE_TOOLS:
-            return tool
-
-        schema = copy.deepcopy(tool.parameters_schema) if isinstance(tool.parameters_schema, dict) else {}
-        properties = schema.get("properties")
-        if isinstance(properties, dict) and "tab_id" in properties:
-            properties.pop("tab_id", None)
-        required = schema.get("required")
-        if isinstance(required, list):
-            schema["required"] = [item for item in required if item != "tab_id"]
-
-        async def _execute(payload: dict) -> dict:
-            scoped_payload = dict(payload or {})
-            scoped_payload["tab_id"] = pinned_tab_id
-            return await tool.execute(scoped_payload)
-
-        return ToolDefinition(
-            name=tool.name,
-            description=tool.description,
-            risk_level=tool.risk_level,
-            parameters_schema=schema,
-            execute=_execute,
-            enabled=tool.enabled,
-        )
-
-    def _pinned_browser_tab_id(self, task: SubAgentTask) -> str | None:
-        constraints = task.constraints if isinstance(task.constraints, list) else []
-        for item in constraints:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("type", "")).strip().lower() != "browser_tab":
-                continue
-            tab_id = item.get("tab_id")
-            if isinstance(tab_id, str) and tab_id.strip():
-                return tab_id.strip()
-        return None
 
     def _sub_agent_system_prompt(self, task: SubAgentTask) -> str:
         """Generate a strict scope/constraint prompt for delegated sub-agent runs."""
@@ -348,17 +350,8 @@ class SubAgentOrchestrator:
             else "all available tools"
         )
         scope = task.context or "No extra scope provided"
-        pinned_tab_id = self._pinned_browser_tab_id(task)
-        tab_scope = ""
-        if pinned_tab_id is not None:
-            tab_scope = (
-                f"\nBrowser tab scope: you are pinned to tab_id={pinned_tab_id}. "
-                "All browser actions are forced to this tab. "
-                "Do not attempt to open/focus/close/list tabs or reset the browser."
-            )
         return (
             "You are a delegated sub-agent. Stay strictly within objective and scope.\n"
             f"Allowed tools: {tools}.\n"
             f"Scope: {scope}"
-            f"{tab_scope}"
         )

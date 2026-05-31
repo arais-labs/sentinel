@@ -41,6 +41,7 @@ _CODEX_EXECUTION_MARKER = "You are Codex, a coding agent running in Sentinel."
 _CODEX_EXECUTION_PRELUDE = (
     f"{_CODEX_EXECUTION_MARKER}\n\n"
     "Keep acting until the task is complete. Do not stop at analysis if the user asked for execution.\n"
+    "When you are about to use tools, provide a brief user-facing progress update about what you are doing or checking.\n"
     "When verification is possible via tools, run the tools instead of guessing.\n"
     "Do not claim commands were run or files were changed unless tool output confirms it.\n"
     "If blocked, state the concrete blocker and the best immediate next action."
@@ -67,8 +68,7 @@ def _sanitize_json_schema(value: Any) -> Any:
 
     if isinstance(value.get("properties"), dict):
         value["properties"] = {
-            str(key): _sanitize_json_schema(child)
-            for key, child in value["properties"].items()
+            str(key): _sanitize_json_schema(child) for key, child in value["properties"].items()
         }
     if "items" in value:
         value["items"] = _sanitize_json_schema(value.get("items"))
@@ -298,9 +298,7 @@ class CodexProvider(LLMProvider):
                 if response.is_error:
                     body = await response.aread()
                     detail = body.decode("utf-8", errors="replace").strip()
-                    raise RuntimeError(
-                        f"Codex stream http_{response.status_code}: {detail[:500]}"
-                    )
+                    raise RuntimeError(f"Codex stream http_{response.status_code}: {detail[:500]}")
 
                 async for raw_line in response.aiter_lines():
                     line = raw_line.strip()
@@ -343,9 +341,7 @@ class CodexProvider(LLMProvider):
                             started = True
                             yield AgentEvent(type="start")
                     elif etype in {"error", "response.error", "response.failed"}:
-                        raise RuntimeError(
-                            f"Codex stream sse_error: {self._error_message(event)}"
-                        )
+                        raise RuntimeError(f"Codex stream sse_error: {self._error_message(event)}")
 
                     # --- text streaming ---
                     elif etype == "response.content_part.added":
@@ -400,8 +396,7 @@ class CodexProvider(LLMProvider):
 
                     elif etype == "response.function_call_arguments.delta":
                         item_id = str(
-                            event.get("item_id")
-                            or f"idx:{int(event.get('output_index') or 0)}"
+                            event.get("item_id") or f"idx:{int(event.get('output_index') or 0)}"
                         )
                         out_idx = tool_indices.get(item_id, event.get("output_index", 0))
                         delta = event.get("delta", "")
@@ -418,8 +413,7 @@ class CodexProvider(LLMProvider):
 
                     elif etype == "response.function_call_arguments.done":
                         item_id = str(
-                            event.get("item_id")
-                            or f"idx:{int(event.get('output_index') or 0)}"
+                            event.get("item_id") or f"idx:{int(event.get('output_index') or 0)}"
                         )
                         arguments = event.get("arguments")
                         if isinstance(arguments, str) and arguments:
@@ -441,11 +435,7 @@ class CodexProvider(LLMProvider):
                             out_idx = tool_indices.get(item_id, event.get("output_index", 0))
                             arguments = item.get("arguments")
                             already_emitted = tool_argument_buffers.get(item_id, "")
-                            if (
-                                isinstance(arguments, str)
-                                and arguments
-                                and not already_emitted
-                            ):
+                            if isinstance(arguments, str) and arguments and not already_emitted:
                                 tool_argument_buffers[item_id] = arguments
                                 yield AgentEvent(
                                     type="toolcall_delta",
@@ -454,7 +444,9 @@ class CodexProvider(LLMProvider):
                                 )
                             yield AgentEvent(type="toolcall_end", content_index=out_idx)
                         elif item.get("type") == "message":
-                            out_idx = int(event.get("output_index") or event.get("content_index") or 0)
+                            out_idx = int(
+                                event.get("output_index") or event.get("content_index") or 0
+                            )
                             text_value = self._extract_message_output_text(item)
                             if text_value and out_idx not in text_delta_seen:
                                 if out_idx not in text_started:
@@ -480,11 +472,7 @@ class CodexProvider(LLMProvider):
                         "response.reasoning_text.delta",
                         "response.reasoning_summary_text.delta",
                     }:
-                        idx = int(
-                            event.get("content_index")
-                            or event.get("summary_index")
-                            or 0
-                        )
+                        idx = int(event.get("content_index") or event.get("summary_index") or 0)
                         delta = event.get("delta", "")
                         if isinstance(delta, str) and delta:
                             if idx not in thinking_started:
@@ -500,11 +488,7 @@ class CodexProvider(LLMProvider):
                         "response.reasoning_text.done",
                         "response.reasoning_summary_text.done",
                     }:
-                        idx = int(
-                            event.get("content_index")
-                            or event.get("summary_index")
-                            or 0
-                        )
+                        idx = int(event.get("content_index") or event.get("summary_index") or 0)
                         if idx in thinking_started:
                             yield AgentEvent(type="thinking_end", content_index=idx)
 
@@ -560,31 +544,51 @@ class CodexProvider(LLMProvider):
                     if tool_calls:
                         for tc in tool_calls:
                             fn = tc.get("function", {}) if isinstance(tc, dict) else {}
-                            input_items.append({
-                                "type": "function_call",
-                                "call_id": tc.get("id", ""),
-                                "name": fn.get("name", ""),
-                                "arguments": fn.get("arguments", "{}"),
-                            })
+                            call_id = str(tc.get("id") or "").strip()
+                            call_name = str(fn.get("name") or "").strip()
+                            if not call_id or not call_name:
+                                continue
+                            input_items.append(
+                                {
+                                    "type": "function_call",
+                                    "call_id": call_id,
+                                    "name": call_name,
+                                    "arguments": fn.get("arguments", "{}"),
+                                }
+                            )
                     if content:
                         input_items.append({"role": "assistant", "content": content})
                 elif role == "tool":
-                    input_items.append({
-                        "type": "function_call_output",
-                        "call_id": message.get("tool_call_id", ""),
-                        "output": content if isinstance(content, str) else json.dumps(content),
-                    })
+                    call_id = str(message.get("tool_call_id") or "").strip()
+                    if not call_id:
+                        continue
+                    input_items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": content if isinstance(content, str) else json.dumps(content),
+                        }
+                    )
                 else:
                     input_items.append({"role": "user", "content": content})
                 continue
 
             # ToolResultMessage
             if isinstance(message, ToolResultMessage):
-                input_items.append({
-                    "type": "function_call_output",
-                    "call_id": message.tool_call_id,
-                    "output": message.content if isinstance(message.content, str) else json.dumps(message.content),
-                })
+                call_id = str(message.tool_call_id or "").strip()
+                if not call_id:
+                    continue
+                input_items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": (
+                            message.content
+                            if isinstance(message.content, str)
+                            else json.dumps(message.content)
+                        ),
+                    }
+                )
                 continue
 
             role = getattr(message, "role", "user")
@@ -601,12 +605,18 @@ class CodexProvider(LLMProvider):
                 text_parts = [item.text for item in content if isinstance(item, TextContent)]
                 for item in content:
                     if isinstance(item, ToolCallContent):
-                        input_items.append({
-                            "type": "function_call",
-                            "call_id": item.id,
-                            "name": item.name,
-                            "arguments": json.dumps(item.arguments),
-                        })
+                        call_id = str(item.id or "").strip()
+                        call_name = str(item.name or "").strip()
+                        if not call_id or not call_name:
+                            continue
+                        input_items.append(
+                            {
+                                "type": "function_call",
+                                "call_id": call_id,
+                                "name": call_name,
+                                "arguments": json.dumps(item.arguments),
+                            }
+                        )
                 if text_parts:
                     input_items.append({"role": "assistant", "content": "\n".join(text_parts)})
                 continue
@@ -633,10 +643,12 @@ class CodexProvider(LLMProvider):
                 input_items.append({"role": "user", "content": text})
                 continue
 
-            input_items.append({
-                "role": role,
-                "content": content if isinstance(content, str) else "",
-            })
+            input_items.append(
+                {
+                    "role": role,
+                    "content": content if isinstance(content, str) else "",
+                }
+            )
 
         return "\n\n".join(instructions_parts), input_items
 
