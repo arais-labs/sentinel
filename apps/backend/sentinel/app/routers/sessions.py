@@ -642,7 +642,7 @@ async def proxy_runtime_forward_websocket(
 
     await websocket.accept()
     try:
-        async with websockets.connect(target_url) as remote:
+        async with websockets.connect(target_url, proxy=None) as remote:
 
             async def _client_to_remote() -> None:
                 while True:
