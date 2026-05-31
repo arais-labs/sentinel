@@ -19,7 +19,10 @@ import {
 } from 'lucide-react';
 
 import { APP_VERSION } from '../lib/env';
-import { instanceRouteFromPath } from '../lib/routes';
+import { instancePrefixFromPath, instanceRouteFromPath } from '../lib/routes';
+import { useWorkspaceMode } from '../lib/workspace-context';
+import { isWorkspaceTabId } from '../lib/workspace-tabs';
+import { useOpenTabIds, useWorkspaceStore } from '../store/workspace-store';
 import { useThemeStore } from '../store/theme-store';
 import { Logo } from './ui/Logo';
 
@@ -67,22 +70,49 @@ export function AppShell({
 }: AppShellProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const workspaceMode = useWorkspaceMode();
   const theme = useThemeStore((state) => state.theme);
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
+  const openTab = useWorkspaceStore((state) => state.openTab);
+  const openTabIds = useOpenTabIds();
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const instanceMatch = location.pathname.match(/^\/instances\/([^/]+)/);
   const hasInstanceScope = Boolean(instanceMatch?.[1]);
 
+  // When the shell is hosting the tiling workspace, the left nav acts as a tab
+  // launcher: clicking an item opens/focuses that pane instead of navigating to
+  // a standalone page. Detected by the dedicated `/workspace` route.
+  const instancePrefix = instancePrefixFromPath(location.pathname);
+  const workspaceRoute = instancePrefix ? `${instancePrefix}/workspace` : null;
+  const launcherMode = Boolean(workspaceRoute) && location.pathname === workspaceRoute;
+
+  // A nav item launches a workspace tab when we are in launcher mode and the
+  // item's route maps to a real workspace tab id (e.g. dev-only `showcase` has
+  // no tab, so it always router-navigates).
+  const handleNavClick = (item: NavItem, onNavigate?: () => void) => {
+    if (launcherMode && isWorkspaceTabId(item.route)) {
+      openTab(item.route);
+      onNavigate?.();
+      return;
+    }
+    navigate(instanceRouteFromPath(location.pathname, item.route));
+    onNavigate?.();
+  };
+
   const renderNav = (items: NavItem[], onNavigate?: () => void) => (
     <nav className="flex-1 overflow-y-auto overflow-x-hidden py-4 px-2 space-y-1">
       {items.map((item) => {
         const itemPath = instanceRouteFromPath(location.pathname, item.route);
-        const active = isActive(location.pathname, itemPath);
+        // In launcher mode the "active" cue follows which tabs are open rather
+        // than the URL (which stays on `/workspace`).
+        const active = launcherMode
+          ? isWorkspaceTabId(item.route) && openTabIds.includes(item.route)
+          : isActive(location.pathname, itemPath);
         return (
           <button
             key={item.route}
-            onClick={() => { navigate(itemPath); onNavigate?.(); }}
+            onClick={() => handleNavClick(item, onNavigate)}
             className={`group flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
               active
                 ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
@@ -101,6 +131,26 @@ export function AppShell({
       })}
     </nav>
   );
+
+  // Inside a tiling workspace pane the global chrome (sidebar + header) is
+  // already provided by the outer shell hosting <Workspace/>, and the pane
+  // supplies its own header (tab picker / split / close). Pages still wrap their
+  // body in <AppShell> for the route case, so here we collapse to bare content
+  // and let the optional header actions ride along in a slim strip.
+  if (workspaceMode) {
+    return (
+      <div className="flex h-full w-full flex-col overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">
+        {!hideHeader && actions && (
+          <div className="flex shrink-0 items-center justify-end gap-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-4 py-2">
+            {actions}
+          </div>
+        )}
+        <main className={`flex-1 overflow-y-auto p-4 md:p-6 ${contentClassName}`}>
+          {children}
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">

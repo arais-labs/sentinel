@@ -13,7 +13,8 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { APP_VERSION } from '../lib/env';
 import { api, requestBlob } from '../lib/api';
-import { instanceRouteFromPath } from '../lib/routes';
+import { useInstanceName } from '../lib/workspace-context';
+import { instanceRoute, instanceRouteFromPath } from '../lib/routes';
 import { useAuthStore } from '../store/auth-store';
 import type {
   Runtime,
@@ -404,9 +405,8 @@ export function SettingsPage() {
     }
   }
 
-  const instanceName = location.pathname.match(/^\/instances\/([^/]+)/)?.[1]
-    ? decodeURIComponent(location.pathname.match(/^\/instances\/([^/]+)/)?.[1] || '')
-    : null;
+  // Context-first so the page works inside a tiling pane (not the active route).
+  const instanceName = useInstanceName() ?? null;
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -1267,7 +1267,7 @@ export function SettingsPage() {
             <div className="space-y-3">
               {isAdmin ? (
                 <RouterLink
-                  to={instanceRouteFromPath(location.pathname, 'settings/admin')}
+                  to={instanceName ? instanceRoute(instanceName, 'settings/admin') : instanceRouteFromPath(location.pathname, 'settings/admin')}
                   className="flex items-center justify-between p-4 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all group"
                 >
                   <div className="flex items-center gap-3">

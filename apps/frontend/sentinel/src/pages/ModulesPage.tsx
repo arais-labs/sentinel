@@ -1773,12 +1773,16 @@ const SECTION_LABELS: Record<ModuleSection, string> = {
   permissions: 'Permissions',
 };
 
-export function ModulesPage() {
+export function ModulesPage({ section }: { section?: ModuleSection } = {}) {
   const location = useLocation();
-  let activeSection: ModuleSection = 'modules';
-  const sectionPath = location.pathname.replace(/^\/instances\/[^/]+/, '');
-  if (sectionPath.startsWith('/approvals')) activeSection = 'approvals';
-  else if (sectionPath.startsWith('/permissions')) activeSection = 'permissions';
+  // Workspace panes pass `section` explicitly (a pane is not the active route).
+  // Outside a pane the section is derived from the URL.
+  let activeSection: ModuleSection = section ?? 'modules';
+  if (!section) {
+    const sectionPath = location.pathname.replace(/^\/instances\/[^/]+/, '');
+    if (sectionPath.startsWith('/approvals')) activeSection = 'approvals';
+    else if (sectionPath.startsWith('/permissions')) activeSection = 'permissions';
+  }
 
   const isFullHeight = activeSection === 'modules';
 

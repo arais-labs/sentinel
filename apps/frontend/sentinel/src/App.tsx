@@ -1,8 +1,10 @@
 import { Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Toaster } from 'sonner';
 
+import { AppShell } from './components/AppShell';
+import { Workspace } from './components/workspace/Workspace';
 import { Logo } from './components/ui/Logo';
 import { AdminPage } from './pages/AdminPage';
 import { LogsPage } from './pages/LogsPage';
@@ -20,6 +22,7 @@ import { ModulesPage } from './pages/ModulesPage';
 import { instanceRouteFromPath } from './lib/routes';
 import { useAuthStore } from './store/auth-store';
 import { useThemeStore } from './store/theme-store';
+import { useWorkspaceStore } from './store/workspace-store';
 import { api } from './lib/api';
 
 function FullPageLoader() {
@@ -92,6 +95,59 @@ function TriggerDetailRedirect() {
   return <Navigate to={instanceRouteFromPath(location.pathname, 'triggers')} replace />;
 }
 
+/**
+ * Instance workspace: the tiling container fills the AppShell content area and
+ * the left nav acts as a tab launcher (see AppShell launcher mode). The header
+ * is hidden so dockview owns the full content region; the persisted layout is
+ * rehydrated by <Workspace/> itself on mount.
+ */
+function WorkspaceRoute() {
+  const { instanceName } = useParams<{ instanceName?: string }>();
+
+  // Seed a sensible default layout (a single Sessions pane) the first time the
+  // workspace is opened with nothing persisted. <Workspace/> restores any saved
+  // layout in its onReady; we only step in when there is none. openTab needs the
+  // live DockviewApi to be bound, so retry across frames until it takes.
+  useEffect(() => {
+    const store = useWorkspaceStore.getState();
+    // A persisted layout (even empty) means the user has a saved arrangement —
+    // never override it.
+    if (store.layout) return;
+
+    let cancelled = false;
+    let frame = 0;
+    const trySeed = () => {
+      if (cancelled) return;
+      const current = useWorkspaceStore.getState();
+      // The user (or restore) may have created panes between frames; bail if so.
+      if (current.layout || Object.keys(current.openTabs).length > 0) return;
+      const paneId = current.openTab('sessions');
+      if (paneId === null) {
+        // No api bound yet; try again next frame (cap to avoid a runaway loop).
+        if (frame < 60) {
+          frame += 1;
+          requestAnimationFrame(trySeed);
+        }
+      }
+    };
+    requestAnimationFrame(trySeed);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <AppShell
+      title="Workspace"
+      subtitle={instanceName}
+      hideHeader
+      contentClassName="h-full !p-0 overflow-hidden"
+    >
+      <Workspace instanceName={instanceName} />
+    </AppShell>
+  );
+}
+
 export default function App() {
   const initialize = useAuthStore((state) => state.initialize);
   const initializeTheme = useThemeStore((state) => state.initializeTheme);
@@ -109,6 +165,8 @@ export default function App() {
 
         <Route element={<AuthenticatedOutlet />}>
           <Route path="/" element={<InstancePickerPage />} />
+          <Route path="/instances/:instanceName" element={<Navigate to="workspace" replace />} />
+          <Route path="/instances/:instanceName/workspace" element={<WorkspaceRoute />} />
           <Route path="/instances/:instanceName/sessions" element={<SessionsPage />} />
           <Route path="/instances/:instanceName/sessions/:id" element={<SessionsPage />} />
           <Route path="/instances/:instanceName/onboarding" element={<OnboardingPage />} />

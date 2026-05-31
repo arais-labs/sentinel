@@ -24,6 +24,7 @@ import { StatusChip } from '../components/ui/StatusChip';
 import { Toggle } from '../components/ui/Toggle';
 import { api } from '../lib/api';
 import { formatCompactDate } from '../lib/format';
+import { useWorkspaceMode } from '../lib/workspace-context';
 import { instanceRouteFromPath } from '../lib/routes';
 import type {
   Session,
@@ -153,6 +154,7 @@ function formatNextRunRelative(nextFireAt: string | null, nowMs: number): string
 export function TriggersPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const workspaceMode = useWorkspaceMode();
   const [triggers, setTriggers] = useState<Trigger[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -408,7 +410,7 @@ export function TriggersPage() {
       } else {
         toast.success('Trigger invoked');
       }
-      if (result.resolved_session_id) {
+      if (result.resolved_session_id && !workspaceMode) {
         navigate(instanceRouteFromPath(location.pathname, `sessions/${result.resolved_session_id}`));
         return;
       }
@@ -437,7 +439,7 @@ export function TriggersPage() {
       } else {
         toast.success('Trigger invoked');
       }
-      if (result.resolved_session_id) {
+      if (result.resolved_session_id && !workspaceMode) {
         navigate(instanceRouteFromPath(location.pathname, `sessions/${result.resolved_session_id}`));
         return;
       }

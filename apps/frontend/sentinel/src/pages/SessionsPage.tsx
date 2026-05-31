@@ -62,6 +62,7 @@ import {
   type ApprovalRef,
 } from '../lib/approvals';
 import { api } from '../lib/api';
+import { useInstanceName, useWorkspaceMode } from '../lib/workspace-context';
 import { instanceRouteFromPath } from '../lib/routes';
 import { getSessionDeleteWorkspaceSummary } from '../lib/sessionDeletion';
 import {
@@ -606,15 +607,23 @@ function StreamToolCard({
 export function SessionsPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const workspaceMode = useWorkspaceMode();
   const { id: routeSessionId } = useParams<{ id: string }>();
   const sessionRoute = useCallback(
     (sessionId?: string | null) => instanceRouteFromPath(location.pathname, sessionId ? `sessions/${sessionId}` : 'sessions'),
     [location.pathname],
   );
-  const activeInstanceName = useMemo(() => {
-    const match = location.pathname.match(/^\/instances\/([^/]+)/);
-    return match?.[1] ? decodeURIComponent(match[1]) : null;
-  }, [location.pathname]);
+  const instanceName = useInstanceName();
+  const activeInstanceName = instanceName ?? null;
+  // In a tiling pane the page is not the active route, so route-driven session
+  // selection would hijack the global URL. Keep selection local instead.
+  const selectSession = useCallback(
+    (sessionId: string | null, options?: { replace?: boolean }) => {
+      if (workspaceMode) return;
+      navigate(sessionRoute(sessionId), options);
+    },
+    [workspaceMode, navigate, sessionRoute],
+  );
 
   const [instances, setInstances] = useState<SentinelInstance[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -1180,8 +1189,9 @@ export function SessionsPage() {
 
   const onInstanceClick = useCallback((instanceName: string) => {
     if (!instanceName || instanceName === activeInstanceName) return;
-    navigate(`/instances/${encodeURIComponent(instanceName)}/sessions`);
-  }, [activeInstanceName, navigate]);
+    const dest = workspaceMode ? 'workspace' : 'sessions';
+    navigate(`/instances/${encodeURIComponent(instanceName)}/${dest}`);
+  }, [activeInstanceName, navigate, workspaceMode]);
 
   const onSessionClick = useCallback((id: string) => {
     const previousId = activeSessionIdRef.current;
@@ -1190,9 +1200,9 @@ export function SessionsPage() {
     }
     setRuntimeBooting(true);
     setActiveSessionId(id);
-    navigate(sessionRoute(id));
+    selectSession(id);
     markSessionRead(id);
-  }, [markSessionRead, navigate, sessionRoute]);
+  }, [markSessionRead, selectSession]);
 
   const startResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1241,11 +1251,13 @@ export function SessionsPage() {
 
   // Effects
   useEffect(() => {
+    // In a tiling pane the route id is not the selected session; local state owns it.
+    if (workspaceMode) return;
     if (routeSessionId && routeSessionId !== activeSessionId) {
       setRuntimeBooting(true);
       setActiveSessionId(routeSessionId);
     }
-  }, [routeSessionId, activeSessionId]);
+  }, [workspaceMode, routeSessionId, activeSessionId]);
 
   useEffect(() => {
     setSelectedSessionIds((current) => current.filter((id) => sessions.some((session) => session.id === id)));
@@ -1467,7 +1479,7 @@ export function SessionsPage() {
       if (autoSelectIfEmpty && !activeSessionIdRef.current) {
         setActiveSessionId(defaultSession.id);
         activeSessionIdRef.current = defaultSession.id;
-        navigate(sessionRoute(defaultSession.id), { replace: true });
+        selectSession(defaultSession.id, { replace: true });
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to load sessions');
@@ -1515,11 +1527,7 @@ export function SessionsPage() {
             ? remaining.find((item) => item.id === defaultSessionId)?.id
             : null) ?? remaining[0]?.id ?? null;
         setActiveSessionId(fallbackId);
-        if (fallbackId) {
-          navigate(sessionRoute(fallbackId), { replace: true });
-        } else {
-          navigate(sessionRoute(), { replace: true });
-        }
+        selectSession(fallbackId, { replace: true });
       }
       toast.success('Session deleted');
     } catch (error) {
@@ -1543,7 +1551,7 @@ export function SessionsPage() {
         ),
       );
       setActiveSessionId(updated.id);
-      navigate(sessionRoute(updated.id));
+      selectSession(updated.id);
       toast.success('Main session updated');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to set main session');
@@ -1638,11 +1646,7 @@ export function SessionsPage() {
               ? remaining.find((session) => session.id === defaultSessionId)?.id
               : null) ?? remaining[0]?.id ?? null;
           setActiveSessionId(fallbackId);
-          if (fallbackId) {
-            navigate(sessionRoute(fallbackId), { replace: true });
-          } else {
-            navigate(sessionRoute(), { replace: true });
-          }
+          selectSession(fallbackId, { replace: true });
         }
       }
 
@@ -1852,7 +1856,7 @@ export function SessionsPage() {
       setActiveSessionId(fresh.id);
       setRuntimeBooting(true);
       setLiveView(null);
-      navigate(sessionRoute(fresh.id), { replace: true });
+      selectSession(fresh.id, { replace: true });
       toast.success('New session started. Memories preserved.');
     } catch {
       toast.error('Failed to reset session');
