@@ -44,7 +44,7 @@ services:
   sentinel-frontend:
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "if [ ! -x node_modules/.bin/vite ]; then npm ci; fi && npm run dev -- --host --port 5173"
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host --port 5173"
     environment:
       VITE_BASE_PATH: /
       VITE_ROUTER_BASENAME: /
