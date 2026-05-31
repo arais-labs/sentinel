@@ -522,7 +522,7 @@ function normalizedMemoryCategory(block: Record<string, unknown>): string {
   return 'uncategorized';
 }
 
-function renderMemoryReferenceCard(block: Record<string, unknown>, key: string): JSX.Element {
+function renderMemoryReferenceCard(block: Record<string, unknown>, key: string): React.JSX.Element {
   const title =
     typeof block.title === 'string' && block.title.trim()
       ? block.title.trim()
@@ -1962,7 +1962,7 @@ export function LogsPage() {
     options?: {
       compact?: boolean;
       onClick?: (e?: React.MouseEvent | React.KeyboardEvent) => void;
-      headerBadge?: JSX.Element | null;
+      headerBadge?: React.JSX.Element | null;
     },
   ) => {
     const compact = options?.compact ?? false;

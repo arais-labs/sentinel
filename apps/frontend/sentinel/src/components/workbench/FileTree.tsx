@@ -94,7 +94,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
     }
   }
 
-  function renderEntries(items: SessionRuntimeFileEntry[], depth = 0): JSX.Element[] {
+  function renderEntries(items: SessionRuntimeFileEntry[], depth = 0): React.JSX.Element[] {
     return items.map((entry) => {
       const isDirectory = entry.kind === 'directory';
       const isExpanded = Boolean(expandedPaths[entry.path]);

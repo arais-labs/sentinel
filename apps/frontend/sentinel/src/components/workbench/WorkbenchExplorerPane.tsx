@@ -65,7 +65,7 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
     }
   }
 
-  function renderGitTree(nodes: RuntimeGitChangedTreeNode[], depth = 0): JSX.Element[] {
+  function renderGitTree(nodes: RuntimeGitChangedTreeNode[], depth = 0): React.JSX.Element[] {
     return nodes.map((node) => {
       if (node.kind === 'directory') {
         const expanded = expandedGitDirs[node.fullPath] ?? false;

@@ -14,10 +14,10 @@ export interface CustomToolCardContext {
   outputError: boolean;
   screenshotBase64: string | null;
   openLightbox: () => void;
-  renderGenericCompact: (options?: { hideInput?: boolean }) => JSX.Element;
-  renderGenericOutput: (options?: { showRawJson?: boolean }) => JSX.Element;
-  renderPortForwardCompact: () => JSX.Element;
-  renderPortForwardExpanded: () => JSX.Element;
+  renderGenericCompact: (options?: { hideInput?: boolean }) => React.JSX.Element;
+  renderGenericOutput: (options?: { showRawJson?: boolean }) => React.JSX.Element;
+  renderPortForwardCompact: () => React.JSX.Element;
+  renderPortForwardExpanded: () => React.JSX.Element;
 }
 
 export interface CustomToolCard {
@@ -25,8 +25,8 @@ export interface CustomToolCard {
   matches: (context: CustomToolCardContext) => boolean;
   autoExpand?: (context: CustomToolCardContext) => boolean;
   hideGenericArguments?: (context: CustomToolCardContext) => boolean;
-  renderCompact: (context: CustomToolCardContext) => JSX.Element;
-  renderExpandedResult: (context: CustomToolCardContext) => JSX.Element;
+  renderCompact: (context: CustomToolCardContext) => React.JSX.Element;
+  renderExpandedResult: (context: CustomToolCardContext) => React.JSX.Element;
 }
 
 function normalizeToolName(value: string): string {

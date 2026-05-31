@@ -968,7 +968,7 @@ export function ToolPayloadCompactSummary({
   );
 }
 
-const SOURCE_CHIP_RENDERERS: Record<string, (metadata: Record<string, unknown>) => JSX.Element> = {
+const SOURCE_CHIP_RENDERERS: Record<string, (metadata: Record<string, unknown>) => React.JSX.Element> = {
   telegram: (metadata) => {
     const chatType = metadata.telegram_chat_type as string | undefined;
     const userName = metadata.telegram_user_name as string | undefined;

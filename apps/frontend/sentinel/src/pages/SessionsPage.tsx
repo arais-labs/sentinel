@@ -1512,7 +1512,7 @@ export function SessionsPage() {
       if (activeSessionId === session.id) {
         const fallbackId =
           (defaultSessionId && defaultSessionId !== session.id
-            ? remaining.find((item) => item.id === defaultSessionId)?.id ?? null
+            ? remaining.find((item) => item.id === defaultSessionId)?.id
             : null) ?? remaining[0]?.id ?? null;
         setActiveSessionId(fallbackId);
         if (fallbackId) {
@@ -1635,7 +1635,7 @@ export function SessionsPage() {
         if (activeSessionId && deletedIds.includes(activeSessionId)) {
           const fallbackId =
             (defaultSessionId && !deletedIds.includes(defaultSessionId)
-              ? remaining.find((session) => session.id === defaultSessionId)?.id ?? null
+              ? remaining.find((session) => session.id === defaultSessionId)?.id
               : null) ?? remaining[0]?.id ?? null;
           setActiveSessionId(fallbackId);
           if (fallbackId) {
