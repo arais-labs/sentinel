@@ -54,7 +54,10 @@ def test_broadcast_agent_event_converts_all_event_types():
         AgentEvent(type="thinking_start", content_index=1),
         AgentEvent(type="thinking_delta", delta="hmm", content_index=1),
         AgentEvent(type="thinking_end", content_index=1),
-        AgentEvent(type="toolcall_start", tool_call=ToolCallContent(id="c1", name="tool", arguments={"x": 1})),
+        AgentEvent(
+            type="toolcall_start",
+            tool_call=ToolCallContent(id="c1", name="tool", arguments={"x": 1}),
+        ),
         AgentEvent(type="toolcall_delta", delta="{", content_index=2),
         AgentEvent(type="toolcall_end", content_index=2),
         AgentEvent(
@@ -94,7 +97,9 @@ def test_sub_agent_events_payloads():
     async def _scenario():
         await manager.connect("session-3", socket)
         await manager.broadcast_sub_agent_started("session-3", "task-1", "collect logs")
-        await manager.broadcast_sub_agent_completed("session-3", "task-1", "completed", {"final_text": "ok"})
+        await manager.broadcast_sub_agent_completed(
+            "session-3", "task-1", "completed", {"final_text": "ok"}
+        )
 
     _run(_scenario())
     assert socket.messages[0] == {

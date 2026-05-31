@@ -108,16 +108,16 @@ def test_trigger_create_rejects_missing_owner_context():
 
     try:
         _run(
-        executor.execute(
-            "triggers",
-            {
-                "command": "create",
+            executor.execute(
+                "triggers",
+                {
+                    "command": "create",
                     "name": "daily",
                     "type": "heartbeat",
-                "config": {"interval_seconds": 60},
-                "action_type": "tool_call",
-                "action_config": {"name": "memory", "arguments": {"command": "roots"}},
-            },
+                    "config": {"interval_seconds": 60},
+                    "action_type": "tool_call",
+                    "action_config": {"name": "memory", "arguments": {"command": "roots"}},
+                },
                 runtime=ToolRuntimeContext(),
             )
         )

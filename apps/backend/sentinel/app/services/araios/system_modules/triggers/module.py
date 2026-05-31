@@ -3,6 +3,8 @@ from __future__ import annotations
 from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import handle_create, handle_delete, handle_list, handle_update
+
+
 def _trigger_id_prop() -> dict:
     return {"type": "string", "description": "Trigger UUID."}
 
@@ -63,7 +65,10 @@ def _list_parameters_schema() -> dict:
         "additionalProperties": False,
         "required": [],
         "properties": {
-            "enabled_only": {"type": "boolean", "description": "If true, only enabled triggers are returned."},
+            "enabled_only": {
+                "type": "boolean",
+                "description": "If true, only enabled triggers are returned.",
+            },
         },
     }
 

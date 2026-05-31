@@ -1,4 +1,5 @@
 """Native module: coordination — backed by standard module_records."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -23,12 +24,18 @@ async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
     if limit > 500:
         limit = 500
     async with AsyncSessionLocal() as db:
-        rows = (await db.execute(
-            select(AraiosModuleRecord)
-            .where(AraiosModuleRecord.module_name == _MODULE)
-            .order_by(AraiosModuleRecord.created_at.asc())
-            .limit(limit)
-        )).scalars().all()
+        rows = (
+            (
+                await db.execute(
+                    select(AraiosModuleRecord)
+                    .where(AraiosModuleRecord.module_name == _MODULE)
+                    .order_by(AraiosModuleRecord.created_at.asc())
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
     messages = [_serialize(r) for r in rows]
     if agent:
         messages = [m for m in messages if m.get("agent") == agent]

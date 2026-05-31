@@ -4,7 +4,6 @@ from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import handle_close, handle_list, handle_open
 
-
 MODULE = ModuleDefinition(
     name="port_forward",
     label="Port Forward",

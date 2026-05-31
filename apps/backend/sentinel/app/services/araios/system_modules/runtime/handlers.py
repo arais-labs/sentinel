@@ -61,7 +61,9 @@ def _terminal_ids(payload: dict[str, Any], *, required: bool) -> list[str] | Non
             raise ToolValidationError("Field 'terminal_ids' must be an array of strings.")
         for item in raw_ids:
             if not isinstance(item, str) or not item.strip():
-                raise ToolValidationError("Field 'terminal_ids' must contain only non-empty strings.")
+                raise ToolValidationError(
+                    "Field 'terminal_ids' must contain only non-empty strings."
+                )
             values.append(item.strip())
     if not values:
         if required:
@@ -99,13 +101,19 @@ async def _broadcast(session_id: str, payload: dict[str, Any]) -> None:
     await manager.broadcast(session_id, {"session_id": session_id, **payload})
 
 
-async def handle_terminal_list(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    if not await runtime_configured(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory):
+async def handle_terminal_list(
+    payload: dict[str, Any], runtime: ToolRuntimeContext
+) -> dict[str, Any]:
+    if not await runtime_configured(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    ):
         raise ToolValidationError("Runtime SSH target is not configured.")
 
     session_id = _session_key(runtime)
     terminal_ids = _terminal_ids(payload, required=False)
-    terminal_manager = await get_runtime_terminal_manager(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory)
+    terminal_manager = await get_runtime_terminal_manager(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    )
     terminals = await terminal_manager.list_terminals(session_id, terminal_ids=terminal_ids)
     items = [terminal.to_dict() for terminal in terminals]
     return {
@@ -115,14 +123,20 @@ async def handle_terminal_list(payload: dict[str, Any], runtime: ToolRuntimeCont
     }
 
 
-async def handle_terminal_read(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    if not await runtime_configured(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory):
+async def handle_terminal_read(
+    payload: dict[str, Any], runtime: ToolRuntimeContext
+) -> dict[str, Any]:
+    if not await runtime_configured(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    ):
         raise ToolValidationError("Runtime SSH target is not configured.")
 
     session_id = _session_key(runtime)
     terminal_ids = _terminal_ids(payload, required=True)
     assert terminal_ids is not None
-    terminal_manager = await get_runtime_terminal_manager(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory)
+    terminal_manager = await get_runtime_terminal_manager(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    )
     results = await terminal_manager.read_tails(
         session_id,
         terminal_ids=terminal_ids,
@@ -135,14 +149,20 @@ async def handle_terminal_read(payload: dict[str, Any], runtime: ToolRuntimeCont
     }
 
 
-async def handle_terminal_close(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    if not await runtime_configured(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory):
+async def handle_terminal_close(
+    payload: dict[str, Any], runtime: ToolRuntimeContext
+) -> dict[str, Any]:
+    if not await runtime_configured(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    ):
         raise ToolValidationError("Runtime SSH target is not configured.")
 
     session_id = _session_key(runtime)
     terminal_ids = _terminal_ids(payload, required=True)
     assert terminal_ids is not None
-    terminal_manager = await get_runtime_terminal_manager(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory)
+    terminal_manager = await get_runtime_terminal_manager(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    )
     results = await terminal_manager.close_terminals(session_id, terminal_ids=terminal_ids)
     for result in results:
         if result.get("ok"):
@@ -161,7 +181,9 @@ async def handle_terminal_close(payload: dict[str, Any], runtime: ToolRuntimeCon
 
 
 async def handle_user(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    if not await runtime_configured(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory):
+    if not await runtime_configured(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    ):
         raise ToolValidationError("Runtime SSH target is not configured.")
 
     session_id = _session_key(runtime)
@@ -173,7 +195,9 @@ async def handle_user(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
     background = _bool_field(payload, "background")
     env = _env(payload)
 
-    terminal_manager = await get_runtime_terminal_manager(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory)
+    terminal_manager = await get_runtime_terminal_manager(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    )
     if background:
         job_terminal_id = _string_field(payload, "terminal_id") or f"bg-{uuid4().hex[:8]}"
         if job_terminal_id == "0":
@@ -218,7 +242,9 @@ async def handle_user(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
             ) from exc
         except TerminalUnavailableError as exc:
             detail = f": {exc.detail}" if exc.detail else ""
-            raise ToolValidationError(f"Runtime terminal unavailable ({exc.reason}){detail}") from exc
+            raise ToolValidationError(
+                f"Runtime terminal unavailable ({exc.reason}){detail}"
+            ) from exc
 
         await _broadcast(
             session_id,

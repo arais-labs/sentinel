@@ -3,7 +3,17 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,7 +39,9 @@ class Trigger(Base):
     action_type: Mapped[str] = mapped_column(String(20))
     action_config: Mapped[dict] = mapped_column(JSONB)
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    next_fire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    next_fire_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     fire_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     error_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     consecutive_errors: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
@@ -39,7 +51,9 @@ class Trigger(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    logs: Mapped[list["TriggerLog"]] = relationship(back_populates="trigger", cascade="all, delete-orphan")
+    logs: Mapped[list["TriggerLog"]] = relationship(
+        back_populates="trigger", cascade="all, delete-orphan"
+    )
 
 
 class TriggerLog(Base):

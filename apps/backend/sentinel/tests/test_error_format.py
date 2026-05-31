@@ -49,7 +49,9 @@ def test_error_response_format_consistency():
         assert not_found.status_code == 404
         assert not_found.json()["error"]["code"] == "not_found"
 
-        session = client.post("/api/v1/instances/main/sessions", json={"title": "err-test"}, headers=headers)
+        session = client.post(
+            "/api/v1/instances/main/sessions", json={"title": "err-test"}, headers=headers
+        )
         assert session.status_code == 200
         session_id = session.json()["id"]
 
@@ -61,7 +63,9 @@ def test_error_response_format_consistency():
         assert validation.status_code == 422
         assert validation.json()["error"]["code"] == "validation_error"
 
-        non_admin_headers = {"Authorization": f"Bearer {_make_token(sub='standard-user', role='agent')}"}
+        non_admin_headers = {
+            "Authorization": f"Bearer {_make_token(sub='standard-user', role='agent')}"
+        }
         forbidden = client.get("/api/v1/instances/main/admin/config", headers=non_admin_headers)
         assert forbidden.status_code == 403
         assert forbidden.json()["error"]["code"] == "forbidden"
@@ -69,7 +73,9 @@ def test_error_response_format_consistency():
         RateLimitMiddleware._buckets.clear()
         last = None
         for _ in range(11):
-            last = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+            last = client.post(
+                "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+            )
         assert last is not None
         assert last.status_code == 429
         assert last.json()["error"]["code"] == "rate_limited"

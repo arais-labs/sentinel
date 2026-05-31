@@ -29,5 +29,6 @@ class ApprovalListResponse(BaseModel):
     items: list[ApprovalRecordResponse]
     total: int
 
+
 class ResolveApprovalRequest(BaseModel):
     note: str | None = None

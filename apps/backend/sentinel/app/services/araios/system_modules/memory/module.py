@@ -57,7 +57,11 @@ def _metadata_prop() -> dict:
 
 
 def _embedding_prop() -> dict:
-    return {"type": "array", "items": {"type": "number"}, "description": "Optional embedding vector."}
+    return {
+        "type": "array",
+        "items": {"type": "number"},
+        "description": "Optional embedding vector.",
+    }
 
 
 def _root_id_prop() -> dict:

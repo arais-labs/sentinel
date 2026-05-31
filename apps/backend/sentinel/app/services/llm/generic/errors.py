@@ -20,7 +20,16 @@ def is_retryable(exc: Exception) -> bool:
     """Classify whether an exception is safe to retry automatically."""
     if isinstance(exc, TransientProviderError):
         return True
-    if isinstance(exc, (TimeoutError, ConnectionError, httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError)):
+    if isinstance(
+        exc,
+        (
+            TimeoutError,
+            ConnectionError,
+            httpx.TimeoutException,
+            httpx.ConnectError,
+            httpx.NetworkError,
+        ),
+    ):
         return True
     code = status_code(exc)
     if code is None:

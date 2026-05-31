@@ -60,7 +60,9 @@ class _RuntimeSupportStub:
         max_iterations,
         stream,
     ):
-        messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
+        messages = await self.context_builder.build(
+            db, session_id, system_prompt, pending_user_message, agent_mode
+        )
         return PreparedRuntimeTurnContext(
             messages=messages,
             tools=self.tool_registry.list_schemas(),
@@ -68,7 +70,9 @@ class _RuntimeSupportStub:
             runtime_context_snapshot=None,
         )
 
-    async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+    async def persist_created_messages(
+        self, db, session_id, created, assistant_iterations, **kwargs
+    ):
         await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
 
     async def _build_context(self, db, session_id, system_prompt, pending_user_message, agent_mode):
@@ -124,7 +128,9 @@ class _BlockingRuntimeSupportStub:
         max_iterations,
         stream,
     ):
-        messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
+        messages = await self.context_builder.build(
+            db, session_id, system_prompt, pending_user_message, agent_mode
+        )
         return PreparedRuntimeTurnContext(
             messages=messages,
             tools=self.tool_registry.list_schemas(),
@@ -132,10 +138,14 @@ class _BlockingRuntimeSupportStub:
             runtime_context_snapshot=None,
         )
 
-    async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+    async def persist_created_messages(
+        self, db, session_id, created, assistant_iterations, **kwargs
+    ):
         await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
 
-    async def _build_context(self, _db, _session_id, system_prompt, pending_user_message, agent_mode):
+    async def _build_context(
+        self, _db, _session_id, system_prompt, pending_user_message, agent_mode
+    ):
         _ = (system_prompt, pending_user_message, agent_mode)
         return []
 
@@ -165,7 +175,9 @@ class _StreamingProvider(LLMProvider):
     def name(self) -> str:
         return "fake"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         self.calls.append(
             {
                 "messages": list(messages),
@@ -177,7 +189,9 @@ class _StreamingProvider(LLMProvider):
         )
         raise AssertionError("Trigger runtime tests expect the streaming provider path")
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         self.calls.append(
             {
                 "messages": list(messages),
@@ -196,12 +210,16 @@ class _BlockingProvider(LLMProvider):
     def name(self) -> str:
         return "fake"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         await asyncio.sleep(3600)
         raise AssertionError("unreachable")
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         await asyncio.sleep(3600)
         if False:
@@ -223,7 +241,9 @@ class _WSManagerStub:
         self.thinking_events: list[str] = []
         self.agent_events: list[dict] = []
 
-    async def broadcast_message_ack(self, session_key, message_id, content, created_at, metadata=None):
+    async def broadcast_message_ack(
+        self, session_key, message_id, content, created_at, metadata=None
+    ):
         self.message_acks.append(
             {
                 "session_key": session_key,

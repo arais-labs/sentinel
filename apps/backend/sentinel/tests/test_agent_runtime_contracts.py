@@ -203,8 +203,12 @@ async def test_engine_cancellation_during_tool_execution_preserves_completed_res
     assert [item.role for item in created_items] == ["user", "assistant", "tool", "tool"]
     assert len(tool_items) == 2
 
-    fast_result = next(item.content[0] for item in tool_items if item.content[0].tool_call_id == "call_fast")
-    slow_result = next(item.content[0] for item in tool_items if item.content[0].tool_call_id == "call_slow")
+    fast_result = next(
+        item.content[0] for item in tool_items if item.content[0].tool_call_id == "call_fast"
+    )
+    slow_result = next(
+        item.content[0] for item in tool_items if item.content[0].tool_call_id == "call_slow"
+    )
 
     assert json.loads(fast_result.content)["tool"] == "fast"
     slow_payload = json.loads(slow_result.content)
@@ -244,7 +248,9 @@ async def test_engine_interjection_source_appends_items_between_iterations() -> 
             ConversationItem(
                 id="operator-1",
                 role="user",
-                content=[TextBlock(text="[Operator interjection]: continue with the new constraint")],
+                content=[
+                    TextBlock(text="[Operator interjection]: continue with the new constraint")
+                ],
                 metadata={"source": "operator_interjection"},
             )
         ]

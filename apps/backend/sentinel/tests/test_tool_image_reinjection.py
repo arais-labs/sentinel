@@ -6,8 +6,9 @@ from app.services.agent.tool_image_reinjection import (
 )
 from app.services.llm.generic.types import ImageContent, ToolResultMessage
 
-
-PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s8bVgAAAABJRU5ErkJggg=="
+PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s8bVgAAAABJRU5ErkJggg=="
+)
 
 
 def test_tool_image_reinjection_respects_limits_and_dedupes():

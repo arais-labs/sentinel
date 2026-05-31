@@ -45,10 +45,10 @@ def test_sub_agents_crud_ownership_and_concurrency_cap():
     from app import main as app_main
 
     class _WsStub(ConnectionManager):
-        async def broadcast_sub_agent_started(self, session_id: str, task_id: str, objective: str) -> None:
-            ws_events.append(
-                {"session_id": session_id, "task_id": task_id, "objective": objective}
-            )
+        async def broadcast_sub_agent_started(
+            self, session_id: str, task_id: str, objective: str
+        ) -> None:
+            ws_events.append({"session_id": session_id, "task_id": task_id, "objective": objective})
 
     old_init = app_main.init_db
     old_ws_manager = getattr(app.state, "ws_manager", None)
@@ -103,7 +103,9 @@ def test_sub_agents_crud_ownership_and_concurrency_cap():
         task_id = created_payload["id"]
         assert any(item["task_id"] == task_id for item in ws_events)
 
-        listed = client.get(f"/api/v1/instances/main/sessions/{session_id}/sub-agents", headers=owner_headers)
+        listed = client.get(
+            f"/api/v1/instances/main/sessions/{session_id}/sub-agents", headers=owner_headers
+        )
         assert listed.status_code == 200
         assert listed.json()["total"] >= 1
         assert any(item["id"] == task_id for item in listed.json()["items"])

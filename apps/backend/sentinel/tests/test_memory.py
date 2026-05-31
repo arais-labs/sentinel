@@ -8,7 +8,6 @@ from app.main import app
 from tests.fake_db import FakeDB
 from tests.helpers import install_fake_db_overrides, restore_test_app
 
-
 MEMORY_API = "/api/v1/instances/main/memory"
 ONBOARDING_COMPLETE_API = "/api/v1/instances/main/onboarding/complete"
 
@@ -20,7 +19,9 @@ def test_memory_store_search_stats_delete():
 
     try:
         client = TestClient(app)
-        token_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        token_resp = client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        )
         assert token_resp.status_code == 200
         token = token_resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -61,7 +62,9 @@ def test_memory_hierarchy_endpoints():
 
     try:
         client = TestClient(app)
-        token_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        token_resp = client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        )
         assert token_resp.status_code == 200
         token = token_resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -140,7 +143,9 @@ def test_system_memories_are_backend_protected():
 
     try:
         client = TestClient(app)
-        token_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        token_resp = client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        )
         assert token_resp.status_code == 200
         token = token_resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}

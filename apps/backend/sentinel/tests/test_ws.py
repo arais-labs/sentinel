@@ -17,7 +17,6 @@ from app.services.ws.ws_stream_service import unresolved_tool_calls_from_history
 from tests.fake_db import FakeDB
 from tests.helpers import FakeSessionFactory, install_fake_db_overrides, restore_test_app
 
-
 SESSIONS_API = "/api/v1/instances/main/sessions"
 WS_API = "/ws/instances/main/sessions"
 
@@ -166,7 +165,9 @@ def test_ws_rejects_invalid_agent_mode_payload():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post(SESSIONS_API, json={"title": "ws-invalid-mode"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-invalid-mode"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -195,7 +196,9 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post(SESSIONS_API, json={"title": "ws-pending"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-pending"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -209,7 +212,10 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
                         {
                             "id": "toolu_pending_1",
                             "name": "git",
-                            "arguments": {"command": "write", "cli_command": "git push origin main"},
+                            "arguments": {
+                                "command": "write",
+                                "cli_command": "git push origin main",
+                            },
                         }
                     ]
                 },
@@ -242,9 +248,14 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             replay_pending = ws.receive_json()
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_1"
-            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "write", "cli_command": "git push origin main"}
+            assert replay_pending["tool_result"]["tool_arguments"] == {
+                "command": "write",
+                "cli_command": "git push origin main",
+            }
             assert replay_pending["tool_result"]["content"]["status"] == "pending"
-            assert replay_pending["tool_result"]["content"]["message"] == "Action requires approval."
+            assert (
+                replay_pending["tool_result"]["content"]["message"] == "Action requires approval."
+            )
             assert replay_pending["tool_result"]["metadata"]["pending"] is True
             approval = replay_pending["tool_result"]["metadata"].get("approval")
             assert isinstance(approval, dict)
@@ -275,7 +286,9 @@ def test_ws_connected_rehydrates_active_run_as_thinking_when_no_tool_pending():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post(SESSIONS_API, json={"title": "ws-running"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-running"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -344,7 +357,9 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post(SESSIONS_API, json={"title": "ws-pending-truncated"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-pending-truncated"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -407,7 +422,6 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
         restore_test_app(old_init)
 
 
-
 def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
     fake_db = FakeDB()
 
@@ -422,7 +436,9 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post(SESSIONS_API, json={"title": "ws-runtime-pending"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-runtime-pending"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -456,7 +472,10 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
             replay_pending = ws.receive_json()
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_runtime"
-            assert replay_pending["tool_result"]["tool_arguments"] == {"command": "user", "shell_command": "sleep 10"}
+            assert replay_pending["tool_result"]["tool_arguments"] == {
+                "command": "user",
+                "shell_command": "sleep 10",
+            }
             assert replay_pending["tool_result"]["content"]["status"] == "running"
             assert "pending" not in replay_pending["tool_result"]["metadata"]
             assert "approval_id" not in replay_pending["tool_result"]["metadata"]
@@ -482,7 +501,9 @@ def test_ws_connected_does_not_attach_mismatched_pending_approval():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post(SESSIONS_API, json={"title": "ws-pending-mismatch"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-pending-mismatch"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -551,7 +572,9 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
         owner_token = login.json()["access_token"]
         owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
-        session_resp = client.post(SESSIONS_API, json={"title": "ws-stale-pending"}, headers=owner_headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "ws-stale-pending"}, headers=owner_headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -572,9 +595,12 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
                         {
                             "id": "toolu_stale_1",
                             "name": "git",
-                            "arguments": {"command": "write", "cli_command": "git push origin main"},
+                            "arguments": {
+                                "command": "write",
+                                "cli_command": "git push origin main",
+                            },
                         }
-                    ]
+                    ],
                 },
             )
         )

@@ -16,7 +16,6 @@ from app.services.runtime.linux_bubblewrap import (
 from app.services.runtime.remote_commands import load_remote_command
 from app.services.runtime.workspace import RuntimeWorkspaceError, workspace_paths
 
-
 TERMINAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 TMUX_COLS = 200
 TMUX_ROWS = 50
@@ -55,9 +54,7 @@ PS1='\[\033]133;A\033\\\]\[\033[38;5;81m\]\u@\h\[\033[0m\]:\[\033[38;5;220m\]\w\
 
 def validate_terminal_id(terminal_id: str) -> str:
     if not TERMINAL_ID_PATTERN.fullmatch(terminal_id):
-        raise RuntimeWorkspaceError(
-            "terminal id must match [A-Za-z0-9][A-Za-z0-9_.-]{0,63}"
-        )
+        raise RuntimeWorkspaceError("terminal id must match [A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
     return terminal_id
 
 
@@ -66,7 +63,9 @@ def tmux_socket_path(terminal_id: str) -> str:
     return (PurePosixPath("/state/tmux") / f"{terminal_id}.sock").as_posix()
 
 
-def tmux_host_socket_path(session_id: str, *, terminal_id: str = "0", root: str | None = None) -> str:
+def tmux_host_socket_path(
+    session_id: str, *, terminal_id: str = "0", root: str | None = None
+) -> str:
     paths = workspace_paths(session_id, root=root)
     terminal_id = validate_terminal_id(terminal_id)
     return (PurePosixPath(paths.tmux) / f"{terminal_id}.sock").as_posix()
@@ -84,18 +83,18 @@ def build_host_tmux_command(args: list[str], *, os_name: str = "linux") -> str:
         [
             "set -e",
             "sentinel_login_shell=$(dscl . -read \"/Users/$(whoami)\" UserShell 2>/dev/null | sed 's/^UserShell: //' || true)",
-            "if [ -z \"$sentinel_login_shell\" ] || [ ! -x \"$sentinel_login_shell\" ]; then",
+            'if [ -z "$sentinel_login_shell" ] || [ ! -x "$sentinel_login_shell" ]; then',
             "  sentinel_login_shell=${SHELL:-}",
             "fi",
             "sentinel_tmux=$(command -v tmux 2>/dev/null || true)",
-            "if [ -z \"$sentinel_tmux\" ] && [ -n \"$sentinel_login_shell\" ] && [ -x \"$sentinel_login_shell\" ]; then",
+            'if [ -z "$sentinel_tmux" ] && [ -n "$sentinel_login_shell" ] && [ -x "$sentinel_login_shell" ]; then',
             "  sentinel_tmux=$(\"$sentinel_login_shell\" -lc 'command -v tmux' 2>/dev/null | awk 'NF { value=$0 } END { print value }' || true)",
             "fi",
-            "if [ -z \"$sentinel_tmux\" ]; then",
+            'if [ -z "$sentinel_tmux" ]; then',
             "  echo \"Required executable 'tmux' is not available in the runtime PATH.\" >&2",
             "  exit 127",
             "fi",
-            "exec \"$sentinel_tmux\" " + " ".join(quote(arg) for arg in args),
+            'exec "$sentinel_tmux" ' + " ".join(quote(arg) for arg in args),
         ]
     )
     return f"/bin/sh -lc {quote(inner)}"
@@ -107,14 +106,14 @@ def build_resolve_host_tmux_script(*, os_name: str = "linux") -> str:
     return "\n".join(
         [
             "sentinel_login_shell=$(dscl . -read \"/Users/$(whoami)\" UserShell 2>/dev/null | sed 's/^UserShell: //' || true)",
-            "if [ -z \"$sentinel_login_shell\" ] || [ ! -x \"$sentinel_login_shell\" ]; then",
+            'if [ -z "$sentinel_login_shell" ] || [ ! -x "$sentinel_login_shell" ]; then',
             "  sentinel_login_shell=${SHELL:-}",
             "fi",
             "sentinel_tmux=$(command -v tmux 2>/dev/null || true)",
-            "if [ -z \"$sentinel_tmux\" ] && [ -n \"$sentinel_login_shell\" ] && [ -x \"$sentinel_login_shell\" ]; then",
+            'if [ -z "$sentinel_tmux" ] && [ -n "$sentinel_login_shell" ] && [ -x "$sentinel_login_shell" ]; then',
             "  sentinel_tmux=$(\"$sentinel_login_shell\" -lc 'command -v tmux' 2>/dev/null | awk 'NF { value=$0 } END { print value }' || true)",
             "fi",
-            "if [ -z \"$sentinel_tmux\" ]; then",
+            'if [ -z "$sentinel_tmux" ]; then',
             "  echo \"Required executable 'tmux' is not available in the runtime PATH.\" >&2",
             "  exit 127",
             "fi",
@@ -206,10 +205,14 @@ def build_open_tmux_script(
         f"tmux -f /dev/null -S {quote(socket)} pipe-pane -t {quote(name)} -o {quote(f'cat >> {pane_log}')}"
     )
     script = load_remote_command("common/tmux/open.sh")
-    script = script.replace("__REQUIRE_WORKSPACE__", "\n".join(item for item in [require_workspace, prelude] if item))
+    script = script.replace(
+        "__REQUIRE_WORKSPACE__", "\n".join(item for item in [require_workspace, prelude] if item)
+    )
     script = script.replace("__RUNTIME_DIR__", quote(paths.runtime))
     script = script.replace("__LOGS_DIR__", quote(paths.logs))
-    script = script.replace("__RESOLVE_HOST_TMUX__", build_resolve_host_tmux_script(os_name=os_name))
+    script = script.replace(
+        "__RESOLVE_HOST_TMUX__", build_resolve_host_tmux_script(os_name=os_name)
+    )
     script = script.replace("__HOST_SOCKET__", quote(host_socket))
     script = script.replace("__TMUX_NAME__", quote(name))
     script = script.replace("__BWRAP_COMMAND__", sandbox_command(inner))
@@ -229,7 +232,9 @@ def build_close_tmux_script(
     host_socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=root)
     name = tmux_session_name(terminal_id)
     script = load_remote_command("common/tmux/close.sh")
-    script = script.replace("__RESOLVE_HOST_TMUX__", build_resolve_host_tmux_script(os_name=os_name))
+    script = script.replace(
+        "__RESOLVE_HOST_TMUX__", build_resolve_host_tmux_script(os_name=os_name)
+    )
     script = script.replace("__SESSION_ROOT__", quote(paths.session_root))
     script = script.replace("__HOST_SOCKET__", quote(host_socket))
     script = script.replace("__TMUX_NAME__", quote(name))
@@ -248,7 +253,9 @@ def build_tmux_status_script(
     host_socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=root)
     name = tmux_session_name(terminal_id)
     script = load_remote_command("common/tmux/status.sh")
-    script = script.replace("__RESOLVE_HOST_TMUX__", build_resolve_host_tmux_script(os_name=os_name))
+    script = script.replace(
+        "__RESOLVE_HOST_TMUX__", build_resolve_host_tmux_script(os_name=os_name)
+    )
     script = script.replace("__SESSION_ROOT__", quote(paths.session_root))
     script = script.replace("__HOST_SOCKET__", quote(host_socket))
     script = script.replace("__TMUX_NAME__", quote(name))

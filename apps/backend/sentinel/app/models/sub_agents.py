@@ -30,7 +30,9 @@ class SubAgentTask(Base):
     max_tokens: Mapped[int] = mapped_column(Integer, default=50_000, server_default=text("50000"))
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=300, server_default=text("300"))
     context: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="pending", server_default=text("'pending'"))
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default=text("'pending'")
+    )
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     tokens_used: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     turns_used: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))

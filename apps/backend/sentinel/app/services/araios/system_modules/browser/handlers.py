@@ -1,4 +1,5 @@
 """Browser action handlers."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -9,6 +10,7 @@ from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.runtime_context import require_runtime_session_id
 
 from .shared import optional_browser_tab_id, resolve_browser_manager
+
 
 async def handle_navigate(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
     manager = await resolve_browser_manager(payload, runtime)
@@ -169,7 +171,12 @@ async def handle_scroll(payload: dict[str, Any], runtime: ToolRuntimeContext) ->
     amount = payload.get("amount", 500)
     selector = payload.get("selector")
     tab_id = optional_browser_tab_id(payload)
-    if not isinstance(direction, str) or direction.strip().lower() not in {"up", "down", "left", "right"}:
+    if not isinstance(direction, str) or direction.strip().lower() not in {
+        "up",
+        "down",
+        "left",
+        "right",
+    }:
         raise ToolValidationError("Field 'direction' must be one of: up, down, left, right")
     if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
         raise ToolValidationError("Field 'amount' must be a positive integer (pixels)")
@@ -265,13 +272,17 @@ async def handle_get_html(payload: dict[str, Any], runtime: ToolRuntimeContext) 
     return await manager.get_html(tab_id=tab_id)
 
 
-async def handle_get_cookies(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+async def handle_get_cookies(
+    payload: dict[str, Any], runtime: ToolRuntimeContext
+) -> dict[str, Any]:
     manager = await resolve_browser_manager(payload, runtime)
     tab_id = optional_browser_tab_id(payload)
     return await manager.get_cookies(tab_id=tab_id)
 
 
-async def handle_set_cookies(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+async def handle_set_cookies(
+    payload: dict[str, Any], runtime: ToolRuntimeContext
+) -> dict[str, Any]:
     manager = await resolve_browser_manager(payload, runtime)
     cookies = payload.get("cookies")
     if not isinstance(cookies, list) or not cookies:
@@ -279,13 +290,17 @@ async def handle_set_cookies(payload: dict[str, Any], runtime: ToolRuntimeContex
     return await manager.set_cookies(cookies)
 
 
-async def handle_console_logs(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+async def handle_console_logs(
+    payload: dict[str, Any], runtime: ToolRuntimeContext
+) -> dict[str, Any]:
     manager = await resolve_browser_manager(payload, runtime)
     tab_id = optional_browser_tab_id(payload)
     return await manager.get_console_logs(tab_id=tab_id)
 
 
-async def handle_network_intercept(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+async def handle_network_intercept(
+    payload: dict[str, Any], runtime: ToolRuntimeContext
+) -> dict[str, Any]:
     manager = await resolve_browser_manager(payload, runtime)
     url_pattern = payload.get("url_pattern")
     tab_id = optional_browser_tab_id(payload)
@@ -307,7 +322,9 @@ async def handle_network_intercept(payload: dict[str, Any], runtime: ToolRuntime
     )
 
 
-async def handle_network_logs(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+async def handle_network_logs(
+    payload: dict[str, Any], runtime: ToolRuntimeContext
+) -> dict[str, Any]:
     manager = await resolve_browser_manager(payload, runtime)
     tab_id = optional_browser_tab_id(payload)
     return await manager.get_network_logs(tab_id=tab_id)
@@ -321,9 +338,8 @@ async def handle_clear_network_intercepts(
     tab_id = optional_browser_tab_id(payload)
     return await manager.clear_network_intercepts(tab_id=tab_id)
 
-BROWSER_TAB_MANAGEMENT_COMMANDS = frozenset(
-    {"tabs", "tab_open", "tab_focus", "tab_close", "reset"}
-)
+
+BROWSER_TAB_MANAGEMENT_COMMANDS = frozenset({"tabs", "tab_open", "tab_focus", "tab_close", "reset"})
 
 BROWSER_TAB_TARGETABLE_COMMANDS = frozenset(
     {

@@ -140,14 +140,16 @@ class ToolSchema:
 @dataclass(slots=True)
 class ReasoningConfig:
     """Per-call reasoning parameters that flow from tier config to API payload."""
+
     max_tokens: int = 8192
-    thinking_budget: int | None = None    # Anthropic extended thinking budget_tokens
-    reasoning_effort: str | None = None   # OpenAI: "low" | "medium" | "high"
+    thinking_budget: int | None = None  # Anthropic extended thinking budget_tokens
+    reasoning_effort: str | None = None  # OpenAI: "low" | "medium" | "high"
 
 
 @dataclass(slots=True)
 class ModelCompat:
     """Per-model capability flags — avoids sending unsupported params."""
+
     supports_thinking: bool = False
     supports_reasoning_effort: bool = False
     max_tokens_field: str = "max_tokens"  # Some models use "max_completion_tokens"

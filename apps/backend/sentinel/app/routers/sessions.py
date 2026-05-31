@@ -8,14 +8,29 @@ from uuid import UUID
 
 import httpx
 import websockets
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import CHAT_DEFAULT_ITERATIONS
 from app.database import ManagerSessionLocal
 from app.dependencies import get_db, get_request_db_factory, get_request_instance_runtime_context
-from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, TokenPayload, decode_and_validate_token, require_auth
+from app.middleware.auth import (
+    ACCESS_TOKEN_COOKIE_NAME,
+    TokenPayload,
+    decode_and_validate_token,
+    require_auth,
+)
 from app.models import Message, Session
 from app.schemas.sessions import (
     ChatRequest,
@@ -61,7 +76,11 @@ from app.services.runtime.files import (
     RuntimePathNotFoundError,
 )
 from app.services.araios.runtime_services import get_browser_pool
-from app.services.runtime.ssh_runtime import get_runtime_desktop_manager, get_runtime_terminal_manager, get_runtime_workspace_files
+from app.services.runtime.ssh_runtime import (
+    get_runtime_desktop_manager,
+    get_runtime_terminal_manager,
+    get_runtime_workspace_files,
+)
 from app.services.runtime.port_forwards import RuntimeForwardNotFound
 from app.services.runtime.ssh_runtime import get_runtime_port_forward_manager
 from app.services.ws.ws_stream_service import run_agent_once
@@ -167,7 +186,9 @@ def _raise_http_for_runtime_path_error(exc: Exception) -> None:
 
 
 def _raise_http_for_session_or_runtime_error(exc: Exception) -> None:
-    if isinstance(exc, (RuntimePathNotFoundError, RuntimePathInvalidError, RuntimePathIsDirectoryError)):
+    if isinstance(
+        exc, (RuntimePathNotFoundError, RuntimePathInvalidError, RuntimePathIsDirectoryError)
+    ):
         _raise_http_for_runtime_path_error(exc)
         return
     _raise_http_for_session_error(exc)
@@ -328,7 +349,9 @@ async def list_sessions(
     unread_flags = await service.compute_unread_flags(db, page.items)
     items = [
         await _session_list_item_response(
-            item, service, main_session_id=main_session_id,
+            item,
+            service,
+            main_session_id=main_session_id,
             has_unread=unread_flags.get(item.id, False),
         )
         for item in page.items
@@ -361,9 +384,7 @@ async def get_default_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
     service = _resolve_session_service(request)
-    session = await service.get_default_session(
-        db, user_id=user.sub, agent_id=user.agent_id
-    )
+    session = await service.get_default_session(db, user_id=user.sub, agent_id=user.agent_id)
     return await _session_response(session, service, main_session_id=session.id)
 
 
@@ -374,9 +395,7 @@ async def reset_default_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
     service = _resolve_session_service(request)
-    session = await service.reset_default_session(
-        db, user_id=user.sub, agent_id=user.agent_id
-    )
+    session = await service.reset_default_session(db, user_id=user.sub, agent_id=user.agent_id)
     return await _session_response(session, service, main_session_id=session.id)
 
 
@@ -449,9 +468,7 @@ async def get_session_context_usage(
 ) -> SessionContextUsageResponse:
     service = _resolve_session_service(request)
     try:
-        usage = await service.get_context_usage(
-            db, session_id=id, user_id=user.sub
-        )
+        usage = await service.get_context_usage(db, session_id=id, user_id=user.sub)
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
@@ -541,13 +558,17 @@ async def proxy_runtime_forward_http(
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id=user.sub)
-        forwards = await get_runtime_port_forward_manager(instance_name=_request_instance_name(request))
+        forwards = await get_runtime_port_forward_manager(
+            instance_name=_request_instance_name(request)
+        )
         forward = await forwards.get_forward(
             session_id=str(id),
             forward_id=forward_id,
         )
     except RuntimeForwardNotFound as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime forward not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Runtime forward not found"
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
@@ -622,6 +643,7 @@ async def proxy_runtime_forward_websocket(
     await websocket.accept()
     try:
         async with websockets.connect(target_url) as remote:
+
             async def _client_to_remote() -> None:
                 while True:
                     message = await websocket.receive()
@@ -748,7 +770,9 @@ async def close_terminal(
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
-    terminal_manager = await get_runtime_terminal_manager(instance_name=_request_instance_name(request))
+    terminal_manager = await get_runtime_terminal_manager(
+        instance_name=_request_instance_name(request)
+    )
     status_result = await terminal_manager.close_terminal(
         str(id),
         terminal_id=terminal_id,
@@ -766,7 +790,9 @@ async def close_terminal(
     }
 
 
-async def _cleanup_runtime_for_deleted_sessions(session_ids: list[UUID], *, instance_name: str) -> None:
+async def _cleanup_runtime_for_deleted_sessions(
+    session_ids: list[UUID], *, instance_name: str
+) -> None:
     terminal_manager = await get_runtime_terminal_manager(instance_name=instance_name)
     for session_id in session_ids:
         session_key = str(session_id)
@@ -1084,5 +1110,9 @@ def _message_response(message: Message) -> MessageResponse:
         runtime_context_structured=runtime_context_structured,
         created_at=message.created_at,
     )
+
+
 def _request_instance_name(request: Request) -> str:
-    return str(getattr(request.state, "instance_name", request.path_params.get("instance_name", "")))
+    return str(
+        getattr(request.state, "instance_name", request.path_params.get("instance_name", ""))
+    )

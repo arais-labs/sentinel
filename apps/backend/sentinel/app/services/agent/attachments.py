@@ -45,7 +45,7 @@ def _extract_image_payload(value: str, *, key_hint: str) -> tuple[str, str, int]
             return None
         header = payload[:comma_idx]
         declared_mime = header[5:].split(";")[0].strip().lower()
-        payload = payload[comma_idx + 1:]
+        payload = payload[comma_idx + 1 :]
 
     payload = "".join(payload.split())
     if len(payload) < 64:
@@ -61,7 +61,9 @@ def _extract_image_payload(value: str, *, key_hint: str) -> tuple[str, str, int]
     detected_mime = _detect_image_mime(decoded)
     if detected_mime is None:
         return None
-    mime_type = declared_mime if declared_mime and declared_mime.startswith("image/") else detected_mime
+    mime_type = (
+        declared_mime if declared_mime and declared_mime.startswith("image/") else detected_mime
+    )
     if mime_type == "image/jpg":
         mime_type = "image/jpeg"
     return (payload, mime_type, len(decoded))

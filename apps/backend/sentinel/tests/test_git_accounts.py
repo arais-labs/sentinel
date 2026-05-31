@@ -104,7 +104,9 @@ def test_git_accounts_crud_and_approval_resolution():
         )
         fake_db.add(approval)
 
-        approvals = client.get("/api/v1/instances/main/approvals?provider=git&status=pending", headers=admin_headers)
+        approvals = client.get(
+            "/api/v1/instances/main/approvals?provider=git&status=pending", headers=admin_headers
+        )
         assert approvals.status_code == 200
         assert approvals.json()["total"] == 1
         approval_id = approvals.json()["items"][0]["approval_id"]
@@ -119,7 +121,9 @@ def test_git_accounts_crud_and_approval_resolution():
         assert resolved.json()["status"] == "approved"
         assert resolved.json()["decision_note"] == "approved"
 
-        removed = client.delete(f"/api/v1/instances/main/git/accounts/{account_id}", headers=admin_headers)
+        removed = client.delete(
+            f"/api/v1/instances/main/git/accounts/{account_id}", headers=admin_headers
+        )
         assert removed.status_code == 200
         assert removed.json()["success"] is True
     finally:
@@ -201,7 +205,9 @@ def test_generic_approvals_routes_list_and_resolve_git_tool_approval():
             )
         )
 
-        approvals = client.get("/api/v1/instances/main/approvals?status=pending", headers=admin_headers)
+        approvals = client.get(
+            "/api/v1/instances/main/approvals?status=pending", headers=admin_headers
+        )
         assert approvals.status_code == 200
         body = approvals.json()
         assert body["total"] == 1

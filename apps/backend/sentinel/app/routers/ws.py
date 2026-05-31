@@ -38,6 +38,7 @@ from app.services.ws.ws_stream_service import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
 async def _persist_retryable_error(
     db: AsyncSession,
     *,
@@ -107,7 +108,9 @@ async def stream_session(
     unresolved_calls = unresolved_tool_calls_from_history(history)
     session_running = await run_registry.is_running(session_key)
     if unresolved_calls and not session_running:
-        await _materialize_interrupted_tool_results(db, session_id=id, unresolved_calls=unresolved_calls)
+        await _materialize_interrupted_tool_results(
+            db, session_id=id, unresolved_calls=unresolved_calls
+        )
         history = await load_history(db, id)
         unresolved_calls = []
     terminals_payload = await _initial_terminal_descriptors(instance_context.name)
@@ -218,7 +221,9 @@ async def stream_session(
                 metadata=message.metadata_json or {},
             )
 
-            agent_runtime_support = get_connection_instance_runtime_context(websocket).agent_runtime_support
+            agent_runtime_support = get_connection_instance_runtime_context(
+                websocket
+            ).agent_runtime_support
             if agent_runtime_support is None:
                 await manager.broadcast_agent_error(
                     session_key, "No provider connected for agent reply."
@@ -369,6 +374,7 @@ def _approval_payload(row: ToolApproval) -> dict[str, Any]:
         "session_id": str(row.session_id) if row.session_id else None,
     }
 
+
 async def _materialize_interrupted_tool_results(
     db: AsyncSession,
     *,
@@ -397,7 +403,11 @@ async def _materialize_interrupted_tool_results(
             ),
         }
     )
-    call_ids = [str(call.get("id") or "").strip() for call in unresolved_calls if str(call.get("id") or "").strip()]
+    call_ids = [
+        str(call.get("id") or "").strip()
+        for call in unresolved_calls
+        if str(call.get("id") or "").strip()
+    ]
     existing_result = await db.execute(
         select(Message).where(
             Message.session_id == session_id,
@@ -457,7 +467,9 @@ def _apply_terminal_tool_result_update(
     approval_status: str,
     decision_note: str,
 ) -> None:
-    existing_metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+    existing_metadata = (
+        dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+    )
     approval = existing_metadata.get("approval")
     if isinstance(approval, dict):
         next_approval = dict(approval)
@@ -515,7 +527,9 @@ async def stream_terminal(
     await websocket.accept()
     try:
         await (
-            await get_runtime_terminal_manager(instance_name=str(websocket.path_params["instance_name"]))
+            await get_runtime_terminal_manager(
+                instance_name=str(websocket.path_params["instance_name"])
+            )
         ).attach_ws(str(id), terminal_id, websocket)
     except WebSocketDisconnect:
         return

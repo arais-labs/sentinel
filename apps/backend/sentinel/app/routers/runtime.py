@@ -41,7 +41,9 @@ async def get_runtime_status(
     request: Request,
     _user: TokenPayload = Depends(require_auth),
 ) -> RuntimeStatusResponse:
-    return RuntimeStatusResponse(**(await runtime_status_payload(instance_name=_request_instance_name(request))))
+    return RuntimeStatusResponse(
+        **(await runtime_status_payload(instance_name=_request_instance_name(request)))
+    )
 
 
 @router.get("/live-view", response_model=RuntimeLiveViewResponse)
@@ -138,4 +140,6 @@ async def wipe_runtime_workspace(
 
 
 def _request_instance_name(request: Request) -> str:
-    return str(getattr(request.state, "instance_name", request.path_params.get("instance_name", "")))
+    return str(
+        getattr(request.state, "instance_name", request.path_params.get("instance_name", ""))
+    )

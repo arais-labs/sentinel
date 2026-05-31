@@ -4,13 +4,13 @@ Revision ID: 0000_instance_v1
 Revises:
 Create Date: 2026-05-14
 """
+
 from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects import postgresql
-
 
 revision = "0000_instance_v1"
 down_revision = None
@@ -41,14 +41,20 @@ def upgrade() -> None:
         sa.Column("page_content", sa.Text(), nullable=True),
         sa.Column("system", sa.Boolean(), server_default=sa.text("false"), nullable=False),
         sa.Column("order", sa.Integer(), server_default=sa.text("100"), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=True),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=True),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=True
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=True
+        ),
         sa.PrimaryKeyConstraint("name"),
     )
     op.create_table(
         "audit_logs",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("timestamp", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "timestamp", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+        ),
         sa.Column("user_id", sa.String(length=100), nullable=True),
         sa.Column("action", sa.String(length=100), nullable=False),
         sa.Column("resource_type", sa.String(length=50), nullable=True),
@@ -65,20 +71,37 @@ def upgrade() -> None:
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("name", sa.String(length=120), nullable=False),
         sa.Column("host", sa.String(length=255), nullable=False),
-        sa.Column("scope_pattern", sa.String(length=500), server_default=sa.text("'*'"), nullable=False),
+        sa.Column(
+            "scope_pattern", sa.String(length=500), server_default=sa.text("'*'"), nullable=False
+        ),
         sa.Column("author_name", sa.String(length=255), nullable=False),
         sa.Column("author_email", sa.String(length=320), nullable=False),
         sa.Column("token_read", sa.Text(), nullable=False),
         sa.Column("token_write", sa.Text(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_table(
         "system_settings",
         sa.Column("key", sa.String(length=100), nullable=False),
         sa.Column("value", sa.Text(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.PrimaryKeyConstraint("key"),
     )
     op.create_table(
@@ -90,14 +113,35 @@ def upgrade() -> None:
         sa.Column("title", sa.String(length=255), nullable=True),
         sa.Column("initial_prompt", sa.Text(), nullable=True),
         sa.Column("latest_system_prompt", sa.Text(), nullable=True),
-        sa.Column("status", sa.String(length=20), server_default=sa.text("'active'"), nullable=False),
-        sa.Column("started_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "status", sa.String(length=20), server_default=sa.text("'active'"), nullable=False
+        ),
+        sa.Column(
+            "started_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.Column("last_read_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("conversation_message_count", sa.Integer(), server_default=sa.text("0"), nullable=False),
-        sa.Column("last_auto_rename_count", sa.Integer(), server_default=sa.text("0"), nullable=False),
+        sa.Column(
+            "conversation_message_count", sa.Integer(), server_default=sa.text("0"), nullable=False
+        ),
+        sa.Column(
+            "last_auto_rename_count", sa.Integer(), server_default=sa.text("0"), nullable=False
+        ),
         sa.ForeignKeyConstraint(["parent_session_id"], ["sessions.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -117,22 +161,39 @@ def upgrade() -> None:
         sa.Column("error_count", sa.Integer(), server_default=sa.text("0"), nullable=False),
         sa.Column("consecutive_errors", sa.Integer(), server_default=sa.text("0"), nullable=False),
         sa.Column("last_error", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("action_type IN ('agent_message', 'tool_call', 'http_request')", name="ck_triggers_action_type"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "action_type IN ('agent_message', 'tool_call', 'http_request')",
+            name="ck_triggers_action_type",
+        ),
         sa.CheckConstraint("type IN ('cron', 'webhook', 'heartbeat')", name="ck_triggers_type"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_table(
         "tool_approvals",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("provider", sa.String(length=40), server_default=sa.text("'tool'"), nullable=False),
+        sa.Column(
+            "provider", sa.String(length=40), server_default=sa.text("'tool'"), nullable=False
+        ),
         sa.Column("tool_name", sa.String(length=120), nullable=False),
         sa.Column("session_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("action", sa.String(length=160), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("match_key", sa.Text(), nullable=True),
-        sa.Column("status", sa.String(length=20), server_default=sa.text("'pending'"), nullable=False),
+        sa.Column(
+            "status", sa.String(length=20), server_default=sa.text("'pending'"), nullable=False
+        ),
         sa.Column("requested_by", sa.String(length=120), nullable=True),
         sa.Column("decision_by", sa.String(length=120), nullable=True),
         sa.Column("decision_note", sa.Text(), nullable=True),
@@ -140,8 +201,18 @@ def upgrade() -> None:
         sa.Column("result_json", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_table(
@@ -149,8 +220,12 @@ def upgrade() -> None:
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("module_name", sa.String(), nullable=False),
         sa.Column("data", postgresql.JSON(astext_type=sa.Text()), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=True),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=True),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=True
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=True
+        ),
         sa.ForeignKeyConstraint(["module_name"], ["modules.name"]),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -159,7 +234,9 @@ def upgrade() -> None:
         sa.Column("module_name", sa.String(), nullable=False),
         sa.Column("key", sa.String(), nullable=False),
         sa.Column("value", sa.String(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=True),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=True
+        ),
         sa.ForeignKeyConstraint(["module_name"], ["modules.name"]),
         sa.PrimaryKeyConstraint("module_name", "key"),
     )
@@ -169,11 +246,21 @@ def upgrade() -> None:
         sa.Column("session_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("role", sa.String(length=20), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+        sa.Column(
+            "metadata",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
         sa.Column("token_count", sa.Integer(), nullable=True),
         sa.Column("tool_call_id", sa.String(length=100), nullable=True),
         sa.Column("tool_name", sa.String(length=100), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["session_id"], ["sessions.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -190,13 +277,34 @@ def upgrade() -> None:
         sa.Column("is_system", sa.Boolean(), server_default=sa.text("false"), nullable=False),
         sa.Column("system_key", sa.String(length=100), nullable=True),
         sa.Column("embedding", Vector(dim=1536), nullable=True),
-        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+        sa.Column(
+            "metadata",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
         sa.Column("session_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("last_accessed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("((is_system AND system_key IS NOT NULL) OR (NOT is_system AND system_key IS NULL))", name="ck_memories_system_key_consistency"),
-        sa.CheckConstraint("category IN ('core', 'preference', 'project', 'correction')", name="ck_memories_category"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "((is_system AND system_key IS NOT NULL) OR (NOT is_system AND system_key IS NULL))",
+            name="ck_memories_system_key_consistency",
+        ),
+        sa.CheckConstraint(
+            "category IN ('core', 'preference', 'project', 'correction')",
+            name="ck_memories_category",
+        ),
         sa.CheckConstraint("importance >= 0 AND importance <= 100", name="ck_memories_importance"),
         sa.ForeignKeyConstraint(["parent_id"], ["memories.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["session_id"], ["sessions.id"], ondelete="SET NULL"),
@@ -209,7 +317,12 @@ def upgrade() -> None:
         sa.Column("summary", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("raw_token_count", sa.Integer(), nullable=False),
         sa.Column("compressed_token_count", sa.Integer(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["session_id"], ["sessions.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -221,9 +334,24 @@ def upgrade() -> None:
         sa.Column("binding_key", sa.String(length=255), nullable=False),
         sa.Column("session_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("is_active", sa.Boolean(), server_default=sa.text("true"), nullable=False),
-        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "metadata",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["session_id"], ["sessions.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -232,20 +360,40 @@ def upgrade() -> None:
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("session_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("objective", sa.Text(), nullable=False),
-        sa.Column("constraints", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-        sa.Column("allowed_tools", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+        sa.Column(
+            "constraints",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'[]'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "allowed_tools",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'[]'::jsonb"),
+            nullable=False,
+        ),
         sa.Column("max_turns", sa.Integer(), server_default=sa.text("10"), nullable=False),
         sa.Column("max_tokens", sa.Integer(), server_default=sa.text("50000"), nullable=False),
         sa.Column("timeout_seconds", sa.Integer(), server_default=sa.text("300"), nullable=False),
         sa.Column("context", sa.Text(), nullable=True),
-        sa.Column("status", sa.String(length=20), server_default=sa.text("'pending'"), nullable=False),
+        sa.Column(
+            "status", sa.String(length=20), server_default=sa.text("'pending'"), nullable=False
+        ),
         sa.Column("result", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("tokens_used", sa.Integer(), server_default=sa.text("0"), nullable=False),
         sa.Column("turns_used", sa.Integer(), server_default=sa.text("0"), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.CheckConstraint("status IN ('pending', 'running', 'completed', 'failed', 'cancelled')", name="ck_sub_agent_tasks_status"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed', 'cancelled')",
+            name="ck_sub_agent_tasks_status",
+        ),
         sa.ForeignKeyConstraint(["session_id"], ["sessions.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -253,7 +401,9 @@ def upgrade() -> None:
         "trigger_logs",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("trigger_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("fired_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "fired_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+        ),
         sa.Column("status", sa.String(length=20), nullable=False),
         sa.Column("duration_ms", sa.Integer(), nullable=True),
         sa.Column("input_payload", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
@@ -284,7 +434,11 @@ def upgrade() -> None:
     op.create_index("ix_session_bindings_is_active", "session_bindings", ["is_active"])
     op.create_index("ix_session_bindings_session_id", "session_bindings", ["session_id"])
     op.create_index("ix_session_bindings_user_id", "session_bindings", ["user_id"])
-    op.create_index("ix_session_bindings_user_type_key", "session_bindings", ["user_id", "binding_type", "binding_key"])
+    op.create_index(
+        "ix_session_bindings_user_type_key",
+        "session_bindings",
+        ["user_id", "binding_type", "binding_key"],
+    )
     op.create_index("ix_session_summaries_session_id", "session_summaries", ["session_id"])
     op.create_index("ix_sessions_parent_session_id", "sessions", ["parent_session_id"])
     op.create_index("ix_sessions_status", "sessions", ["status"])
@@ -324,10 +478,14 @@ def upgrade() -> None:
     op.create_index(
         "idx_memories_roots_rank",
         "memories",
-        ["parent_id", sa.text("pinned DESC"), sa.text("importance DESC"), sa.text("updated_at DESC")],
+        [
+            "parent_id",
+            sa.text("pinned DESC"),
+            sa.text("importance DESC"),
+            sa.text("updated_at DESC"),
+        ],
     )
-    op.execute(
-        """
+    op.execute("""
         DO $$
         BEGIN
             CREATE INDEX IF NOT EXISTS idx_memories_embedding_ivfflat
@@ -337,9 +495,7 @@ def upgrade() -> None:
                 RAISE NOTICE 'Skipping idx_memories_embedding_ivfflat: %', SQLERRM;
         END
         $$;
-        """
-    )
-
+        """)
 
 
 def downgrade() -> None:

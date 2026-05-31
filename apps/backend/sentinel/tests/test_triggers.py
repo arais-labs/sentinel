@@ -11,7 +11,6 @@ from app.main import app
 from tests.fake_db import FakeDB
 from tests.helpers import install_fake_db_overrides, make_fake_instance_context, restore_test_app
 
-
 TRIGGERS_API = "/api/v1/instances/main/triggers"
 WEBHOOKS_API = "/api/v1/instances/main/webhooks"
 
@@ -26,7 +25,9 @@ def test_triggers_crud_fire_logs_and_webhook():
 
     try:
         client = TestClient(app)
-        token_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        token_resp = client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        )
         assert token_resp.status_code == 200
         token = token_resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}

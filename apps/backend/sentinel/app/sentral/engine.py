@@ -73,12 +73,22 @@ class AgentRuntimeEngine(Runtime):
             "run_turn_start conversation_id=%s new_items=%d stream=%s max_iterations=%s timeout=%s",
             getattr(request, "conversation_id", None),
             len(request.new_items or []),
-            getattr(request.config, "stream", None) if getattr(request, "config", None) is not None else None,
-            getattr(request.config, "max_iterations", None) if getattr(request, "config", None) is not None else None,
+            (
+                getattr(request.config, "stream", None)
+                if getattr(request, "config", None) is not None
+                else None
+            ),
+            (
+                getattr(request.config, "max_iterations", None)
+                if getattr(request, "config", None) is not None
+                else None
+            ),
             getattr(request, "timeout_seconds", None),
         )
         history = await self._load_history(request)
-        result, _events = await self._execute(request, history=history, sink=sink, checkpoint=checkpoint)
+        result, _events = await self._execute(
+            request, history=history, sink=sink, checkpoint=checkpoint
+        )
         await self._persist_history(request, result)
         logger.debug(
             "run_turn_finish conversation_id=%s status=%s iterations=%s stop_reason=%s pending_approval=%s error=%s",
@@ -101,8 +111,16 @@ class AgentRuntimeEngine(Runtime):
             "stream_turn_start conversation_id=%s new_items=%d stream=%s max_iterations=%s timeout=%s",
             getattr(request, "conversation_id", None),
             len(request.new_items or []),
-            getattr(request.config, "stream", None) if getattr(request, "config", None) is not None else None,
-            getattr(request.config, "max_iterations", None) if getattr(request, "config", None) is not None else None,
+            (
+                getattr(request.config, "stream", None)
+                if getattr(request, "config", None) is not None
+                else None
+            ),
+            (
+                getattr(request.config, "max_iterations", None)
+                if getattr(request, "config", None) is not None
+                else None
+            ),
             getattr(request, "timeout_seconds", None),
         )
         history = await self._load_history(request)
@@ -116,7 +134,9 @@ class AgentRuntimeEngine(Runtime):
         async def _run() -> None:
             nonlocal terminal_error, result
             try:
-                result, _events = await self._execute(request, history=history, sink=_sink, checkpoint=checkpoint)
+                result, _events = await self._execute(
+                    request, history=history, sink=_sink, checkpoint=checkpoint
+                )
                 await self._persist_history(request, result)
             except Exception as exc:  # noqa: BLE001
                 terminal_error = exc
@@ -258,7 +278,9 @@ class AgentRuntimeEngine(Runtime):
                         effective_max,
                         grace_extension,
                     )
-                    if not await self._grace_analysis(working_history, effective_max, grace_extension):
+                    if not await self._grace_analysis(
+                        working_history, effective_max, grace_extension
+                    ):
                         logger.debug("iteration_grace_analysis_denied iteration=%d", index + 1)
                         await self._run_finalization_round(
                             working_history=working_history,
@@ -325,7 +347,9 @@ class AgentRuntimeEngine(Runtime):
                     )
                     return
 
-                tool_calls = [block for block in assistant_item.content if isinstance(block, ToolCallBlock)]
+                tool_calls = [
+                    block for block in assistant_item.content if isinstance(block, ToolCallBlock)
+                ]
                 if not tool_calls:
                     logger.debug("iteration_no_tool_blocks_after_tool_use iteration=%d", iterations)
                     await _emit(AgentEvent(type="done", stop_reason="stop"))
@@ -410,7 +434,9 @@ class AgentRuntimeEngine(Runtime):
                         )
                         return
                 if tool_execution_cancelled:
-                    logger.debug("iteration_aborted_after_tool_cancellation iteration=%d", iterations)
+                    logger.debug(
+                        "iteration_aborted_after_tool_cancellation iteration=%d", iterations
+                    )
                     await _emit(AgentEvent(type="done", stop_reason="aborted"))
                     return
                 logger.debug(
@@ -433,48 +459,63 @@ class AgentRuntimeEngine(Runtime):
             try:
                 await asyncio.wait_for(_run_iterations(), timeout=float(timeout_seconds))
             except asyncio.TimeoutError:
-                logger.debug("execute_timeout timeout_seconds=%s iterations=%d", timeout_seconds, iterations)
+                logger.debug(
+                    "execute_timeout timeout_seconds=%s iterations=%d", timeout_seconds, iterations
+                )
                 await _emit(AgentEvent(type="done", stop_reason="timeout"))
-                return self._build_result(
-                    history=working_history,
-                    created_items=created_items,
-                    usage=usage,
-                    iterations=iterations,
-                    stop_reason="timeout",
-                    error=f"Agent runtime timed out after {timeout_seconds}s",
-                    pending_approval=pending_approval,
-                ), events
+                return (
+                    self._build_result(
+                        history=working_history,
+                        created_items=created_items,
+                        usage=usage,
+                        iterations=iterations,
+                        stop_reason="timeout",
+                        error=f"Agent runtime timed out after {timeout_seconds}s",
+                        pending_approval=pending_approval,
+                    ),
+                    events,
+                )
             except asyncio.CancelledError:
                 logger.debug("execute_cancelled iterations=%d", iterations)
                 await _emit(AgentEvent(type="done", stop_reason="aborted"))
-                return self._build_result(
-                    history=working_history,
-                    created_items=created_items,
-                    usage=usage,
-                    iterations=iterations,
-                    stop_reason="aborted",
-                    error="Generation stopped by user",
-                    pending_approval=pending_approval,
-                ), events
+                return (
+                    self._build_result(
+                        history=working_history,
+                        created_items=created_items,
+                        usage=usage,
+                        iterations=iterations,
+                        stop_reason="aborted",
+                        error="Generation stopped by user",
+                        pending_approval=pending_approval,
+                    ),
+                    events,
+                )
         else:
             try:
                 await _run_iterations()
             except asyncio.CancelledError:
                 logger.debug("execute_cancelled iterations=%d", iterations)
                 await _emit(AgentEvent(type="done", stop_reason="aborted"))
-                return self._build_result(
-                    history=working_history,
-                    created_items=created_items,
-                    usage=usage,
-                    iterations=iterations,
-                    stop_reason="aborted",
-                    error="Generation stopped by user",
-                    pending_approval=pending_approval,
-                ), events
+                return (
+                    self._build_result(
+                        history=working_history,
+                        created_items=created_items,
+                        usage=usage,
+                        iterations=iterations,
+                        stop_reason="aborted",
+                        error="Generation stopped by user",
+                        pending_approval=pending_approval,
+                    ),
+                    events,
+                )
 
         logger.debug(
             "execute_finish status=%s iterations=%d stop_reason=%s pending_approval=%s total_usage_in=%d total_usage_out=%d events=%d",
-            "pending_approval" if pending_approval is not None else ("error" if last_stop_reason == "error" else "completed"),
+            (
+                "pending_approval"
+                if pending_approval is not None
+                else ("error" if last_stop_reason == "error" else "completed")
+            ),
             iterations,
             last_stop_reason,
             pending_approval is not None,
@@ -482,15 +523,18 @@ class AgentRuntimeEngine(Runtime):
             usage.output_tokens,
             len(events),
         )
-        return self._build_result(
-            history=working_history,
-            created_items=created_items,
-            usage=usage,
-            iterations=iterations,
-            stop_reason=last_stop_reason,
-            error=None,
-            pending_approval=pending_approval,
-        ), events
+        return (
+            self._build_result(
+                history=working_history,
+                created_items=created_items,
+                usage=usage,
+                iterations=iterations,
+                stop_reason=last_stop_reason,
+                error=None,
+                pending_approval=pending_approval,
+            ),
+            events,
+        )
 
     async def _provider_turn(
         self,
@@ -509,7 +553,9 @@ class AgentRuntimeEngine(Runtime):
             getattr(self._provider, "name", type(self._provider).__name__),
         )
         if config.stream:
-            return await self._stream_response(history, tools=tool_schemas, config=config, emit=emit)
+            return await self._stream_response(
+                history, tools=tool_schemas, config=config, emit=emit
+            )
         turn = await self._provider.chat(messages=history, tools=tool_schemas, config=config)
         for block in turn.item.content:
             if isinstance(block, TextBlock) and block.text:
@@ -557,7 +603,9 @@ class AgentRuntimeEngine(Runtime):
             (perf_counter() - stream_started_at) * 1000,
             final_done.stop_reason,
         )
-        return self._assemble_turn_from_events(streamed_events, fallback_model=config.model, fallback_provider=self._provider.name)
+        return self._assemble_turn_from_events(
+            streamed_events, fallback_model=config.model, fallback_provider=self._provider.name
+        )
 
     def _assemble_turn_from_events(
         self,
@@ -585,11 +633,19 @@ class AgentRuntimeEngine(Runtime):
             block_sequence.append(key)
 
         for index, event in enumerate(events):
-            idx = int(event.metadata.get("content_index", index)) if isinstance(event.metadata.get("content_index"), int) else index
+            idx = (
+                int(event.metadata.get("content_index", index))
+                if isinstance(event.metadata.get("content_index"), int)
+                else index
+            )
             if event.item is not None and event.item.role == "assistant":
                 model = str(event.item.metadata.get("model") or model)
                 provider = str(event.item.metadata.get("provider") or provider)
-                usage_payload = event.item.metadata.get("usage") if isinstance(event.item.metadata.get("usage"), dict) else {}
+                usage_payload = (
+                    event.item.metadata.get("usage")
+                    if isinstance(event.item.metadata.get("usage"), dict)
+                    else {}
+                )
                 usage.input_tokens += int(usage_payload.get("input_tokens") or 0)
                 usage.output_tokens += int(usage_payload.get("output_tokens") or 0)
             if event.type == "text_start":
@@ -650,7 +706,13 @@ class AgentRuntimeEngine(Runtime):
             elif block_type == "tool_call":
                 state = tool_calls.get(
                     idx,
-                    {"id": "", "name": "", "arg_deltas": [], "base_args": {}, "thought_signature": None},
+                    {
+                        "id": "",
+                        "name": "",
+                        "arg_deltas": [],
+                        "base_args": {},
+                        "thought_signature": None,
+                    },
                 )
                 call_id = str(state.get("id") or "").strip()
                 call_name = str(state.get("name") or "").strip()
@@ -664,7 +726,9 @@ class AgentRuntimeEngine(Runtime):
                     except json.JSONDecodeError:
                         parsed_args = {"raw": raw_args}
                 else:
-                    parsed_args = state.get("base_args") if isinstance(state.get("base_args"), dict) else {}
+                    parsed_args = (
+                        state.get("base_args") if isinstance(state.get("base_args"), dict) else {}
+                    )
                 if isinstance(state.get("base_args"), dict) and isinstance(parsed_args, dict):
                     merged = dict(state["base_args"])
                     merged.update(parsed_args)
@@ -676,7 +740,8 @@ class AgentRuntimeEngine(Runtime):
                         arguments=parsed_args,
                         thought_signature=(
                             str(state.get("thought_signature")).strip()
-                            if isinstance(state.get("thought_signature"), str) and str(state.get("thought_signature")).strip()
+                            if isinstance(state.get("thought_signature"), str)
+                            and str(state.get("thought_signature")).strip()
                             else None
                         ),
                     )
@@ -722,7 +787,9 @@ class AgentRuntimeEngine(Runtime):
                 if not task.done():
                     task.cancel()
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            raise _ToolExecutionCancelled(self._normalize_tool_execution_results(tool_calls, results)) from None
+            raise _ToolExecutionCancelled(
+                self._normalize_tool_execution_results(tool_calls, results)
+            ) from None
 
     async def _execute_one_tool(self, tool_call: ToolCallBlock) -> ToolResultBlock:
         tool = self._tool_registry.get_tool(tool_call.name)
@@ -789,7 +856,11 @@ class AgentRuntimeEngine(Runtime):
                 metadata=metadata,
                 tool_arguments=dict(tool_call.arguments),
             )
-        content = result.content if isinstance(result.content, str) else json.dumps(result.content, default=str)
+        content = (
+            result.content
+            if isinstance(result.content, str)
+            else json.dumps(result.content, default=str)
+        )
         return ToolResultBlock(
             tool_call_id=tool_call.id,
             tool_name=tool_call.name,
@@ -811,14 +882,17 @@ class AgentRuntimeEngine(Runtime):
             return None
         return ApprovalRequest(
             id=str(approval.get("id") or approval.get("approval_id") or "").strip(),
-            tool_name=str(approval.get("tool_name") or approval.get("provider") or result.tool_name).strip(),
+            tool_name=str(
+                approval.get("tool_name") or approval.get("provider") or result.tool_name
+            ).strip(),
             action=str(approval.get("action") or result.tool_name).strip(),
             description=str(approval.get("description") or "Action requires approval.").strip(),
             payload=dict(result.tool_arguments or {}),
             metadata={
                 key: value
                 for key, value in approval.items()
-                if key not in {"id", "approval_id", "tool_name", "provider", "action", "description"}
+                if key
+                not in {"id", "approval_id", "tool_name", "provider", "action", "description"}
             },
         )
 
@@ -926,7 +1000,9 @@ class AgentRuntimeEngine(Runtime):
         for block in final_turn.item.content:
             if isinstance(block, TextBlock) and block.text:
                 await emit(AgentEvent(type="text_delta", delta=block.text))
-        await emit(AgentEvent(type="done", stop_reason=final_turn.stop_reason, item=final_turn.item))
+        await emit(
+            AgentEvent(type="done", stop_reason=final_turn.stop_reason, item=final_turn.item)
+        )
         logger.debug(
             "finalization_round_finish stop_reason=%s usage_in=%d usage_out=%d content=%s",
             final_turn.stop_reason,
@@ -945,7 +1021,11 @@ class AgentRuntimeEngine(Runtime):
         summary_lines: list[str] = []
         for item in tail:
             if item.role == "assistant":
-                text_parts = [block.text for block in item.content if isinstance(block, TextBlock) and block.text]
+                text_parts = [
+                    block.text
+                    for block in item.content
+                    if isinstance(block, TextBlock) and block.text
+                ]
                 tool_calls = [
                     f"{block.name}({json.dumps(block.arguments)[:200]})"
                     for block in item.content
@@ -959,7 +1039,9 @@ class AgentRuntimeEngine(Runtime):
                 for block in item.content:
                     if isinstance(block, ToolResultBlock):
                         status = "error" if block.is_error else "ok"
-                        summary_lines.append(f"tool_result({status}): {(block.content or '')[:300]}")
+                        summary_lines.append(
+                            f"tool_result({status}): {(block.content or '')[:300]}"
+                        )
         tail_text = "\n".join(summary_lines[-30:])
         analysis_request = [
             ConversationItem(
@@ -973,7 +1055,7 @@ class AgentRuntimeEngine(Runtime):
                             "so it can complete its current task.\n\n"
                             "## Recent conversation tail (last ~10 exchanges)\n"
                             f"{tail_text}\n\n"
-                            "Respond ONLY with valid JSON: {\"continue\": true} or {\"continue\": false}."
+                            'Respond ONLY with valid JSON: {"continue": true} or {"continue": false}.'
                         )
                     )
                 ],
@@ -989,7 +1071,9 @@ class AgentRuntimeEngine(Runtime):
                 timeout=15.0,
             )
             text = "\n".join(
-                block.text for block in response.item.content if isinstance(block, TextBlock) and block.text
+                block.text
+                for block in response.item.content
+                if isinstance(block, TextBlock) and block.text
             ).strip()
             if text.startswith("```"):
                 text = text.split("```")[1] if "```" in text[3:] else text
@@ -1060,7 +1144,9 @@ def _summarize_content_blocks(blocks: list[Any]) -> str:
             arg_keys = sorted(block.arguments.keys()) if isinstance(block.arguments, dict) else []
             parts.append(f"tool_call(name={block.name},id={block.id},arg_keys={arg_keys[:8]})")
         elif isinstance(block, ToolResultBlock):
-            parts.append(f"tool_result(name={block.tool_name},error={block.is_error},len={len(block.content or '')})")
+            parts.append(
+                f"tool_result(name={block.tool_name},error={block.is_error},len={len(block.content or '')})"
+            )
         elif isinstance(block, ImageBlock):
             parts.append("image")
         else:
@@ -1069,17 +1155,25 @@ def _summarize_content_blocks(blocks: list[Any]) -> str:
 
 
 def _summarize_tool_calls(tool_calls: list[ToolCallBlock]) -> str:
-    return "[" + ", ".join(
-        f"{tool.name}(id={tool.id},arg_keys={sorted(tool.arguments.keys())[:8] if isinstance(tool.arguments, dict) else []})"
-        for tool in tool_calls
-    ) + "]"
+    return (
+        "["
+        + ", ".join(
+            f"{tool.name}(id={tool.id},arg_keys={sorted(tool.arguments.keys())[:8] if isinstance(tool.arguments, dict) else []})"
+            for tool in tool_calls
+        )
+        + "]"
+    )
 
 
 def _summarize_tool_results(tool_results: list[ToolResultBlock]) -> str:
-    return "[" + ", ".join(
-        f"{result.tool_name}(error={result.is_error},len={len(result.content or '')},approval={bool(result.metadata.get('approval'))})"
-        for result in tool_results
-    ) + "]"
+    return (
+        "["
+        + ", ".join(
+            f"{result.tool_name}(error={result.is_error},len={len(result.content or '')},approval={bool(result.metadata.get('approval'))})"
+            for result in tool_results
+        )
+        + "]"
+    )
 
 
 def _summarize_event(event: AgentEvent) -> str:
@@ -1101,10 +1195,15 @@ def _summarize_event(event: AgentEvent) -> str:
         parts.append(f"approval={event.approval_request.tool_name}:{event.approval_request.id}")
     if event.metadata:
         # TODO: summarize opaque provider signatures instead of logging their raw values.
-        interesting = {k: event.metadata[k] for k in sorted(event.metadata) if k in {"content_index", "provider", "model", "signature"}}
+        interesting = {
+            k: event.metadata[k]
+            for k in sorted(event.metadata)
+            if k in {"content_index", "provider", "model", "signature"}
+        }
         if interesting:
             parts.append(f"meta={interesting}")
     return " ".join(parts)
+
 
 class _ToolExecutionCancelled(RuntimeError):
     def __init__(self, tool_results: list[ToolResultBlock]) -> None:

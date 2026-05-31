@@ -1,4 +1,5 @@
 """Manager-scoped admin endpoints (no instance_name in path)."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

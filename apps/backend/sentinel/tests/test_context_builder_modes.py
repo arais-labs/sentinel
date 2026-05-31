@@ -13,9 +13,7 @@ def _run(coro):
 
 
 def _system_text(messages) -> str:
-    return "\n".join(
-        item.content for item in messages if getattr(item, "role", "") == "system"
-    )
+    return "\n".join(item.content for item in messages if getattr(item, "role", "") == "system")
 
 
 def test_normal_mode_system_prompt_omits_html_artifact_rules():

@@ -50,11 +50,15 @@ def _encode_token(*, identity: Identity, token_type: str, ttl_seconds: int) -> s
 
 
 def create_access_token(identity: Identity) -> str:
-    return _encode_token(identity=identity, token_type="access", ttl_seconds=settings.access_token_ttl_seconds)
+    return _encode_token(
+        identity=identity, token_type="access", ttl_seconds=settings.access_token_ttl_seconds
+    )
 
 
 def create_refresh_token(identity: Identity) -> str:
-    return _encode_token(identity=identity, token_type="refresh", ttl_seconds=settings.refresh_token_ttl_seconds)
+    return _encode_token(
+        identity=identity, token_type="refresh", ttl_seconds=settings.refresh_token_ttl_seconds
+    )
 
 
 async def _is_revoked(db: AsyncSession, jti: str) -> bool:

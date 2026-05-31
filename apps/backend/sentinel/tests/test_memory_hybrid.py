@@ -12,7 +12,6 @@ from app.services.memory.search import MemorySearchResult, MemorySearchService
 from tests.fake_db import FakeDB
 from tests.helpers import install_fake_db_overrides, restore_test_app
 
-
 MEMORY_API = "/api/v1/instances/main/memory"
 
 

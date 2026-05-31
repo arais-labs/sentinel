@@ -87,7 +87,9 @@ def _split_extra_args(raw: str) -> list[str]:
 def build_chromium_launch_options(*, headless: bool | None = None) -> dict[str, Any]:
     live_view_enabled = _env_bool("BROWSER_LIVE_VIEW_ENABLED", False)
     default_headless = not live_view_enabled
-    resolved_headless = _env_bool("BROWSER_HEADLESS", default_headless) if headless is None else bool(headless)
+    resolved_headless = (
+        _env_bool("BROWSER_HEADLESS", default_headless) if headless is None else bool(headless)
+    )
     no_sandbox = _env_bool("BROWSER_NO_SANDBOX", False)
     slow_mo = max(_env_int("BROWSER_SLOW_MO_MS", 0), 0)
 
@@ -104,8 +106,12 @@ def build_chromium_launch_options(*, headless: bool | None = None) -> dict[str, 
     if no_sandbox:
         args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
     if not resolved_headless:
-        window_width = max(_env_int("BROWSER_WINDOW_WIDTH", _env_int("BROWSER_VIEWPORT_WIDTH", 1600)), 800)
-        window_height = max(_env_int("BROWSER_WINDOW_HEIGHT", _env_int("BROWSER_VIEWPORT_HEIGHT", 900)), 600)
+        window_width = max(
+            _env_int("BROWSER_WINDOW_WIDTH", _env_int("BROWSER_VIEWPORT_WIDTH", 1600)), 800
+        )
+        window_height = max(
+            _env_int("BROWSER_WINDOW_HEIGHT", _env_int("BROWSER_VIEWPORT_HEIGHT", 900)), 600
+        )
         args.append(f"--window-size={window_width},{window_height}")
         args.append("--start-maximized")
         device_scale_factor = _env_float("BROWSER_DEVICE_SCALE_FACTOR", 1.0)

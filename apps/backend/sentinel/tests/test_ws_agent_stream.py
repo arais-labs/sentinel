@@ -18,8 +18,12 @@ from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRegistry
 from app.services.ws.ws_stream_service import maybe_auto_compact_after_run
 from tests.fake_db import FakeDB
-from tests.helpers import FakeSessionFactory, install_fake_db_overrides, make_fake_instance_context, restore_test_app
-
+from tests.helpers import (
+    FakeSessionFactory,
+    install_fake_db_overrides,
+    make_fake_instance_context,
+    restore_test_app,
+)
 
 SESSIONS_API = "/api/v1/instances/main/sessions"
 WS_API = "/ws/instances/main/sessions"
@@ -34,11 +38,15 @@ class _FakeProvider(LLMProvider):
     def name(self) -> str:
         return "fake"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         raise AssertionError("WS runtime tests expect the streaming provider path")
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         run_idx = min(self.calls, len(self._deltas_by_run) - 1)
         self.calls += 1
@@ -68,7 +76,9 @@ class _FakeLoop:
         max_iterations,
         stream,
     ):
-        messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
+        messages = await self.context_builder.build(
+            db, session_id, system_prompt, pending_user_message, agent_mode
+        )
         return PreparedRuntimeTurnContext(
             messages=messages,
             tools=self.tool_registry.list_schemas(),
@@ -76,10 +86,14 @@ class _FakeLoop:
             runtime_context_snapshot=None,
         )
 
-    async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+    async def persist_created_messages(
+        self, db, session_id, created, assistant_iterations, **kwargs
+    ):
         await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
 
-    async def _build_context(self, _db, _session_id, system_prompt, pending_user_message, agent_mode):
+    async def _build_context(
+        self, _db, _session_id, system_prompt, pending_user_message, agent_mode
+    ):
         _ = (system_prompt, pending_user_message, agent_mode)
         return []
 
@@ -87,7 +101,9 @@ class _FakeLoop:
         _ = (db, session_id, created, assistant_iterations, kwargs)
 
     def _extract_final_text(self, _messages) -> str:
-        deltas = self.provider._deltas_by_run[min(self.provider.calls - 1, len(self.provider._deltas_by_run) - 1)]
+        deltas = self.provider._deltas_by_run[
+            min(self.provider.calls - 1, len(self.provider._deltas_by_run) - 1)
+        ]
         return "".join(deltas)
 
     @staticmethod

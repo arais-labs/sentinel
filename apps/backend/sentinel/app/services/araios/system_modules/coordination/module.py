@@ -23,7 +23,10 @@ def _list_parameters_schema() -> dict:
         "additionalProperties": False,
         "properties": {
             "agent": _agent_prop(),
-            "limit": {"type": "integer", "description": "Max number of messages to return for list."},
+            "limit": {
+                "type": "integer",
+                "description": "Max number of messages to return for list.",
+            },
         },
     }
 

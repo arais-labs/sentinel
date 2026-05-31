@@ -29,6 +29,8 @@ from .handlers import (
     handle_type,
     handle_wait_for,
 )
+
+
 def _base_schema(
     *,
     required: list[str] | None = None,
@@ -161,7 +163,14 @@ def _browser_actions() -> list[ActionDefinition]:
                     "selector": {"type": "string"},
                     "condition": {
                         "type": "string",
-                        "enum": ["visible", "hidden", "attached", "detached", "enabled", "disabled"],
+                        "enum": [
+                            "visible",
+                            "hidden",
+                            "attached",
+                            "detached",
+                            "enabled",
+                            "disabled",
+                        ],
                     },
                     "timeout_ms": _timeout_prop(),
                     "tab_id": _tab_id_prop(),

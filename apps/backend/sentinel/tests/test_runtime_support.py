@@ -30,7 +30,10 @@ def _new_session(db: FakeDB, user_id: str = "dev-admin") -> Session:
 
 def _support() -> SentinelRuntimeSupport:
     return SentinelRuntimeSupport(
-        provider=None, context_builder=None, tool_registry=None, tool_executor=None,
+        provider=None,
+        context_builder=None,
+        tool_registry=None,
+        tool_executor=None,
     )
 
 
@@ -184,8 +187,7 @@ def test_runtime_support_truncates_large_tool_results_for_storage():
 
     [tool_record] = [m for m in db.storage[Message] if m.session_id == session.id]
     assert (
-        "[TRUNCATED - " in tool_record.content
-        or "[TRUNCATED_FOR_STORAGE - " in tool_record.content
+        "[TRUNCATED - " in tool_record.content or "[TRUNCATED_FOR_STORAGE - " in tool_record.content
     )
     assert tool_record.metadata_json.get("storage_truncated") is True
     assert int(tool_record.metadata_json.get("original_chars") or 0) > len(tool_record.content)

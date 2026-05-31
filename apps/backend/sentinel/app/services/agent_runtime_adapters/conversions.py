@@ -120,9 +120,11 @@ def sentinel_message_to_runtime_item(
             blocks = [TextBlock(text=content)]
         else:
             blocks = [
-                TextBlock(text=block.text)
-                if isinstance(block, TextContent)
-                else ImageBlock(media_type=block.media_type, data=block.data)
+                (
+                    TextBlock(text=block.text)
+                    if isinstance(block, TextContent)
+                    else ImageBlock(media_type=block.media_type, data=block.data)
+                )
                 for block in content
             ]
         return ConversationItem(
@@ -146,18 +148,22 @@ def sentinel_message_to_runtime_item(
             id=item_id,
             role="assistant",
             content=[
-                TextBlock(text=block.text)
-                if isinstance(block, TextContent)
-                else ThinkingBlock(
-                    thinking=block.thinking,
-                    signature=block.signature,
-                )
-                if isinstance(block, ThinkingContent)
-                else ToolCallBlock(
-                    id=block.id,
-                    name=block.name,
-                    arguments=dict(block.arguments),
-                    thought_signature=block.thought_signature,
+                (
+                    TextBlock(text=block.text)
+                    if isinstance(block, TextContent)
+                    else (
+                        ThinkingBlock(
+                            thinking=block.thinking,
+                            signature=block.signature,
+                        )
+                        if isinstance(block, ThinkingContent)
+                        else ToolCallBlock(
+                            id=block.id,
+                            name=block.name,
+                            arguments=dict(block.arguments),
+                            thought_signature=block.thought_signature,
+                        )
+                    )
                 )
                 for block in message.content
             ],
@@ -234,11 +240,13 @@ def sentinel_event_to_runtime_event(
         )
         approval_payload = extract_approval_metadata_from_tool_result(
             tool_name=event.tool_result.tool_name,
-            result={
-                "approval": event.tool_result.metadata.get("approval"),
-            }
-            if isinstance(event.tool_result.metadata.get("approval"), dict)
-            else {},
+            result=(
+                {
+                    "approval": event.tool_result.metadata.get("approval"),
+                }
+                if isinstance(event.tool_result.metadata.get("approval"), dict)
+                else {}
+            ),
         )
         if approval_payload is not None:
             runtime_event.approval_request = approval_payload_to_request(
@@ -501,7 +509,9 @@ def _db_message_to_runtime_item(
             mime_type = attachment.get("mime_type")
             data = attachment.get("base64")
             if isinstance(mime_type, str) and isinstance(data, str) and data.strip():
-                content.append(ImageBlock(media_type=mime_type.strip() or "image/png", data=data.strip()))
+                content.append(
+                    ImageBlock(media_type=mime_type.strip() or "image/png", data=data.strip())
+                )
     return ConversationItem(
         id=str(message.id),
         role="user",
@@ -529,7 +539,11 @@ def _db_tool_call_blocks(message: Message) -> list[ToolCallBlock]:
                 id=call_id,
                 name=str(item.get("name") or ""),
                 arguments=item.get("arguments") if isinstance(item.get("arguments"), dict) else {},
-                thought_signature=thought_signature.strip() if isinstance(thought_signature, str) and thought_signature.strip() else None,
+                thought_signature=(
+                    thought_signature.strip()
+                    if isinstance(thought_signature, str) and thought_signature.strip()
+                    else None
+                ),
             )
         )
     return blocks

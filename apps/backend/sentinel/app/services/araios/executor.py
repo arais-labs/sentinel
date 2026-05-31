@@ -10,6 +10,7 @@ Available in action code:
 Everything in Python builtins is available. Only subprocess execution
 and direct os.system/os.popen calls are blocked.
 """
+
 import asyncio
 import base64
 import builtins
@@ -45,10 +46,22 @@ _BUILTINS = {**builtins.__dict__, "__import__": _make_safe_import(_BLOCKED_MODUL
 _SAFE_OS = type(_os)("os")
 for _attr in dir(_os):
     if _attr not in (
-        "system", "popen", "execv", "execve", "execvp", "execvpe",
-        "spawnl", "spawnle", "spawnlp", "spawnlpe",
-        "spawnv", "spawnve", "spawnvp", "spawnvpe",
-        "fork", "forkpty",
+        "system",
+        "popen",
+        "execv",
+        "execve",
+        "execvp",
+        "execvpe",
+        "spawnl",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "spawnv",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "fork",
+        "forkpty",
     ):
         try:
             setattr(_SAFE_OS, _attr, getattr(_os, _attr))

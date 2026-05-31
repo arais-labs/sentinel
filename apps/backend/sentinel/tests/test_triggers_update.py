@@ -8,8 +8,8 @@ from app.main import app
 from tests.fake_db import FakeDB
 from tests.helpers import install_fake_db_overrides, restore_test_app
 
-
 TRIGGERS_API = "/api/v1/instances/main/triggers"
+
 
 def test_trigger_type_and_action_type_update():
     fake_db = FakeDB()
@@ -18,7 +18,9 @@ def test_trigger_type_and_action_type_update():
 
     try:
         client = TestClient(app)
-        token_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        token_resp = client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        )
         assert token_resp.status_code == 200
         token = token_resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -45,10 +47,7 @@ def test_trigger_type_and_action_type_update():
         # 2. Update type from cron to heartbeat
         update_type = client.patch(
             f"{TRIGGERS_API}/{trigger_id}",
-            json={
-                "type": "heartbeat",
-                "config": {"interval_seconds": 60}
-            },
+            json={"type": "heartbeat", "config": {"interval_seconds": 60}},
             headers=headers,
         )
         assert update_type.status_code == 200
@@ -62,7 +61,7 @@ def test_trigger_type_and_action_type_update():
             f"{TRIGGERS_API}/{trigger_id}",
             json={
                 "action_type": "http_request",
-                "action_config": {"url": "https://example.com/hook", "method": "POST"}
+                "action_config": {"url": "https://example.com/hook", "method": "POST"},
             },
             headers=headers,
         )
@@ -74,9 +73,7 @@ def test_trigger_type_and_action_type_update():
         # 4. Update action_config WITHOUT changing action_type
         update_config = client.patch(
             f"{TRIGGERS_API}/{trigger_id}",
-            json={
-                "action_config": {"url": "https://example.com/new-hook", "method": "GET"}
-            },
+            json={"action_config": {"url": "https://example.com/new-hook", "method": "GET"}},
             headers=headers,
         )
         assert update_config.status_code == 200
@@ -94,8 +91,8 @@ def test_trigger_type_and_action_type_update():
         assert update_name.status_code == 200
         data = update_name.json()
         assert data["name"] == "renamed-trigger"
-        assert data["type"] == "heartbeat" # preserved
-        assert data["action_type"] == "http_request" # preserved
+        assert data["type"] == "heartbeat"  # preserved
+        assert data["action_type"] == "http_request"  # preserved
 
     finally:
         restore_test_app(old_init)

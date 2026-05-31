@@ -1,4 +1,5 @@
 """Builds the ToolRegistry from system modules."""
+
 from __future__ import annotations
 
 import logging

@@ -8,7 +8,6 @@ from app.main import app
 from tests.fake_db import FakeDB
 from tests.helpers import install_fake_db_overrides, restore_test_app
 
-
 SESSIONS_API = "/api/v1/instances/main/sessions"
 MEMORY_API = "/api/v1/instances/main/memory"
 TRIGGERS_API = "/api/v1/instances/main/triggers"
@@ -21,14 +20,14 @@ def test_validation_hardening_rules():
 
     try:
         client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "  admin  ", "password": "  admin  "})
+        login = client.post(
+            "/api/v1/auth/login", json={"username": "  admin  ", "password": "  admin  "}
+        )
         assert login.status_code == 200
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
         too_long_title = "x" * 201
-        invalid_session = client.post(
-            SESSIONS_API, json={"title": too_long_title}, headers=headers
-        )
+        invalid_session = client.post(SESSIONS_API, json={"title": too_long_title}, headers=headers)
         assert invalid_session.status_code == 422
 
         valid_session = client.post(

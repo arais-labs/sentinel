@@ -96,7 +96,10 @@ class AnthropicProvider(LLMProvider):
         use_thinking = rc.thinking_budget is not None and rc.thinking_budget > 0
         logger.info(
             "Anthropic.chat: model=%s use_thinking=%s thinking_budget=%s max_tokens=%s tools=%d",
-            model, use_thinking, rc.thinking_budget, rc.max_tokens,
+            model,
+            use_thinking,
+            rc.thinking_budget,
+            rc.max_tokens,
             len(tools) if tools else 0,
         )
         payload = {
@@ -161,7 +164,10 @@ class AnthropicProvider(LLMProvider):
         use_thinking = rc.thinking_budget is not None and rc.thinking_budget > 0
         logger.info(
             "Anthropic.stream: model=%s use_thinking=%s thinking_budget=%s max_tokens=%s tools=%d",
-            model, use_thinking, rc.thinking_budget, rc.max_tokens,
+            model,
+            use_thinking,
+            rc.thinking_budget,
+            rc.max_tokens,
             len(tools) if tools else 0,
         )
         payload = {
@@ -192,9 +198,7 @@ class AnthropicProvider(LLMProvider):
                     body = await response.aread()
                     detail = body.decode("utf-8", errors="replace").strip()
                     snippet = detail[:500] if detail else "<no response body>"
-                    raise RuntimeError(
-                        f"Anthropic stream http_{response.status_code}: {snippet}"
-                    )
+                    raise RuntimeError(f"Anthropic stream http_{response.status_code}: {snippet}")
                 async for raw_line in response.aiter_lines():
                     line = raw_line.strip()
                     if not line or not line.startswith("data:"):
@@ -252,7 +256,9 @@ class AnthropicProvider(LLMProvider):
                     parts.append(content.strip())
         return "\n\n".join(parts) if parts else None
 
-    def _to_anthropic_messages(self, messages: Sequence[AgentMessage | dict]) -> list[dict[str, Any]]:
+    def _to_anthropic_messages(
+        self, messages: Sequence[AgentMessage | dict]
+    ) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []
         for message in messages:
             role = _message_role(message)
@@ -282,7 +288,10 @@ class AnthropicProvider(LLMProvider):
                         if isinstance(block, TextContent) and block.text:
                             blocks.append({"type": "text", "text": block.text})
                         elif isinstance(block, ThinkingContent):
-                            thinking_block: dict[str, Any] = {"type": "thinking", "thinking": block.thinking}
+                            thinking_block: dict[str, Any] = {
+                                "type": "thinking",
+                                "thinking": block.thinking,
+                            }
                             if block.signature:
                                 thinking_block["signature"] = block.signature
                             blocks.append(thinking_block)
@@ -325,23 +334,29 @@ class AnthropicProvider(LLMProvider):
             output.append({"role": "user", "content": user_blocks})
         return output
 
-    def _parse_content_blocks(self, blocks: list[dict[str, Any]]) -> list[TextContent | ThinkingContent | ToolCallContent]:
+    def _parse_content_blocks(
+        self, blocks: list[dict[str, Any]]
+    ) -> list[TextContent | ThinkingContent | ToolCallContent]:
         parsed: list[TextContent | ThinkingContent | ToolCallContent] = []
         for block in blocks:
             block_type = block.get("type")
             if block_type == "text":
                 parsed.append(TextContent(text=block.get("text") or ""))
             elif block_type == "thinking":
-                parsed.append(ThinkingContent(
-                    thinking=block.get("thinking") or "",
-                    signature=block.get("signature"),
-                ))
+                parsed.append(
+                    ThinkingContent(
+                        thinking=block.get("thinking") or "",
+                        signature=block.get("signature"),
+                    )
+                )
             elif block_type == "tool_use":
                 parsed.append(
                     ToolCallContent(
                         id=block.get("id") or "",
                         name=block.get("name") or "",
-                        arguments=block.get("input") if isinstance(block.get("input"), dict) else {},
+                        arguments=(
+                            block.get("input") if isinstance(block.get("input"), dict) else {}
+                        ),
                     )
                 )
         return parsed
@@ -383,7 +398,9 @@ def _parse_anthropic_stream_event(event: dict[str, Any]) -> list[AgentEvent]:
     """Translate one Anthropic SSE payload into Sentinel agent stream events."""
     event_type = event.get("type")
     index = event.get("index")
-    content_block = event.get("content_block") if isinstance(event.get("content_block"), dict) else {}
+    content_block = (
+        event.get("content_block") if isinstance(event.get("content_block"), dict) else {}
+    )
     delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
 
     parsed: list[AgentEvent] = []
@@ -399,7 +416,9 @@ def _parse_anthropic_stream_event(event: dict[str, Any]) -> list[AgentEvent]:
         elif block_type == "tool_use":
             logger.info(
                 "SSE tool_use block: name=%s id=%s index=%s",
-                content_block.get("name"), content_block.get("id"), index,
+                content_block.get("name"),
+                content_block.get("id"),
+                index,
             )
             parsed.append(
                 AgentEvent(
@@ -408,9 +427,11 @@ def _parse_anthropic_stream_event(event: dict[str, Any]) -> list[AgentEvent]:
                     tool_call=ToolCallContent(
                         id=content_block.get("id") or "",
                         name=content_block.get("name") or "",
-                        arguments=content_block.get("input")
-                        if isinstance(content_block.get("input"), dict)
-                        else {},
+                        arguments=(
+                            content_block.get("input")
+                            if isinstance(content_block.get("input"), dict)
+                            else {}
+                        ),
                     ),
                 )
             )
@@ -478,6 +499,8 @@ def _parse_anthropic_stream_event(event: dict[str, Any]) -> list[AgentEvent]:
     elif event_type == "error":
         error = event.get("error") if isinstance(event.get("error"), dict) else {}
         logger.error("SSE error event: %s", error.get("message"))
-        parsed.append(AgentEvent(type="error", error=error.get("message") or "Provider stream error"))
+        parsed.append(
+            AgentEvent(type="error", error=error.get("message") or "Provider stream error")
+        )
 
     return parsed

@@ -47,6 +47,7 @@ def test_logging_routes_allow_runtime_override():
     old_init = app_main.init_db
     app_main.init_db = _noop_init_db
     try:
+
         async def _fake_auth() -> TokenPayload:
             return TokenPayload(
                 sub="dev-admin",

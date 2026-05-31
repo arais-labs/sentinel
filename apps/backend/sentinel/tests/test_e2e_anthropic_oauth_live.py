@@ -26,7 +26,9 @@ def _run(coro):
 
 def test_live_anthropic_oauth_token_chat_roundtrip():
     if os.getenv(_LIVE_TEST_FLAG, "").strip() != "1":
-        pytest.skip(f"WARN: skipped live Anthropic OAuth e2e test because {_LIVE_TEST_FLAG}=1 is not set.")
+        pytest.skip(
+            f"WARN: skipped live Anthropic OAuth e2e test because {_LIVE_TEST_FLAG}=1 is not set."
+        )
 
     token = _read_candidate_token()
     if not token:

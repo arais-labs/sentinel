@@ -61,7 +61,9 @@ async def create_trigger(
     next_fire_at = None
     if payload.enabled:
         try:
-            next_fire_at = compute_next_fire_at(payload.type, payload.config, reference_time=datetime.now(UTC))
+            next_fire_at = compute_next_fire_at(
+                payload.type, payload.config, reference_time=datetime.now(UTC)
+            )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     action_config = payload.action_config
@@ -117,17 +119,27 @@ async def update_trigger(
     if payload.config is not None:
         trigger.config = payload.config
 
-    new_action_type = payload.action_type if payload.action_type is not None else trigger.action_type
+    new_action_type = (
+        payload.action_type if payload.action_type is not None else trigger.action_type
+    )
     if payload.action_config is not None or payload.action_type is not None:
         if new_action_type == "agent_message":
             trigger.action_config = await _normalize_agent_message_action_config(
                 db,
                 user_id=user.sub,
-                action_config=payload.action_config if payload.action_config is not None else trigger.action_config,
+                action_config=(
+                    payload.action_config
+                    if payload.action_config is not None
+                    else trigger.action_config
+                ),
             )
         else:
-            trigger.action_config = payload.action_config if payload.action_config is not None else trigger.action_config
-        
+            trigger.action_config = (
+                payload.action_config
+                if payload.action_config is not None
+                else trigger.action_config
+            )
+
         if payload.action_type is not None:
             trigger.action_type = payload.action_type
 
@@ -136,9 +148,13 @@ async def update_trigger(
         if not payload.enabled:
             trigger.next_fire_at = None
 
-    if trigger.enabled and (payload.config is not None or payload.type is not None or payload.enabled is True):
+    if trigger.enabled and (
+        payload.config is not None or payload.type is not None or payload.enabled is True
+    ):
         try:
-            trigger.next_fire_at = compute_next_fire_at(trigger.type, trigger.config, reference_time=datetime.now(UTC))
+            trigger.next_fire_at = compute_next_fire_at(
+                trigger.type, trigger.config, reference_time=datetime.now(UTC)
+            )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
@@ -229,7 +245,9 @@ async def list_trigger_logs(
     total = (await db.execute(count_stmt)).scalar_one()
 
     paged = (await db.execute(stmt.offset(offset).limit(limit))).scalars().all()
-    return TriggerLogListResponse(items=[_trigger_log_response(item) for item in paged], total=total)
+    return TriggerLogListResponse(
+        items=[_trigger_log_response(item) for item in paged], total=total
+    )
 
 
 async def _get_trigger_or_404(db: AsyncSession, trigger_id: UUID, user_id: str) -> Trigger:

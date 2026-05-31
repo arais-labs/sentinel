@@ -34,7 +34,9 @@ class ToolApprovalProvider:
             rows = [row for row in rows if row.status == status_filter]
         if session_id is not None:
             rows = [row for row in rows if row.session_id == session_id]
-        rows.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
+        rows.sort(
+            key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC), reverse=True
+        )
         total = len(rows)
         paged = rows[offset : offset + limit]
         return [self._to_record(row) for row in paged], total

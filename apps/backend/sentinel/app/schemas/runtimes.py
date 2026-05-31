@@ -7,7 +7,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
 RuntimeProvider = Literal["ssh", "lima", "docker"]
 RuntimeJobStatus = Literal["queued", "running", "succeeded", "failed"]
 RuntimeAuthType = Literal["private_key", "password"]

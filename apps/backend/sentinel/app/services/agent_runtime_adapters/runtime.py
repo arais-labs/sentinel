@@ -43,7 +43,6 @@ from app.services.agent_runtime_adapters.provider import SentinelProviderAdapter
 from app.services.agent_runtime_adapters.tools import SentinelToolRegistryAdapter
 from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
 
-
 HistoryLoader = Callable[[AsyncSession, UUID], Awaitable[list[ConversationItem]]]
 
 
@@ -157,14 +156,21 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 approval = runtime_event.tool_result.metadata.get("approval")
                 if isinstance(approval, dict):
                     approval_status = str(approval.get("status") or "").strip().lower()
-                    approval_pending = approval.get("pending") is True or approval_status in {"pending", ""}
+                    approval_pending = approval.get("pending") is True or approval_status in {
+                        "pending",
+                        "",
+                    }
                     if not approval_pending:
                         pending_approval = None
             elif runtime_event.type == "done" and runtime_event.stop_reason != "pending_approval":
                 pending_approval = None
             if runtime_event.type == "toolcall_start" and runtime_event.tool_call:
                 tool_call_ids_by_name[runtime_event.tool_call.name] = runtime_event.tool_call.id
-            if config.stream and runtime_event.type == "done" and runtime_event.stop_reason != "tool_use":
+            if (
+                config.stream
+                and runtime_event.type == "done"
+                and runtime_event.stop_reason != "tool_use"
+            ):
                 deferred_done = runtime_event
                 return
             events.append(runtime_event)
@@ -182,13 +188,16 @@ class SentinelLoopRuntimeAdapter(Runtime):
             instead of waiting until the approval is resolved.
             """
             import json as _json
+
             tool_call_id = tool_call_ids_by_name.get(tool_name, "")
             pending_metadata: dict = {"approval": approval_payload, "pending": True}
-            content = _json.dumps({
-                "status": "pending",
-                "message": approval_payload.get("description") or "Waiting for approval.",
-                "approval": approval_payload,
-            })
+            content = _json.dumps(
+                {
+                    "status": "pending",
+                    "message": approval_payload.get("description") or "Waiting for approval.",
+                    "approval": approval_payload,
+                }
+            )
             pending_block = ToolResultBlock(
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
@@ -197,7 +206,9 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 metadata=pending_metadata,
                 tool_arguments=tool_args,
             )
-            await _emit_runtime_event(RuntimeAgentEvent(type="tool_result", tool_result=pending_block))
+            await _emit_runtime_event(
+                RuntimeAgentEvent(type="tool_result", tool_result=pending_block)
+            )
 
         mode_definition = get_agent_mode_definition(config.provider_metadata.get("agent_mode"))
         user_metadata = (
@@ -371,7 +382,9 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 "SentinelLoopRuntimeAdapter currently requires DB-backed Sentinel history; direct history injection is not supported yet."
             )
         if request.conversation_id is not None and request.conversation_id != str(self._session_id):
-            raise ValueError("RunTurnRequest.conversation_id must match the bound Sentinel session.")
+            raise ValueError(
+                "RunTurnRequest.conversation_id must match the bound Sentinel session."
+            )
         if not request.new_items:
             raise ValueError("RunTurnRequest.new_items must contain at least one user item.")
         for item in request.new_items:
@@ -412,7 +425,10 @@ class SentinelLoopRuntimeAdapter(Runtime):
     def _collaboration_tool_call_interceptor(
         self,
         provider: SentinelProviderAdapter,
-    ) -> Callable[[list[ConversationItem], list[ToolCallBlock], GenerationConfig], Awaitable[ToolCallInterceptionResult | None]]:
+    ) -> Callable[
+        [list[ConversationItem], list[ToolCallBlock], GenerationConfig],
+        Awaitable[ToolCallInterceptionResult | None],
+    ]:
         async def _intercept(
             working_history: list[ConversationItem],
             tool_calls: list[ToolCallBlock],
@@ -488,7 +504,10 @@ class SentinelLoopRuntimeAdapter(Runtime):
         changed = False
 
         for call in tool_calls:
-            if call.name != "delegate" or str(call.arguments.get("command") or "").strip() != "spawn":
+            if (
+                call.name != "delegate"
+                or str(call.arguments.get("command") or "").strip() != "spawn"
+            ):
                 allowed_calls.append(call)
                 continue
             decision = decision_by_call_id.get(call.id)
@@ -510,7 +529,8 @@ class SentinelLoopRuntimeAdapter(Runtime):
                                 for item in (decision.get("missing_prerequisites") or [])
                                 if isinstance(item, str) and item.strip()
                             ],
-                            "main_thread_task": str(decision.get("main_thread_task") or "").strip() or None,
+                            "main_thread_task": str(decision.get("main_thread_task") or "").strip()
+                            or None,
                         }
                     },
                     tool_arguments=dict(call.arguments),
@@ -557,7 +577,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
             "or if the main thread would obviously duplicate the delegated branch.\n"
             "Allow a spawn only when the branch is bounded and its prerequisites are satisfied.\n"
             "Respond ONLY with valid JSON matching this schema:\n"
-            "{\"spawn_decisions\":[{\"tool_call_id\":\"...\",\"allow\":true,\"reason\":\"...\",\"missing_prerequisites\":[\"...\"],\"main_thread_task\":\"...\"}]}"
+            '{"spawn_decisions":[{"tool_call_id":"...","allow":true,"reason":"...","missing_prerequisites":["..."],"main_thread_task":"..."}]}'
         )
         user_text = (
             "Recent runtime history tail:\n"
@@ -583,9 +603,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
     @staticmethod
     def _parse_collaboration_plan_response(item: ConversationItem) -> dict[str, object] | None:
         text = "\n".join(
-            block.text
-            for block in item.content
-            if isinstance(block, TextBlock) and block.text
+            block.text for block in item.content if isinstance(block, TextBlock) and block.text
         ).strip()
         if not text:
             return None
@@ -650,9 +668,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
                     if isinstance(block, ToolResultBlock):
                         status = "error" if block.is_error else "ok"
                         preview = (block.content or "").strip().replace("\n", " ")
-                        lines.append(
-                            f"tool_result[{block.tool_name}:{status}]: {preview[:220]}"
-                        )
+                        lines.append(f"tool_result[{block.tool_name}:{status}]: {preview[:220]}")
         return "\n".join(lines[-24:])
 
     @staticmethod

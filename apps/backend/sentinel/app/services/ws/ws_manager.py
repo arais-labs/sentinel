@@ -110,7 +110,9 @@ class ConnectionManager:
             },
         )
 
-    async def broadcast_sub_agent_started(self, session_id: str, task_id: str, objective: str) -> None:
+    async def broadcast_sub_agent_started(
+        self, session_id: str, task_id: str, objective: str
+    ) -> None:
         await self.broadcast(
             session_id,
             {

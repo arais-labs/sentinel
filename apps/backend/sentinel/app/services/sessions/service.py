@@ -195,9 +195,7 @@ class SessionService:
             active_only=True,
         )
         if is_telegram_channel:
-            raise MainSessionTargetInvalidError(
-                "Telegram channel sessions cannot be set as main"
-            )
+            raise MainSessionTargetInvalidError("Telegram channel sessions cannot be set as main")
         try:
             session = await session_bindings.set_main_session(
                 db,
@@ -230,9 +228,7 @@ class SessionService:
             active_only=True,
         )
         if is_telegram_channel:
-            raise SessionRenameNotAllowedError(
-                "Telegram channel sessions cannot be renamed"
-            )
+            raise SessionRenameNotAllowedError("Telegram channel sessions cannot be renamed")
         session.title = title
         await db.commit()
         await db.refresh(session)
@@ -276,9 +272,11 @@ class SessionService:
             if str(metadata.get("source") or "").strip().lower() != "runtime_context":
                 continue
             metrics = extract_runtime_context_metrics(
-                metadata.get("run_context")
-                if isinstance(metadata.get("run_context"), dict)
-                else None,
+                (
+                    metadata.get("run_context")
+                    if isinstance(metadata.get("run_context"), dict)
+                    else None
+                ),
                 default_budget=budget,
             )
             if metrics is None:
@@ -416,7 +414,11 @@ class SessionService:
                     "message": "Tool call cancelled by user via stop.",
                 }
             )
-            call_ids = [str(call.get("id") or "").strip() for call in unresolved_tool_calls if str(call.get("id") or "").strip()]
+            call_ids = [
+                str(call.get("id") or "").strip()
+                for call in unresolved_tool_calls
+                if str(call.get("id") or "").strip()
+            ]
             existing_result = await db.execute(
                 select(Message).where(
                     Message.session_id == session_id,
@@ -475,7 +477,9 @@ class SessionService:
         approval_status: str,
         decision_note: str,
     ) -> None:
-        existing_metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+        existing_metadata = (
+            dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
+        )
         approval = existing_metadata.get("approval")
         if isinstance(approval, dict):
             next_approval = dict(approval)
@@ -494,7 +498,9 @@ class SessionService:
         session_id: UUID,
     ) -> list[dict[str, Any]]:
         result = await db.execute(
-            select(Message).where(Message.session_id == session_id).order_by(Message.created_at.asc())
+            select(Message)
+            .where(Message.session_id == session_id)
+            .order_by(Message.created_at.asc())
         )
         messages = result.scalars().all()
 
@@ -517,7 +523,9 @@ class SessionService:
                         continue
                     call_name = str(raw_call.get("name") or "unknown").strip() or "unknown"
                     generation = normalize_generation_metadata(
-                        metadata.get("generation") if isinstance(metadata.get("generation"), dict) else None
+                        metadata.get("generation")
+                        if isinstance(metadata.get("generation"), dict)
+                        else None
                     )
                     pending[call_id] = {"id": call_id, "name": call_name}
                     pending[call_id]["generation"] = generation
@@ -579,9 +587,7 @@ class SessionService:
         _ = await self.get_session(db, session_id=session_id, user_id=user_id)
         result = await db.execute(select(Message).where(Message.session_id == session_id))
         messages = result.scalars().all()
-        messages.sort(
-            key=lambda m: m.created_at or datetime.min.replace(tzinfo=UTC), reverse=True
-        )
+        messages.sort(key=lambda m: m.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
 
         if before:
             before_message = next((msg for msg in messages if msg.id == before), None)
@@ -700,9 +706,7 @@ class SessionService:
             )
             .group_by(Message.session_id)
         )
-        latest_by_session: dict[UUID, datetime] = {
-            row.session_id: row.latest_msg for row in result
-        }
+        latest_by_session: dict[UUID, datetime] = {row.session_id: row.latest_msg for row in result}
         flags: dict[UUID, bool] = {}
         for session in sessions:
             latest_msg = latest_by_session.get(session.id)
@@ -817,7 +821,9 @@ class SessionService:
         memory_service: MemoryService,
     ) -> Memory:
         roots = await memory_service.list_root_memories(db, category="core")
-        root = next((item for item in roots if (item.title or "").strip() == "Previous Sessions"), None)
+        root = next(
+            (item for item in roots if (item.title or "").strip() == "Previous Sessions"), None
+        )
         if root is not None:
             if not bool(root.pinned):
                 await memory_service.update_memory(

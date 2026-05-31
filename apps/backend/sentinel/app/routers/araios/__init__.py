@@ -3,6 +3,7 @@
 Provides the /api/* module/control-plane routes consumed by the Sentinel
 modules surface and agents.
 """
+
 from fastapi import APIRouter
 
 from app.routers.araios import (

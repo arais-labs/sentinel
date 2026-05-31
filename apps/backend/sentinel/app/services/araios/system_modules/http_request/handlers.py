@@ -126,4 +126,3 @@ async def handle_request(payload: dict[str, Any]) -> dict[str, Any]:
         "body": parsed_body,
         "truncated": truncated,
     }
-

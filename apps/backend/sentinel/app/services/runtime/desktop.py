@@ -57,14 +57,18 @@ class RuntimeDesktopManager:
         self._handles: dict[str, _DesktopHandle] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
-    async def ensure_session_desktop(self, session_id: UUID | str, *, geometry: str | None = None) -> RuntimeDesktop:
+    async def ensure_session_desktop(
+        self, session_id: UUID | str, *, geometry: str | None = None
+    ) -> RuntimeDesktop:
         sid = str(session_id)
         target_geometry = geometry or self._geometry
         lock = self._locks.setdefault(sid, asyncio.Lock())
         async with lock:
             environment = await self._terminal_manager.runtime_environment()
             if environment.os != "linux":
-                raise RuntimeDesktopError("Desktop live view is currently supported only on Linux SSH targets.")
+                raise RuntimeDesktopError(
+                    "Desktop live view is currently supported only on Linux SSH targets."
+                )
             existing = self._handles.get(sid)
             if existing is not None:
                 if geometry is None or existing.desktop.geometry == target_geometry:
@@ -179,7 +183,9 @@ def _build_ensure_desktop_script(
         "geometry": geometry,
         "depth": depth,
     }
-    return load_remote_command("linux/desktop/ensure.sh"), [json.dumps(request, separators=(",", ":"))]
+    return load_remote_command("linux/desktop/ensure.sh"), [
+        json.dumps(request, separators=(",", ":"))
+    ]
 
 
 def _build_stop_desktop_script(session_id: str, *, root: str | None) -> tuple[str, list[str]]:
@@ -188,4 +194,6 @@ def _build_stop_desktop_script(session_id: str, *, root: str | None) -> tuple[st
         "home": paths.home,
         "runtime": paths.runtime,
     }
-    return load_remote_command("linux/desktop/stop.sh"), [json.dumps(request, separators=(",", ":"))]
+    return load_remote_command("linux/desktop/stop.sh"), [
+        json.dumps(request, separators=(",", ":"))
+    ]

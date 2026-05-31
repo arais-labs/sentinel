@@ -202,9 +202,7 @@ def _env_lookup(key: str, env: Mapping[str, str] | None = None) -> str:
 
 def _has_any_provider_credentials(env: Mapping[str, str] | None = None) -> bool:
     return any(
-        _env_lookup(key, env)
-        for option in _PROVIDER_CREDENTIAL_OPTIONS
-        for key in option.env_keys
+        _env_lookup(key, env) for option in _PROVIDER_CREDENTIAL_OPTIONS for key in option.env_keys
     )
 
 
@@ -293,9 +291,7 @@ def _collect_boot_provider_overrides_tui(
     if provider_key is None:
         raise RuntimeError("Credential setup cancelled.")
 
-    selected = next(
-        option for option in _PROVIDER_CREDENTIAL_OPTIONS if option.key == provider_key
-    )
+    selected = next(option for option in _PROVIDER_CREDENTIAL_OPTIONS if option.key == provider_key)
     source = select_fn(
         f"How do you want to provide {selected.label}?",
         [
@@ -309,9 +305,7 @@ def _collect_boot_provider_overrides_tui(
     overrides: dict[str, str] = {"PRIMARY_PROVIDER": selected.primary_provider}
     if source == "paste":
         while True:
-            secret = _normalize_cli_input(
-                input_value(f"Paste {selected.label}:") or ""
-            ).strip()
+            secret = _normalize_cli_input(input_value(f"Paste {selected.label}:") or "").strip()
             if secret:
                 overrides[selected.env_keys[0]] = secret
                 print(f"Using {selected.label} for this run.\n")
@@ -320,13 +314,16 @@ def _collect_boot_provider_overrides_tui(
 
     while True:
         default_hint = selected.env_keys[0]
-        var_name = _normalize_cli_input(
-            input_with_default(
-                f"Environment variable name for {selected.label}:",
-                default_hint,
-            )
-            or ""
-        ).strip() or default_hint
+        var_name = (
+            _normalize_cli_input(
+                input_with_default(
+                    f"Environment variable name for {selected.label}:",
+                    default_hint,
+                )
+                or ""
+            ).strip()
+            or default_hint
+        )
         value = _env_lookup(var_name, env_map)
         if value:
             overrides[selected.env_keys[0]] = value
@@ -384,9 +381,12 @@ def _collect_boot_provider_overrides(
 
     while True:
         default_hint = selected.env_keys[0]
-        var_name = _normalize_cli_input(
-            prompt_input(f"Environment variable name [{default_hint}]: ")
-        ).strip() or default_hint
+        var_name = (
+            _normalize_cli_input(
+                prompt_input(f"Environment variable name [{default_hint}]: ")
+            ).strip()
+            or default_hint
+        )
         value = _env_lookup(var_name, env_map)
         if value:
             overrides[selected.env_keys[0]] = value
@@ -416,7 +416,9 @@ def _build_provider() -> LLMProvider:
     gemini = None
     openai_is_codex = False
 
-    anthropic_token = _env_lookup("ANTHROPIC_OAUTH_TOKEN", env) or _env_lookup("ANTHROPIC_API_KEY", env)
+    anthropic_token = _env_lookup("ANTHROPIC_OAUTH_TOKEN", env) or _env_lookup(
+        "ANTHROPIC_API_KEY", env
+    )
     if anthropic_token:
         anthropic = AnthropicProvider(anthropic_token)
 
@@ -692,7 +694,9 @@ def _runtime_item_to_sentinel_message(item: ConversationItem) -> Any:
             elif isinstance(block, ImageBlock):
                 blocks.append(ImageContent(media_type=block.media_type, data=block.data))
         if len(blocks) == 1 and isinstance(blocks[0], TextContent):
-            return UserMessage(content=blocks[0].text, metadata=dict(item.metadata), timestamp=item.timestamp)
+            return UserMessage(
+                content=blocks[0].text, metadata=dict(item.metadata), timestamp=item.timestamp
+            )
         return UserMessage(content=blocks, metadata=dict(item.metadata), timestamp=item.timestamp)
 
     if item.role == "assistant":
@@ -743,7 +747,9 @@ def _runtime_item_to_sentinel_message(item: ConversationItem) -> Any:
     )
 
 
-def _sentinel_assistant_turn_to_runtime(message: AssistantMessage, *, item_id: str) -> AssistantTurn:
+def _sentinel_assistant_turn_to_runtime(
+    message: AssistantMessage, *, item_id: str
+) -> AssistantTurn:
     metadata = {
         "model": message.model,
         "provider": message.provider,
@@ -970,7 +976,9 @@ class LocalWorkspaceToolRegistry(ToolRegistry):
             return ToolExecutionResult(status="error", error=str(exc))
         max_bytes = payload.get("max_bytes", MAX_FILE_BYTES)
         if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
-            return ToolExecutionResult(status="error", error="Field 'max_bytes' must be a positive integer")
+            return ToolExecutionResult(
+                status="error", error="Field 'max_bytes' must be a positive integer"
+            )
         if not path.exists() or not path.is_file():
             return ToolExecutionResult(status="error", error=f"File not found: {path}")
         data = path.read_bytes()
@@ -1015,9 +1023,17 @@ class LocalWorkspaceToolRegistry(ToolRegistry):
         command = payload.get("command")
         timeout_seconds = payload.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
         if not isinstance(command, str) or not command.strip():
-            return ToolExecutionResult(status="error", error="Field 'command' must be a non-empty string")
-        if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
-            return ToolExecutionResult(status="error", error="Field 'timeout_seconds' must be a positive integer")
+            return ToolExecutionResult(
+                status="error", error="Field 'command' must be a non-empty string"
+            )
+        if (
+            not isinstance(timeout_seconds, int)
+            or isinstance(timeout_seconds, bool)
+            or timeout_seconds <= 0
+        ):
+            return ToolExecutionResult(
+                status="error", error="Field 'timeout_seconds' must be a positive integer"
+            )
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=str(self._cwd),
@@ -1025,7 +1041,9 @@ class LocalWorkspaceToolRegistry(ToolRegistry):
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=float(timeout_seconds))
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=float(timeout_seconds)
+            )
         except asyncio.TimeoutError:
             proc.kill()
             await proc.communicate()
@@ -1078,7 +1096,11 @@ def _preview_tool_result_content(content: Any) -> str:
 
 
 def _format_runtime_trace(event: AgentEvent) -> str | None:
-    if event.type == "agent_progress" and event.iteration is not None and event.max_iterations is not None:
+    if (
+        event.type == "agent_progress"
+        and event.iteration is not None
+        and event.max_iterations is not None
+    ):
         return f"[iter {event.iteration}/{event.max_iterations}]"
     if event.type == "done":
         reason = event.stop_reason or "stop"
@@ -1110,7 +1132,9 @@ def _compose_turn_system_prompt(
 ) -> str:
     normalized = base_prompt.strip()
     if CLI_EXECUTION_POLICY not in normalized:
-        normalized = f"{normalized}\n\n{CLI_EXECUTION_POLICY}" if normalized else CLI_EXECUTION_POLICY
+        normalized = (
+            f"{normalized}\n\n{CLI_EXECUTION_POLICY}" if normalized else CLI_EXECUTION_POLICY
+        )
     if CLI_FILE_POLICY not in normalized:
         normalized = f"{normalized}\n\n{CLI_FILE_POLICY}" if normalized else CLI_FILE_POLICY
     return (
@@ -1215,7 +1239,9 @@ async def _run_turn(
     final_text = ""
     if result.final_item is not None:
         final_text = "\n".join(
-            block.text for block in result.final_item.content if isinstance(block, TextBlock) and block.text
+            block.text
+            for block in result.final_item.content
+            if isinstance(block, TextBlock) and block.text
         ).strip()
     if not printed_text and final_text:
         print(final_text)
@@ -1269,8 +1295,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--workspace", default=str(Path.cwd()))
     parser.add_argument("--max-iterations", type=int, default=_env_int("AGENT_MAX_ITERATIONS", 50))
     parser.add_argument("--temperature", type=float, default=_env_float("AGENT_TEMPERATURE", 0.7))
-    parser.add_argument("--timeout-seconds", type=int, default=_env_int("AGENT_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
-    parser.add_argument("--system-prompt", default=_env_str("AGENT_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT))
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=_env_int("AGENT_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+    )
+    parser.add_argument(
+        "--system-prompt", default=_env_str("AGENT_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
+    )
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--show-thinking", action="store_true")
     return parser.parse_args(argv)

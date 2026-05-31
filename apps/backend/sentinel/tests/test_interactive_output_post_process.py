@@ -10,7 +10,7 @@ from app.services.agent.interactive_output import (
 
 def test_themed_marker_injects_style_block():
     result = post_process_assistant_html(
-        f"{THEMED_MARKER}\n<table class=\"sentinel-table\"><tr><td>hi</td></tr></table>"
+        f'{THEMED_MARKER}\n<table class="sentinel-table"><tr><td>hi</td></tr></table>'
     )
     assert result.startswith(THEMED_MARKER)
     assert "<style>" in result
@@ -19,7 +19,7 @@ def test_themed_marker_injects_style_block():
 
 
 def test_raw_marker_normalizes_and_skips_injection():
-    body = "<div style=\"color:red\">hello</div>"
+    body = '<div style="color:red">hello</div>'
     result = post_process_assistant_html(f"{RAW_MARKER}\n{body}")
     assert THEMED_MARKER in result
     assert RAW_MARKER not in result
@@ -75,34 +75,34 @@ def test_themed_marker_strips_agent_pasted_theme_copy():
     """Agents sometimes copy the auto-injected <style> block from earlier turns.
     The duplicate would override the live theme. post_process must strip it."""
     agent_copy = (
-        '<style>\n'
-        '/* Sentinel themed components for HTML artifacts.\n'
-        '   Auto-injected when the assistant uses the <!-- sentinel:html --> marker. */\n'
-        'body { padding: 99px; background: red; }\n'
-        '</style>'
+        "<style>\n"
+        "/* Sentinel themed components for HTML artifacts.\n"
+        "   Auto-injected when the assistant uses the <!-- sentinel:html --> marker. */\n"
+        "body { padding: 99px; background: red; }\n"
+        "</style>"
     )
     body = '<div class="sentinel-card"><p>hello</p></div>'
     text = f"{THEMED_MARKER}\n{agent_copy}\n{body}"
     result = post_process_assistant_html(text)
     # The agent's copy must be gone — no padding:99px, no red background
-    assert 'padding: 99px' not in result
-    assert 'background: red' not in result
+    assert "padding: 99px" not in result
+    assert "background: red" not in result
     # The canonical theme CSS must be present
-    assert '.sentinel-table' in result  # from theme.css
+    assert ".sentinel-table" in result  # from theme.css
     # The body content must survive
     assert body in result
 
 
 def test_themed_marker_keeps_small_override_style_blocks():
     """Custom overrides without the auto-injection signature must survive."""
-    override = '<style>.my-custom { color: red; }</style>'
+    override = "<style>.my-custom { color: red; }</style>"
     body = '<div class="my-custom sentinel-card">hi</div>'
     text = f"{THEMED_MARKER}\n{override}\n{body}"
     result = post_process_assistant_html(text)
     assert override in result
     assert body in result
     # Theme is still injected
-    assert '.sentinel-table' in result
+    assert ".sentinel-table" in result
 
 
 def test_theme_css_constant_is_loaded():

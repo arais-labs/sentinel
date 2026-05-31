@@ -112,7 +112,11 @@ def _config_checks(runtime: object | None, error: str | None) -> list[RuntimeSta
         RuntimeStatusCheck(
             id="config_auth",
             label="SSH authentication configured",
-            status="pass" if getattr(runtime, "auth_type", "") in {"private_key", "password"} else "fail",
+            status=(
+                "pass"
+                if getattr(runtime, "auth_type", "") in {"private_key", "password"}
+                else "fail"
+            ),
             detail=str(getattr(runtime, "auth_type", "") or "No SSH auth configured"),
         )
     )
@@ -162,7 +166,9 @@ def _detected_os(checks: list[RuntimeStatusCheck]) -> str:
 
 
 def _detected_sandbox(checks: list[RuntimeStatusCheck]) -> str:
-    sandbox = next((item.detail for item in checks if item.id == "sandbox" and item.status == "pass"), None)
+    sandbox = next(
+        (item.detail for item in checks if item.id == "sandbox" and item.status == "pass"), None
+    )
     if sandbox in {"bubblewrap", "seatbelt"}:
         return sandbox
     return "unavailable"
@@ -180,17 +186,48 @@ def _capabilities(checks: list[RuntimeStatusCheck]) -> dict[str, str]:
         return supported_os and sandbox_ready and all(by_id.get(item) == "pass" for item in ids)
 
     return {
-        "shell": "ready" if ready("ssh_connect", "ssh_command", "workspace_writable", "binary_tmux", "binary_bash") else "unavailable",
-        "files": "ready" if ready("ssh_connect", "workspace_writable", "binary_python3") else "unavailable",
-        "git": "ready" if ready("ssh_connect", "workspace_writable", "binary_git", "binary_gh") else "unavailable",
-        "jobs": "ready" if ready("ssh_connect", "workspace_writable", "binary_bash", "binary_python3", "binary_tmux") else "unavailable",
+        "shell": (
+            "ready"
+            if ready(
+                "ssh_connect", "ssh_command", "workspace_writable", "binary_tmux", "binary_bash"
+            )
+            else "unavailable"
+        ),
+        "files": (
+            "ready"
+            if ready("ssh_connect", "workspace_writable", "binary_python3")
+            else "unavailable"
+        ),
+        "git": (
+            "ready"
+            if ready("ssh_connect", "workspace_writable", "binary_git", "binary_gh")
+            else "unavailable"
+        ),
+        "jobs": (
+            "ready"
+            if ready(
+                "ssh_connect", "workspace_writable", "binary_bash", "binary_python3", "binary_tmux"
+            )
+            else "unavailable"
+        ),
         "port_forward": "ready" if ready("ssh_connect") else "unavailable",
-        "desktop": "ready" if os_name == "linux" and ready("ssh_connect", "workspace_writable", "desktop_stack") else "unavailable",
-        "browser": "ready" if os_name == "linux" and ready("ssh_connect", "workspace_writable", "desktop_stack", "binary_chromium") else "unavailable",
+        "desktop": (
+            "ready"
+            if os_name == "linux" and ready("ssh_connect", "workspace_writable", "desktop_stack")
+            else "unavailable"
+        ),
+        "browser": (
+            "ready"
+            if os_name == "linux"
+            and ready("ssh_connect", "workspace_writable", "desktop_stack", "binary_chromium")
+            else "unavailable"
+        ),
     }
 
 
-def _overall_status(checks: list[RuntimeStatusCheck], *, configured: bool, unreachable: bool) -> str:
+def _overall_status(
+    checks: list[RuntimeStatusCheck], *, configured: bool, unreachable: bool
+) -> str:
     if not configured:
         return "not_configured"
     if unreachable:
@@ -228,7 +265,14 @@ async def runtime_status_payload(*, instance_name: str) -> dict[str, object]:
     configured = await runtime_configured(instance_name=instance_name) and all(
         item.status == "pass"
         for item in checks
-        if item.id in {"config_runtime", "config_ssh_host", "config_ssh_username", "config_workspaces_dir", "config_auth"}
+        if item.id
+        in {
+            "config_runtime",
+            "config_ssh_host",
+            "config_ssh_username",
+            "config_workspaces_dir",
+            "config_auth",
+        }
     )
     unreachable = False
     if configured:
@@ -245,7 +289,9 @@ async def runtime_status_payload(*, instance_name: str) -> dict[str, object]:
                     duration_ms=int((time.perf_counter() - started) * 1000),
                 )
             )
-            script, args = _remote_probe_script(normalize_workspaces_root(runtime.workspaces_dir if runtime else ""))
+            script, args = _remote_probe_script(
+                normalize_workspaces_root(runtime.workspaces_dir if runtime else "")
+            )
             result = await manager.ssh.run_script(script, args=args, timeout=15)
             if result.exit_status in {0, None}:
                 checks.extend(_parse_remote_checks(result.stdout))

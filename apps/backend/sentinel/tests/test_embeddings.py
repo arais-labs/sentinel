@@ -60,5 +60,3 @@ def test_embedding_service_embed_batch_returns_multiple_vectors_with_chunking():
     assert len(vectors[0]) == 1536
     assert len(vectors[1]) == 1536
     assert len(fake.calls) == 2
-
-

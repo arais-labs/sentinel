@@ -3,7 +3,6 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 

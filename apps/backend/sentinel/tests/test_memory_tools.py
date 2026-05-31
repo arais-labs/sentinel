@@ -11,7 +11,13 @@ from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, Text
 from app.services.agent import ContextBuilder, SentinelRuntimeSupport
 from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent, TokenUsage
+from app.services.llm.generic.types import (
+    AgentEvent,
+    AssistantMessage,
+    TextContent,
+    ToolCallContent,
+    TokenUsage,
+)
 from app.services.memory.search import MemorySearchResult, MemorySearchService
 from app.services.tools import ToolExecutor
 from app.services.tools.executor import ToolValidationError
@@ -95,13 +101,17 @@ class _SequenceProvider(LLMProvider):
     def name(self) -> str:
         return "seq"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         idx = min(self.calls, len(self._responses) - 1)
         _ = tool_choice
         self.calls += 1
         return self._responses[idx]
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         _ = tool_choice
         if False:
             yield AgentEvent(type="done", stop_reason="stop")
@@ -140,7 +150,13 @@ def test_runtime_support_can_call_memory_search_tool():
     provider = _SequenceProvider(
         [
             AssistantMessage(
-                content=[ToolCallContent(id="call_mem", name="memory", arguments={"command": "search", "query": "alpha"})],
+                content=[
+                    ToolCallContent(
+                        id="call_mem",
+                        name="memory",
+                        arguments={"command": "search", "query": "alpha"},
+                    )
+                ],
                 model="m",
                 provider="p",
                 usage=TokenUsage(),
@@ -362,7 +378,7 @@ def test_memory_delete_tool_rejects_invalid_or_unknown_id():
             executor.execute(
                 "memory",
                 _memory_input("delete", id="not-a-uuid"),
-                )
+            )
         )
 
     with pytest.raises(ToolValidationError, match="Memory node not found"):
@@ -370,7 +386,7 @@ def test_memory_delete_tool_rejects_invalid_or_unknown_id():
             executor.execute(
                 "memory",
                 _memory_input("delete", id="7f07395b-9e02-41cd-9952-65792509f7e4"),
-                )
+            )
         )
 
 
@@ -435,7 +451,7 @@ def test_memory_move_tool_rejects_cycle_or_conflicting_nodes():
             executor.execute(
                 "memory",
                 _memory_input("move", node_ids=[str(root.id)], target_parent_id=str(child.id)),
-                )
+            )
         )
 
     with pytest.raises(ToolValidationError, match="ancestor and its descendant"):
@@ -443,7 +459,7 @@ def test_memory_move_tool_rejects_cycle_or_conflicting_nodes():
             executor.execute(
                 "memory",
                 _memory_input("move", node_ids=[str(root.id), str(child.id)], to_root=True),
-                )
+            )
         )
 
 
@@ -479,7 +495,7 @@ def test_memory_move_tool_rejects_system_memory_nodes():
                     "node_ids": [str(system_root.id)],
                     "target_parent_id": str(other_root.id),
                 },
-                )
+            )
         )
 
 
@@ -515,7 +531,7 @@ def test_memory_move_tool_rejects_target_parent_that_is_system_memory():
                     "node_ids": [str(other_root.id)],
                     "target_parent_id": str(system_root.id),
                 },
-                )
+            )
         )
 
 
@@ -568,11 +584,15 @@ def test_context_builder_injects_all_root_memories_and_auto_branches():
     assert str(root_b.id) in roots_block
     assert str(root_a.id) not in roots_block
 
-    memory_policy_block = next(msg for msg in system_messages if "## Hierarchical Memory Policy" in msg)
+    memory_policy_block = next(
+        msg for msg in system_messages if "## Hierarchical Memory Policy" in msg
+    )
     assert "Pinned memories are high-priority anchors" in memory_policy_block
     assert "ask whether the user wants memory reorganization" in memory_policy_block
 
-    relevant_block = next(msg for msg in system_messages if "Potentially Relevant Memory Branches" in msg)
+    relevant_block = next(
+        msg for msg in system_messages if "Potentially Relevant Memory Branches" in msg
+    )
     assert str(child.id) in relevant_block or str(root_a.id) in relevant_block
 
 
@@ -661,7 +681,11 @@ def test_context_builder_strips_orphan_tool_use_for_anthropic_compat():
             content="Using tool",
             metadata_json={
                 "tool_calls": [
-                    {"id": "toolu_orphan", "name": "memory", "arguments": {"command": "search", "query": "alpha"}}
+                    {
+                        "id": "toolu_orphan",
+                        "name": "memory",
+                        "arguments": {"command": "search", "query": "alpha"},
+                    }
                 ]
             },
         )
@@ -696,8 +720,16 @@ def test_context_builder_keeps_only_matching_tool_results_for_tool_use_turn():
             content="Using tool",
             metadata_json={
                 "tool_calls": [
-                    {"id": "toolu_a", "name": "memory", "arguments": {"command": "search", "query": "alpha"}},
-                    {"id": "toolu_b", "name": "memory", "arguments": {"command": "search", "query": "beta"}},
+                    {
+                        "id": "toolu_a",
+                        "name": "memory",
+                        "arguments": {"command": "search", "query": "alpha"},
+                    },
+                    {
+                        "id": "toolu_b",
+                        "name": "memory",
+                        "arguments": {"command": "search", "query": "beta"},
+                    },
                 ]
             },
         )
@@ -758,6 +790,9 @@ def test_context_builder_adds_delegation_policy_when_tools_available():
     delegation = next((msg for msg in system_messages if "## Delegation Policy" in msg), None)
     assert delegation is not None
     assert "independent branches" in delegation
-    assert "Use delegate instead of doing multiple exploratory or checking tool calls yourself" in delegation
+    assert (
+        "Use delegate instead of doing multiple exploratory or checking tool calls yourself"
+        in delegation
+    )
     assert "command=spawn" in delegation
     assert "do not immediately poll with command=status" in delegation

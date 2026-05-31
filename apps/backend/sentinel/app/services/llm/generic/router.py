@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 
 from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import AgentEvent, AgentMessage, AssistantMessage, ReasoningConfig, ToolSchema
+from app.services.llm.generic.types import (
+    AgentEvent,
+    AgentMessage,
+    AssistantMessage,
+    ReasoningConfig,
+    ToolSchema,
+)
 
 
 class RouterProvider(LLMProvider):

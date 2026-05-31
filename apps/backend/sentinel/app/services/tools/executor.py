@@ -118,7 +118,11 @@ class ToolExecutor:
                 )
                 raise ToolExecutionError(str(exc), approval=approved_metadata) from exc
             await self._record_approval_result(approval=approved_metadata, result=result)
-        if approved_metadata and isinstance(result, dict) and not isinstance(result.get("approval"), dict):
+        if (
+            approved_metadata
+            and isinstance(result, dict)
+            and not isinstance(result.get("approval"), dict)
+        ):
             result["approval"] = approved_metadata
         duration_ms = int((time.perf_counter() - started) * 1000)
         return result, max(duration_ms, 0)
@@ -166,7 +170,9 @@ class ToolExecutor:
 
         requirement = evaluation.requirement
         if requirement is None:
-            raise ToolExecutionError("Approval gate requires a request descriptor before execution.")
+            raise ToolExecutionError(
+                "Approval gate requires a request descriptor before execution."
+            )
         if auto_approve_required:
             approval_payload = {
                 "provider": tool.name,
@@ -190,7 +196,9 @@ class ToolExecutor:
         if requirement.timeout_seconds < 1:
             raise ToolExecutionError("Approval timeout must be a positive integer.")
         if self._approval_waiter is None:
-            raise ToolExecutionError(f"Tool '{tool.name}' requires approval but no waiter is configured.")
+            raise ToolExecutionError(
+                f"Tool '{tool.name}' requires approval but no waiter is configured."
+            )
 
         logger.info(
             "tool_approval_wait tool=%s action=%s timeout_seconds=%s requested_by=%s",
@@ -237,7 +245,8 @@ class ToolExecutor:
         positional_params = [
             parameter
             for parameter in evaluator_signature.parameters.values()
-            if parameter.kind in {
+            if parameter.kind
+            in {
                 inspect.Parameter.POSITIONAL_ONLY,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
             }
@@ -284,7 +293,9 @@ class ToolExecutor:
         if expected_type:
             if expected_type == "string" and not isinstance(value, str):
                 raise ToolValidationError(f"Field '{field_name}' must be a string")
-            if expected_type == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
+            if expected_type == "integer" and (
+                not isinstance(value, int) or isinstance(value, bool)
+            ):
                 raise ToolValidationError(f"Field '{field_name}' must be an integer")
             if expected_type == "boolean" and not isinstance(value, bool):
                 raise ToolValidationError(f"Field '{field_name}' must be a boolean")
@@ -295,4 +306,6 @@ class ToolExecutor:
 
         enum = field_schema.get("enum")
         if enum and value not in enum:
-            raise ToolValidationError(f"Field '{field_name}' must be one of: {', '.join(map(str, enum))}")
+            raise ToolValidationError(
+                f"Field '{field_name}' must be one of: {', '.join(map(str, enum))}"
+            )

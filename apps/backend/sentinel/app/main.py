@@ -69,7 +69,6 @@ from app.services.instance_runtime_context import (
 )
 from app.services.ws.ws_manager import ConnectionManager
 
-
 _LLM_CREDENTIAL_ENV_VARS = (
     "ANTHROPIC_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",

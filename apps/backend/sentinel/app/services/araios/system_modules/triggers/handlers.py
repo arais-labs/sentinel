@@ -1,4 +1,5 @@
 """Native module: triggers — scheduled task management."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -28,7 +29,9 @@ def _compute_next_fire_at(trigger_type: str, config: dict) -> datetime | None:
 
         expr = config.get("expr") or config.get("cron")
         if not isinstance(expr, str) or not expr.strip():
-            raise ToolValidationError("Cron config requires field 'expr' with a valid cron expression")
+            raise ToolValidationError(
+                "Cron config requires field 'expr' with a valid cron expression"
+            )
         try:
             return croniter(expr.strip(), now).get_next(datetime).replace(tzinfo=UTC)
         except Exception as exc:
@@ -53,7 +56,10 @@ def _parse_optional_uuid(value: Any, *, field_name: str) -> UUID | None:
 
 
 async def _resolve_owner_user_id(
-    db, *, context_session_id: UUID | None, action_config: dict[str, Any],
+    db,
+    *,
+    context_session_id: UUID | None,
+    action_config: dict[str, Any],
 ) -> str:
     target_session_id = extract_agent_message_target_session_id(action_config)
     if context_session_id is None and target_session_id is None:
@@ -66,7 +72,9 @@ async def _resolve_owner_user_id(
         result = await db.execute(select(Session).where(Session.id == context_session_id))
         session = result.scalars().first()
         if session is None:
-            raise ToolValidationError(f"session_id references unknown session: {context_session_id}")
+            raise ToolValidationError(
+                f"session_id references unknown session: {context_session_id}"
+            )
         context_user_id = session.user_id
     if target_session_id is not None:
         result = await db.execute(select(Session).where(Session.id == target_session_id))
@@ -74,12 +82,16 @@ async def _resolve_owner_user_id(
         if session is not None:
             target_user_id = session.user_id
         elif context_user_id is None:
-            raise ToolValidationError(f"action_config target references unknown session: {target_session_id}")
+            raise ToolValidationError(
+                f"action_config target references unknown session: {target_session_id}"
+            )
     if context_user_id and target_user_id and context_user_id != target_user_id:
         raise ToolValidationError("session_id and action_config target belong to different users")
     owner = context_user_id or target_user_id
     if owner is None:
-        raise ToolValidationError("Unable to resolve trigger owner user_id from provided session context")
+        raise ToolValidationError(
+            "Unable to resolve trigger owner user_id from provided session context"
+        )
     return owner
 
 
@@ -104,7 +116,9 @@ async def handle_create(payload: dict[str, Any], runtime: ToolRuntimeContext) ->
         raise ToolValidationError("Field 'config' must be an object")
     action_type = payload.get("action_type")
     if action_type not in _ALLOWED_ACTION_TYPES:
-        raise ToolValidationError(f"Field 'action_type' must be one of: {sorted(_ALLOWED_ACTION_TYPES)}")
+        raise ToolValidationError(
+            f"Field 'action_type' must be one of: {sorted(_ALLOWED_ACTION_TYPES)}"
+        )
     action_config = payload.get("action_config", {})
     if not isinstance(action_config, dict):
         raise ToolValidationError("Field 'action_config' must be an object")
@@ -112,7 +126,9 @@ async def handle_create(payload: dict[str, Any], runtime: ToolRuntimeContext) ->
     if action_type == "agent_message":
         msg = action_config.get("message")
         if not isinstance(msg, str) or not msg.strip():
-            raise ToolValidationError("action_config.message must be a non-empty string for agent_message action")
+            raise ToolValidationError(
+                "action_config.message must be a non-empty string for agent_message action"
+            )
     enabled = payload.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ToolValidationError("Field 'enabled' must be a boolean")
@@ -123,7 +139,9 @@ async def handle_create(payload: dict[str, Any], runtime: ToolRuntimeContext) ->
         )
         resolved_action_config = action_config
         if action_type == "agent_message":
-            route = await resolve_agent_message_route(db, user_id=owner_user_id, action_config=action_config)
+            route = await resolve_agent_message_route(
+                db, user_id=owner_user_id, action_config=action_config
+            )
             resolved_action_config = route.normalized_action_config
         trigger = Trigger(
             user_id=owner_user_id,
@@ -229,7 +247,9 @@ async def handle_update(payload: dict[str, Any], runtime: ToolRuntimeContext) ->
             if not isinstance(ac, dict):
                 raise ToolValidationError("Field 'action_config' must be an object")
             if trigger.action_type == "agent_message":
-                route = await resolve_agent_message_route(db, user_id=owner_user_id, action_config=ac)
+                route = await resolve_agent_message_route(
+                    db, user_id=owner_user_id, action_config=ac
+                )
                 trigger.action_config = route.normalized_action_config
             else:
                 trigger.action_config = ac

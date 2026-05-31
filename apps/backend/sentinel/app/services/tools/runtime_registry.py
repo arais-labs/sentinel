@@ -33,7 +33,9 @@ async def rebuild_runtime_registry(
     app_state.tool_executor = ToolExecutor(
         registry,
         approval_waiter=build_tool_db_approval_waiter(session_factory=session_factory),
-        approval_result_recorder=build_tool_db_approval_result_recorder(session_factory=session_factory),
+        approval_result_recorder=build_tool_db_approval_result_recorder(
+            session_factory=session_factory
+        ),
         db_session_factory=session_factory,
     )
     return registry

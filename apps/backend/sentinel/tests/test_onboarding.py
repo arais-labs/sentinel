@@ -14,7 +14,6 @@ from app.services.onboarding.onboarding_defaults import DEFAULT_SYSTEM_PROMPT, b
 from tests.fake_db import FakeDB
 from tests.helpers import install_fake_db_overrides, restore_test_app
 
-
 MEMORY_API = "/api/v1/instances/main/memory"
 ONBOARDING_API = "/api/v1/instances/main/onboarding"
 
@@ -130,7 +129,11 @@ def test_runtime_context_assembly_when_user_skips_everything():
                 "triggers",
             },
         )
-        context = _run(builder.build(fake_db, session.id, pending_user_message="please automate recurring checks"))
+        context = _run(
+            builder.build(
+                fake_db, session.id, pending_user_message="please automate recurring checks"
+            )
+        )
         system_messages = [m.content for m in context if getattr(m, "role", "") == "system"]
 
         assert system_messages
@@ -226,7 +229,9 @@ def test_runtime_context_assembly_when_user_inputs_everything():
                 "triggers",
             },
         )
-        context = _run(builder.build(fake_db, session.id, pending_user_message="set up weekly status trigger"))
+        context = _run(
+            builder.build(fake_db, session.id, pending_user_message="set up weekly status trigger")
+        )
         system_messages = [m.content for m in context if getattr(m, "role", "") == "system"]
 
         assert system_messages

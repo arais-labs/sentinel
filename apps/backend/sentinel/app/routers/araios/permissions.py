@@ -72,7 +72,8 @@ async def _resolved_permissions(db: AsyncSession) -> dict[str, str]:
     stored_levels = {
         str(row.action): str(row.level).strip().lower()
         for row in rows
-        if isinstance(getattr(row, "action", None), str) and isinstance(getattr(row, "level", None), str)
+        if isinstance(getattr(row, "action", None), str)
+        and isinstance(getattr(row, "level", None), str)
     }
 
     resolved = dict(_system_permission_defaults())
@@ -85,7 +86,7 @@ async def _resolved_permissions(db: AsyncSession) -> dict[str, str]:
     for module in modules_result.scalars().all():
         module_prefix = f"{module.name}."
         module_existing = {
-            action[len(module_prefix):]: level
+            action[len(module_prefix) :]: level
             for action, level in stored_levels.items()
             if action.startswith(module_prefix)
         }

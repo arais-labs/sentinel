@@ -93,7 +93,12 @@ def build_tool_db_approval_waiter(
             )
             return ToolApprovalOutcome(
                 status=ToolApprovalOutcomeStatus.CANCELLED,
-                approval={**approval_payload, "status": "cancelled", "pending": False, "can_resolve": False},
+                approval={
+                    **approval_payload,
+                    "status": "cancelled",
+                    "pending": False,
+                    "can_resolve": False,
+                },
                 message="Approval cancelled.",
             )
 
@@ -124,14 +129,20 @@ def build_tool_db_approval_result_recorder(
             return
 
         async with session_factory() as db:
-            db_result = await db.execute(select(ToolApproval).where(ToolApproval.id == approval_uuid))
+            db_result = await db.execute(
+                select(ToolApproval).where(ToolApproval.id == approval_uuid)
+            )
             approval = db_result.scalars().first()
             if approval is None:
                 return
-            approval.result_json = _jsonb_safe(result if isinstance(result, dict) else {"result": result})
+            approval.result_json = _jsonb_safe(
+                result if isinstance(result, dict) else {"result": result}
+            )
             await db.commit()
 
     return _record
+
+
 async def _wait_for_resolution(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -168,7 +179,9 @@ async def _wait_for_resolution(
         if asyncio.get_running_loop().time() >= deadline:
             async with session_factory() as db:
                 now = datetime.now(UTC)
-                result = await db.execute(select(ToolApproval).where(ToolApproval.id == approval_id))
+                result = await db.execute(
+                    select(ToolApproval).where(ToolApproval.id == approval_id)
+                )
                 row = result.scalars().first()
                 if row is not None and row.status == "pending":
                     row.status = "timed_out"

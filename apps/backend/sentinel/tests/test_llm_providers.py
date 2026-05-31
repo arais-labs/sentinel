@@ -129,9 +129,7 @@ class _FakeAsyncClient:
         return self.get_response
 
     def stream(self, method: str, url: str, *, json: dict, headers: dict[str, str]):
-        self.stream_calls.append(
-            {"method": method, "url": url, "json": json, "headers": headers}
-        )
+        self.stream_calls.append({"method": method, "url": url, "json": json, "headers": headers})
         if self.stream_responses:
             return self.stream_responses.pop(0)
         return self.stream_response
@@ -222,7 +220,9 @@ def test_anthropic_stream_emits_all_event_types():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="claude-sonnet-4-20250514"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="claude-sonnet-4-20250514"
+        ):
             events.append(event)
         return events
 
@@ -351,12 +351,28 @@ def test_reliable_provider_fallback_on_429():
         def name(self) -> str:
             return "retry"
 
-        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def chat(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             request = httpx.Request("POST", "https://retry.example")
             response = httpx.Response(429, request=request)
             raise httpx.HTTPStatusError("rate limited", request=request, response=response)
 
-        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def stream(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             if False:
                 yield
             return
@@ -369,16 +385,34 @@ def test_reliable_provider_fallback_on_429():
         def name(self) -> str:
             return "ok"
 
-        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def chat(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             self.called += 1
             return AssistantMessage(content=[TextContent(text="ok")], model=model, provider="ok")
 
-        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def stream(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             yield AgentEvent(type="start")
             yield AgentEvent(type="done", stop_reason="stop")
 
     ok = _OkProvider()
-    provider = ReliableProvider([_RetryProvider(), ok], max_retries=2, sleep_func=lambda _: asyncio.sleep(0))
+    provider = ReliableProvider(
+        [_RetryProvider(), ok], max_retries=2, sleep_func=lambda _: asyncio.sleep(0)
+    )
     result = _run(provider.chat([UserMessage(content="hello")], model="test-model"))
     assert result.content[0].text == "ok"
     assert ok.called == 1
@@ -390,14 +424,32 @@ def test_reliable_provider_stream_attaches_generation_hint_on_first_event():
         def name(self) -> str:
             return "ok"
 
-        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def chat(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             return AssistantMessage(content=[TextContent(text="ok")], model=model, provider="ok")
 
-        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def stream(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             yield AgentEvent(type="start")
             yield AgentEvent(type="done", stop_reason="stop")
 
-    provider = ReliableProvider([_OkProvider()], max_retries=1, sleep_func=lambda _: asyncio.sleep(0))
+    provider = ReliableProvider(
+        [_OkProvider()], max_retries=1, sleep_func=lambda _: asyncio.sleep(0)
+    )
 
     async def _collect():
         events = []
@@ -422,11 +474,29 @@ def test_router_provider_routes_hint_and_passthrough_model():
         def name(self) -> str:
             return self._provider_name
 
-        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def chat(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             self.calls.append(model)
-            return AssistantMessage(content=[TextContent(text=model)], model=model, provider=self._provider_name)
+            return AssistantMessage(
+                content=[TextContent(text=model)], model=model, provider=self._provider_name
+            )
 
-        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def stream(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             self.calls.append(model)
             yield AgentEvent(type="start")
             yield AgentEvent(type="done", stop_reason="stop")
@@ -458,10 +528,28 @@ def test_router_provider_stream_attaches_resolved_generation_metadata():
         def name(self) -> str:
             return self._provider_name
 
-        async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
-            return AssistantMessage(content=[TextContent(text=model)], model=model, provider=self._provider_name)
+        async def chat(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
+            return AssistantMessage(
+                content=[TextContent(text=model)], model=model, provider=self._provider_name
+            )
 
-        async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+        async def stream(
+            self,
+            messages,
+            model,
+            tools=None,
+            temperature=0.7,
+            reasoning_config=None,
+            tool_choice=None,
+        ):
             yield AgentEvent(type="start")
             yield AgentEvent(type="done", stop_reason="stop")
 
@@ -574,7 +662,9 @@ def test_anthropic_oauth_stream_headers():
 
     async def _collect():
         events = []
-        async for event in provider.stream([UserMessage(content="hi")], model="claude-sonnet-4-20250514"):
+        async for event in provider.stream(
+            [UserMessage(content="hi")], model="claude-sonnet-4-20250514"
+        ):
             events.append(event)
         return events
 
@@ -632,7 +722,13 @@ def test_anthropic_chat_sends_thinking_payload_when_budget_set():
         client_factory=lambda: fake_client,
     )
     rc = ReasoningConfig(max_tokens=16384, thinking_budget=32000)
-    _run(provider.chat([UserMessage(content="think hard")], model="claude-sonnet-4-20250514", reasoning_config=rc))
+    _run(
+        provider.chat(
+            [UserMessage(content="think hard")],
+            model="claude-sonnet-4-20250514",
+            reasoning_config=rc,
+        )
+    )
 
     payload = fake_client.post_calls[0]["json"]
     assert payload["max_tokens"] == 40192
@@ -661,7 +757,14 @@ def test_anthropic_chat_no_thinking_when_budget_zero():
         client_factory=lambda: fake_client,
     )
     rc = ReasoningConfig(max_tokens=4096, thinking_budget=None)
-    _run(provider.chat([UserMessage(content="be fast")], model="claude-haiku-4-5-20251001", reasoning_config=rc, temperature=0.3))
+    _run(
+        provider.chat(
+            [UserMessage(content="be fast")],
+            model="claude-haiku-4-5-20251001",
+            reasoning_config=rc,
+            temperature=0.3,
+        )
+    )
 
     payload = fake_client.post_calls[0]["json"]
     assert payload["max_tokens"] == 4096
@@ -690,7 +793,11 @@ def test_anthropic_oauth_with_thinking_combines_betas():
         client_factory=lambda: fake_client,
     )
     rc = ReasoningConfig(max_tokens=8192, thinking_budget=5000)
-    _run(provider.chat([UserMessage(content="hi")], model="claude-sonnet-4-20250514", reasoning_config=rc))
+    _run(
+        provider.chat(
+            [UserMessage(content="hi")], model="claude-sonnet-4-20250514", reasoning_config=rc
+        )
+    )
 
     headers = fake_client.post_calls[0]["headers"]
     beta = headers["anthropic-beta"]
@@ -753,6 +860,7 @@ def test_openai_chat_no_reasoning_effort_when_none():
 
 class _TierCaptureProvider(LLMProvider):
     """Captures model and reasoning_config for assertions."""
+
     def __init__(self, provider_name: str, *, fail_with: Exception | None = None) -> None:
         self._provider_name = provider_name
         self._fail_with = fail_with
@@ -770,13 +878,21 @@ class _TierCaptureProvider(LLMProvider):
         except ValueError:
             return None
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         self.chat_calls.append((model, reasoning_config))
         if self._fail_with:
             raise self._fail_with
-        return AssistantMessage(content=[TextContent(text=f"{self._provider_name}:{model}")], model=model, provider=self._provider_name)
+        return AssistantMessage(
+            content=[TextContent(text=f"{self._provider_name}:{model}")],
+            model=model,
+            provider=self._provider_name,
+        )
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         self.stream_calls.append((model, reasoning_config))
         if self._fail_with:
             raise self._fail_with
@@ -794,16 +910,41 @@ def _make_tier_provider(
 
     tiers = {
         TierName.FAST: TierConfig(
-            primary=TierModelConfig(provider=primary, model="claude-haiku", reasoning_config=fast_rc, temperature=0.3),
-            fallbacks=[TierModelConfig(provider=fallback, model="gpt-4o-mini", reasoning_config=fast_rc, temperature=0.3)] if fallback else [],
+            primary=TierModelConfig(
+                provider=primary, model="claude-haiku", reasoning_config=fast_rc, temperature=0.3
+            ),
+            fallbacks=(
+                [
+                    TierModelConfig(
+                        provider=fallback,
+                        model="gpt-4o-mini",
+                        reasoning_config=fast_rc,
+                        temperature=0.3,
+                    )
+                ]
+                if fallback
+                else []
+            ),
         ),
         TierName.NORMAL: TierConfig(
-            primary=TierModelConfig(provider=primary, model="claude-sonnet", reasoning_config=normal_rc),
-            fallbacks=[TierModelConfig(provider=fallback, model="gpt-4o", reasoning_config=normal_rc)] if fallback else [],
+            primary=TierModelConfig(
+                provider=primary, model="claude-sonnet", reasoning_config=normal_rc
+            ),
+            fallbacks=(
+                [TierModelConfig(provider=fallback, model="gpt-4o", reasoning_config=normal_rc)]
+                if fallback
+                else []
+            ),
         ),
         TierName.HARD: TierConfig(
-            primary=TierModelConfig(provider=primary, model="claude-sonnet", reasoning_config=hard_rc),
-            fallbacks=[TierModelConfig(provider=fallback, model="o3", reasoning_config=hard_rc)] if fallback else [],
+            primary=TierModelConfig(
+                provider=primary, model="claude-sonnet", reasoning_config=hard_rc
+            ),
+            fallbacks=(
+                [TierModelConfig(provider=fallback, model="o3", reasoning_config=hard_rc)]
+                if fallback
+                else []
+            ),
         ),
     }
     return TierProvider(
@@ -1208,7 +1349,9 @@ def test_gemini_chat_parses_tool_calls():
 
     # Verify URL and headers
     post_call = fake_client.post_calls[0]
-    assert post_call["url"] == "https://gemini.example/v1beta/models/gemini-2.5-flash:generateContent"
+    assert (
+        post_call["url"] == "https://gemini.example/v1beta/models/gemini-2.5-flash:generateContent"
+    )
     assert post_call["headers"]["x-goog-api-key"] == "test-gemini-key"
 
     # Verify system instruction extracted
@@ -1417,13 +1560,21 @@ def test_gemini_oauth_stream_uses_code_assist_sse_wrapper():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
             events.append(event)
         return events
 
     events = _run(_collect())
 
-    assert [event.type for event in events] == ["start", "text_start", "text_delta", "text_end", "done"]
+    assert [event.type for event in events] == [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done",
+    ]
     assert fake_client.stream_calls[0]["url"] == (
         "https://codeassist.example/v1internal:streamGenerateContent?alt=sse"
     )
@@ -1466,13 +1617,21 @@ def test_gemini_oauth_stream_falls_back_on_capacity_429():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-3.1-pro-preview"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-3.1-pro-preview"
+        ):
             events.append(event)
         return events
 
     events = _run(_collect())
 
-    assert [event.type for event in events] == ["start", "text_start", "text_delta", "text_end", "done"]
+    assert [event.type for event in events] == [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done",
+    ]
     assert fake_client.stream_calls[0]["json"]["model"] == "gemini-3.1-pro-preview"
     assert fake_client.stream_calls[1]["json"]["model"] == "gemini-3-pro-preview"
 
@@ -1503,7 +1662,9 @@ def test_gemini_oauth_stream_empty_stop_chunk_closes_turn():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
             events.append(event)
         return events
 
@@ -1516,9 +1677,7 @@ def test_regular_gemini_provider_does_not_resolve_cli_alias_models():
     fake_client = _FakeAsyncClient(
         post_response=_FakeResponse(
             {
-                "candidates": [
-                    {"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}
-                ],
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
                 "usageMetadata": {},
             }
         )
@@ -1571,7 +1730,9 @@ def test_gemini_stream_events():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
             events.append(event)
         return events
 
@@ -1616,7 +1777,9 @@ def test_gemini_stream_done_keeps_tool_use_across_chunks():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
             events.append(event)
         return events
 
@@ -1639,7 +1802,9 @@ def test_gemini_stream_raises_on_empty_stop_chunk():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
             events.append(event)
         return events
 
@@ -1663,7 +1828,9 @@ def test_gemini_stream_raises_when_no_candidates_or_terminal():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gemini-2.5-flash"):
+        async for event in provider.stream(
+            [UserMessage(content="hello")], model="gemini-2.5-flash"
+        ):
             events.append(event)
         return events
 
@@ -1678,9 +1845,7 @@ def test_gemini_tool_choice_required_sets_any_mode():
     fake_client = _FakeAsyncClient(
         post_response=_FakeResponse(
             {
-                "candidates": [
-                    {"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}
-                ],
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
                 "usageMetadata": {},
             }
         )
@@ -1749,7 +1914,9 @@ def test_gemini_no_thinking_config_when_zero():
         client_factory=lambda: fake_client,
     )
     rc = ReasoningConfig(max_tokens=4096, thinking_budget=None)
-    _run(provider.chat([UserMessage(content="fast")], model="gemini-2.0-flash", reasoning_config=rc))
+    _run(
+        provider.chat([UserMessage(content="fast")], model="gemini-2.0-flash", reasoning_config=rc)
+    )
 
     payload = fake_client.post_calls[0]["json"]
     assert "thinkingConfig" not in payload["generationConfig"]
@@ -1884,7 +2051,9 @@ def test_gemini_function_call_turn_serialization_is_strict():
             [
                 # Orphan tool-call history from a truncated context window should be dropped.
                 AssistantMessage(
-                    content=[ToolCallContent(id="orphan", name="search_web", arguments={"q": "old"})],
+                    content=[
+                        ToolCallContent(id="orphan", name="search_web", arguments={"q": "old"})
+                    ],
                     model="gemini-2.5-flash",
                     provider="gemini",
                     stop_reason="tool_use",
@@ -2130,7 +2299,9 @@ def test_codex_stream_emits_tool_arguments_from_function_call_done():
         async for event in provider.stream(
             [UserMessage(content="Run command")],
             model="gpt-5.3-codex-spark",
-            tools=[ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})],
+            tools=[
+                ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})
+            ],
         ):
             events.append(event)
         return events
@@ -2158,7 +2329,9 @@ def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta()
         async for event in provider.stream(
             [UserMessage(content="Run command")],
             model="gpt-5.3-codex-spark",
-            tools=[ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})],
+            tools=[
+                ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})
+            ],
         ):
             events.append(event)
         return events
@@ -2185,7 +2358,9 @@ def test_codex_stream_emits_tool_arguments_when_present_on_output_item_added():
         async for event in provider.stream(
             [UserMessage(content="Run command")],
             model="gpt-5.3-codex-spark",
-            tools=[ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})],
+            tools=[
+                ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})
+            ],
         ):
             events.append(event)
         return events
@@ -2344,7 +2519,9 @@ def test_codex_stream_raises_on_sse_error_event():
         async for event in provider.stream(
             [UserMessage(content="Run command")],
             model="gpt-5.3-codex",
-            tools=[ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})],
+            tools=[
+                ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})
+            ],
         ):
             events.append(event)
         return events
@@ -2376,7 +2553,9 @@ def test_codex_stream_keeps_requested_model_when_catalog_does_not_include_it():
         async for event in provider.stream(
             [UserMessage(content="Run command")],
             model="gpt-5.3-codex",
-            tools=[ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})],
+            tools=[
+                ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})
+            ],
         ):
             events.append(event)
         return events

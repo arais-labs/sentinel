@@ -18,7 +18,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.drop_constraint("fk_instances_runtime_target_id_runtime_ssh_targets", "instances", type_="foreignkey")
+    op.drop_constraint(
+        "fk_instances_runtime_target_id_runtime_ssh_targets", "instances", type_="foreignkey"
+    )
     op.rename_table("runtime_ssh_targets", "runtimes")
     for column_name in (
         "host",
@@ -34,7 +36,9 @@ def upgrade() -> None:
     op.add_column("runtimes", sa.Column("provider", sa.String(length=32), nullable=True))
     op.add_column("runtimes", sa.Column("status", sa.String(length=32), nullable=True))
     op.add_column("runtimes", sa.Column("profile", sa.String(length=120), nullable=True))
-    op.add_column("runtimes", sa.Column("last_job_id", postgresql.UUID(as_uuid=True), nullable=True))
+    op.add_column(
+        "runtimes", sa.Column("last_job_id", postgresql.UUID(as_uuid=True), nullable=True)
+    )
     op.add_column("runtimes", sa.Column("last_job_status", sa.String(length=32), nullable=True))
     op.add_column(
         "runtimes",

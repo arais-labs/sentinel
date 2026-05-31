@@ -36,7 +36,9 @@ def normalize_instance_name(raw: str) -> str:
     value = re.sub(r"[^a-z0-9-]+", "-", raw.strip().lower())
     value = re.sub(r"-+", "-", value).strip("-")
     if not value or not _INSTANCE_RE.fullmatch(value):
-        raise InvalidInstanceNameError("Instance name must use lowercase letters, numbers, and dashes")
+        raise InvalidInstanceNameError(
+            "Instance name must use lowercase letters, numbers, and dashes"
+        )
     return value
 
 
@@ -128,7 +130,9 @@ class InstanceRegistryService:
         await db.refresh(instance)
         return instance
 
-    async def rename_instance(self, db: AsyncSession, old_name: str, new_name: str) -> SentinelInstance:
+    async def rename_instance(
+        self, db: AsyncSession, old_name: str, new_name: str
+    ) -> SentinelInstance:
         instance = await self.get_instance(db, old_name)
         normalized_new = normalize_instance_name(new_name)
         if normalized_new == instance.name:

@@ -66,7 +66,9 @@ async def test_build_instance_settings_restores_provider_keys_without_global_mut
 
 
 @pytest.mark.asyncio
-async def test_set_api_keys_normalizes_gemini_oauth_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_set_api_keys_normalizes_gemini_oauth_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     persisted: list[tuple[str, str]] = []
 
     async def _fake_upsert(_db, *, key: str, value: str) -> None:
@@ -192,7 +194,9 @@ def test_extract_codex_access_token_from_cli_auth_json() -> None:
 
 def test_extract_codex_access_token_rejects_missing_token() -> None:
     with pytest.raises(HTTPException) as exc:
-        SettingsService._extract_codex_access_token(json.dumps({"tokens": {"id_token": "id-token"}}))
+        SettingsService._extract_codex_access_token(
+            json.dumps({"tokens": {"id_token": "id-token"}})
+        )
 
     assert exc.value.status_code == 422
     assert "access_token" in str(exc.value.detail)
@@ -222,8 +226,6 @@ async def test_import_desktop_codex_oauth_token_persists_openai_oauth(tmp_path: 
 
     assert result.masked_key == "code...oken"
     persisted = next(
-        row.value
-        for row in fake_db.storage[SystemSetting]
-        if row.key == "openai_oauth_token"
+        row.value for row in fake_db.storage[SystemSetting] if row.key == "openai_oauth_token"
     )
     assert persisted == "codex-access-token"

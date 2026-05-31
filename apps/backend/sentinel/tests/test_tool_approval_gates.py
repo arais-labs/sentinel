@@ -22,7 +22,9 @@ def _run(coro):
 
 
 def _tool_with_check(*, approval_check=None) -> ToolDefinition:
-    async def _execute(payload: dict[str, object], runtime: ToolRuntimeContext) -> dict[str, object]:
+    async def _execute(
+        payload: dict[str, object], runtime: ToolRuntimeContext
+    ) -> dict[str, object]:
         del runtime
         return {
             "ok": True,

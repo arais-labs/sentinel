@@ -68,6 +68,5 @@ def build_agent_identity_memory(
 DEFAULT_SYSTEM_PROMPT = build_system_prompt()
 DEFAULT_AGENT_IDENTITY_MEMORY = build_agent_identity_memory()
 DEFAULT_USER_PROFILE_MEMORY = (
-    "The user's name and detailed profile are not known yet.\n\n"
-    f"{DEFAULT_USER_PROFILE_HINT}"
+    "The user's name and detailed profile are not known yet.\n\n" f"{DEFAULT_USER_PROFILE_HINT}"
 )

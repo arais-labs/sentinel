@@ -84,7 +84,9 @@ class RuntimeWorkspaceFiles:
             timeout=20,
         )
 
-    async def git_changed(self, session_id: UUID | str, *, path: str = "", limit: int = 200) -> dict:
+    async def git_changed(
+        self, session_id: UUID | str, *, path: str = "", limit: int = 200
+    ) -> dict:
         return await self._run_json(
             session_id,
             "git_changed",
@@ -162,7 +164,9 @@ class RuntimeWorkspaceFiles:
         if not isinstance(response, dict):
             raise RuntimePathInvalidError("Runtime file response was not an object")
         if response.get("ok") is False:
-            _raise_remote_error(str(response.get("error") or "runtime_error"), str(response.get("detail") or ""))
+            _raise_remote_error(
+                str(response.get("error") or "runtime_error"), str(response.get("detail") or "")
+            )
         data = response.get("data")
         return data if isinstance(data, dict) else {}
 

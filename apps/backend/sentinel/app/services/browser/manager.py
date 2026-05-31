@@ -99,9 +99,7 @@ el => {
 """
 
 
-def _truncate_content(
-    text: str, max_chars: int = _MAX_BROWSER_CONTENT_CHARS
-) -> tuple[str, bool]:
+def _truncate_content(text: str, max_chars: int = _MAX_BROWSER_CONTENT_CHARS) -> tuple[str, bool]:
     if len(text) <= max_chars:
         return text, False
     return text[:max_chars] + _TRUNCATION_NOTICE, True
@@ -248,9 +246,7 @@ class BrowserManager:
         timeout = self._resolve_timeout(timeout_ms)
         page, resolved_tab_id, make_active = await self._resolve_action_page(tab_id)
         async with self._lock_for_tab(resolved_tab_id):
-            await page.goto(
-                normalized, wait_until="domcontentloaded", timeout=timeout
-            )
+            await page.goto(normalized, wait_until="domcontentloaded", timeout=timeout)
             title = await page.title()
             current_url = getattr(page, "url", normalized)
             result_tab_id = self._register_page(page, make_active=make_active)
@@ -416,14 +412,10 @@ class BrowserManager:
                 )
             elif target_selector.lower().startswith("aria/"):
                 locator = page.locator(f"aria={target_selector[5:].strip()}").first
-                selected_values = await locator.select_option(
-                    **criteria, timeout=timeout
-                )
+                selected_values = await locator.select_option(**criteria, timeout=timeout)
             elif target_selector.lower().startswith("aria="):
                 locator = page.locator(target_selector).first
-                selected_values = await locator.select_option(
-                    **criteria, timeout=timeout
-                )
+                selected_values = await locator.select_option(**criteria, timeout=timeout)
             else:
                 selected_values = await page.select_option(
                     target_selector, **criteria, timeout=timeout
@@ -472,13 +464,9 @@ class BrowserManager:
             if cond in {"visible", "hidden", "attached", "detached"}:
                 await locator.wait_for(state=cond, timeout=timeout)
             elif cond == "enabled":
-                await self._wait_for_enabled_state(
-                    locator, enabled=True, timeout_ms=timeout
-                )
+                await self._wait_for_enabled_state(locator, enabled=True, timeout_ms=timeout)
             else:
-                await self._wait_for_enabled_state(
-                    locator, enabled=False, timeout_ms=timeout
-                )
+                await self._wait_for_enabled_state(locator, enabled=False, timeout_ms=timeout)
 
             state = await self._page_state(
                 page=page,
@@ -887,9 +875,7 @@ class BrowserManager:
             target = (url or "").strip() or "about:blank"
             if target != "about:blank":
                 target = self._validate_url(target)
-                await page.goto(
-                    target, wait_until="domcontentloaded", timeout=self._timeout_ms
-                )
+                await page.goto(target, wait_until="domcontentloaded", timeout=self._timeout_ms)
             tab_id = self._register_page(page, make_active=True)
             try:
                 title = await page.title()
@@ -962,7 +948,9 @@ class BrowserManager:
         result = await page.evaluate(expression)
         return {"result": result, "url": page.url}
 
-    async def get_html(self, selector: str | None = None, *, tab_id: str | None = None) -> dict[str, Any]:
+    async def get_html(
+        self, selector: str | None = None, *, tab_id: str | None = None
+    ) -> dict[str, Any]:
         """Get the outer HTML of the page or a specific element."""
         page, _tid, _locked = await self._resolve_action_page(tab_id)
         if selector:
@@ -980,7 +968,9 @@ class BrowserManager:
         cookies = await page.context.cookies()
         return {"cookies": cookies, "url": page.url, "count": len(cookies)}
 
-    async def set_cookies(self, cookies: list[dict], *, tab_id: str | None = None) -> dict[str, Any]:
+    async def set_cookies(
+        self, cookies: list[dict], *, tab_id: str | None = None
+    ) -> dict[str, Any]:
         """Set one or more cookies in the browser context."""
         page, _tid, _locked = await self._resolve_action_page(tab_id)
         await page.context.add_cookies(cookies)
@@ -1140,9 +1130,7 @@ class BrowserManager:
         last_exc: Exception | None = None
         for candidate in self._name_candidates(name):
             try:
-                await page.locator(f"aria={candidate}").first.fill(
-                    text, timeout=timeout_ms
-                )
+                await page.locator(f"aria={candidate}").first.fill(text, timeout=timeout_ms)
                 return
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
@@ -1206,12 +1194,8 @@ class BrowserManager:
         for role_candidate in role_candidates:
             for candidate in self._name_candidates(name):
                 try:
-                    locator = page.get_by_role(
-                        role_candidate, name=candidate, exact=False
-                    ).first
-                    return await locator.select_option(
-                        **criteria, timeout=timeout_ms
-                    )
+                    locator = page.get_by_role(role_candidate, name=candidate, exact=False).first
+                    return await locator.select_option(**criteria, timeout=timeout_ms)
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
         for candidate in self._name_candidates(name):
@@ -1224,15 +1208,13 @@ class BrowserManager:
             raise last_exc
         raise ValueError("No accessible-name candidates available for select_option")
 
-    async def _inner_text_by_accessible_name(
-        self, page: Any, *, role: str, name: str
-    ) -> str:
+    async def _inner_text_by_accessible_name(self, page: Any, *, role: str, name: str) -> str:
         last_exc: Exception | None = None
         for candidate in self._name_candidates(name):
             try:
-                return await page.get_by_role(
-                    role, name=candidate, exact=False
-                ).first.inner_text(timeout=self._timeout_ms)
+                return await page.get_by_role(role, name=candidate, exact=False).first.inner_text(
+                    timeout=self._timeout_ms
+                )
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
         if last_exc is not None:
@@ -1269,9 +1251,7 @@ class BrowserManager:
     async def _state_from_locator(self, locator: Any) -> dict[str, Any]:
         return await locator.evaluate(_ELEMENT_STATE_JS, timeout=self._timeout_ms)
 
-    async def _state_by_accessible_name(
-        self, page: Any, *, role: str, name: str
-    ) -> dict[str, Any]:
+    async def _state_by_accessible_name(self, page: Any, *, role: str, name: str) -> dict[str, Any]:
         last_exc: Exception | None = None
         for candidate in self._name_candidates(name):
             try:
@@ -1459,11 +1439,7 @@ class BrowserManager:
                     if isinstance(ai_result, str):
                         text = ai_result
                     elif isinstance(ai_result, dict):
-                        text = (
-                            ai_result.get("snapshot")
-                            or ai_result.get("text")
-                            or str(ai_result)
-                        )
+                        text = ai_result.get("snapshot") or ai_result.get("text") or str(ai_result)
                     elif ai_result:
                         text = str(ai_result)
                     if text and len(text.strip()) > 10:
@@ -1556,9 +1532,7 @@ class BrowserManager:
         stale_lock_cleared = self._cleanup_stale_profile_lock()
         page = await self._ensure_page()
         try:
-            await page.goto(
-                "about:blank", wait_until="domcontentloaded", timeout=self._timeout_ms
-            )
+            await page.goto("about:blank", wait_until="domcontentloaded", timeout=self._timeout_ms)
         except Exception:
             pass
         current_url = getattr(page, "url", "about:blank")
@@ -1636,13 +1610,13 @@ class BrowserManager:
         # Remote CDP connection (runtime container)
         if self._cdp_endpoint:
             self._browser = await self._playwright.chromium.connect_over_cdp(self._cdp_endpoint)
-            self._context = self._browser.contexts[0] if self._browser.contexts else await self._browser.new_context()
-            await apply_stealth_init_script(self._context)
-            page = (
-                self._context.pages[0]
-                if self._context.pages
-                else await self._context.new_page()
+            self._context = (
+                self._browser.contexts[0]
+                if self._browser.contexts
+                else await self._browser.new_context()
             )
+            await apply_stealth_init_script(self._context)
+            page = self._context.pages[0] if self._context.pages else await self._context.new_page()
             self._register_page(page, make_active=True)
             await self._maximize_window(page)
             self._sync_tabs()
@@ -1654,12 +1628,10 @@ class BrowserManager:
 
         if self._user_data_dir:
             try:
-                self._context = (
-                    await self._playwright.chromium.launch_persistent_context(
-                        self._user_data_dir,
-                        **launch_options,
-                        **context_options,
-                    )
+                self._context = await self._playwright.chromium.launch_persistent_context(
+                    self._user_data_dir,
+                    **launch_options,
+                    **context_options,
                 )
                 await apply_stealth_init_script(self._context)
                 page = (
@@ -1695,6 +1667,7 @@ class BrowserManager:
         if tab_id is None:
             tab_id = self._next_tab_id()
             self._tab_ids_by_page[page_key] = tab_id
+
             # Capture console messages for this page
             def _on_console(msg, _key=page_key):
                 entry = {"type": msg.type, "text": msg.text}
@@ -1702,6 +1675,7 @@ class BrowserManager:
                 buf.append(entry)
                 if len(buf) > 500:
                     self._console_logs[_key] = buf[-500:]
+
             page.on("console", _on_console)
         if make_active:
             self._active_tab_id = tab_id

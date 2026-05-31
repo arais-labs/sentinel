@@ -4,7 +4,6 @@ import logging
 from contextvars import ContextVar, Token
 from typing import Any
 
-
 _SESSION_LOG_CONTEXT: ContextVar[str] = ContextVar("session_log_context", default="-")
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s [session=%(session_id)s]: %(message)s"
 _DEFAULT_ROOT_LEVEL = "INFO"

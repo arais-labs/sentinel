@@ -154,9 +154,7 @@ class ContextBuilder:
     ) -> list[Message]:
         result = await db.execute(select(Message).where(Message.session_id == session_id))
         items = [
-            item
-            for item in result.scalars().all()
-            if not self._is_runtime_context_message(item)
+            item for item in result.scalars().all() if not self._is_runtime_context_message(item)
         ]
         items.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC))
 
@@ -260,7 +258,11 @@ class ContextBuilder:
                                     if isinstance(tc.get("arguments"), dict)
                                     else {}
                                 ),
-                                thought_signature=thought_signature.strip() if isinstance(thought_signature, str) else None,
+                                thought_signature=(
+                                    thought_signature.strip()
+                                    if isinstance(thought_signature, str)
+                                    else None
+                                ),
                             )
                         )
             return AssistantMessage(content=content_blocks)

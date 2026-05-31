@@ -4,7 +4,6 @@ from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import handle_request
 
-
 MODULE = ModuleDefinition(
     name="http_request",
     label="HTTP Request",

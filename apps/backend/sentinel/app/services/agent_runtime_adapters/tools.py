@@ -20,6 +20,7 @@ from app.services.tools.registry import ToolDefinition, ToolRegistry, ToolRuntim
 try:
     from app.services.secrets.resolver import resolve_secrets_in_payload
 except ModuleNotFoundError:  # pragma: no cover - optional until secrets module lands
+
     async def resolve_secrets_in_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
 
@@ -40,16 +41,16 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
         agent_mode: AgentMode | str | None = None,
         session_id: UUID | str | None = None,
         runtime_session_id: UUID | str | None = None,
-        on_pending_tool_result: Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]] | None = None,
+        on_pending_tool_result: (
+            Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]] | None
+        ) = None,
     ) -> None:
         self._registry = registry
         self._executor = executor
         self._agent_mode = agent_mode
         self._session_id = str(session_id) if session_id is not None else None
         self._runtime_session_id = (
-            str(runtime_session_id)
-            if runtime_session_id is not None
-            else self._session_id
+            str(runtime_session_id) if runtime_session_id is not None else self._session_id
         )
         self._on_pending_tool_result = on_pending_tool_result
 
@@ -74,9 +75,7 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
             runtime = ToolRuntimeContext(
                 session_id=UUID(self._session_id) if self._session_id is not None else None,
                 runtime_session_id=(
-                    UUID(self._runtime_session_id)
-                    if self._runtime_session_id is not None
-                    else None
+                    UUID(self._runtime_session_id) if self._runtime_session_id is not None else None
                 ),
             )
 
@@ -84,7 +83,9 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
                 nonlocal pending_approval_payload
                 pending_approval_payload = dict(approval_payload)
                 if self._on_pending_tool_result is not None:
-                    await self._on_pending_tool_result(tool.name, execution_payload, approval_payload)
+                    await self._on_pending_tool_result(
+                        tool.name, execution_payload, approval_payload
+                    )
 
             try:
                 result, _duration_ms = await self._executor.execute(
@@ -101,7 +102,9 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
 
                 if isinstance(approval_metadata, dict):
                     approval_status = str(approval_metadata.get("status") or "").strip().lower()
-                    approval_pending = approval_metadata.get("pending") is True or approval_status in {"pending", ""}
+                    approval_pending = approval_metadata.get(
+                        "pending"
+                    ) is True or approval_status in {"pending", ""}
                     if approval_pending:
                         return ToolExecutionResult(
                             status="pending_approval",
@@ -139,7 +142,8 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
 
             if isinstance(cleaned_content, dict):
                 cleaned_content = {
-                    k: v for k, v in cleaned_content.items()
+                    k: v
+                    for k, v in cleaned_content.items()
                     if k not in _RESULT_STRIP_TOP_LEVEL_FIELDS
                 }
 

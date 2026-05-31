@@ -47,6 +47,7 @@ def test_login_use_revoke_flow():
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_manager_db] = _override_get_manager_db
     from app import main as app_main
+
     old_init = app_main.init_db
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
@@ -54,21 +55,30 @@ def test_login_use_revoke_flow():
     try:
         client = TestClient(app)
 
-        token_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        token_resp = client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        )
         assert token_resp.status_code == 200
         access_token = token_resp.json()["access_token"]
 
-        sessions_resp = client.get("/api/v1/instances/main/sessions", headers={"Authorization": f"Bearer {access_token}"})
+        sessions_resp = client.get(
+            "/api/v1/instances/main/sessions", headers={"Authorization": f"Bearer {access_token}"}
+        )
         assert sessions_resp.status_code == 200
 
-        revoke_resp = client.delete("/api/v1/auth/session", headers={"Authorization": f"Bearer {access_token}"})
+        revoke_resp = client.delete(
+            "/api/v1/auth/session", headers={"Authorization": f"Bearer {access_token}"}
+        )
         assert revoke_resp.status_code == 200
 
-        revoked_resp = client.get("/api/v1/instances/main/sessions", headers={"Authorization": f"Bearer {access_token}"})
+        revoked_resp = client.get(
+            "/api/v1/instances/main/sessions", headers={"Authorization": f"Bearer {access_token}"}
+        )
         assert revoked_resp.status_code == 401
     finally:
         app.dependency_overrides.clear()
         app_main.init_db = old_init
+
 
 def test_login_accepts_seeded_credentials_and_can_revoke():
     fake_db = FakeDB()
@@ -85,6 +95,7 @@ def test_login_accepts_seeded_credentials_and_can_revoke():
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_manager_db] = _override_get_manager_db
     from app import main as app_main
+
     old_init = app_main.init_db
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
@@ -99,13 +110,19 @@ def test_login_accepts_seeded_credentials_and_can_revoke():
         assert login_resp.status_code == 200
         access_token = login_resp.json()["access_token"]
 
-        sessions_resp = client.get("/api/v1/instances/main/sessions", headers={"Authorization": f"Bearer {access_token}"})
+        sessions_resp = client.get(
+            "/api/v1/instances/main/sessions", headers={"Authorization": f"Bearer {access_token}"}
+        )
         assert sessions_resp.status_code == 200
 
-        revoke_resp = client.delete("/api/v1/auth/session", headers={"Authorization": f"Bearer {access_token}"})
+        revoke_resp = client.delete(
+            "/api/v1/auth/session", headers={"Authorization": f"Bearer {access_token}"}
+        )
         assert revoke_resp.status_code == 200
 
-        revoked_resp = client.get("/api/v1/instances/main/sessions", headers={"Authorization": f"Bearer {access_token}"})
+        revoked_resp = client.get(
+            "/api/v1/instances/main/sessions", headers={"Authorization": f"Bearer {access_token}"}
+        )
         assert revoked_resp.status_code == 401
     finally:
         app.dependency_overrides.clear()
@@ -117,7 +134,10 @@ async def test_auth_settings_sync_to_configured_env_credentials(monkeypatch):
     fake_db = FakeDB(seed_auth=False)
     await ensure_default_auth_settings(fake_db)
 
-    assert await authenticate_user(fake_db, username="admin", password="admin") == ("admin", "admin")
+    assert await authenticate_user(fake_db, username="admin", password="admin") == (
+        "admin",
+        "admin",
+    )
 
     monkeypatch.setattr(settings, "sentinel_auth_username", "owner")
     monkeypatch.setattr(settings, "sentinel_auth_password", "new-secret")
@@ -125,7 +145,10 @@ async def test_auth_settings_sync_to_configured_env_credentials(monkeypatch):
     await ensure_default_auth_settings(fake_db)
 
     assert await authenticate_user(fake_db, username="admin", password="admin") is None
-    assert await authenticate_user(fake_db, username="owner", password="new-secret") == ("owner", "admin")
+    assert await authenticate_user(fake_db, username="owner", password="new-secret") == (
+        "owner",
+        "admin",
+    )
 
 
 @pytest.mark.asyncio
@@ -138,7 +161,10 @@ async def test_desktop_mode_db_wins_over_env(monkeypatch):
     monkeypatch.setattr(settings, "sentinel_auth_username", "operator")
     monkeypatch.setattr(settings, "sentinel_auth_password", "first-pw")
     await ensure_default_auth_settings(fake_db)
-    assert await authenticate_user(fake_db, username="operator", password="first-pw") == ("operator", "admin")
+    assert await authenticate_user(fake_db, username="operator", password="first-pw") == (
+        "operator",
+        "admin",
+    )
 
     # Simulate the user changing the password in-app.
     from app.services.auth_service import change_user_password
@@ -151,7 +177,10 @@ async def test_desktop_mode_db_wins_over_env(monkeypatch):
     monkeypatch.setattr(settings, "sentinel_auth_password", "stale-env-value")
     await ensure_default_auth_settings(fake_db)
 
-    assert await authenticate_user(fake_db, username="operator", password="rotated-pw") == ("operator", "admin")
+    assert await authenticate_user(fake_db, username="operator", password="rotated-pw") == (
+        "operator",
+        "admin",
+    )
     assert await authenticate_user(fake_db, username="operator", password="stale-env-value") is None
 
 
@@ -167,7 +196,10 @@ async def test_desktop_mode_without_seed_waits_for_bootstrap(monkeypatch):
 
     assert await bootstrap_auth_settings(fake_db, username="Owner", password="local-secret")
     assert await auth_is_configured(fake_db) is True
-    assert await authenticate_user(fake_db, username="owner", password="local-secret") == ("owner", "admin")
+    assert await authenticate_user(fake_db, username="owner", password="local-secret") == (
+        "owner",
+        "admin",
+    )
     assert not await bootstrap_auth_settings(fake_db, username="other", password="other-secret")
 
 
@@ -189,6 +221,7 @@ def test_desktop_bootstrap_endpoint_creates_first_admin(monkeypatch):
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_manager_db] = _override_get_manager_db
     from app import main as app_main
+
     old_init = app_main.init_db
     app_main.init_db = _noop_init_db
     RateLimitMiddleware._buckets.clear()
@@ -211,7 +244,9 @@ def test_desktop_bootstrap_endpoint_creates_first_admin(monkeypatch):
         assert status_after.status_code == 200
         assert status_after.json() == {"configured": True, "bootstrap_available": False}
 
-        login_resp = client.post("/api/v1/auth/login", json={"username": "owner", "password": "local-secret"})
+        login_resp = client.post(
+            "/api/v1/auth/login", json={"username": "owner", "password": "local-secret"}
+        )
         assert login_resp.status_code == 200
 
         second_bootstrap = client.post(

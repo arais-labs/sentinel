@@ -1,4 +1,5 @@
 """Native module: tasks — backed by standard module_records."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -19,11 +20,17 @@ async def handle_list(payload: dict[str, Any]) -> dict[str, Any]:
     status = payload.get("status")
     priority = payload.get("priority")
     async with AsyncSessionLocal() as db:
-        rows = (await db.execute(
-            select(AraiosModuleRecord)
-            .where(AraiosModuleRecord.module_name == _MODULE)
-            .order_by(AraiosModuleRecord.created_at.desc())
-        )).scalars().all()
+        rows = (
+            (
+                await db.execute(
+                    select(AraiosModuleRecord)
+                    .where(AraiosModuleRecord.module_name == _MODULE)
+                    .order_by(AraiosModuleRecord.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
     tasks = [_serialize(r) for r in rows]
     if status:
         tasks = [t for t in tasks if t.get("status") == status]
@@ -49,12 +56,18 @@ async def handle_update(payload: dict[str, Any]) -> dict[str, Any]:
     if not task_id:
         raise ValueError("'id' is required")
     async with AsyncSessionLocal() as db:
-        record = (await db.execute(
-            select(AraiosModuleRecord).where(
-                AraiosModuleRecord.module_name == _MODULE,
-                AraiosModuleRecord.id == task_id,
+        record = (
+            (
+                await db.execute(
+                    select(AraiosModuleRecord).where(
+                        AraiosModuleRecord.module_name == _MODULE,
+                        AraiosModuleRecord.id == task_id,
+                    )
+                )
             )
-        )).scalars().first()
+            .scalars()
+            .first()
+        )
         if not record:
             raise ValueError(f"Task '{task_id}' not found")
         updated = dict(record.data or {})
@@ -72,12 +85,18 @@ async def handle_delete(payload: dict[str, Any]) -> dict[str, Any]:
     if not task_id:
         raise ValueError("'id' is required")
     async with AsyncSessionLocal() as db:
-        record = (await db.execute(
-            select(AraiosModuleRecord).where(
-                AraiosModuleRecord.module_name == _MODULE,
-                AraiosModuleRecord.id == task_id,
+        record = (
+            (
+                await db.execute(
+                    select(AraiosModuleRecord).where(
+                        AraiosModuleRecord.module_name == _MODULE,
+                        AraiosModuleRecord.id == task_id,
+                    )
+                )
             )
-        )).scalars().first()
+            .scalars()
+            .first()
+        )
         if not record:
             raise ValueError(f"Task '{task_id}' not found")
         await db.delete(record)

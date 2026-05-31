@@ -111,9 +111,7 @@ async def change_user_password(
         return False
     if not _verify_password(current_password, stored_hash):
         return False
-    await upsert_manager_setting(
-        db, key=_PASSWORD_HASH_KEY, value=_hash_password(new_password)
-    )
+    await upsert_manager_setting(db, key=_PASSWORD_HASH_KEY, value=_hash_password(new_password))
     return True
 
 

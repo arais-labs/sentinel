@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dependencies import get_db, get_request_instance_runtime_context
 from app.middleware.auth import TokenPayload, require_auth
 from app.models import Session, SubAgentTask
-from app.schemas.sub_agents import CreateSubAgentTaskRequest, InterjectRequest, SubAgentTaskListResponse, SubAgentTaskResponse
+from app.schemas.sub_agents import (
+    CreateSubAgentTaskRequest,
+    InterjectRequest,
+    SubAgentTaskListResponse,
+    SubAgentTaskResponse,
+)
 from app.services.sub_agents import SubAgentOrchestrator
 from app.services.ws.ws_manager import ConnectionManager
 
@@ -27,7 +32,9 @@ async def create_sub_agent_task(
 ) -> SubAgentTaskResponse:
     session = await _get_owned_session(db, id, user.sub)
     if await _active_task_count(db, session.id) >= 3:
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many concurrent tasks")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many concurrent tasks"
+        )
 
     task = SubAgentTask(
         session_id=session.id,
@@ -64,7 +71,9 @@ async def list_sub_agent_tasks(
     result = await db.execute(select(SubAgentTask).where(SubAgentTask.session_id == id))
     tasks = result.scalars().all()
     tasks.sort(key=lambda item: item.created_at, reverse=True)
-    return SubAgentTaskListResponse(items=[_task_response(task) for task in tasks], total=len(tasks))
+    return SubAgentTaskListResponse(
+        items=[_task_response(task) for task in tasks], total=len(tasks)
+    )
 
 
 @router.get("/{id}/sub-agents/{task_id}")
@@ -94,7 +103,9 @@ async def interject_sub_agent_task(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task is not running")
     orchestrator = _resolve_orchestrator(request)
     if not orchestrator.inject_message(task.id, payload.message):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task not accepting messages")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Task not accepting messages"
+        )
     return {"status": "injected"}
 
 
@@ -117,7 +128,9 @@ async def cancel_sub_agent_task(
 
 
 async def _get_owned_session(db: AsyncSession, session_id: UUID, user_id: str) -> Session:
-    result = await db.execute(select(Session).where(Session.id == session_id, Session.user_id == user_id))
+    result = await db.execute(
+        select(Session).where(Session.id == session_id, Session.user_id == user_id)
+    )
     session = result.scalars().first()
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
@@ -126,11 +139,15 @@ async def _get_owned_session(db: AsyncSession, session_id: UUID, user_id: str) -
 
 async def _get_session_task(db: AsyncSession, session_id: UUID, task_id: UUID) -> SubAgentTask:
     result = await db.execute(
-        select(SubAgentTask).where(SubAgentTask.session_id == session_id, SubAgentTask.id == task_id)
+        select(SubAgentTask).where(
+            SubAgentTask.session_id == session_id, SubAgentTask.id == task_id
+        )
     )
     task = result.scalars().first()
     if task is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sub-agent task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Sub-agent task not found"
+        )
     return task
 
 

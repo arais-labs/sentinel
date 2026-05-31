@@ -41,7 +41,9 @@ async def detect_runtime_environment(ssh: SSHClient) -> RuntimeEnvironment:
         probe = await ssh.run("command -v bwrap >/dev/null 2>&1 && echo yes || echo no", timeout=10)
         sandbox = "bubblewrap" if (probe.stdout or "").strip() == "yes" else "unavailable"
     elif os_name == "darwin":
-        probe = await ssh.run("command -v sandbox-exec >/dev/null 2>&1 && echo yes || echo no", timeout=10)
+        probe = await ssh.run(
+            "command -v sandbox-exec >/dev/null 2>&1 && echo yes || echo no", timeout=10
+        )
         sandbox = "seatbelt" if (probe.stdout or "").strip() == "yes" else "unavailable"
     else:
         sandbox = "unavailable"

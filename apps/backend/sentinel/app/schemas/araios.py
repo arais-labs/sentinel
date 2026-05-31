@@ -1,8 +1,8 @@
 """Pydantic schemas for dynamic module/control-plane API endpoints."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-
 
 # ── Approvals ──
 

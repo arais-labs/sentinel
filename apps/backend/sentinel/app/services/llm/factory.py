@@ -11,6 +11,7 @@ from app.config import Settings
 
 DEFAULT_TIER_NAME = TierName.NORMAL
 
+
 def build_models_response(provider: object | None) -> ModelsResponse:
     if provider is None:
         return ModelsResponse(models=[], default_tier=None)
@@ -56,7 +57,9 @@ def build_tier_provider_from_settings(settings: Settings) -> LLMProvider | None:
                 model=anthropic_model,
                 reasoning_config=ReasoningConfig(
                     max_tokens=max_tokens,
-                    thinking_budget=anthropic_thinking_budget if anthropic_thinking_budget > 0 else None,
+                    thinking_budget=(
+                        anthropic_thinking_budget if anthropic_thinking_budget > 0 else None
+                    ),
                 ),
                 temperature=temperature,
             )
@@ -91,7 +94,9 @@ def build_tier_provider_from_settings(settings: Settings) -> LLMProvider | None:
         primary_name = parse_provider_choice(settings.primary_provider)
         if primary_name in candidates:
             primary = candidates[primary_name]
-            fallbacks = [cfg for provider_name, cfg in candidates.items() if provider_name != primary_name]
+            fallbacks = [
+                cfg for provider_name, cfg in candidates.items() if provider_name != primary_name
+            ]
         else:
             ordered = list(candidates.values())
             primary = ordered[0]

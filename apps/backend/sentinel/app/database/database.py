@@ -22,7 +22,9 @@ manager_engine = create_async_engine(
     pool_pre_ping=True,
     echo=False,
 )
-ManagerSessionLocal = async_sessionmaker(manager_engine, class_=AsyncSession, expire_on_commit=False)
+ManagerSessionLocal = async_sessionmaker(
+    manager_engine, class_=AsyncSession, expire_on_commit=False
+)
 _current_session_factory: ContextVar[async_sessionmaker[AsyncSession] | None] = ContextVar(
     "current_db_session_factory",
     default=None,
@@ -35,6 +37,7 @@ class ContextualSessionFactory:
     def __call__(self, *args, **kwargs):
         factory = _current_session_factory.get() or ManagerSessionLocal
         return factory(*args, **kwargs)
+
 
 # Transitional aliases. These keep existing imports alive while the routers and
 # services are moved from one global app DB to explicit manager/instance DBs.
@@ -106,7 +109,9 @@ async def init_instance_db(database_name: str) -> None:
             ini_name="alembic.instance.ini",
             database_url=settings.database_url(database_name),
         )
-        session_factory = async_sessionmaker(instance_engine, class_=AsyncSession, expire_on_commit=False)
+        session_factory = async_sessionmaker(
+            instance_engine, class_=AsyncSession, expire_on_commit=False
+        )
         await _seed_app_defaults(session_factory)
     finally:
         await instance_engine.dispose()

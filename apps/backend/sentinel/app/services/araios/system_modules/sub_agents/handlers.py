@@ -1,4 +1,5 @@
 """Native module: delegate — spawn, status, list, and cancel delegated sub-agent tasks."""
+
 from __future__ import annotations
 
 import contextlib
@@ -17,7 +18,6 @@ from app.models import SubAgentTask
 from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.runtime_context import require_session_id
-
 
 # ── Helpers ──
 

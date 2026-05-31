@@ -16,7 +16,9 @@ class ToolApproval(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     provider: Mapped[str] = mapped_column(String(40), server_default=text("'tool'"), index=True)
     tool_name: Mapped[str] = mapped_column(String(120), index=True)
-    session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
     action: Mapped[str] = mapped_column(String(160), index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     match_key: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)

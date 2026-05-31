@@ -63,17 +63,25 @@ async def require_runtime_session(
     try:
         sid = UUID(session_id)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid session id.") from exc
-    result = await db.execute(select(Session.id).where(Session.id == sid, Session.user_id == user.sub))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid session id."
+        ) from exc
+    result = await db.execute(
+        select(Session.id).where(Session.id == sid, Session.user_id == user.sub)
+    )
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
     if not await runtime_configured(instance_name=instance_name):
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="SSH runtime is not configured.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="SSH runtime is not configured."
+        )
     return sid
 
 
 def _request_instance_name(request: Request) -> str:
-    return str(getattr(request.state, "instance_name", request.path_params.get("instance_name", "")))
+    return str(
+        getattr(request.state, "instance_name", request.path_params.get("instance_name", ""))
+    )
 
 
 async def live_view_response(
@@ -107,7 +115,9 @@ async def live_view_response(
             reason="Invalid session id.",
             provider=provider,
         )
-    result = await db.execute(select(Session.id).where(Session.id == sid, Session.user_id == user.sub))
+    result = await db.execute(
+        select(Session.id).where(Session.id == sid, Session.user_id == user.sub)
+    )
     if result.scalar_one_or_none() is None:
         return RuntimeLiveViewResponse(
             enabled=False,
@@ -136,7 +146,9 @@ async def live_view_response(
             provider=provider,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to prepare runtime desktop for session %s", session_id, exc_info=True)
+        logger.warning(
+            "failed to prepare runtime desktop for session %s", session_id, exc_info=True
+        )
         return RuntimeLiveViewResponse(
             enabled=True,
             available=False,
@@ -180,7 +192,9 @@ async def set_live_view_resolution_response(
             reason="Invalid session id.",
             provider=provider,
         )
-    result = await db.execute(select(Session.id).where(Session.id == sid, Session.user_id == user.sub))
+    result = await db.execute(
+        select(Session.id).where(Session.id == sid, Session.user_id == user.sub)
+    )
     if result.scalar_one_or_none() is None:
         return RuntimeLiveViewResponse(
             enabled=False,
@@ -217,7 +231,9 @@ async def set_live_view_resolution_response(
             provider=provider,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to set runtime desktop resolution for session %s", session_id, exc_info=True)
+        logger.warning(
+            "failed to set runtime desktop resolution for session %s", session_id, exc_info=True
+        )
         return RuntimeLiveViewResponse(
             enabled=True,
             available=False,
@@ -254,7 +270,9 @@ async def bridge_runtime_desktop_rfb(
     except Exception:
         await websocket.close(code=4001, reason="Invalid token")
         return
-    result = await db.execute(select(Session.id).where(Session.id == session_id, Session.user_id == user.sub))
+    result = await db.execute(
+        select(Session.id).where(Session.id == session_id, Session.user_id == user.sub)
+    )
     if result.scalar_one_or_none() is None:
         await websocket.close(code=4004, reason="Session not found")
         return
@@ -265,7 +283,9 @@ async def bridge_runtime_desktop_rfb(
         )
         desktop = await desktop_manager.get_session_desktop(str(session_id))
     except Exception:
-        logger.warning("runtime desktop websocket prepare failed for session %s", session_id, exc_info=True)
+        logger.warning(
+            "runtime desktop websocket prepare failed for session %s", session_id, exc_info=True
+        )
         await websocket.close(code=4005, reason="Runtime desktop unavailable")
         return
 

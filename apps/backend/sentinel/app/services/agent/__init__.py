@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.services.agent.context_builder import ContextBuilder
-    from app.services.agent.runtime_support import PreparedRuntimeTurnContext, SentinelRuntimeSupport
+    from app.services.agent.runtime_support import (
+        PreparedRuntimeTurnContext,
+        SentinelRuntimeSupport,
+    )
 
 __all__ = ["ContextBuilder", "SentinelRuntimeSupport", "PreparedRuntimeTurnContext"]
 

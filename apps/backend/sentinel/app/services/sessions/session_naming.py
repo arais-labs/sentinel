@@ -108,7 +108,9 @@ class SessionNamingService:
             return None
 
         transcript = await self._recent_transcript(
-            db, session_id=session.id, max_messages=max(6, int(settings.session_auto_rename_context_messages))
+            db,
+            session_id=session.id,
+            max_messages=max(6, int(settings.session_auto_rename_context_messages)),
         )
         seed = (first_message or "").strip()
         if not transcript and seed:
@@ -140,9 +142,7 @@ class SessionNamingService:
         await db.commit()
         return title
 
-    async def _effective_conversation_count(
-        self, db: AsyncSession, session: Session
-    ) -> int:
+    async def _effective_conversation_count(self, db: AsyncSession, session: Session) -> int:
         current = max(0, int(session.conversation_message_count or 0))
         if current > 0:
             return current

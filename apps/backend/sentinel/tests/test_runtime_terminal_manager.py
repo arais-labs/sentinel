@@ -22,9 +22,13 @@ class _SSHStub:
         self.responses: list[RuntimeExecResult] = []
 
     def push(self, stdout: str = "", stderr: str = "", exit_status: int = 0) -> None:
-        self.responses.append(RuntimeExecResult(exit_status=exit_status, stdout=stdout, stderr=stderr))
+        self.responses.append(
+            RuntimeExecResult(exit_status=exit_status, stdout=stdout, stderr=stderr)
+        )
 
-    async def run_script(self, script: str, *, args: list[str] | None = None, timeout: int = 300) -> RuntimeExecResult:
+    async def run_script(
+        self, script: str, *, args: list[str] | None = None, timeout: int = 300
+    ) -> RuntimeExecResult:
         _ = timeout
         self.scripts.append(script)
         self.script_args.append(args or [])
@@ -101,9 +105,13 @@ async def test_run_command_opens_tmux_sends_plain_command_and_parses_marker() ->
     )
 
     assert result == RuntimeExecResult(exit_status=0, stdout="hello", stderr="")
-    assert any("/srv/sentinel/session-123/workspace" in arg for args in ssh.script_args for arg in args)
+    assert any(
+        "/srv/sentinel/session-123/workspace" in arg for args in ssh.script_args for arg in args
+    )
     assert any("nohup bwrap" in script for script in ssh.scripts)
-    send_literals = [command for command in ssh.commands if "send-keys" in command and " -l " in command]
+    send_literals = [
+        command for command in ssh.commands if "send-keys" in command and " -l " in command
+    ]
     assert send_literals == [
         "tmux -S /srv/sentinel/session-123/state/tmux/main.sock "
         "send-keys -t sentinel_main -l 'echo hello'"
@@ -149,7 +157,9 @@ async def test_read_tail_truncates_at_line_boundary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_background_command_allocates_terminal_and_sends_job_script(monkeypatch) -> None:
+async def test_start_background_command_allocates_terminal_and_sends_job_script(
+    monkeypatch,
+) -> None:
     ssh = _SSHStub()
     ssh.push(stdout="bash\n")  # foreground command check
     ssh.push(stdout="0\n")  # pipe log size before send
@@ -173,6 +183,10 @@ async def test_start_background_command_allocates_terminal_and_sends_job_script(
     assert isinstance(handle, BackgroundJobHandle)
     assert handle.terminal_id.startswith("bg-")
     assert handle.result_path.endswith(f"/state/runtime/jobs/{handle.id}/done.json")
-    assert any(f"/srv/sentinel/session-123/state/runtime/jobs/{handle.id}" in arg for args in ssh.script_args for arg in args)
+    assert any(
+        f"/srv/sentinel/session-123/state/runtime/jobs/{handle.id}" in arg
+        for args in ssh.script_args
+        for arg in args
+    )
     assert any("sleep 1 && echo done" in arg for args in ssh.script_args for arg in args)
     assert any("bash /state/runtime/jobs/" in command for command in ssh.commands)

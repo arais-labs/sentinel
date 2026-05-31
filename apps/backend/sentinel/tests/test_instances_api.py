@@ -124,7 +124,9 @@ def test_instances_api_removes_normalized_runtime_context_names(monkeypatch):
         return None
 
     monkeypatch.setattr(instances_router.instance_runtime_context_registry, "remove", _remove)
-    monkeypatch.setattr(instances_router.instance_runtime_context_registry, "get_or_create", _get_or_create)
+    monkeypatch.setattr(
+        instances_router.instance_runtime_context_registry, "get_or_create", _get_or_create
+    )
 
     rename_response = client.post("/api/v1/instances/Main/rename", json={"name": "Client A"})
     assert rename_response.status_code == 200

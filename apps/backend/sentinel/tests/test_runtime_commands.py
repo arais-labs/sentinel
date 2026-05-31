@@ -5,7 +5,12 @@ import pytest
 from app.services.runtime.darwin_seatbelt import build_seatbelt_profile
 from app.services.runtime.linux_bubblewrap import build_bubblewrap_argv
 from app.services.runtime.ssh_client import build_shell_command
-from app.services.runtime.status import RuntimeStatusCheck, _capabilities, _detected_os, _detected_sandbox
+from app.services.runtime.status import (
+    RuntimeStatusCheck,
+    _capabilities,
+    _detected_os,
+    _detected_sandbox,
+)
 from app.services.runtime.tmux import (
     SENTINEL_BASHRC,
     build_close_tmux_script,
@@ -103,8 +108,10 @@ def test_open_tmux_starts_tmux_inside_bubblewrap() -> None:
     assert "\\[\\033[38;5;81m\\]" in SENTINEL_BASHRC
     assert "/state/tmux/main.sock" in script
     assert "/srv/sentinel/session-123/state/tmux/main.sock" in script
-    assert 'sentinel_tmux=tmux' in script
-    assert '"$sentinel_tmux" -f /dev/null -S /srv/sentinel/session-123/state/tmux/main.sock' in script
+    assert "sentinel_tmux=tmux" in script
+    assert (
+        '"$sentinel_tmux" -f /dev/null -S /srv/sentinel/session-123/state/tmux/main.sock' in script
+    )
     assert "new-session" in script
     assert "HOME=/state/home" in script
     assert script.index("bwrap") < script.index("new-session")

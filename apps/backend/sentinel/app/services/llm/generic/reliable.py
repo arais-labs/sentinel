@@ -8,7 +8,13 @@ from typing import Any
 
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.errors import error_tag, is_retryable
-from app.services.llm.generic.types import AgentEvent, AgentMessage, AssistantMessage, ReasoningConfig, ToolSchema
+from app.services.llm.generic.types import (
+    AgentEvent,
+    AgentMessage,
+    AssistantMessage,
+    ReasoningConfig,
+    ToolSchema,
+)
 
 
 class ReliableProvider(LLMProvider):
@@ -99,7 +105,9 @@ class ReliableProvider(LLMProvider):
                             hint_provider = hint[0] if hint is not None else provider.name
                             hint_model = hint[1] if hint is not None else model
                             if event.message is None:
-                                event.message = AssistantMessage(model=hint_model, provider=hint_provider)
+                                event.message = AssistantMessage(
+                                    model=hint_model, provider=hint_provider
+                                )
                             else:
                                 if not event.message.model:
                                     event.message.model = hint_model

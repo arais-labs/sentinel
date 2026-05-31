@@ -124,14 +124,19 @@ async def bootstrap_auth(
     db: AsyncSession = Depends(get_manager_db),
 ) -> TokenPairResponse:
     if not is_desktop_app():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auth bootstrap is only available in desktop mode")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Auth bootstrap is only available in desktop mode",
+        )
     created = await bootstrap_auth_settings(
         db,
         username=payload.username,
         password=payload.password,
     )
     if not created:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Auth is already configured")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Auth is already configured"
+        )
 
     identity = Identity(user_id=payload.username.strip().lower(), role="admin", agent_id=None)
     access_token = create_access_token(identity)
@@ -168,10 +173,14 @@ async def refresh_session_token(
     if not token:
         token = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME, "").strip()
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token"
+        )
 
     token_payload = await decode_and_validate_token(token, db, expected_type="refresh")
-    identity = Identity(user_id=token_payload.sub, role=token_payload.role, agent_id=token_payload.agent_id)
+    identity = Identity(
+        user_id=token_payload.sub, role=token_payload.role, agent_id=token_payload.agent_id
+    )
     access_token = create_access_token(identity)
     refresh_token = create_refresh_token(identity)
     _set_auth_cookies(response, access_token=access_token, refresh_token=refresh_token)

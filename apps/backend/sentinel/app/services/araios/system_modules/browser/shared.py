@@ -9,6 +9,7 @@ from app.services.tools.runtime_context import require_runtime_session_id
 
 BROWSER_SESSION_PROP: dict[str, dict[str, str]] = {}
 
+
 def optional_browser_tab_id(payload: dict[str, Any]) -> str | None:
     tab_id = payload.get("tab_id")
     if tab_id is None:

@@ -259,7 +259,9 @@ async def test_git_reports_missing_runtime_executable(monkeypatch) -> None:
 
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
-    manager.ssh.next_result = RuntimeExecResult(exit_status=127, stdout="", stderr="bash: gh: command not found\n")
+    manager.ssh.next_result = RuntimeExecResult(
+        exit_status=127, stdout="", stderr="bash: gh: command not found\n"
+    )
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
     monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
     monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))

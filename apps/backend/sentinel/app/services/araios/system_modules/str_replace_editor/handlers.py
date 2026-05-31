@@ -43,7 +43,9 @@ def _string_field(payload: dict[str, Any], key: str, *, required: bool = False) 
 
 
 async def handle_edit(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    if not await runtime_configured(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory):
+    if not await runtime_configured(
+        instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+    ):
         raise ToolValidationError("Runtime SSH target is not configured.")
 
     session_id = require_runtime_session_id(runtime)
@@ -54,7 +56,9 @@ async def handle_edit(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
     new_str = _string_field(payload, "new_str")
 
     try:
-        files = await get_runtime_workspace_files(instance_name=runtime.instance_name, session_factory=runtime.db_session_factory)
+        files = await get_runtime_workspace_files(
+            instance_name=runtime.instance_name, session_factory=runtime.db_session_factory
+        )
         return await files.str_replace(
             str(session_id),
             path=path,

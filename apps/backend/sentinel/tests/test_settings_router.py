@@ -24,7 +24,9 @@ class _SettingsService:
 
 
 @pytest.mark.asyncio
-async def test_settings_mutations_rebuild_current_instance_context(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_settings_mutations_rebuild_current_instance_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     rebuilt: list[str] = []
 
     async def rebuild(_request) -> None:

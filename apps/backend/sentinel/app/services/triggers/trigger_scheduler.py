@@ -99,7 +99,9 @@ class TriggerScheduler:
         self._poll_interval_seconds = max(0.1, float(poll_interval_seconds))
         self._in_flight: set[str] = set()
 
-    def set_agent_runtime_support(self, agent_runtime_support: SentinelRuntimeSupport | None) -> None:
+    def set_agent_runtime_support(
+        self, agent_runtime_support: SentinelRuntimeSupport | None
+    ) -> None:
         """Hot-swap the runtime support used for agent_message actions."""
         self._agent_runtime_support = agent_runtime_support
 
@@ -166,7 +168,9 @@ class TriggerScheduler:
         trigger.action_config = route.normalized_action_config
         session_id = route.session_id
         route_mode = route.normalized_action_config.get("route_mode")
-        normalized_route_mode = str(route_mode) if isinstance(route_mode, str) and route_mode else None
+        normalized_route_mode = (
+            str(route_mode) if isinstance(route_mode, str) and route_mode else None
+        )
 
         queued_log = TriggerLog(
             trigger_id=trigger.id,
@@ -405,7 +409,9 @@ class TriggerScheduler:
                     trigger_log_id=trigger_log_id,
                 )
         except Exception:  # noqa: BLE001
-            logger.exception("queued trigger fire failed: trigger_id=%s log_id=%s", trigger_id, trigger_log_id)
+            logger.exception(
+                "queued trigger fire failed: trigger_id=%s log_id=%s", trigger_id, trigger_log_id
+            )
 
     def _next_fire_after_success(self, trigger: Trigger, fired_at: datetime) -> datetime | None:
         next_fire = compute_next_fire_at(trigger.type, trigger.config, reference_time=fired_at)
@@ -428,7 +434,9 @@ class TriggerScheduler:
             return await self._execute_http_request(trigger)
         raise ValueError(f"Unsupported action_type: {trigger.action_type}")
 
-    async def _execute_agent_message(self, db: AsyncSession, trigger: Trigger) -> TriggerActionOutcome:
+    async def _execute_agent_message(
+        self, db: AsyncSession, trigger: Trigger
+    ) -> TriggerActionOutcome:
         if self._agent_runtime_support is None:
             raise RuntimeError("Agent runtime support unavailable")
         action = trigger.action_config if isinstance(trigger.action_config, dict) else {}
@@ -531,7 +539,9 @@ class TriggerScheduler:
                 if isinstance(block, TextBlock) and block.text
             ).strip()
         route_mode = route.normalized_action_config.get("route_mode")
-        normalized_route_mode = str(route_mode) if isinstance(route_mode, str) and route_mode else None
+        normalized_route_mode = (
+            str(route_mode) if isinstance(route_mode, str) and route_mode else None
+        )
         return TriggerActionOutcome(
             output_summary=f"agent_message:{final_text[:500]}",
             resolved_session_id=session_id,
@@ -551,9 +561,7 @@ class TriggerScheduler:
 
         candidate_session_id = extract_agent_message_target_session_id(action)
         if candidate_session_id is not None:
-            result = await db.execute(
-                select(Session).where(Session.id == candidate_session_id)
-            )
+            result = await db.execute(select(Session).where(Session.id == candidate_session_id))
             session = result.scalars().first()
             if session is not None:
                 trigger.user_id = session.user_id
@@ -570,13 +578,13 @@ class TriggerScheduler:
         if self._tool_executor is None:
             raise RuntimeError("Tool executor unavailable")
         action = trigger.action_config if isinstance(trigger.action_config, dict) else {}
-        
+
         # New model: 'name' and 'arguments'
         # Old model fallback: 'tool_name' and 'payload'
         tool_name = action.get("name") or action.get("tool_name") or action.get("tool")
         if not isinstance(tool_name, str) or not tool_name.strip():
             raise ValueError("tool_call action requires non-empty 'name'")
-            
+
         payload = action.get("arguments") or action.get("payload") or action.get("input", {})
         if payload is None:
             payload = {}
@@ -614,7 +622,11 @@ class TriggerScheduler:
             raise ValueError("http_request action 'headers' must be an object")
 
         timeout_seconds = action.get("timeout_seconds", 10)
-        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or timeout_seconds <= 0
+        ):
             raise ValueError("http_request action 'timeout_seconds' must be positive")
 
         request_kwargs: dict = {"headers": {str(k): str(v) for k, v in headers.items()}}

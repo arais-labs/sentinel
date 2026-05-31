@@ -25,7 +25,9 @@ class _FakeProvider(LLMProvider):
     def name(self) -> str:
         return "fake"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         self.calls.append(
             {
                 "messages": list(messages),
@@ -42,7 +44,9 @@ class _FakeProvider(LLMProvider):
             stop_reason="stop",
         )
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         if False:
             yield
@@ -88,7 +92,9 @@ class _FakeLoop:
             runtime_context_snapshot=None,
         )
 
-    async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+    async def persist_created_messages(
+        self, db, session_id, created, assistant_iterations, **kwargs
+    ):
         _ = (db, session_id, created, assistant_iterations, kwargs)
 
     def extract_final_text(self, _messages) -> str:
@@ -115,7 +121,9 @@ def test_chat_endpoint_calls_runtime_support_and_returns_response():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        session_resp = client.post("/api/v1/instances/main/sessions", json={"title": "chat"}, headers=headers)
+        session_resp = client.post(
+            "/api/v1/instances/main/sessions", json={"title": "chat"}, headers=headers
+        )
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
@@ -156,7 +164,9 @@ def test_chat_endpoint_returns_503_when_no_provider_configured():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        session_resp = client.post("/api/v1/instances/main/sessions", json={"title": "chat"}, headers=headers)
+        session_resp = client.post(
+            "/api/v1/instances/main/sessions", json={"title": "chat"}, headers=headers
+        )
         session_id = session_resp.json()["id"]
 
         chat = client.post(

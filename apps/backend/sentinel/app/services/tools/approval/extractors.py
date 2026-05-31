@@ -29,9 +29,7 @@ def _extract_generic_approval(result: dict[str, Any]) -> dict[str, Any] | None:
     status = str(approval.get("status") or "pending").strip() or "pending"
     pending = bool(approval.get("pending")) if "pending" in approval else status == "pending"
     can_resolve = (
-        bool(approval.get("can_resolve"))
-        if "can_resolve" in approval
-        else status == "pending"
+        bool(approval.get("can_resolve")) if "can_resolve" in approval else status == "pending"
     )
     payload: dict[str, Any] = {
         "provider": provider,

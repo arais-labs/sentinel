@@ -8,7 +8,6 @@ from pathlib import PurePosixPath
 
 from app.services.runtime.remote_commands import load_remote_command
 
-
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
@@ -35,7 +34,10 @@ class RemoteWorkspacePaths:
         return {
             "schema_version": 1,
             "session_id": self.session_id,
-            "created_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "created_at": datetime.now(UTC)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
             "paths": {
                 "workspaces_root": self.workspaces_root,
                 "session_root": self.session_root,
@@ -53,9 +55,7 @@ class RemoteWorkspacePaths:
 
 def validate_session_id(session_id: str) -> str:
     if not SESSION_ID_PATTERN.fullmatch(session_id):
-        raise RuntimeWorkspaceError(
-            "session id must match [A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
-        )
+        raise RuntimeWorkspaceError("session id must match [A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
     return session_id
 
 
@@ -92,7 +92,9 @@ def workspace_paths(session_id: str, *, root: str | None = None) -> RemoteWorksp
     )
 
 
-def build_prepare_workspace_script(session_id: str, *, root: str | None = None) -> tuple[str, list[str]]:
+def build_prepare_workspace_script(
+    session_id: str, *, root: str | None = None
+) -> tuple[str, list[str]]:
     paths = workspace_paths(session_id, root=root)
     directories = [
         paths.workspaces_root,
@@ -124,13 +126,19 @@ def build_prepare_workspace_script(session_id: str, *, root: str | None = None) 
         ],
         "manifest": paths.manifest_payload(),
     }
-    return load_remote_command("common/workspace/prepare.sh"), [json.dumps(request, separators=(",", ":"))]
+    return load_remote_command("common/workspace/prepare.sh"), [
+        json.dumps(request, separators=(",", ":"))
+    ]
 
 
-def build_delete_workspace_script(session_id: str, *, root: str | None = None) -> tuple[str, list[str]]:
+def build_delete_workspace_script(
+    session_id: str, *, root: str | None = None
+) -> tuple[str, list[str]]:
     paths = workspace_paths(session_id, root=root)
     request = {
         "session_root": paths.session_root,
         "workspaces_root": paths.workspaces_root,
     }
-    return load_remote_command("common/workspace/delete.sh"), [json.dumps(request, separators=(",", ":"))]
+    return load_remote_command("common/workspace/delete.sh"), [
+        json.dumps(request, separators=(",", ":"))
+    ]

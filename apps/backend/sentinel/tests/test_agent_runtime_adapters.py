@@ -85,7 +85,9 @@ class _FakeProvider(LLMProvider):
         yield AgentEvent(type="text_end")
         yield AgentEvent(
             type="toolcall_end",
-            tool_call=ToolCallContent(id="call-1", name="browser.navigate", arguments={"url": "https://example.com"}),
+            tool_call=ToolCallContent(
+                id="call-1", name="browser.navigate", arguments={"url": "https://example.com"}
+            ),
         )
         yield AgentEvent(type="done", stop_reason="tool_use")
 
@@ -158,7 +160,9 @@ def test_runtime_message_conversion_skips_invalid_tool_call_blocks() -> None:
         content=[
             TextBlock(text="hi"),
             ToolCallBlock(id="", name="browser.navigate", arguments={"url": "https://example.com"}),
-            ToolCallBlock(id="call-1", name="browser.navigate", arguments={"url": "https://example.com"}),
+            ToolCallBlock(
+                id="call-1", name="browser.navigate", arguments={"url": "https://example.com"}
+            ),
         ],
         metadata={
             "model": "normal",
@@ -186,7 +190,11 @@ async def test_provider_adapter_converts_chat_surface() -> None:
                 content=[TextBlock(text="hello")],
             )
         ],
-        tools=[ToolSchema(name="notes.create", description="Create note", parameters={"type": "object"})],
+        tools=[
+            ToolSchema(
+                name="notes.create", description="Create note", parameters={"type": "object"}
+            )
+        ],
         config=GenerationConfig(model="normal", temperature=0.2),
     )
 
@@ -292,7 +300,9 @@ async def test_tool_registry_adapter_maps_pending_approval() -> None:
 async def test_tool_registry_adapter_maps_post_approval_validation_error_to_error() -> None:
     registry = ToolRegistry()
 
-    async def _invalid_after_approval(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    async def _invalid_after_approval(
+        payload: dict[str, Any], runtime: ToolRuntimeContext
+    ) -> dict[str, Any]:
         _ = payload, runtime
         raise ToolValidationError("Field 'command' must be 'read' for non-write git or gh commands")
 
@@ -315,7 +325,9 @@ async def test_tool_registry_adapter_maps_post_approval_validation_error_to_erro
 
     tool = adapter.get_tool("git")
     assert tool is not None
-    result = await tool.execute({"command": "write", "cli_command": "git clone https://github.com/example/repo.git"})
+    result = await tool.execute(
+        {"command": "write", "cli_command": "git clone https://github.com/example/repo.git"}
+    )
 
     assert result.status == "error"
     assert result.approval_request is None
@@ -329,7 +341,9 @@ async def test_tool_registry_adapter_hides_and_injects_session_id_for_grouped_to
     session_id = "00000000-0000-0000-0000-000000000123"
     seen_payloads: list[tuple[dict[str, Any], ToolRuntimeContext]] = []
 
-    async def _handle_run_user(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
+    async def _handle_run_user(
+        payload: dict[str, Any], runtime: ToolRuntimeContext
+    ) -> dict[str, Any]:
         seen_payloads.append((dict(payload), runtime))
         return {"ok": True, "payload": dict(payload)}
 

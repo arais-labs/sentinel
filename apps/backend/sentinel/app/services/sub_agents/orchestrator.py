@@ -153,12 +153,14 @@ class SubAgentOrchestrator:
                         break
                     if not isinstance(text, str) or not text.strip():
                         continue
-                    items.append(ConversationItem(
-                        id=f"interjection-{len(items)}",
-                        role="user",
-                        content=[TextBlock(text=f"[Operator interjection]: {text}")],
-                        metadata={"source": "operator_interjection"},
-                    ))
+                    items.append(
+                        ConversationItem(
+                            id=f"interjection-{len(items)}",
+                            role="user",
+                            content=[TextBlock(text=f"[Operator interjection]: {text}")],
+                            metadata={"source": "operator_interjection"},
+                        )
+                    )
                 return items
 
             async def _on_sub_agent_event(event: AgentEvent) -> None:
@@ -295,9 +297,7 @@ class SubAgentOrchestrator:
         if self._base_tool_registry is None:
             return self._agent_runtime_support
 
-        allowed_tools = (
-            task.allowed_tools if isinstance(task.allowed_tools, list) else []
-        )
+        allowed_tools = task.allowed_tools if isinstance(task.allowed_tools, list) else []
         if allowed_tools:
             allowed = {
                 str(item)
@@ -321,7 +321,9 @@ class SubAgentOrchestrator:
 
         base_context = self._agent_runtime_support.context_builder
         context_builder = ContextBuilder(
-            default_system_prompt=getattr(base_context, "_default_system_prompt", settings.default_system_prompt),
+            default_system_prompt=getattr(
+                base_context, "_default_system_prompt", settings.default_system_prompt
+            ),
             token_budget=getattr(base_context, "_token_budget", settings.context_token_budget),
             available_tools=available_tools,
             memory_search_service=getattr(base_context, "_memory_search_service", None),
@@ -334,7 +336,9 @@ class SubAgentOrchestrator:
                 scoped_registry,
                 db_session_factory=self._db_factory,
                 sub_agent_orchestrator=self,
-                instance_name=getattr(self._agent_runtime_support.tool_executor, "_instance_name", None),
+                instance_name=getattr(
+                    self._agent_runtime_support.tool_executor, "_instance_name", None
+                ),
             ),
         )
 

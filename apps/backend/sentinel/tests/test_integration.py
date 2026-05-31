@@ -110,7 +110,9 @@ def test_full_integration_happy_path():
             )
             assert sent.status_code == 200
 
-        compacted = client.post(f"/api/v1/instances/main/sessions/{session_id}/compact", headers=headers)
+        compacted = client.post(
+            f"/api/v1/instances/main/sessions/{session_id}/compact", headers=headers
+        )
         assert compacted.status_code == 200
         assert compacted.json()["raw_token_count"] > compacted.json()["compressed_token_count"]
 
@@ -122,7 +124,9 @@ def test_full_integration_happy_path():
         assert spawned.status_code == 202
         task_id = spawned.json()["id"]
 
-        task_list = client.get(f"/api/v1/instances/main/sessions/{session_id}/sub-agents", headers=headers)
+        task_list = client.get(
+            f"/api/v1/instances/main/sessions/{session_id}/sub-agents", headers=headers
+        )
         assert task_list.status_code == 200
         assert any(item["id"] == task_id for item in task_list.json()["items"])
 
@@ -166,7 +170,9 @@ def test_full_integration_happy_path():
         assert live_view.status_code == 200
         assert "enabled" in live_view.json()
 
-        with client.websocket_connect(f"/ws/instances/main/sessions/{session_id}/stream?token={token}") as ws:
+        with client.websocket_connect(
+            f"/ws/instances/main/sessions/{session_id}/stream?token={token}"
+        ) as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             ws.send_json({"type": "message", "content": "integration websocket message"})

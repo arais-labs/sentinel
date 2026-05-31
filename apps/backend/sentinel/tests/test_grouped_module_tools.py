@@ -13,12 +13,16 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-async def _handle_click(payload: dict[str, object], runtime: ToolRuntimeContext) -> dict[str, object]:
+async def _handle_click(
+    payload: dict[str, object], runtime: ToolRuntimeContext
+) -> dict[str, object]:
     _ = runtime
     return {"clicked": True, "selector": payload["selector"]}
 
 
-async def _handle_navigate(payload: dict[str, object], runtime: ToolRuntimeContext) -> dict[str, object]:
+async def _handle_navigate(
+    payload: dict[str, object], runtime: ToolRuntimeContext
+) -> dict[str, object]:
     _ = runtime
     return {"navigated": True, "url": payload["url"]}
 
@@ -218,12 +222,16 @@ def test_grouped_tool_requires_explicit_selector_field():
 def test_grouped_tool_ignores_fields_not_used_by_selected_action():
     calls: list[dict[str, object]] = []
 
-    async def _handle_run(payload: dict[str, object], runtime: ToolRuntimeContext) -> dict[str, object]:
+    async def _handle_run(
+        payload: dict[str, object], runtime: ToolRuntimeContext
+    ) -> dict[str, object]:
         _ = runtime
         calls.append(payload)
         return payload
 
-    async def _handle_accounts(payload: dict[str, object], runtime: ToolRuntimeContext) -> dict[str, object]:
+    async def _handle_accounts(
+        payload: dict[str, object], runtime: ToolRuntimeContext
+    ) -> dict[str, object]:
         _ = runtime
         calls.append(payload)
         return payload

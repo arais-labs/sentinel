@@ -1,4 +1,5 @@
 """Native module: memory — hierarchical memory tree operations."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -269,8 +270,7 @@ async def handle_tree(payload: dict[str, Any]) -> dict[str, Any]:
 
         if depth < max_depth and direct_children:
             payload_node["children"] = [
-                _node_to_tree(child, depth + 1)
-                for child in direct_children
+                _node_to_tree(child, depth + 1) for child in direct_children
             ]
 
         return payload_node
@@ -425,9 +425,7 @@ async def handle_update(payload: dict[str, Any]) -> dict[str, Any]:
             try:
                 updates["parent_id"] = UUID(parent_id_raw.strip())
             except ValueError as exc:
-                raise ToolValidationError(
-                    "Field 'parent_id' must be a valid UUID string"
-                ) from exc
+                raise ToolValidationError("Field 'parent_id' must be a valid UUID string") from exc
 
     memory_service = MemoryService(MemoryRepository())
     try:
@@ -506,7 +504,9 @@ async def handle_move(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             target_parent_id = UUID(target_parent_id_raw.strip())
         except ValueError as exc:
-            raise ToolValidationError("Field 'target_parent_id' must be a valid UUID string") from exc
+            raise ToolValidationError(
+                "Field 'target_parent_id' must be a valid UUID string"
+            ) from exc
 
     if to_root and target_parent_id is not None:
         raise ToolValidationError("Provide either to_root=true or target_parent_id, not both")
@@ -606,9 +606,7 @@ async def handle_search(payload: dict[str, Any]) -> dict[str, Any]:
         )
         expanded: list[Memory] = []
         if auto_expand:
-            expanded = await memory_service.expand_branches(
-                db, items=result.items, root_id=root_id
-            )
+            expanded = await memory_service.expand_branches(db, items=result.items, root_id=root_id)
 
     return {
         "items": [

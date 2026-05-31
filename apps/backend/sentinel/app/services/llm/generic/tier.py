@@ -16,7 +16,13 @@ from app.schemas.models import ModelFallbackResponse, ModelOptionResponse
 from app.services.llm.ids import ProviderId, TierName, parse_tier_name
 from app.services.llm.generic.base import LLMProvider
 from app.services.llm.generic.errors import error_tag, is_retryable, status_code
-from app.services.llm.generic.types import AgentEvent, AgentMessage, AssistantMessage, ReasoningConfig, ToolSchema
+from app.services.llm.generic.types import (
+    AgentEvent,
+    AgentMessage,
+    AssistantMessage,
+    ReasoningConfig,
+    ToolSchema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,7 @@ _TIER_LABELS: dict[TierName, tuple[str, str]] = {
 @dataclass(slots=True)
 class TierModelConfig:
     """One provider's config within a tier."""
+
     provider: LLMProvider
     model: str
     reasoning_config: ReasoningConfig
@@ -43,6 +50,7 @@ class TierModelConfig:
 @dataclass(slots=True)
 class TierConfig:
     """A tier has a primary and zero or more fallback providers."""
+
     primary: TierModelConfig
     fallbacks: list[TierModelConfig] = field(default_factory=list)
 
@@ -51,18 +59,21 @@ class TierConfig:
 # Cooldown tracker  (inspired by OpenClaw)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _CooldownState:
     """Tracks when a provider was last rate-limited."""
-    cooldown_until: float = 0.0          # time.monotonic() deadline
-    last_probe: float = 0.0             # last time we probed during cooldown
-    cooldown_seconds: float = 60.0      # window length
+
+    cooldown_until: float = 0.0  # time.monotonic() deadline
+    last_probe: float = 0.0  # last time we probed during cooldown
+    cooldown_seconds: float = 60.0  # window length
     probe_interval_seconds: float = 30.0  # how often to probe recovery
 
 
 # ---------------------------------------------------------------------------
 # TierProvider
 # ---------------------------------------------------------------------------
+
 
 class TierProvider(LLMProvider):
     """Routes tier values (for example ``normal``) to per-tier provider configs.
@@ -147,7 +158,9 @@ class TierProvider(LLMProvider):
         for tier_name, tier_cfg in self._tiers.items():
             label, description = _TIER_LABELS.get(tier_name, (tier_name.value.title(), ""))
             rc = tier_cfg.primary.reasoning_config
-            thinking_budget = rc.thinking_budget if rc.thinking_budget and rc.thinking_budget > 0 else None
+            thinking_budget = (
+                rc.thinking_budget if rc.thinking_budget and rc.thinking_budget > 0 else None
+            )
 
             fallback_providers = [
                 ModelFallbackResponse(
@@ -253,7 +266,9 @@ class TierProvider(LLMProvider):
     def _record_rate_limit(self, provider_name: str) -> None:
         cd = self._get_cooldown(provider_name)
         cd.cooldown_until = time.monotonic() + cd.cooldown_seconds
-        logger.warning("Provider %s rate-limited, cooldown until +%.0fs", provider_name, cd.cooldown_seconds)
+        logger.warning(
+            "Provider %s rate-limited, cooldown until +%.0fs", provider_name, cd.cooldown_seconds
+        )
 
     def _record_probe(self, provider_name: str) -> None:
         cd = self._get_cooldown(provider_name)

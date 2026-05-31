@@ -4,7 +4,6 @@ from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import handle_edit
 
-
 MODULE = ModuleDefinition(
     name="str_replace_editor",
     label="Str Replace Editor",

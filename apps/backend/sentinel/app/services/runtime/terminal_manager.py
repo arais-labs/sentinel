@@ -132,7 +132,11 @@ class RuntimeTerminalManager:
         )
 
     async def delete_workspace(self, session_id: str) -> None:
-        terminal_ids = {terminal_id for current_session, terminal_id in self._running_terminals if current_session == session_id}
+        terminal_ids = {
+            terminal_id
+            for current_session, terminal_id in self._running_terminals
+            if current_session == session_id
+        }
         terminal_ids.add("0")
         for terminal_id in terminal_ids:
             await self.close_terminal(session_id, terminal_id=terminal_id)
@@ -150,7 +154,9 @@ class RuntimeTerminalManager:
         async with lock:
             return await self._open_terminal_unlocked(session_id, terminal_id=terminal_id)
 
-    async def _open_terminal_unlocked(self, session_id: str, *, terminal_id: str = "0") -> TerminalStatus:
+    async def _open_terminal_unlocked(
+        self, session_id: str, *, terminal_id: str = "0"
+    ) -> TerminalStatus:
         key = (session_id, terminal_id)
         if key in self._running_terminals:
             return TerminalStatus(session_id=session_id, terminal_id=terminal_id, status="running")
@@ -227,7 +233,9 @@ class RuntimeTerminalManager:
                 "terminal_status_failed",
                 detail=(result.stderr or result.stdout or "").strip()[:500],
             )
-        status = (result.stdout or "").strip().splitlines()[-1] if result.stdout.strip() else "unknown"
+        status = (
+            (result.stdout or "").strip().splitlines()[-1] if result.stdout.strip() else "unknown"
+        )
         key = (session_id, terminal_id)
         if status == "running":
             self._running_terminals.add(key)
@@ -357,12 +365,15 @@ class RuntimeTerminalManager:
                 continue
             if terminal_id not in discovered:
                 self._running_terminals.discard((current_session, terminal_id))
-        terminal_ids_to_report = sorted(discovered | {item[1] for item in self._running_terminals if item[0] == session_id})
+        terminal_ids_to_report = sorted(
+            discovered | {item[1] for item in self._running_terminals if item[0] == session_id}
+        )
         if requested is not None:
-            terminal_ids_to_report = [terminal_id for terminal_id in terminal_ids_to_report if terminal_id in requested]
+            terminal_ids_to_report = [
+                terminal_id for terminal_id in terminal_ids_to_report if terminal_id in requested
+            ]
         return [
-            self._descriptor_for(session_id, terminal_id)
-            for terminal_id in terminal_ids_to_report
+            self._descriptor_for(session_id, terminal_id) for terminal_id in terminal_ids_to_report
         ]
 
     async def read_tails(
@@ -376,9 +387,13 @@ class RuntimeTerminalManager:
         for terminal_id in terminal_ids:
             terminal_id = validate_terminal_id(terminal_id)
             try:
-                output = await self.read_tail(session_id, terminal_id=terminal_id, tail_bytes=tail_bytes)
+                output = await self.read_tail(
+                    session_id, terminal_id=terminal_id, tail_bytes=tail_bytes
+                )
             except Exception as exc:  # noqa: BLE001
-                results.append({"terminal_id": terminal_id, "ok": False, "error": str(exc), "output": ""})
+                results.append(
+                    {"terminal_id": terminal_id, "ok": False, "error": str(exc), "output": ""}
+                )
                 continue
             results.append({"terminal_id": terminal_id, "ok": True, "output": output})
         return results
@@ -396,7 +411,9 @@ class RuntimeTerminalManager:
             try:
                 status = await self.close_terminal(session_id, terminal_id=terminal_id)
             except Exception as exc:  # noqa: BLE001
-                results.append({"terminal_id": terminal_id, "closed": False, "ok": False, "error": str(exc)})
+                results.append(
+                    {"terminal_id": terminal_id, "closed": False, "ok": False, "error": str(exc)}
+                )
                 continue
             results.append(
                 {
@@ -417,20 +434,24 @@ class RuntimeTerminalManager:
         tail_bytes: int = 8_000,
     ) -> str:
         count = max(256, min(int(tail_bytes), 200_000))
-        socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
+        socket = tmux_host_socket_path(
+            session_id, terminal_id=terminal_id, root=self._workspaces_root
+        )
         name = tmux_session_name(terminal_id)
         history_lines = max(100, min(5_000, (count // 80) + 100))
-        command = await self._tmux_command([
-            "-S",
-            socket,
-            "capture-pane",
-            "-p",
-            "-J",
-            "-t",
-            name,
-            "-S",
-            f"-{history_lines}",
-        ])
+        command = await self._tmux_command(
+            [
+                "-S",
+                socket,
+                "capture-pane",
+                "-p",
+                "-J",
+                "-t",
+                name,
+                "-S",
+                f"-{history_lines}",
+            ]
+        )
         result = await self._ssh.run(f"{command} 2>/dev/null", timeout=15)
         if result.exit_status not in {0, None}:
             raise TerminalUnavailableError(
@@ -443,7 +464,9 @@ class RuntimeTerminalManager:
         validate_terminal_id(terminal_id)
         if (session_id, terminal_id) not in self._running_terminals:
             await self.open_terminal(session_id, terminal_id=terminal_id)
-        socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
+        socket = tmux_host_socket_path(
+            session_id, terminal_id=terminal_id, root=self._workspaces_root
+        )
         name = tmux_session_name(terminal_id)
         command = await self._tmux_command(["-S", socket, "-C", "attach-session", "-t", name])
         process = await self._ssh.create_process(
@@ -497,7 +520,11 @@ class RuntimeTerminalManager:
                         process.stdin.write(f"refresh-client -C {cols}x{rows}\n")
                         continue
                 raw = message.get("bytes")
-                data = raw if raw is not None else text.encode("utf-8", errors="replace") if text is not None else b""
+                data = (
+                    raw
+                    if raw is not None
+                    else text.encode("utf-8", errors="replace") if text is not None else b""
+                )
                 if data:
                     _write_tmux_control_keys(process, name, data)
         finally:
@@ -564,9 +591,13 @@ class RuntimeTerminalManager:
             label=str(metadata.get("label") or ("main" if terminal_id == "0" else terminal_id)),
             status="running",
             busy=busy,
-            last_command=str(metadata["last_command"]) if metadata.get("last_command") is not None else None,
+            last_command=(
+                str(metadata["last_command"]) if metadata.get("last_command") is not None else None
+            ),
             last_cwd=str(metadata["last_cwd"]) if metadata.get("last_cwd") is not None else None,
-            auto=bool(metadata.get("auto") if "auto" in metadata else terminal_id.startswith("bg-")),
+            auto=bool(
+                metadata.get("auto") if "auto" in metadata else terminal_id.startswith("bg-")
+            ),
             created_by=str(metadata.get("created_by") or "runtime"),
         )
 
@@ -576,7 +607,9 @@ class RuntimeTerminalManager:
         script = (
             load_remote_command("common/tmux/discover.sh")
             .replace("__TMUX_DIR__", quote(paths.tmux))
-            .replace("__RESOLVE_HOST_TMUX__", build_resolve_host_tmux_script(os_name=environment.os))
+            .replace(
+                "__RESOLVE_HOST_TMUX__", build_resolve_host_tmux_script(os_name=environment.os)
+            )
         )
         result = await self._ssh.run_script(script, timeout=15)
         if result.exit_status not in {0, None}:
@@ -613,7 +646,9 @@ class RuntimeTerminalManager:
             )
         return environment
 
-    async def _run_required_script(self, script: str, args: list[str], *, timeout: int, reason: str) -> None:
+    async def _run_required_script(
+        self, script: str, args: list[str], *, timeout: int, reason: str
+    ) -> None:
         result = await self._ssh.run_script(script, args=args, timeout=timeout)
         if result.exit_status not in {0, None}:
             raise TerminalUnavailableError(
@@ -622,17 +657,21 @@ class RuntimeTerminalManager:
             )
 
     async def _refuse_if_foreground_busy(self, session_id: str, *, terminal_id: str) -> None:
-        socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
+        socket = tmux_host_socket_path(
+            session_id, terminal_id=terminal_id, root=self._workspaces_root
+        )
         name = tmux_session_name(terminal_id)
-        command = await self._tmux_command([
-            "-S",
-            socket,
-            "display-message",
-            "-p",
-            "-t",
-            name,
-            "#{pane_current_command}",
-        ])
+        command = await self._tmux_command(
+            [
+                "-S",
+                socket,
+                "display-message",
+                "-p",
+                "-t",
+                name,
+                "#{pane_current_command}",
+            ]
+        )
         result = await self._ssh.run(
             command,
             timeout=10,
@@ -642,7 +681,9 @@ class RuntimeTerminalManager:
             raise TerminalBlockedError("foreground_process_running", current_command=current)
 
     async def _pane_log_size(self, session_id: str, *, terminal_id: str) -> int:
-        log_path = tmux_host_log_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
+        log_path = tmux_host_log_path(
+            session_id, terminal_id=terminal_id, root=self._workspaces_root
+        )
         environment = await self._require_supported_environment()
         stat_command = (
             f"stat -f %z {quote(log_path)} 2>/dev/null || echo 0"
@@ -659,7 +700,9 @@ class RuntimeTerminalManager:
             return 0
 
     async def _send_to_pane(self, session_id: str, *, terminal_id: str, command: str) -> None:
-        socket = tmux_host_socket_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
+        socket = tmux_host_socket_path(
+            session_id, terminal_id=terminal_id, root=self._workspaces_root
+        )
         name = tmux_session_name(terminal_id)
         await self._ssh.run(
             await self._tmux_command(["-S", socket, "send-keys", "-t", name, "C-u"]),
@@ -667,7 +710,9 @@ class RuntimeTerminalManager:
         )
         if "\n" in command:
             await self._ssh.run(
-                await self._tmux_command(["-S", socket, "send-keys", "-t", name, "-l", "\x1b[200~"]),
+                await self._tmux_command(
+                    ["-S", socket, "send-keys", "-t", name, "-l", "\x1b[200~"]
+                ),
                 timeout=10,
             )
             await self._ssh.run(
@@ -675,7 +720,9 @@ class RuntimeTerminalManager:
                 timeout=15,
             )
             await self._ssh.run(
-                await self._tmux_command(["-S", socket, "send-keys", "-t", name, "-l", "\x1b[201~"]),
+                await self._tmux_command(
+                    ["-S", socket, "send-keys", "-t", name, "-l", "\x1b[201~"]
+                ),
                 timeout=10,
             )
         else:
@@ -700,7 +747,9 @@ class RuntimeTerminalManager:
         since_offset: int,
         timeout: int,
     ) -> RuntimeExecResult:
-        log_path = tmux_host_log_path(session_id, terminal_id=terminal_id, root=self._workspaces_root)
+        log_path = tmux_host_log_path(
+            session_id, terminal_id=terminal_id, root=self._workspaces_root
+        )
         deadline = asyncio.get_running_loop().time() + timeout
         last_chunk = b""
         while True:
@@ -711,7 +760,9 @@ class RuntimeTerminalManager:
             last_chunk = (result.stdout or "").encode("utf-8", errors="replace")
             match = _OSC_D_PATTERN.search(last_chunk)
             if match:
-                raw_code = match.group(1).decode("ascii", errors="replace") if match.group(1) else ""
+                raw_code = (
+                    match.group(1).decode("ascii", errors="replace") if match.group(1) else ""
+                )
                 exit_code = int(raw_code) if raw_code and raw_code.lstrip("-").isdigit() else -1
                 return self._parse_output(last_chunk[: match.start()], exit_code)
             if asyncio.get_running_loop().time() >= deadline:
@@ -861,7 +912,9 @@ class RuntimeTerminalManager:
             if not cancelled and on_complete is not None:
                 await on_complete(job, stdout_tail[-8_000:], "")
 
-    async def _read_background_job_result(self, handle: BackgroundJobHandle) -> dict[str, object] | None:
+    async def _read_background_job_result(
+        self, handle: BackgroundJobHandle
+    ) -> dict[str, object] | None:
         result = await self._ssh.run(
             f"test -f {quote(handle.result_path)} && cat {quote(handle.result_path)} || true",
             timeout=15,
@@ -884,7 +937,9 @@ class RuntimeTerminalManager:
         return RuntimeExecResult(exit_status=exit_code, stdout=output.rstrip(), stderr="")
 
 
-def get_terminal_manager(ssh: SSHClient, *, workspaces_root: str | None = None) -> RuntimeTerminalManager:
+def get_terminal_manager(
+    ssh: SSHClient, *, workspaces_root: str | None = None
+) -> RuntimeTerminalManager:
     return RuntimeTerminalManager(ssh, workspaces_root=workspaces_root)
 
 
@@ -1001,11 +1056,7 @@ def _decode_tmux_control_value(value: str) -> bytes:
     index = 0
     while index < len(value):
         char = value[index]
-        if (
-            char == "\\"
-            and index + 3 < len(value)
-            and value[index + 1 : index + 4].isdigit()
-        ):
+        if char == "\\" and index + 3 < len(value) and value[index + 1 : index + 4].isdigit():
             try:
                 output.append(int(value[index + 1 : index + 4], 8))
                 index += 4

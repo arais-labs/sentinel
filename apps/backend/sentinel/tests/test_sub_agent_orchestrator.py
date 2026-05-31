@@ -6,7 +6,13 @@ import json
 from app.models import Message, Session, SubAgentTask
 from app.services.agent import ContextBuilder, SentinelRuntimeSupport
 from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, ToolCallContent, TokenUsage
+from app.services.llm.generic.types import (
+    AgentEvent,
+    AssistantMessage,
+    TextContent,
+    ToolCallContent,
+    TokenUsage,
+)
 from app.services.sub_agents import SubAgentOrchestrator
 from app.services.tools import ToolDefinition, ToolExecutor, ToolRegistry
 from app.services.tools.registry import ToolRuntimeContext
@@ -45,13 +51,17 @@ class _SequenceProvider(LLMProvider):
     def name(self) -> str:
         return "sequence"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         idx = min(self.calls, len(self._responses) - 1)
         _ = tool_choice
         self.calls += 1
         return self._responses[idx]
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         _ = tool_choice
         if False:
             yield AgentEvent(type="done", stop_reason="stop")
@@ -63,12 +73,16 @@ class _SlowProvider(LLMProvider):
     def name(self) -> str:
         return "slow"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         await asyncio.sleep(2)
         raise AssertionError("unreachable")
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         await asyncio.sleep(2)
         if False:
@@ -220,7 +234,11 @@ def test_sub_agents_do_not_receive_delegate_tool_or_policy():
     provider = _SequenceProvider(
         [
             AssistantMessage(
-                content=[ToolCallContent(id="call_delegate", name="delegate", arguments={"command": "spawn"})],
+                content=[
+                    ToolCallContent(
+                        id="call_delegate", name="delegate", arguments={"command": "spawn"}
+                    )
+                ],
                 model="m",
                 provider="p",
                 usage=TokenUsage(),
@@ -362,7 +380,9 @@ def test_orchestrator_timeout_marks_task_failed():
     db.add(parent)
     task = _add_task(db, parent, timeout_seconds=1)
 
-    orchestrator = SubAgentOrchestrator(_build_base_runtime_support(_SlowProvider()), _SessionFactory(db), ToolRegistry())
+    orchestrator = SubAgentOrchestrator(
+        _build_base_runtime_support(_SlowProvider()), _SessionFactory(db), ToolRegistry()
+    )
     _run(orchestrator.run_task(task.id))
 
     assert task.status == "failed"
@@ -418,7 +438,9 @@ def test_orchestrator_cancel_task_marks_cancelled():
     db.add(parent)
     task = _add_task(db, parent, timeout_seconds=5)
 
-    orchestrator = SubAgentOrchestrator(_build_base_runtime_support(_SlowProvider()), _SessionFactory(db), ToolRegistry())
+    orchestrator = SubAgentOrchestrator(
+        _build_base_runtime_support(_SlowProvider()), _SessionFactory(db), ToolRegistry()
+    )
 
     async def _scenario():
         started = orchestrator.start_task(task.id)

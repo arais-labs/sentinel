@@ -256,17 +256,25 @@ class SentinelRuntimeSupport:
             if isinstance(message, UserMessage):
                 metadata = dict(message.metadata or {})
                 text_content = self._user_text(message.content)
-                if session_record is not None and not session_record.initial_prompt and text_content.strip():
+                if (
+                    session_record is not None
+                    and not session_record.initial_prompt
+                    and text_content.strip()
+                ):
                     session_record.initial_prompt = text_content.strip()
                 metadata = with_generation_metadata(metadata, generation=requested_generation)
                 if isinstance(message.content, list):
                     attachments: list[dict[str, Any]] = []
                     for block in message.content:
                         if isinstance(block, ImageContent) and block.data:
-                            attachments.append({"mime_type": block.media_type, "base64": block.data})
+                            attachments.append(
+                                {"mime_type": block.media_type, "base64": block.data}
+                            )
                     if attachments:
                         existing = metadata.get("attachments")
-                        metadata["attachments"] = [*existing, *attachments] if isinstance(existing, list) else attachments
+                        metadata["attachments"] = (
+                            [*existing, *attachments] if isinstance(existing, list) else attachments
+                        )
                 db.add(
                     Message(
                         session_id=session_id,
@@ -329,12 +337,16 @@ class SentinelRuntimeSupport:
                 raw_metadata = dict(message.metadata or {})
                 persisted_message_id = raw_metadata.pop("__persisted_message_id", None)
                 metadata = {"is_error": message.is_error}
-                metadata.update({k: v for k, v in raw_metadata.items() if not str(k).startswith("__")})
+                metadata.update(
+                    {k: v for k, v in raw_metadata.items() if not str(k).startswith("__")}
+                )
                 metadata = with_generation_metadata(
                     metadata,
                     generation=latest_assistant_generation or requested_generation,
                 )
-                stored_content, truncation_meta = self._truncate_tool_result_for_storage(message.content or "")
+                stored_content, truncation_meta = self._truncate_tool_result_for_storage(
+                    message.content or ""
+                )
                 if truncation_meta:
                     metadata.update(truncation_meta)
                 existing_record = None
@@ -366,7 +378,11 @@ class SentinelRuntimeSupport:
 
     @staticmethod
     def _extract_runtime_system_prompt(messages: list[AgentMessage]) -> str | None:
-        blocks = [(message.content or "").strip() for message in messages if isinstance(message, SystemMessage)]
+        blocks = [
+            (message.content or "").strip()
+            for message in messages
+            if isinstance(message, SystemMessage)
+        ]
         blocks = [block for block in blocks if block]
         return "\n\n---\n\n".join(blocks) if blocks else None
 
@@ -398,7 +414,11 @@ class SentinelRuntimeSupport:
             entry: dict[str, Any] = {
                 "role": "user",
                 "kind": "history_user",
-                "preview": SentinelRuntimeSupport._truncate_runtime_history_preview(preview) if preview else None,
+                "preview": (
+                    SentinelRuntimeSupport._truncate_runtime_history_preview(preview)
+                    if preview
+                    else None
+                ),
                 "text_block_count": len(text_parts),
                 "image_count": image_count,
             }
@@ -420,14 +440,22 @@ class SentinelRuntimeSupport:
             preview = "\n\n".join(text_parts).strip()
             if not preview and tool_calls:
                 call_names = ", ".join(
-                    call["name"] for call in tool_calls if isinstance(call.get("name"), str) and call["name"].strip()
+                    call["name"]
+                    for call in tool_calls
+                    if isinstance(call.get("name"), str) and call["name"].strip()
                 )
                 if call_names:
-                    preview = f"Planned tool call{'s' if len(tool_calls) != 1 else ''}: {call_names}"
+                    preview = (
+                        f"Planned tool call{'s' if len(tool_calls) != 1 else ''}: {call_names}"
+                    )
             entry = {
                 "role": "assistant",
                 "kind": "history_assistant",
-                "preview": SentinelRuntimeSupport._truncate_runtime_history_preview(preview) if preview else None,
+                "preview": (
+                    SentinelRuntimeSupport._truncate_runtime_history_preview(preview)
+                    if preview
+                    else None
+                ),
                 "text_block_count": len(text_parts),
                 "tool_call_count": len(tool_calls),
             }
@@ -435,7 +463,9 @@ class SentinelRuntimeSupport:
                 entry["tool_calls"] = tool_calls
             return entry
         if isinstance(message, ToolResultMessage):
-            preview = SentinelRuntimeSupport._truncate_runtime_history_preview((message.content or "").strip())
+            preview = SentinelRuntimeSupport._truncate_runtime_history_preview(
+                (message.content or "").strip()
+            )
             return {
                 "role": "tool_result",
                 "kind": "history_tool_result",
@@ -517,7 +547,9 @@ class SentinelRuntimeSupport:
         pinned_memories = [
             {"title": block["title"], "content": str(block.get("content") or "").strip()}
             for block in memory_blocks
-            if block.get("pinned") and isinstance(block.get("content"), str) and str(block.get("content")).strip()
+            if block.get("pinned")
+            and isinstance(block.get("content"), str)
+            and str(block.get("content")).strip()
         ]
         if not pinned_memories:
             for block in layered_context:
@@ -525,7 +557,9 @@ class SentinelRuntimeSupport:
                 if content.startswith("## Memory (pinned):"):
                     first_line, _, remainder = content.partition("\n")
                     title = first_line.replace("## Memory (pinned):", "").strip()
-                    pinned_memories.append({"title": title or "Untitled", "content": remainder.strip()})
+                    pinned_memories.append(
+                        {"title": title or "Untitled", "content": remainder.strip()}
+                    )
         usage_metrics = build_context_usage_metrics(
             estimated_tokens=estimate_agent_messages_tokens(messages),
             context_budget=settings.context_token_budget,
@@ -533,7 +567,9 @@ class SentinelRuntimeSupport:
         return {
             "timestamp": datetime.now(UTC).isoformat(),
             "model": model,
-            "agent_mode": agent_mode.value if isinstance(agent_mode, AgentMode) else str(agent_mode),
+            "agent_mode": (
+                agent_mode.value if isinstance(agent_mode, AgentMode) else str(agent_mode)
+            ),
             "temperature": temperature,
             "max_iterations": max_iterations,
             "stream": stream,
@@ -577,7 +613,9 @@ class SentinelRuntimeSupport:
         return attachments
 
     def _assistant_text(self, message: AssistantMessage) -> str:
-        parts = [block.text for block in message.content if isinstance(block, TextContent) and block.text]
+        parts = [
+            block.text for block in message.content if isinstance(block, TextContent) and block.text
+        ]
         return "\n".join(parts)
 
     def _sanitize_tool_call_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:

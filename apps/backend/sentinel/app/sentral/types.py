@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, TypeAlias
 
-
 ConversationRole = Literal["system", "user", "assistant", "tool"]
 StopReason = Literal[
     "stop",
@@ -91,9 +90,7 @@ class ToolResultBlock:
     tool_arguments: dict[str, Any] | None = None
 
 
-ContentBlock: TypeAlias = (
-    TextBlock | ImageBlock | ThinkingBlock | ToolCallBlock | ToolResultBlock
-)
+ContentBlock: TypeAlias = TextBlock | ImageBlock | ThinkingBlock | ToolCallBlock | ToolResultBlock
 
 
 @dataclass(slots=True)

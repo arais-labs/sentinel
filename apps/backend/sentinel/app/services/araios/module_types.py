@@ -2,6 +2,7 @@
 
 Used by both system modules (code-defined) and user modules (DB-defined).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ _GROUPED_ACTION_FIELD = "command"
 @dataclass
 class FieldDefinition:
     """A field in a module's record schema."""
+
     key: str
     label: str
     type: str = "text"  # text|textarea|email|url|number|date|select|badge|tags|readonly
@@ -46,6 +48,7 @@ class FieldDefinition:
 @dataclass
 class FieldsConfig:
     """Controls how records display in the UI."""
+
     titleField: str | None = None
     subtitleField: str | None = None
     badgeField: str | None = None
@@ -53,18 +56,23 @@ class FieldsConfig:
     metaField: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {k: v for k, v in {
-            "titleField": self.titleField,
-            "subtitleField": self.subtitleField,
-            "badgeField": self.badgeField,
-            "filterField": self.filterField,
-            "metaField": self.metaField,
-        }.items() if v is not None}
+        return {
+            k: v
+            for k, v in {
+                "titleField": self.titleField,
+                "subtitleField": self.subtitleField,
+                "badgeField": self.badgeField,
+                "filterField": self.filterField,
+                "metaField": self.metaField,
+            }.items()
+            if v is not None
+        }
 
 
 @dataclass
 class ParamDefinition:
     """A parameter for an action (flat format — legacy compat)."""
+
     key: str
     label: str
     type: str = "text"  # text|textarea|number
@@ -80,14 +88,15 @@ class ParamDefinition:
 @dataclass
 class ActionDefinition:
     """An executable action within a module."""
+
     id: str
     label: str
     description: str = ""
     type: str = "standalone"  # standalone|record
     parameters_schema: dict[str, Any] | None = None
     params: list[ParamDefinition] | None = None  # flat format — auto-converted to parameters_schema
-    code: str | None = None       # user modules — Python executed in runtime
-    handler: Any | None = None    # system modules — the actual async handler function
+    code: str | None = None  # user modules — Python executed in runtime
+    handler: Any | None = None  # system modules — the actual async handler function
     streaming: bool = False
     approval: bool = False
     permission_default: str | None = None
@@ -176,9 +185,11 @@ class ActionDefinition:
             schema["required"] = required
         return schema
 
+
 @dataclass
 class SecretDefinition:
     """A runtime-configurable secret for a module."""
+
     key: str
     label: str
     required: bool = False
@@ -196,6 +207,7 @@ class SecretDefinition:
 @dataclass
 class ModuleDefinition:
     """A unified module definition — used by both system and user modules."""
+
     name: str
     label: str
     description: str = ""
@@ -276,12 +288,15 @@ class ModuleDefinition:
                         )
                         for p in a.get("params", [])
                         if isinstance(p, dict) and "key" in p
-                    ] or None,
+                    ]
+                    or None,
                     code=a.get("code"),
                     handler=a.get("handler"),
                     streaming=a.get("streaming", False),
                     approval=_normalize_approval_value(a.get("approval")),
-                    permission_default=_normalize_permission_default_value(a.get("permission_default")),
+                    permission_default=_normalize_permission_default_value(
+                        a.get("permission_default")
+                    ),
                 )
                 for a in raw_actions
                 if isinstance(a, dict) and "id" in a
@@ -479,7 +494,8 @@ def _resolve_grouped_action(
     action = action_map.get(normalized)
     if action is None:
         raise ToolValidationError(
-            f"Field '{_GROUPED_ACTION_FIELD}' must be one of: " + ", ".join(sorted(action_map.keys()))
+            f"Field '{_GROUPED_ACTION_FIELD}' must be one of: "
+            + ", ".join(sorted(action_map.keys()))
         )
     return action
 
@@ -583,7 +599,8 @@ async def _invoke_approval_check(
     positional_params = [
         parameter
         for parameter in evaluator_signature.parameters.values()
-        if parameter.kind in {
+        if parameter.kind
+        in {
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
         }
@@ -635,7 +652,8 @@ async def _invoke_action_handler(
     positional_params = [
         parameter
         for parameter in handler_signature.parameters.values()
-        if parameter.kind in {
+        if parameter.kind
+        in {
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
         }
@@ -649,6 +667,7 @@ async def _invoke_action_handler(
     if inspect.isawaitable(result):
         return await result
     return result
+
 
 def _validate_field(field_name: str, value: Any, field_schema: dict[str, Any]) -> None:
     expected_type = field_schema.get("type")

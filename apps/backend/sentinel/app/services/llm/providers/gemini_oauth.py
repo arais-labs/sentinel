@@ -13,7 +13,14 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from app.services.llm.generic.errors import TransientProviderError
-from app.services.llm.generic.types import AgentEvent, AgentMessage, AssistantMessage, ReasoningConfig, ToolCallContent, ToolSchema
+from app.services.llm.generic.types import (
+    AgentEvent,
+    AgentMessage,
+    AssistantMessage,
+    ReasoningConfig,
+    ToolCallContent,
+    ToolSchema,
+)
 from app.services.llm.providers.gemini import GeminiProvider, _map_finish_reason
 
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -214,7 +221,9 @@ class GeminiOAuthProvider(GeminiProvider):
         rc = reasoning_config or ReasoningConfig()
         thinking_budget = rc.thinking_budget if rc.thinking_budget and rc.thinking_budget > 0 else 0
 
-        payload = self._build_payload(messages, model, tools, temperature, thinking_budget, tool_choice=tool_choice)
+        payload = self._build_payload(
+            messages, model, tools, temperature, thinking_budget, tool_choice=tool_choice
+        )
         last_error: Exception | None = None
 
         candidate_models = self._iter_candidate_models(model)
@@ -255,7 +264,9 @@ class GeminiOAuthProvider(GeminiProvider):
         rc = reasoning_config or ReasoningConfig()
         thinking_budget = rc.thinking_budget if rc.thinking_budget and rc.thinking_budget > 0 else 0
 
-        payload = self._build_payload(messages, model, tools, temperature, thinking_budget, tool_choice=tool_choice)
+        payload = self._build_payload(
+            messages, model, tools, temperature, thinking_budget, tool_choice=tool_choice
+        )
         candidate_models = self._iter_candidate_models(model)
         last_error: Exception | None = None
 
@@ -298,7 +309,9 @@ class GeminiOAuthProvider(GeminiProvider):
         buffered_lines: list[str] = []
 
         async with self._client_factory() as client:
-            async with client.stream("POST", url, json=request_payload, headers=headers) as response:
+            async with client.stream(
+                "POST", url, json=request_payload, headers=headers
+            ) as response:
                 if response.is_error:
                     body = await response.aread()
                     detail = body.decode("utf-8", errors="replace").strip()
@@ -358,7 +371,11 @@ class GeminiOAuthProvider(GeminiProvider):
                                 thinking_started = True
                                 yield AgentEvent(type="thinking_start", content_index=0)
                             signature = part.get("thoughtSignature")
-                            signature_value = signature if isinstance(signature, str) and signature.strip() else None
+                            signature_value = (
+                                signature
+                                if isinstance(signature, str) and signature.strip()
+                                else None
+                            )
                             yield AgentEvent(
                                 type="thinking_delta",
                                 content_index=0,
@@ -418,14 +435,20 @@ class GeminiOAuthProvider(GeminiProvider):
                             if finish_upper == "SAFETY" or last_block_reason:
                                 reason = last_block_reason or finish_upper
                                 raise RuntimeError(f"Gemini blocked response ({reason})")
-                            yield AgentEvent(type="done", stop_reason=_map_finish_reason(finish_reason))
+                            yield AgentEvent(
+                                type="done", stop_reason=_map_finish_reason(finish_reason)
+                            )
                             done_emitted = True
                             continue
                         if thinking_started:
                             yield AgentEvent(type="thinking_end", content_index=0)
                         if text_started:
                             yield AgentEvent(type="text_end", content_index=0)
-                        stop = "tool_use" if response_has_function_call else _map_finish_reason(finish_reason)
+                        stop = (
+                            "tool_use"
+                            if response_has_function_call
+                            else _map_finish_reason(finish_reason)
+                        )
                         yield AgentEvent(type="done", stop_reason=stop)
                         done_emitted = True
 
@@ -636,9 +659,7 @@ class GeminiOAuthProvider(GeminiProvider):
             if now >= self._model_cooldowns.get(candidate, 0.0)
         ]
         cooled = [
-            candidate
-            for candidate in candidates
-            if now < self._model_cooldowns.get(candidate, 0.0)
+            candidate for candidate in candidates if now < self._model_cooldowns.get(candidate, 0.0)
         ]
         ordered = [*available, *cooled]
         return ordered or candidates

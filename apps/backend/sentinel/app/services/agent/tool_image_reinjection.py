@@ -59,11 +59,19 @@ def build_tool_image_reinjection_messages(
                 continue
 
             size_bytes_raw = att.get("size_bytes")
-            size_bytes = int(size_bytes_raw) if isinstance(size_bytes_raw, int) else _estimate_base64_size(payload)
+            size_bytes = (
+                int(size_bytes_raw)
+                if isinstance(size_bytes_raw, int)
+                else _estimate_base64_size(payload)
+            )
             mime_type_raw = att.get("mime_type")
-            mime_type = mime_type_raw if isinstance(mime_type_raw, str) and mime_type_raw else "image/png"
+            mime_type = (
+                mime_type_raw if isinstance(mime_type_raw, str) and mime_type_raw else "image/png"
+            )
             hash_raw = att.get("sha256")
-            image_hash = hash_raw if isinstance(hash_raw, str) and hash_raw else _hash_base64(payload)
+            image_hash = (
+                hash_raw if isinstance(hash_raw, str) and hash_raw else _hash_base64(payload)
+            )
 
             if image_hash in seen:
                 skipped += 1
@@ -120,7 +128,11 @@ def build_tool_image_reinjection_messages(
         )
 
     if skipped > 0:
-        content.append(TextContent(text=f"Note: {skipped} additional image(s) were skipped due to reinjection limits."))
+        content.append(
+            TextContent(
+                text=f"Note: {skipped} additional image(s) were skipped due to reinjection limits."
+            )
+        )
 
     return ToolImageReinjectionResult(
         messages=[

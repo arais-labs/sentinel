@@ -47,10 +47,14 @@ class _NoopProvider(LLMProvider):
     def name(self) -> str:
         return "noop"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         return AssistantMessage(content=[TextContent(text="noop")], model=model, provider=self.name)
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         yield AgentEvent(type="start")
         yield AgentEvent(type="done", stop_reason="stop")
 
@@ -67,11 +71,15 @@ def test_compaction_create_idempotent_and_ownership():
     try:
         client = TestClient(app)
 
-        owner_login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        owner_login = client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        )
         owner_headers = {"Authorization": f"Bearer {owner_login.json()['access_token']}"}
         other_headers = {"Authorization": f"Bearer {_make_token(sub='other-user')}"}
 
-        session = client.post("/api/v1/instances/main/sessions", json={"title": "compact-me"}, headers=owner_headers)
+        session = client.post(
+            "/api/v1/instances/main/sessions", json={"title": "compact-me"}, headers=owner_headers
+        )
         assert session.status_code == 200
         session_id = session.json()["id"]
 
@@ -85,7 +93,9 @@ def test_compaction_create_idempotent_and_ownership():
             )
             assert posted.status_code == 200
 
-        compacted = client.post(f"/api/v1/instances/main/sessions/{session_id}/compact", headers=owner_headers)
+        compacted = client.post(
+            f"/api/v1/instances/main/sessions/{session_id}/compact", headers=owner_headers
+        )
         assert compacted.status_code == 200
         payload = compacted.json()
         assert payload["session_id"] == session_id
@@ -96,7 +106,9 @@ def test_compaction_create_idempotent_and_ownership():
         assert len(summaries) == 1
         first_summary_id = summaries[0].id
 
-        compacted_again = client.post(f"/api/v1/instances/main/sessions/{session_id}/compact", headers=owner_headers)
+        compacted_again = client.post(
+            f"/api/v1/instances/main/sessions/{session_id}/compact", headers=owner_headers
+        )
         assert compacted_again.status_code == 200
         second_payload = compacted_again.json()
         assert second_payload["raw_token_count"] >= second_payload["compressed_token_count"]
@@ -104,7 +116,9 @@ def test_compaction_create_idempotent_and_ownership():
         assert len(summaries_after) == 1
         assert summaries_after[0].id == first_summary_id
 
-        forbidden = client.post(f"/api/v1/instances/main/sessions/{session_id}/compact", headers=other_headers)
+        forbidden = client.post(
+            f"/api/v1/instances/main/sessions/{session_id}/compact", headers=other_headers
+        )
         assert forbidden.status_code == 404
     finally:
         restore_test_app(old_init)
@@ -124,7 +138,9 @@ def test_compaction_noop_when_context_is_small():
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        session = client.post("/api/v1/instances/main/sessions", json={"title": "small-context"}, headers=headers)
+        session = client.post(
+            "/api/v1/instances/main/sessions", json={"title": "small-context"}, headers=headers
+        )
         session_id = session.json()["id"]
 
         for i in range(5):
@@ -135,7 +151,9 @@ def test_compaction_noop_when_context_is_small():
             )
             assert posted.status_code == 200
 
-        compacted = client.post(f"/api/v1/instances/main/sessions/{session_id}/compact", headers=headers)
+        compacted = client.post(
+            f"/api/v1/instances/main/sessions/{session_id}/compact", headers=headers
+        )
         assert compacted.status_code == 200
         payload = compacted.json()
         assert payload["raw_token_count"] == 0
@@ -151,11 +169,17 @@ def test_compaction_retains_coherent_recent_turn_not_just_last_10_rows():
 
     # Older turn to compact away
     fake_db.add(Message(session_id=session.id, role="user", content="old-user-1", metadata_json={}))
-    fake_db.add(Message(session_id=session.id, role="assistant", content="old-assistant-1", metadata_json={}))
+    fake_db.add(
+        Message(
+            session_id=session.id, role="assistant", content="old-assistant-1", metadata_json={}
+        )
+    )
 
     # Most recent turn: one user + many tool results + final assistant.
     # Legacy row-count retention would drop this user row when trimming to last 10 rows.
-    fake_db.add(Message(session_id=session.id, role="user", content="latest-user-turn", metadata_json={}))
+    fake_db.add(
+        Message(session_id=session.id, role="user", content="latest-user-turn", metadata_json={})
+    )
     for idx in range(15):
         fake_db.add(
             Message(

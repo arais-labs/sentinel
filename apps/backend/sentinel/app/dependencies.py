@@ -117,4 +117,3 @@ def get_connection_instance_runtime_context(connection: HTTPConnection) -> Insta
     if isinstance(context, InstanceRuntimeContext):
         return context
     raise RuntimeError("Instance runtime context is missing; route is not instance-scoped")
-

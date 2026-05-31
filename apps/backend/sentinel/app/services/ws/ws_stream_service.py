@@ -78,9 +78,18 @@ class RuntimeSupportProtocol(Protocol):
     context_builder: Any
     tool_adapter: Any
 
-    async def prepare_runtime_turn_context(self, db: AsyncSession, session_id: UUID, **kwargs) -> Any: ...
+    async def prepare_runtime_turn_context(
+        self, db: AsyncSession, session_id: UUID, **kwargs
+    ) -> Any: ...
 
-    async def persist_created_messages(self, db: AsyncSession, session_id: UUID, created: list[Any], assistant_iterations: dict[int, int], **kwargs) -> None: ...
+    async def persist_created_messages(
+        self,
+        db: AsyncSession,
+        session_id: UUID,
+        created: list[Any],
+        assistant_iterations: dict[int, int],
+        **kwargs,
+    ) -> None: ...
 
     def extract_final_text(self, messages: list[Any]) -> str: ...
 
@@ -138,7 +147,9 @@ def unresolved_tool_calls_from_history(history: list[dict[str, Any]]) -> list[di
                 name = str(raw_call.get("name") or "unknown")
                 arguments = raw_call.get("arguments")
                 generation = normalize_generation_metadata(
-                    metadata.get("generation") if isinstance(metadata.get("generation"), dict) else None
+                    metadata.get("generation")
+                    if isinstance(metadata.get("generation"), dict)
+                    else None
                 )
                 pending[call_id] = {
                     "id": call_id,
@@ -243,7 +254,13 @@ async def run_agent_once(
         phase = _phase_from_sentinel_event(sentinel_event)
         if phase is not None:
             await run_registry.set_phase(session_key, phase)
-        elif getattr(sentinel_event, "type", None) in {"thinking_end", "toolcall_end", "done", "error", "agent_error"}:
+        elif getattr(sentinel_event, "type", None) in {
+            "thinking_end",
+            "toolcall_end",
+            "done",
+            "error",
+            "agent_error",
+        }:
             await run_registry.set_phase(session_key, None)
         await manager.broadcast_agent_event(session_key, sentinel_event)
 
@@ -292,7 +309,10 @@ async def run_agent_once(
         await run_registry.set_phase(session_key, "thinking")
         run_result = await run_task
         run_error = getattr(run_result, "error", None)
-        cancelled = getattr(run_result, "status", None) == "aborted" or run_error == "Generation stopped by user"
+        cancelled = (
+            getattr(run_result, "status", None) == "aborted"
+            or run_error == "Generation stopped by user"
+        )
     except asyncio.CancelledError:
         cancelled = True
     except Exception as exc:  # noqa: BLE001
@@ -322,7 +342,9 @@ async def maybe_auto_compact_after_run(
     compaction_service_cls: type[CompactionService] = CompactionService,
 ) -> None:
     try:
-        compaction_svc = compaction_service_cls(provider=getattr(agent_runtime_support, "provider", None))
+        compaction_svc = compaction_service_cls(
+            provider=getattr(agent_runtime_support, "provider", None)
+        )
         should_compact = await compaction_svc.should_auto_compact(db, session_id=session_id)
         if not should_compact:
             return
@@ -355,6 +377,7 @@ async def maybe_auto_compact_after_run(
                 "error": "Auto-compaction failed",
             },
         )
+
 
 def _iso(value: datetime | None) -> str | None:
     if value is None:

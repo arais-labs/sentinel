@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from app.services.llm.generic.types import AssistantMessage, ReasoningConfig, SystemMessage, TextContent, TokenUsage
+from app.services.llm.generic.types import (
+    AssistantMessage,
+    ReasoningConfig,
+    SystemMessage,
+    TextContent,
+    TokenUsage,
+)
 from app.sentral import ConversationItem, TextBlock, ToolResultBlock
 from app.sentral import AgentEvent
 from scripts.agent_cli import (
@@ -76,7 +82,9 @@ async def test_local_workspace_tools_can_write_read_cd_and_run(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_local_workspace_tools_allow_absolute_paths_outside_initial_root(tmp_path: Path) -> None:
+async def test_local_workspace_tools_allow_absolute_paths_outside_initial_root(
+    tmp_path: Path,
+) -> None:
     registry = LocalWorkspaceToolRegistry(root=tmp_path)
     read_tool = registry.get_tool("read_file")
     cd_tool = registry.get_tool("cd")
@@ -128,7 +136,7 @@ def test_collect_boot_provider_overrides_from_env_var_name() -> None:
 
 
 def test_collect_boot_provider_overrides_from_gemini_oauth_json() -> None:
-    prompts = iter(['5', '1', '{"refresh_token":"refresh-token","access_token":"access-token"}'])
+    prompts = iter(["5", "1", '{"refresh_token":"refresh-token","access_token":"access-token"}'])
 
     overrides = _collect_boot_provider_overrides(
         env={},
@@ -206,7 +214,9 @@ def test_preview_tool_result_content_prefers_stdout_then_content() -> None:
     assert _preview_tool_result_content({"content": "hello\nworld"}) == "hello"
 
 
-def test_compose_turn_system_prompt_includes_execution_and_workspace_context(tmp_path: Path) -> None:
+def test_compose_turn_system_prompt_includes_execution_and_workspace_context(
+    tmp_path: Path,
+) -> None:
     prompt = _compose_turn_system_prompt(
         base_prompt="Base prompt",
         workspace_root=tmp_path,
@@ -214,23 +224,31 @@ def test_compose_turn_system_prompt_includes_execution_and_workspace_context(tmp
     )
 
     assert "Do not end a turn with text like 'I'll do X next'" in prompt
-    assert "Only finish with a text-only assistant turn when the task is actually complete" in prompt
+    assert (
+        "Only finish with a text-only assistant turn when the task is actually complete" in prompt
+    )
     assert "include that progress update in the same assistant turn as the next tool call" in prompt
-    assert "Do not say a file was written, generated, or updated unless a tool result confirmed it." in prompt
+    assert (
+        "Do not say a file was written, generated, or updated unless a tool result confirmed it."
+        in prompt
+    )
     assert f"Initial CLI directory: {tmp_path}" in prompt
     assert f"Current working directory: {tmp_path / 'src'}" in prompt
 
 
 def test_format_runtime_trace_for_progress_and_done() -> None:
-    assert _format_runtime_trace(
-        AgentEvent(type="agent_progress", iteration=2, max_iterations=50)
-    ) == "[iter 2/50]"
-    assert _format_runtime_trace(
-        AgentEvent(type="done", stop_reason="tool_use")
-    ) == "[turn-stop] tool_use -> continuing"
-    assert _format_runtime_trace(
-        AgentEvent(type="done", stop_reason="stop")
-    ) == "[turn-stop] stop -> ending"
+    assert (
+        _format_runtime_trace(AgentEvent(type="agent_progress", iteration=2, max_iterations=50))
+        == "[iter 2/50]"
+    )
+    assert (
+        _format_runtime_trace(AgentEvent(type="done", stop_reason="tool_use"))
+        == "[turn-stop] tool_use -> continuing"
+    )
+    assert (
+        _format_runtime_trace(AgentEvent(type="done", stop_reason="stop"))
+        == "[turn-stop] stop -> ending"
+    )
 
 
 def test_strip_runtime_system_items_removes_ephemeral_prompt_items() -> None:

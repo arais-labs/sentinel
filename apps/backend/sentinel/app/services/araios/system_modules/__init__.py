@@ -1,4 +1,5 @@
 """System module registry — all native tool module definitions."""
+
 from __future__ import annotations
 
 from importlib import import_module

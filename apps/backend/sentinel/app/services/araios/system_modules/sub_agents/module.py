@@ -3,6 +3,8 @@ from __future__ import annotations
 from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import handle_cancel, handle_list, handle_spawn, handle_status
+
+
 def _task_id_prop() -> dict:
     return {"type": "string", "description": "Sub-agent task ID."}
 
@@ -54,8 +56,7 @@ def _list_parameters_schema() -> dict:
         "type": "object",
         "additionalProperties": False,
         "required": [],
-        "properties": {
-        },
+        "properties": {},
     }
 
 

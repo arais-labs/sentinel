@@ -4,7 +4,6 @@ from app.services.araios.module_types import ActionDefinition, ModuleDefinition
 
 from .handlers import handle_terminal_close, handle_terminal_list, handle_terminal_read, handle_user
 
-
 _TERMINAL_ID_PROPERTY: dict = {
     "type": "string",
     "description": "Terminal id. '0' is the prioritized main terminal but can still be closed if requested.",

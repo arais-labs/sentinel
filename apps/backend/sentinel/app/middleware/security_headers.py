@@ -26,7 +26,9 @@ class SecurityHeadersMiddleware:
                 _setdefault(header_list, b"x-content-type-options", b"nosniff")
                 _setdefault(header_list, b"x-frame-options", b"DENY")
                 _setdefault(header_list, b"referrer-policy", b"no-referrer")
-                _setdefault(header_list, b"permissions-policy", b"camera=(), microphone=(), geolocation=()")
+                _setdefault(
+                    header_list, b"permissions-policy", b"camera=(), microphone=(), geolocation=()"
+                )
                 _setdefault(header_list, b"cache-control", b"no-store")
 
                 message = {**message, "headers": header_list}

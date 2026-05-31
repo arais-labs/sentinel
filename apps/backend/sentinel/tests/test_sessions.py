@@ -20,12 +20,15 @@ from tests.helpers import install_fake_db_overrides, make_fake_instance_context,
 from app.main import app
 from app.models import Message, Session, SessionBinding, ToolApproval
 from app.services.llm.generic.types import AssistantMessage, SystemMessage, TextContent, UserMessage
-from app.services.runtime.files import RuntimeDownload, RuntimePathInvalidError, RuntimePathIsDirectoryError
+from app.services.runtime.files import (
+    RuntimeDownload,
+    RuntimePathInvalidError,
+    RuntimePathIsDirectoryError,
+)
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.errors import SessionWorkspaceCleanupError
 from app.services.sessions.service import SessionService
 from tests.fake_db import FakeDB
-
 
 SESSIONS_API = "/api/v1/instances/main/sessions"
 
@@ -62,7 +65,9 @@ class _LocalRuntimeWorkspaceFiles:
             "git_detached_head": False,
         }
 
-    async def list_files(self, session_id: uuid.UUID | str, *, path: str = "", limit: int = 400) -> dict:
+    async def list_files(
+        self, session_id: uuid.UUID | str, *, path: str = "", limit: int = 400
+    ) -> dict:
         workspace = self._workspace(session_id)
         target = self._resolve(session_id, path)
         if not target.is_dir():
@@ -79,7 +84,9 @@ class _LocalRuntimeWorkspaceFiles:
             "truncated": len(children) > limit,
         }
 
-    async def preview_file(self, session_id: uuid.UUID | str, *, path: str, max_bytes: int = 32_000) -> dict:
+    async def preview_file(
+        self, session_id: uuid.UUID | str, *, path: str, max_bytes: int = 32_000
+    ) -> dict:
         target = self._resolve(session_id, path)
         if not target.is_file():
             raise RuntimePathIsDirectoryError(path)
@@ -350,21 +357,38 @@ def test_sessions_crud_and_ownership(monkeypatch):
 
     try:
         client = TestClient(app)
-        user1_token_resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        user1_token_resp = client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        )
         assert user1_token_resp.status_code == 200
         user1_token = user1_token_resp.json()["access_token"]
 
         user2_token = _make_token(sub="other-user")
 
-        s1 = client.post(SESSIONS_API, json={"title": "alpha"}, headers={"Authorization": f"Bearer {user1_token}"})
-        s2 = client.post(SESSIONS_API, json={"title": "beta"}, headers={"Authorization": f"Bearer {user1_token}"})
+        s1 = client.post(
+            SESSIONS_API,
+            json={"title": "alpha"},
+            headers={"Authorization": f"Bearer {user1_token}"},
+        )
+        s2 = client.post(
+            SESSIONS_API, json={"title": "beta"}, headers={"Authorization": f"Bearer {user1_token}"}
+        )
         s_child = client.post(
             SESSIONS_API,
             json={"title": "sub-agent:child"},
             headers={"Authorization": f"Bearer {user1_token}"},
         )
-        s3 = client.post(SESSIONS_API, json={"title": "gamma"}, headers={"Authorization": f"Bearer {user2_token}"})
-        assert s1.status_code == 200 and s2.status_code == 200 and s3.status_code == 200 and s_child.status_code == 200
+        s3 = client.post(
+            SESSIONS_API,
+            json={"title": "gamma"},
+            headers={"Authorization": f"Bearer {user2_token}"},
+        )
+        assert (
+            s1.status_code == 200
+            and s2.status_code == 200
+            and s3.status_code == 200
+            and s_child.status_code == 200
+        )
 
         session1_id = s1.json()["id"]
         session2_id = s2.json()["id"]
@@ -391,7 +415,9 @@ def test_sessions_crud_and_ownership(monkeypatch):
         assert "initial_prompt" not in listed_session1
         assert "latest_system_prompt" not in listed_session1
 
-        forbidden_get = client.get(f"{SESSIONS_API}/{session3_id}", headers={"Authorization": f"Bearer {user1_token}"})
+        forbidden_get = client.get(
+            f"{SESSIONS_API}/{session3_id}", headers={"Authorization": f"Bearer {user1_token}"}
+        )
         assert forbidden_get.status_code == 404
 
         set_main_resp = client.post(
@@ -559,8 +585,9 @@ def test_retry_message_endpoint_reruns_existing_user_message():
         assert message.status_code == 200
         message_id = message.json()["id"]
 
-        with patch("app.routers.sessions.run_agent_once", new=_fake_run_agent_once), patch(
-            "app.routers.sessions.asyncio.create_task", side_effect=_fake_create_task
+        with (
+            patch("app.routers.sessions.run_agent_once", new=_fake_run_agent_once),
+            patch("app.routers.sessions.asyncio.create_task", side_effect=_fake_create_task),
         ):
             response = client.post(
                 f"{SESSIONS_API}/{session_id}/messages/{message_id}/retry",
@@ -608,6 +635,7 @@ def test_cannot_set_telegram_channel_session_as_main():
         channel_session_id = channel_resp.json()["id"]
 
         import jwt as _jwt
+
         _decoded = _jwt.decode(token, options={"verify_signature": False})
         _actual_user_id = _decoded["sub"]
         fake_db.add(
@@ -625,9 +653,7 @@ def test_cannot_set_telegram_channel_session_as_main():
         assert forbidden.status_code == 400
         payload = forbidden.json()
         detail = (
-            payload.get("detail")
-            or (payload.get("error") or {}).get("message")
-            or str(payload)
+            payload.get("detail") or (payload.get("error") or {}).get("message") or str(payload)
         )
         assert "Telegram channel sessions cannot be set as main" in detail
 
@@ -655,6 +681,7 @@ def test_cannot_rename_telegram_channel_session():
         channel_session_id = channel_resp.json()["id"]
 
         import jwt as _jwt
+
         _decoded = _jwt.decode(token, options={"verify_signature": False})
         _actual_user_id = _decoded["sub"]
         fake_db.add(
@@ -676,9 +703,7 @@ def test_cannot_rename_telegram_channel_session():
         assert rename.status_code == 400
         payload = rename.json()
         detail = (
-            payload.get("detail")
-            or (payload.get("error") or {}).get("message")
-            or str(payload)
+            payload.get("detail") or (payload.get("error") or {}).get("message") or str(payload)
         )
         assert "cannot be renamed" in detail.lower()
     finally:
@@ -694,7 +719,9 @@ def test_reset_default_session_keeps_previous_main_runtime_workspace():
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_base = Path(tmpdir)
             client = TestClient(app)
-            login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+            login = client.post(
+                "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+            )
             assert login.status_code == 200
             token = login.json()["access_token"]
             headers = {"Authorization": f"Bearer {token}"}
@@ -732,7 +759,9 @@ def test_stop_session_generation_cancels_pending_git_approvals():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        session_resp = client.post(SESSIONS_API, json={"title": "stop-cancels-approvals"}, headers=headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "stop-cancels-approvals"}, headers=headers
+        )
         assert session_resp.status_code == 200
         session_id = uuid.UUID(session_resp.json()["id"])
 
@@ -770,7 +799,9 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        session_resp = client.post(SESSIONS_API, json={"title": "stop-materializes-tool-result"}, headers=headers)
+        session_resp = client.post(
+            SESSIONS_API, json={"title": "stop-materializes-tool-result"}, headers=headers
+        )
         assert session_resp.status_code == 200
         session_id = uuid.UUID(session_resp.json()["id"])
 
@@ -793,7 +824,7 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
                             "name": "runtime",
                             "arguments": {"command": "user", "shell_command": "sleep 20"},
                         }
-                    ]
+                    ],
                 },
             )
         )
@@ -827,6 +858,7 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
 
 def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
     fake_db = FakeDB()
+
     class _FakeContextBuilder:
         async def build(self, db, session_id, system_prompt=None, pending_user_message=None):
             _ = (db, session_id, system_prompt, pending_user_message)
@@ -895,13 +927,20 @@ def test_runtime_file_explorer_endpoints():
             (workspace / "repo").mkdir(parents=True, exist_ok=True)
             subprocess.run(["git", "-C", str(workspace / "repo"), "init"], check=False)
 
-            with patch("app.routers.sessions.get_runtime_workspace_files", return_value=_LocalRuntimeWorkspaceFiles(runtime_base)):
-                files_root = client.get(f"{SESSIONS_API}/{session_id}/runtime/files", headers=headers)
+            with patch(
+                "app.routers.sessions.get_runtime_workspace_files",
+                return_value=_LocalRuntimeWorkspaceFiles(runtime_base),
+            ):
+                files_root = client.get(
+                    f"{SESSIONS_API}/{session_id}/runtime/files", headers=headers
+                )
                 assert files_root.status_code == 200
                 root_payload = files_root.json()
                 names = {item["name"] for item in root_payload["entries"]}
                 assert {"src", "README.md", "repo"} <= names
-                repo_entry = next(item for item in root_payload["entries"] if item["name"] == "repo")
+                repo_entry = next(
+                    item for item in root_payload["entries"] if item["name"] == "repo"
+                )
                 assert repo_entry["kind"] == "directory"
                 assert repo_entry["is_git_root"] is True
 
@@ -913,7 +952,10 @@ def test_runtime_file_explorer_endpoints():
                 src_payload = files_src.json()
                 assert src_payload["path"] == "src"
                 assert src_payload["parent_path"] == ""
-                assert any(item["name"] == "main.py" and item["kind"] == "file" for item in src_payload["entries"])
+                assert any(
+                    item["name"] == "main.py" and item["kind"] == "file"
+                    for item in src_payload["entries"]
+                )
 
                 preview = client.get(
                     f"{SESSIONS_API}/{session_id}/runtime/file?path=src/main.py",
@@ -955,8 +997,13 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
             repo_dir.mkdir(parents=True, exist_ok=True)
 
             subprocess.run(["git", "-C", str(repo_dir), "init"], check=True)
-            subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test User"], check=True)
-            subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "test-user@example.com"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo_dir), "config", "user.name", "Test User"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(repo_dir), "config", "user.email", "test-user@example.com"],
+                check=True,
+            )
 
             deleted_file = repo_dir / "old.txt"
             deleted_file.write_text("before\n", encoding="utf-8")
@@ -967,7 +1014,10 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
             added_file = repo_dir / "new.txt"
             added_file.write_text("after\n", encoding="utf-8")
 
-            with patch("app.routers.sessions.get_runtime_workspace_files", return_value=_LocalRuntimeWorkspaceFiles(runtime_base)):
+            with patch(
+                "app.routers.sessions.get_runtime_workspace_files",
+                return_value=_LocalRuntimeWorkspaceFiles(runtime_base),
+            ):
                 deleted_resp = client.get(
                     f"{SESSIONS_API}/{session_id}/runtime/git/diff?path=repo/old.txt&base_ref=HEAD&staged=false&context_lines=3&max_bytes=120000",
                     headers=headers,
@@ -1016,14 +1066,17 @@ def test_runtime_download_supports_files_and_directories():
             guide = docs_dir / "guide.txt"
             guide.write_text("hello zip\n", encoding="utf-8")
 
-            with patch("app.routers.sessions.get_runtime_workspace_files", return_value=_LocalRuntimeWorkspaceFiles(runtime_base)):
+            with patch(
+                "app.routers.sessions.get_runtime_workspace_files",
+                return_value=_LocalRuntimeWorkspaceFiles(runtime_base),
+            ):
                 file_resp = client.get(
                     f"{SESSIONS_API}/{session_id}/runtime/download?path=README.md",
                     headers=headers,
                 )
                 assert file_resp.status_code == 200
                 assert file_resp.headers["content-type"].startswith("text/markdown")
-                assert "filename=\"README.md\"" in file_resp.headers["content-disposition"]
+                assert 'filename="README.md"' in file_resp.headers["content-disposition"]
                 assert file_resp.text == "# demo\n"
 
                 folder_resp = client.get(
@@ -1032,7 +1085,7 @@ def test_runtime_download_supports_files_and_directories():
                 )
                 assert folder_resp.status_code == 200
                 assert folder_resp.headers["content-type"] == "application/zip"
-                assert "filename=\"docs.zip\"" in folder_resp.headers["content-disposition"]
+                assert 'filename="docs.zip"' in folder_resp.headers["content-disposition"]
 
                 archive_path = runtime_base / "download-check.zip"
                 archive_path.write_bytes(folder_resp.content)

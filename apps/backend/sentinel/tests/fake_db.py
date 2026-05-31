@@ -167,7 +167,11 @@ class FakeDB:
             filtered = rows
         else:
             referenced_models = self._referenced_models(stmt, primary=model)
-            filtered = [row for row in rows if self._row_matches(stmt, primary=model, row=row, related_models=referenced_models)]
+            filtered = [
+                row
+                for row in rows
+                if self._row_matches(stmt, primary=model, row=row, related_models=referenced_models)
+            ]
 
         limit_clause = getattr(stmt, "_limit_clause", None)
         if limit_clause is not None:
@@ -198,7 +202,9 @@ class FakeDB:
 
     def _row_matches(self, stmt: Select, *, primary: type, row, related_models: list[type]) -> bool:
         if not related_models:
-            return all(self._evaluate({primary: row}, criterion) for criterion in stmt._where_criteria)
+            return all(
+                self._evaluate({primary: row}, criterion) for criterion in stmt._where_criteria
+            )
 
         related_rows = [list(self.storage.get(model, [])) for model in related_models]
         for combo in product(*related_rows):

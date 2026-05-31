@@ -21,7 +21,6 @@ from app.schemas.modules import (
 )
 from app.services.araios.dynamic_modules import normalize_dynamic_module_actions
 
-
 MODULE_MUTABLE_FIELDS = (
     "label",
     "icon",

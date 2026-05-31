@@ -68,11 +68,7 @@ def test_scrub_redacts_bearer_with_oauth_token():
 
 
 def test_scrub_redacts_pem_blocks_and_preserves_headers():
-    pem = (
-        "-----BEGIN PRIVATE KEY-----\n"
-        "abc123secretmaterial\n"
-        "-----END PRIVATE KEY-----"
-    )
+    pem = "-----BEGIN PRIVATE KEY-----\n" "abc123secretmaterial\n" "-----END PRIVATE KEY-----"
     redacted = scrub(f"prefix {pem} suffix")
     assert "abc123secretmaterial" not in redacted
     assert "-----BEGIN PRIVATE KEY-----" in redacted

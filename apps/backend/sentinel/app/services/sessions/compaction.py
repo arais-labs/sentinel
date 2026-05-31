@@ -251,9 +251,7 @@ class CompactionService:
         *,
         default_budget: int,
     ) -> int:
-        metrics = self._latest_runtime_context_metrics(
-            messages, default_budget=default_budget
-        )
+        metrics = self._latest_runtime_context_metrics(messages, default_budget=default_budget)
         if metrics is not None:
             return metrics.estimated_context_tokens
         return self._estimate_messages_tokens(messages)
@@ -267,17 +265,15 @@ class CompactionService:
         for message in reversed(messages):
             if message.role != "system":
                 continue
-            metadata = (
-                message.metadata_json
-                if isinstance(message.metadata_json, dict)
-                else {}
-            )
+            metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
             if str(metadata.get("source") or "").strip().lower() != "runtime_context":
                 continue
             metrics = extract_runtime_context_metrics(
-                metadata.get("run_context")
-                if isinstance(metadata.get("run_context"), dict)
-                else None,
+                (
+                    metadata.get("run_context")
+                    if isinstance(metadata.get("run_context"), dict)
+                    else None
+                ),
                 default_budget=default_budget,
             )
             if metrics is not None:

@@ -60,7 +60,11 @@ async def resolve_agent_message_route(
     # Backward compatibility: if legacy-only session target exists, treat as session route.
     if target_session_id is None and route_mode == ROUTE_MODE_SESSION:
         target_session_id = legacy_session_id
-    elif target_session_id is None and route_mode == ROUTE_MODE_MAIN and legacy_session_id is not None:
+    elif (
+        target_session_id is None
+        and route_mode == ROUTE_MODE_MAIN
+        and legacy_session_id is not None
+    ):
         route_mode = ROUTE_MODE_SESSION
         target_session_id = legacy_session_id
 
@@ -96,9 +100,7 @@ async def resolve_agent_message_route(
     normalized_action = dict(raw)
     normalized_action["route_mode"] = normalized_route_mode
     normalized_action["target_session_id"] = (
-        str(normalized_target_session_id)
-        if normalized_target_session_id is not None
-        else None
+        str(normalized_target_session_id) if normalized_target_session_id is not None else None
     )
     normalized_action["resolved_session_id"] = str(resolved.id)
     # Keep legacy key for backward compatibility in schedulers/tooling.
