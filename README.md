@@ -8,6 +8,7 @@
 <p align="center">
   <a href="https://github.com/arais-labs/sentinel/blob/main/LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg"></a>
   <img alt="Deployment" src="https://img.shields.io/badge/deploy-Docker%20Compose-2496ED">
+  <a href="https://sentinel.arais.us"><img alt="Docs" src="https://img.shields.io/badge/docs-sentinel.arais.us-informational"></a>
   <a href="https://github.com/arais-labs/sentinel/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/arais-labs/sentinel?branch=main"></a>
   <a href="https://github.com/arais-labs/sentinel/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/arais-labs/sentinel"></a>
   <a href="https://github.com/arais-labs/sentinel/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/arais-labs/sentinel"></a>
@@ -22,6 +23,8 @@ It combines an agent runtime, browser automation, scheduling, memory, approvals,
 One deployment hosts multiple isolated **instances** — each with its own database, agent runtime, and LLM provider — managed from a single control plane (the CLI or the desktop app).
 
 Built by [ARAIS](https://arais.us).
+
+📖 **Docs:** **[sentinel.arais.us](https://sentinel.arais.us)**
 
 ## Quick links
 
@@ -158,6 +161,7 @@ supported for terminal workflows.
 
 ## Documentation
 
+- **Live docs site: [sentinel.arais.us](https://sentinel.arais.us)**
 - Docs site source: [`docs-site/`](docs-site)
 - Intro: [`docs-site/docs/introduction.md`](docs-site/docs/introduction.md)
 - Quickstart: [`docs-site/docs/quickstart.md`](docs-site/docs/quickstart.md)
