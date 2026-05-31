@@ -16,6 +16,9 @@ import {
   LayoutGrid,
   CheckCircle,
   Lock,
+  Globe,
+  Terminal,
+  Folder,
 } from 'lucide-react';
 
 import { APP_VERSION } from '../lib/env';
@@ -43,6 +46,9 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: 'Sessions', route: 'sessions', icon: LayoutDashboard },
+  { label: 'Desktop', route: 'desktop', icon: Globe },
+  { label: 'Terminal', route: 'terminal', icon: Terminal },
+  { label: 'Files', route: 'files', icon: Folder },
   { label: 'Session Logs', route: 'logs', icon: Activity },
   { label: 'Memory', route: 'memory', icon: Database },
   { label: 'Triggers', route: 'triggers', icon: Zap },

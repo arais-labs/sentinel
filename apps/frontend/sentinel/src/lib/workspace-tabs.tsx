@@ -9,6 +9,9 @@ import {
   GitBranch,
   Send,
   Settings,
+  Terminal,
+  Globe,
+  Folder,
   type LucideIcon,
 } from 'lucide-react';
 import { ComponentType } from 'react';
@@ -21,6 +24,9 @@ import { ModulesPage } from '../pages/ModulesPage';
 import { GitPage } from '../pages/GitPage';
 import { TelegramPage } from '../pages/TelegramPage';
 import { SettingsPage } from '../pages/SettingsPage';
+import { TerminalTab } from '../components/workspace/TerminalTab';
+import { DesktopTab } from '../components/workspace/tabs/DesktopTab';
+import { FilesTab } from '../pages/FilesTab';
 
 // approvals/permissions reuse ModulesPage but need their section passed
 // explicitly, since a pane is not the active route (no section in the URL).
@@ -31,6 +37,9 @@ const PermissionsTab = () => <ModulesPage section="permissions" />;
 /** Stable identifier for each workspace tab. Persisted into the layout. */
 export type WorkspaceTabId =
   | 'sessions'
+  | 'desktop'
+  | 'terminal'
+  | 'files'
   | 'logs'
   | 'memory'
   | 'triggers'
@@ -55,6 +64,9 @@ export interface WorkspaceTab {
  */
 export const WORKSPACE_TABS: WorkspaceTab[] = [
   { id: 'sessions', label: 'Sessions', icon: LayoutDashboard, component: SessionsPage },
+  { id: 'desktop', label: 'Desktop', icon: Globe, component: DesktopTab },
+  { id: 'terminal', label: 'Terminal', icon: Terminal, component: TerminalTab },
+  { id: 'files', label: 'Files', icon: Folder, component: FilesTab },
   { id: 'logs', label: 'Session Logs', icon: Activity, component: LogsPage },
   { id: 'memory', label: 'Memory', icon: Database, component: MemoryPage },
   { id: 'triggers', label: 'Triggers', icon: Zap, component: TriggersPage },
