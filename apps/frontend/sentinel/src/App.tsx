@@ -110,9 +110,12 @@ function WorkspaceRoute() {
   // live DockviewApi to be bound, so retry across frames until it takes.
   useEffect(() => {
     const store = useWorkspaceStore.getState();
-    // A persisted layout (even empty) means the user has a saved arrangement —
-    // never override it.
-    if (store.layout) return;
+    // Whether a pane already exists is tracked by openTabs (rebuilt from the
+    // restored layout on bind), not by `layout`: binding the live api eagerly
+    // persists a non-null *empty* layout via toJSON(), so `layout` is truthy
+    // even with zero panes. Keying off openTabs avoids that false positive,
+    // which previously made the seed bail and leave the workspace empty.
+    if (Object.keys(store.openTabs).length > 0) return;
 
     let cancelled = false;
     let frame = 0;
@@ -120,7 +123,7 @@ function WorkspaceRoute() {
       if (cancelled) return;
       const current = useWorkspaceStore.getState();
       // The user (or restore) may have created panes between frames; bail if so.
-      if (current.layout || Object.keys(current.openTabs).length > 0) return;
+      if (Object.keys(current.openTabs).length > 0) return;
       const paneId = current.openTab('sessions');
       if (paneId === null) {
         // No api bound yet; try again next frame (cap to avoid a runaway loop).

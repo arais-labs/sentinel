@@ -24,8 +24,15 @@ import {
  *      once across all panes" rule.
  *   3. Exposes imperative actions that drive the live `DockviewApi` once bound.
  *
+ * One-view-per-pane model:
+ *   - Every dockview group holds exactly one panel. Panels are never stacked
+ *     into a tab group (`Workspace.tsx` blocks center / tab-strip drops, the
+ *     split control creates new groups, and `openTab` swaps a pane's content
+ *     rather than adding panels).
+ *
  * Vocabulary:
- *   - "pane" == a dockview panel. `paneId` is the dockview panel id.
+ *   - "pane" == a dockview panel (and its sole-occupant group). `paneId` is the
+ *     dockview panel id.
  *   - Every panel carries `params.tabId` so a deserialized layout is
  *     self-describing and `openTabs` can be rebuilt on reload.
  */
@@ -65,9 +72,13 @@ export interface WorkspaceState {
   syncFromApi: () => void;
 
   /**
-   * Open a tab. If it is already open anywhere, focus that pane instead of
-   * creating a duplicate (at-most-once). Otherwise add a new pane.
-   * Returns the pane id hosting the tab, or null if no api is bound.
+   * Open a tab from the nav launcher. Behaviour (one-view-per-pane):
+   *   - Already open anywhere -> focus/activate that pane (no duplicate, no
+   *     move; preserves at-most-once).
+   *   - No panes yet -> create the first pane hosting the tab.
+   *   - Otherwise -> replace the *active* pane's content with this tab in place
+   *     (swap params, never add/stack a panel).
+   * Returns the pane id now hosting the tab, or null if no api is bound.
    */
   openTab: (tabId: WorkspaceTabId) => string | null;
   /**
@@ -78,9 +89,10 @@ export interface WorkspaceState {
   /** Close (remove) a pane. */
   closePane: (paneId: string) => void;
   /**
-   * Split `paneId` in `direction`, placing `tabId` in the new pane. Rejected
-   * (returns null) if `tabId` is already open elsewhere. Returns the new pane
-   * id, or null on rejection / no bound api.
+   * Split `paneId` in `direction`, placing `tabId` in a brand-new pane (its own
+   * group — never stacked into a tab group). Rejected (returns null) if `tabId`
+   * is already open elsewhere. Returns the new pane id, or null on rejection /
+   * no bound api.
    */
   splitPane: (
     paneId: string,
@@ -119,15 +131,34 @@ function computeOpenTabs(api: DockviewApi): Partial<Record<WorkspaceTabId, strin
   return next;
 }
 
-/** Map our SplitDirection onto dockview's positional AddPanelOptions. */
+/**
+ * Map our SplitDirection onto dockview's positional AddPanelOptions. A
+ * directional add (left/right/above/below) relative to a panel always lands the
+ * new panel in its own new group. `'within'` is the only stacking direction, so
+ * we coerce it to `'right'` to keep the one-view-per-pane invariant.
+ */
 function toAddPanelPosition(
   referencePanel: string,
   direction: SplitDirection,
 ): AddPanelOptions['position'] {
+  const positional: Direction = direction === 'within' ? 'right' : (direction as Direction);
   return {
     referencePanel,
-    direction: direction as Direction,
+    direction: positional,
   };
+}
+
+/**
+ * Resolve the pane the launcher should replace: the active panel, else the
+ * active group's active panel, else the last panel. `undefined` when empty.
+ */
+function resolveActivePane(api: DockviewApi): string | undefined {
+  const active = api.activePanel;
+  if (active) return active.id;
+  const groupActive = api.activeGroup?.activePanel;
+  if (groupActive) return groupActive.id;
+  const panels = api.panels;
+  return panels.length > 0 ? panels[panels.length - 1].id : undefined;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>()(
@@ -164,6 +195,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
       openTab: (tabId) => {
         if (!liveApi) return null;
+
+        // Already open somewhere: jump to it. Never duplicate or move.
         const existingPaneId = get().openTabs[tabId];
         if (existingPaneId) {
           const panel = liveApi.getPanel(existingPaneId);
@@ -172,15 +205,29 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             return existingPaneId;
           }
         }
-        const paneId = makePaneId(tabId);
+
         const params: WorkspacePaneParams = { tabId };
-        liveApi.addPanel({
-          id: paneId,
-          component: WORKSPACE_PANEL_COMPONENT,
-          params,
-        });
+
+        // Empty workspace: create the first pane (its own group).
+        const activePaneId = resolveActivePane(liveApi);
+        if (!activePaneId) {
+          const paneId = makePaneId(tabId);
+          liveApi.addPanel({
+            id: paneId,
+            component: WORKSPACE_PANEL_COMPONENT,
+            params,
+          });
+          get().syncFromApi();
+          return paneId;
+        }
+
+        // Replace the active pane's content in place: swap params, no new panel.
+        const activePane = liveApi.getPanel(activePaneId);
+        if (!activePane) return null;
+        activePane.api.updateParameters(params);
+        activePane.api.setActive();
         get().syncFromApi();
-        return paneId;
+        return activePaneId;
       },
 
       setPaneTab: (paneId, tabId) => {
@@ -235,6 +282,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     {
       name: STORAGE_KEY,
       storage: createJSONStorage(() => localStorage),
+      // v2 introduced one-view-per-pane; drop any pre-v2 layout (it may contain
+      // stacked tab groups) so it doesn't render stacked after the upgrade.
+      version: 2,
+      migrate: (persisted, fromVersion) => {
+        if (fromVersion < 2) return { layout: null, openTabs: {} };
+        return persisted as { layout: SerializedDockview | null; openTabs: Partial<Record<WorkspaceTabId, string>> };
+      },
       // Only persist the serializable layout + open-tab map; actions and the
       // live api are runtime-only.
       partialize: (state) => ({
