@@ -12,17 +12,24 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
-from telegram import Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
 )
 
-from app.config import settings
 from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
 from app.models import Message as MessageModel, Session as SessionModel
 from app.services.agent_runtime_adapters import (
@@ -42,7 +49,6 @@ from app.services.sessions.session_naming import (
     conversation_delta_for_role,
 )
 
-from .lifecycle import clear_owner_pairing_code
 from .shared import (
     TELEGRAM_BUSY_POLL_ATTEMPTS,
     TELEGRAM_BUSY_POLL_INTERVAL_SECONDS,
@@ -257,6 +263,7 @@ class TelegramBridge:
         run_registry: _RunRegistryProtocol,
         ws_manager: _WSManagerProtocol,
         db_factory: Any,
+        instance_settings: Any,
     ) -> None:
         self._bot_token = bot_token
         self._user_id = user_id
@@ -264,6 +271,7 @@ class TelegramBridge:
         self._run_registry = run_registry
         self._ws_manager = ws_manager
         self._db_factory = db_factory
+        self._instance_settings = instance_settings
 
         self._app: Application | None = None
         self._queue: asyncio.Queue[tuple[Update, dict]] = asyncio.Queue()
@@ -295,7 +303,7 @@ class TelegramBridge:
         self._agent_runtime_support = agent_runtime_support
 
     def _owner_chat_id(self) -> int | None:
-        raw = settings.telegram_owner_chat_id
+        raw = self._instance_settings.telegram_owner_chat_id
         if not isinstance(raw, str) or not raw.strip():
             return None
         try:
@@ -306,7 +314,7 @@ class TelegramBridge:
     def _is_owner_sender(self, chat: object | None, user: object | None) -> bool:
         if chat is None or getattr(chat, "type", None) != "private":
             return False
-        expected_user_id = settings.telegram_owner_telegram_user_id
+        expected_user_id = self._instance_settings.telegram_owner_telegram_user_id
         if (
             expected_user_id
             and user is not None
@@ -434,9 +442,9 @@ class TelegramBridge:
             return f"dm:{chat_id}:{sender_user_id or 0}"
         return None
 
-    async def _resolve_owner_main_session_with_db(self, db: object) -> UUID | None:
-        """Resolve owner DM route session from canonical binding table."""
-        session = await session_bindings.resolve_or_create_main_session(
+    async def _resolve_owner_active_session(self, db: object) -> UUID | None:
+        """Resolve owner DM route session from the owner_active binding (defaults to main)."""
+        session = await session_bindings.resolve_owner_active_session(
             db,
             user_id=self._user_id,
             agent_id="dev-agent",
@@ -526,7 +534,7 @@ class TelegramBridge:
     ) -> tuple[UUID | None, str]:
         """Map inbound Telegram chat/user tuple to the correct Sentinel session."""
         if self._should_reply_inline(chat, metadata):
-            return (await self._resolve_owner_main_session_with_db(db), "owner_main")
+            return (await self._resolve_owner_active_session(db), "owner_main")
 
         chat_type = str(getattr(chat, "type", "")).lower()
         chat_id = self._to_int(getattr(chat, "id", None))
@@ -579,6 +587,30 @@ class TelegramBridge:
 
     # -- lifecycle -----------------------------------------------------------
 
+    async def _register_bot_commands(self, app: Application) -> None:
+        """Publish the slash-command menu. /session is scoped to the owner's chat only.
+
+        Re-applied on every start(); since owner binding rebuilds the bridge, the owner-scoped
+        menu (with /session) tracks the current owner chat automatically.
+        """
+        base = [
+            BotCommand("start", "Connect this chat to Sentinel"),
+            BotCommand("status", "Show Telegram bridge status"),
+            BotCommand("ask", "Ask the agent (needed in privacy-mode groups)"),
+        ]
+        try:
+            await app.bot.set_my_commands(base, scope=BotCommandScopeDefault())
+            owner_chat_id = self._owner_chat_id()
+            if owner_chat_id is not None:
+                owner_commands = base + [
+                    BotCommand("session", "Switch which session your DM routes to"),
+                ]
+                await app.bot.set_my_commands(
+                    owner_commands, scope=BotCommandScopeChat(chat_id=owner_chat_id)
+                )
+        except Exception:
+            logger.exception("Failed to set Telegram command menu")
+
     async def start(self, stop_event: asyncio.Event) -> None:
         """Start the Telegram bot with long-polling + message worker."""
         try:
@@ -587,8 +619,9 @@ class TelegramBridge:
 
             app.add_handler(CommandHandler("start", self._handle_start))
             app.add_handler(CommandHandler("status", self._handle_status))
-            app.add_handler(CommandHandler("link", self._handle_link))
             app.add_handler(CommandHandler("ask", self._handle_ask))
+            app.add_handler(CommandHandler("session", self._handle_session))
+            app.add_handler(CallbackQueryHandler(self._handle_session_callback, pattern=r"^sess:"))
             app.add_handler(
                 MessageHandler(
                     (filters.TEXT | filters.CAPTION) & ~filters.COMMAND, self._handle_message
@@ -615,6 +648,8 @@ class TelegramBridge:
                 self._bot_username,
                 self._can_read_all_group_messages,
             )
+
+            await self._register_bot_commands(app)
 
             self._worker_task = asyncio.create_task(self._message_worker())
 
@@ -706,48 +741,6 @@ class TelegramBridge:
         )
         await update.message.reply_text(f"Sentinel status: {status}\nGroup mode: {group_mode}")
 
-    async def _handle_link(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not update.message:
-            return
-        chat = update.effective_chat
-        user = update.effective_user
-        if chat is None or user is None:
-            return
-        if chat.type != "private":
-            await update.message.reply_text(
-                "Owner linking must be done in a private DM with the bot."
-            )
-            return
-        if settings.telegram_owner_user_id is None:
-            await update.message.reply_text("Telegram owner is not configured yet in Sentinel.")
-            return
-        args = context.args or []
-        code = args[0].strip() if args and isinstance(args[0], str) else ""
-        if not code:
-            await update.message.reply_text("Usage: /link <PAIRING_CODE>")
-            return
-        if not _pairing_not_expired(settings.telegram_pairing_code_expires_at):
-            await update.message.reply_text(
-                "No active pairing code or it has expired. Generate a new code from Sentinel."
-            )
-            return
-        expected_hash = settings.telegram_pairing_code_hash or ""
-        received_hash = _pairing_code_hash(code)
-        if not expected_hash or not hmac.compare_digest(expected_hash, received_hash):
-            await update.message.reply_text("Invalid pairing code.")
-            return
-
-        settings.telegram_owner_telegram_user_id = str(user.id)
-        settings.telegram_owner_chat_id = str(chat.id)
-        await _upsert_setting(
-            "telegram_owner_telegram_user_id", settings.telegram_owner_telegram_user_id
-        )
-        await _upsert_setting("telegram_owner_chat_id", settings.telegram_owner_chat_id)
-        await clear_owner_pairing_code()
-        await update.message.reply_text(
-            "Owner link successful. This DM is now treated as the trusted owner channel."
-        )
-
     async def _handle_ask(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
@@ -760,6 +753,93 @@ class TelegramBridge:
         if chat is not None:
             logger.info("Telegram /ask: chat_id=%s type=%s", chat.id, chat.type)
         await self._enqueue_message(update, text_override=text)
+
+    async def _handle_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """List the owner's recent sessions as inline buttons to switch DM routing."""
+        if not update.message:
+            return
+        chat = update.effective_chat
+        user = update.effective_user
+        if chat is None or chat.type != "private" or not self._is_owner_sender(chat, user):
+            await update.message.reply_text(
+                "This command is only available to the owner in a private chat."
+            )
+            return
+
+        async with self._db_factory() as db:
+            sessions = await session_bindings.list_recent_owner_sessions(
+                db,
+                user_id=self._user_id,
+                limit=30,
+            )
+            current = await session_bindings.get_active_binding_session(
+                db,
+                user_id=self._user_id,
+                binding_type=session_bindings.OWNER_ACTIVE_BINDING_TYPE,
+                binding_key=session_bindings.MAIN_BINDING_KEY,
+            )
+            current_id = (
+                current.id
+                if current is not None
+                else await session_bindings.resolve_main_session_id(db, user_id=self._user_id)
+            )
+
+        if not sessions:
+            await update.message.reply_text("No sessions yet.")
+            return
+
+        rows: list[list[InlineKeyboardButton]] = []
+        for session in sessions:
+            prefix = "✅ " if str(session.id) == str(current_id) else ""
+            label = f"{prefix}{(session.title or 'Untitled')[:40]}"
+            rows.append([InlineKeyboardButton(label, callback_data=f"sess:{session.id}")])
+        keyboard = InlineKeyboardMarkup(rows)
+        await update.message.reply_text(
+            "Pick the session your DM routes to:",
+            reply_markup=keyboard,
+        )
+
+    async def _handle_session_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Switch the owner's active DM session from a /session inline button tap."""
+        query = update.callback_query
+        if query is None:
+            return
+        chat = query.message.chat if query.message else None
+        user = query.from_user
+        if (
+            chat is None
+            or getattr(chat, "type", None) != "private"
+            or not self._is_owner_sender(chat, user)
+        ):
+            await query.answer("Not authorized", show_alert=True)
+            return
+
+        raw = query.data or ""
+        try:
+            parsed = UUID(raw.split("sess:", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("Invalid selection", show_alert=True)
+            return
+
+        async with self._db_factory() as db:
+            try:
+                session = await session_bindings.set_owner_active_session(
+                    db,
+                    user_id=self._user_id,
+                    session_id=parsed,
+                )
+                await db.commit()
+            except session_bindings.SessionBindingTargetInvalidError as exc:
+                await query.answer(str(exc), show_alert=True)
+                return
+
+        await query.answer("Switched")
+        try:
+            await query.edit_message_text(f"Now routing your DM to: {session.title or 'Untitled'}")
+        except Exception:
+            logger.exception("Failed to confirm Telegram session switch")
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._enqueue_message(update)
@@ -903,9 +983,7 @@ class TelegramBridge:
         )
         session = session_result.scalars().first()
         if session is not None:
-            apply_conversation_message_delta(
-                session, conversation_delta_for_role("user")
-            )
+            apply_conversation_message_delta(session, conversation_delta_for_role("user"))
 
         message = MessageModel(
             session_id=route.session_id,
@@ -1138,7 +1216,10 @@ class TelegramBridge:
                                         inline_stream_last_at = now
                                     except Exception:
                                         logger.exception("Failed to stream Telegram inline reply")
-                    elif sentinel_event.type == "tool_result" and sentinel_event.tool_result is not None:
+                    elif (
+                        sentinel_event.type == "tool_result"
+                        and sentinel_event.tool_result is not None
+                    ):
                         tool_result = sentinel_event.tool_result
                         tool_summary = _telegram_tool_result_summary(
                             tool_name=tool_result.tool_name,
@@ -1196,7 +1277,9 @@ class TelegramBridge:
                                 "persist_user_message": False,
                             },
                         ),
-                        interjection_source=lambda: self._run_registry.drain_interjections(route.session_key),
+                        interjection_source=lambda: self._run_registry.drain_interjections(
+                            route.session_key
+                        ),
                     ),
                     sink=_on_event,
                 )
@@ -1296,7 +1379,9 @@ class TelegramBridge:
             except Exception:
                 logger.exception("Failed to send trailing Telegram chunk")
 
-    async def _send_photo(self, chat_id: int, image_base64: str, caption: str | None = None) -> None:
+    async def _send_photo(
+        self, chat_id: int, image_base64: str, caption: str | None = None
+    ) -> None:
         """Send a base64-encoded image as a photo to a Telegram chat."""
         if self._app is None:
             return

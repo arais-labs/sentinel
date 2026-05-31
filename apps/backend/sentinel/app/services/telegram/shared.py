@@ -7,7 +7,6 @@ from typing import Any, Protocol
 from uuid import UUID
 
 TELEGRAM_MAX_MSG_LEN = 4096
-TELEGRAM_OWNER_PAIRING_TTL_SECONDS = 600
 TELEGRAM_BUSY_POLL_ATTEMPTS = 12
 TELEGRAM_BUSY_POLL_INTERVAL_SECONDS = 5
 
@@ -50,7 +49,14 @@ class _RuntimeSupportProtocol(Protocol):
 
     async def prepare_runtime_turn_context(self, db: Any, session_id: UUID, **kwargs) -> Any: ...
 
-    async def persist_created_messages(self, db: Any, session_id: UUID, created: list[Any], assistant_iterations: dict[int, int], **kwargs) -> None: ...
+    async def persist_created_messages(
+        self,
+        db: Any,
+        session_id: UUID,
+        created: list[Any],
+        assistant_iterations: dict[int, int],
+        **kwargs,
+    ) -> None: ...
 
     def extract_final_text(self, messages: list[Any]) -> str: ...
 
@@ -91,7 +97,6 @@ __all__ = [
     "TELEGRAM_BUSY_POLL_ATTEMPTS",
     "TELEGRAM_BUSY_POLL_INTERVAL_SECONDS",
     "TELEGRAM_MAX_MSG_LEN",
-    "TELEGRAM_OWNER_PAIRING_TTL_SECONDS",
     "_RuntimeSupportProtocol",
     "_PersistedInboundMessage",
     "_RouteContext",

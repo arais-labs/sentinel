@@ -12,6 +12,8 @@ from .handlers import (
     handle_status,
     handle_stop,
 )
+
+
 def _chat_id_prop() -> dict:
     return {"type": "integer", "description": "Telegram chat ID."}
 
@@ -24,7 +26,10 @@ def _send_parameters_schema() -> dict:
         "properties": {
             "chat_id": _chat_id_prop(),
             "message": {"type": "string", "description": "Message text to send."},
-            "allow_owner_chat": {"type": "boolean", "description": "Allow sending to the owner DM chat."},
+            "allow_owner_chat": {
+                "type": "boolean",
+                "description": "Allow sending to the owner DM chat.",
+            },
         },
     }
 
@@ -33,8 +38,7 @@ def _status_parameters_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "properties": {
-        },
+        "properties": {},
     }
 
 
@@ -54,8 +58,7 @@ def _session_manage_parameters_schema() -> dict:
         "type": "object",
         "additionalProperties": False,
         "required": [],
-        "properties": {
-        },
+        "properties": {},
     }
 
 
@@ -66,7 +69,10 @@ def _bind_owner_parameters_schema() -> dict:
         "required": ["chat_id"],
         "properties": {
             "chat_id": _chat_id_prop(),
-            "telegram_user_id": {"type": "string", "description": "Optional Telegram user ID override."},
+            "telegram_user_id": {
+                "type": "string",
+                "description": "Optional Telegram user ID override.",
+            },
         },
     }
 
@@ -87,6 +93,7 @@ MODULE = ModuleDefinition(
             label="Send Telegram Message",
             description="Send a message to a connected Telegram chat.",
             handler=handle_send,
+            requires_runtime_context=True,
             parameters_schema=_send_parameters_schema(),
         ),
         ActionDefinition(

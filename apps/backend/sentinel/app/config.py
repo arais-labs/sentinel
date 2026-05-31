@@ -122,8 +122,6 @@ class Settings(BaseSettings):
     telegram_owner_user_id: str | None = None
     telegram_owner_chat_id: str | None = None
     telegram_owner_telegram_user_id: str | None = None
-    telegram_pairing_code_hash: str | None = None
-    telegram_pairing_code_expires_at: str | None = None
     telegram_enabled: bool = False
 
     model_config = SettingsConfigDict(

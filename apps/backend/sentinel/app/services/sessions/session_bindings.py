@@ -12,6 +12,7 @@ from app.models import Session, SessionBinding
 
 MAIN_BINDING_TYPE = "main"
 MAIN_BINDING_KEY = "owner"
+OWNER_ACTIVE_BINDING_TYPE = "owner_active"
 TELEGRAM_GROUP_BINDING_TYPE = "telegram_group"
 TELEGRAM_DM_BINDING_TYPE = "telegram_dm"
 
@@ -75,7 +76,9 @@ async def bind_session(
 ) -> SessionBinding:
     session = await _get_root_owned_session(db, user_id=user_id, session_id=session_id)
     if session is None:
-        raise SessionBindingTargetInvalidError("Binding target must be a root session owned by user")
+        raise SessionBindingTargetInvalidError(
+            "Binding target must be a root session owned by user"
+        )
 
     if binding_type == MAIN_BINDING_TYPE:
         await _deactivate_active_bindings(
@@ -207,9 +210,7 @@ async def set_main_session(
     if session is None:
         raise SessionBindingTargetInvalidError("Main session must be a root session owned by user")
     if await _is_telegram_route_session(db, user_id=user_id, session_id=session.id):
-        raise SessionBindingTargetInvalidError(
-            "Telegram channel sessions cannot be set as main"
-        )
+        raise SessionBindingTargetInvalidError("Telegram channel sessions cannot be set as main")
 
     await bind_session(
         db,
@@ -220,6 +221,72 @@ async def set_main_session(
         metadata={"source": "set_main"},
     )
     return session
+
+
+async def resolve_owner_active_session(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    agent_id: str | None,
+) -> Session:
+    bound = await get_active_binding_session(
+        db,
+        user_id=user_id,
+        binding_type=OWNER_ACTIVE_BINDING_TYPE,
+        binding_key=MAIN_BINDING_KEY,
+    )
+    if bound is not None:
+        return bound
+    return await resolve_or_create_main_session(db, user_id=user_id, agent_id=agent_id)
+
+
+async def set_owner_active_session(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    session_id: UUID,
+) -> Session:
+    session = await _get_root_owned_session(db, user_id=user_id, session_id=session_id)
+    if session is None:
+        raise SessionBindingTargetInvalidError(
+            "Active session must be a root session owned by user"
+        )
+    if await _is_telegram_route_session(db, user_id=user_id, session_id=session.id):
+        raise SessionBindingTargetInvalidError(
+            "Telegram channel sessions cannot be set as the active session"
+        )
+
+    await bind_session(
+        db,
+        user_id=user_id,
+        binding_type=OWNER_ACTIVE_BINDING_TYPE,
+        binding_key=MAIN_BINDING_KEY,
+        session_id=session.id,
+        metadata={"source": "telegram_session_switch"},
+    )
+    return session
+
+
+async def list_recent_owner_sessions(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    limit: int = 30,
+) -> list[Session]:
+    roots = await _root_sessions(db, user_id=user_id)
+    candidates: list[Session] = []
+    for session in roots:
+        if await _is_telegram_route_session(db, user_id=user_id, session_id=session.id):
+            continue
+        candidates.append(session)
+    candidates.sort(
+        key=lambda item: (
+            item.updated_at or _utc_min(),
+            item.created_at or _utc_min(),
+        ),
+        reverse=True,
+    )
+    return candidates[:limit]
 
 
 async def is_session_bound(

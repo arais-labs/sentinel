@@ -460,17 +460,6 @@ async def lifespan(app: FastAPI):
                     exc_info=True,
                 )
 
-    # --- Telegram bridge ---
-    telegram_stop_event = asyncio.Event()
-    app.state.telegram_bridge = None
-    app.state.telegram_stop_event = telegram_stop_event
-    app.state.telegram_task = None
-
-    if settings.telegram_bot_token:
-        from app.services.telegram import start_telegram_bridge
-
-        await start_telegram_bridge(app.state)
-
     try:
         yield
     finally:
@@ -518,11 +507,9 @@ async def lifespan(app: FastAPI):
         )
 
         # 4. External resources.
-        from app.services.telegram import stop_telegram_bridge
         from app.services.runtime.ssh_runtime import close_runtime_terminal_manager
 
         await _bounded("runtime_ssh", close_runtime_terminal_manager(), timeout=3.0)
-        await _bounded("telegram_bridge", stop_telegram_bridge(app.state), timeout=3.0)
         await _bounded("instance_db_engines", instance_session_registry.dispose_all(), timeout=3.0)
 
 

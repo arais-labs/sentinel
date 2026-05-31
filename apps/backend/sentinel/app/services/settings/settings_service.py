@@ -58,8 +58,6 @@ class SettingsService:
         "telegram_owner_user_id",
         "telegram_owner_chat_id",
         "telegram_owner_telegram_user_id",
-        "telegram_pairing_code_hash",
-        "telegram_pairing_code_expires_at",
     )
 
     async def build_instance_settings(self, db: AsyncSession) -> Settings:
@@ -115,7 +113,9 @@ class SettingsService:
             value=normalized_gemini_oauth,
         )
 
-    def get_desktop_codex_oauth_status(self, *, auth_path: Path | None = None) -> DesktopCodexOauthStatus:
+    def get_desktop_codex_oauth_status(
+        self, *, auth_path: Path | None = None
+    ) -> DesktopCodexOauthStatus:
         enabled = is_desktop_app()
         return DesktopCodexOauthStatus(
             enabled=enabled,
@@ -132,9 +132,13 @@ class SettingsService:
         try:
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Codex auth file was not found at ~/.codex/auth.json.") from exc
+            raise HTTPException(
+                status_code=404, detail="Codex auth file was not found at ~/.codex/auth.json."
+            ) from exc
         except OSError as exc:
-            raise HTTPException(status_code=422, detail="Codex auth file could not be read.") from exc
+            raise HTTPException(
+                status_code=422, detail="Codex auth file could not be read."
+            ) from exc
 
         token = self._extract_codex_access_token(raw)
         await upsert_system_setting(db, key="openai_oauth_token", value=token)
@@ -148,14 +152,18 @@ class SettingsService:
         openai_oauth = settings_source.openai_oauth_token
         gemini_key = settings_source.gemini_api_key
         gemini_oauth = settings_source.gemini_oauth_credentials
-        primary_provider = parse_provider_choice(settings_source.primary_provider) or ProviderChoice.ANTHROPIC
+        primary_provider = (
+            parse_provider_choice(settings_source.primary_provider) or ProviderChoice.ANTHROPIC
+        )
 
         return ApiKeysStatus(
             primary_provider=primary_provider,
             providers={
                 ProviderChoice.ANTHROPIC: ProviderAuthStatus(
                     configured=bool(anthropic_key or anthropic_oauth),
-                    auth_method="oauth" if anthropic_oauth else ("api_key" if anthropic_key else None),
+                    auth_method=(
+                        "oauth" if anthropic_oauth else ("api_key" if anthropic_key else None)
+                    ),
                     masked_key=self._mask_secret(anthropic_oauth or anthropic_key),
                 ),
                 ProviderChoice.OPENAI: ProviderAuthStatus(
@@ -268,10 +276,14 @@ class SettingsService:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=422, detail="Codex auth file is not valid JSON.") from exc
+            raise HTTPException(
+                status_code=422, detail="Codex auth file is not valid JSON."
+            ) from exc
 
         if not isinstance(payload, dict):
-            raise HTTPException(status_code=422, detail="Codex auth file must contain a JSON object.")
+            raise HTTPException(
+                status_code=422, detail="Codex auth file must contain a JSON object."
+            )
 
         token = SettingsService._find_codex_access_token(payload)
         if token is None:
@@ -311,7 +323,9 @@ class SettingsService:
     def _find_nested_access_token(value: Any) -> str | None:
         if isinstance(value, dict):
             for key in ("access_token", "accessToken"):
-                token = SettingsService._strip_or_none(value.get(key) if isinstance(value.get(key), str) else None)
+                token = SettingsService._strip_or_none(
+                    value.get(key) if isinstance(value.get(key), str) else None
+                )
                 if token is not None:
                     return token
             for child in value.values():

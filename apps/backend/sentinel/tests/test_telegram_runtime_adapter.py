@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+from app.config import Settings
 from app.sentral import TextBlock
 from app.services.agent import PreparedRuntimeTurnContext
 from app.services.llm.generic.base import LLMProvider
@@ -38,7 +39,9 @@ class _WSManager:
         self.done: list[dict] = []
         self.thinking: list[str] = []
 
-    async def broadcast_message_ack(self, session_key, message_id, content, created_at, metadata=None):
+    async def broadcast_message_ack(
+        self, session_key, message_id, content, created_at, metadata=None
+    ):
         self.message_acks.append(
             {
                 "session_key": session_key,
@@ -84,7 +87,9 @@ class _FakeProvider(LLMProvider):
     def name(self) -> str:
         return "fake"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         self.calls.append(
             {
                 "messages": list(messages),
@@ -94,9 +99,13 @@ class _FakeProvider(LLMProvider):
                 "stream": False,
             }
         )
-        raise AssertionError("Telegram runtime adapter should use streaming provider path in this test")
+        raise AssertionError(
+            "Telegram runtime adapter should use streaming provider path in this test"
+        )
 
-    async def stream(self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None):
+    async def stream(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         self.calls.append(
             {
                 "messages": list(messages),
@@ -132,7 +141,9 @@ class _RuntimeSupportStub:
         max_iterations,
         stream,
     ):
-        messages = await self.context_builder.build(db, session_id, system_prompt, pending_user_message, agent_mode)
+        messages = await self.context_builder.build(
+            db, session_id, system_prompt, pending_user_message, agent_mode
+        )
         return PreparedRuntimeTurnContext(
             messages=messages,
             tools=self.tool_registry.list_schemas(),
@@ -140,10 +151,14 @@ class _RuntimeSupportStub:
             runtime_context_snapshot=None,
         )
 
-    async def persist_created_messages(self, db, session_id, created, assistant_iterations, **kwargs):
+    async def persist_created_messages(
+        self, db, session_id, created, assistant_iterations, **kwargs
+    ):
         await self._persist_messages(db, session_id, created, assistant_iterations, **kwargs)
 
-    async def _persist_messages(self, db, session_id, created, assistant_iterations, **kwargs) -> None:
+    async def _persist_messages(
+        self, db, session_id, created, assistant_iterations, **kwargs
+    ) -> None:
         self.persist_calls.append(
             {
                 "db": db,
@@ -168,6 +183,20 @@ class _RuntimeSupportStub:
         return self._collect_attachments(messages)
 
 
+def _make_instance_settings(**overrides) -> Settings:
+    instance_settings = Settings(_env_file=None)
+    instance_settings.dev_user_id = overrides.pop("dev_user_id", "user-1")
+    instance_settings.telegram_bot_token = overrides.pop("telegram_bot_token", "dummy")
+    instance_settings.telegram_owner_user_id = overrides.pop("telegram_owner_user_id", None)
+    instance_settings.telegram_owner_chat_id = overrides.pop("telegram_owner_chat_id", None)
+    instance_settings.telegram_owner_telegram_user_id = overrides.pop(
+        "telegram_owner_telegram_user_id", None
+    )
+    for key, value in overrides.items():
+        setattr(instance_settings, key, value)
+    return instance_settings
+
+
 def _build_bridge(db: FakeDB) -> TelegramBridge:
     return TelegramBridge(
         bot_token="dummy",
@@ -176,6 +205,7 @@ def _build_bridge(db: FakeDB) -> TelegramBridge:
         run_registry=_RunRegistry(),
         ws_manager=_WSManager(),
         db_factory=lambda: _DBFactory(db),
+        instance_settings=_make_instance_settings(),
     )
 
 
@@ -204,8 +234,12 @@ def test_telegram_process_message_uses_runtime_adapter_and_preserves_ws_events()
     with (
         patch.object(bridge, "_resolve_route_context", new=AsyncMock(return_value=route)),
         patch.object(bridge, "_wait_for_session_ready", new=AsyncMock(return_value=True)),
-        patch.object(bridge, "_persist_inbound_user_message", new=AsyncMock(return_value=persisted)),
-        patch.object(bridge, "_deliver_non_inline_reply", new=AsyncMock(return_value=None)) as deliver_mock,
+        patch.object(
+            bridge, "_persist_inbound_user_message", new=AsyncMock(return_value=persisted)
+        ),
+        patch.object(
+            bridge, "_deliver_non_inline_reply", new=AsyncMock(return_value=None)
+        ) as deliver_mock,
         patch.object(bridge, "_auto_compact_after_run", new=AsyncMock(return_value=None)),
     ):
         asyncio.run(bridge._process_message(update, {"telegram_user_id": "456"}))  # noqa: SLF001
