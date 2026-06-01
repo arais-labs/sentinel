@@ -2,8 +2,6 @@ import {
   ArrowDown,
   Bot,
   ChevronDown,
-  Home,
-  Expand,
   Loader2,
   Plus,
   RefreshCw,
@@ -51,6 +49,7 @@ import {
 } from '../lib/approvals';
 import { api } from '../lib/api';
 import { useInstanceName, useWorkspaceMode } from '../lib/workspace-context';
+import { useAnchorRect } from '../lib/portal-menu';
 import { instanceRouteFromPath } from '../lib/routes';
 import { getSessionDeleteWorkspaceSummary } from '../lib/sessionDeletion';
 import { useSetActiveSession } from '../store/active-session-store';
@@ -737,7 +736,9 @@ export function SessionsPage() {
       if (sessionDropdownRef.current?.contains(target)) return;
       if (sessionDropdownMenuRef.current?.contains(target)) return;
       if (effortDropdownRef.current?.contains(target)) return;
+      if (effortDropdownMenuRef.current?.contains(target)) return;
       if (agentModeDropdownRef.current?.contains(target)) return;
+      if (agentModeDropdownMenuRef.current?.contains(target)) return;
       setIsSessionDropdownOpen(false);
       setIsEffortDropdownOpen(false);
       setIsAgentModeDropdownOpen(false);
@@ -774,6 +775,7 @@ export function SessionsPage() {
   const [isStopping, setIsStopping] = useState(false);
   const [rightPanelWidth, setRightPanelWidth] = useState(400);
   const [isResizing, setIsResizing] = useState(false);
+  const [statusTooltip, setStatusTooltip] = useState<'connection' | 'progress' | 'context' | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const messagesRef = useRef<Message[]>([]);
@@ -793,10 +795,20 @@ export function SessionsPage() {
   const sessionDropdownButtonRef = useRef<HTMLButtonElement | null>(null);
   const sessionDropdownMenuRef = useRef<HTMLDivElement | null>(null);
   const effortDropdownRef = useRef<HTMLDivElement | null>(null);
+  const effortDropdownMenuRef = useRef<HTMLDivElement | null>(null);
   const agentModeDropdownRef = useRef<HTMLDivElement | null>(null);
+  const agentModeDropdownMenuRef = useRef<HTMLDivElement | null>(null);
+  const connectionPillRef = useRef<HTMLDivElement | null>(null);
+  const progressPillRef = useRef<HTMLDivElement | null>(null);
+  const contextPillRef = useRef<HTMLDivElement | null>(null);
   const activeSessionIdRef = useRef<string | null>(routeSessionId ?? null);
   const contextUsageRequestRef = useRef(0);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const effortDropdownRect = useAnchorRect(effortDropdownRef, isEffortDropdownOpen);
+  const agentModeDropdownRect = useAnchorRect(agentModeDropdownRef, isAgentModeDropdownOpen);
+  const connectionTooltipRect = useAnchorRect(connectionPillRef, statusTooltip === 'connection');
+  const progressTooltipRect = useAnchorRect(progressPillRef, statusTooltip === 'progress');
+  const contextTooltipRect = useAnchorRect(contextPillRef, statusTooltip === 'context');
 
   // Keep refs in sync so WS callbacks can read current values
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
@@ -2494,186 +2506,81 @@ export function SessionsPage() {
           hideHeader={mode === 'solo'}
           actions={
             mode === 'advanced' ? (
-              <div className="flex min-w-0 items-center gap-2">
-                <div ref={sessionDropdownRef} className="order-5 relative z-[200] hidden min-w-0 sm:block">
-                  <button
-                    ref={sessionDropdownButtonRef}
-                    type="button"
-                    aria-haspopup="listbox"
-                    aria-expanded={isSessionDropdownOpen}
-                    onClick={() => {
-                      setIsEffortDropdownOpen(false);
-                      setIsAgentModeDropdownOpen(false);
-                      updateSessionDropdownRect();
-                      setIsSessionDropdownOpen((open) => !open);
-                    }}
-                    className="flex h-9 w-[min(390px,34vw)] items-center justify-start gap-4 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] pl-4 pr-3 text-left shadow-sm outline-none transition-all hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)] focus:border-[color:var(--accent-solid)] focus:ring-2 focus:ring-[color:var(--accent-solid)]/20"
+              <div className="flex w-full min-w-0 items-center gap-2">
+                {/* Status */}
+                <div className="flex min-w-0 shrink-0 items-center gap-2.5">
+                  <div
+                    ref={connectionPillRef}
+                    onMouseEnter={() => setStatusTooltip('connection')}
+                    onMouseLeave={() => setStatusTooltip((current) => current === 'connection' ? null : current)}
+                    className="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default"
                   >
-                    <span className="w-28 shrink-0 text-left text-[9px] font-bold uppercase tracking-[0.12em] text-[color:var(--text-muted)]">
-                      Instance Picker
-                    </span>
-                    <span aria-hidden="true" className="h-4 w-px shrink-0 bg-[color:var(--border-subtle)]" />
-                    <span className="block min-w-0 flex-1 truncate text-left text-xs font-semibold text-[color:var(--text-primary)]">
-                      {instancePickerLabel}
-                    </span>
-                    <ChevronDown
-                      size={13}
-                      aria-hidden="true"
-                      className={`shrink-0 text-[color:var(--text-muted)] transition-transform duration-300 ${isSessionDropdownOpen ? 'rotate-180' : ''}`}
-                    />
-                  </button>
-
-                  {isSessionDropdownOpen && sessionDropdownRect && createPortal(
+                    <div className={`h-1.5 w-1.5 rounded-full transition-all duration-500 ${streaming.connection === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]'}`} />
+                    <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--text-secondary)]">{streaming.connection === 'connected' ? 'Live' : 'Offline'}</span>
+                  </div>
+                  {statusTooltip === 'connection' && connectionTooltipRect && createPortal(
                     <div
-                      ref={sessionDropdownMenuRef}
-                      role="listbox"
-                      aria-label="Switch session"
                       style={{
-                        left: sessionDropdownRect.left,
-                        top: sessionDropdownRect.top,
-                        width: Math.max(sessionDropdownRect.width, 320),
+                        position: 'fixed',
+                        top: connectionTooltipRect.top + 8,
+                        left: Math.max(8, Math.min(connectionTooltipRect.left, window.innerWidth - 220)),
+                        zIndex: 10000,
                       }}
-                      className="fixed z-[10000] max-h-80 overflow-y-auto rounded-2xl border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] py-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-200 origin-top-left"
+                      className="px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap pointer-events-none shadow-2xl animate-in fade-in slide-in-from-top-1 duration-150"
                     >
-                      {instances.length === 0 ? (
-                        <div className="px-3 py-3 text-xs text-[color:var(--text-muted)]">No instances</div>
-                      ) : (
-                        instances.map((instance) => {
-                          const title = (instance.display_name || instance.name).trim() || instance.name;
-                          const active = instance.name === activeInstanceName;
-                          return (
-                            <button
-                              key={instance.name}
-                              type="button"
-                              role="option"
-                              aria-selected={active}
-                              onClick={() => {
-                                setIsSessionDropdownOpen(false);
-                                if (!active) onInstanceClick(instance.name);
-                              }}
-                              className={`group flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
-                                active
-                                  ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
-                                  : 'text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)] hover:text-[color:var(--text-primary)]'
-                              }`}
-                            >
-                              <div className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? 'bg-[color:var(--accent-solid)]' : 'bg-[color:var(--text-muted)]/35 group-hover:bg-[color:var(--text-secondary)]'}`} />
-                              <span className="min-w-0 flex-1 truncate text-xs font-semibold">{title}</span>
-                              {active && <Check size={13} className="shrink-0 text-[color:var(--accent-solid)]" />}
-                            </button>
-                          );
-                        })
-                      )}
+                      <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Telemetry Link</div>
+                      <div className="flex items-center gap-2">
+                        <div className={`h-1.5 w-1.5 rounded-full ${streaming.connection === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                        <span className={streaming.connection === 'connected' ? 'text-emerald-500 font-bold' : 'text-rose-500 font-bold'}>{streaming.connection.toUpperCase()}</span>
+                      </div>
                     </div>,
                     document.body,
                   )}
-                </div>
 
-                <button
-                  type="button"
-                  title="Instance menu"
-                  aria-label="Instance menu"
-                  onClick={() => navigate('/')}
-                  className="order-6 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-secondary)] shadow-sm transition-all hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] active:scale-95"
-                >
-                  <Home size={14} />
-                </button>
-
-                <button
-                    onClick={() => setMode('solo')}
-                    className="order-1 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm animate-[focusModePillIn_180ms_cubic-bezier(0.22,1,0.36,1)]"
-                >
-                  <Expand size={14} className="text-emerald-500/80" />
-                  Focus
-                </button>
-
-                <div className="order-2 h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
-
-                <button
-                    onClick={resetSession}
-                    title="Start fresh (memories preserved)"
-                    className="order-3 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
-                >
-                  <RefreshCw size={14} className="text-sky-500/80" />
-                  New Chat
-                </button>
-
-                <button
-                    onClick={compactContext}
-                    disabled={isCompacting}
-                    className="order-4 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
-                >
-                  <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-500/80`} />
-                  Compact
-                </button>
-              </div>
-            ) : null
-          }
-      >
-        <div className="relative flex h-full w-full overflow-hidden">
-          {mode === 'solo' ? (
-            <div className="absolute top-4 right-4 z-20">
-              <button
-                type="button"
-                onClick={() => setMode('advanced')}
-                className="inline-flex h-9 items-center gap-2 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)]/90 backdrop-blur px-4 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] hover:bg-[color:var(--surface-1)] transition-all active:scale-95 shadow-xl animate-[focusModePillIn_180ms_cubic-bezier(0.22,1,0.36,1)]"
-              >
-                <X size={14} className="text-[color:var(--text-muted)]" />
-                Exit Focus
-              </button>
-            </div>
-          ) : null}
-          {/* Chat Area */}
-          <main className="order-5 relative z-0 flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)] overflow-hidden">
-            {/* Unified Session Toolbar */}
-            {mode === 'advanced' ? (
-            <div className="flex items-center justify-between px-4 h-12 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/80 backdrop-blur-md sticky top-0 z-30 shrink-0 select-none">
-              {/* Left: Connection & Progress */}
-              <div className="flex items-center gap-2.5">
-                <div className="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
-                  <div className={`h-1.5 w-1.5 rounded-full transition-all duration-500 ${streaming.connection === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]'}`} />
-                  <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--text-secondary)]">{streaming.connection === 'connected' ? 'Live' : 'Offline'}</span>
-
-                  {/* Connection Tooltip */}
-                  <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
-                    <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Telemetry Link</div>
-                    <div className="flex items-center gap-2">
-                      <div className={`h-1.5 w-1.5 rounded-full ${streaming.connection === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-                      <span className={streaming.connection === 'connected' ? 'text-emerald-500 font-bold' : 'text-rose-500 font-bold'}>{streaming.connection.toUpperCase()}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {streaming.agentMaxIterations > 0 && (
-                  <div className="group relative flex items-center gap-3 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
-                    <div className="w-16 h-1 rounded-full bg-[color:var(--surface-3)] overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-[color:var(--accent-solid)] transition-all duration-700 ease-out"
-                        style={{ width: `${Math.min((streaming.agentIteration / streaming.agentMaxIterations) * 100, 100)}%` }}
-                      />
-                    </div>
-                    <span className="text-[10px] font-mono font-bold text-[color:var(--text-primary)]">
-                      {streaming.agentIteration}<span className="text-[color:var(--text-muted)] mx-0.5">/</span>{streaming.agentMaxIterations}
-                    </span>
-
-                    {/* Progress Tooltip */}
-                    <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
-                      <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Execution Pipeline</div>
-                      <div><span className="font-bold text-[color:var(--accent-solid)]">{streaming.agentIteration}</span><span className="text-[color:var(--text-muted)]"> of {streaming.agentMaxIterations} steps completed</span></div>
-                      <div className="mt-1 h-1 w-full bg-[color:var(--surface-2)] rounded-full overflow-hidden">
-                        <div className="h-full bg-[color:var(--accent-solid)]" style={{ width: `${(streaming.agentIteration / streaming.agentMaxIterations) * 100}%` }} />
+                  {streaming.agentMaxIterations > 0 && (
+                    <div
+                      ref={progressPillRef}
+                      onMouseEnter={() => setStatusTooltip('progress')}
+                      onMouseLeave={() => setStatusTooltip((current) => current === 'progress' ? null : current)}
+                      className="group relative flex items-center gap-3 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default"
+                    >
+                      <div className="w-16 h-1 rounded-full bg-[color:var(--surface-3)] overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-[color:var(--accent-solid)] transition-all duration-700 ease-out"
+                          style={{ width: `${Math.min((streaming.agentIteration / streaming.agentMaxIterations) * 100, 100)}%` }}
+                        />
                       </div>
+                      <span className="text-[10px] font-mono font-bold text-[color:var(--text-primary)]">
+                        {streaming.agentIteration}<span className="text-[color:var(--text-muted)] mx-0.5">/</span>{streaming.agentMaxIterations}
+                      </span>
                     </div>
-                  </div>
-                )}
-              </div>
+                  )}
+                  {statusTooltip === 'progress' && progressTooltipRect && streaming.agentMaxIterations > 0 && createPortal(
+                    <div
+                      style={{
+                        position: 'fixed',
+                        top: progressTooltipRect.top + 8,
+                        left: Math.max(8, Math.min(progressTooltipRect.left, window.innerWidth - 300)),
+                        zIndex: 10000,
+                      }}
+                      className="px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap pointer-events-none shadow-2xl animate-in fade-in slide-in-from-top-1 duration-150"
+                    >
+                        <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Execution Pipeline</div>
+                        <div><span className="font-bold text-[color:var(--accent-solid)]">{streaming.agentIteration}</span><span className="text-[color:var(--text-muted)]"> of {streaming.agentMaxIterations} steps completed</span></div>
+                        <div className="mt-1 h-1 w-full bg-[color:var(--surface-2)] rounded-full overflow-hidden">
+                          <div className="h-full bg-[color:var(--accent-solid)]" style={{ width: `${(streaming.agentIteration / streaming.agentMaxIterations) * 100}%` }} />
+                        </div>
+                    </div>,
+                    document.body,
+                  )}
 
-              {/* Center: Toolbar metadata removed */}
-
-              {/* Right: Controls & Context */}
-              <div className="flex items-center gap-3">
                 {/* Context Indicator */}
-                <div className="group relative flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
+                <div
+                  ref={contextPillRef}
+                  onMouseEnter={() => setStatusTooltip('context')}
+                  onMouseLeave={() => setStatusTooltip((current) => current === 'context' ? null : current)}
+                  className="group relative flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default"
+                >
                   {(() => {
                     const estimatedTokens = typeof contextTokenEstimate === 'number' && Number.isFinite(contextTokenEstimate) ? contextTokenEstimate : null;
                     const hasBudget = typeof contextTokenBudget === 'number' && contextTokenBudget > 0;
@@ -2700,7 +2607,16 @@ export function SessionsPage() {
                         </span>
 
                         {/* Context Tooltip */}
-                        <div className="absolute top-full right-0 mt-2 px-3 py-2.5 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
+                        {statusTooltip === 'context' && contextTooltipRect && createPortal(
+                        <div
+                          style={{
+                            position: 'fixed',
+                            top: contextTooltipRect.top + 8,
+                            left: Math.max(8, Math.min(contextTooltipRect.left, window.innerWidth - 320)),
+                            zIndex: 10000,
+                          }}
+                          className="px-3 py-2.5 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap pointer-events-none shadow-2xl animate-in fade-in slide-in-from-top-1 duration-150"
+                        >
                           <div className="font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-1.5 pb-1 border-b border-[color:var(--border-subtle)]">Context Window</div>
                           <div className="flex items-center justify-between gap-8 mb-1">
                             <span className="text-[color:var(--text-secondary)]">Utilization</span>
@@ -2722,14 +2638,17 @@ export function SessionsPage() {
                             </div>
                           )}
                           {!hasEstimate && <div className="mt-1.5 text-[color:var(--text-muted)] italic">Awaiting telemetry...</div>}
-                        </div>
+                        </div>,
+                        document.body,
+                        )}
                       </>
                     );
                   })()}
                 </div>
+              </div>
 
-                <div className="w-px h-4 bg-[color:var(--border-subtle)] mx-1" />
-
+              {/* Controls */}
+              <div className="ml-auto flex shrink-0 items-center gap-3">
                 {/* Effort / Tier Selector */}
                 <div ref={effortDropdownRef} className="relative z-20">
                   {(() => {
@@ -2755,8 +2674,17 @@ export function SessionsPage() {
                       );
                     })()}
 
-                  {isEffortDropdownOpen && (
-                      <div className="absolute top-full right-0 mt-2 w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl">
+                  {isEffortDropdownOpen && effortDropdownRect && createPortal(
+                      <div
+                        ref={effortDropdownMenuRef}
+                        style={{
+                          position: 'fixed',
+                          top: effortDropdownRect.top + 8,
+                          left: Math.max(8, Math.min(effortDropdownRect.left + effortDropdownRect.triggerWidth - 288, window.innerWidth - 296)),
+                          zIndex: 10000,
+                        }}
+                        className="w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl"
+                      >
                         {models.map(m => {
                           const active = selectedTier === m.tier;
                           const tier = m.tier ?? 'normal';
@@ -2812,7 +2740,8 @@ export function SessionsPage() {
                             </button>
                           );
                         })}
-                      </div>
+                      </div>,
+                      document.body,
                   )}
                 </div>
 
@@ -2840,8 +2769,17 @@ export function SessionsPage() {
                     );
                   })()}
 
-                  {isAgentModeDropdownOpen && agentModes.length > 0 && (
-                    <div className="absolute top-full right-0 mt-2 w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl">
+                  {isAgentModeDropdownOpen && agentModes.length > 0 && agentModeDropdownRect && createPortal(
+                    <div
+                      ref={agentModeDropdownMenuRef}
+                      style={{
+                        position: 'fixed',
+                        top: agentModeDropdownRect.top + 8,
+                        left: Math.max(8, Math.min(agentModeDropdownRect.left + agentModeDropdownRect.triggerWidth - 288, window.innerWidth - 296)),
+                        zIndex: 10000,
+                      }}
+                      className="w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl"
+                    >
                       {agentModes.map((modeOption) => {
                         const active = selectedAgentMode === modeOption.id;
                         return (
@@ -2874,7 +2812,8 @@ export function SessionsPage() {
                           </button>
                         );
                       })}
-                    </div>
+                    </div>,
+                    document.body,
                   )}
                 </div>
 
@@ -2892,9 +2831,45 @@ export function SessionsPage() {
                   </select>
                 </div>
 
+                <button
+                    onClick={resetSession}
+                    title="Start fresh (memories preserved)"
+                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+                >
+                  <RefreshCw size={14} className="text-sky-500/80" />
+                  New Chat
+                </button>
+
+                <button
+                    onClick={compactContext}
+                    disabled={isCompacting}
+                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
+                >
+                  <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-500/80`} />
+                  Compact
+                </button>
+
               </div>
+              </div>
+            ) : null
+          }
+      >
+        <div className="relative flex h-full w-full overflow-hidden">
+          {mode === 'solo' ? (
+            <div className="absolute top-4 right-4 z-20">
+              <button
+                type="button"
+                onClick={() => setMode('advanced')}
+                className="inline-flex h-9 items-center gap-2 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)]/90 backdrop-blur px-4 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] hover:bg-[color:var(--surface-1)] transition-all active:scale-95 shadow-xl animate-[focusModePillIn_180ms_cubic-bezier(0.22,1,0.36,1)]"
+              >
+                <X size={14} className="text-[color:var(--text-muted)]" />
+                Exit Focus
+              </button>
             </div>
-            ) : null}
+          ) : null}
+          {/* Chat Area */}
+          <main className="order-5 relative z-0 flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)] overflow-hidden">
+            {/* Session toolbar items moved into the pane-header actions */}
 
             {/* Messages */}
             <div

@@ -1,4 +1,4 @@
-import { PropsWithChildren, ReactNode, useState } from 'react';
+import { PropsWithChildren, ReactNode, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -27,6 +27,9 @@ import { useWorkspaceMode } from '../lib/workspace-context';
 import { isWorkspaceTabId } from '../lib/workspace-tabs';
 import { useOpenTabIds, useWorkspaceStore } from '../store/workspace-store';
 import { useThemeStore } from '../store/theme-store';
+import { clearPaneActions, setPaneActions } from '../store/pane-actions-store';
+import { usePaneId } from './workspace/WorkspacePane';
+import { SidebarInstanceSwitcher } from './SidebarInstanceSwitcher';
 import { Logo } from './ui/Logo';
 
 interface AppShellProps extends PropsWithChildren {
@@ -83,8 +86,22 @@ export function AppShell({
   const openTabIds = useOpenTabIds();
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const paneId = usePaneId();
   const instanceMatch = location.pathname.match(/^\/instances\/([^/]+)/);
   const hasInstanceScope = Boolean(instanceMatch?.[1]);
+
+  // In a tiling-workspace pane the page's header actions render inside the
+  // pane's own tab ({@link PaneHeaderTab}), not in a second header bar here.
+  // The tab lives in a separate React tree, so we bridge the `actions` node
+  // through the pane-actions store keyed by `paneId`. The store is consumed by
+  // the tab (a different component tree), so this write never re-renders this
+  // AppShell — no update loop. Depend only on [paneId, actions]; clear on
+  // unmount or when the pane id changes so a closed pane leaves no stale node.
+  useEffect(() => {
+    if (!workspaceMode || !paneId) return;
+    setPaneActions(paneId, actions ?? null);
+    return () => clearPaneActions(paneId);
+  }, [paneId, actions, workspaceMode]);
 
   // When the shell is hosting the tiling workspace, the left nav acts as a tab
   // launcher: clicking an item opens/focuses that pane instead of navigating to
@@ -140,17 +157,12 @@ export function AppShell({
 
   // Inside a tiling workspace pane the global chrome (sidebar + header) is
   // already provided by the outer shell hosting <Workspace/>, and the pane
-  // supplies its own header (tab picker / split / close). Pages still wrap their
-  // body in <AppShell> for the route case, so here we collapse to bare content
-  // and let the optional header actions ride along in a slim strip.
+  // supplies its own header (tab picker / actions / split / close). The page's
+  // `actions` are registered into the pane-actions store above and rendered by
+  // the pane's tab, so here we render bare content with NO header bar.
   if (workspaceMode) {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">
-        {!hideHeader && actions && (
-          <div className="flex shrink-0 items-center justify-end gap-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-4 py-2">
-            {actions}
-          </div>
-        )}
         <main className={`flex-1 overflow-y-auto p-4 md:p-6 ${contentClassName}`}>
           {children}
         </main>
@@ -182,6 +194,8 @@ export function AppShell({
             </div>
           </div>
         </div>
+
+        {hasInstanceScope && <SidebarInstanceSwitcher expanded={isSidebarExpanded} />}
 
         {hasInstanceScope ? renderNav(navItems) : <div className="flex-1" />}
 
@@ -251,6 +265,7 @@ export function AppShell({
                 <X size={20} />
               </button>
             </div>
+            {hasInstanceScope && <SidebarInstanceSwitcher expanded />}
             {hasInstanceScope ? renderNav(navItems, () => setIsMobileMenuOpen(false)) : <div className="flex-1" />}
             <div className="p-4 border-t border-[color:var(--border-subtle)]">
               <button

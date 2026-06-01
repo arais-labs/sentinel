@@ -18,8 +18,22 @@ import { TabPicker } from './PaneHeaderTab';
  */
 export const WorkspaceInstanceContext = createContext<string | undefined>(undefined);
 
+/**
+ * Carries this pane's dockview id (`props.api.id`) down into the content
+ * subtree. The pane's tab and its content live in separate React trees, so the
+ * page's {@link AppShell} cannot derive the id on its own — it reads this
+ * context to register its header actions under the right pane in the
+ * pane-actions store. Undefined outside a pane (the standalone route case).
+ */
+export const PaneIdContext = createContext<string | undefined>(undefined);
+
 function useHostInstanceName(): string | undefined {
   return useContext(WorkspaceInstanceContext);
+}
+
+/** Read the hosting pane's id from the surrounding {@link PaneIdContext}. */
+export function usePaneId(): string | undefined {
+  return useContext(PaneIdContext);
 }
 
 /** Read the current `tabId` off the panel params, validated against the registry. */
@@ -53,9 +67,11 @@ export function WorkspacePane(props: IDockviewPanelProps<WorkspacePaneParams>) {
     <div className="flex h-full w-full flex-col overflow-hidden bg-[color:var(--surface-0)] text-[color:var(--text-primary)]">
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[color:var(--app-bg)]">
         {TabComponent ? (
-          <WorkspaceProvider instanceName={instanceName} workspaceMode>
-            <TabComponent />
-          </WorkspaceProvider>
+          <PaneIdContext.Provider value={paneId}>
+            <WorkspaceProvider instanceName={instanceName} workspaceMode>
+              <TabComponent />
+            </WorkspaceProvider>
+          </PaneIdContext.Provider>
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8 text-center">
             <p className="text-sm text-[color:var(--text-secondary)]">

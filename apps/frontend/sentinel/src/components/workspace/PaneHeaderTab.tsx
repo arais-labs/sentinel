@@ -1,12 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type SyntheticEvent,
-} from 'react';
+import { useRef, useState, type CSSProperties, type SyntheticEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { IDockviewPanelHeaderProps } from 'dockview-react';
 import {
@@ -29,6 +21,8 @@ import {
   type WorkspacePaneParams,
   type SplitDirection,
 } from '../../store/workspace-store';
+import { usePaneActions } from '../../store/pane-actions-store';
+import { useAnchorRect, useDismissOnOutside } from '../../lib/portal-menu';
 
 /** Read the current `tabId` off the panel params, validated against the registry. */
 function readTabId(params: Partial<WorkspacePaneParams> | undefined): WorkspaceTabId | null {
@@ -56,80 +50,6 @@ const DRAG_BLOCKERS = {
   onPointerDown: blockDrag,
   onMouseDown: blockDrag,
 } as const;
-
-interface MenuRect {
-  top: number;
-  left: number;
-  /** Width of the trigger, so the menu can size/align relative to it. */
-  triggerWidth: number;
-}
-
-/**
- * Track the viewport rect of a trigger element while `open`, recomputing on
- * open and on scroll/resize so a menu portaled to `document.body` (position:
- * fixed) stays glued to its trigger. Returns null while closed.
- */
-function useAnchorRect(
-  triggerRef: React.RefObject<HTMLElement | null>,
-  open: boolean,
-): MenuRect | null {
-  const [rect, setRect] = useState<MenuRect | null>(null);
-
-  const measure = useCallback(() => {
-    const el = triggerRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setRect({ top: r.bottom, left: r.left, triggerWidth: r.width });
-  }, [triggerRef]);
-
-  useLayoutEffect(() => {
-    if (!open) {
-      setRect(null);
-      return;
-    }
-    measure();
-    // Capture-phase scroll catches nested scroll containers (e.g. a pane body).
-    window.addEventListener('scroll', measure, true);
-    window.addEventListener('resize', measure);
-    return () => {
-      window.removeEventListener('scroll', measure, true);
-      window.removeEventListener('resize', measure);
-    };
-  }, [open, measure]);
-
-  return rect;
-}
-
-/**
- * Close `open` when a pointer goes down outside both the trigger and the
- * portaled menu. Both refs are checked because the menu lives in document.body,
- * outside the trigger's DOM subtree.
- */
-function useDismissOnOutside(
-  open: boolean,
-  setOpen: (value: boolean) => void,
-  triggerRef: React.RefObject<HTMLElement | null>,
-  menuRef: React.RefObject<HTMLElement | null>,
-) {
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (triggerRef.current?.contains(target)) return;
-      if (menuRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open, setOpen, triggerRef, menuRef]);
-}
 
 export interface TabPickerProps {
   paneId: string;
@@ -388,13 +308,28 @@ export function PaneHeaderTab(props: IDockviewPanelHeaderProps<WorkspacePanePara
   const paneId = props.api.id;
   const tabId = readTabId(props.params);
   const closePane = useWorkspaceStore((state) => state.closePane);
+  // The hosted page registers its header actions under this pane id (the page's
+  // AppShell and this tab live in separate React trees, bridged by the store).
+  const actions = usePaneActions(paneId);
 
   return (
-    <div className="flex h-full w-full items-center justify-between gap-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 text-[color:var(--text-primary)]">
-      <div className="flex min-w-0 items-center gap-1">
+    <div className="flex h-full w-full items-center gap-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 text-[color:var(--text-primary)]">
+      <div className="flex min-w-0 shrink-0 items-center gap-1">
         <TabPicker paneId={paneId} activeTabId={tabId} variant="header" />
       </div>
-      <div className="flex shrink-0 items-center gap-0.5">
+      {actions != null && (
+        // The page's interactive action buttons. Drag-block here (same backends
+        // as the split/close controls) so clicking an action never arms a pane
+        // drag. Min-w-0 + scroll-x lets a crowded action set shrink/scroll
+        // without pushing the split/close controls out of the bar.
+        <div
+          {...DRAG_BLOCKERS}
+          className="flex min-w-0 flex-1 items-center justify-end gap-1.5 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {actions}
+        </div>
+      )}
+      <div className={`flex shrink-0 items-center gap-0.5 ${actions != null ? '' : 'ml-auto'}`}>
         <SplitMenu paneId={paneId} />
         <button
           type="button"
