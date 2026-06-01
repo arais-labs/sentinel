@@ -24,6 +24,9 @@ import {
   GitBranch,
   CheckCircle2,
   AlertCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Pin,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -780,6 +783,24 @@ export function SessionsPage() {
   const [isStopping, setIsStopping] = useState(false);
   const [rightPanelWidth, setRightPanelWidth] = useState(400);
   const [isResizing, setIsResizing] = useState(false);
+  // Session/agents rail: docked (in-flow column) by default, or collapsed to a
+  // slim strip that summons the full rail as a floating overlay on demand — so a
+  // side-by-side pane can give the chat full width. Docked preference persists.
+  const [railDocked, setRailDocked] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('sentinel.sessions.railDocked') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [railOverlayOpen, setRailOverlayOpen] = useState(false);
+  useEffect(() => {
+    try {
+      localStorage.setItem('sentinel.sessions.railDocked', String(railDocked));
+    } catch {
+      /* storage unavailable — non-fatal */
+    }
+  }, [railDocked]);
   const [statusTooltip, setStatusTooltip] = useState<'connection' | 'progress' | 'context' | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -3248,7 +3269,7 @@ export function SessionsPage() {
               <div
                 className={`absolute inset-y-0 z-40 hidden xl:block w-3 -translate-x-1/2 cursor-col-resize transition-colors ${isWorkbenchResizing ? 'bg-[color:var(--accent-solid)]/20' : 'hover:bg-[color:var(--accent-solid)]/10'}`}
                 onMouseDown={startWorkbenchResizing}
-                style={{ left: `${rightPanelWidth + workbenchWidth}px` }}
+                style={{ left: `${(railDocked ? rightPanelWidth : 36) + workbenchWidth}px` }}
               />
                 <Workbench
                 className="order-3 border-l-0"
@@ -3296,25 +3317,53 @@ export function SessionsPage() {
             </>
           ) : null}
 
-          {/* Left Rail Resize Handle */}
-          <div
-              className="order-2 relative hidden xl:block w-0 shrink-0"
-          />
-          <div
-              className={`absolute inset-y-0 z-40 hidden xl:block w-3 -translate-x-1/2 cursor-col-resize transition-colors before:absolute before:left-1 before:right-1 before:top-[47px] before:h-px before:bg-[color:var(--border-subtle)] ${isResizing ? 'bg-[color:var(--accent-solid)]/20' : 'hover:bg-[color:var(--accent-solid)]/10'}`}
-              onMouseDown={startResizing}
-              style={{ left: `${rightPanelWidth}px` }}
-          />
+          {/* Left Rail Resize Handle (only while the rail is docked) */}
+          {railDocked ? (
+            <>
+              <div className="order-2 relative hidden xl:block w-0 shrink-0" />
+              <div
+                  className={`absolute inset-y-0 z-40 hidden xl:block w-3 -translate-x-1/2 cursor-col-resize transition-colors before:absolute before:left-1 before:right-1 before:top-[47px] before:h-px before:bg-[color:var(--border-subtle)] ${isResizing ? 'bg-[color:var(--accent-solid)]/20' : 'hover:bg-[color:var(--accent-solid)]/10'}`}
+                  onMouseDown={startResizing}
+                  style={{ left: `${rightPanelWidth}px` }}
+              />
+            </>
+          ) : null}
 
-          {/* Tool Rail */}
+          {/* Collapsed: a slim strip that summons the rail as a floating overlay. */}
+          {!railDocked ? (
+            <button
+              type="button"
+              onClick={() => setRailOverlayOpen(true)}
+              title="Show sessions panel"
+              className="order-1 w-9 shrink-0 hidden xl:flex flex-col items-center pt-3 border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors z-30"
+            >
+              <PanelLeftOpen size={16} />
+            </button>
+          ) : null}
+
+          {/* Backdrop dismisses the overlay on an outside click. */}
+          {!railDocked && railOverlayOpen ? (
+            <div
+              className="absolute inset-0 z-40 hidden xl:block"
+              onClick={() => setRailOverlayOpen(false)}
+              aria-hidden="true"
+            />
+          ) : null}
+
+          {/* Tool Rail — docked in-flow column, or a floating overlay drawer when collapsed. */}
+          {(railDocked || railOverlayOpen) ? (
           <aside
               style={{ width: `${rightPanelWidth}px` }}
-              className="order-1 relative z-30 hidden xl:flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden"
+              className={
+                railDocked
+                  ? 'order-1 relative z-30 hidden xl:flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden'
+                  : 'absolute inset-y-0 left-0 z-50 hidden xl:flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden shadow-2xl animate-[workbenchDockIn_180ms_ease-out]'
+              }
           >
             <div className="relative">
-              <div className="flex h-12 items-center px-3">
+              <div className="flex h-12 items-center gap-2 px-3">
                 <div
-                  className="relative grid w-full gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden"
+                  className="relative grid flex-1 gap-0 rounded-full border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)] overflow-hidden"
                   style={{ gridTemplateColumns: `repeat(${rightRailTabs.length}, minmax(0, 1fr))` }}
                 >
                   {/* Sliding Indicator */}
@@ -3341,6 +3390,24 @@ export function SessionsPage() {
                     </button>
                   ))}
                 </div>
+                {!railDocked ? (
+                  <button
+                    type="button"
+                    onClick={() => { setRailDocked(true); setRailOverlayOpen(false); }}
+                    title="Keep panel docked"
+                    className="shrink-0 p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+                  >
+                    <Pin size={15} />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => { if (railDocked) { setRailDocked(false); } else { setRailOverlayOpen(false); } }}
+                  title={railDocked ? 'Collapse panel' : 'Close'}
+                  className="shrink-0 p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+                >
+                  <PanelLeftClose size={15} />
+                </button>
               </div>
             </div>
 
@@ -3415,7 +3482,7 @@ export function SessionsPage() {
                   deletingSessionId={deletingSessionId}
                   filteredSessions={filteredSessions}
                   activeSessionId={activeSessionId}
-                  onSessionClick={onSessionClick}
+                  onSessionClick={(id) => { onSessionClick(id); if (!railDocked) setRailOverlayOpen(false); }}
                   editingSessionId={editingSessionId}
                   editingSessionTitle={editingSessionTitle}
                   setEditingSessionTitle={setEditingSessionTitle}
@@ -3501,6 +3568,7 @@ export function SessionsPage() {
               </div>
             ) : null}
           </aside>
+          ) : null}
         </div>
 
         {isTaskModalOpen && selectedTask && (
