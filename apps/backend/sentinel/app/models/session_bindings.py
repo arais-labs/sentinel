@@ -27,12 +27,6 @@ class SessionBinding(Base):
             unique=True,
             postgresql_where=text("is_active"),
         ),
-        Index(
-            "uq_session_bindings_active_main",
-            "user_id",
-            unique=True,
-            postgresql_where=text("is_active AND binding_type = 'main'"),
-        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

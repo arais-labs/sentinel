@@ -48,7 +48,6 @@ class SessionResponse(BaseModel):
     latest_system_prompt: str | None = None
     started_at: datetime
     is_running: bool = False
-    is_main: bool = False
     has_unread: bool = False
 
 
@@ -60,7 +59,6 @@ class SessionListItemResponse(BaseModel):
     title: str | None = None
     started_at: datetime
     is_running: bool = False
-    is_main: bool = False
     has_unread: bool = False
 
 

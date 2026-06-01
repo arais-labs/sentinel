@@ -143,7 +143,7 @@ def test_full_integration_happy_path():
                 "type": "cron",
                 "config": {"cron": "*/15 * * * *"},
                 "action_type": "agent_message",
-                "action_config": {"message": "run"},
+                "action_config": {"message": "run", "target_session_id": session_id},
             },
             headers=headers,
         )

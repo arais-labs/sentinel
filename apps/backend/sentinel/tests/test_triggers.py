@@ -31,6 +31,11 @@ def test_triggers_crud_fire_logs_and_webhook():
         assert token_resp.status_code == 200
         token = token_resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
+        session_resp = client.post(
+            "/api/v1/instances/main/sessions", json={"title": "trigger-target"}, headers=headers
+        )
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
 
         invalid = client.post(
             TRIGGERS_API,
@@ -52,7 +57,7 @@ def test_triggers_crud_fire_logs_and_webhook():
                 "type": "cron",
                 "config": {"cron": "*/5 * * * *"},
                 "action_type": "agent_message",
-                "action_config": {"message": "ping"},
+                "action_config": {"message": "ping", "target_session_id": session_id},
             },
             headers=headers,
         )
@@ -67,7 +72,7 @@ def test_triggers_crud_fire_logs_and_webhook():
                 "type": "heartbeat",
                 "config": {"interval_seconds": 30},
                 "action_type": "agent_message",
-                "action_config": {"message": "pulse"},
+                "action_config": {"message": "pulse", "target_session_id": session_id},
             },
             headers=headers,
         )
@@ -121,7 +126,7 @@ def test_triggers_crud_fire_logs_and_webhook():
                 "type": "webhook",
                 "config": {"secret": "topsecret"},
                 "action_type": "agent_message",
-                "action_config": {"message": "webhook fired"},
+                "action_config": {"message": "webhook fired", "target_session_id": session_id},
             },
             headers=headers,
         )
@@ -160,7 +165,7 @@ def test_triggers_crud_fire_logs_and_webhook():
                 "enabled": False,
                 "config": {"secret": "topsecret"},
                 "action_type": "agent_message",
-                "action_config": {"message": "off"},
+                "action_config": {"message": "off", "target_session_id": session_id},
             },
             headers=headers,
         )

@@ -209,7 +209,7 @@ session prefix:
 | `POST` | `/backup/inspect` | Inspect a backup file (version, items) |
 | `POST` | `/backup/import` | Restore (version-gated; rebuilds the runtime context if `modules` are imported) |
 
-Restores are version-gated (`MIN_RESTORABLE_VERSION = 0.1.0`, plus a forward
+Restores are version-gated (`MIN_RESTORABLE_VERSION = 0.1.2`, plus a forward
 guard on the major version) and schema-verified against the pinned instance
 Alembic head. Backups are encrypted with AES-GCM using a scrypt-derived key
 from the passphrase, which is required for both export and import.

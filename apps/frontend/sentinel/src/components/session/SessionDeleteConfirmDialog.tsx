@@ -17,6 +17,13 @@ type SessionDeleteConfirmRequest =
       kind: 'workspace_wipe';
       label: string;
       topLevelEntries: string[];
+    }
+  | {
+      kind: 'trigger_targets';
+      label?: string;
+      sessionCount: number;
+      triggerCount: number;
+      triggerNames: string[];
     };
 
 type SessionDeleteConfirmDialogProps = {
@@ -34,11 +41,18 @@ function SessionDeleteConfirmDialog({
 
   const isBulk = request.kind === 'bulk';
   const isWorkspaceWipe = request.kind === 'workspace_wipe';
+  const isTriggerTargets = request.kind === 'trigger_targets';
   const title = isWorkspaceWipe
     ? 'Wipe runtime workspace?'
+    : isTriggerTargets
+    ? 'Delete trigger target?'
     : isBulk ? 'Delete sessions and workspaces?' : 'Delete session and workspace?';
   const description = isWorkspaceWipe
     ? `This will permanently delete runtime workspace files for "${request.label}". The chat session and messages will be kept.`
+    : isTriggerTargets
+    ? request.sessionCount === 1
+      ? `"${request.label ?? 'This session'}" is targeted by ${request.triggerCount} enabled trigger${request.triggerCount === 1 ? '' : 's'}.`
+      : `${request.sessionCount} selected sessions are targeted by ${request.triggerCount} enabled trigger${request.triggerCount === 1 ? '' : 's'}.`
     : isBulk
     ? `This will permanently delete ${request.sessionCount} selected sessions, their messages, and runtime workspace files for ${request.workspaceSessionCount} session${request.workspaceSessionCount === 1 ? '' : 's'}.`
     : `This will permanently delete "${request.label}", all messages in the session, and this session's runtime workspace files.`;
@@ -49,6 +63,7 @@ function SessionDeleteConfirmDialog({
     : 'Workspace files will be removed from disk. Any files the agent created, edited, cloned, downloaded, or generated in this session workspace will be deleted.';
   const actionLabel = isWorkspaceWipe
     ? 'Wipe workspace'
+    : isTriggerTargets ? 'Continue'
     : isBulk ? 'Delete sessions and workspaces' : 'Delete session and workspace';
   const previewLabel = isBulk
     ? 'Top-level workspace files and folders found'
@@ -77,31 +92,57 @@ function SessionDeleteConfirmDialog({
             <div className="flex items-start gap-2.5">
               <Trash2 size={15} className="mt-0.5 shrink-0 text-rose-400" />
               <p className="text-xs font-semibold leading-relaxed text-rose-200">
-                {workspaceCopy}
+                {isTriggerTargets
+                  ? 'Affected triggers will not run until each trigger is edited to target another session.'
+                  : workspaceCopy}
               </p>
             </div>
           </div>
-          <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-3">
-            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[color:var(--text-muted)]">
-              {previewLabel}
-            </p>
-            {request.topLevelEntries.length > 0 ? (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {request.topLevelEntries.map((entry) => (
-                  <span
-                    key={entry}
-                    className="max-w-full truncate rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 py-1 font-mono text-[11px] text-[color:var(--text-secondary)]"
-                  >
-                    {entry}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="mt-2 text-xs leading-relaxed text-[color:var(--text-muted)]">
-                No top-level files or folders were found in the preview, but workspace files may still be deleted.
+          {isTriggerTargets ? (
+            <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[color:var(--text-muted)]">
+                Affected triggers
               </p>
-            )}
-          </div>
+              {request.triggerNames.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {request.triggerNames.map((entry) => (
+                    <span
+                      key={entry}
+                      className="max-w-full truncate rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 py-1 text-[11px] text-[color:var(--text-secondary)]"
+                    >
+                      {entry}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-2 text-xs leading-relaxed text-[color:var(--text-muted)]">
+                  Trigger names could not be previewed.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[color:var(--text-muted)]">
+                {previewLabel}
+              </p>
+              {request.topLevelEntries.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {request.topLevelEntries.map((entry) => (
+                    <span
+                      key={entry}
+                      className="max-w-full truncate rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-2 py-1 font-mono text-[11px] text-[color:var(--text-secondary)]"
+                    >
+                      {entry}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-2 text-xs leading-relaxed text-[color:var(--text-muted)]">
+                  No top-level files or folders were found in the preview, but workspace files may still be deleted.
+                </p>
+              )}
+            </div>
+          )}
           <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-rose-300">
             This cannot be undone.
           </p>

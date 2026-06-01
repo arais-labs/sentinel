@@ -1,8 +1,6 @@
 from app.services.sessions.errors import (
     AgentRuntimeUnavailableError,
     ChatPayloadRequiredError,
-    MainSessionDeletionError,
-    MainSessionTargetInvalidError,
     MessageNotFoundError,
     SessionRenameNotAllowedError,
     SessionNotFoundError,
@@ -15,8 +13,6 @@ __all__ = [
     "AgentRuntimeUnavailableError",
     "ChatPayloadRequiredError",
     "ChatRunResult",
-    "MainSessionDeletionError",
-    "MainSessionTargetInvalidError",
     "MessageNotFoundError",
     "SessionRenameNotAllowedError",
     "MessagePage",

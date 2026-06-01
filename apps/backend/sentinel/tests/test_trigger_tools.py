@@ -70,36 +70,36 @@ def test_trigger_create_binds_owner_from_context_session():
     assert created.action_config.get("session_id") is None
 
 
-def test_trigger_create_invalid_specific_target_falls_back_to_main():
+def test_trigger_create_invalid_specific_target_is_rejected():
     db = FakeDB()
     session = Session(user_id="user-1", title="main", status="active")
     db.add(session)
     executor = _executor_for(db)
 
-    result, _ = _run(
-        executor.execute(
-            "triggers",
-            {
-                "command": "create",
-                "name": "daily",
-                "type": "heartbeat",
-                "config": {"interval_seconds": 60},
-                "action_type": "agent_message",
-                "action_config": {
-                    "message": "ping",
-                    "route_mode": "session",
-                    "target_session_id": "0fb4e3d8-4238-4fae-a5df-7bf1a615b38b",
+    try:
+        _run(
+            executor.execute(
+                "triggers",
+                {
+                    "command": "create",
+                    "name": "daily",
+                    "type": "heartbeat",
+                    "config": {"interval_seconds": 60},
+                    "action_type": "agent_message",
+                    "action_config": {
+                        "message": "ping",
+                        "target_session_id": "0fb4e3d8-4238-4fae-a5df-7bf1a615b38b",
+                    },
                 },
-            },
-            runtime=ToolRuntimeContext(session_id=session.id),
+                runtime=ToolRuntimeContext(session_id=session.id),
+            )
         )
-    )
-
-    assert result["trigger_id"]
-    created = db.storage[Trigger][0]
-    assert created.action_config.get("route_mode") == "main"
-    assert created.action_config.get("target_session_id") is None
-    assert created.action_config.get("route_fallback_reason") == "invalid_or_deleted_target_session"
+        raised = False
+    except ToolValidationError as exc:
+        raised = True
+        assert "target session is missing or deleted" in str(exc)
+    assert raised is True
+    assert db.storage[Trigger] == []
 
 
 def test_trigger_create_rejects_missing_owner_context():

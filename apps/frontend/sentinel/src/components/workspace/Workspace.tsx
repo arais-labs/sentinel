@@ -14,10 +14,11 @@ import { Plus } from 'lucide-react';
 import { useThemeStore } from '../../store/theme-store';
 import {
   WORKSPACE_PANEL_COMPONENT,
+  WORKSPACE_DND_MIME,
   useWorkspaceStore,
   useOpenTabIds,
 } from '../../store/workspace-store';
-import { WORKSPACE_TABS } from '../../lib/workspace-tabs';
+import { WORKSPACE_TABS, isWorkspaceTabId } from '../../lib/workspace-tabs';
 import { WorkspacePane, WorkspaceInstanceContext } from './WorkspacePane';
 import { PaneHeaderTab } from './PaneHeaderTab';
 
@@ -120,6 +121,24 @@ export function Workspace({ instanceName, className = '' }: WorkspaceProps) {
     const disposeBind = store.bindApi(event.api);
     // Prevent stacking drops so every group keeps exactly one panel.
     const overlay = event.api.onWillShowOverlay(blockStackingDrops);
+    // Sidebar tabs are external drag sources: accept our tagged drag so dockview
+    // renders its drop zones, then add (or move, if already open) a pane on drop.
+    const dragOver = event.api.onUnhandledDragOverEvent((dragEvent) => {
+      const native = dragEvent.nativeEvent;
+      if (native instanceof DragEvent && native.dataTransfer?.types?.includes(WORKSPACE_DND_MIME)) {
+        dragEvent.accept();
+      }
+    });
+    const drop = event.api.onDidDrop((dropEvent) => {
+      const tabId =
+        dropEvent.nativeEvent instanceof DragEvent
+          ? dropEvent.nativeEvent.dataTransfer?.getData(WORKSPACE_DND_MIME)
+          : undefined;
+      if (!tabId || !isWorkspaceTabId(tabId)) return;
+      const refPaneId =
+        dropEvent.group?.activePanel?.id ?? dropEvent.group?.panels[0]?.id ?? null;
+      useWorkspaceStore.getState().dropTab(tabId, refPaneId, dropEvent.position);
+    });
     // Keep paneCount in sync with the live layout so the overlay reflects pane
     // presence. onDidLayoutChange fires (asynchronously) on every add/remove.
     const layout = event.api.onDidLayoutChange(() => {
@@ -141,6 +160,8 @@ export function Workspace({ instanceName, className = '' }: WorkspaceProps) {
     disposeRef.current = () => {
       layout.dispose();
       overlay.dispose();
+      dragOver.dispose();
+      drop.dispose();
       disposeBind();
     };
   }, []);

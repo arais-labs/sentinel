@@ -443,15 +443,13 @@ class TelegramBridge:
         return None
 
     async def _resolve_owner_active_session(self, db: object) -> UUID | None:
-        """Resolve owner DM route session from the owner_active binding (defaults to main)."""
+        """Resolve owner DM route session from the explicit owner_active binding."""
         session = await session_bindings.resolve_owner_active_session(
             db,
             user_id=self._user_id,
             agent_id="dev-agent",
         )
-        await db.commit()
-        await db.refresh(session)
-        return session.id
+        return session.id if session is not None else None
 
     async def _resolve_or_create_routed_session(
         self,
@@ -534,7 +532,10 @@ class TelegramBridge:
     ) -> tuple[UUID | None, str]:
         """Map inbound Telegram chat/user tuple to the correct Sentinel session."""
         if self._should_reply_inline(chat, metadata):
-            return (await self._resolve_owner_active_session(db), "owner_main")
+            session_id = await self._resolve_owner_active_session(db)
+            if session_id is None:
+                return (None, "owner_dm_missing")
+            return (session_id, "owner_dm")
 
         chat_type = str(getattr(chat, "type", "")).lower()
         chat_id = self._to_int(getattr(chat, "id", None))
@@ -776,13 +777,9 @@ class TelegramBridge:
                 db,
                 user_id=self._user_id,
                 binding_type=session_bindings.OWNER_ACTIVE_BINDING_TYPE,
-                binding_key=session_bindings.MAIN_BINDING_KEY,
+                binding_key=session_bindings.OWNER_ACTIVE_BINDING_KEY,
             )
-            current_id = (
-                current.id
-                if current is not None
-                else await session_bindings.resolve_main_session_id(db, user_id=self._user_id)
-            )
+            current_id = current.id if current is not None else None
 
         if not sessions:
             await update.message.reply_text("No sessions yet.")
@@ -931,6 +928,7 @@ class TelegramBridge:
             metadata=metadata,
         )
         if session_id is None:
+            metadata["telegram_route_error"] = route_scope
             return None
         self._apply_route_guardrails(metadata, route_scope)
         chat_id = self._to_int(getattr(chat, "id", None))
@@ -939,7 +937,7 @@ class TelegramBridge:
             session_id=session_id,
             session_key=str(session_id),
             route_scope=route_scope,
-            inline_reply_mode=(route_scope == "owner_main"),
+            inline_reply_mode=(route_scope == "owner_dm"),
             chat_id=chat_id,
             chat_type=chat_type,
         )
@@ -1140,7 +1138,12 @@ class TelegramBridge:
                 metadata=metadata,
             )
             if route is None:
-                await update.message.reply_text("Could not resolve agent session.")
+                if metadata.get("telegram_route_error") == "owner_dm_missing":
+                    await update.message.reply_text(
+                        "Choose a session with /session before sending owner DM messages."
+                    )
+                else:
+                    await update.message.reply_text("Could not resolve agent session.")
                 return
 
         if not await self._wait_for_session_ready(update, session_key=route.session_key):

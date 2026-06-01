@@ -6,7 +6,9 @@ import type {
   SerializedDockview,
   AddPanelOptions,
   Direction,
+  Position,
 } from 'dockview-react';
+import { positionToDirection } from 'dockview-react';
 
 import {
   WORKSPACE_TAB_IDS,
@@ -39,6 +41,9 @@ import {
 
 /** The single content component id registered with DockviewReact. */
 export const WORKSPACE_PANEL_COMPONENT = 'workspace-pane';
+
+/** dataTransfer MIME marking a workspace-tab dragged out of the sidebar launcher. */
+export const WORKSPACE_DND_MIME = 'application/x-sentinel-workspace-tab';
 
 /** localStorage key for the persisted layout. */
 const STORAGE_KEY = 'sentinel.workspace';
@@ -98,6 +103,18 @@ export interface WorkspaceState {
     paneId: string,
     tabId: WorkspaceTabId,
     direction: SplitDirection,
+  ) => string | null;
+  /**
+   * Handle a sidebar tab dropped onto the workspace at `referencePaneId` /
+   * `position`. New tab -> add a pane there; already-open tab -> move its pane
+   * there (one-view-per-pane, never duplicated). `referencePaneId` null falls
+   * back to the active pane (or the first pane when empty). A center drop is
+   * coerced to a right split so panes never stack. Returns the hosting pane id.
+   */
+  dropTab: (
+    tabId: WorkspaceTabId,
+    referencePaneId: string | null,
+    position: Position,
   ) => string | null;
   /** Remove every pane and clear the layout. */
   resetWorkspace: () => void;
@@ -267,6 +284,41 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           component: WORKSPACE_PANEL_COMPONENT,
           params,
           position: toAddPanelPosition(paneId, direction),
+        });
+        get().syncFromApi();
+        return newPaneId;
+      },
+
+      dropTab: (tabId, referencePaneId, position) => {
+        if (!liveApi) return null;
+        // Never stack onto a pane: a center drop becomes a right split.
+        const splitPos: Position = position === 'center' ? 'right' : position;
+        const refPaneId = referencePaneId ?? resolveActivePane(liveApi) ?? null;
+        const reference = refPaneId ? liveApi.getPanel(refPaneId) : undefined;
+
+        // Already open: move its pane to the drop spot rather than duplicating.
+        const existingPaneId = get().openTabs[tabId];
+        if (existingPaneId) {
+          const existing = liveApi.getPanel(existingPaneId);
+          if (!existing) return null;
+          if (reference && refPaneId !== existingPaneId) {
+            existing.api.moveTo({ group: reference.api.group, position: splitPos });
+          }
+          existing.api.setActive();
+          get().syncFromApi();
+          return existingPaneId;
+        }
+
+        // New view: its own pane at the drop spot (or the first pane when empty).
+        const params: WorkspacePaneParams = { tabId };
+        const newPaneId = makePaneId(tabId);
+        liveApi.addPanel({
+          id: newPaneId,
+          component: WORKSPACE_PANEL_COMPONENT,
+          params,
+          position: reference
+            ? { referencePanel: refPaneId as string, direction: positionToDirection(splitPos) }
+            : undefined,
         });
         get().syncFromApi();
         return newPaneId;

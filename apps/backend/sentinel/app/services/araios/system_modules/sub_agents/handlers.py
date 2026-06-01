@@ -100,9 +100,9 @@ async def handle_spawn(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
             f"Sub-agent spawned (timeout: {timeout_seconds}s). "
             "Do not call delegate with command=status immediately in the normal case. "
             "Default to ending the turn and waiting so the user can steer while it runs. "
-            "The main session will be prompted automatically when results are ready, so immediate polling is usually unnecessary. "
+            "The parent session will be prompted automatically when results are ready, so immediate polling is usually unnecessary. "
             "Only continue if you still have other real pending work that does not duplicate the delegated branch. "
-            "Wait until the main session is prompted that results are ready before requesting status in the normal case. "
+            "Wait until the parent session is prompted that results are ready before requesting status in the normal case. "
             "Use command=status only when the next decision depends on that result, the user explicitly asks for status, or before reporting delegated output as final."
         ),
     }
@@ -124,7 +124,7 @@ async def handle_status(payload: dict[str, Any]) -> dict[str, Any]:
         status = str(task.status)
         next_action = (
             "Do not poll repeatedly. In the normal case, end the turn and wait. "
-            "The main session will be prompted automatically when results are ready. "
+            "The parent session will be prompted automatically when results are ready. "
             "Call delegate with command=status later only when you need this result for the next decision or the user asks for status."
         )
         retry_recommended = False

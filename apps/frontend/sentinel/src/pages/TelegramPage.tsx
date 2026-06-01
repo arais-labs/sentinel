@@ -30,7 +30,6 @@ interface TelegramStatus {
   owner_user_id?: string | null;
   owner_chat_id?: string | null;
   owner_telegram_user_id?: string | null;
-  main_session_id?: string | null;
 }
 
 // ── main page ───────────────────────────────────────────────────────────────
@@ -212,12 +211,6 @@ export function TelegramPage() {
               )}
 
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-[color:var(--text-muted)] uppercase tracking-wider">Owner Main Session</span>
-                <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
-                  {status?.main_session_id || 'not set'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
                 <span className="text-[11px] font-bold text-[color:var(--text-muted)] uppercase tracking-wider">Owner Telegram Chat</span>
                 <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
                   {status?.owner_chat_id || 'not set'}
@@ -358,7 +351,7 @@ export function TelegramPage() {
               </button>
             </div>
             <p className="text-[10px] text-[color:var(--text-muted)]">
-              Owner DM always routes to main session. Choose which private Telegram chat identity is treated as owner.
+              Owner DM routes to the session selected with Telegram /session. Choose which private Telegram chat identity is treated as owner.
             </p>
           </div>
         </Panel>
@@ -419,7 +412,7 @@ export function TelegramPage() {
         <div className="bg-[color:var(--surface-1)] p-4 rounded-xl border border-[color:var(--border-subtle)] flex items-start gap-3">
           <Info size={16} className="text-[color:var(--accent-solid)] shrink-0 mt-0.5" />
           <p className="text-[11px] text-[color:var(--text-secondary)] leading-relaxed font-medium">
-            Owner DM always routes to your main session. Each Telegram group and each non-owner DM gets its own persistent channel session for stable context and safer isolation. Create a bot via <span className="font-mono">@BotFather</span> in Telegram to get a token.
+            Owner DM routes to the explicitly selected session. Each Telegram group and each non-owner DM gets its own persistent channel session for stable context and safer isolation. Create a bot via <span className="font-mono">@BotFather</span> in Telegram to get a token.
           </p>
         </div>
       </div>

@@ -84,7 +84,7 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="spawn",
             label="Spawn Delegated Branch",
-            description="Spawn one bounded delegated branch, especially for parallel investigation, candidate exploration, isolated execution, or verification. This should be the default first move when independent branches are clear. After spawning, do not normally request status immediately; let it run and either end the turn or do distinct non-overlapping work. The main session will be prompted automatically when the delegated branch finishes.",
+            description="Spawn one bounded delegated branch, especially for parallel investigation, candidate exploration, isolated execution, or verification. This should be the default first move when independent branches are clear. After spawning, do not normally request status immediately; let it run and either end the turn or do distinct non-overlapping work. The parent session will be prompted automatically when the delegated branch finishes.",
             handler=handle_spawn,
             requires_runtime_context=True,
             parameters_schema=_spawn_parameters_schema(),
@@ -92,7 +92,7 @@ MODULE = ModuleDefinition(
         ActionDefinition(
             id="status",
             label="Delegated Branch Status",
-            description="Get the status and current result of one delegated branch only when you actually need it now. Not for immediate post-spawn polling in the normal case, because the main session will be prompted automatically when the delegated branch finishes.",
+            description="Get the status and current result of one delegated branch only when you actually need it now. Not for immediate post-spawn polling in the normal case, because the parent session will be prompted automatically when the delegated branch finishes.",
             handler=handle_status,
             parameters_schema=_status_parameters_schema(),
         ),

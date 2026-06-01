@@ -14,6 +14,7 @@ from app.services.tools.executor import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.runtime_context import optional_session_id, require_session_id
 from app.services.triggers.routing import (
+    AgentMessageRouteError,
     extract_agent_message_target_session_id,
     resolve_agent_message_route,
 )
@@ -139,9 +140,12 @@ async def handle_create(payload: dict[str, Any], runtime: ToolRuntimeContext) ->
         )
         resolved_action_config = action_config
         if action_type == "agent_message":
-            route = await resolve_agent_message_route(
-                db, user_id=owner_user_id, action_config=action_config
-            )
+            try:
+                route = await resolve_agent_message_route(
+                    db, user_id=owner_user_id, action_config=action_config
+                )
+            except AgentMessageRouteError as exc:
+                raise ToolValidationError(str(exc)) from exc
             resolved_action_config = route.normalized_action_config
         trigger = Trigger(
             user_id=owner_user_id,
@@ -247,9 +251,12 @@ async def handle_update(payload: dict[str, Any], runtime: ToolRuntimeContext) ->
             if not isinstance(ac, dict):
                 raise ToolValidationError("Field 'action_config' must be an object")
             if trigger.action_type == "agent_message":
-                route = await resolve_agent_message_route(
-                    db, user_id=owner_user_id, action_config=ac
-                )
+                try:
+                    route = await resolve_agent_message_route(
+                        db, user_id=owner_user_id, action_config=ac
+                    )
+                except AgentMessageRouteError as exc:
+                    raise ToolValidationError(str(exc)) from exc
                 trigger.action_config = route.normalized_action_config
             else:
                 trigger.action_config = ac

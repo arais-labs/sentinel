@@ -122,7 +122,7 @@ def _telegram_tool():
     return TELEGRAM_MODULE.to_tool_definitions()[0]
 
 
-def test_owner_dm_route_creates_main_session_when_missing():
+def test_owner_dm_route_requires_explicit_session_when_missing():
     db = FakeDB()
     bridge = _build_bridge(db=db, user_id="admin")
     private_chat = SimpleNamespace(id=123, type="private", title=None)
@@ -136,36 +136,19 @@ def test_owner_dm_route_creates_main_session_when_missing():
             metadata={"telegram_is_owner": True},
         )
     )
-    assert scope == "owner_main"
-    assert session_id is not None
-
-    sessions = db.storage[Session]
-    bindings = db.storage[SessionBinding]
-    assert len(sessions) == 1
-    assert sessions[0].id == session_id
-    assert sessions[0].title == "Main"
-    assert any(
-        b.binding_type == session_bindings.MAIN_BINDING_TYPE
-        and b.binding_key == session_bindings.MAIN_BINDING_KEY
-        and b.session_id == session_id
-        and b.is_active
-        for b in bindings
-    )
+    assert scope == "owner_dm_missing"
+    assert session_id is None
+    assert db.storage[Session] == []
+    assert db.storage[SessionBinding] == []
 
 
-def test_owner_dm_route_uses_canonical_main_binding():
+def test_owner_dm_route_uses_owner_active_binding():
     db = FakeDB()
     older = Session(user_id="admin", title="Old")
     newer = Session(user_id="admin", title="New")
     db.add(older)
     db.add(newer)
-    _run(
-        session_bindings.set_main_session(
-            db,
-            user_id="admin",
-            session_id=older.id,
-        )
-    )
+    _run(session_bindings.set_owner_active_session(db, user_id="admin", session_id=older.id))
     bridge = _build_bridge(db=db, user_id="admin")
     private_chat = SimpleNamespace(id=123, type="private", title=None)
     owner_user = SimpleNamespace(id=123, full_name="Owner", first_name="Owner")
@@ -179,11 +162,11 @@ def test_owner_dm_route_uses_canonical_main_binding():
         )
     )
 
-    assert scope == "owner_main"
+    assert scope == "owner_dm"
     assert session_id == older.id
 
 
-def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
+def test_telegram_manage_tool_configure_sets_owner():
     db = FakeDB()
     instance_settings = _make_instance_settings(
         dev_user_id="dev-admin",
@@ -229,14 +212,6 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
                 "rebuild_context",
                 new=AsyncMock(side_effect=_fake_rebuild),
             ) as rebuild_mock,
-            patch(
-                "app.services.araios.system_modules.telegram.handlers.session_bindings.resolve_or_create_main_session",
-                new=AsyncMock(return_value=Session(user_id="admin", title="Main")),
-            ),
-            patch(
-                "app.services.telegram.resolve_latest_active_root_session_id_for_user",
-                new=AsyncMock(return_value="main-session-id"),
-            ),
         ):
             result = _run(
                 tool.execute(
@@ -250,7 +225,7 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
 
         assert result["success"] is True
         assert result.get("owner_user_id") == "admin"
-        assert result.get("main_session_id") == "main-session-id"
+        assert "main_session_id" not in result
         persist_mock.assert_awaited_once()
         rebuild_mock.assert_awaited_once()
     finally:
@@ -363,14 +338,6 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
                 "rebuild_context",
                 new=AsyncMock(side_effect=_fake_rebuild),
             ) as rebuild_mock,
-            patch(
-                "app.services.araios.system_modules.telegram.handlers.session_bindings.resolve_or_create_main_session",
-                new=AsyncMock(return_value=Session(user_id="new-admin", title="Main")),
-            ),
-            patch(
-                "app.services.telegram.resolve_latest_active_root_session_id_for_user",
-                new=AsyncMock(return_value="main-session-id"),
-            ),
         ):
             result = _run(
                 tool.execute(
@@ -382,6 +349,7 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
             )
         assert result["success"] is True
         assert result.get("owner_user_id") == "new-admin"
+        assert "main_session_id" not in result
         upsert_mock.assert_any_await(context, "telegram_owner_user_id", "new-admin")
         delete_mock.assert_any_await(context, "telegram_owner_chat_id")
         delete_mock.assert_any_await(context, "telegram_owner_telegram_user_id")
@@ -818,7 +786,7 @@ def test_handle_session_owner_dm_returns_keyboard():
     project = Session(user_id="admin", title="Project Alpha")
     db.add(main)
     db.add(project)
-    _run(session_bindings.set_main_session(db, user_id="admin", session_id=main.id))
+    _run(session_bindings.set_owner_active_session(db, user_id="admin", session_id=main.id))
 
     bridge = _build_bridge(db=db, user_id="admin", instance_settings=_owner_instance_settings())
     reply_text = AsyncMock()
@@ -840,7 +808,7 @@ def test_handle_session_owner_dm_returns_keyboard():
     assert any("Main" in text for text in button_texts)
     assert any("Project Alpha" in text for text in button_texts)
     assert f"sess:{main.id}" in callback_targets
-    # The current (main) session is marked with the checkmark prefix.
+    # The current owner DM session is marked with the checkmark prefix.
     assert any(text.startswith("✅ ") and "Main" in text for text in button_texts)
 
 
@@ -848,7 +816,6 @@ def test_handle_session_refuses_non_owner():
     db = FakeDB()
     main = Session(user_id="admin", title="Main")
     db.add(main)
-    _run(session_bindings.set_main_session(db, user_id="admin", session_id=main.id))
 
     bridge = _build_bridge(db=db, user_id="admin", instance_settings=_owner_instance_settings())
     reply_text = AsyncMock()
@@ -874,7 +841,6 @@ def test_handle_session_callback_owner_switches_binding():
     project = Session(user_id="admin", title="Project Alpha")
     db.add(main)
     db.add(project)
-    _run(session_bindings.set_main_session(db, user_id="admin", session_id=main.id))
 
     bridge = _build_bridge(db=db, user_id="admin", instance_settings=_owner_instance_settings())
     query = SimpleNamespace(
@@ -896,8 +862,6 @@ def test_handle_session_callback_owner_switches_binding():
         session_bindings.resolve_owner_active_session(db, user_id="admin", agent_id="dev-agent")
     )
     assert resolved.id == project.id
-    # Main remains isolated.
-    assert _run(session_bindings.resolve_main_session_id(db, user_id="admin")) == main.id
 
 
 def test_handle_session_callback_refuses_non_owner_and_does_not_switch():
@@ -906,7 +870,6 @@ def test_handle_session_callback_refuses_non_owner_and_does_not_switch():
     project = Session(user_id="admin", title="Project Alpha")
     db.add(main)
     db.add(project)
-    _run(session_bindings.set_main_session(db, user_id="admin", session_id=main.id))
 
     bridge = _build_bridge(db=db, user_id="admin", instance_settings=_owner_instance_settings())
     query = SimpleNamespace(
@@ -923,7 +886,7 @@ def test_handle_session_callback_refuses_non_owner_and_does_not_switch():
 
     query.answer.assert_awaited_once_with("Not authorized", show_alert=True)
     query.edit_message_text.assert_not_called()
-    # No owner_active binding was created -> still defaults to main.
+    # No owner_active binding was created.
     assert not any(
         b.binding_type == session_bindings.OWNER_ACTIVE_BINDING_TYPE
         for b in db.storage[SessionBinding]
@@ -931,7 +894,7 @@ def test_handle_session_callback_refuses_non_owner_and_does_not_switch():
     resolved = _run(
         session_bindings.resolve_owner_active_session(db, user_id="admin", agent_id="dev-agent")
     )
-    assert resolved.id == main.id
+    assert resolved is None
 
 
 def test_register_bot_commands_scopes_session_to_owner_chat():

@@ -41,14 +41,14 @@ BACKUP_KIND = "sentinel-instance-backup"
 # MIN_RESTORABLE_VERSION is the single knob: raise it to the current VERSION
 # whenever a change makes older backups unrestorable. Until then every newer
 # backup keeps restoring for free — compatibility is the default, you opt out.
-MIN_RESTORABLE_VERSION = "0.1.0"
+MIN_RESTORABLE_VERSION = "0.1.2"
 
 # Dead-man's-switch for schema drift. Pinned to the instance migration head this
 # build is verified to restore onto. Any new instance migration moves the real
 # head, which both reddens test_backup_verified_head_matches_instance_head and
 # makes restore refuse at runtime — until a commit re-affirms this head (and, if
 # the migration breaks old backups, raises MIN_RESTORABLE_VERSION).
-VERIFIED_INSTANCE_ALEMBIC_HEAD = "0000_instance_v1"
+VERIFIED_INSTANCE_ALEMBIC_HEAD = "0001_remove_main_session_bindings"
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[3]
 _INSTANCE_SCRIPT_LOCATION = _BACKEND_ROOT / "db" / "alembic" / "instance"

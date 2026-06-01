@@ -64,7 +64,6 @@ export function TriggerDetailPage() {
   const [cronExpr, setCronExpr] = useState('0 9 * * *');
   const [heartbeatInterval, setHeartbeatInterval] = useState(3600);
   const [agentMsg, setAgentMsg] = useState('');
-  const [routeMode, setRouteMode] = useState<'main' | 'session'>('main');
   const [targetSessionId, setTargetSessionId] = useState('');
   const [toolName, setToolName] = useState('');
   const [toolArgs, setToolArgs] = useState('{}');
@@ -80,10 +79,10 @@ export function TriggerDetailPage() {
   );
   const isRouteTargetMissing = useMemo(
     () =>
-      routeMode === 'session'
+      editActionType === 'agent_message'
       && Boolean(targetSessionId)
       && !routeSessions.some((session) => session.id === targetSessionId),
-    [routeMode, targetSessionId, routeSessions],
+    [editActionType, targetSessionId, routeSessions],
   );
 
   useEffect(() => {
@@ -106,7 +105,6 @@ export function TriggerDetailPage() {
     setCronExpr(readString(config, ['expr', 'cron'], '0 9 * * *'));
     setHeartbeatInterval(readNumber(config, ['interval_seconds', 'interval'], 3600));
     setAgentMsg(readString(action, ['message'], ''));
-    setRouteMode(route.routeMode);
     setTargetSessionId(route.targetSessionId);
     setToolName(readString(action, ['name', 'tool_name'], ''));
     setToolArgs(toPrettyJson((action.arguments as Record<string, unknown>) ?? (action.payload as Record<string, unknown>) ?? {}));
@@ -153,9 +151,6 @@ export function TriggerDetailPage() {
         toast.error(result.log.error_message || 'Invocation failed');
       } else {
         toast.success('Trigger invoked');
-        if (result.used_fallback) {
-          toast.warning('Target session unavailable, routed to main session');
-        }
       }
       if (result.log.status !== 'failed' && result.resolved_session_id) {
         navigate(instanceRouteFromPath(location.pathname, `sessions/${result.resolved_session_id}`));
@@ -189,7 +184,6 @@ export function TriggerDetailPage() {
       useManualAction,
       actionConfigText: editActionConfigText,
       agentMsg,
-      routeMode,
       targetSessionId,
       toolName,
       toolArgs,
@@ -467,46 +461,25 @@ export function TriggerDetailPage() {
                             />
                           </div>
                           <div className="space-y-2">
-                            <p className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Route</p>
+                            <p className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Target Session</p>
                             <select
-                              value={routeMode}
-                              onChange={(event) => {
-                                const nextMode = event.target.value === 'session' ? 'session' : 'main';
-                                setRouteMode(nextMode);
-                                if (nextMode === 'main') {
-                                  setTargetSessionId('');
-                                } else if (!targetSessionId && routeSessions[0]?.id) {
-                                  setTargetSessionId(routeSessions[0].id);
-                                }
-                              }}
-                              className="input-field h-9 text-[10px] font-bold uppercase tracking-wider"
+                              value={targetSessionId}
+                              onChange={(event) => setTargetSessionId(event.target.value)}
+                              className="input-field h-9 text-[10px] font-bold tracking-wide"
                             >
-                              <option value="main">Main Session</option>
-                              <option value="session">Specific Session</option>
+                              {!targetSessionId && <option value="">Select session…</option>}
+                              {routeSessions.map((session) => (
+                                <option key={session.id} value={session.id}>
+                                  {session.title || session.id.slice(0, 8)}
+                                </option>
+                              ))}
+                              {isRouteTargetMissing && (
+                                <option value={targetSessionId}>
+                                  Missing session ({targetSessionId.slice(0, 8)})
+                                </option>
+                              )}
                             </select>
                           </div>
-                          {routeMode === 'session' && (
-                            <div className="space-y-2">
-                              <p className="text-[9px] font-bold uppercase text-[color:var(--text-muted)]">Target Session</p>
-                              <select
-                                value={targetSessionId}
-                                onChange={(event) => setTargetSessionId(event.target.value)}
-                                className="input-field h-9 text-[10px] font-bold tracking-wide"
-                              >
-                                {!targetSessionId && <option value="">Select session…</option>}
-                                {routeSessions.map((session) => (
-                                  <option key={session.id} value={session.id}>
-                                    {session.is_main ? 'Main' : 'Session'} · {session.title || session.id.slice(0, 8)}
-                                  </option>
-                                ))}
-                                {isRouteTargetMissing && (
-                                  <option value={targetSessionId}>
-                                    Missing session ({targetSessionId.slice(0, 8)})
-                                  </option>
-                                )}
-                              </select>
-                            </div>
-                          )}
                         </>
                       )}
                       {editActionType === 'tool_call' && (
@@ -677,21 +650,8 @@ function readNumber(source: Record<string, unknown>, keys: string[], fallback: n
   return fallback;
 }
 
-function resolveAgentRoute(actionConfig: Record<string, unknown>): { routeMode: 'main' | 'session'; targetSessionId: string } {
-  const hasRouteMode = Object.prototype.hasOwnProperty.call(actionConfig, 'route_mode');
-  const routeModeRaw = readString(actionConfig, ['route_mode'], 'main').toLowerCase();
-  const routeMode = routeModeRaw === 'session' ? 'session' : 'main';
-
-  const canonicalTarget = readString(actionConfig, ['target_session_id'], '');
-  if (routeMode === 'session') {
-    const target = canonicalTarget || readString(actionConfig, ['session_id'], '');
-    return { routeMode: 'session', targetSessionId: target };
-  }
-  if (!hasRouteMode) {
-    const legacyTarget = readString(actionConfig, ['session_id'], '');
-    if (legacyTarget) return { routeMode: 'session', targetSessionId: legacyTarget };
-  }
-  return { routeMode: 'main', targetSessionId: '' };
+function resolveAgentRoute(actionConfig: Record<string, unknown>): { targetSessionId: string } {
+  return { targetSessionId: readString(actionConfig, ['target_session_id'], '') };
 }
 
 function buildConfigPayload({
@@ -736,7 +696,6 @@ function buildActionConfigPayload({
   useManualAction,
   actionConfigText,
   agentMsg,
-  routeMode,
   targetSessionId,
   toolName,
   toolArgs,
@@ -747,7 +706,6 @@ function buildActionConfigPayload({
   useManualAction: boolean;
   actionConfigText: string;
   agentMsg: string;
-  routeMode: 'main' | 'session';
   targetSessionId: string;
   toolName: string;
   toolArgs: string;
@@ -770,12 +728,14 @@ function buildActionConfigPayload({
     if (!agentMsg.trim()) {
       return { ok: false, error: 'Agent message is required' };
     }
+    if (!targetSessionId) {
+      return { ok: false, error: 'Choose a target session' };
+    }
     return {
       ok: true,
       value: {
         message: agentMsg.trim(),
-        route_mode: routeMode,
-        target_session_id: routeMode === 'session' && targetSessionId ? targetSessionId : null,
+        target_session_id: targetSessionId,
       },
     };
   }

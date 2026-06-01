@@ -24,6 +24,11 @@ def test_trigger_type_and_action_type_update():
         assert token_resp.status_code == 200
         token = token_resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
+        session_resp = client.post(
+            "/api/v1/instances/main/sessions", json={"title": "trigger-target"}, headers=headers
+        )
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
 
         # 1. Create a cron trigger
         create = client.post(
@@ -33,7 +38,7 @@ def test_trigger_type_and_action_type_update():
                 "type": "cron",
                 "config": {"expr": "*/5 * * * *"},
                 "action_type": "agent_message",
-                "action_config": {"message": "ping"},
+                "action_config": {"message": "ping", "target_session_id": session_id},
             },
             headers=headers,
         )

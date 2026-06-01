@@ -19,14 +19,12 @@ interface SessionHistorySidebarProps {
   filteredSessions: Session[];
   activeSessionId: string | null;
   onSessionClick: (id: string) => void;
-  defaultSessionId: string | null;
   editingSessionId: string | null;
   editingSessionTitle: string;
   setEditingSessionTitle: (v: string) => void;
   submitRenameSession: (s: Session) => void;
   cancelRenameSession: () => void;
   startRenameSession: (s: Session) => void;
-  setMainSession: (s: Session) => void;
   deleteSession: (s: Session) => void;
   renamingSessionId: string | null;
   loadingSessions?: boolean;
@@ -49,14 +47,12 @@ export function SessionHistorySidebar({
   filteredSessions,
   activeSessionId,
   onSessionClick,
-  defaultSessionId,
   editingSessionId,
   editingSessionTitle,
   setEditingSessionTitle,
   submitRenameSession,
   cancelRenameSession,
   startRenameSession,
-  setMainSession,
   deleteSession,
   renamingSessionId,
   loadingSessions = false,
@@ -169,13 +165,12 @@ export function SessionHistorySidebar({
               session={s}
               isActive={s.id === activeSessionId}
               onClick={onSessionClick}
-              canDelete={Boolean(defaultSessionId) && s.id !== defaultSessionId}
+              canDelete={true}
               isDeleting={
                 deletingSessionId === s.id ||
                 selectedSessionIds.includes(s.id) && deletingSessionId !== null
               }
               onDelete={deleteSession}
-              onSetMain={setMainSession}
               canRename={(() => {
                 const kind = sessionChannelKind(s);
                 return kind !== 'telegram_group' && kind !== 'telegram_dm';

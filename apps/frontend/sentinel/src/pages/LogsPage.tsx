@@ -12,7 +12,6 @@ import {
   Wrench,
   X,
   Zap,
-  BadgeCheck,
   Cpu,
   MessageSquare,
   Network,
@@ -30,7 +29,10 @@ import { Markdown } from '../components/ui/Markdown';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api } from '../lib/api';
 import { formatCompactDate, truncate } from '../lib/format';
-import { getSessionDeleteWorkspaceSummary } from '../lib/sessionDeletion';
+import {
+  getSessionDeleteTriggerSummary,
+  getSessionDeleteWorkspaceSummary,
+} from '../lib/sessionDeletion';
 import type {
   Message,
   MessageListResponse,
@@ -1340,7 +1342,6 @@ function EventDetailModal({ open, event, onClose }: EventDetailModalProps) {
 
 export function LogsPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
@@ -1380,10 +1381,8 @@ export function LogsPage() {
   }, [sessionsInTab, sessionFilter]);
 
   const selectableVisibleSessionIds = useMemo(() => {
-    return filteredSessions
-      .filter((session) => Boolean(defaultSessionId) && session.id !== defaultSessionId)
-      .map((session) => session.id);
-  }, [filteredSessions, defaultSessionId]);
+    return filteredSessions.map((session) => session.id);
+  }, [filteredSessions]);
 
   const allVisibleSelected = useMemo(() => {
     return (
@@ -1394,13 +1393,20 @@ export function LogsPage() {
 
   async function deleteSession(session: Session) {
     if (deletingSessionId) return;
-    if (session.id === defaultSessionId) {
-      toast.error('Main session cannot be deleted');
-      return;
-    }
     setDeletingSessionId(session.id);
     try {
       const label = (session.title || 'Session').trim() || 'Session';
+      const triggerSummary = await getSessionDeleteTriggerSummary([session.id]);
+      if (triggerSummary.triggerCount > 0) {
+        const confirmed = await confirmSessionDelete({
+          kind: 'trigger_targets',
+          label,
+          sessionCount: 1,
+          triggerCount: triggerSummary.triggerCount,
+          triggerNames: triggerSummary.triggerNames,
+        });
+        if (!confirmed) return;
+      }
       const workspaceSummary = await getSessionDeleteWorkspaceSummary(session.id);
       if (workspaceSummary.needsConfirmation) {
         const confirmed = await confirmSessionDelete({
@@ -1427,11 +1433,21 @@ export function LogsPage() {
 
   async function deleteSelectedSessions() {
     if (deletingSessionId) return;
-    const targetIds = selectedSessionIds.filter((id) => id !== defaultSessionId);
+    const targetIds = [...selectedSessionIds];
     if (targetIds.length === 0) return;
 
     setDeletingSessionId('bulk');
     try {
+      const triggerSummary = await getSessionDeleteTriggerSummary(targetIds);
+      if (triggerSummary.triggerCount > 0) {
+        const confirmed = await confirmSessionDelete({
+          kind: 'trigger_targets',
+          sessionCount: targetIds.length,
+          triggerCount: triggerSummary.triggerCount,
+          triggerNames: triggerSummary.triggerNames,
+        });
+        if (!confirmed) return;
+      }
       const workspaceSummaries = await Promise.all(
         targetIds.map((id) => getSessionDeleteWorkspaceSummary(id)),
       );
@@ -1508,23 +1524,6 @@ export function LogsPage() {
     }
   }
 
-  async function setMainSession(session: Session) {
-    try {
-      const updated = await api.post<Session>(`/sessions/${session.id}/main`, {});
-      setDefaultSessionId(updated.id);
-      setSessions((current) =>
-        current.map((item) =>
-          item.id === updated.id
-            ? { ...item, ...updated, is_main: true }
-            : { ...item, is_main: false },
-        ),
-      );
-      toast.success('Main session updated');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to set main session');
-    }
-  }
-
   const [inspector, setInspector] = useState<{
     session: Session | null;
     userMessage?: Message | null;
@@ -1575,12 +1574,8 @@ export function LogsPage() {
         if (!byId.has(session.id)) byId.set(session.id, session);
       }
       const ordered = Array.from(byId.values());
-      const main = ordered.find((s) => s.is_main) || ordered[0];
-      if (main) {
-        setDefaultSessionId(main.id);
-      }
       setSessions(ordered);
-      setSelectedSessionId((current) => current ?? main?.id ?? null);
+      setSelectedSessionId((current) => current ?? ordered.find((s) => !s.parent_session_id)?.id ?? ordered[0]?.id ?? null);
     } catch {
       toast.error('Failed to load sessions');
     } finally {
@@ -2120,14 +2115,12 @@ export function LogsPage() {
             filteredSessions={filteredSessions}
             activeSessionId={selectedSessionId}
             onSessionClick={(id) => setSelectedSessionId(id)}
-            defaultSessionId={defaultSessionId}
             editingSessionId={editingSessionId}
             editingSessionTitle={editingSessionTitle}
             setEditingSessionTitle={setEditingSessionTitle}
             submitRenameSession={submitRenameSession}
             cancelRenameSession={cancelRenameSession}
             startRenameSession={startRenameSession}
-            setMainSession={setMainSession}
             deleteSession={deleteSession}
             renamingSessionId={renamingSessionId}
             loadingSessions={loadingSessions}

@@ -55,8 +55,6 @@ from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions import (
     AgentRuntimeUnavailableError,
     ChatPayloadRequiredError,
-    MainSessionDeletionError,
-    MainSessionTargetInvalidError,
     MessageNotFoundError,
     SessionRenameNotAllowedError,
     SessionNotFoundError,
@@ -134,16 +132,6 @@ def _raise_http_for_session_error(exc: Exception) -> None:
     if isinstance(exc, MessageNotFoundError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Message not found"
-        ) from exc
-    if isinstance(exc, MainSessionDeletionError):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Main session cannot be deleted",
-        ) from exc
-    if isinstance(exc, MainSessionTargetInvalidError):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc) or "Invalid main session target",
         ) from exc
     if isinstance(exc, SessionRenameNotAllowedError):
         raise HTTPException(
@@ -338,7 +326,6 @@ async def list_sessions(
     db: AsyncSession = Depends(get_db),
 ) -> SessionListResponse:
     service = _resolve_session_service(request)
-    main_session_id = await service.get_main_session_id(db, user_id=user.sub)
     page = await service.list_sessions(
         db,
         user_id=user.sub,
@@ -351,7 +338,6 @@ async def list_sessions(
         await _session_list_item_response(
             item,
             service,
-            main_session_id=main_session_id,
             has_unread=unread_flags.get(item.id, False),
         )
         for item in page.items
@@ -373,33 +359,10 @@ async def create_session(
         agent_id=user.agent_id,
         title=payload.title,
     )
-    main_session_id = await service.get_main_session_id(db, user_id=user.sub)
-    return await _session_response(session, service, main_session_id=main_session_id)
+    return await _session_response(session, service)
 
 
-@router.get("/default")
-async def get_default_session(
-    request: Request,
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionResponse:
-    service = _resolve_session_service(request)
-    session = await service.get_default_session(db, user_id=user.sub, agent_id=user.agent_id)
-    return await _session_response(session, service, main_session_id=session.id)
-
-
-@router.post("/default/reset")
-async def reset_default_session(
-    request: Request,
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionResponse:
-    service = _resolve_session_service(request)
-    session = await service.reset_default_session(db, user_id=user.sub, agent_id=user.agent_id)
-    return await _session_response(session, service, main_session_id=session.id)
-
-
-@router.get("/{id}")
+@router.get("/{id:uuid}")
 async def get_session(
     id: UUID,
     request: Request,
@@ -412,11 +375,10 @@ async def get_session(
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
-    main_session_id = await service.get_main_session_id(db, user_id=user.sub)
-    return await _session_response(session, service, main_session_id=main_session_id)
+    return await _session_response(session, service)
 
 
-@router.patch("/{id}")
+@router.patch("/{id:uuid}")
 async def update_session(
     id: UUID,
     payload: UpdateSessionRequest,
@@ -435,31 +397,10 @@ async def update_session(
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
-    main_session_id = await service.get_main_session_id(db, user_id=user.sub)
-    return await _session_response(session, service, main_session_id=main_session_id)
+    return await _session_response(session, service)
 
 
-@router.post("/{id}/main")
-async def set_session_as_main(
-    id: UUID,
-    request: Request,
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionResponse:
-    service = _resolve_session_service(request)
-    try:
-        session = await service.set_main_session(
-            db,
-            session_id=id,
-            user_id=user.sub,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_error(exc)
-        raise
-    return await _session_response(session, service, main_session_id=session.id)
-
-
-@router.get("/{id}/context-usage", response_model=SessionContextUsageResponse)
+@router.get("/{id:uuid}/context-usage", response_model=SessionContextUsageResponse)
 async def get_session_context_usage(
     id: UUID,
     request: Request,
@@ -475,7 +416,7 @@ async def get_session_context_usage(
     return SessionContextUsageResponse(**usage)
 
 
-@router.get("/{id}/runtime/files", response_model=SessionRuntimeFilesResponse)
+@router.get("/{id:uuid}/runtime/files", response_model=SessionRuntimeFilesResponse)
 async def list_session_runtime_files(
     id: UUID,
     request: Request,
@@ -495,7 +436,7 @@ async def list_session_runtime_files(
     return SessionRuntimeFilesResponse(**payload)
 
 
-@router.get("/{id}/runtime/file", response_model=SessionRuntimeFilePreviewResponse)
+@router.get("/{id:uuid}/runtime/file", response_model=SessionRuntimeFilePreviewResponse)
 async def get_session_runtime_file(
     id: UUID,
     request: Request,
@@ -519,7 +460,7 @@ async def get_session_runtime_file(
     return SessionRuntimeFilePreviewResponse(**payload)
 
 
-@router.get("/{id}/runtime/download")
+@router.get("/{id:uuid}/runtime/download")
 async def download_session_runtime_path(
     id: UUID,
     request: Request,
@@ -540,11 +481,11 @@ async def download_session_runtime_path(
 
 
 @router.api_route(
-    "/{id}/runtime/forwards/{forward_id}",
+    "/{id:uuid}/runtime/forwards/{forward_id}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
 )
 @router.api_route(
-    "/{id}/runtime/forwards/{forward_id}/{path:path}",
+    "/{id:uuid}/runtime/forwards/{forward_id}/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
 )
 async def proxy_runtime_forward_http(
@@ -595,8 +536,8 @@ async def proxy_runtime_forward_http(
     )
 
 
-@router.websocket("/{id}/runtime/forwards/{forward_id}")
-@router.websocket("/{id}/runtime/forwards/{forward_id}/{path:path}")
+@router.websocket("/{id:uuid}/runtime/forwards/{forward_id}")
+@router.websocket("/{id:uuid}/runtime/forwards/{forward_id}/{path:path}")
 async def proxy_runtime_forward_websocket(
     websocket: WebSocket,
     id: UUID,
@@ -681,7 +622,7 @@ async def proxy_runtime_forward_websocket(
             return
 
 
-@router.get("/{id}/runtime/git/roots", response_model=SessionRuntimeGitRootsResponse)
+@router.get("/{id:uuid}/runtime/git/roots", response_model=SessionRuntimeGitRootsResponse)
 async def list_session_runtime_git_roots(
     id: UUID,
     request: Request,
@@ -701,7 +642,7 @@ async def list_session_runtime_git_roots(
     return SessionRuntimeGitRootsResponse(**payload)
 
 
-@router.get("/{id}/runtime/git/changed", response_model=SessionRuntimeGitChangedFilesResponse)
+@router.get("/{id:uuid}/runtime/git/changed", response_model=SessionRuntimeGitChangedFilesResponse)
 async def list_session_runtime_git_changed_files(
     id: UUID,
     request: Request,
@@ -721,7 +662,7 @@ async def list_session_runtime_git_changed_files(
     return SessionRuntimeGitChangedFilesResponse(**payload)
 
 
-@router.get("/{id}/runtime/git/diff", response_model=SessionRuntimeGitDiffResponse)
+@router.get("/{id:uuid}/runtime/git/diff", response_model=SessionRuntimeGitDiffResponse)
 async def get_session_runtime_git_diff(
     id: UUID,
     request: Request,
@@ -751,7 +692,7 @@ async def get_session_runtime_git_diff(
     return SessionRuntimeGitDiffResponse(**payload)
 
 
-@router.delete("/{id}/terminals/{terminal_id}")
+@router.delete("/{id:uuid}/terminals/{terminal_id}")
 async def close_terminal(
     id: UUID,
     terminal_id: str,
@@ -825,7 +766,7 @@ async def _cleanup_runtime_for_deleted_sessions(
         await terminal_manager.delete_workspace(session_key)
 
 
-@router.delete("/{id}")
+@router.delete("/{id:uuid}")
 async def delete_session(
     id: UUID,
     request: Request,
@@ -850,7 +791,7 @@ async def delete_session(
     return {"status": "deleted", "deleted_descendants": deleted_descendants}
 
 
-@router.post("/{id}/stop")
+@router.post("/{id:uuid}/stop")
 async def stop_session_generation(
     id: UUID,
     request: Request,
@@ -866,7 +807,7 @@ async def stop_session_generation(
     return {"status": "stopping" if cancelled else "idle"}
 
 
-@router.post("/{id}/read")
+@router.post("/{id:uuid}/read")
 async def mark_session_read(
     id: UUID,
     request: Request,
@@ -882,7 +823,7 @@ async def mark_session_read(
     return {"status": "ok"}
 
 
-@router.post("/{id}/messages")
+@router.post("/{id:uuid}/messages")
 async def create_message(
     id: UUID,
     request: Request,
@@ -906,7 +847,7 @@ async def create_message(
     return _message_response(message)
 
 
-@router.post("/{id}/messages/{message_id}/retry")
+@router.post("/{id:uuid}/messages/{message_id:uuid}/retry")
 async def retry_message(
     id: UUID,
     message_id: UUID,
@@ -981,7 +922,7 @@ async def retry_message(
     return {"status": "retrying"}
 
 
-@router.get("/{id}/messages")
+@router.get("/{id:uuid}/messages")
 async def list_messages(
     id: UUID,
     request: Request,
@@ -1008,7 +949,7 @@ async def list_messages(
     )
 
 
-@router.post("/{id}/chat", response_model=ChatResponse)
+@router.post("/{id:uuid}/chat", response_model=ChatResponse)
 async def chat_session(
     id: UUID,
     payload: ChatRequest,
@@ -1048,7 +989,6 @@ async def _session_response(
     session: Session,
     service: SessionService,
     *,
-    main_session_id: UUID | None = None,
     has_unread: bool = False,
 ) -> SessionResponse:
     is_running = await service.is_session_running(session.id)
@@ -1062,7 +1002,6 @@ async def _session_response(
         latest_system_prompt=session.latest_system_prompt,
         started_at=session.started_at,
         is_running=is_running,
-        is_main=bool(main_session_id and session.id == main_session_id),
         has_unread=has_unread,
     )
 
@@ -1071,7 +1010,6 @@ async def _session_list_item_response(
     session: Session,
     service: SessionService,
     *,
-    main_session_id: UUID | None = None,
     has_unread: bool = False,
 ) -> SessionListItemResponse:
     is_running = await service.is_session_running(session.id)
@@ -1083,7 +1021,6 @@ async def _session_list_item_response(
         title=session.title,
         started_at=session.started_at,
         is_running=is_running,
-        is_main=bool(main_session_id and session.id == main_session_id),
         has_unread=has_unread,
     )
 

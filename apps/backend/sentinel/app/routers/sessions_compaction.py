@@ -14,7 +14,7 @@ from app.services.sessions.compaction import CompactionService
 router = APIRouter()
 
 
-@router.post("/{id}/compact", response_model=CompactionResponse)
+@router.post("/{id:uuid}/compact", response_model=CompactionResponse)
 async def compact_session(
     id: UUID,
     db: AsyncSession = Depends(get_db),

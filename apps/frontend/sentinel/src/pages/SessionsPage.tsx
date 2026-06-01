@@ -52,7 +52,10 @@ import { api } from '../lib/api';
 import { useInstanceName, useWorkspaceMode } from '../lib/workspace-context';
 import { useAnchorRect } from '../lib/portal-menu';
 import { instanceRouteFromPath } from '../lib/routes';
-import { getSessionDeleteWorkspaceSummary } from '../lib/sessionDeletion';
+import {
+  getSessionDeleteTriggerSummary,
+  getSessionDeleteWorkspaceSummary,
+} from '../lib/sessionDeletion';
 import { useSetActiveSession } from '../store/active-session-store';
 import { useSessionRuntimeStream } from '../hooks/useSessionRuntimeStream';
 import { useSessionWorkbench } from '../hooks/useSessionWorkbench';
@@ -563,10 +566,8 @@ export function SessionsPage() {
 
   const [instances, setInstances] = useState<SentinelInstance[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const { confirmSessionDelete, sessionDeleteConfirmDialog } = useSessionDeleteConfirmation();
-  const [settingMainSessionId, setSettingMainSessionId] = useState<string | null>(null);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionTitle, setEditingSessionTitle] = useState('');
@@ -1017,10 +1018,8 @@ export function SessionsPage() {
 
   const selectedSessionIdSet = useMemo(() => new Set(selectedSessionIds), [selectedSessionIds]);
   const selectableVisibleSessionIds = useMemo(
-    () => filteredSessions
-      .filter((session) => Boolean(defaultSessionId) && session.id !== defaultSessionId)
-      .map((session) => session.id),
-    [filteredSessions, defaultSessionId],
+    () => filteredSessions.map((session) => session.id),
+    [filteredSessions],
   );
   const allVisibleSelected = useMemo(
     () =>
@@ -1243,22 +1242,16 @@ export function SessionsPage() {
   async function fetchSessions(options?: { autoSelectIfEmpty?: boolean }) {
     const autoSelectIfEmpty = options?.autoSelectIfEmpty ?? false;
     try {
-      const [payload, defaultSession] = await Promise.all([
-        api.get<SessionListResponse>('/sessions?limit=100&offset=0&include_sub_agents=true'),
-        api.get<Session>('/sessions/default'),
-      ]);
-      setDefaultSessionId(defaultSession.id);
+      const payload = await api.get<SessionListResponse>('/sessions?limit=100&offset=0&include_sub_agents=true');
       const payloadItems = Array.isArray(payload?.items) ? payload.items : [];
-      const exists = payloadItems.find((s) => s.id === defaultSession.id);
-      const merged = (exists ? payloadItems : [defaultSession, ...payloadItems]).map((item) => ({
-        ...item,
-        is_main: item.id === defaultSession.id,
-      }));
-      setSessions(merged);
+      setSessions(payloadItems);
       if (autoSelectIfEmpty && !activeSessionIdRef.current) {
-        setActiveSessionId(defaultSession.id);
-        activeSessionIdRef.current = defaultSession.id;
-        selectSession(defaultSession.id, { replace: true });
+        const firstRoot = payloadItems.find((item) => !item.parent_session_id) ?? payloadItems[0] ?? null;
+        if (firstRoot) {
+          setActiveSessionId(firstRoot.id);
+          activeSessionIdRef.current = firstRoot.id;
+          selectSession(firstRoot.id, { replace: true });
+        }
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to load sessions');
@@ -1275,13 +1268,20 @@ export function SessionsPage() {
 
   async function deleteSession(session: Session) {
     if (deletingSessionId) return;
-    if (session.id === defaultSessionId) {
-      toast.error('Main session cannot be deleted');
-      return;
-    }
     setDeletingSessionId(session.id);
     try {
       const label = (session.title || 'Session').trim() || 'Session';
+      const triggerSummary = await getSessionDeleteTriggerSummary([session.id]);
+      if (triggerSummary.triggerCount > 0) {
+        const confirmed = await confirmSessionDelete({
+          kind: 'trigger_targets',
+          label,
+          sessionCount: 1,
+          triggerCount: triggerSummary.triggerCount,
+          triggerNames: triggerSummary.triggerNames,
+        });
+        if (!confirmed) return;
+      }
       const workspaceSummary = await getSessionDeleteWorkspaceSummary(session.id);
       if (workspaceSummary.needsConfirmation) {
         const confirmed = await confirmSessionDelete({
@@ -1301,10 +1301,7 @@ export function SessionsPage() {
       setSelectedSessionIds((current) => current.filter((id) => id !== session.id));
 
       if (activeSessionId === session.id) {
-        const fallbackId =
-          (defaultSessionId && defaultSessionId !== session.id
-            ? remaining.find((item) => item.id === defaultSessionId)?.id
-            : null) ?? remaining[0]?.id ?? null;
+        const fallbackId = remaining.find((item) => !item.parent_session_id)?.id ?? remaining[0]?.id ?? null;
         setActiveSessionId(fallbackId);
         selectSession(fallbackId, { replace: true });
       }
@@ -1313,29 +1310,6 @@ export function SessionsPage() {
       toast.error(error instanceof Error ? error.message : 'Failed to delete session');
     } finally {
       setDeletingSessionId(null);
-    }
-  }
-
-  async function setMainSession(session: Session) {
-    if (settingMainSessionId) return;
-    setSettingMainSessionId(session.id);
-    try {
-      const updated = await api.post<Session>(`/sessions/${session.id}/main`, {});
-      setDefaultSessionId(updated.id);
-      setSessions((current) =>
-        current.map((item) =>
-          item.id === updated.id
-            ? { ...item, ...updated, is_main: true }
-            : { ...item, is_main: false },
-        ),
-      );
-      setActiveSessionId(updated.id);
-      selectSession(updated.id);
-      toast.success('Main session updated');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to set main session');
-    } finally {
-      setSettingMainSessionId(null);
     }
   }
 
@@ -1383,11 +1357,21 @@ export function SessionsPage() {
 
   async function deleteSelectedSessions() {
     if (deletingSessionId) return;
-    const targetIds = selectedSessionIds.filter((id) => id !== defaultSessionId);
+    const targetIds = [...selectedSessionIds];
     if (targetIds.length === 0) return;
 
     setDeletingSessionId('bulk');
     try {
+      const triggerSummary = await getSessionDeleteTriggerSummary(targetIds);
+      if (triggerSummary.triggerCount > 0) {
+        const confirmed = await confirmSessionDelete({
+          kind: 'trigger_targets',
+          sessionCount: targetIds.length,
+          triggerCount: triggerSummary.triggerCount,
+          triggerNames: triggerSummary.triggerNames,
+        });
+        if (!confirmed) return;
+      }
       const workspaceSummaries = await Promise.all(
         targetIds.map((id) => getSessionDeleteWorkspaceSummary(id)),
       );
@@ -1420,10 +1404,7 @@ export function SessionsPage() {
         setSelectedSessionIds((current) => current.filter((id) => !deletedIds.includes(id)));
 
         if (activeSessionId && deletedIds.includes(activeSessionId)) {
-          const fallbackId =
-            (defaultSessionId && !deletedIds.includes(defaultSessionId)
-              ? remaining.find((session) => session.id === defaultSessionId)?.id
-              : null) ?? remaining[0]?.id ?? null;
+          const fallbackId = remaining.find((session) => !session.parent_session_id)?.id ?? remaining[0]?.id ?? null;
           setActiveSessionId(fallbackId);
           selectSession(fallbackId, { replace: true });
         }
@@ -1487,14 +1468,13 @@ export function SessionsPage() {
   }
 
   // The live-view / runtime-status fetches and the desktop-resolution and
-  // reset/restart/wipe runtime actions live with the standalone Desktop tab and
+  // restart/wipe runtime actions live with the standalone Desktop tab and
   // the shared `useSessionRuntimeStream` hook now. SessionsPage keeps only
-  // `setLiveView` / `setRuntimeBooting` (used by resetSession + session-switch)
+  // `setLiveView` / `setRuntimeBooting` (used by new chat + session-switch)
   // through that hook.
 
-  async function resetSession() {
+  async function createSession() {
     try {
-      const previousId = activeSessionId;
       // Null the active-session ref + wipe messages before the API call so the
       // shared stream's guarded handler drops any in-flight events from the old
       // session. Switching `activeSessionId` below re-subscribes the WS to the
@@ -1502,18 +1482,17 @@ export function SessionsPage() {
       activeSessionIdRef.current = null;
       setMessages([]);
       setStreaming(defaultStreamingState);
-      const fresh = await api.post<Session>('/sessions/default/reset', {});
+      const fresh = await api.post<Session>('/sessions', {});
       setSessions((current) => {
-        const merged = [fresh, ...current.filter((s) => s.id !== fresh.id)];
-        return merged.map((item) => ({ ...item, is_main: item.id === fresh.id }));
+        return [fresh, ...current.filter((s) => s.id !== fresh.id)];
       });
       setActiveSessionId(fresh.id);
       setRuntimeBooting(true);
       setLiveView(null);
       selectSession(fresh.id, { replace: true });
-      toast.success('New session started. Memories preserved.');
+      toast.success('New session started');
     } catch {
-      toast.error('Failed to reset session');
+      toast.error('Failed to create session');
     }
   }
 
@@ -2884,7 +2863,7 @@ export function SessionsPage() {
                 </div>
 
                 <button
-                    onClick={resetSession}
+                    onClick={createSession}
                     title="Start fresh (memories preserved)"
                     className="inline-flex h-7 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
                 >
@@ -2938,7 +2917,12 @@ export function SessionsPage() {
                   </div>
               ) : (
                   <>
-                    {messages.length === 0 && (
+                    {!activeSessionId ? (
+                        <div className="h-full flex flex-col items-center justify-center text-center p-8 opacity-40">
+                          <Bot size={48} className="mb-4" />
+                          <p className="text-sm font-medium">No sessions yet.</p>
+                        </div>
+                    ) : messages.length === 0 && (
                         <div className="h-full flex flex-col items-center justify-center text-center p-8 opacity-40">
                           <Bot size={48} className="mb-4" />
                           <p className="text-sm font-medium">No messages in this session yet.</p>
@@ -3200,15 +3184,15 @@ export function SessionsPage() {
                             sendMessage(e as any);
                           }
                         }}
-                        disabled={isCompacting || streaming.isCompactingContext}
-                        placeholder={isCompacting || streaming.isCompactingContext ? 'Compacting context…' : 'Ask Sentinel anything...'}
+                        disabled={!activeSessionId || isCompacting || streaming.isCompactingContext}
+                        placeholder={!activeSessionId ? 'No session selected' : isCompacting || streaming.isCompactingContext ? 'Compacting context…' : 'Ask Sentinel anything...'}
                         className="input-field min-h-[100px] py-4 pr-24 resize-none text-[14px] leading-relaxed shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                     />
                       <div className="absolute right-3 bottom-3 flex items-center gap-2">
                         <button
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
-                          disabled={streamBusy || composerAttachments.length >= MAX_IMAGE_ATTACHMENTS}
+                          disabled={!activeSessionId || streamBusy || composerAttachments.length >= MAX_IMAGE_ATTACHMENTS}
                           className="p-2.5 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95 shadow-sm"
                           title="Attach image"
                         >
@@ -3216,9 +3200,9 @@ export function SessionsPage() {
                         </button>
                         <button
                             type="submit"
-                            disabled={(composer.trim().length === 0 && composerAttachments.length === 0) || streamBusy}
+                            disabled={!activeSessionId || (composer.trim().length === 0 && composerAttachments.length === 0) || streamBusy}
                             className={`p-2.5 rounded-xl transition-all active:scale-95 shadow-md ${
-                                (composer.trim().length > 0 || composerAttachments.length > 0) && !streamBusy
+                                activeSessionId && (composer.trim().length > 0 || composerAttachments.length > 0) && !streamBusy
                                     ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] shadow-[0_4px_12px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_12px_rgba(255,255,255,0.05)]'
                                     : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] cursor-not-allowed opacity-40'
                             }`}
@@ -3432,14 +3416,12 @@ export function SessionsPage() {
                   filteredSessions={filteredSessions}
                   activeSessionId={activeSessionId}
                   onSessionClick={onSessionClick}
-                  defaultSessionId={defaultSessionId}
                   editingSessionId={editingSessionId}
                   editingSessionTitle={editingSessionTitle}
                   setEditingSessionTitle={setEditingSessionTitle}
                   submitRenameSession={submitRenameSession}
                   cancelRenameSession={cancelRenameSession}
                   startRenameSession={startRenameSession}
-                  setMainSession={setMainSession}
                   deleteSession={deleteSession}
                   renamingSessionId={renamingSessionId}
                   loadingSessions={false}

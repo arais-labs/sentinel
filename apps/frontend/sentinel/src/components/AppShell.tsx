@@ -25,7 +25,7 @@ import { APP_VERSION } from '../lib/env';
 import { instancePrefixFromPath, instanceRouteFromPath } from '../lib/routes';
 import { useWorkspaceMode } from '../lib/workspace-context';
 import { isWorkspaceTabId } from '../lib/workspace-tabs';
-import { useOpenTabIds, useWorkspaceStore } from '../store/workspace-store';
+import { useOpenTabIds, useWorkspaceStore, WORKSPACE_DND_MIME } from '../store/workspace-store';
 import { useThemeStore } from '../store/theme-store';
 import { clearPaneActions, setPaneActions } from '../store/pane-actions-store';
 import { usePaneId } from './workspace/WorkspacePane';
@@ -132,10 +132,23 @@ export function AppShell({
         const active = launcherMode
           ? isWorkspaceTabId(item.route) && openTabIds.includes(item.route)
           : isActive(location.pathname, itemPath);
+        // In launcher mode each workspace-tab item is also a drag source: drag it
+        // into the workspace to open (or move) that view as a pane at the drop spot.
+        const dragSource = launcherMode && isWorkspaceTabId(item.route);
         return (
           <button
             key={item.route}
             onClick={() => handleNavClick(item, onNavigate)}
+            draggable={dragSource}
+            onDragStart={
+              dragSource
+                ? (event) => {
+                    event.dataTransfer.setData(WORKSPACE_DND_MIME, item.route);
+                    event.dataTransfer.effectAllowed = 'copy';
+                  }
+                : undefined
+            }
+            title={dragSource ? `Drag to open ${item.label} in a new pane` : undefined}
             className={`group flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
               active
                 ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'

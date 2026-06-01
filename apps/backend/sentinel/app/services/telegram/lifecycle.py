@@ -7,7 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Session as SessionModel
-from app.services.sessions import session_bindings
 from app.services.settings.system_settings import delete_system_setting, upsert_system_setting
 
 logger = logging.getLogger(__name__)
@@ -59,18 +58,6 @@ async def persist_telegram_settings(
         await _delete_setting(session_factory, "telegram_owner_telegram_user_id")
 
 
-async def resolve_latest_active_root_session_id_for_user(
-    session_factory: async_sessionmaker[AsyncSession], user_id: str
-) -> str | None:
-    """Return newest active root session id for a user, if any."""
-    try:
-        async with session_factory() as db:
-            session_id = await session_bindings.resolve_main_session_id(db, user_id=user_id)
-            return str(session_id) if session_id is not None else None
-    except Exception:
-        return None
-
-
 async def resolve_owner_user_id_from_session(
     session_factory: async_sessionmaker[AsyncSession], session_id: str | None
 ) -> str | None:
@@ -93,6 +80,5 @@ async def resolve_owner_user_id_from_session(
 __all__ = [
     "mask_telegram_token",
     "persist_telegram_settings",
-    "resolve_latest_active_root_session_id_for_user",
     "resolve_owner_user_id_from_session",
 ]

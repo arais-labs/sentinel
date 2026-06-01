@@ -22,7 +22,6 @@ export interface Session {
   latest_system_prompt?: string | null;
   started_at: string;
   is_running: boolean;
-  is_main?: boolean;
   has_unread?: boolean;
 }
 
@@ -293,8 +292,6 @@ export interface TriggerLog {
 export interface FireTriggerResponse {
   log: TriggerLog;
   resolved_session_id: string | null;
-  route_mode: string | null;
-  used_fallback: boolean | null;
 }
 
 export interface TriggerListResponse {

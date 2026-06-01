@@ -5,14 +5,12 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Session, SessionBinding
 
-MAIN_BINDING_TYPE = "main"
-MAIN_BINDING_KEY = "owner"
 OWNER_ACTIVE_BINDING_TYPE = "owner_active"
+OWNER_ACTIVE_BINDING_KEY = "owner"
 TELEGRAM_GROUP_BINDING_TYPE = "telegram_group"
 TELEGRAM_DM_BINDING_TYPE = "telegram_dm"
 
@@ -80,14 +78,6 @@ async def bind_session(
             "Binding target must be a root session owned by user"
         )
 
-    if binding_type == MAIN_BINDING_TYPE:
-        await _deactivate_active_bindings(
-            db,
-            user_id=user_id,
-            binding_type=MAIN_BINDING_TYPE,
-            keep_key=binding_key,
-        )
-
     existing_active = await get_active_binding(
         db,
         user_id=user_id,
@@ -127,117 +117,18 @@ async def bind_session(
     return reusable
 
 
-async def resolve_main_session_id(
-    db: AsyncSession,
-    *,
-    user_id: str,
-) -> UUID | None:
-    session = await get_active_binding_session(
-        db,
-        user_id=user_id,
-        binding_type=MAIN_BINDING_TYPE,
-        binding_key=MAIN_BINDING_KEY,
-    )
-    return session.id if session is not None else None
-
-
-async def resolve_or_create_main_session(
-    db: AsyncSession,
-    *,
-    user_id: str,
-    agent_id: str | None,
-) -> Session:
-    bound_main = await get_active_binding_session(
-        db,
-        user_id=user_id,
-        binding_type=MAIN_BINDING_TYPE,
-        binding_key=MAIN_BINDING_KEY,
-    )
-    if bound_main is not None:
-        return bound_main
-
-    roots = await _root_sessions(db, user_id=user_id)
-    if roots:
-        roots.sort(key=lambda item: item.created_at or _utc_min())
-        selected = roots[0]
-        try:
-            async with db.begin_nested():
-                await bind_session(
-                    db,
-                    user_id=user_id,
-                    binding_type=MAIN_BINDING_TYPE,
-                    binding_key=MAIN_BINDING_KEY,
-                    session_id=selected.id,
-                    metadata={"source": "resolved_root"},
-                )
-            return selected
-        except IntegrityError as exc:
-            return await _reload_main_session_after_race(db, user_id=user_id, cause=exc)
-
-    try:
-        async with db.begin_nested():
-            now = datetime.now(UTC)
-            created = Session(
-                user_id=user_id,
-                agent_id=agent_id,
-                title="Main",
-                started_at=now,
-                created_at=now,
-                updated_at=now,
-            )
-            db.add(created)
-            await db.flush()
-            await bind_session(
-                db,
-                user_id=user_id,
-                binding_type=MAIN_BINDING_TYPE,
-                binding_key=MAIN_BINDING_KEY,
-                session_id=created.id,
-                metadata={"source": "created_main"},
-            )
-        return created
-    except IntegrityError as exc:
-        return await _reload_main_session_after_race(db, user_id=user_id, cause=exc)
-
-
-async def set_main_session(
-    db: AsyncSession,
-    *,
-    user_id: str,
-    session_id: UUID,
-) -> Session:
-    session = await _get_root_owned_session(db, user_id=user_id, session_id=session_id)
-    if session is None:
-        raise SessionBindingTargetInvalidError("Main session must be a root session owned by user")
-    if await _is_telegram_route_session(db, user_id=user_id, session_id=session.id):
-        raise SessionBindingTargetInvalidError("Telegram channel sessions cannot be set as main")
-
-    await bind_session(
-        db,
-        user_id=user_id,
-        binding_type=MAIN_BINDING_TYPE,
-        binding_key=MAIN_BINDING_KEY,
-        session_id=session.id,
-        metadata={"source": "set_main"},
-    )
-    return session
-
-
 async def resolve_owner_active_session(
     db: AsyncSession,
     *,
     user_id: str,
-    agent_id: str | None,
-) -> Session:
-    bound = await get_active_binding_session(
+    agent_id: str | None = None,
+) -> Session | None:
+    return await get_active_binding_session(
         db,
         user_id=user_id,
         binding_type=OWNER_ACTIVE_BINDING_TYPE,
-        binding_key=MAIN_BINDING_KEY,
+        binding_key=OWNER_ACTIVE_BINDING_KEY,
     )
-    if bound is not None:
-        return bound
-    return await resolve_or_create_main_session(db, user_id=user_id, agent_id=agent_id)
 
 
 async def set_owner_active_session(
@@ -260,7 +151,7 @@ async def set_owner_active_session(
         db,
         user_id=user_id,
         binding_type=OWNER_ACTIVE_BINDING_TYPE,
-        binding_key=MAIN_BINDING_KEY,
+        binding_key=OWNER_ACTIVE_BINDING_KEY,
         session_id=session.id,
         metadata={"source": "telegram_session_switch"},
     )
@@ -320,44 +211,6 @@ async def _get_root_owned_session(
         )
     )
     return result.scalars().first()
-
-
-async def _reload_main_session_after_race(
-    db: AsyncSession,
-    *,
-    user_id: str,
-    cause: IntegrityError,
-) -> Session:
-    bound_main = await get_active_binding_session(
-        db,
-        user_id=user_id,
-        binding_type=MAIN_BINDING_TYPE,
-        binding_key=MAIN_BINDING_KEY,
-    )
-    if bound_main is None:
-        raise cause
-    return bound_main
-
-
-async def _deactivate_active_bindings(
-    db: AsyncSession,
-    *,
-    user_id: str,
-    binding_type: str,
-    keep_key: str | None = None,
-) -> None:
-    result = await db.execute(
-        select(SessionBinding).where(
-            SessionBinding.user_id == user_id,
-            SessionBinding.binding_type == binding_type,
-            SessionBinding.is_active.is_(True),
-        )
-    )
-    rows = result.scalars().all()
-    for row in rows:
-        if keep_key is not None and row.binding_key == keep_key:
-            continue
-        row.is_active = False
 
 
 async def _is_telegram_route_session(

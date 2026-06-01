@@ -87,7 +87,7 @@ const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: r
   },
   telegram: {
     input: ['command', 'chat_id', 'message', 'session_id', 'bot_token', 'telegram_user_id'],
-    output: ['success', 'chat_id', 'message_sent', 'running', 'bot_username', 'connected_chats', 'main_session_id'],
+    output: ['success', 'chat_id', 'message_sent', 'running', 'bot_username', 'connected_chats'],
   },
 };
 

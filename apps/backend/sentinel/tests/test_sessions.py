@@ -420,13 +420,6 @@ def test_sessions_crud_and_ownership(monkeypatch):
         )
         assert forbidden_get.status_code == 404
 
-        set_main_resp = client.post(
-            f"{SESSIONS_API}/{session2_id}/main",
-            headers={"Authorization": f"Bearer {user1_token}"},
-        )
-        assert set_main_resp.status_code == 200
-        assert set_main_resp.json()["is_main"] is True
-
         delete_resp = client.delete(
             f"{SESSIONS_API}/{session1_id}",
             headers={"Authorization": f"Bearer {user1_token}"},
@@ -614,7 +607,7 @@ def test_retry_message_endpoint_reruns_existing_user_message():
         app.state.db_factory = old_db_factory
 
 
-def test_cannot_set_telegram_channel_session_as_main():
+def test_removed_main_session_endpoints_return_404():
     fake_db = FakeDB()
 
     old_init = install_fake_db_overrides(app_db=fake_db)
@@ -626,40 +619,13 @@ def test_cannot_set_telegram_channel_session_as_main():
         token = login.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        main_resp = client.get(f"{SESSIONS_API}/default", headers=headers)
-        assert main_resp.status_code == 200
-        main_session_id = main_resp.json()["id"]
+        created = client.post(SESSIONS_API, json={"title": "ordinary"}, headers=headers)
+        assert created.status_code == 200
+        session_id = created.json()["id"]
 
-        channel_resp = client.post(SESSIONS_API, json={"title": "TG Group · Ops"}, headers=headers)
-        assert channel_resp.status_code == 200
-        channel_session_id = channel_resp.json()["id"]
-
-        import jwt as _jwt
-
-        _decoded = _jwt.decode(token, options={"verify_signature": False})
-        _actual_user_id = _decoded["sub"]
-        fake_db.add(
-            SessionBinding(
-                user_id=_actual_user_id,
-                binding_type="telegram_group",
-                binding_key="group:-100123",
-                session_id=uuid.UUID(channel_session_id),
-                is_active=True,
-                metadata_json={"chat_id": -100123},
-            )
-        )
-
-        forbidden = client.post(f"{SESSIONS_API}/{channel_session_id}/main", headers=headers)
-        assert forbidden.status_code == 400
-        payload = forbidden.json()
-        detail = (
-            payload.get("detail") or (payload.get("error") or {}).get("message") or str(payload)
-        )
-        assert "Telegram channel sessions cannot be set as main" in detail
-
-        still_main = client.get(f"{SESSIONS_API}/{main_session_id}", headers=headers)
-        assert still_main.status_code == 200
-        assert still_main.json()["is_main"] is True
+        assert client.get(f"{SESSIONS_API}/default", headers=headers).status_code == 404
+        assert client.post(f"{SESSIONS_API}/default/reset", headers=headers).status_code == 404
+        assert client.post(f"{SESSIONS_API}/{session_id}/main", headers=headers).status_code == 404
     finally:
         restore_test_app(old_init)
 
@@ -710,39 +676,28 @@ def test_cannot_rename_telegram_channel_session():
         restore_test_app(old_init)
 
 
-def test_reset_default_session_keeps_previous_main_runtime_workspace():
+def test_delete_any_root_session_succeeds():
     fake_db = FakeDB()
 
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            runtime_base = Path(tmpdir)
-            client = TestClient(app)
-            login = client.post(
-                "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
-            )
-            assert login.status_code == 200
-            token = login.json()["access_token"]
-            headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(app)
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-            main_resp = client.get(f"{SESSIONS_API}/default", headers=headers)
-            assert main_resp.status_code == 200
-            old_main_id = main_resp.json()["id"]
+        created = client.post(SESSIONS_API, json={"title": "former main"}, headers=headers)
+        assert created.status_code == 200
+        session_id = created.json()["id"]
 
-            old_workspace = runtime_base / old_main_id / "workspace"
-            old_workspace.mkdir(parents=True, exist_ok=True)
-            marker = old_workspace / "keep.txt"
-            marker.write_text("preserve")
+        async def _noop_cleanup(*_args, **_kwargs):
+            return None
 
-            reset_resp = client.post(f"{SESSIONS_API}/default/reset", headers=headers)
-            assert reset_resp.status_code == 200
-            new_main_id = reset_resp.json()["id"]
-            assert new_main_id != old_main_id
-
-            assert old_workspace.exists() is True
-            assert marker.exists() is True
-            assert marker.read_text() == "preserve"
+        with patch("app.routers.sessions._cleanup_runtime_for_deleted_sessions", new=_noop_cleanup):
+            deleted = client.delete(f"{SESSIONS_API}/{session_id}", headers=headers)
+        assert deleted.status_code == 200
+        assert deleted.json()["status"] == "deleted"
     finally:
         restore_test_app(old_init)
 

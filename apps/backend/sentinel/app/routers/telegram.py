@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dependencies import get_db, get_request_instance_runtime_context
 from app.middleware.auth import TokenPayload, require_auth
 from app.services.instance_runtime_context import instance_runtime_context_registry
-from app.services.sessions import session_bindings
 from app.services.settings.system_settings import delete_system_setting, upsert_system_setting
 from app.services.telegram.lifecycle import mask_telegram_token
 
@@ -20,17 +19,6 @@ router = APIRouter()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
-
-
-async def _resolve_main_session_id(db: AsyncSession, user_id: str) -> str | None:
-    session = await session_bindings.resolve_or_create_main_session(
-        db,
-        user_id=user_id,
-        agent_id=None,
-    )
-    await db.commit()
-    await db.refresh(session)
-    return str(session.id)
 
 
 async def _rebuild(request: Request) -> None:
@@ -74,7 +62,6 @@ async def get_status(
     context = get_request_instance_runtime_context(request)
     instance_settings = context.instance_settings
     bridge: TelegramBridge | None = context.telegram_bridge
-    main_session_id = await _resolve_main_session_id(db, user.sub)
     return {
         "running": bridge.is_running if bridge else False,
         "bot_username": bridge.bot_username if bridge else None,
@@ -83,7 +70,6 @@ async def get_status(
         "token_configured": bool(instance_settings.telegram_bot_token),
         "masked_token": mask_telegram_token(instance_settings.telegram_bot_token),
         "owner_user_id": instance_settings.telegram_owner_user_id or instance_settings.dev_user_id,
-        "main_session_id": main_session_id,
         "owner_chat_id": instance_settings.telegram_owner_chat_id,
         "owner_telegram_user_id": instance_settings.telegram_owner_telegram_user_id,
     }
@@ -112,14 +98,13 @@ async def configure(
         instance_settings.telegram_owner_user_id
         and instance_settings.telegram_owner_user_id != user.sub
     )
-    main_session_id = await _resolve_main_session_id(db, user.sub)
     await upsert_system_setting(db, key="telegram_bot_token", value=bot_token)
     await upsert_system_setting(db, key="telegram_owner_user_id", value=user.sub)
     if owner_changed:
         await delete_system_setting(db, key="telegram_owner_chat_id")
         await delete_system_setting(db, key="telegram_owner_telegram_user_id")
     await _rebuild(request)
-    return {"success": True, "main_session_id": main_session_id}
+    return {"success": True}
 
 
 @router.post("/start")
@@ -135,13 +120,12 @@ async def start_bridge(
         instance_settings.telegram_owner_user_id
         and instance_settings.telegram_owner_user_id != user.sub
     )
-    main_session_id = await _resolve_main_session_id(db, user.sub)
     await upsert_system_setting(db, key="telegram_owner_user_id", value=user.sub)
     if owner_changed:
         await delete_system_setting(db, key="telegram_owner_chat_id")
         await delete_system_setting(db, key="telegram_owner_telegram_user_id")
     await _rebuild(request)
-    return {"success": True, "main_session_id": main_session_id}
+    return {"success": True}
 
 
 @router.post("/owner")

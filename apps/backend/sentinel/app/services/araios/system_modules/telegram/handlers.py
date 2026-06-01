@@ -9,7 +9,6 @@ from app.services.instance_runtime_context import (
     InstanceRuntimeContext,
     instance_runtime_context_registry,
 )
-from app.services.sessions import session_bindings
 from app.services.tools.executor import ToolExecutionError, ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.runtime_context import optional_session_id
@@ -47,14 +46,6 @@ async def _resolve_owner_user_id_from_session(
     from app.services.telegram import resolve_owner_user_id_from_session
 
     return await resolve_owner_user_id_from_session(context.session_factory, session_id)
-
-
-async def _resolve_latest_active_root_session_id_for_user(
-    context: InstanceRuntimeContext, user_id: str
-) -> str | None:
-    from app.services.telegram import resolve_latest_active_root_session_id_for_user
-
-    return await resolve_latest_active_root_session_id_for_user(context.session_factory, user_id)
 
 
 async def _persist_telegram_settings(context: InstanceRuntimeContext, **kwargs: Any) -> None:
@@ -144,17 +135,11 @@ async def handle_send(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
     raise ToolExecutionError("Failed to send message")
 
 
-async def _status_payload(
-    context: InstanceRuntimeContext, *, status_user_id: str | None = None
-) -> dict[str, Any]:
+async def _status_payload(context: InstanceRuntimeContext) -> dict[str, Any]:
     bridge = context.telegram_bridge
     instance_settings = context.instance_settings
     connected = bridge.connected_chats if bridge else {}
     owner_user_id = instance_settings.telegram_owner_user_id or instance_settings.dev_user_id
-    effective_status_user_id = status_user_id or owner_user_id
-    main_session_id = await _resolve_latest_active_root_session_id_for_user(
-        context, effective_status_user_id
-    )
     return {
         "running": bool(bridge and bridge.is_running),
         "bot_username": bridge.bot_username if bridge else None,
@@ -164,24 +149,9 @@ async def _status_payload(
         "token_configured": bool(instance_settings.telegram_bot_token),
         "masked_token": _mask_telegram_token(instance_settings.telegram_bot_token),
         "owner_user_id": owner_user_id,
-        "main_session_id": main_session_id,
         "owner_chat_id": instance_settings.telegram_owner_chat_id,
         "owner_telegram_user_id": instance_settings.telegram_owner_telegram_user_id,
     }
-
-
-async def _ensure_owner_main_session(
-    context: InstanceRuntimeContext, owner_user_id: str
-) -> str | None:
-    async with context.session_factory() as db:
-        session = await session_bindings.resolve_or_create_main_session(
-            db,
-            user_id=owner_user_id,
-            agent_id=None,
-        )
-        await db.commit()
-        await db.refresh(session)
-        return str(session.id)
 
 
 async def _resolve_actor_user_id(
@@ -233,7 +203,7 @@ async def _handle_manage_action(
         return {
             "success": True,
             "action": action,
-            **(await _status_payload(context, status_user_id=actor_user_id)),
+            **(await _status_payload(context)),
         }
 
     if action == "stop":
@@ -242,7 +212,7 @@ async def _handle_manage_action(
         return {
             "success": True,
             "action": action,
-            **(await _status_payload(context, status_user_id=actor_user_id)),
+            **(await _status_payload(context)),
         }
 
     if action == "configure":
@@ -261,7 +231,6 @@ async def _handle_manage_action(
             instance_settings.telegram_owner_user_id
             and instance_settings.telegram_owner_user_id != actor_user_id
         )
-        main_session_id = await _ensure_owner_main_session(context, actor_user_id)
         await _persist_telegram_settings(
             context,
             bot_token=token,
@@ -275,8 +244,7 @@ async def _handle_manage_action(
         return {
             "success": True,
             "action": action,
-            "main_session_id": main_session_id,
-            **(await _status_payload(context, status_user_id=actor_user_id)),
+            **(await _status_payload(context)),
         }
 
     if action == "start":
@@ -293,13 +261,11 @@ async def _handle_manage_action(
         if owner_changed:
             await _delete_setting(context, "telegram_owner_chat_id")
             await _delete_setting(context, "telegram_owner_telegram_user_id")
-        main_session_id = await _ensure_owner_main_session(context, actor_user_id)
         context = await _rebuild_instance_context(context)
         return {
             "success": True,
             "action": action,
-            "main_session_id": main_session_id,
-            **(await _status_payload(context, status_user_id=actor_user_id)),
+            **(await _status_payload(context)),
         }
 
     if action == "delete_config":
@@ -311,7 +277,7 @@ async def _handle_manage_action(
         return {
             "success": True,
             "action": action,
-            **(await _status_payload(context, status_user_id=actor_user_id)),
+            **(await _status_payload(context)),
         }
 
     if action == "bind_owner":
@@ -355,7 +321,7 @@ async def _handle_manage_action(
             "action": action,
             "owner_chat_id": owner_chat_id,
             "owner_telegram_user_id": owner_tg_user_id,
-            **(await _status_payload(context, status_user_id=actor_user_id)),
+            **(await _status_payload(context)),
         }
 
     if action == "clear_owner":
@@ -365,7 +331,7 @@ async def _handle_manage_action(
         return {
             "success": True,
             "action": action,
-            **(await _status_payload(context, status_user_id=actor_user_id)),
+            **(await _status_payload(context)),
         }
 
     raise ToolValidationError(f"Unsupported action: {action}")

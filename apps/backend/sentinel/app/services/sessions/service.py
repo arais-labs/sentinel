@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.sentral import ConversationItem, GenerationConfig, ImageBlock, RunTurnRequest, TextBlock
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import Memory, Message, Session, ToolApproval
+from app.models import Message, Session, ToolApproval
 from app.services.sessions.context_usage import (
     build_context_usage_metrics,
     estimate_agent_messages_tokens,
@@ -25,9 +25,7 @@ from app.services.sessions.context_usage import (
 from app.services.sessions import session_bindings
 from app.services.agent.agent_modes import AgentMode, get_default_agent_mode
 from app.services.sessions.agent_run_registry import AgentRunRegistry
-from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
 from app.services.llm.ids import TierName
-from app.services.memory import MemoryRepository, MemoryService
 from app.services.messages import normalize_generation_metadata, with_generation_metadata
 from app.services.sessions.session_naming import (
     SessionNamingService,
@@ -37,8 +35,6 @@ from app.services.sessions.session_naming import (
 from app.services.sessions.errors import (
     AgentRuntimeUnavailableError,
     ChatPayloadRequiredError,
-    MainSessionDeletionError,
-    MainSessionTargetInvalidError,
     MessageNotFoundError,
     SessionRenameNotAllowedError,
     SessionNotFoundError,
@@ -123,87 +119,6 @@ class SessionService:
             updated_at=now,
         )
         db.add(session)
-        await db.commit()
-        await db.refresh(session)
-        return session
-
-    async def get_default_session(
-        self,
-        db: AsyncSession,
-        *,
-        user_id: str,
-        agent_id: str | None,
-    ) -> Session:
-        session = await session_bindings.resolve_or_create_main_session(
-            db,
-            user_id=user_id,
-            agent_id=agent_id,
-        )
-        await db.commit()
-        await db.refresh(session)
-        return session
-
-    async def reset_default_session(
-        self,
-        db: AsyncSession,
-        *,
-        user_id: str,
-        agent_id: str | None,
-    ) -> Session:
-        current_main = await session_bindings.resolve_or_create_main_session(
-            db,
-            user_id=user_id,
-            agent_id=agent_id,
-        )
-
-        now = datetime.now(UTC)
-        session = Session(
-            user_id=user_id,
-            agent_id=agent_id,
-            title="Main",
-            started_at=now,
-            created_at=now,
-            updated_at=now,
-        )
-        db.add(session)
-        await db.flush()
-        await session_bindings.set_main_session(
-            db,
-            user_id=user_id,
-            session_id=session.id,
-        )
-        await db.commit()
-        await db.refresh(session)
-        return session
-
-    async def set_main_session(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-    ) -> Session:
-        _ = await self.get_session(db, session_id=session_id, user_id=user_id)
-        is_telegram_channel = await session_bindings.is_session_bound(
-            db,
-            user_id=user_id,
-            session_id=session_id,
-            binding_types={
-                session_bindings.TELEGRAM_GROUP_BINDING_TYPE,
-                session_bindings.TELEGRAM_DM_BINDING_TYPE,
-            },
-            active_only=True,
-        )
-        if is_telegram_channel:
-            raise MainSessionTargetInvalidError("Telegram channel sessions cannot be set as main")
-        try:
-            session = await session_bindings.set_main_session(
-                db,
-                user_id=user_id,
-                session_id=session_id,
-            )
-        except session_bindings.SessionBindingTargetInvalidError as exc:
-            raise MainSessionTargetInvalidError(str(exc)) from exc
         await db.commit()
         await db.refresh(session)
         return session
@@ -357,9 +272,6 @@ class SessionService:
         before_delete: SessionDeleteCleanup | None = None,
     ) -> int:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        main_session_id = await self._get_main_session_id(db, user_id=user_id)
-        if main_session_id is not None and session.id == main_session_id:
-            raise MainSessionDeletionError("Main session cannot be deleted")
         descendants = await self._get_descendant_sessions(
             db, root_session_id=session.id, user_id=user_id
         )
@@ -734,137 +646,6 @@ class SessionService:
         await db.commit()
         await db.refresh(session)
         return session
-
-    async def get_main_session_id(self, db: AsyncSession, *, user_id: str) -> UUID | None:
-        return await self._get_main_session_id(db, user_id=user_id)
-
-    async def extract_session_memories(self, session_ids: list[UUID], user_id: str) -> None:
-        """Summarize prior sessions into memory nodes (fire-and-forget)."""
-        if self._agent_runtime_support is None:
-            return
-        try:
-            memory_service = MemoryService(MemoryRepository())
-            async with self._db_factory() as db:
-                for session_id in session_ids:
-                    messages = await self._session_messages_for_distillation(db, session_id)
-                    if not messages:
-                        continue
-
-                    transcript = self._build_transcript(messages)
-                    prompt = (
-                        "You are a memory distillation agent. Given a conversation transcript, "
-                        "extract the most important durable facts, decisions, user preferences, "
-                        "and outcomes. Write a concise structured summary (max 300 words) that "
-                        "would help an assistant in a future session understand what happened "
-                        "and what matters. Focus on facts, not chat pleasantries.\n\n"
-                        f"TRANSCRIPT:\n{transcript}"
-                    )
-                    result = await self._agent_runtime_support.provider.chat(
-                        [UserMessage(content=prompt)],
-                        model=TierName.FAST.value,
-                        tools=[],
-                        temperature=0.3,
-                    )
-                    summary_text = "".join(
-                        block.text for block in result.content if isinstance(block, TextContent)
-                    ).strip()
-                    if not summary_text:
-                        continue
-
-                    root = await self._get_or_create_previous_sessions_root(
-                        db,
-                        memory_service=memory_service,
-                    )
-                    date_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-                    await memory_service.create_memory(
-                        db,
-                        content=summary_text,
-                        title=f"Session summary ({date_str})",
-                        summary=summary_text[:200],
-                        category="core",
-                        importance=65,
-                        parent_id=root.id,
-                        pinned=False,
-                        metadata={"source": "session_reset", "user_id": user_id},
-                        embedding=None,
-                        embedding_service=None,
-                        ignore_embedding_errors=True,
-                    )
-        except Exception:
-            logger.warning("Memory extraction on reset failed", exc_info=True)
-
-    async def _session_messages_for_distillation(
-        self, db: AsyncSession, session_id: UUID
-    ) -> list[Message]:
-        result = await db.execute(
-            select(Message).where(
-                Message.session_id == session_id,
-                Message.role.in_(["user", "assistant"]),
-            )
-        )
-        return result.scalars().all()
-
-    def _build_transcript(self, messages: list[Message]) -> str:
-        lines: list[str] = []
-        for message in sorted(
-            messages, key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC)
-        ):
-            role = message.role.upper()
-            snippet = (message.content or "")[:400].replace("\n", " ")
-            lines.append(f"{role}: {snippet}")
-        return "\n".join(lines)[:6000]
-
-    async def _get_or_create_previous_sessions_root(
-        self,
-        db: AsyncSession,
-        *,
-        memory_service: MemoryService,
-    ) -> Memory:
-        roots = await memory_service.list_root_memories(db, category="core")
-        root = next(
-            (item for item in roots if (item.title or "").strip() == "Previous Sessions"), None
-        )
-        if root is not None:
-            if not bool(root.pinned):
-                await memory_service.update_memory(
-                    db,
-                    memory_id=root.id,
-                    updates={"pinned": True},
-                    embedding_service=None,
-                    ignore_embedding_errors=True,
-                )
-            return root
-
-        return await memory_service.create_memory(
-            db,
-            content=(
-                "Archive of past session summaries. "
-                "Reference these when context from previous conversations may be relevant."
-            ),
-            title="Previous Sessions",
-            summary="Past session summaries — reference if needed.",
-            category="core",
-            importance=80,
-            parent_id=None,
-            pinned=True,
-            metadata={"source": "session_reset_root"},
-            embedding=None,
-            embedding_service=None,
-            ignore_embedding_errors=True,
-        )
-
-    async def _get_main_session_id(self, db: AsyncSession, *, user_id: str) -> UUID | None:
-        existing = await session_bindings.resolve_main_session_id(db, user_id=user_id)
-        if existing is not None:
-            return existing
-
-        session = await session_bindings.resolve_or_create_main_session(
-            db,
-            user_id=user_id,
-            agent_id=None,
-        )
-        await db.commit()
-        return session.id
 
     async def _get_descendant_sessions(
         self,

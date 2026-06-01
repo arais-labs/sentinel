@@ -1,5 +1,4 @@
 import {
-  BadgeCheck,
   Check,
   Loader2,
   Pencil,
@@ -26,7 +25,6 @@ interface SessionRowProps {
   canDelete: boolean;
   isDeleting: boolean;
   onDelete: (s: Session) => void;
-  onSetMain: (s: Session) => void;
   canRename: boolean;
   isEditing: boolean;
   isRenaming: boolean;
@@ -47,7 +45,6 @@ export const SessionRow = memo(({
   canDelete,
   isDeleting,
   onDelete,
-  onSetMain,
   canRename,
   isEditing,
   isRenaming,
@@ -165,26 +162,11 @@ export const SessionRow = memo(({
                 <span>DM</span>
               </span>
             ) : null}
-            {session.is_main ? (
-              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-emerald-400">
-                <BadgeCheck size={8} />
-                Main
-              </span>
-            ) : null}
           </div>
         </div>
         <span className="text-[9px] font-medium uppercase tracking-tight text-[color:var(--text-muted)] opacity-60">{formatCompactDate(session.started_at)}</span>
       </button>
     )}
-    {!isEditing && !multiSelectMode && !session.is_main ? (
-      <button
-        onClick={() => onSetMain(session)}
-        title="Set as main session"
-        className="session-row-action absolute right-16 top-3 h-7 w-7 rounded-full border border-emerald-500/35 text-emerald-400 bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center transition-all opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto z-20 shadow-sm"
-      >
-        <BadgeCheck size={13} />
-      </button>
-    ) : null}
     {!isEditing && !multiSelectMode && canRename ? (
       <button
         onClick={() => onRename(session)}

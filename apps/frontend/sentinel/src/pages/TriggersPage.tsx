@@ -50,7 +50,6 @@ interface ModalState {
   cronExpr: string;
   heartbeatInterval: number;
   agentMsg: string;
-  routeMode: 'main' | 'session';
   targetSessionId: string;
   toolName: string;
   toolArgs: string;
@@ -73,7 +72,6 @@ const modalDefault: ModalState = {
   cronExpr: '0 9 * * *',
   heartbeatInterval: 3600,
   agentMsg: '',
-  routeMode: 'main',
   targetSessionId: '',
   toolName: '',
   toolArgs: '{}',
@@ -101,21 +99,8 @@ function readNumber(source: Record<string, unknown>, keys: string[], fallback: n
   return fallback;
 }
 
-function resolveAgentRoute(actionConfig: Record<string, unknown>): { routeMode: 'main' | 'session'; targetSessionId: string } {
-  const hasRouteMode = Object.prototype.hasOwnProperty.call(actionConfig, 'route_mode');
-  const routeModeRaw = readString(actionConfig, ['route_mode'], 'main').toLowerCase();
-  const routeMode = routeModeRaw === 'session' ? 'session' : 'main';
-
-  const canonicalTarget = readString(actionConfig, ['target_session_id'], '');
-  if (routeMode === 'session') {
-    const target = canonicalTarget || readString(actionConfig, ['session_id'], '');
-    return { routeMode: 'session', targetSessionId: target };
-  }
-  if (!hasRouteMode) {
-    const legacyTarget = readString(actionConfig, ['session_id'], '');
-    if (legacyTarget) return { routeMode: 'session', targetSessionId: legacyTarget };
-  }
-  return { routeMode: 'main', targetSessionId: '' };
+function resolveAgentRoute(actionConfig: Record<string, unknown>): { targetSessionId: string } {
+  return { targetSessionId: readString(actionConfig, ['target_session_id'], '') };
 }
 
 function statusTone(status: string): 'default' | 'good' | 'warn' | 'danger' | 'info' {
@@ -189,10 +174,10 @@ export function TriggersPage() {
 
   const isRouteTargetMissing = useMemo(
     () =>
-      modal.routeMode === 'session'
+      modal.actionType === 'agent_message'
       && Boolean(modal.targetSessionId)
       && !routeSessions.some((session) => session.id === modal.targetSessionId),
-    [modal.routeMode, modal.targetSessionId, routeSessions],
+    [modal.actionType, modal.targetSessionId, routeSessions],
   );
 
   useEffect(() => {
@@ -248,11 +233,7 @@ export function TriggersPage() {
     if (modal.actionType === 'agent_message') {
       return {
         message: modal.agentMsg,
-        route_mode: modal.routeMode,
-        target_session_id:
-          modal.routeMode === 'session' && modal.targetSessionId
-            ? modal.targetSessionId
-            : null,
+        target_session_id: modal.targetSessionId || null,
       };
     }
     if (modal.actionType === 'tool_call') {
@@ -272,6 +253,10 @@ export function TriggersPage() {
   async function handleModalSubmit(event: FormEvent) {
     event.preventDefault();
     if (!modal.name.trim() || savingModal) return;
+    if (!modal.useManualAction && modal.actionType === 'agent_message' && !modal.targetSessionId) {
+      toast.error('Choose a target session');
+      return;
+    }
 
     const config = buildConfig();
     const action_config = buildActionConfig();
@@ -313,8 +298,12 @@ export function TriggersPage() {
     setInvokePayloadText(JSON.stringify(defaultManualInvokePayload, null, 2));
     setModalLogs([]);
     setModalLogOffset(0);
-    setModal(modalDefault);
-    setModal((prev) => ({ ...prev, open: true, mode: 'create' }));
+    setModal({
+      ...modalDefault,
+      open: true,
+      mode: 'create',
+      targetSessionId: routeSessions[0]?.id ?? '',
+    });
   }
 
   function openEditModal(trigger: Trigger) {
@@ -337,7 +326,6 @@ export function TriggersPage() {
       cronExpr: isCron ? readString(trigger.config, ['expr', 'cron'], '0 9 * * *') : '0 9 * * *',
       heartbeatInterval: isHeartbeat ? readNumber(trigger.config, ['interval_seconds', 'interval'], 3600) : 3600,
       agentMsg: isAgentMsg ? readString(trigger.action_config, ['message'], '') : '',
-      routeMode: isAgentMsg ? route.routeMode : 'main',
       targetSessionId: isAgentMsg ? route.targetSessionId : '',
       toolName: isToolCall ? readString(trigger.action_config, ['name', 'tool_name'], '') : '',
       toolArgs: isToolCall ? JSON.stringify(trigger.action_config.arguments ?? trigger.action_config.payload ?? {}, null, 2) : '{}',
@@ -405,11 +393,7 @@ export function TriggersPage() {
         await Promise.all([loadModalLogs(modal.triggerId, true), loadData()]);
         return;
       }
-      if (result.used_fallback) {
-        toast.warning('Target session unavailable, routed to main session');
-      } else {
-        toast.success('Trigger invoked');
-      }
+      toast.success('Trigger invoked');
       if (result.resolved_session_id && !workspaceMode) {
         navigate(instanceRouteFromPath(location.pathname, `sessions/${result.resolved_session_id}`));
         return;
@@ -434,11 +418,7 @@ export function TriggersPage() {
         await loadData();
         return;
       }
-      if (result.used_fallback) {
-        toast.warning('Target session unavailable, routed to main session');
-      } else {
-        toast.success('Trigger invoked');
-      }
+      toast.success('Trigger invoked');
       if (result.resolved_session_id && !workspaceMode) {
         navigate(instanceRouteFromPath(location.pathname, `sessions/${result.resolved_session_id}`));
         return;
@@ -825,49 +805,25 @@ export function TriggersPage() {
                                   onChange={(event) => setModal((prev) => ({ ...prev, agentMsg: event.target.value }))}
                                 />
                               </div>
-                              <div className="grid grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                  <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Routing</label>
-                                  <select
-                                    className="input-field h-10 text-xs font-bold uppercase"
-                                    value={modal.routeMode}
-                                    onChange={(event) =>
-                                      setModal((prev) => ({
-                                        ...prev,
-                                        routeMode: event.target.value === 'session' ? 'session' : 'main',
-                                        targetSessionId:
-                                          event.target.value === 'session'
-                                            ? prev.targetSessionId || (routeSessions[0]?.id ?? '')
-                                            : '',
-                                      }))
-                                    }
-                                  >
-                                    <option value="main">Main Session</option>
-                                    <option value="session">Specific Session</option>
-                                  </select>
-                                </div>
-                                {modal.routeMode === 'session' && (
-                                  <div className="space-y-2 animate-in fade-in slide-in-from-left-1 duration-200">
-                                    <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Target</label>
-                                    <select
-                                      className="input-field h-10 text-xs font-bold"
-                                      value={modal.targetSessionId}
-                                      onChange={(event) => setModal((prev) => ({ ...prev, targetSessionId: event.target.value }))}
-                                    >
-                                      {!modal.targetSessionId && <option value="">Select session...</option>}
-                                      {routeSessions.map((session) => (
-                                        <option key={session.id} value={session.id}>
-                                          {session.title || session.id.slice(0, 8)}
-                                        </option>
-                                      ))}
-                                      {isRouteTargetMissing && (
-                                        <option value={modal.targetSessionId}>
-                                          Missing ({modal.targetSessionId.slice(0, 8)})
-                                        </option>
-                                      )}
-                                    </select>
-                                  </div>
-                                )}
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Target Session</label>
+                                <select
+                                  className="input-field h-10 text-xs font-bold"
+                                  value={modal.targetSessionId}
+                                  onChange={(event) => setModal((prev) => ({ ...prev, targetSessionId: event.target.value }))}
+                                >
+                                  {!modal.targetSessionId && <option value="">Select session...</option>}
+                                  {routeSessions.map((session) => (
+                                    <option key={session.id} value={session.id}>
+                                      {session.title || session.id.slice(0, 8)}
+                                    </option>
+                                  ))}
+                                  {isRouteTargetMissing && (
+                                    <option value={modal.targetSessionId}>
+                                      Missing ({modal.targetSessionId.slice(0, 8)})
+                                    </option>
+                                  )}
+                                </select>
                               </div>
                             </div>
                           )}

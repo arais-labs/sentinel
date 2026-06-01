@@ -24,6 +24,7 @@ from app.services.agent_runtime_adapters import (
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.messages import trigger_ingress_metadata
 from app.services.triggers.routing import (
+    AgentMessageRouteError,
     extract_agent_message_target_session_id,
     resolve_agent_message_route,
 )
@@ -42,8 +43,6 @@ class TriggerOwnershipError(ValueError):
 class TriggerActionOutcome:
     output_summary: str
     resolved_session_id: UUID | None = None
-    route_mode: str | None = None
-    used_fallback: bool | None = None
 
 
 @dataclass(slots=True)
@@ -160,17 +159,21 @@ class TriggerScheduler:
             raise ValueError("agent_message action requires non-empty 'message'")
 
         effective_user_id = await self._resolve_effective_user_id(db, trigger, action)
-        route = await resolve_agent_message_route(
-            db,
-            user_id=effective_user_id,
-            action_config=action,
-        )
+        try:
+            route = await resolve_agent_message_route(
+                db,
+                user_id=effective_user_id,
+                action_config=action,
+            )
+        except AgentMessageRouteError:
+            return await self.fire_now(
+                db,
+                trigger_id=trigger_id,
+                input_payload=input_payload,
+                force=force,
+            )
         trigger.action_config = route.normalized_action_config
         session_id = route.session_id
-        route_mode = route.normalized_action_config.get("route_mode")
-        normalized_route_mode = (
-            str(route_mode) if isinstance(route_mode, str) and route_mode else None
-        )
 
         queued_log = TriggerLog(
             trigger_id=trigger.id,
@@ -196,8 +199,6 @@ class TriggerScheduler:
             action=TriggerActionOutcome(
                 output_summary="agent_message:queued",
                 resolved_session_id=session_id,
-                route_mode=normalized_route_mode,
-                used_fallback=route.used_fallback,
             ),
         )
 
@@ -458,13 +459,6 @@ class TriggerScheduler:
         trigger.action_config = route.normalized_action_config
         session_id = route.session_id
         session_key = str(session_id)
-        if route.used_fallback:
-            logger.info(
-                "Trigger %s route fallback applied (%s), resolved to main session %s",
-                trigger.id,
-                route.fallback_reason or "unknown",
-                session_id,
-            )
 
         async def _on_event(event: Any) -> None:
             if self._ws_manager:
@@ -538,15 +532,9 @@ class TriggerScheduler:
                 for block in result.final_item.content
                 if isinstance(block, TextBlock) and block.text
             ).strip()
-        route_mode = route.normalized_action_config.get("route_mode")
-        normalized_route_mode = (
-            str(route_mode) if isinstance(route_mode, str) and route_mode else None
-        )
         return TriggerActionOutcome(
             output_summary=f"agent_message:{final_text[:500]}",
             resolved_session_id=session_id,
-            route_mode=normalized_route_mode,
-            used_fallback=route.used_fallback,
         )
 
     async def _resolve_effective_user_id(

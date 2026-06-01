@@ -35,7 +35,7 @@ def _action_type_prop() -> dict:
 def _action_config_prop() -> dict:
     return {
         "type": "object",
-        "description": "For agent_message: {message, route_mode, target_session_id}.",
+        "description": "For agent_message: {message, target_session_id}.",
     }
 
 

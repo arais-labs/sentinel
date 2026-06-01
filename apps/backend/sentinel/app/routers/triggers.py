@@ -23,7 +23,7 @@ from app.schemas.triggers import (
     UpdateTriggerRequest,
 )
 from app.services.triggers.trigger_scheduler import TriggerScheduler, compute_next_fire_at
-from app.services.triggers.routing import resolve_agent_message_route
+from app.services.triggers.routing import AgentMessageRouteError, resolve_agent_message_route
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -220,8 +220,6 @@ async def fire_trigger(
     return FireTriggerResponse(
         log=_trigger_log_response(log),
         resolved_session_id=action.resolved_session_id,
-        route_mode=action.route_mode,
-        used_fallback=action.used_fallback,
     )
 
 
@@ -307,9 +305,15 @@ async def _normalize_agent_message_action_config(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="agent_message action requires non-empty action_config.message",
         )
-    route = await resolve_agent_message_route(
-        db,
-        user_id=user_id,
-        action_config=action_config,
-    )
+    try:
+        route = await resolve_agent_message_route(
+            db,
+            user_id=user_id,
+            action_config=action_config,
+        )
+    except AgentMessageRouteError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     return route.normalized_action_config

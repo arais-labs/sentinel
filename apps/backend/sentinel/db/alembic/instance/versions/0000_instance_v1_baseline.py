@@ -458,13 +458,6 @@ def upgrade() -> None:
     op.create_index("ix_triggers_type", "triggers", ["type"])
     op.create_index("ix_triggers_user_id", "triggers", ["user_id"])
     op.create_index(
-        "uq_session_bindings_active_main",
-        "session_bindings",
-        ["user_id"],
-        unique=True,
-        postgresql_where=sa.text("is_active AND binding_type = 'main'"),
-    )
-    op.create_index(
         "uq_session_bindings_active_route",
         "session_bindings",
         ["user_id", "binding_type", "binding_key"],
