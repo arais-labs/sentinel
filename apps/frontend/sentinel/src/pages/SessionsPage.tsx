@@ -15,6 +15,7 @@ import {
   ExternalLink,
   Zap,
   Activity,
+  Gauge,
   Brain,
   Sparkles,
   Paperclip,
@@ -587,6 +588,7 @@ export function SessionsPage() {
     () => parseTier(localStorage.getItem('sentinel-selected-tier')) ?? 'normal',
   );
   const [isAgentModeDropdownOpen, setIsAgentModeDropdownOpen] = useState(false);
+  const [isMaxDropdownOpen, setIsMaxDropdownOpen] = useState(false);
   const [isEffortDropdownOpen, setIsEffortDropdownOpen] = useState(false);
   const [maxIterations, setMaxIterations] = useState(50);
 
@@ -729,7 +731,7 @@ export function SessionsPage() {
   }, [selectedAgentMode]);
 
   useEffect(() => {
-    if (!isSessionDropdownOpen && !isEffortDropdownOpen && !isAgentModeDropdownOpen) return;
+    if (!isSessionDropdownOpen && !isEffortDropdownOpen && !isAgentModeDropdownOpen && !isMaxDropdownOpen) return;
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
@@ -739,6 +741,8 @@ export function SessionsPage() {
       if (effortDropdownMenuRef.current?.contains(target)) return;
       if (agentModeDropdownRef.current?.contains(target)) return;
       if (agentModeDropdownMenuRef.current?.contains(target)) return;
+      if (maxDropdownRef.current?.contains(target)) return;
+      if (maxDropdownMenuRef.current?.contains(target)) return;
       setIsSessionDropdownOpen(false);
       setIsEffortDropdownOpen(false);
       setIsAgentModeDropdownOpen(false);
@@ -747,7 +751,7 @@ export function SessionsPage() {
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
     };
-  }, [isSessionDropdownOpen, isEffortDropdownOpen, isAgentModeDropdownOpen]);
+  }, [isSessionDropdownOpen, isEffortDropdownOpen, isAgentModeDropdownOpen, isMaxDropdownOpen]);
 
   const updateSessionDropdownRect = useCallback(() => {
     const button = sessionDropdownButtonRef.current;
@@ -798,6 +802,8 @@ export function SessionsPage() {
   const effortDropdownMenuRef = useRef<HTMLDivElement | null>(null);
   const agentModeDropdownRef = useRef<HTMLDivElement | null>(null);
   const agentModeDropdownMenuRef = useRef<HTMLDivElement | null>(null);
+  const maxDropdownRef = useRef<HTMLDivElement | null>(null);
+  const maxDropdownMenuRef = useRef<HTMLDivElement | null>(null);
   const connectionPillRef = useRef<HTMLDivElement | null>(null);
   const progressPillRef = useRef<HTMLDivElement | null>(null);
   const contextPillRef = useRef<HTMLDivElement | null>(null);
@@ -806,6 +812,7 @@ export function SessionsPage() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const effortDropdownRect = useAnchorRect(effortDropdownRef, isEffortDropdownOpen);
   const agentModeDropdownRect = useAnchorRect(agentModeDropdownRef, isAgentModeDropdownOpen);
+  const maxDropdownRect = useAnchorRect(maxDropdownRef, isMaxDropdownOpen);
   const connectionTooltipRect = useAnchorRect(connectionPillRef, statusTooltip === 'connection');
   const progressTooltipRect = useAnchorRect(progressPillRef, statusTooltip === 'progress');
   const contextTooltipRect = useAnchorRect(contextPillRef, statusTooltip === 'context');
@@ -2665,7 +2672,7 @@ export function SessionsPage() {
                             setIsAgentModeDropdownOpen(false);
                             setIsEffortDropdownOpen(!isEffortDropdownOpen);
                           }}
-                          className="flex items-center gap-2.5 px-3 h-8 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all shadow-sm"
+                          className="flex items-center gap-2 px-3 h-7 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] hover:border-[color:var(--border-strong)] transition-all shadow-sm"
                         >
                           <span className="text-[color:var(--text-secondary)]">{icons[tier] || <Activity size={11} />}</span>
                           <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)]">{active?.label || 'Mode'}</span>
@@ -2746,7 +2753,7 @@ export function SessionsPage() {
                 </div>
 
                 {/* Agent Mode Selector */}
-                <div ref={agentModeDropdownRef} className="relative z-20 pl-2 border-l border-[color:var(--border-subtle)]">
+                <div ref={agentModeDropdownRef} className="relative z-20">
                   {(() => {
                     const active = agentModes.find((item) => item.id === selectedAgentMode) ?? agentModes[0];
                     return (
@@ -2757,7 +2764,7 @@ export function SessionsPage() {
                           setIsAgentModeDropdownOpen((prev) => !prev);
                         }}
                         disabled={agentModes.length === 0}
-                        className="flex items-center gap-2.5 px-3 h-8 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                        className="flex items-center gap-2 px-3 h-7 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] hover:border-[color:var(--border-strong)] transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                         title={active?.description ?? 'Agent mode'}
                       >
                         <span className="text-[color:var(--text-secondary)]"><Bot size={11} /></span>
@@ -2817,24 +2824,69 @@ export function SessionsPage() {
                   )}
                 </div>
 
-                {/* Steps Selector */}
-                <div className="flex items-center gap-2 pl-2 border-l border-[color:var(--border-subtle)]">
-                  <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Max</span>
-                  <select
-                      value={maxIterations}
-                      onChange={(e) => setMaxIterations(Number(e.target.value))}
-                      className="bg-transparent text-[11px] font-bold outline-none cursor-pointer hover:text-[color:var(--accent-solid)] transition-colors pr-1"
+                {/* Max Steps Selector */}
+                <div ref={maxDropdownRef} className="relative z-20">
+                  <button
+                    onClick={() => {
+                      setIsEffortDropdownOpen(false);
+                      setIsAgentModeDropdownOpen(false);
+                      setIsMaxDropdownOpen((prev) => !prev);
+                    }}
+                    title="Maximum agent steps per run"
+                    className="flex items-center gap-2 px-3 h-7 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] hover:border-[color:var(--border-strong)] transition-all shadow-sm"
                   >
-                    {[5, 10, 20, 30, 50, 100].map(n => (
-                      <option key={n} value={n} className="bg-[color:var(--surface-0)]">{n}</option>
-                    ))}
-                  </select>
+                    <span className="text-[color:var(--text-secondary)]"><Gauge size={11} /></span>
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Max Steps</span>
+                    <span className="text-[10px] font-bold tabular-nums tracking-widest text-[color:var(--text-primary)]">{maxIterations}</span>
+                    <ChevronDown size={11} className={`transition-transform duration-300 opacity-40 ${isMaxDropdownOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {isMaxDropdownOpen && maxDropdownRect && createPortal(
+                    <div
+                      ref={maxDropdownMenuRef}
+                      style={{
+                        position: 'fixed',
+                        top: maxDropdownRect.top + 8,
+                        left: Math.max(8, Math.min(maxDropdownRect.left + maxDropdownRect.triggerWidth - 224, window.innerWidth - 232)),
+                        zIndex: 10000,
+                      }}
+                      className="w-56 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl"
+                    >
+                      <div className="px-4 py-2 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] border-b border-[color:var(--border-subtle)]">
+                        Max steps per run
+                      </div>
+                      {[5, 10, 20, 30, 50, 100].map((n) => {
+                        const active = maxIterations === n;
+                        return (
+                          <button
+                            key={n}
+                            onClick={() => {
+                              setMaxIterations(n);
+                              setIsMaxDropdownOpen(false);
+                            }}
+                            className={`w-full flex items-center gap-2.5 px-4 py-2.5 transition-all text-left ${
+                              active
+                                ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
+                                : 'hover:bg-[color:var(--surface-1)]'
+                            }`}
+                          >
+                            <span className={`text-[11px] font-bold tabular-nums ${active ? 'text-[color:var(--app-bg)]' : 'text-[color:var(--text-primary)]'}`}>{n}</span>
+                            <span className={`text-[9px] font-medium ${active ? 'text-[color:var(--app-bg)] opacity-70' : 'text-[color:var(--text-muted)]'}`}>steps</span>
+                            {active && (
+                              <div className="ml-auto w-1 h-5 rounded-full bg-[color:var(--app-bg)]/20 shadow-sm" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>,
+                    document.body,
+                  )}
                 </div>
 
                 <button
                     onClick={resetSession}
                     title="Start fresh (memories preserved)"
-                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+                    className="inline-flex h-7 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
                 >
                   <RefreshCw size={14} className="text-sky-500/80" />
                   New Chat
@@ -2843,7 +2895,7 @@ export function SessionsPage() {
                 <button
                     onClick={compactContext}
                     disabled={isCompacting}
-                    className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
+                    className="inline-flex h-7 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
                 >
                   <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-500/80`} />
                   Compact

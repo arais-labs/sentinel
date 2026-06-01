@@ -195,10 +195,10 @@ export function GitPage() {
       actions={(
         <button
           onClick={() => void refreshAll()}
-          className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-all active:scale-95"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
           aria-label="Refresh"
         >
-          <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />
+          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
         </button>
       )}    >
       <div className="max-w-3xl mx-auto space-y-6">

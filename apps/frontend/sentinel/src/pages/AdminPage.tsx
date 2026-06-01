@@ -77,8 +77,8 @@ export function AdminPage() {
       subtitle="Critical Overrides & Audit Protocol"
       actions={
         <div className="flex items-center gap-2">
-          <button onClick={() => void loadAdminData(true)} className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-all active:scale-95">
-            <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+          <button onClick={() => void loadAdminData(true)} aria-label="Refresh" className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm">
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
       }    >
