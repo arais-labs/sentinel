@@ -13,6 +13,7 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api } from '../lib/api';
 import { formatCompactDate } from '../lib/format';
+import { useWorkspaceMode } from '../lib/workspace-context';
 import { instanceRouteFromPath } from '../lib/routes';
 import { useAuthStore } from '../store/auth-store';
 import type {
@@ -42,6 +43,7 @@ const EMPTY_FORM: GitAccountForm = {
 
 export function GitPage() {
   const location = useLocation();
+  const workspaceMode = useWorkspaceMode();
   const role = useAuthStore((state) => state.role);
   const [accounts, setAccounts] = useState<GitAccount[]>([]);
   const [loading, setLoading] = useState(true);
@@ -69,6 +71,17 @@ export function GitPage() {
   }, [loadAll]);
 
   if (role !== 'admin') {
+    // Inside a tiling pane the page is not the active route, so a redirect would
+    // hijack the global URL and unmount sibling panes. Show an inline notice.
+    if (workspaceMode) {
+      return (
+        <AppShell title="Git" subtitle="Source Control">
+          <Panel className="p-6 text-sm text-[color:var(--text-secondary)]">
+            Git account management is available to administrators only.
+          </Panel>
+        </AppShell>
+      );
+    }
     return <Navigate to={instanceRouteFromPath(location.pathname, 'settings')} replace />;
   }
 
@@ -182,10 +195,10 @@ export function GitPage() {
       actions={(
         <button
           onClick={() => void refreshAll()}
-          className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-all active:scale-95"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
           aria-label="Refresh"
         >
-          <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />
+          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
         </button>
       )}    >
       <div className="max-w-3xl mx-auto space-y-6">

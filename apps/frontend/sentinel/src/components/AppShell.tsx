@@ -1,4 +1,4 @@
-import { PropsWithChildren, ReactNode, useState } from 'react';
+import { PropsWithChildren, ReactNode, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -16,11 +16,20 @@ import {
   LayoutGrid,
   CheckCircle,
   Lock,
+  Globe,
+  Terminal,
+  Folder,
 } from 'lucide-react';
 
 import { APP_VERSION } from '../lib/env';
-import { instanceRouteFromPath } from '../lib/routes';
+import { instancePrefixFromPath, instanceRouteFromPath } from '../lib/routes';
+import { useWorkspaceMode } from '../lib/workspace-context';
+import { isWorkspaceTabId } from '../lib/workspace-tabs';
+import { useOpenTabIds, useWorkspaceStore } from '../store/workspace-store';
 import { useThemeStore } from '../store/theme-store';
+import { clearPaneActions, setPaneActions } from '../store/pane-actions-store';
+import { usePaneId } from './workspace/WorkspacePane';
+import { SidebarInstanceSwitcher } from './SidebarInstanceSwitcher';
 import { Logo } from './ui/Logo';
 
 interface AppShellProps extends PropsWithChildren {
@@ -40,6 +49,9 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: 'Sessions', route: 'sessions', icon: LayoutDashboard },
+  { label: 'Desktop', route: 'desktop', icon: Globe },
+  { label: 'Terminal', route: 'terminal', icon: Terminal },
+  { label: 'Files', route: 'files', icon: Folder },
   { label: 'Session Logs', route: 'logs', icon: Activity },
   { label: 'Memory', route: 'memory', icon: Database },
   { label: 'Triggers', route: 'triggers', icon: Zap },
@@ -67,22 +79,63 @@ export function AppShell({
 }: AppShellProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const workspaceMode = useWorkspaceMode();
   const theme = useThemeStore((state) => state.theme);
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
+  const openTab = useWorkspaceStore((state) => state.openTab);
+  const openTabIds = useOpenTabIds();
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const paneId = usePaneId();
   const instanceMatch = location.pathname.match(/^\/instances\/([^/]+)/);
   const hasInstanceScope = Boolean(instanceMatch?.[1]);
+
+  // In a tiling-workspace pane the page's header actions render inside the
+  // pane's own tab ({@link PaneHeaderTab}), not in a second header bar here.
+  // The tab lives in a separate React tree, so we bridge the `actions` node
+  // through the pane-actions store keyed by `paneId`. The store is consumed by
+  // the tab (a different component tree), so this write never re-renders this
+  // AppShell — no update loop. Depend only on [paneId, actions]; clear on
+  // unmount or when the pane id changes so a closed pane leaves no stale node.
+  useEffect(() => {
+    if (!workspaceMode || !paneId) return;
+    setPaneActions(paneId, actions ?? null);
+    return () => clearPaneActions(paneId);
+  }, [paneId, actions, workspaceMode]);
+
+  // When the shell is hosting the tiling workspace, the left nav acts as a tab
+  // launcher: clicking an item opens/focuses that pane instead of navigating to
+  // a standalone page. Detected by the dedicated `/workspace` route.
+  const instancePrefix = instancePrefixFromPath(location.pathname);
+  const workspaceRoute = instancePrefix ? `${instancePrefix}/workspace` : null;
+  const launcherMode = Boolean(workspaceRoute) && location.pathname === workspaceRoute;
+
+  // A nav item launches a workspace tab when we are in launcher mode and the
+  // item's route maps to a real workspace tab id (e.g. dev-only `showcase` has
+  // no tab, so it always router-navigates).
+  const handleNavClick = (item: NavItem, onNavigate?: () => void) => {
+    if (launcherMode && isWorkspaceTabId(item.route)) {
+      openTab(item.route);
+      onNavigate?.();
+      return;
+    }
+    navigate(instanceRouteFromPath(location.pathname, item.route));
+    onNavigate?.();
+  };
 
   const renderNav = (items: NavItem[], onNavigate?: () => void) => (
     <nav className="flex-1 overflow-y-auto overflow-x-hidden py-4 px-2 space-y-1">
       {items.map((item) => {
         const itemPath = instanceRouteFromPath(location.pathname, item.route);
-        const active = isActive(location.pathname, itemPath);
+        // In launcher mode the "active" cue follows which tabs are open rather
+        // than the URL (which stays on `/workspace`).
+        const active = launcherMode
+          ? isWorkspaceTabId(item.route) && openTabIds.includes(item.route)
+          : isActive(location.pathname, itemPath);
         return (
           <button
             key={item.route}
-            onClick={() => { navigate(itemPath); onNavigate?.(); }}
+            onClick={() => handleNavClick(item, onNavigate)}
             className={`group flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
               active
                 ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
@@ -101,6 +154,21 @@ export function AppShell({
       })}
     </nav>
   );
+
+  // Inside a tiling workspace pane the global chrome (sidebar + header) is
+  // already provided by the outer shell hosting <Workspace/>, and the pane
+  // supplies its own header (tab picker / actions / split / close). The page's
+  // `actions` are registered into the pane-actions store above and rendered by
+  // the pane's tab, so here we render bare content with NO header bar.
+  if (workspaceMode) {
+    return (
+      <div className="flex h-full w-full flex-col overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">
+        <main className={`flex-1 overflow-y-auto p-4 md:p-6 ${contentClassName}`}>
+          {children}
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[color:var(--app-bg)] text-[color:var(--text-primary)]">
@@ -126,6 +194,8 @@ export function AppShell({
             </div>
           </div>
         </div>
+
+        {hasInstanceScope && <SidebarInstanceSwitcher expanded={isSidebarExpanded} />}
 
         {hasInstanceScope ? renderNav(navItems) : <div className="flex-1" />}
 
@@ -195,6 +265,7 @@ export function AppShell({
                 <X size={20} />
               </button>
             </div>
+            {hasInstanceScope && <SidebarInstanceSwitcher expanded />}
             {hasInstanceScope ? renderNav(navItems, () => setIsMobileMenuOpen(false)) : <div className="flex-1" />}
             <div className="p-4 border-t border-[color:var(--border-subtle)]">
               <button

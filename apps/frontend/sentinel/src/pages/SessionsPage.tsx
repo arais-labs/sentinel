@@ -2,26 +2,20 @@ import {
   ArrowDown,
   Bot,
   ChevronDown,
-  Home,
-  Expand,
   Loader2,
   Plus,
   RefreshCw,
-  RotateCcw,
   Send,
-  Settings2,
   Users,
   Square,
   Wand2,
   Wrench,
   X,
-  Trash2,
   Terminal,
-  Folder,
-  Globe,
   ExternalLink,
   Zap,
   Activity,
+  Gauge,
   Brain,
   Sparkles,
   Paperclip,
@@ -30,9 +24,6 @@ import {
   GitBranch,
   CheckCircle2,
   AlertCircle,
-  XCircle,
-  Copy,
-  HelpCircle,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, FormEvent, useEffect, useMemo, useRef, useState, memo, useCallback, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -42,19 +33,15 @@ import { toast } from 'sonner';
 import { AppShell } from '../components/AppShell';
 import { SessionMessageCard, buildToolArgumentsByCallId, ToolPayloadView, ToolPayloadCompactSummary } from '../components/session/SessionMessageCard';
 import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
-import { DesktopPreview } from '../components/session/DesktopPreview';
-import { TerminalPreview } from '../components/session/TerminalPreview';
 import { useSessionDeleteConfirmation } from '../components/session/SessionDeleteConfirmDialog';
 import { getTerminalLabel, summarizeCommand } from '../lib/terminalIdentity';
 import { SubAgentTaskModal } from '../components/SubAgentTaskModal';
 import { SpawnSubAgentModal } from '../components/SpawnSubAgentModal';
 import { Markdown } from '../components/ui/Markdown';
-import { WorkbenchExplorerPane } from '../components/workbench/WorkbenchExplorerPane';
-import { Workbench, type WorkbenchTab } from '../components/workbench/Workbench';
+import { Workbench } from '../components/workbench/Workbench';
 import { StatusChip } from '../components/ui/StatusChip';
-import { SESSION_DEBUG_PANEL_ENABLED, wsSessionsBaseUrl } from '../lib/env';
+import { SESSION_DEBUG_PANEL_ENABLED } from '../lib/env';
 import { toPrettyJson, truncate } from '../lib/format';
-import { buildRuntimeGitChangedTree } from '../lib/runtimeGitTree';
 import {
   approvalKey,
   approvalRefFromMetadata,
@@ -62,8 +49,13 @@ import {
   type ApprovalRef,
 } from '../lib/approvals';
 import { api } from '../lib/api';
+import { useInstanceName, useWorkspaceMode } from '../lib/workspace-context';
+import { useAnchorRect } from '../lib/portal-menu';
 import { instanceRouteFromPath } from '../lib/routes';
 import { getSessionDeleteWorkspaceSummary } from '../lib/sessionDeletion';
+import { useSetActiveSession } from '../store/active-session-store';
+import { useSessionRuntimeStream } from '../hooks/useSessionRuntimeStream';
+import { useSessionWorkbench } from '../hooks/useSessionWorkbench';
 import {
   applyToolcallEnd,
   applyToolResult,
@@ -82,38 +74,15 @@ import type {
   MessageListResponse,
   ModelOption,
   ModelsResponse,
-  RuntimeActionResponse,
-  RuntimeLiveView,
-  RuntimeStatusResponse,
   Session,
   SessionContextUsage,
-  SessionRuntimeFileEntry,
-  SessionRuntimeFilePreviewResponse,
-  SessionRuntimeFilesResponse,
-  SessionRuntimeGitChangedFilesResponse,
-  SessionRuntimeGitDiffResponse,
-  SessionRuntimeGitRoot,
-  SessionRuntimeGitRootsResponse,
   SessionListResponse,
   SubAgentTask,
   SubAgentTaskListResponse,
-  WsConnectionState,
   WsEvent,
 } from '../types/api';
 
 // --- Utility Functions ---
-
-const DESKTOP_RESOLUTION_PRESETS = [
-  { value: '1280x800', label: '1280 x 800' },
-  { value: '1440x900', label: '1440 x 900' },
-  { value: '1680x1050', label: '1680 x 1050' },
-  { value: '1920x1200', label: '1920 x 1200' },
-  { value: '2560x1600', label: '2560 x 1600' },
-  { value: '2880x1800', label: '2880 x 1800' },
-  { value: '3840x2400', label: '3840 x 2400' },
-];
-
-const DEFAULT_DESKTOP_RESOLUTION = '1920x1200';
 
 function taskStatusTone(status: string): 'default' | 'good' | 'warn' | 'danger' | 'info' {
   switch (status) {
@@ -192,46 +161,14 @@ interface SentinelInstance {
   runtime_id: string | null;
 }
 
-// Top-level right-rail tabs. `runtime` is a composite tab that contains
-// three sub-views (Desktop / Terminals / Files) selected via an inner
-// segmented control — see `RuntimeView` below. The previous flat enum
-// (desktop / terminals / runtime / …) collapsed those three siblings into
-// one parent so the rail stays under three primary tabs.
-type RightRailTab = 'runtime' | 'sub_agents' | 'sessions' | 'debug';
-type RuntimeView = 'desktop' | 'terminals' | 'files';
+// Top-level right-rail tabs. The Desktop / Terminals / Files runtime surfaces
+// moved out of SessionsPage into standalone workspace tabs (DesktopTab /
+// TerminalTab / FilesTab), so the rail keeps only the chat-adjacent panels:
+// sub-agent tasks, session history, and the debug panel.
+type RightRailTab = 'sub_agents' | 'sessions' | 'debug';
 
-interface ActiveTerminal {
-  id: string;
-  /** Backend-supplied label, used only as a fallback for auto-allocated terminals. */
-  label: string | null;
-  createdBy: 'agent' | 'user';
-  createdAt: number;
-  auto: boolean;
-  busy: boolean;
-  /** Most recent command run in this terminal (for tooltip + rail header). */
-  lastCommand: string | null;
-}
-
-function buildRuntimeDiffBaseRefOptions(
-  roots: SessionRuntimeGitRoot[],
-  currentRef: string | null | undefined,
-): string[] {
-  const options = new Set<string>();
-  options.add('HEAD');
-  for (const root of roots) {
-    if (!root.detached_head && root.branch) {
-      options.add(root.branch);
-      options.add(`origin/${root.branch}`);
-    }
-  }
-  options.add('origin/main');
-  options.add('origin/master');
-  const normalizedCurrent = (currentRef ?? '').trim();
-  if (normalizedCurrent) {
-    options.add(normalizedCurrent);
-  }
-  return Array.from(options);
-}
+// ActiveTerminal lives in useSessionRuntimeStream; the diff base-ref option
+// builder lives in useSessionWorkbench.
 
 function humanizeAgentError(raw: string): string {
   const lower = raw.toLowerCase();
@@ -606,15 +543,23 @@ function StreamToolCard({
 export function SessionsPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const workspaceMode = useWorkspaceMode();
   const { id: routeSessionId } = useParams<{ id: string }>();
   const sessionRoute = useCallback(
     (sessionId?: string | null) => instanceRouteFromPath(location.pathname, sessionId ? `sessions/${sessionId}` : 'sessions'),
     [location.pathname],
   );
-  const activeInstanceName = useMemo(() => {
-    const match = location.pathname.match(/^\/instances\/([^/]+)/);
-    return match?.[1] ? decodeURIComponent(match[1]) : null;
-  }, [location.pathname]);
+  const instanceName = useInstanceName();
+  const activeInstanceName = instanceName ?? null;
+  // In a tiling pane the page is not the active route, so route-driven session
+  // selection would hijack the global URL. Keep selection local instead.
+  const selectSession = useCallback(
+    (sessionId: string | null, options?: { replace?: boolean }) => {
+      if (workspaceMode) return;
+      navigate(sessionRoute(sessionId), options);
+    },
+    [workspaceMode, navigate, sessionRoute],
+  );
 
   const [instances, setInstances] = useState<SentinelInstance[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -643,6 +588,7 @@ export function SessionsPage() {
     () => parseTier(localStorage.getItem('sentinel-selected-tier')) ?? 'normal',
   );
   const [isAgentModeDropdownOpen, setIsAgentModeDropdownOpen] = useState(false);
+  const [isMaxDropdownOpen, setIsMaxDropdownOpen] = useState(false);
   const [isEffortDropdownOpen, setIsEffortDropdownOpen] = useState(false);
   const [maxIterations, setMaxIterations] = useState(50);
 
@@ -664,92 +610,85 @@ export function SessionsPage() {
 
   const [tasks, setTasks] = useState<SubAgentTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [rightRailTab, setRightRailTab] = useState<RightRailTab>('runtime');
-  // Selected sub-view inside the Runtime tab. Defaults to Desktop (the most
-  // recognizable "what is the agent doing" surface). Auto-promoted to
-  // `terminals` the first time a terminal opens — see the terminal_opened
-  // WS handler below for the rule.
-  const [runtimeView, setRuntimeView] = useState<RuntimeView>('desktop');
-  // Tracks the moment the user last manually picked a runtimeView. Used to
-  // suppress auto-focus when the user has just expressed an intent — we
-  // don't want the agent's activity stealing focus a half-second later.
-  const lastRuntimeViewIntentRef = useRef<number>(0);
-  // Refs to the three runtime sub-tab buttons + the strip container, so the
-  // sliding indicator can size to the *actual* active button instead of a
-  // calc'd third. When the rail is narrow and a button's content (icon +
-  // label + badge) overflows its grid cell, the cell-based indicator falls
-  // out of alignment — measuring offsetLeft/offsetWidth dodges that whole
-  // class of bug.
-  const runtimeTabRefs = useRef<Record<RuntimeView, HTMLButtonElement | null>>({
-    desktop: null,
-    terminals: null,
-    files: null,
-  });
-  const runtimeStripRef = useRef<HTMLDivElement | null>(null);
-  const [runtimeIndicator, setRuntimeIndicator] = useState<{ left: number; width: number } | null>(null);
-  // Centralised predicates so every conditional in the file reads the same
-  // way and a future rename only touches one line. The Runtime tab is a
-  // composite, so individual sub-views are gated on both rightRailTab AND
-  // runtimeView.
-  const isRuntimeTab = rightRailTab === 'runtime';
-  const showDesktopView = isRuntimeTab && runtimeView === 'desktop';
-  const showTerminalsView = isRuntimeTab && runtimeView === 'terminals';
-  const showFilesView = isRuntimeTab && runtimeView === 'files';
+  const [rightRailTab, setRightRailTab] = useState<RightRailTab>('sessions');
   // Pills above the chat composer surface every tmux-backed terminal the
   // agent (or the user) has opened in the current chat session. State is
   // driven by `terminal_opened/closed/busy` WS events plus the initial
   // `connected` payload that lists already-live terminals on page load.
-  const [activeTerminals, setActiveTerminals] = useState<ActiveTerminal[]>([]);
-  const [focusedTerminalId, setFocusedTerminalId] = useState<string | null>(null);
+  //
+  // The terminal list, the noVNC live-view payload, runtime status, and the
+  // desktop-resolution actions all live in `useSessionRuntimeStream`, which
+  // owns the SHARED, ref-counted session WS stream. The Desktop / Terminals /
+  // Files surfaces themselves now live in standalone workspace tabs that
+  // consume the same shared hooks; SessionsPage only keeps the chat-adjacent
+  // pieces (terminal pills + the chat stream tap). The chat stream consumes the
+  // socket through this hook's `onEvent` tap — one socket per session.
+  const setActiveSession = useSetActiveSession();
 
-  // Position the runtime-tabs sliding indicator under the active button.
-  // useLayoutEffect runs before paint, so the indicator never flashes at the
-  // wrong width. We re-measure on view change, on badge changes (since they
-  // mutate button widths), and on rail resize via ResizeObserver below.
-  useLayoutEffect(() => {
-    if (!isRuntimeTab) return;
-    const active = runtimeTabRefs.current[runtimeView];
-    if (!active) return;
-    setRuntimeIndicator({ left: active.offsetLeft, width: active.offsetWidth });
-  }, [isRuntimeTab, runtimeView, activeTerminals.length]);
+  // Per-session runtime stream. Owns the shared, ref-counted WS connection; the
+  // chat stream taps the same socket via `onEvent`. The standalone runtime tabs
+  // subscribe to the same (instance, session) pair, so opening them reuses this
+  // socket. `desktopViewActive` is false here — SessionsPage no longer hosts the
+  // desktop surface, so it must not drive the live-view poll.
+  const runtime = useSessionRuntimeStream(activeInstanceName, activeSessionId, {
+    desktopViewActive: false,
+    onReconnectFailed: () => {
+      toast.error('Realtime stream disconnected');
+    },
+    onEvent: (event) => {
+      onStreamEvent(activeSessionIdRef.current ?? '', event);
+    },
+  });
+  const {
+    connection: runtimeConnection,
+    isStreamOpen,
+    sendMessage: sendStreamMessage,
+    activeTerminals,
+    focusedTerminalId,
+    setFocusedTerminalId,
+    dropTerminal,
+    setLiveView,
+    runtimeBooting,
+    setRuntimeBooting,
+  } = runtime;
 
-  useEffect(() => {
-    const strip = runtimeStripRef.current;
-    if (!strip || !isRuntimeTab) return;
-    // Strip width changes when the user resizes the right rail. Reread the
-    // active button's box and reapply. ResizeObserver fires once on attach
-    // too, so this also handles the initial mount cleanly.
-    const observer = new ResizeObserver(() => {
-      const active = runtimeTabRefs.current[runtimeView];
-      if (!active) return;
-      setRuntimeIndicator({ left: active.offsetLeft, width: active.offsetWidth });
-    });
-    observer.observe(strip);
-    return () => observer.disconnect();
-  }, [isRuntimeTab, runtimeView]);
-  const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
-  const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
-  const [runtimeFilesRefreshKey, setRuntimeFilesRefreshKey] = useState(0);
-  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
-  const [runtimeStatusLoading, setRuntimeStatusLoading] = useState(false);
-  const [showPassingRuntimeChecks, setShowPassingRuntimeChecks] = useState(false);
-  const [showOptionalRuntimeWarnings, setShowOptionalRuntimeWarnings] = useState(false);
-
-  const [runtimePath, setRuntimePath] = useState('');
-  const [runtimeRepoChangesByRoot, setRuntimeRepoChangesByRoot] = useState<Record<string, SessionRuntimeGitChangedFilesResponse | null>>({});
-  const [runtimeRepoChangesLoadingByRoot, setRuntimeRepoChangesLoadingByRoot] = useState<Record<string, boolean>>({});
-  const [runtimeExpandedGitDirs, setRuntimeExpandedGitDirs] = useState<Record<string, boolean>>({});
-  const [workbenchTabs, setWorkbenchTabs] = useState<WorkbenchTab[]>([]);
-  const [activeWorkbenchPath, setActiveWorkbenchPath] = useState<string | null>(null);
-  const [workbenchLoadingPath, setWorkbenchLoadingPath] = useState<string | null>(null);
+  // Files / workbench surface (directory browse, open-file view, diff, repo
+  // changes, download). Owned by the shared workbench hook; SessionsPage just
+  // wires its props. Stale-session guarding lives inside the hook.
+  const workbench = useSessionWorkbench(activeSessionId);
+  const {
+    runtimeFiles,
+    runtimePath,
+    runtimeFilesLoading,
+    runtimeFilesRefreshKey,
+    fetchRuntimeFiles,
+    bumpRuntimeFilesRefreshKey,
+    loadRuntimeDirectoryEntries,
+    downloadRuntimeEntry,
+    repoChangeSections: runtimeRepoChangeSections,
+    expandedGitDirs: runtimeExpandedGitDirs,
+    toggleGitDir,
+    fetchChangedFilesForRepo,
+    forgetRepoRoot,
+    workbenchTabs,
+    activeWorkbenchPath,
+    setActiveWorkbenchPath,
+    activeWorkbenchTab,
+    openRuntimeFile,
+    openRuntimeFileDiff,
+    closeWorkbenchTab,
+    closeAllWorkbenchTabs,
+    workbenchShowDiffByPath,
+    setShowDiffForPath,
+    activeWorkbenchDiff,
+    activeWorkbenchDiffError,
+    activeWorkbenchDiffLoading,
+    activeWorkbenchBaseRef,
+    setDiffBaseRefForPath,
+    activeWorkbenchBaseRefOptions,
+  } = workbench;
   const [workbenchWidth, setWorkbenchWidth] = useState(442);
   const [isWorkbenchResizing, setIsWorkbenchResizing] = useState(false);
-  const [workbenchShowDiffByPath, setWorkbenchShowDiffByPath] = useState<Record<string, boolean>>({});
-  const [workbenchDiffBaseRefByPath, setWorkbenchDiffBaseRefByPath] = useState<Record<string, string>>({});
-  const [workbenchDiffByPath, setWorkbenchDiffByPath] = useState<Record<string, SessionRuntimeGitDiffResponse | null>>({});
-  const [workbenchDiffErrorByPath, setWorkbenchDiffErrorByPath] = useState<Record<string, string | null>>({});
-  const [workbenchDiffLoadingPath, setWorkbenchDiffLoadingPath] = useState<string | null>(null);
-  const [workbenchGitRootsByPath, setWorkbenchGitRootsByPath] = useState<Record<string, SessionRuntimeGitRoot[]>>({});
   const [spawnObjective, setSpawnObjective] = useState('');
   const [spawnScope, setSpawnScope] = useState('');
   const [spawnMaxSteps, setSpawnMaxSteps] = useState(5);
@@ -761,9 +700,6 @@ export function SessionsPage() {
   const [isTerminatingTask, setIsTerminatingTask] = useState(false);
   const [confirmTerminateTaskId, setConfirmTerminateTaskId] = useState<string | null>(null);
 
-  const [liveView, setLiveView] = useState<RuntimeLiveView | null>(null);
-  const [runtimeBooting, setRuntimeBooting] = useState(false);
-  const isDesktopRuntimeStarting = Boolean(liveView?.enabled && !liveView.available) || runtimeBooting;
   const [debugMenuOpen, setDebugMenuOpen] = useState(false);
   const [debugEvents, setDebugEvents] = useState<SessionDebugEvent[]>([]);
   const [mode, setMode] = useState<'solo' | 'advanced'>(
@@ -771,20 +707,15 @@ export function SessionsPage() {
   );
 
   const hasActiveSubAgentTasks = tasks.some((task) => task.status === 'running' || task.status === 'pending');
-  const runtimeRepoChangeSections = useMemo(
-    () =>
-      Object.entries(runtimeRepoChangesByRoot).map(([rootPath, payload]) => ({
-        id: rootPath,
-        title:
-          (payload?.git_root || rootPath)
-            .split('/')
-            .filter(Boolean)
-            .pop() || rootPath || 'repo',
-        tree: buildRuntimeGitChangedTree(payload),
-        loading: Boolean(runtimeRepoChangesLoadingByRoot[rootPath]),
-      })),
-    [runtimeRepoChangesByRoot, runtimeRepoChangesLoadingByRoot],
-  );
+
+  // Mirror the shared stream's connection state into the chat `streaming`
+  // state so existing UI that reads `streaming.connection` stays accurate now
+  // that the WebSocket lives in the runtime hook rather than inline here.
+  useEffect(() => {
+    setStreaming((current) =>
+      current.connection === runtimeConnection ? current : { ...current, connection: runtimeConnection },
+    );
+  }, [runtimeConnection]);
 
   useEffect(() => {
     localStorage.setItem('sentinel-mode', mode);
@@ -800,14 +731,18 @@ export function SessionsPage() {
   }, [selectedAgentMode]);
 
   useEffect(() => {
-    if (!isSessionDropdownOpen && !isEffortDropdownOpen && !isAgentModeDropdownOpen) return;
+    if (!isSessionDropdownOpen && !isEffortDropdownOpen && !isAgentModeDropdownOpen && !isMaxDropdownOpen) return;
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
       if (sessionDropdownRef.current?.contains(target)) return;
       if (sessionDropdownMenuRef.current?.contains(target)) return;
       if (effortDropdownRef.current?.contains(target)) return;
+      if (effortDropdownMenuRef.current?.contains(target)) return;
       if (agentModeDropdownRef.current?.contains(target)) return;
+      if (agentModeDropdownMenuRef.current?.contains(target)) return;
+      if (maxDropdownRef.current?.contains(target)) return;
+      if (maxDropdownMenuRef.current?.contains(target)) return;
       setIsSessionDropdownOpen(false);
       setIsEffortDropdownOpen(false);
       setIsAgentModeDropdownOpen(false);
@@ -816,7 +751,7 @@ export function SessionsPage() {
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
     };
-  }, [isSessionDropdownOpen, isEffortDropdownOpen, isAgentModeDropdownOpen]);
+  }, [isSessionDropdownOpen, isEffortDropdownOpen, isAgentModeDropdownOpen, isMaxDropdownOpen]);
 
   const updateSessionDropdownRect = useCallback(() => {
     const button = sessionDropdownButtonRef.current;
@@ -842,33 +777,9 @@ export function SessionsPage() {
 
   const [isCompacting, setIsCompacting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
-  const [runtimeActionBusy, setRuntimeActionBusy] = useState(false);
-  const [isDesktopResolutionChanging, setIsDesktopResolutionChanging] = useState(false);
-  const [desktopResolution, setDesktopResolutionState] = useState(() => (
-    localStorage.getItem('sentinel-desktop-resolution') || DEFAULT_DESKTOP_RESOLUTION
-  ));
-  const [desktopLayoutNonce, setDesktopLayoutNonce] = useState(0);
-  const [resetMenuOpen, setResetMenuOpen] = useState(false);
-  const resetMenuRef = useRef<HTMLDivElement>(null);
-  const [isDesktopFullscreen, setIsDesktopFullscreen] = useState(false);
   const [rightPanelWidth, setRightPanelWidth] = useState(400);
   const [isResizing, setIsResizing] = useState(false);
-
-  useEffect(() => {
-    if (isDesktopFullscreen) {
-      setResetMenuOpen(false);
-      setIsSessionDropdownOpen(false);
-      setIsEffortDropdownOpen(false);
-      setIsAgentModeDropdownOpen(false);
-    }
-  }, [isDesktopFullscreen]);
-
-  useEffect(() => {
-    if (!DESKTOP_RESOLUTION_PRESETS.some((preset) => preset.value === desktopResolution)) {
-      setDesktopResolutionState(DEFAULT_DESKTOP_RESOLUTION);
-      localStorage.setItem('sentinel-desktop-resolution', DEFAULT_DESKTOP_RESOLUTION);
-    }
-  }, [desktopResolution]);
+  const [statusTooltip, setStatusTooltip] = useState<'connection' | 'progress' | 'context' | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const messagesRef = useRef<Message[]>([]);
@@ -880,74 +791,39 @@ export function SessionsPage() {
   const prependScrollAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const oldestServerMessageIdRef = useRef<string | null>(null);
   const loadingOlderRef = useRef(false);
-  const wsRef = useRef<WebSocket | null>(null);
+  // The session WebSocket + reconnect now live in the shared stream manager
+  // (see `useSessionRuntimeStream` / `session-stream.ts`); no inline ws/reconnect
+  // refs remain here.
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sessionDropdownRef = useRef<HTMLDivElement | null>(null);
   const sessionDropdownButtonRef = useRef<HTMLButtonElement | null>(null);
   const sessionDropdownMenuRef = useRef<HTMLDivElement | null>(null);
   const effortDropdownRef = useRef<HTMLDivElement | null>(null);
+  const effortDropdownMenuRef = useRef<HTMLDivElement | null>(null);
   const agentModeDropdownRef = useRef<HTMLDivElement | null>(null);
-  const fullscreenFrameRef = useRef<HTMLIFrameElement | null>(null);
-  const intentionalCloseRef = useRef(false);
-  const reconnectTimerRef = useRef<number | null>(null);
-  const reconnectAttemptsRef = useRef(0);
+  const agentModeDropdownMenuRef = useRef<HTMLDivElement | null>(null);
+  const maxDropdownRef = useRef<HTMLDivElement | null>(null);
+  const maxDropdownMenuRef = useRef<HTMLDivElement | null>(null);
+  const connectionPillRef = useRef<HTMLDivElement | null>(null);
+  const progressPillRef = useRef<HTMLDivElement | null>(null);
+  const contextPillRef = useRef<HTMLDivElement | null>(null);
   const activeSessionIdRef = useRef<string | null>(routeSessionId ?? null);
   const contextUsageRequestRef = useRef(0);
-  const wsInstanceRef = useRef(0);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const shouldRestoreComposerFocusRef = useRef(true);
-  const composerFocusTimerRefs = useRef<number[]>([]);
+  const effortDropdownRect = useAnchorRect(effortDropdownRef, isEffortDropdownOpen);
+  const agentModeDropdownRect = useAnchorRect(agentModeDropdownRef, isAgentModeDropdownOpen);
+  const maxDropdownRect = useAnchorRect(maxDropdownRef, isMaxDropdownOpen);
+  const connectionTooltipRect = useAnchorRect(connectionPillRef, statusTooltip === 'connection');
+  const progressTooltipRect = useAnchorRect(progressPillRef, statusTooltip === 'progress');
+  const contextTooltipRect = useAnchorRect(contextPillRef, statusTooltip === 'context');
 
   // Keep refs in sync so WS callbacks can read current values
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => {
-    return () => {
-      composerFocusTimerRefs.current.forEach((timer) => window.clearTimeout(timer));
-      composerFocusTimerRefs.current = [];
-    };
-  }, []);
-  useEffect(() => {
     setRetryCandidate(null);
     setRetryingMessageId(null);
-    composerFocusTimerRefs.current.forEach((timer) => window.clearTimeout(timer));
-    composerFocusTimerRefs.current = [];
-    shouldRestoreComposerFocusRef.current = true;
   }, [activeSessionId]);
-
-  const handleDesktopInteract = useCallback(() => {
-    shouldRestoreComposerFocusRef.current = false;
-    composerFocusTimerRefs.current.forEach((timer) => window.clearTimeout(timer));
-    composerFocusTimerRefs.current = [];
-  }, []);
-
-  const handleDesktopFrameLoad = useCallback(() => {
-    if (!shouldRestoreComposerFocusRef.current) return;
-    if (!showDesktopView || isDesktopFullscreen) return;
-
-    composerFocusTimerRefs.current.forEach((timer) => window.clearTimeout(timer));
-    composerFocusTimerRefs.current = [];
-
-    const restoreFocus = () => {
-      if (!shouldRestoreComposerFocusRef.current) return;
-      const activeElement = document.activeElement as HTMLElement | null;
-      const activeTag = activeElement?.tagName;
-      const canRestoreFocus =
-        !activeElement ||
-        activeElement === document.body ||
-        activeElement === document.documentElement ||
-        activeTag === 'IFRAME' ||
-        activeElement === composerRef.current;
-
-      if (!canRestoreFocus) return;
-      composerRef.current?.focus({ preventScroll: true });
-    };
-
-    [0, 100, 400, 900, 1600, 2600].forEach((delay) => {
-      const timer = window.setTimeout(restoreFocus, delay);
-      composerFocusTimerRefs.current.push(timer);
-    });
-  }, [isDesktopFullscreen, showDesktopView]);
 
   const streamBusy =
     streaming.isThinking ||
@@ -1016,12 +892,10 @@ export function SessionsPage() {
   const instancePickerLabel = activeInstance?.display_name || activeInstance?.name || activeInstanceName || 'Choose instance';
   const rightRailTabs = useMemo<Array<{ id: RightRailTab; label: string }>>(
     () => {
-      // Three primary tabs: Runtime (composite — Desktop/Terminals/Files),
-      // Agents (sub-agent tasks), Sessions (history). The previous five-tab
-      // strip is unflattened here: Desktop/Terminal/Files moved into the
-      // Runtime sub-segmented control rendered below the tab strip.
+      // Two primary tabs: Agents (sub-agent tasks) and Sessions (history). The
+      // Desktop/Terminals/Files runtime surfaces moved out into standalone
+      // workspace tabs, so the rail no longer hosts a composite Runtime tab.
       const tabs: Array<{ id: RightRailTab; label: string }> = [
-        { id: 'runtime', label: 'Runtime' },
         { id: 'sub_agents', label: 'Agents' },
         { id: 'sessions', label: 'Sessions' },
       ];
@@ -1034,26 +908,10 @@ export function SessionsPage() {
   );
   const rightRailActiveIndex = Math.max(0, rightRailTabs.findIndex((tab) => tab.id === rightRailTab));
 
+  // activeWorkbenchTab / activeWorkbenchDiff / activeWorkbenchDiffError /
+  // activeWorkbenchBaseRef / activeWorkbenchBaseRefOptions are provided by
+  // useSessionWorkbench (destructured above). Only the visibility flag is local.
   const workbenchVisible = workbenchTabs.length > 0;
-  const activeWorkbenchTab = useMemo(() => {
-    if (!workbenchTabs.length) return null;
-    if (!activeWorkbenchPath) return workbenchTabs[0];
-    return workbenchTabs.find((tab) => tab.path === activeWorkbenchPath) ?? workbenchTabs[0];
-  }, [workbenchTabs, activeWorkbenchPath]);
-  const activeWorkbenchDiff = activeWorkbenchTab ? workbenchDiffByPath[activeWorkbenchTab.path] ?? null : null;
-  const activeWorkbenchDiffError = activeWorkbenchTab ? workbenchDiffErrorByPath[activeWorkbenchTab.path] ?? null : null;
-  const activeWorkbenchGitRoots = activeWorkbenchTab ? workbenchGitRootsByPath[activeWorkbenchTab.path] ?? [] : [];
-  const activeWorkbenchViewMode = activeWorkbenchTab && workbenchShowDiffByPath[activeWorkbenchTab.path] ? 'diff' : 'content';
-  const activeWorkbenchViewerKey = activeWorkbenchTab
-    ? `${activeWorkbenchTab.path}:${activeWorkbenchViewMode}`
-    : 'none';
-  const activeWorkbenchBaseRef = activeWorkbenchTab
-    ? workbenchDiffBaseRefByPath[activeWorkbenchTab.path] ?? 'HEAD'
-    : 'HEAD';
-  const activeWorkbenchBaseRefOptions = useMemo(
-    () => (activeWorkbenchTab ? buildRuntimeDiffBaseRefOptions(activeWorkbenchGitRoots, activeWorkbenchBaseRef) : ['HEAD']),
-    [activeWorkbenchTab, activeWorkbenchGitRoots, activeWorkbenchBaseRef],
-  );
 
   const toolArgumentsByCallId = useMemo(() => buildToolArgumentsByCallId(messages), [messages]);
 
@@ -1180,8 +1038,9 @@ export function SessionsPage() {
 
   const onInstanceClick = useCallback((instanceName: string) => {
     if (!instanceName || instanceName === activeInstanceName) return;
-    navigate(`/instances/${encodeURIComponent(instanceName)}/sessions`);
-  }, [activeInstanceName, navigate]);
+    const dest = workspaceMode ? 'workspace' : 'sessions';
+    navigate(`/instances/${encodeURIComponent(instanceName)}/${dest}`);
+  }, [activeInstanceName, navigate, workspaceMode]);
 
   const onSessionClick = useCallback((id: string) => {
     const previousId = activeSessionIdRef.current;
@@ -1190,9 +1049,9 @@ export function SessionsPage() {
     }
     setRuntimeBooting(true);
     setActiveSessionId(id);
-    navigate(sessionRoute(id));
+    selectSession(id);
     markSessionRead(id);
-  }, [markSessionRead, navigate, sessionRoute]);
+  }, [markSessionRead, selectSession]);
 
   const startResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1241,11 +1100,13 @@ export function SessionsPage() {
 
   // Effects
   useEffect(() => {
+    // In a tiling pane the route id is not the selected session; local state owns it.
+    if (workspaceMode) return;
     if (routeSessionId && routeSessionId !== activeSessionId) {
       setRuntimeBooting(true);
       setActiveSessionId(routeSessionId);
     }
-  }, [routeSessionId, activeSessionId]);
+  }, [workspaceMode, routeSessionId, activeSessionId]);
 
   useEffect(() => {
     setSelectedSessionIds((current) => current.filter((id) => sessions.some((session) => session.id === id)));
@@ -1265,41 +1126,10 @@ export function SessionsPage() {
     void fetchSessions({ autoSelectIfEmpty: true });
     void fetchModels();
     void fetchAgentModes();
-    void fetchLiveView();
-    void fetchRuntimeStatus();
+    // Live-view + runtime-status fetching (incl. the session-change re-fetch, the
+    // booting poll, and the desktop-visibility status refresh) is owned by
+    // `useSessionRuntimeStream`.
   }, [activeInstanceName]);
-
-  // Re-fetch live view when the active session changes
-  useEffect(() => {
-    setRuntimeBooting(true);
-    void fetchLiveView();
-  }, [activeSessionId]);
-
-  useEffect(() => {
-    if (!activeSessionId || !showDesktopView) return;
-    if (!runtimeBooting && liveView?.enabled && liveView.available) return;
-
-    let cancelled = false;
-    const refresh = async () => {
-      if (cancelled) return;
-      await fetchLiveView();
-    };
-    const interval = window.setInterval(() => {
-      void refresh();
-    }, 2000);
-
-    void refresh();
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [activeSessionId, showDesktopView, runtimeBooting, liveView?.enabled, liveView?.available]);
-
-  useEffect(() => {
-    if (!showDesktopView) return;
-    void fetchRuntimeStatus();
-  }, [showDesktopView, activeInstanceName]);
 
   // Poll sessions every 30s to pick up unread changes
   useEffect(() => {
@@ -1318,23 +1148,16 @@ export function SessionsPage() {
   }, []);
 
   useEffect(() => {
+    // Runtime/workbench state (files, repo changes, workbench tabs, diffs) is
+    // reset by `useSessionWorkbench` on session change; terminals + live view by
+    // `useSessionRuntimeStream`; the WS connection by the shared stream manager.
+    // This effect now only owns chat state (messages / context / tasks /
+    // streaming) and re-fetches the initial runtime file tree.
     if (!activeSessionId) {
       setMessages([]);
       setContextTokenEstimate(null);
       setContextTokenPercent(null);
       setTasks([]);
-      setRuntimeFiles(null);
-      setRuntimePath('');
-      setRuntimeRepoChangesByRoot({});
-      setRuntimeRepoChangesLoadingByRoot({});
-      setRuntimeExpandedGitDirs({});
-      setWorkbenchTabs([]);
-      setActiveWorkbenchPath(null);
-      setWorkbenchShowDiffByPath({});
-      setWorkbenchDiffByPath({});
-      setWorkbenchDiffErrorByPath({});
-      setWorkbenchDiffBaseRefByPath({});
-      setWorkbenchGitRootsByPath({});
       setStreaming(defaultStreamingState);
       shouldAutoScrollRef.current = true;
       lastScrollTopRef.current = 0;
@@ -1342,7 +1165,6 @@ export function SessionsPage() {
       oldestServerMessageIdRef.current = null;
       loadingOlderRef.current = false;
       setIsLoadingOlderMessages(false);
-      disconnectWs();
       return;
     }
 
@@ -1351,21 +1173,7 @@ export function SessionsPage() {
     setContextTokenEstimate(null);
     setContextTokenPercent(null);
     setTasks([]);
-    setRuntimeFiles(null);
-    setRuntimePath('');
-    setRuntimeRepoChangesByRoot({});
-    setRuntimeRepoChangesLoadingByRoot({});
-    setRuntimeExpandedGitDirs({});
-    setWorkbenchTabs([]);
-    setActiveWorkbenchPath(null);
-    setWorkbenchShowDiffByPath({});
-    setWorkbenchDiffByPath({});
-    setWorkbenchDiffErrorByPath({});
-    setWorkbenchDiffBaseRefByPath({});
-    setWorkbenchGitRootsByPath({});
     setStreaming(defaultStreamingState);
-    setActiveTerminals([]);
-    setFocusedTerminalId(null);
     setHasMoreMessages(false);
     oldestServerMessageIdRef.current = null;
     loadingOlderRef.current = false;
@@ -1377,13 +1185,18 @@ export function SessionsPage() {
     void loadMessages(activeSessionId);
     void fetchContextUsage(activeSessionId);
     void fetchTasks(activeSessionId);
-    void fetchRuntimeFiles(activeSessionId, '');
-    void connectWs(activeSessionId);
-
-    return () => {
-      disconnectWs();
-    };
+    // Seed the workbench file tree for this session. The standalone Files tab
+    // owns the live refresh loop; here we only need the initial listing so any
+    // open-file / diff actions from the chat workbench resolve against it.
+    void fetchRuntimeFiles('', { refreshGit: false });
   }, [activeSessionId]);
+
+  // Publish the page's selected session to the workspace-wide active-session
+  // store so the standalone Desktop / Terminal / Files tabs follow the session
+  // selected here.
+  useEffect(() => {
+    setActiveSession(activeSessionId);
+  }, [activeSessionId, setActiveSession]);
 
   useEffect(() => {
     if (!activeSessionId || !hasActiveSubAgentTasks) return;
@@ -1394,28 +1207,6 @@ export function SessionsPage() {
       window.clearInterval(timer);
     };
   }, [activeSessionId, hasActiveSubAgentTasks]);
-
-  useEffect(() => {
-    if (!activeSessionId || !showFilesView) return;
-    void fetchRuntimeFiles(activeSessionId, runtimePath, {
-      refreshGit: true,
-      silent: false,
-    });
-  }, [activeSessionId, showFilesView]);
-
-  useEffect(() => {
-    if (!activeSessionId || !showFilesView) return;
-    if (streaming.connection !== 'connected') return;
-    const timer = window.setInterval(() => {
-      void fetchRuntimeFiles(activeSessionId, runtimePath, {
-        refreshGit: true,
-        silent: true,
-      });
-    }, 3000);
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [activeSessionId, showFilesView, runtimePath, streaming.connection]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -1467,7 +1258,7 @@ export function SessionsPage() {
       if (autoSelectIfEmpty && !activeSessionIdRef.current) {
         setActiveSessionId(defaultSession.id);
         activeSessionIdRef.current = defaultSession.id;
-        navigate(sessionRoute(defaultSession.id), { replace: true });
+        selectSession(defaultSession.id, { replace: true });
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to load sessions');
@@ -1515,11 +1306,7 @@ export function SessionsPage() {
             ? remaining.find((item) => item.id === defaultSessionId)?.id
             : null) ?? remaining[0]?.id ?? null;
         setActiveSessionId(fallbackId);
-        if (fallbackId) {
-          navigate(sessionRoute(fallbackId), { replace: true });
-        } else {
-          navigate(sessionRoute(), { replace: true });
-        }
+        selectSession(fallbackId, { replace: true });
       }
       toast.success('Session deleted');
     } catch (error) {
@@ -1543,7 +1330,7 @@ export function SessionsPage() {
         ),
       );
       setActiveSessionId(updated.id);
-      navigate(sessionRoute(updated.id));
+      selectSession(updated.id);
       toast.success('Main session updated');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to set main session');
@@ -1638,11 +1425,7 @@ export function SessionsPage() {
               ? remaining.find((session) => session.id === defaultSessionId)?.id
               : null) ?? remaining[0]?.id ?? null;
           setActiveSessionId(fallbackId);
-          if (fallbackId) {
-            navigate(sessionRoute(fallbackId), { replace: true });
-          } else {
-            navigate(sessionRoute(), { replace: true });
-          }
+          selectSession(fallbackId, { replace: true });
         }
       }
 
@@ -1703,144 +1486,19 @@ export function SessionsPage() {
     }
   }
 
-  async function fetchLiveView() {
-    const sid = activeSessionIdRef.current;
-    if (!sid) {
-      setLiveView(null);
-      setRuntimeBooting(false);
-      return;
-    }
-    try {
-      const query = new URLSearchParams({ session_id: sid, geometry: desktopResolution });
-      const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?${query.toString()}`);
-      setLiveView(payload);
-      if (payload.enabled && payload.available) {
-        setRuntimeBooting(false);
-      } else if (payload.enabled) {
-        setRuntimeBooting(true);
-      } else {
-        setRuntimeBooting(false);
-      }
-    } catch {
-      setLiveView(null);
-    }
-  }
-
-  async function fetchRuntimeStatus() {
-    setRuntimeStatusLoading(true);
-    try {
-      const payload = await api.get<RuntimeStatusResponse>('/runtime/status');
-      setRuntimeStatus(payload);
-    } catch {
-      setRuntimeStatus(null);
-    } finally {
-      setRuntimeStatusLoading(false);
-    }
-  }
-
-  async function setDesktopResolution(geometry: string) {
-    if (isDesktopResolutionChanging || geometry === desktopResolution) return;
-    const sid = activeSessionIdRef.current;
-    if (!sid) return;
-    setDesktopResolutionState(geometry);
-    localStorage.setItem('sentinel-desktop-resolution', geometry);
-    setIsDesktopResolutionChanging(true);
-    setRuntimeBooting(true);
-    setDesktopLayoutNonce((value) => value + 1);
-    try {
-      const query = new URLSearchParams({ session_id: sid });
-      const payload = await api.post<RuntimeLiveView>(
-        `/runtime/live-view/resolution?${query.toString()}`,
-        { geometry },
-        { timeoutMs: 60_000 },
-      );
-      setLiveView(payload);
-      if (payload.enabled && payload.available) {
-        setRuntimeBooting(false);
-        setDesktopLayoutNonce((value) => value + 1);
-      } else {
-        toast.error(payload.reason || 'Desktop resolution change failed');
-      }
-    } catch {
-      toast.error('Failed to change desktop resolution');
-      setRuntimeBooting(false);
-    } finally {
-      setIsDesktopResolutionChanging(false);
-    }
-  }
-
-  async function resetBrowser() {
-    if (runtimeActionBusy) return;
-    const sid = activeSessionIdRef.current;
-    if (!sid) return;
-    setRuntimeActionBusy(true);
-    try {
-      await api.post<RuntimeActionResponse>(`/runtime/browser/reset?session_id=${sid}`, {});
-      toast.success('Browser reset');
-      await fetchLiveView();
-    } catch {
-      toast.error('Failed to reset browser');
-    } finally {
-      setRuntimeActionBusy(false);
-    }
-  }
-
-  async function restartDesktop() {
-    if (runtimeActionBusy) return;
-    const sid = activeSessionIdRef.current;
-    if (!sid) return;
-    setRuntimeActionBusy(true);
-    setRuntimeBooting(true);
-    setLiveView(null);
-    try {
-      await api.post<RuntimeActionResponse>(
-        `/runtime/desktop/restart?session_id=${sid}`,
-        { geometry: desktopResolution },
-        { timeoutMs: 60_000 },
-      );
-      toast.success('Desktop restarted');
-      await fetchLiveView();
-    } catch {
-      toast.error('Failed to restart desktop');
-      setRuntimeBooting(false);
-    } finally {
-      setRuntimeActionBusy(false);
-    }
-  }
-
-  async function wipeWorkspace() {
-    if (runtimeActionBusy) return;
-    const sid = activeSessionIdRef.current;
-    if (!sid) return;
-    const label = (activeSession?.title || 'Session').trim() || 'Session';
-    const workspaceSummary = await getSessionDeleteWorkspaceSummary(sid);
-    const confirmed = await confirmSessionDelete({
-      kind: 'workspace_wipe',
-      label,
-      topLevelEntries: workspaceSummary.topLevelEntries,
-    });
-    if (!confirmed) return;
-    setRuntimeActionBusy(true);
-    setRuntimeBooting(true);
-    setLiveView(null);
-    try {
-      await api.post<RuntimeActionResponse>(`/runtime/workspace/wipe?session_id=${sid}`, {}, { timeoutMs: 90_000 });
-      toast.success('Workspace wiped');
-      await fetchLiveView();
-      void fetchRuntimeFiles(sid, '');
-    } catch {
-      toast.error('Failed to wipe workspace');
-      setRuntimeBooting(false);
-    } finally {
-      setRuntimeActionBusy(false);
-    }
-  }
+  // The live-view / runtime-status fetches and the desktop-resolution and
+  // reset/restart/wipe runtime actions live with the standalone Desktop tab and
+  // the shared `useSessionRuntimeStream` hook now. SessionsPage keeps only
+  // `setLiveView` / `setRuntimeBooting` (used by resetSession + session-switch)
+  // through that hook.
 
   async function resetSession() {
     try {
       const previousId = activeSessionId;
-      // Disconnect WS and wipe messages before the API call to prevent stale events polluting the new session
-      disconnectWs();
+      // Null the active-session ref + wipe messages before the API call so the
+      // shared stream's guarded handler drops any in-flight events from the old
+      // session. Switching `activeSessionId` below re-subscribes the WS to the
+      // new session (and unsubscribes the old) via the runtime stream hook.
       activeSessionIdRef.current = null;
       setMessages([]);
       setStreaming(defaultStreamingState);
@@ -1852,7 +1510,7 @@ export function SessionsPage() {
       setActiveSessionId(fresh.id);
       setRuntimeBooting(true);
       setLiveView(null);
-      navigate(sessionRoute(fresh.id), { replace: true });
+      selectSession(fresh.id, { replace: true });
       toast.success('New session started. Memories preserved.');
     } catch {
       toast.error('Failed to reset session');
@@ -1991,290 +1649,10 @@ export function SessionsPage() {
     finally { setTasksLoading(false); }
   }
 
-  async function fetchRuntimeFiles(
-    sessionId: string,
-    path = '',
-    options?: { refreshGit?: boolean; silent?: boolean },
-  ) {
-    const silent = Boolean(options?.silent);
-    if (!silent) {
-      setRuntimeFilesLoading(true);
-    }
-    try {
-      const query = new URLSearchParams();
-      if (path.trim().length > 0) query.set('path', path.trim());
-      query.set('limit', '400');
-      const suffix = query.toString();
-      const payload = await api.get<SessionRuntimeFilesResponse>(`/sessions/${sessionId}/runtime/files${suffix ? `?${suffix}` : ''}`);
-      if (sessionId !== activeSessionIdRef.current) return;
-      setRuntimeFiles(payload);
-      setRuntimePath(payload.path || '');
-      if (options?.refreshGit ?? showFilesView) {
-        Object.keys(runtimeRepoChangesByRoot).forEach((rootPath) => {
-          void fetchRuntimeChangedFilesForRepo(sessionId, rootPath);
-        });
-      }
-    } catch (err) {
-      if (sessionId !== activeSessionIdRef.current) return;
-      // Directory no longer exists — walk up to the nearest valid parent
-      if ((err as { status?: number }).status === 404 && path) {
-        const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-        void fetchRuntimeFiles(sessionId, parent, options);
-        return;
-      }
-      // Preserve the last successful explorer tree on transient refresh failures.
-    } finally {
-      if (sessionId === activeSessionIdRef.current && !silent) {
-        setRuntimeFilesLoading(false);
-      }
-    }
-  }
-
-  async function loadRuntimeDirectoryEntries(path: string): Promise<SessionRuntimeFileEntry[]> {
-    if (!activeSessionId) return [];
-    const query = new URLSearchParams();
-    if (path.trim().length > 0) query.set('path', path.trim());
-    query.set('limit', '400');
-    const suffix = query.toString();
-    const payload = await api.get<SessionRuntimeFilesResponse>(
-      `/sessions/${activeSessionId}/runtime/files${suffix ? `?${suffix}` : ''}`,
-    );
-    if (activeSessionId !== activeSessionIdRef.current) return [];
-    return Array.isArray(payload?.entries) ? payload.entries : [];
-  }
-
-  async function downloadRuntimeEntry(entry: SessionRuntimeFileEntry) {
-    if (!activeSessionId) return;
-    try {
-      const { blob, filename } = await api.download(
-        `/sessions/${activeSessionId}/runtime/download?path=${encodeURIComponent(entry.path)}`,
-        { timeoutMs: 120_000 },
-      );
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = filename || (entry.kind === 'directory' ? `${entry.name}.zip` : entry.name);
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      URL.revokeObjectURL(url);
-    } catch {
-      toast.error(entry.kind === 'directory' ? 'Failed to download folder zip' : 'Failed to download file');
-    }
-  }
-
-  async function fetchRuntimeChangedFilesForRepo(
-    sessionId: string,
-    path: string,
-  ): Promise<SessionRuntimeGitChangedFilesResponse | null> {
-    setRuntimeRepoChangesLoadingByRoot((current) => ({ ...current, [path]: true }));
-    try {
-      const payload = await api.get<SessionRuntimeGitChangedFilesResponse>(
-        `/sessions/${sessionId}/runtime/git/changed?path=${encodeURIComponent(path)}&limit=200`,
-      );
-      if (sessionId !== activeSessionIdRef.current) return null;
-      setRuntimeRepoChangesByRoot((current) => ({ ...current, [path]: payload }));
-      return payload;
-    } catch {
-      if (sessionId !== activeSessionIdRef.current) return null;
-      setRuntimeRepoChangesByRoot((current) => ({ ...current, [path]: null }));
-      return null;
-    } finally {
-      if (sessionId === activeSessionIdRef.current) {
-        setRuntimeRepoChangesLoadingByRoot((current) => ({ ...current, [path]: false }));
-      }
-    }
-  }
-
-  async function openRuntimeDirectory(
-    path: string,
-    options?: { autoOpenFirstDiff?: boolean },
-  ) {
-    if (!activeSessionId) return;
-    const shouldAutoOpenFirstDiff = Boolean(options?.autoOpenFirstDiff);
-    await fetchRuntimeFiles(activeSessionId, path, {
-      refreshGit: !shouldAutoOpenFirstDiff,
-    });
-    if (!shouldAutoOpenFirstDiff) return;
-    const changed = await fetchRuntimeChangedFilesForRepo(activeSessionId, path);
-    const firstPath = changed?.entries?.[0]?.path;
-    if (!firstPath) return;
-    await openRuntimeFileDiff(firstPath);
-  }
-
-  async function openRuntimeFile(
-    path: string,
-    options?: { suppressErrorToast?: boolean },
-  ): Promise<boolean> {
-    if (!activeSessionId) return false;
-    setWorkbenchLoadingPath(path);
-    try {
-      const payload = await api.get<SessionRuntimeFilePreviewResponse>(
-        `/sessions/${activeSessionId}/runtime/file?path=${encodeURIComponent(path)}&max_bytes=32000`,
-      );
-      if (activeSessionId !== activeSessionIdRef.current) return false;
-      const nextTab: WorkbenchTab = {
-        path: payload.path,
-        name: payload.name,
-        size_bytes: payload.size_bytes,
-        modified_at: payload.modified_at,
-        content: payload.content,
-        truncated: payload.truncated,
-        max_bytes: payload.max_bytes,
-      };
-      setWorkbenchTabs((current) => {
-        const existing = current.find((tab) => tab.path === nextTab.path);
-        if (existing) {
-          return current.map((tab) => (tab.path === nextTab.path ? nextTab : tab));
-        }
-        return [...current, nextTab];
-      });
-      setActiveWorkbenchPath(nextTab.path);
-      setWorkbenchDiffBaseRefByPath((current) =>
-        current[nextTab.path] ? current : { ...current, [nextTab.path]: 'HEAD' },
-      );
-      setWorkbenchDiffErrorByPath((current) => ({ ...current, [nextTab.path]: null }));
-      setWorkbenchShowDiffByPath((current) =>
-        Object.prototype.hasOwnProperty.call(current, nextTab.path)
-          ? current
-          : { ...current, [nextTab.path]: false },
-      );
-      void fetchRuntimeGitRoots(activeSessionId, nextTab.path);
-      return true;
-    } catch {
-      if (!options?.suppressErrorToast) {
-        toast.error('Failed to open runtime file');
-      }
-      return false;
-    } finally {
-      if (activeSessionId === activeSessionIdRef.current) {
-        setWorkbenchLoadingPath((current) => (current === path ? null : current));
-      }
-    }
-  }
-
-  function ensureWorkbenchTab(path: string) {
-    const name = path.split('/').pop() || path;
-    setWorkbenchTabs((current) => {
-      if (current.some((tab) => tab.path === path)) return current;
-      return [
-        ...current,
-        {
-          path,
-          name,
-          size_bytes: 0,
-          modified_at: null,
-          content: '',
-          truncated: false,
-          max_bytes: 0,
-        },
-      ];
-    });
-    setActiveWorkbenchPath(path);
-    setWorkbenchDiffBaseRefByPath((current) =>
-      current[path] ? current : { ...current, [path]: 'HEAD' },
-    );
-    setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: null }));
-  }
-
-  async function openRuntimeFileDiff(path: string) {
-    if (!activeSessionId) return;
-    const opened = await openRuntimeFile(path, { suppressErrorToast: true });
-    if (!opened) {
-      ensureWorkbenchTab(path);
-    }
-    setWorkbenchShowDiffByPath((current) => ({ ...current, [path]: true }));
-    void fetchRuntimeGitDiff(activeSessionId, path);
-  }
-
-  function closeWorkbenchTab(path: string) {
-    setWorkbenchTabs((current) => {
-      const targetIndex = current.findIndex((tab) => tab.path === path);
-      const next = current.filter((tab) => tab.path !== path);
-      setActiveWorkbenchPath((previous) => {
-        if (previous !== path) return previous;
-        if (!next.length) return null;
-        const fallbackIndex = Math.min(Math.max(targetIndex - 1, 0), next.length - 1);
-        return next[fallbackIndex]?.path ?? next[next.length - 1].path;
-      });
-      return next;
-    });
-    setWorkbenchShowDiffByPath((current) => {
-      const next = { ...current };
-      delete next[path];
-      return next;
-    });
-    setWorkbenchDiffByPath((current) => {
-      const next = { ...current };
-      delete next[path];
-      return next;
-    });
-    setWorkbenchDiffErrorByPath((current) => {
-      const next = { ...current };
-      delete next[path];
-      return next;
-    });
-    setWorkbenchDiffBaseRefByPath((current) => {
-      const next = { ...current };
-      delete next[path];
-      return next;
-    });
-    setWorkbenchGitRootsByPath((current) => {
-      const next = { ...current };
-      delete next[path];
-      return next;
-    });
-    setWorkbenchLoadingPath((current) => (current === path ? null : current));
-    setWorkbenchDiffLoadingPath((current) => (current === path ? null : current));
-  }
-
-  async function fetchRuntimeGitRoots(sessionId: string, path: string) {
-    try {
-      const payload = await api.get<SessionRuntimeGitRootsResponse>(
-        `/sessions/${sessionId}/runtime/git/roots?path=${encodeURIComponent(path)}&limit=200`,
-      );
-      if (sessionId !== activeSessionIdRef.current) return;
-      setWorkbenchGitRootsByPath((current) => ({ ...current, [path]: payload.roots || [] }));
-    } catch {
-      if (sessionId !== activeSessionIdRef.current) return;
-      setWorkbenchGitRootsByPath((current) => ({ ...current, [path]: [] }));
-    }
-  }
-
-  async function fetchRuntimeGitDiff(
-    sessionId: string,
-    path: string,
-    options?: { baseRef?: string },
-  ) {
-    const baseRefRaw = options?.baseRef ?? workbenchDiffBaseRefByPath[path];
-    const baseRef = (typeof baseRefRaw === 'string' && baseRefRaw.trim().length > 0) ? baseRefRaw.trim() : 'HEAD';
-    setWorkbenchDiffLoadingPath(path);
-    setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: null }));
-    try {
-      const query = new URLSearchParams();
-      query.set('path', path);
-      query.set('base_ref', baseRef);
-      query.set('staged', 'false');
-      query.set('context_lines', '3');
-      query.set('max_bytes', '120000');
-      const payload = await api.get<SessionRuntimeGitDiffResponse>(
-        `/sessions/${sessionId}/runtime/git/diff?${query.toString()}`,
-      );
-      if (sessionId !== activeSessionIdRef.current) return;
-      setWorkbenchDiffByPath((current) => ({ ...current, [path]: payload }));
-      setWorkbenchShowDiffByPath((current) => ({ ...current, [path]: true }));
-      if (!workbenchGitRootsByPath[path]?.length) {
-        void fetchRuntimeGitRoots(sessionId, path);
-      }
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : 'Failed to load git diff';
-      setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: detail }));
-    } finally {
-      if (sessionId === activeSessionIdRef.current) {
-        setWorkbenchDiffLoadingPath((current) => (current === path ? null : current));
-      }
-    }
-  }
+  // Files / workbench actions (fetchRuntimeFiles, loadRuntimeDirectoryEntries,
+  // downloadRuntimeEntry, fetchChangedFilesForRepo, openRuntimeFile,
+  // openRuntimeDirectory, openRuntimeFileDiff, closeWorkbenchTab,
+  // fetchRuntimeGitDiff, ...) now live in `useSessionWorkbench`.
 
   async function terminateTask(taskId: string) {
     if (!activeSessionId || isTerminatingTask) return;
@@ -2453,70 +1831,10 @@ export function SessionsPage() {
     }
   }, [updatePersistedMessageApproval, updateStreamingCallApproval]);
 
-  // WebSocket Logic
-  function disconnectWs() {
-    intentionalCloseRef.current = true;
-    wsInstanceRef.current += 1;
-    if (reconnectTimerRef.current) {
-      window.clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
-    if (wsRef.current) {
-      wsRef.current.onopen = null;
-      wsRef.current.onmessage = null;
-      wsRef.current.onclose = null;
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    setStreaming((current) => ({ ...current, connection: 'disconnected' }));
-  }
-
-  async function connectWs(sessionId: string) {
-    disconnectWs();
-    intentionalCloseRef.current = false;
-
-    setStreaming((current) => ({
-      ...current,
-      connection: reconnectAttemptsRef.current > 0 ? 'reconnecting' : 'connecting',
-    }));
-
-    const instanceId = ++wsInstanceRef.current;
-    if (!activeInstanceName) {
-      return;
-    }
-    const ws = new WebSocket(`${wsSessionsBaseUrl(activeInstanceName)}/${sessionId}/stream`);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      if (instanceId !== wsInstanceRef.current || ws !== wsRef.current) return;
-      reconnectAttemptsRef.current = 0;
-      setStreaming((current) => ({ ...current, connection: 'connected' }));
-    };
-
-    ws.onmessage = (event) => {
-      if (instanceId !== wsInstanceRef.current || ws !== wsRef.current) return;
-      try {
-        const payload = JSON.parse(event.data) as WsEvent;
-        onStreamEvent(sessionId, payload);
-      } catch { /* ignore */ }
-    };
-
-    ws.onclose = () => {
-      if (instanceId !== wsInstanceRef.current || ws !== wsRef.current) return;
-      wsRef.current = null;
-      if (!intentionalCloseRef.current) scheduleReconnect(sessionId);
-    };
-  }
-
-  function scheduleReconnect(sessionId: string) {
-    reconnectAttemptsRef.current += 1;
-    if (reconnectAttemptsRef.current > 8) {
-      toast.error('Realtime stream disconnected');
-      return;
-    }
-    const delay = Math.min(2 ** reconnectAttemptsRef.current, 20);
-    reconnectTimerRef.current = window.setTimeout(() => connectWs(sessionId), delay * 1000);
-  }
+  // WebSocket connection + reconnect are owned by the shared, ref-counted stream
+  // manager (`session-stream.ts`) and consumed via `useSessionRuntimeStream`.
+  // `onStreamEvent` below is the chat-side handler, wired in as the hook's
+  // `onEvent` tap so chat + runtime share ONE socket per session.
 
   function markLatestUserMessageRetryable(rawError: string) {
     const latestUserMessage = [...messagesRef.current].reverse().find((message) => message.role === 'user');
@@ -2625,6 +1943,9 @@ export function SessionsPage() {
 
     switch (event.type) {
       case 'connected':
+        // Terminal population from `event.terminals` is handled by
+        // `useSessionRuntimeStream`; here we only own the chat-side payload
+        // (context budget + message history).
         if (typeof event.context_token_budget === 'number' && Number.isFinite(event.context_token_budget) && event.context_token_budget > 0) {
           setContextTokenBudget(Math.floor(event.context_token_budget));
         }
@@ -2637,89 +1958,10 @@ export function SessionsPage() {
           oldestServerMessageIdRef.current = next.length > 0 ? next[0].id : null;
           return next;
         });
-        if (Array.isArray(event.terminals)) {
-          // Initial pill population: server may have terminals alive across a
-          // reload or backend restart. We replace state entirely rather than
-          // merge so stale terminals from the previous session don't linger.
-          const incomingTerminals = event.terminals
-            .map((raw) => {
-              if (!raw || typeof raw !== 'object') return null;
-              const value = raw as Record<string, unknown>;
-              const id = typeof value.terminal_id === 'string' ? value.terminal_id : null;
-              if (!id) return null;
-              return {
-                id,
-                label: typeof value.label === 'string' ? value.label : null,
-                createdBy: value.created_by === 'user' ? 'user' : 'agent',
-                createdAt: typeof value.created_at === 'number' ? value.created_at : Date.now() / 1000,
-                auto: Boolean(value.auto),
-                busy: false,
-                lastCommand: typeof value.last_command === 'string' ? value.last_command : null,
-              } as ActiveTerminal;
-            })
-            .filter((item): item is ActiveTerminal => item !== null);
-          setActiveTerminals(incomingTerminals);
-        }
         break;
-      case 'terminal_opened': {
-        const id = typeof event.terminal_id === 'string' ? event.terminal_id : null;
-        if (!id) break;
-        const label = typeof event.label === 'string' ? event.label : null;
-        const createdBy = event.created_by === 'user' ? 'user' : 'agent';
-        const auto = Boolean(event.auto);
-        // Capture "was the pill row empty before this event?" before we mutate
-        // it. We auto-focus the Terminals sub-view only on the FIRST terminal
-        // of a session, so the user isn't yanked off Files/Desktop every time
-        // the agent spins up another shell.
-        let wasFirstTerminal = false;
-        setActiveTerminals((current) => {
-          if (current.some((t) => t.id === id)) {
-            return current.map((t) => (t.id === id ? { ...t, label: t.label || label } : t));
-          }
-          wasFirstTerminal = current.length === 0;
-          return [
-            ...current,
-            { id, label, createdBy, createdAt: Date.now() / 1000, auto, busy: false, lastCommand: null },
-          ];
-        });
-        // Auto-focus rule: only flip to the Terminals sub-view if we're
-        // already on the Runtime tab AND this is the first terminal AND the
-        // user hasn't manually picked a sub-view in the last 4s. Anything
-        // else would be surprise UI motion. Cross-tab activity (Agents /
-        // Sessions) never steals focus.
-        if (
-          wasFirstTerminal
-          && rightRailTab === 'runtime'
-          && Date.now() - lastRuntimeViewIntentRef.current > 4_000
-        ) {
-          setRuntimeView('terminals');
-        }
-        break;
-      }
-      case 'terminal_closed': {
-        const id = typeof event.terminal_id === 'string' ? event.terminal_id : null;
-        if (!id) break;
-        setActiveTerminals((current) => current.filter((t) => t.id !== id));
-        setFocusedTerminalId((current) => (current === id ? null : current));
-        break;
-      }
-      case 'terminal_busy': {
-        const id = typeof event.terminal_id === 'string' ? event.terminal_id : null;
-        if (!id) break;
-        const busy = Boolean(event.busy);
-        // The same event carries the most-recent command/cwd whenever the
-        // backend has them — that's how the pill tooltip + rail header stay
-        // in sync with what the terminal is actually doing.
-        const lastCommand = typeof event.last_command === 'string' ? event.last_command : undefined;
-        setActiveTerminals((current) =>
-          current.map((t) =>
-            t.id === id
-              ? { ...t, busy, lastCommand: lastCommand !== undefined ? lastCommand : t.lastCommand }
-              : t,
-          ),
-        );
-        break;
-      }
+      // terminal_opened / terminal_closed / terminal_busy and runtime_ready are
+      // handled by useSessionRuntimeStream. SessionsPage does not opt into the
+      // hook's onFirstTerminalOpened callback, so no terminal auto-focus here.
       case 'message_ack':
         setMessages((current) => {
           const messageId = (event.message_id as string | undefined)?.trim();
@@ -2966,10 +2208,11 @@ export function SessionsPage() {
             toolNameForRefresh === 'git' ||
             toolNameForRefresh === 'str_replace_editor'
           ) {
-            if (showFilesView) {
-              setRuntimeFilesRefreshKey((current) => current + 1);
-              void fetchRuntimeFiles(sessionId, runtimePath);
-            }
+            // Keep the chat workbench's file tree + repo changes fresh when a
+            // file-mutating tool completes. The standalone Files tab runs its
+            // own poll; this only feeds the workbench panel hosted here.
+            bumpRuntimeFilesRefreshKey();
+            void fetchRuntimeFiles(runtimePath, { refreshGit: true });
           }
         }
         setStreaming((current) => {
@@ -3034,29 +2277,9 @@ export function SessionsPage() {
         setStreaming((current) => ({ ...current, isCompactingContext: false }));
         toast.error((event.error as string) || 'Auto-compaction failed');
         break;
-      case 'runtime_ready':
-        // noVNC may need a moment after the container reports ready — retry a few times
-        void (async () => {
-          for (let attempt = 0; attempt < 6; attempt++) {
-            await new Promise((r) => setTimeout(r, 2000));
-            const sid = activeSessionIdRef.current;
-            if (!sid) break;
-            try {
-              const query = new URLSearchParams({ session_id: sid, geometry: desktopResolution });
-              const payload = await api.get<RuntimeLiveView>(`/runtime/live-view?${query.toString()}`);
-              setLiveView(payload);
-              if (payload.enabled && payload.available) {
-                setRuntimeBooting(false);
-                return;
-              }
-            } catch { /* retry */ }
-          }
-          const sid = activeSessionIdRef.current;
-          if (!sid) {
-            setRuntimeBooting(false);
-          }
-        })();
-        break;
+      // runtime_ready is handled by useSessionRuntimeStream (it re-fetches the
+      // live view a few times until noVNC is reachable, clearing the booting
+      // flag).
       case 'done': {
         const stopReason = event.stop_reason as string | undefined;
         if (stopReason === 'tool_use') {
@@ -3188,7 +2411,7 @@ export function SessionsPage() {
     const content = composer.trim();
     if ((!content && composerAttachments.length === 0) || streamBusy || !activeSessionId) return;
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (isStreamOpen()) {
       setRetryCandidate(null);
       // Prepend time context if conversation has been idle for >30 minutes
       const lastMsg = messages.at(-1);
@@ -3197,16 +2420,14 @@ export function SessionsPage() {
       const idleNote = idleMs > 30 * 60 * 1000
         ? `[Resuming after ${Math.round(idleMs / 60000)} min — current time: ${now}]\n\n`
         : '';
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'message',
-          content: idleNote + content,
-          attachments: composerAttachments,
-          tier: selectedTier,
-          max_iterations: maxIterations,
-          agent_mode: selectedAgentMode ?? undefined,
-        })
-      );
+      sendStreamMessage({
+        type: 'message',
+        content: idleNote + content,
+        attachments: composerAttachments,
+        tier: selectedTier,
+        max_iterations: maxIterations,
+        agent_mode: selectedAgentMode ?? undefined,
+      });
       setComposer('');
       setComposerAttachments([]);
       shouldAutoScrollRef.current = true;
@@ -3234,25 +2455,12 @@ export function SessionsPage() {
     finally { setIsStopping(false); }
   }
 
-  // Switch to the Runtime tab and pick a sub-view in one call. Used by
-  // anything that wants to focus a specific runtime surface — terminal
-  // pill clicks, "Open terminal" links inside tool cards, the segmented
-  // control buttons themselves. Recording the intent timestamp lets the
-  // auto-focus rule (see terminal_opened WS handler) know to back off
-  // when the user has just steered the view manually.
-  function openRuntimeView(view: RuntimeView) {
-    lastRuntimeViewIntentRef.current = Date.now();
-    setRightRailTab('runtime');
-    setRuntimeView(view);
-  }
-
   // Optimistically drops the pill so the UI reacts immediately, then asks the
   // backend to kill the tmux session. The authoritative `terminal_closed` WS
   // event will also fire and is idempotent against the optimistic update.
   async function closeTerminal(terminalId: string) {
     if (!activeSessionId) return;
-    setActiveTerminals((current) => current.filter((t) => t.id !== terminalId));
-    setFocusedTerminalId((current) => (current === terminalId ? null : current));
+    dropTerminal(terminalId);
     try {
       await api.delete(
         `/sessions/${activeSessionId}/terminals/${encodeURIComponent(terminalId)}`,
@@ -3302,189 +2510,84 @@ export function SessionsPage() {
           subtitle={activeSession ? `ID: ${activeSession.id}` : 'Operator Workspace'}
           contentClassName="h-full !p-0 overflow-hidden"
           hideSidebar={mode === 'solo'}
-          hideHeader={mode === 'solo' || isDesktopFullscreen}
+          hideHeader={mode === 'solo'}
           actions={
-            mode === 'advanced' && !isDesktopFullscreen ? (
-              <div className="flex min-w-0 items-center gap-2">
-                <div ref={sessionDropdownRef} className="order-5 relative z-[200] hidden min-w-0 sm:block">
-                  <button
-                    ref={sessionDropdownButtonRef}
-                    type="button"
-                    aria-haspopup="listbox"
-                    aria-expanded={isSessionDropdownOpen}
-                    onClick={() => {
-                      setIsEffortDropdownOpen(false);
-                      setIsAgentModeDropdownOpen(false);
-                      updateSessionDropdownRect();
-                      setIsSessionDropdownOpen((open) => !open);
-                    }}
-                    className="flex h-9 w-[min(390px,34vw)] items-center justify-start gap-4 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] pl-4 pr-3 text-left shadow-sm outline-none transition-all hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)] focus:border-[color:var(--accent-solid)] focus:ring-2 focus:ring-[color:var(--accent-solid)]/20"
+            mode === 'advanced' ? (
+              <div className="flex w-full min-w-0 items-center gap-2">
+                {/* Status */}
+                <div className="flex min-w-0 shrink-0 items-center gap-2.5">
+                  <div
+                    ref={connectionPillRef}
+                    onMouseEnter={() => setStatusTooltip('connection')}
+                    onMouseLeave={() => setStatusTooltip((current) => current === 'connection' ? null : current)}
+                    className="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default"
                   >
-                    <span className="w-28 shrink-0 text-left text-[9px] font-bold uppercase tracking-[0.12em] text-[color:var(--text-muted)]">
-                      Instance Picker
-                    </span>
-                    <span aria-hidden="true" className="h-4 w-px shrink-0 bg-[color:var(--border-subtle)]" />
-                    <span className="block min-w-0 flex-1 truncate text-left text-xs font-semibold text-[color:var(--text-primary)]">
-                      {instancePickerLabel}
-                    </span>
-                    <ChevronDown
-                      size={13}
-                      aria-hidden="true"
-                      className={`shrink-0 text-[color:var(--text-muted)] transition-transform duration-300 ${isSessionDropdownOpen ? 'rotate-180' : ''}`}
-                    />
-                  </button>
-
-                  {isSessionDropdownOpen && sessionDropdownRect && createPortal(
+                    <div className={`h-1.5 w-1.5 rounded-full transition-all duration-500 ${streaming.connection === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]'}`} />
+                    <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--text-secondary)]">{streaming.connection === 'connected' ? 'Live' : 'Offline'}</span>
+                  </div>
+                  {statusTooltip === 'connection' && connectionTooltipRect && createPortal(
                     <div
-                      ref={sessionDropdownMenuRef}
-                      role="listbox"
-                      aria-label="Switch session"
                       style={{
-                        left: sessionDropdownRect.left,
-                        top: sessionDropdownRect.top,
-                        width: Math.max(sessionDropdownRect.width, 320),
+                        position: 'fixed',
+                        top: connectionTooltipRect.top + 8,
+                        left: Math.max(8, Math.min(connectionTooltipRect.left, window.innerWidth - 220)),
+                        zIndex: 10000,
                       }}
-                      className="fixed z-[10000] max-h-80 overflow-y-auto rounded-2xl border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] py-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-200 origin-top-left"
+                      className="px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap pointer-events-none shadow-2xl animate-in fade-in slide-in-from-top-1 duration-150"
                     >
-                      {instances.length === 0 ? (
-                        <div className="px-3 py-3 text-xs text-[color:var(--text-muted)]">No instances</div>
-                      ) : (
-                        instances.map((instance) => {
-                          const title = (instance.display_name || instance.name).trim() || instance.name;
-                          const active = instance.name === activeInstanceName;
-                          return (
-                            <button
-                              key={instance.name}
-                              type="button"
-                              role="option"
-                              aria-selected={active}
-                              onClick={() => {
-                                setIsSessionDropdownOpen(false);
-                                if (!active) onInstanceClick(instance.name);
-                              }}
-                              className={`group flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
-                                active
-                                  ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
-                                  : 'text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)] hover:text-[color:var(--text-primary)]'
-                              }`}
-                            >
-                              <div className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? 'bg-[color:var(--accent-solid)]' : 'bg-[color:var(--text-muted)]/35 group-hover:bg-[color:var(--text-secondary)]'}`} />
-                              <span className="min-w-0 flex-1 truncate text-xs font-semibold">{title}</span>
-                              {active && <Check size={13} className="shrink-0 text-[color:var(--accent-solid)]" />}
-                            </button>
-                          );
-                        })
-                      )}
+                      <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Telemetry Link</div>
+                      <div className="flex items-center gap-2">
+                        <div className={`h-1.5 w-1.5 rounded-full ${streaming.connection === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                        <span className={streaming.connection === 'connected' ? 'text-emerald-500 font-bold' : 'text-rose-500 font-bold'}>{streaming.connection.toUpperCase()}</span>
+                      </div>
                     </div>,
                     document.body,
                   )}
-                </div>
 
-                <button
-                  type="button"
-                  title="Instance menu"
-                  aria-label="Instance menu"
-                  onClick={() => navigate('/')}
-                  className="order-6 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-secondary)] shadow-sm transition-all hover:border-[color:var(--border-strong)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] active:scale-95"
-                >
-                  <Home size={14} />
-                </button>
-
-                <button
-                    onClick={() => setMode('solo')}
-                    className="order-1 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm animate-[focusModePillIn_180ms_cubic-bezier(0.22,1,0.36,1)]"
-                >
-                  <Expand size={14} className="text-emerald-500/80" />
-                  Focus
-                </button>
-
-                <div className="order-2 h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
-
-                <button
-                    onClick={resetSession}
-                    title="Start fresh (memories preserved)"
-                    className="order-3 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
-                >
-                  <RefreshCw size={14} className="text-sky-500/80" />
-                  New Chat
-                </button>
-
-                <button
-                    onClick={compactContext}
-                    disabled={isCompacting}
-                    className="order-4 inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
-                >
-                  <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-500/80`} />
-                  Compact
-                </button>
-              </div>
-            ) : null
-          }
-      >
-        <div className="relative flex h-full w-full overflow-hidden">
-          {mode === 'solo' ? (
-            <div className="absolute top-4 right-4 z-20">
-              <button
-                type="button"
-                onClick={() => setMode('advanced')}
-                className="inline-flex h-9 items-center gap-2 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)]/90 backdrop-blur px-4 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] hover:bg-[color:var(--surface-1)] transition-all active:scale-95 shadow-xl animate-[focusModePillIn_180ms_cubic-bezier(0.22,1,0.36,1)]"
-              >
-                <X size={14} className="text-[color:var(--text-muted)]" />
-                Exit Focus
-              </button>
-            </div>
-          ) : null}
-          {/* Chat Area */}
-          <main className="order-5 relative z-0 flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)] overflow-hidden">
-            {/* Unified Session Toolbar */}
-            {mode === 'advanced' ? (
-            <div className="flex items-center justify-between px-4 h-12 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/80 backdrop-blur-md sticky top-0 z-30 shrink-0 select-none">
-              {/* Left: Connection & Progress */}
-              <div className="flex items-center gap-2.5">
-                <div className="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
-                  <div className={`h-1.5 w-1.5 rounded-full transition-all duration-500 ${streaming.connection === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]'}`} />
-                  <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--text-secondary)]">{streaming.connection === 'connected' ? 'Live' : 'Offline'}</span>
-
-                  {/* Connection Tooltip */}
-                  <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
-                    <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Telemetry Link</div>
-                    <div className="flex items-center gap-2">
-                      <div className={`h-1.5 w-1.5 rounded-full ${streaming.connection === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-                      <span className={streaming.connection === 'connected' ? 'text-emerald-500 font-bold' : 'text-rose-500 font-bold'}>{streaming.connection.toUpperCase()}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {streaming.agentMaxIterations > 0 && (
-                  <div className="group relative flex items-center gap-3 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
-                    <div className="w-16 h-1 rounded-full bg-[color:var(--surface-3)] overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-[color:var(--accent-solid)] transition-all duration-700 ease-out"
-                        style={{ width: `${Math.min((streaming.agentIteration / streaming.agentMaxIterations) * 100, 100)}%` }}
-                      />
-                    </div>
-                    <span className="text-[10px] font-mono font-bold text-[color:var(--text-primary)]">
-                      {streaming.agentIteration}<span className="text-[color:var(--text-muted)] mx-0.5">/</span>{streaming.agentMaxIterations}
-                    </span>
-
-                    {/* Progress Tooltip */}
-                    <div className="absolute top-full left-0 mt-2 px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
-                      <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Execution Pipeline</div>
-                      <div><span className="font-bold text-[color:var(--accent-solid)]">{streaming.agentIteration}</span><span className="text-[color:var(--text-muted)]"> of {streaming.agentMaxIterations} steps completed</span></div>
-                      <div className="mt-1 h-1 w-full bg-[color:var(--surface-2)] rounded-full overflow-hidden">
-                        <div className="h-full bg-[color:var(--accent-solid)]" style={{ width: `${(streaming.agentIteration / streaming.agentMaxIterations) * 100}%` }} />
+                  {streaming.agentMaxIterations > 0 && (
+                    <div
+                      ref={progressPillRef}
+                      onMouseEnter={() => setStatusTooltip('progress')}
+                      onMouseLeave={() => setStatusTooltip((current) => current === 'progress' ? null : current)}
+                      className="group relative flex items-center gap-3 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default"
+                    >
+                      <div className="w-16 h-1 rounded-full bg-[color:var(--surface-3)] overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-[color:var(--accent-solid)] transition-all duration-700 ease-out"
+                          style={{ width: `${Math.min((streaming.agentIteration / streaming.agentMaxIterations) * 100, 100)}%` }}
+                        />
                       </div>
+                      <span className="text-[10px] font-mono font-bold text-[color:var(--text-primary)]">
+                        {streaming.agentIteration}<span className="text-[color:var(--text-muted)] mx-0.5">/</span>{streaming.agentMaxIterations}
+                      </span>
                     </div>
-                  </div>
-                )}
-              </div>
+                  )}
+                  {statusTooltip === 'progress' && progressTooltipRect && streaming.agentMaxIterations > 0 && createPortal(
+                    <div
+                      style={{
+                        position: 'fixed',
+                        top: progressTooltipRect.top + 8,
+                        left: Math.max(8, Math.min(progressTooltipRect.left, window.innerWidth - 300)),
+                        zIndex: 10000,
+                      }}
+                      className="px-3 py-2 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap pointer-events-none shadow-2xl animate-in fade-in slide-in-from-top-1 duration-150"
+                    >
+                        <div className="font-bold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Execution Pipeline</div>
+                        <div><span className="font-bold text-[color:var(--accent-solid)]">{streaming.agentIteration}</span><span className="text-[color:var(--text-muted)]"> of {streaming.agentMaxIterations} steps completed</span></div>
+                        <div className="mt-1 h-1 w-full bg-[color:var(--surface-2)] rounded-full overflow-hidden">
+                          <div className="h-full bg-[color:var(--accent-solid)]" style={{ width: `${(streaming.agentIteration / streaming.agentMaxIterations) * 100}%` }} />
+                        </div>
+                    </div>,
+                    document.body,
+                  )}
 
-              {/* Center: Toolbar metadata removed */}
-
-              {/* Right: Controls & Context */}
-              <div className="flex items-center gap-3">
                 {/* Context Indicator */}
-                <div className="group relative flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default">
+                <div
+                  ref={contextPillRef}
+                  onMouseEnter={() => setStatusTooltip('context')}
+                  onMouseLeave={() => setStatusTooltip((current) => current === 'context' ? null : current)}
+                  className="group relative flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] transition-all hover:bg-[color:var(--surface-2)] cursor-default"
+                >
                   {(() => {
                     const estimatedTokens = typeof contextTokenEstimate === 'number' && Number.isFinite(contextTokenEstimate) ? contextTokenEstimate : null;
                     const hasBudget = typeof contextTokenBudget === 'number' && contextTokenBudget > 0;
@@ -3511,7 +2614,16 @@ export function SessionsPage() {
                         </span>
 
                         {/* Context Tooltip */}
-                        <div className="absolute top-full right-0 mt-2 px-3 py-2.5 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all pointer-events-none shadow-2xl z-50 translate-y-1 group-hover:translate-y-0">
+                        {statusTooltip === 'context' && contextTooltipRect && createPortal(
+                        <div
+                          style={{
+                            position: 'fixed',
+                            top: contextTooltipRect.top + 8,
+                            left: Math.max(8, Math.min(contextTooltipRect.left, window.innerWidth - 320)),
+                            zIndex: 10000,
+                          }}
+                          className="px-3 py-2.5 rounded-xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] text-[10px] font-mono whitespace-nowrap pointer-events-none shadow-2xl animate-in fade-in slide-in-from-top-1 duration-150"
+                        >
                           <div className="font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-1.5 pb-1 border-b border-[color:var(--border-subtle)]">Context Window</div>
                           <div className="flex items-center justify-between gap-8 mb-1">
                             <span className="text-[color:var(--text-secondary)]">Utilization</span>
@@ -3533,14 +2645,17 @@ export function SessionsPage() {
                             </div>
                           )}
                           {!hasEstimate && <div className="mt-1.5 text-[color:var(--text-muted)] italic">Awaiting telemetry...</div>}
-                        </div>
+                        </div>,
+                        document.body,
+                        )}
                       </>
                     );
                   })()}
                 </div>
+              </div>
 
-                <div className="w-px h-4 bg-[color:var(--border-subtle)] mx-1" />
-
+              {/* Controls */}
+              <div className="ml-auto flex shrink-0 items-center gap-3">
                 {/* Effort / Tier Selector */}
                 <div ref={effortDropdownRef} className="relative z-20">
                   {(() => {
@@ -3557,7 +2672,7 @@ export function SessionsPage() {
                             setIsAgentModeDropdownOpen(false);
                             setIsEffortDropdownOpen(!isEffortDropdownOpen);
                           }}
-                          className="flex items-center gap-2.5 px-3 h-8 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all shadow-sm"
+                          className="flex items-center gap-2 px-3 h-7 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] hover:border-[color:var(--border-strong)] transition-all shadow-sm"
                         >
                           <span className="text-[color:var(--text-secondary)]">{icons[tier] || <Activity size={11} />}</span>
                           <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)]">{active?.label || 'Mode'}</span>
@@ -3566,8 +2681,17 @@ export function SessionsPage() {
                       );
                     })()}
 
-                  {isEffortDropdownOpen && (
-                      <div className="absolute top-full right-0 mt-2 w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl">
+                  {isEffortDropdownOpen && effortDropdownRect && createPortal(
+                      <div
+                        ref={effortDropdownMenuRef}
+                        style={{
+                          position: 'fixed',
+                          top: effortDropdownRect.top + 8,
+                          left: Math.max(8, Math.min(effortDropdownRect.left + effortDropdownRect.triggerWidth - 288, window.innerWidth - 296)),
+                          zIndex: 10000,
+                        }}
+                        className="w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl"
+                      >
                         {models.map(m => {
                           const active = selectedTier === m.tier;
                           const tier = m.tier ?? 'normal';
@@ -3623,12 +2747,13 @@ export function SessionsPage() {
                             </button>
                           );
                         })}
-                      </div>
+                      </div>,
+                      document.body,
                   )}
                 </div>
 
                 {/* Agent Mode Selector */}
-                <div ref={agentModeDropdownRef} className="relative z-20 pl-2 border-l border-[color:var(--border-subtle)]">
+                <div ref={agentModeDropdownRef} className="relative z-20">
                   {(() => {
                     const active = agentModes.find((item) => item.id === selectedAgentMode) ?? agentModes[0];
                     return (
@@ -3639,7 +2764,7 @@ export function SessionsPage() {
                           setIsAgentModeDropdownOpen((prev) => !prev);
                         }}
                         disabled={agentModes.length === 0}
-                        className="flex items-center gap-2.5 px-3 h-8 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                        className="flex items-center gap-2 px-3 h-7 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] hover:border-[color:var(--border-strong)] transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                         title={active?.description ?? 'Agent mode'}
                       >
                         <span className="text-[color:var(--text-secondary)]"><Bot size={11} /></span>
@@ -3651,8 +2776,17 @@ export function SessionsPage() {
                     );
                   })()}
 
-                  {isAgentModeDropdownOpen && agentModes.length > 0 && (
-                    <div className="absolute top-full right-0 mt-2 w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl z-50 overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl">
+                  {isAgentModeDropdownOpen && agentModes.length > 0 && agentModeDropdownRect && createPortal(
+                    <div
+                      ref={agentModeDropdownMenuRef}
+                      style={{
+                        position: 'fixed',
+                        top: agentModeDropdownRect.top + 8,
+                        left: Math.max(8, Math.min(agentModeDropdownRect.left + agentModeDropdownRect.triggerWidth - 288, window.innerWidth - 296)),
+                        zIndex: 10000,
+                      }}
+                      className="w-72 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl"
+                    >
                       {agentModes.map((modeOption) => {
                         const active = selectedAgentMode === modeOption.id;
                         return (
@@ -3685,27 +2819,109 @@ export function SessionsPage() {
                           </button>
                         );
                       })}
-                    </div>
+                    </div>,
+                    document.body,
                   )}
                 </div>
 
-                {/* Steps Selector */}
-                <div className="flex items-center gap-2 pl-2 border-l border-[color:var(--border-subtle)]">
-                  <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Max</span>
-                  <select
-                      value={maxIterations}
-                      onChange={(e) => setMaxIterations(Number(e.target.value))}
-                      className="bg-transparent text-[11px] font-bold outline-none cursor-pointer hover:text-[color:var(--accent-solid)] transition-colors pr-1"
+                {/* Max Steps Selector */}
+                <div ref={maxDropdownRef} className="relative z-20">
+                  <button
+                    onClick={() => {
+                      setIsEffortDropdownOpen(false);
+                      setIsAgentModeDropdownOpen(false);
+                      setIsMaxDropdownOpen((prev) => !prev);
+                    }}
+                    title="Maximum agent steps per run"
+                    className="flex items-center gap-2 px-3 h-7 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-2)] hover:border-[color:var(--border-strong)] transition-all shadow-sm"
                   >
-                    {[5, 10, 20, 30, 50, 100].map(n => (
-                      <option key={n} value={n} className="bg-[color:var(--surface-0)]">{n}</option>
-                    ))}
-                  </select>
+                    <span className="text-[color:var(--text-secondary)]"><Gauge size={11} /></span>
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Max Steps</span>
+                    <span className="text-[10px] font-bold tabular-nums tracking-widest text-[color:var(--text-primary)]">{maxIterations}</span>
+                    <ChevronDown size={11} className={`transition-transform duration-300 opacity-40 ${isMaxDropdownOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {isMaxDropdownOpen && maxDropdownRect && createPortal(
+                    <div
+                      ref={maxDropdownMenuRef}
+                      style={{
+                        position: 'fixed',
+                        top: maxDropdownRect.top + 8,
+                        left: Math.max(8, Math.min(maxDropdownRect.left + maxDropdownRect.triggerWidth - 224, window.innerWidth - 232)),
+                        zIndex: 10000,
+                      }}
+                      className="w-56 rounded-2xl bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-2xl overflow-hidden py-1.5 animate-in fade-in zoom-in-95 duration-200 origin-top-right backdrop-blur-xl"
+                    >
+                      <div className="px-4 py-2 text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] border-b border-[color:var(--border-subtle)]">
+                        Max steps per run
+                      </div>
+                      {[5, 10, 20, 30, 50, 100].map((n) => {
+                        const active = maxIterations === n;
+                        return (
+                          <button
+                            key={n}
+                            onClick={() => {
+                              setMaxIterations(n);
+                              setIsMaxDropdownOpen(false);
+                            }}
+                            className={`w-full flex items-center gap-2.5 px-4 py-2.5 transition-all text-left ${
+                              active
+                                ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
+                                : 'hover:bg-[color:var(--surface-1)]'
+                            }`}
+                          >
+                            <span className={`text-[11px] font-bold tabular-nums ${active ? 'text-[color:var(--app-bg)]' : 'text-[color:var(--text-primary)]'}`}>{n}</span>
+                            <span className={`text-[9px] font-medium ${active ? 'text-[color:var(--app-bg)] opacity-70' : 'text-[color:var(--text-muted)]'}`}>steps</span>
+                            {active && (
+                              <div className="ml-auto w-1 h-5 rounded-full bg-[color:var(--app-bg)]/20 shadow-sm" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>,
+                    document.body,
+                  )}
                 </div>
 
+                <button
+                    onClick={resetSession}
+                    title="Start fresh (memories preserved)"
+                    className="inline-flex h-7 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+                >
+                  <RefreshCw size={14} className="text-sky-500/80" />
+                  New Chat
+                </button>
+
+                <button
+                    onClick={compactContext}
+                    disabled={isCompacting}
+                    className="inline-flex h-7 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
+                >
+                  <Wand2 size={14} className={`${isCompacting ? 'animate-spin' : ''} text-amber-500/80`} />
+                  Compact
+                </button>
+
               </div>
+              </div>
+            ) : null
+          }
+      >
+        <div className="relative flex h-full w-full overflow-hidden">
+          {mode === 'solo' ? (
+            <div className="absolute top-4 right-4 z-20">
+              <button
+                type="button"
+                onClick={() => setMode('advanced')}
+                className="inline-flex h-9 items-center gap-2 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)]/90 backdrop-blur px-4 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-primary)] hover:bg-[color:var(--surface-1)] transition-all active:scale-95 shadow-xl animate-[focusModePillIn_180ms_cubic-bezier(0.22,1,0.36,1)]"
+              >
+                <X size={14} className="text-[color:var(--text-muted)]" />
+                Exit Focus
+              </button>
             </div>
-            ) : null}
+          ) : null}
+          {/* Chat Area */}
+          <main className="order-5 relative z-0 flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)] overflow-hidden">
+            {/* Session toolbar items moved into the pane-header actions */}
 
             {/* Messages */}
             <div
@@ -3790,7 +3006,8 @@ export function SessionsPage() {
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
                           onOpenTerminal={(tid) => {
-                            openRuntimeView('terminals');
+                            // Focus the terminal in the shared runtime state; the
+                            // standalone Terminal tab follows it.
                             setFocusedTerminalId(tid);
                           }}
                         />
@@ -3807,7 +3024,8 @@ export function SessionsPage() {
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
                           onOpenTerminal={(tid) => {
-                            openRuntimeView('terminals');
+                            // Focus the terminal in the shared runtime state; the
+                            // standalone Terminal tab follows it.
                             setFocusedTerminalId(tid);
                           }}
                         />
@@ -3822,7 +3040,8 @@ export function SessionsPage() {
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
                           onOpenTerminal={(tid) => {
-                            openRuntimeView('terminals');
+                            // Focus the terminal in the shared runtime state; the
+                            // standalone Terminal tab follows it.
                             setFocusedTerminalId(tid);
                           }}
                         />
@@ -3874,7 +3093,7 @@ export function SessionsPage() {
                           {activeTerminals.length > 0 ? (
                             <div className="flex flex-wrap items-center justify-center gap-1.5">
                               {activeTerminals.map((terminal) => {
-                                const isFocused = focusedTerminalId === terminal.id && showTerminalsView;
+                                const isFocused = focusedTerminalId === terminal.id;
                                 // Label is derived from terminal_id: '0' → "main",
                                 // 'auto-xxx' / 'bg-…' → first command summary, anything
                                 // else → the agent's chosen name verbatim. Stable
@@ -3895,7 +3114,8 @@ export function SessionsPage() {
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        openRuntimeView('terminals');
+                                        // Focus this terminal in the shared runtime
+                                        // state; the standalone Terminal tab follows.
                                         setFocusedTerminalId(terminal.id);
                                       }}
                                       className={`inline-flex items-center gap-1.5 ${closable ? 'pl-3 pr-2' : 'px-3'} h-7 text-[10px] font-bold uppercase tracking-wider active:scale-95`}
@@ -4036,13 +3256,7 @@ export function SessionsPage() {
             </div>
           </main>
 
-          {workbenchVisible && !isDesktopFullscreen ? (
-            // While the desktop fullscreen overlay is up, the Workbench panel
-            // would otherwise sit on top of it (its `relative z-30` ends up in
-            // a different stacking context than DesktopPreview's `fixed
-            // z-[1000]`, so the simple z compare doesn't win). Unmounting it
-            // for the duration of the fullscreen state is cleaner than
-            // wrestling with stacking contexts and avoids paint thrash.
+          {workbenchVisible ? (
             <>
               <div
                 className="order-4 relative hidden xl:block w-0 shrink-0"
@@ -4058,17 +3272,7 @@ export function SessionsPage() {
                 activeTabPath={activeWorkbenchPath}
                 onTabClick={(path) => setActiveWorkbenchPath(path)}
                 onTabClose={closeWorkbenchTab}
-                onCloseAll={() => {
-                  setWorkbenchTabs([]);
-                  setActiveWorkbenchPath(null);
-                  setWorkbenchShowDiffByPath({});
-                  setWorkbenchDiffByPath({});
-                  setWorkbenchDiffErrorByPath({});
-                  setWorkbenchDiffBaseRefByPath({});
-                  setWorkbenchGitRootsByPath({});
-                  setWorkbenchLoadingPath(null);
-                  setWorkbenchDiffLoadingPath(null);
-                }}
+                onCloseAll={closeAllWorkbenchTabs}
                 showExplorer={false}
                 explorerEntries={runtimeFiles?.entries || []}
                 currentExplorerPath={runtimePath}
@@ -4080,56 +3284,27 @@ export function SessionsPage() {
                 onExplorerDirectoryToggle={(entry, expanded) => {
                   if (!activeSessionId || !entry.is_git_root) return;
                   if (!expanded) {
-                    setRuntimeRepoChangesByRoot((current) => {
-                      const next = { ...current };
-                      delete next[entry.path];
-                      return next;
-                    });
-                    setRuntimeRepoChangesLoadingByRoot((current) => {
-                      const next = { ...current };
-                      delete next[entry.path];
-                      return next;
-                    });
-                    setRuntimeExpandedGitDirs((current) => {
-                      const next = { ...current };
-                      Object.keys(next).forEach((key) => {
-                        if (key === entry.path || key.startsWith(`${entry.path}/`)) delete next[key];
-                      });
-                      return next;
-                    });
+                    forgetRepoRoot(entry.path);
                     return;
                   }
-                  void fetchRuntimeChangedFilesForRepo(activeSessionId, entry.path);
+                  void fetchChangedFilesForRepo(entry.path);
                 }}
                 repoChangesSections={runtimeRepoChangeSections}
                 expandedGitDirs={runtimeExpandedGitDirs}
-                onToggleGitDir={(path) => {
-                  setRuntimeExpandedGitDirs((current) => ({ ...current, [path]: !(current[path] ?? false) }));
-                }}
+                onToggleGitDir={toggleGitDir}
                 onGitFileClick={(path) => void openRuntimeFileDiff(path)}
                 diffMode={activeWorkbenchTab ? workbenchShowDiffByPath[activeWorkbenchTab.path] ?? false : false}
                 setDiffMode={(enabled) => {
                   if (!activeWorkbenchTab) return;
-                  setWorkbenchShowDiffByPath((current) => ({ ...current, [activeWorkbenchTab.path]: enabled }));
-                  if (enabled && activeSessionId) {
-                    void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path);
-                  }
+                  setShowDiffForPath(activeWorkbenchTab.path, enabled);
                 }}
                 diffContent={activeWorkbenchDiff}
-                diffLoading={workbenchDiffLoadingPath === activeWorkbenchTab?.path}
+                diffLoading={activeWorkbenchDiffLoading}
                 diffError={activeWorkbenchDiffError}
                 diffBaseRef={activeWorkbenchBaseRef}
                 onDiffBaseRefChange={(ref) => {
                   if (!activeWorkbenchTab) return;
-                  setWorkbenchDiffBaseRefByPath((current) => ({
-                    ...current,
-                    [activeWorkbenchTab.path]: ref,
-                  }));
-                  if (activeSessionId && workbenchShowDiffByPath[activeWorkbenchTab.path]) {
-                    void fetchRuntimeGitDiff(activeSessionId, activeWorkbenchTab.path, {
-                      baseRef: ref,
-                    });
-                  }
+                  setDiffBaseRefForPath(activeWorkbenchTab.path, ref);
                 }}
                 diffBaseRefOptions={activeWorkbenchBaseRefOptions}
                 width={workbenchWidth}
@@ -4185,528 +3360,6 @@ export function SessionsPage() {
               </div>
             </div>
 
-            {/* Runtime sub-segmented control: Desktop / Terminals / Files.
-                Only rendered when the Runtime tab is active. Matches the
-                primary tab strip's pill styling so the two reads as a
-                hierarchy without screaming for attention. */}
-            {isRuntimeTab ? (
-              <div className="px-3 pb-2">
-                {/* Flex (not grid) layout: each pill sizes to content, so a
-                    label + icon + badge never overflow its cell. The sliding
-                    indicator is positioned by measured offsetLeft/Width via
-                    a useLayoutEffect above — that's what keeps it locked to
-                    the active button regardless of rail width or badge count.
-                    Buttons get `flex-1 min-w-0` so they share remaining
-                    space evenly when the strip is wider than the natural
-                    content; on narrow widths they shrink toward content. */}
-                <div
-                  ref={runtimeStripRef}
-                  className="relative flex items-stretch gap-1 rounded-full border border-[color:var(--border-subtle)] p-1 bg-[color:var(--surface-2)]"
-                >
-                  {runtimeIndicator ? (
-                    <div
-                      aria-hidden
-                      className="pointer-events-none absolute top-1 bottom-1 rounded-full bg-[color:var(--surface-0)] shadow-sm transition-[left,width] duration-300 ease-out"
-                      style={{ left: runtimeIndicator.left, width: runtimeIndicator.width }}
-                    />
-                  ) : null}
-                  {([
-                    { id: 'desktop' as const, label: 'Desktop', Icon: Globe },
-                    { id: 'terminals' as const, label: 'Terminals', Icon: Terminal },
-                    { id: 'files' as const, label: 'Files', Icon: Folder },
-                  ]).map(({ id, label, Icon }) => {
-                    const active = runtimeView === id;
-                    const badge = id === 'terminals' && activeTerminals.length > 0
-                      ? activeTerminals.length
-                      : null;
-                    return (
-                      <button
-                        key={id}
-                        ref={(el) => { runtimeTabRefs.current[id] = el; }}
-                        type="button"
-                        onClick={() => openRuntimeView(id)}
-                        className={`relative z-10 flex-1 min-w-0 inline-flex items-center justify-center gap-1.5 h-7 px-2.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors duration-200 active:scale-95 ${
-                          active
-                            ? 'text-[color:var(--text-primary)]'
-                            : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)]'
-                        }`}
-                        title={label}
-                      >
-                        <Icon size={11} className="shrink-0" />
-                        <span className="truncate">{label}</span>
-                        {badge !== null ? (
-                          <span className="shrink-0 inline-flex items-center justify-center min-w-[16px] h-[15px] px-1 rounded-full bg-sky-500/20 text-sky-300 text-[9px] font-bold tracking-normal leading-none">
-                            {badge}
-                          </span>
-                        ) : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : null}
-
-            {showDesktopView ? (
-              <div className="flex-1 min-h-0 flex flex-col">
-                <div className={`relative flex items-center justify-between p-3 border-b border-[color:var(--border-subtle)] ${
-                  isDesktopFullscreen ? 'z-10' : 'z-[110]'
-                }`}>
-                  <div className="flex items-center gap-2">
-                    <Globe size={15} className="text-sky-500" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-                      Interactive View
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <select
-                      value={desktopResolution}
-                      onChange={(event) => void setDesktopResolution(event.target.value)}
-                      disabled={isDesktopResolutionChanging || isDesktopRuntimeStarting}
-                      className="h-7 max-w-[126px] rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2 font-mono text-[10px] font-bold text-[color:var(--text-secondary)] outline-none transition-colors hover:bg-[color:var(--surface-2)] disabled:opacity-50"
-                      title="Desktop resolution"
-                    >
-                      {DESKTOP_RESOLUTION_PRESETS.map((preset) => (
-                        <option key={preset.value} value={preset.value}>
-                          {preset.label}
-                        </option>
-                      ))}
-                    </select>
-                    {/* Reset dropdown */}
-                    <div className={`relative ${isDesktopFullscreen ? 'z-10' : 'z-[120]'}`} ref={resetMenuRef}>
-                      <button
-                        onClick={() => setResetMenuOpen((o) => !o)}
-                        disabled={runtimeActionBusy}
-                        className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-[color:var(--text-muted)] disabled:opacity-50"
-                        title="Runtime actions"
-                      >
-                        {runtimeActionBusy
-                          ? <RotateCcw size={14} className="animate-spin" />
-                          : <Settings2 size={14} />}
-                      </button>
-                      {resetMenuOpen && (
-                        <div
-                          className={`absolute right-0 top-full mt-1 w-48 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-xl overflow-hidden ${
-                            isDesktopFullscreen ? 'z-10' : 'z-[130]'
-                          }`}
-                          onMouseLeave={() => setResetMenuOpen(false)}
-                        >
-                          <button
-                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
-                            onClick={() => { setResetMenuOpen(false); void resetBrowser(); }}
-                          >
-                            <RotateCcw size={13} className="text-rose-400 shrink-0" />
-                            <div>
-                              <div className="font-semibold">Reset Browser</div>
-                              <div className="text-[9px] text-[color:var(--text-muted)]">Wipe Chrome profile</div>
-                            </div>
-                          </button>
-                          <div className="h-px bg-[color:var(--border-subtle)]" />
-                          <button
-                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
-                            onClick={() => { setResetMenuOpen(false); void restartDesktop(); }}
-                          >
-                            <RefreshCw size={13} className="text-amber-400 shrink-0" />
-                            <div>
-                              <div className="font-semibold">Restart Desktop</div>
-                              <div className="text-[9px] text-[color:var(--text-muted)]">Restart VNC session</div>
-                            </div>
-                          </button>
-                          <div className="h-px bg-[color:var(--border-subtle)]" />
-                          <button
-                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-rose-300 hover:bg-rose-500/10 transition-colors"
-                            onClick={() => { setResetMenuOpen(false); void wipeWorkspace(); }}
-                          >
-                            <Trash2 size={13} className="text-rose-400 shrink-0" />
-                            <div>
-                              <div className="font-semibold">Wipe Workspace</div>
-                              <div className="text-[9px] text-[color:var(--text-muted)]">Delete session files</div>
-                            </div>
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => setIsDesktopFullscreen(true)}
-                      className="p-1.5 rounded-md hover:bg-[color:var(--surface-2)] transition-colors text-sky-500"
-                      title="Open fullscreen"
-                    >
-                      <Expand size={14} />
-                    </button>
-                  </div>
-                </div>
-                <div className="flex-1 min-h-0 overflow-y-auto">
-                  <div className="relative w-full aspect-[16/10] overflow-hidden border-b border-[color:var(--border-subtle)] bg-black">
-                    <DesktopPreview
-                      url={liveView?.enabled && liveView?.available ? liveView.url : null}
-                      wsUrl={liveView?.enabled && liveView?.available ? liveView.ws_url : null}
-                      isFullscreen={isDesktopFullscreen}
-                      onClose={() => setIsDesktopFullscreen(false)}
-                      isBooting={isDesktopRuntimeStarting && !(liveView?.enabled && liveView?.available)}
-                      layoutKey={`${mode}:${desktopLayoutNonce}:${liveView?.geometry ?? desktopResolution}`}
-                      onFrameLoad={handleDesktopFrameLoad}
-                      onInteract={handleDesktopInteract}
-                    />
-                  </div>
-
-                  <div className="p-3 space-y-4">
-                    <section>
-                      <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2.5 px-1">Desktop Status</div>
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]">
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-[color:var(--text-secondary)]">Connection</span>
-                          <div className="flex items-center gap-2">
-                            {liveView?.enabled && liveView.available ? (
-                              <>
-                                <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
-                                <span className="text-[10px] font-mono font-bold text-emerald-500">CONNECTED</span>
-                              </>
-                            ) : isDesktopRuntimeStarting ? (
-                              <>
-                                <div className="h-1.5 w-1.5 rounded-full bg-sky-400 animate-pulse" />
-                                <span className="text-[10px] font-mono font-bold text-sky-400">STARTING</span>
-                              </>
-                            ) : (
-                              <>
-                                <div className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-                                <span className="text-[10px] font-mono font-bold text-rose-500 uppercase">
-                                  {liveView?.enabled ? 'UNREACHABLE' : 'DISABLED'}
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        <div className="p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 transition-all hover:bg-[color:var(--surface-1)]">
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">Stream URL</span>
-                            <div className="flex-1 min-w-0 font-mono text-[10px] text-[color:var(--text-secondary)] truncate text-right">
-                              {liveView?.ws_url || liveView?.url || '—'}
-                            </div>
-                          </div>
-                          {liveView?.reason && (
-                            <div className="mt-1 text-[9px] font-medium text-amber-500/80 leading-relaxed italic text-right truncate">
-                              {liveView.reason}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </section>
-
-                    {(() => {
-                      const overall = runtimeStatus?.status;
-                      const allChecks = runtimeStatus?.checks ?? [];
-                      const failed = allChecks.filter((c) => c.status === 'fail' || c.status === 'warn');
-                      const requiredFailures = failed.filter((c) => c.required);
-                      const optionalWarnings = failed.filter((c) => !c.required);
-                      const passed = allChecks.filter((c) => c.status === 'pass');
-                      const skipped = allChecks.filter((c) => c.status === 'skip');
-                      const totalPassMs = passed.reduce((sum, c) => sum + (c.duration_ms ?? 0), 0);
-                      const primaryFailure = requiredFailures[0] ?? null;
-                      const remainingRequiredFailures = requiredFailures.slice(1);
-                      const suppressPassedRollup = overall === 'unreachable' || overall === 'failed';
-                      type CheckEntry = (typeof allChecks)[number];
-
-                      const heroIcon =
-                        overall === 'ready' ? <CheckCircle2 size={16} className="text-emerald-400 shrink-0 mt-0.5" /> :
-                        overall === 'degraded' ? <AlertCircle size={16} className="text-amber-400 shrink-0 mt-0.5" /> :
-                        overall === 'unreachable' || overall === 'failed' ? <XCircle size={16} className="text-rose-500 shrink-0 mt-0.5" /> :
-                        overall === 'not_configured' ? <HelpCircle size={16} className="text-[color:var(--text-muted)] shrink-0 mt-0.5" /> :
-                        <Loader2 size={16} className="text-[color:var(--text-muted)] animate-spin shrink-0 mt-0.5" />;
-
-                      const heroLabel =
-                        overall === 'ready' ? 'Ready' :
-                        overall === 'degraded' ? 'Degraded' :
-                        overall === 'unreachable' ? 'Unreachable' :
-                        overall === 'failed' ? 'Failed' :
-                        overall === 'not_configured' ? 'Not configured' :
-                        runtimeStatusLoading ? 'Checking…' : 'Unknown';
-
-                      const heroBorder =
-                        overall === 'ready' ? 'border-emerald-500/30 bg-emerald-500/5' :
-                        overall === 'degraded' ? 'border-amber-500/30 bg-amber-500/5' :
-                        overall === 'unreachable' || overall === 'failed' ? 'border-rose-500/30 bg-rose-500/5' :
-                        'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50';
-
-                      const targetLine = runtimeStatus?.runtime
-                        ? [
-                            runtimeStatus.runtime.name,
-                            runtimeStatus.runtime.host && `${runtimeStatus.runtime.host}:${runtimeStatus.runtime.port ?? 22}`,
-                          ].filter(Boolean).join(' · ')
-                        : null;
-
-                      const settingsHref = instanceRouteFromPath(location.pathname, 'settings');
-                      const looksLikeCommand = (text: string) =>
-                        /^(sudo |mkdir |chown |chmod |systemctl |service |brew |apt |apt-get |yum |dnf |pacman |scp |ssh |docker |npm |pip |uv |cargo |go )/.test(text.trim());
-
-                      const renderFixCallout = (check: CheckEntry) => {
-                        const isConfigFailure = check.id.startsWith('config_');
-                        const hintIsCommand = check.hint ? looksLikeCommand(check.hint) : false;
-                        if (!check.hint && !isConfigFailure) return null;
-                        return (
-                          <div className="rounded-md border-l-2 border-amber-500/50 bg-[color:var(--surface-1)]/40 pl-2 pr-1.5 py-1.5 space-y-1.5">
-                            {check.hint && hintIsCommand ? (
-                              <div className="flex items-start gap-1.5">
-                                <code className="flex-1 font-mono text-[10px] text-[color:var(--text-primary)] break-all leading-snug">{check.hint}</code>
-                                <button
-                                  type="button"
-                                  onClick={() => { navigator.clipboard.writeText(check.hint ?? ''); toast.success('Copied'); }}
-                                  className="shrink-0 p-0.5 rounded text-[color:var(--text-muted)] hover:text-[color:var(--accent-solid)] transition-colors"
-                                  title="Copy to clipboard"
-                                >
-                                  <Copy size={10} />
-                                </button>
-                              </div>
-                            ) : check.hint ? (
-                              <div className="text-[10px] leading-snug text-[color:var(--text-secondary)]">{check.hint}</div>
-                            ) : null}
-                            {isConfigFailure && (
-                              <button
-                                type="button"
-                                onClick={() => navigate(settingsHref)}
-                                className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] hover:opacity-70 transition-opacity"
-                              >
-                                Open Settings <ExternalLink size={9} />
-                              </button>
-                            )}
-                          </div>
-                        );
-                      };
-
-                      return (
-                        <section className="space-y-2">
-                          {/* Hero card — absorbs the primary required failure when one exists */}
-                          <div className={`rounded-lg border px-2.5 py-2 ${heroBorder}`}>
-                            <div className="flex items-start gap-2">
-                              {heroIcon}
-                              <div className="flex-1 min-w-0 space-y-1">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="text-[12px] font-bold text-[color:var(--text-primary)]">{heroLabel}</span>
-                                  {targetLine && (
-                                    <span className="text-[10px] font-mono text-[color:var(--text-muted)] truncate">{targetLine}</span>
-                                  )}
-                                </div>
-                                {primaryFailure ? (
-                                  <>
-                                    <div className="text-[10px] text-[color:var(--text-secondary)] leading-snug">
-                                      <span className="font-semibold text-[color:var(--text-primary)]">{primaryFailure.label}</span> failed
-                                      {typeof primaryFailure.duration_ms === 'number' && primaryFailure.duration_ms >= 500 && (
-                                        <span className="font-mono text-[color:var(--text-muted)]"> · {primaryFailure.duration_ms}ms</span>
-                                      )}
-                                    </div>
-                                    {primaryFailure.detail && (
-                                      <div className="font-mono text-[10px] leading-snug text-[color:var(--text-secondary)] break-words">
-                                        {primaryFailure.detail}
-                                      </div>
-                                    )}
-                                    {renderFixCallout(primaryFailure)}
-                                  </>
-                                ) : (
-                                  (runtimeStatus?.summary || runtimeStatusLoading) && (
-                                    <div className="text-[10px] text-[color:var(--text-secondary)] leading-snug">
-                                      {runtimeStatus?.summary ?? 'Checking runtime status…'}
-                                    </div>
-                                  )
-                                )}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => void fetchRuntimeStatus()}
-                                disabled={runtimeStatusLoading}
-                                className="inline-flex h-5 w-5 items-center justify-center rounded text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] disabled:opacity-50 shrink-0"
-                                title="Refresh runtime diagnostics"
-                              >
-                                <RefreshCw size={11} className={runtimeStatusLoading ? 'animate-spin' : ''} />
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Additional required failures, if any (rare — usually there's just one). */}
-                          {remainingRequiredFailures.length > 0 && (
-                            <div className="space-y-1.5">
-                              {remainingRequiredFailures.map((check) => (
-                                <div key={check.id} className="rounded-lg border border-rose-500/30 bg-rose-500/5 px-2.5 py-2">
-                                  <div className="flex items-start gap-2">
-                                    <XCircle size={13} className="text-rose-500 shrink-0 mt-0.5" />
-                                    <div className="min-w-0 flex-1 space-y-1">
-                                      <div className="text-[11px] font-bold text-[color:var(--text-primary)]">{check.label}</div>
-                                      {check.detail && (
-                                        <div className="font-mono text-[10px] leading-snug text-[color:var(--text-secondary)] break-words">{check.detail}</div>
-                                      )}
-                                      {renderFixCallout(check)}
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Optional warnings — collapsed roll-up */}
-                          {optionalWarnings.length > 0 && (
-                            <div className="space-y-1">
-                              <button
-                                type="button"
-                                onClick={() => setShowOptionalRuntimeWarnings((v) => !v)}
-                                className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/10 transition-all text-left"
-                              >
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  <AlertCircle size={11} className="text-amber-400 shrink-0" />
-                                  <span className="text-[10px] font-medium text-[color:var(--text-secondary)]">
-                                    {optionalWarnings.length} optional capabilit{optionalWarnings.length === 1 ? 'y' : 'ies'} missing
-                                  </span>
-                                </div>
-                                <ChevronDown size={11} className={`text-[color:var(--text-muted)] shrink-0 transition-transform ${showOptionalRuntimeWarnings ? 'rotate-180' : ''}`} />
-                              </button>
-                              {showOptionalRuntimeWarnings && (
-                                <div className="space-y-1 px-2 py-1.5 rounded-lg bg-[color:var(--surface-1)]/30">
-                                  {optionalWarnings.map((check) => (
-                                    <div key={check.id} className="flex items-start gap-1.5 py-0.5">
-                                      <div className="h-1 w-1 rounded-full bg-amber-400 shrink-0 mt-1.5" />
-                                      <div className="min-w-0 flex-1">
-                                        <div className="flex items-baseline gap-1.5">
-                                          <span className="text-[10px] font-semibold text-[color:var(--text-secondary)]">{check.label}</span>
-                                          {check.detail && <span className="text-[9px] text-[color:var(--text-muted)] font-mono truncate">{check.detail}</span>}
-                                        </div>
-                                        {check.hint && (
-                                          <div className="text-[9px] text-[color:var(--text-muted)] leading-snug">{check.hint}</div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Passing checks collapsed — hidden when the runtime is unreachable/failed */}
-                          {passed.length > 0 && !suppressPassedRollup && (
-                            <div className="space-y-1">
-                              <button
-                                type="button"
-                                onClick={() => setShowPassingRuntimeChecks((v) => !v)}
-                                className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 hover:bg-[color:var(--surface-1)] transition-all text-left"
-                              >
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  <CheckCircle2 size={11} className="text-emerald-400 shrink-0" />
-                                  <span className="text-[10px] font-medium text-[color:var(--text-secondary)]">
-                                    {passed.length} check{passed.length === 1 ? '' : 's'} passed
-                                    {totalPassMs > 0 ? ` · ${totalPassMs}ms` : ''}
-                                  </span>
-                                </div>
-                                <ChevronDown size={11} className={`text-[color:var(--text-muted)] shrink-0 transition-transform ${showPassingRuntimeChecks ? 'rotate-180' : ''}`} />
-                              </button>
-                              {showPassingRuntimeChecks && (
-                                <div className="space-y-0.5 px-2 py-1.5 rounded-lg bg-[color:var(--surface-1)]/30">
-                                  {passed.map((check) => (
-                                    <div key={check.id} className="flex items-center gap-1.5 py-0.5">
-                                      <div className="h-1 w-1 rounded-full bg-emerald-500 shrink-0" />
-                                      <span className="text-[10px] text-[color:var(--text-secondary)] flex-1 min-w-0 truncate">{check.label}</span>
-                                      {typeof check.duration_ms === 'number' && check.duration_ms >= 100 && (
-                                        <span className="font-mono text-[9px] text-[color:var(--text-muted)] shrink-0">{check.duration_ms}ms</span>
-                                      )}
-                                    </div>
-                                  ))}
-                                  {skipped.map((check) => (
-                                    <div key={check.id} className="flex items-center gap-1.5 py-0.5 opacity-50">
-                                      <div className="h-1 w-1 rounded-full bg-[color:var(--text-muted)] shrink-0" />
-                                      <span className="text-[10px] text-[color:var(--text-muted)] flex-1 min-w-0 truncate">{check.label} (skipped)</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Empty / loading states */}
-                          {!runtimeStatus && runtimeStatusLoading && allChecks.length === 0 && (
-                            <div className="py-3 text-center text-[10px] text-[color:var(--text-muted)] opacity-60">
-                              Checking runtime…
-                            </div>
-                          )}
-                          {!runtimeStatus && !runtimeStatusLoading && (
-                            <div className="py-3 text-center text-[10px] text-[color:var(--text-muted)] opacity-40">
-                              No diagnostics yet.
-                            </div>
-                          )}
-
-                          {/* Footer metadata */}
-                          {runtimeStatus?.runtime && (runtimeStatus.runtime.username || runtimeStatus.runtime.workspaces_dir) && (
-                            <div className="pt-0.5 px-1 space-y-0 text-[9px] text-[color:var(--text-muted)] font-mono">
-                              <div className="truncate">
-                                {[
-                                  runtimeStatus.os !== 'unknown' ? runtimeStatus.os : null,
-                                  runtimeStatus.sandbox !== 'unknown' && runtimeStatus.sandbox !== 'unavailable' ? `${runtimeStatus.sandbox} sandbox` : null,
-                                  runtimeStatus.runtime.username && runtimeStatus.runtime.host
-                                    ? `${runtimeStatus.runtime.username}@${runtimeStatus.runtime.host}:${runtimeStatus.runtime.port ?? 22}`
-                                    : null,
-                                ].filter(Boolean).join(' · ')}
-                              </div>
-                              {runtimeStatus.runtime.workspaces_dir && (
-                                <div className="truncate">{runtimeStatus.runtime.workspaces_dir}</div>
-                              )}
-                            </div>
-                          )}
-                        </section>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            {showTerminalsView ? (
-              <div className="flex-1 min-h-0 flex flex-col">
-                {activeTerminals.length > 1 ? (
-                  <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar px-3 py-2 border-b border-[color:var(--border-subtle)]">
-                    {activeTerminals.map((terminal) => {
-                      const display = getTerminalLabel(terminal.id, terminal.lastCommand ?? terminal.label);
-                      const isFocused = (focusedTerminalId ?? activeTerminals[0]?.id) === terminal.id;
-                      return (
-                        <button
-                          key={terminal.id}
-                          type="button"
-                          onClick={() => setFocusedTerminalId(terminal.id)}
-                          className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2 h-6 text-[10px] font-medium transition-colors ${
-                            isFocused
-                              ? 'bg-sky-500/20 text-sky-300'
-                              : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
-                          }`}
-                          title={display}
-                        >
-                          <span className="max-w-[120px] truncate">{display}</span>
-                          {terminal.busy ? <Loader2 size={9} className="animate-spin" /> : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                <div className="flex-1 min-h-0">
-                  {activeSessionId && (focusedTerminalId ?? activeTerminals[0]?.id) ? (
-                    // Keyed on the (session, terminal) pair so React tears down
-                    // and re-creates the xterm + WS when the user switches tabs;
-                    // sharing state across terminals would mix scrollback.
-                    <TerminalPreview
-                      key={`${activeSessionId}:${focusedTerminalId ?? activeTerminals[0].id}`}
-                      sessionId={activeSessionId}
-                      terminalId={focusedTerminalId ?? activeTerminals[0].id}
-                      instanceName={activeInstanceName ?? ''}
-                    />
-                  ) : (
-                    // Empty state mirrors the Agents tab's idle treatment —
-                    // muted icon block + short subtitle — so the runtime sub
-                    // views feel like a family even when empty.
-                    <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center text-[color:var(--text-muted)] opacity-60">
-                      <div className="p-3 rounded-2xl bg-[color:var(--surface-2)]">
-                        <Terminal size={24} strokeWidth={1} />
-                      </div>
-                      <p className="text-[10px] font-medium uppercase tracking-widest">No terminals open</p>
-                      <p className="text-[10px] leading-relaxed max-w-[220px]">
-                        The agent will open one here when it runs a shell command.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : null}
-
             {rightRailTab === 'sub_agents' ? (
               <div className="flex-1 min-h-0 flex flex-col">
                 <div className="flex-1 overflow-y-auto p-3 space-y-2.5 custom-scrollbar">
@@ -4757,51 +3410,6 @@ export function SessionsPage() {
                     Spawn Sub-Agent
                   </button>
                 </div>
-              </div>
-            ) : null}
-
-            {showFilesView ? (
-              <div className="flex-1 min-h-0 flex flex-col">
-                <WorkbenchExplorerPane
-                  showTitle={false}
-                  currentPath={runtimePath}
-                  explorerLoading={runtimeFilesLoading}
-                  explorerEntries={runtimeFiles?.entries || []}
-                  onExplorerFileClick={(entry) => void openRuntimeFile(entry.path)}
-                  onExplorerDownload={(entry) => void downloadRuntimeEntry(entry)}
-                  loadExplorerDirectory={loadRuntimeDirectoryEntries}
-                  explorerRefreshKey={runtimeFilesRefreshKey}
-                  onExplorerDirectoryToggle={(entry, expanded) => {
-                    if (!activeSessionId || !entry.is_git_root) return;
-                    if (!expanded) {
-                      setRuntimeRepoChangesByRoot((current) => {
-                        const next = { ...current };
-                        delete next[entry.path];
-                        return next;
-                      });
-                      setRuntimeRepoChangesLoadingByRoot((current) => {
-                        const next = { ...current };
-                        delete next[entry.path];
-                        return next;
-                      });
-                      setRuntimeExpandedGitDirs((current) => {
-                        const next = { ...current };
-                        Object.keys(next).forEach((key) => {
-                          if (key === entry.path || key.startsWith(`${entry.path}/`)) delete next[key];
-                        });
-                        return next;
-                      });
-                      return;
-                    }
-                    void fetchRuntimeChangedFilesForRepo(activeSessionId, entry.path);
-                  }}
-                  repoChangesSections={runtimeRepoChangeSections}
-                  expandedGitDirs={runtimeExpandedGitDirs}
-                  onToggleGitDir={(path) => {
-                    setRuntimeExpandedGitDirs((current) => ({ ...current, [path]: !(current[path] ?? false) }));
-                  }}
-                  onGitFileClick={(path) => void openRuntimeFileDiff(path)}
-                />
               </div>
             ) : null}
 

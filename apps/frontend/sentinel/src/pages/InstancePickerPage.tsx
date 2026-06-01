@@ -101,7 +101,7 @@ export function InstancePickerPage() {
   }, [renamingName]);
 
   const openInstance = (instanceName: string) => {
-    navigate(`/instances/${encodeURIComponent(instanceName)}/sessions`);
+    navigate(`/instances/${encodeURIComponent(instanceName)}/workspace`);
   };
 
   const createInstance = async (event: FormEvent) => {

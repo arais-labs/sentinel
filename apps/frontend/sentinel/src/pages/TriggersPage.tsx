@@ -24,6 +24,7 @@ import { StatusChip } from '../components/ui/StatusChip';
 import { Toggle } from '../components/ui/Toggle';
 import { api } from '../lib/api';
 import { formatCompactDate } from '../lib/format';
+import { useWorkspaceMode } from '../lib/workspace-context';
 import { instanceRouteFromPath } from '../lib/routes';
 import type {
   Session,
@@ -153,6 +154,7 @@ function formatNextRunRelative(nextFireAt: string | null, nowMs: number): string
 export function TriggersPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const workspaceMode = useWorkspaceMode();
   const [triggers, setTriggers] = useState<Trigger[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -408,7 +410,7 @@ export function TriggersPage() {
       } else {
         toast.success('Trigger invoked');
       }
-      if (result.resolved_session_id) {
+      if (result.resolved_session_id && !workspaceMode) {
         navigate(instanceRouteFromPath(location.pathname, `sessions/${result.resolved_session_id}`));
         return;
       }
@@ -437,7 +439,7 @@ export function TriggersPage() {
       } else {
         toast.success('Trigger invoked');
       }
-      if (result.resolved_session_id) {
+      if (result.resolved_session_id && !workspaceMode) {
         navigate(instanceRouteFromPath(location.pathname, `sessions/${result.resolved_session_id}`));
         return;
       }
@@ -485,15 +487,14 @@ export function TriggersPage() {
       subtitle="Autonomous Event Scheduling & Webhooks"
       actions={
         <div className="flex items-center gap-2">
-          <button onClick={() => void loadData()} className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors active:scale-95">
-            <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+          <button onClick={() => void loadData()} aria-label="Refresh" className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm">
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
-          <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
-          <button 
-           onClick={openCreateModal} 
-           className="inline-flex h-9 items-center gap-2.5 rounded-full border border-transparent bg-[color:var(--accent-solid)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--app-bg)] transition-all hover:opacity-90 active:scale-95 shadow-md shadow-black/5"
+          <button
+           onClick={openCreateModal}
+           className="inline-flex h-7 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
          >
-            <Plus size={14} />
+            <Plus size={14} className="text-emerald-500/80" />
             New Automation
           </button>
         </div>
