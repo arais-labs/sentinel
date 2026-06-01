@@ -258,7 +258,10 @@ export const DesktopPreview = memo(function DesktopPreview({
         onInteract?.();
       }}
     >
-      <div ref={containerRef} className="h-full w-full overflow-hidden" />
+      <div
+        ref={containerRef}
+        className="h-full w-full overflow-hidden [&>div]:!h-full [&>div]:!w-full [&>div]:!overflow-hidden"
+      />
       {connectionState !== 'connected' ? (
         <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center p-2">
           <div className="rounded-md border border-white/10 bg-black/70 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-white/70">

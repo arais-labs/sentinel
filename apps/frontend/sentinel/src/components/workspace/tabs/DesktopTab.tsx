@@ -5,7 +5,6 @@ import {
   Copy,
   Expand,
   ExternalLink,
-  Globe,
   HelpCircle,
   Loader2,
   MonitorOff,
@@ -15,19 +14,24 @@ import {
   Trash2,
   XCircle,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import { DesktopPreview } from '../../session/DesktopPreview';
 import { useSessionDeleteConfirmation } from '../../session/SessionDeleteConfirmDialog';
+import { usePaneId } from '../WorkspacePane';
+import { HeaderActionButton, HeaderActionDropdown } from '../../ui/HeaderActions';
 import {
   DESKTOP_RESOLUTION_PRESETS,
   useSessionRuntimeStream,
 } from '../../../hooks/useSessionRuntimeStream';
+import { useAnchorRect, useDismissOnOutside } from '../../../lib/portal-menu';
 import { getSessionDeleteWorkspaceSummary } from '../../../lib/sessionDeletion';
 import { instanceRoute } from '../../../lib/routes';
 import { useActiveSessionId } from '../../../store/active-session-store';
+import { clearPaneActions, setPaneActions } from '../../../store/pane-actions-store';
 import { useInstanceName } from '../../../lib/workspace-context';
 import type { RuntimeStatusCheck } from '../../../types/api';
 
@@ -61,17 +65,25 @@ const DESKTOP_RESOLUTION_OPTIONS = DESKTOP_RESOLUTION_PRESETS.map((value) => {
 
 const COMMAND_HINT_RE =
   /^(sudo |mkdir |chown |chmod |systemctl |service |brew |apt |apt-get |yum |dnf |pacman |scp |ssh |docker |npm |pip |uv |cargo |go )/;
+const HEADER_MENU_WIDTH = 224;
 
 export function DesktopTab() {
   const activeSessionId = useActiveSessionId();
   const instanceName = useInstanceName() ?? null;
+  const paneId = usePaneId();
   const navigate = useNavigate();
 
   const [isDesktopFullscreen, setIsDesktopFullscreen] = useState(false);
+  const [resolutionMenuOpen, setResolutionMenuOpen] = useState(false);
   const [resetMenuOpen, setResetMenuOpen] = useState(false);
   const [showPassingRuntimeChecks, setShowPassingRuntimeChecks] = useState(false);
   const [showOptionalRuntimeWarnings, setShowOptionalRuntimeWarnings] = useState(false);
+  const resolutionTriggerRef = useRef<HTMLButtonElement>(null);
+  const resolutionMenuRef = useRef<HTMLDivElement>(null);
+  const resetMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const resetMenuRef = useRef<HTMLDivElement>(null);
+  const resolutionMenuRect = useAnchorRect(resolutionTriggerRef, resolutionMenuOpen);
+  const resetMenuRect = useAnchorRect(resetMenuTriggerRef, resetMenuOpen);
 
   const { confirmSessionDelete, sessionDeleteConfirmDialog } = useSessionDeleteConfirmation();
 
@@ -95,18 +107,8 @@ export function DesktopTab() {
     desktopViewActive: true,
   });
 
-  // Close the maintenance menu on any click outside it (the original lived on a
-  // `resetMenuRef` guard).
-  useEffect(() => {
-    if (!resetMenuOpen) return undefined;
-    const onPointerDown = (event: MouseEvent) => {
-      if (resetMenuRef.current && !resetMenuRef.current.contains(event.target as Node)) {
-        setResetMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    return () => document.removeEventListener('mousedown', onPointerDown);
-  }, [resetMenuOpen]);
+  useDismissOnOutside(resolutionMenuOpen, setResolutionMenuOpen, resolutionTriggerRef, resolutionMenuRef);
+  useDismissOnOutside(resetMenuOpen, setResetMenuOpen, resetMenuTriggerRef, resetMenuRef);
 
   const handleWipeWorkspace = useCallback(() => {
     void wipeWorkspace({
@@ -130,6 +132,184 @@ export function DesktopTab() {
   const handleDesktopInteract = useCallback(() => {}, []);
 
   const isLiveViewReady = Boolean(liveView?.enabled && liveView?.available);
+  const selectedResolutionLabel =
+    DESKTOP_RESOLUTION_OPTIONS.find((option) => option.value === desktopResolution)?.label ??
+    desktopResolution.replace('x', ' x ');
+
+  const desktopHeaderActions = useMemo(() => {
+    if (!activeSessionId) return null;
+
+    const menuLeft = (rect: typeof resolutionMenuRect) => {
+      if (!rect) return 8;
+      return Math.max(
+        8,
+        Math.min(rect.left + rect.triggerWidth - HEADER_MENU_WIDTH, window.innerWidth - HEADER_MENU_WIDTH - 8),
+      );
+    };
+
+    return (
+      <div className="flex min-w-0 items-center gap-1.5">
+        <HeaderActionDropdown
+          ref={resolutionTriggerRef}
+          label={<span className="font-mono">{selectedResolutionLabel}</span>}
+          open={resolutionMenuOpen}
+          disabled={isDesktopResolutionChanging || isDesktopRuntimeStarting}
+          onClick={() => setResolutionMenuOpen((open) => !open)}
+          className="max-w-[11rem]"
+          title="Desktop resolution"
+        />
+        {resolutionMenuOpen &&
+          resolutionMenuRect &&
+          createPortal(
+            <div
+              ref={resolutionMenuRef}
+              role="menu"
+              style={{
+                position: 'fixed',
+                top: resolutionMenuRect.top + 4,
+                left: menuLeft(resolutionMenuRect),
+                zIndex: 1000,
+              }}
+              className="w-56 overflow-hidden rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] py-1 shadow-lg shadow-black/20"
+            >
+              {DESKTOP_RESOLUTION_OPTIONS.map((preset) => {
+                const selected = preset.value === desktopResolution;
+                return (
+                  <button
+                    type="button"
+                    key={preset.value}
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    onClick={() => {
+                      setResolutionMenuOpen(false);
+                      if (!selected) {
+                        void applyDesktopResolution(preset.value);
+                      }
+                    }}
+                    className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left font-mono text-xs transition-colors ${
+                      selected
+                        ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]'
+                        : 'text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)] hover:text-[color:var(--text-primary)]'
+                    }`}
+                  >
+                    <span>{preset.label}</span>
+                    {selected ? <CheckCircle2 size={13} className="shrink-0" /> : null}
+                  </button>
+                );
+              })}
+            </div>,
+            document.body,
+          )}
+
+        <HeaderActionButton
+          ref={resetMenuTriggerRef}
+          icon={
+            runtimeActionBusy ? (
+              <RotateCcw size={14} className="animate-spin" />
+            ) : (
+              <Settings2 size={14} />
+            )
+          }
+          active={resetMenuOpen}
+          disabled={runtimeActionBusy}
+          onClick={() => setResetMenuOpen((open) => !open)}
+          title="Runtime actions"
+        />
+        {resetMenuOpen &&
+          resetMenuRect &&
+          createPortal(
+            <div
+              ref={resetMenuRef}
+              role="menu"
+              style={{
+                position: 'fixed',
+                top: resetMenuRect.top + 4,
+                left: menuLeft(resetMenuRect),
+                zIndex: 1000,
+              }}
+              className="w-56 overflow-hidden rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] py-1 shadow-lg shadow-black/20"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--surface-1)]"
+                onClick={() => {
+                  setResetMenuOpen(false);
+                  void resetBrowser();
+                }}
+              >
+                <RotateCcw size={13} className="shrink-0 text-rose-400" />
+                <div>
+                  <div className="font-semibold">Reset Browser</div>
+                  <div className="text-[9px] text-[color:var(--text-muted)]">Wipe Chrome profile</div>
+                </div>
+              </button>
+              <div className="h-px bg-[color:var(--border-subtle)]" />
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--surface-1)]"
+                onClick={() => {
+                  setResetMenuOpen(false);
+                  void restartDesktop();
+                }}
+              >
+                <RefreshCw size={13} className="shrink-0 text-amber-400" />
+                <div>
+                  <div className="font-semibold">Restart Desktop</div>
+                  <div className="text-[9px] text-[color:var(--text-muted)]">Restart VNC session</div>
+                </div>
+              </button>
+              <div className="h-px bg-[color:var(--border-subtle)]" />
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-rose-300 transition-colors hover:bg-rose-500/10"
+                onClick={() => {
+                  setResetMenuOpen(false);
+                  handleWipeWorkspace();
+                }}
+              >
+                <Trash2 size={13} className="shrink-0 text-rose-400" />
+                <div>
+                  <div className="font-semibold">Wipe Workspace</div>
+                  <div className="text-[9px] text-[color:var(--text-muted)]">Delete session files</div>
+                </div>
+              </button>
+            </div>,
+            document.body,
+          )}
+
+        <HeaderActionButton
+          icon={<Expand size={14} />}
+          onClick={() => setIsDesktopFullscreen(true)}
+          title="Open fullscreen"
+          className="text-sky-500"
+        />
+      </div>
+    );
+  }, [
+    activeSessionId,
+    applyDesktopResolution,
+    desktopResolution,
+    handleWipeWorkspace,
+    isDesktopResolutionChanging,
+    isDesktopRuntimeStarting,
+    resetBrowser,
+    resetMenuOpen,
+    resetMenuRect,
+    resolutionMenuOpen,
+    resolutionMenuRect,
+    restartDesktop,
+    runtimeActionBusy,
+    selectedResolutionLabel,
+  ]);
+
+  useEffect(() => {
+    if (!paneId) return undefined;
+    setPaneActions(paneId, desktopHeaderActions);
+    return () => clearPaneActions(paneId);
+  }, [desktopHeaderActions, paneId]);
 
   if (!activeSessionId) {
     return (
@@ -150,120 +330,23 @@ export function DesktopTab() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {sessionDeleteConfirmDialog}
-      <div
-        className={`relative flex items-center justify-between border-b border-[color:var(--border-subtle)] p-3 ${
-          isDesktopFullscreen ? 'z-10' : 'z-[110]'
-        }`}
-      >
-        <div className="flex items-center gap-2">
-          <Globe size={15} className="text-sky-500" />
-          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-            Interactive View
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <select
-            value={desktopResolution}
-            onChange={(event) => void applyDesktopResolution(event.target.value)}
-            disabled={isDesktopResolutionChanging || isDesktopRuntimeStarting}
-            className="h-7 max-w-[126px] rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-2 font-mono text-[10px] font-bold text-[color:var(--text-secondary)] outline-none transition-colors hover:bg-[color:var(--surface-2)] disabled:opacity-50"
-            title="Desktop resolution"
-          >
-            {DESKTOP_RESOLUTION_OPTIONS.map((preset) => (
-              <option key={preset.value} value={preset.value}>
-                {preset.label}
-              </option>
-            ))}
-          </select>
-          {/* Maintenance menu */}
-          <div className={`relative ${isDesktopFullscreen ? 'z-10' : 'z-[120]'}`} ref={resetMenuRef}>
-            <button
-              onClick={() => setResetMenuOpen((o) => !o)}
-              disabled={runtimeActionBusy}
-              className="rounded-md p-1.5 text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--surface-2)] disabled:opacity-50"
-              title="Runtime actions"
-            >
-              {runtimeActionBusy ? (
-                <RotateCcw size={14} className="animate-spin" />
-              ) : (
-                <Settings2 size={14} />
-              )}
-            </button>
-            {resetMenuOpen && (
-              <div
-                className={`absolute right-0 top-full mt-1 w-48 overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-xl ${
-                  isDesktopFullscreen ? 'z-10' : 'z-[130]'
-                }`}
-              >
-                <button
-                  className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--surface-2)]"
-                  onClick={() => {
-                    setResetMenuOpen(false);
-                    void resetBrowser();
-                  }}
-                >
-                  <RotateCcw size={13} className="shrink-0 text-rose-400" />
-                  <div>
-                    <div className="font-semibold">Reset Browser</div>
-                    <div className="text-[9px] text-[color:var(--text-muted)]">Wipe Chrome profile</div>
-                  </div>
-                </button>
-                <div className="h-px bg-[color:var(--border-subtle)]" />
-                <button
-                  className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--surface-2)]"
-                  onClick={() => {
-                    setResetMenuOpen(false);
-                    void restartDesktop();
-                  }}
-                >
-                  <RefreshCw size={13} className="shrink-0 text-amber-400" />
-                  <div>
-                    <div className="font-semibold">Restart Desktop</div>
-                    <div className="text-[9px] text-[color:var(--text-muted)]">Restart VNC session</div>
-                  </div>
-                </button>
-                <div className="h-px bg-[color:var(--border-subtle)]" />
-                <button
-                  className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[11px] font-medium text-rose-300 transition-colors hover:bg-rose-500/10"
-                  onClick={() => {
-                    setResetMenuOpen(false);
-                    handleWipeWorkspace();
-                  }}
-                >
-                  <Trash2 size={13} className="shrink-0 text-rose-400" />
-                  <div>
-                    <div className="font-semibold">Wipe Workspace</div>
-                    <div className="text-[9px] text-[color:var(--text-muted)]">Delete session files</div>
-                  </div>
-                </button>
-              </div>
-            )}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-hidden border-b border-[color:var(--border-subtle)] bg-black">
+          <div className="relative h-full w-full overflow-hidden bg-black">
+            <DesktopPreview
+              url={isLiveViewReady ? liveView!.url : null}
+              wsUrl={isLiveViewReady ? liveView!.ws_url : null}
+              isFullscreen={isDesktopFullscreen}
+              onClose={() => setIsDesktopFullscreen(false)}
+              isBooting={isDesktopRuntimeStarting && !isLiveViewReady}
+              layoutKey={`desktop-tab:${desktopLayoutNonce}:${liveView?.geometry ?? desktopResolution}`}
+              onFrameLoad={handleDesktopFrameLoad}
+              onInteract={handleDesktopInteract}
+            />
           </div>
-          <button
-            onClick={() => setIsDesktopFullscreen(true)}
-            className="rounded-md p-1.5 text-sky-500 transition-colors hover:bg-[color:var(--surface-2)]"
-            title="Open fullscreen"
-          >
-            <Expand size={14} />
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 min-h-0 overflow-y-auto">
-        <div className="relative aspect-[16/10] w-full overflow-hidden border-b border-[color:var(--border-subtle)] bg-black">
-          <DesktopPreview
-            url={isLiveViewReady ? liveView!.url : null}
-            wsUrl={isLiveViewReady ? liveView!.ws_url : null}
-            isFullscreen={isDesktopFullscreen}
-            onClose={() => setIsDesktopFullscreen(false)}
-            isBooting={isDesktopRuntimeStarting && !isLiveViewReady}
-            layoutKey={`desktop-tab:${desktopLayoutNonce}:${liveView?.geometry ?? desktopResolution}`}
-            onFrameLoad={handleDesktopFrameLoad}
-            onInteract={handleDesktopInteract}
-          />
         </div>
 
-        <div className="space-y-4 p-3">
+        <div className="max-h-[42%] shrink-0 space-y-4 overflow-y-auto p-3">
           <section>
             <div className="mb-2.5 px-1 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">
               Desktop Status
