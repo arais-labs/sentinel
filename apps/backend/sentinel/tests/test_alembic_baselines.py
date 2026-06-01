@@ -36,6 +36,20 @@ def test_backup_verified_head_matches_instance_head() -> None:
     )
 
 
+def test_alembic_revision_ids_fit_version_table() -> None:
+    # Alembic's version_num column is varchar(32) in existing databases.
+    # Revision ids longer than that fail at stamp time after the migration body.
+    for ini_name, script_location in (
+        ("alembic.manager.ini", "db/alembic/manager"),
+        ("alembic.instance.ini", "db/alembic/instance"),
+    ):
+        script_dir = _script_dir(ini_name, script_location)
+        too_long = [
+            script.revision for script in script_dir.walk_revisions() if len(script.revision) > 32
+        ]
+        assert not too_long
+
+
 def test_alembic_templates_do_not_generate_downgrades() -> None:
     for template in (
         BACKEND_ROOT / "db/alembic/manager/script.py.mako",

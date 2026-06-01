@@ -1,6 +1,6 @@
 """remove main session bindings
 
-Revision ID: 0001_remove_main_session_bindings
+Revision ID: 0001_rm_main_bindings
 Revises: 0000_instance_v1
 Create Date: 2026-06-01
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0001_remove_main_session_bindings"
+revision = "0001_rm_main_bindings"
 down_revision = "0000_instance_v1"
 branch_labels = None
 depends_on = None
