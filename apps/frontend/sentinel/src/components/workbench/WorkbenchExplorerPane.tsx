@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, ChevronRight, Folder, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Folder, Loader2, PanelLeftClose } from 'lucide-react';
 
 import type { SessionRuntimeFileEntry } from '../../types/api';
 import type { RuntimeGitChangedTreeNode } from '../../lib/runtimeGitTree';
@@ -26,6 +26,7 @@ interface WorkbenchExplorerPaneProps {
   expandedGitDirs: Record<string, boolean>;
   onToggleGitDir: (path: string) => void;
   onGitFileClick: (path: string) => void;
+  onCollapse?: () => void;
 }
 
 export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
@@ -42,6 +43,7 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
   expandedGitDirs,
   onToggleGitDir,
   onGitFileClick,
+  onCollapse,
 }) => {
   function displayGitStatus(status: string | undefined): string {
     if (!status) return 'M';
@@ -117,16 +119,27 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
     <div className="flex h-full min-h-0 flex-col bg-[color:var(--surface-1)]">
       {showTitle ? (
         <div className="p-3 border-b border-[color:var(--border-subtle)] flex items-center justify-between">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Explorer</span>
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-secondary)]">Explorer</span>
           <div className="flex items-center gap-1">
             {explorerLoading ? <Loader2 size={12} className="animate-spin text-[color:var(--text-muted)]" /> : null}
+            {onCollapse ? (
+              <button
+                type="button"
+                onClick={onCollapse}
+                title="Hide explorer"
+                className="p-1 rounded-md text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+              >
+                <PanelLeftClose size={14} />
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}
       <div className="flex-1 overflow-y-auto p-2 space-y-4">
         <div className="space-y-2">
-          <div className="px-2">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+          <div className="px-2 flex items-center gap-2">
+            <span className="h-1 w-1 rounded-full bg-[color:var(--accent-solid)]" />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-secondary)]">
               Repo Changes
             </span>
           </div>
@@ -162,7 +175,10 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
         <div className="space-y-2">
           {showTitle ? (
             <div className="flex items-center justify-between px-2">
-              <span className="text-[9px] font-black uppercase tracking-[0.2em] text-[color:var(--text-muted)]">Workspace</span>
+              <span className="flex items-center gap-2">
+                <span className="h-1 w-1 rounded-full bg-[color:var(--accent-solid)]" />
+                <span className="text-[9px] font-black uppercase tracking-[0.2em] text-[color:var(--text-secondary)]">Workspace</span>
+              </span>
               {explorerLoading ? <Loader2 size={10} className="animate-spin text-[color:var(--text-muted)]" /> : null}
             </div>
           ) : explorerLoading ? (

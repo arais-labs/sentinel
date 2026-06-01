@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
-import { 
-  FileCode2, 
-  Files, 
-  GitBranch, 
-  Layout, 
-  Loader2, 
-  Terminal, 
-  X 
+import {
+  FileCode2,
+  Files,
+  GitBranch,
+  Loader2,
+  PanelLeftOpen,
+  Terminal,
+  X,
 } from 'lucide-react';
 import type { 
   SessionRuntimeFileEntry, 
@@ -143,49 +143,40 @@ export const Workbench: React.FC<WorkbenchProps> = ({
     >
       <div className="flex flex-1 min-h-0">
         {showExplorer ? (
-          <>
-            <div className="w-12 shrink-0 flex flex-col items-center py-4 border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/50">
-              <button 
-                onClick={() => setExplorerVisible(!explorerVisible)}
-                className={`p-2 rounded-lg transition-colors mb-2 ${explorerVisible ? 'text-[color:var(--accent-solid)] bg-[color:var(--accent-solid)]/10' : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'}`}
-                title="Explorer"
-              >
-                <Files size={20} />
-              </button>
-              <div className="flex-1" />
-              <button 
-                className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
-                title="Search (Coming soon)"
-              >
-                <Layout size={20} />
-              </button>
+          explorerVisible ? (
+            <div className="w-72 shrink-0 border-r border-[color:var(--border-subtle)]">
+              <WorkbenchExplorerPane
+                currentPath={currentExplorerPath}
+                explorerLoading={explorerLoading}
+                explorerEntries={explorerEntries}
+                onExplorerFileClick={onExplorerFileClick}
+                onExplorerDownload={onExplorerDownload}
+                loadExplorerDirectory={loadExplorerDirectory}
+                onExplorerDirectoryToggle={onExplorerDirectoryToggle}
+                explorerRefreshKey={explorerRefreshKey}
+                repoChangesSections={repoChangesSections}
+                expandedGitDirs={expandedGitDirs}
+                onToggleGitDir={onToggleGitDir}
+                onGitFileClick={onGitFileClick}
+                onCollapse={() => setExplorerVisible(false)}
+              />
             </div>
-
-            {explorerVisible && (
-              <div className="w-72 shrink-0 border-r border-[color:var(--border-subtle)]">
-                <WorkbenchExplorerPane
-                  currentPath={currentExplorerPath}
-                  explorerLoading={explorerLoading}
-                  explorerEntries={explorerEntries}
-                  onExplorerFileClick={onExplorerFileClick}
-                  onExplorerDownload={onExplorerDownload}
-                  loadExplorerDirectory={loadExplorerDirectory}
-                  onExplorerDirectoryToggle={onExplorerDirectoryToggle}
-                  explorerRefreshKey={explorerRefreshKey}
-                  repoChangesSections={repoChangesSections}
-                  expandedGitDirs={expandedGitDirs}
-                  onToggleGitDir={onToggleGitDir}
-                  onGitFileClick={onGitFileClick}
-                />
-              </div>
-            )}
-          </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setExplorerVisible(true)}
+              title="Show explorer"
+              className="w-9 shrink-0 flex items-start justify-center pt-3 border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+            >
+              <PanelLeftOpen size={16} />
+            </button>
+          )
         ) : null}
 
         {/* Editor Area */}
         <div className="flex-1 flex flex-col min-w-0 bg-[color:var(--surface-0)]">
           {/* Tabs Bar */}
-          <div className="relative h-12 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]/80 backdrop-blur-md flex items-center overflow-x-auto no-scrollbar pr-12">
+          <div className="relative h-12 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] flex items-center overflow-x-auto no-scrollbar pr-12">
             {tabs.map(tab => (
               <div 
                 key={tab.path}
@@ -223,7 +214,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           {activeTab ? (
             <div className="flex-1 flex flex-col min-h-0">
               {/* Toolbar */}
-              <div className="p-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 flex items-center justify-between gap-4">
+              <div className="p-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] flex items-center justify-between gap-4">
                 <div className="flex items-center gap-1 rounded-lg border border-[color:var(--border-subtle)] p-0.5 bg-[color:var(--surface-2)]">
                   <button
                     onClick={() => setDiffMode(false)}
@@ -308,7 +299,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                     </div>
                   ) : diffContent ? (
                     <div className="h-full flex flex-col animate-in fade-in slide-in-from-top-2 duration-300">
-                      <div className="px-4 py-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40">
+                      <div className="px-4 py-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
                         <div className="flex items-center gap-2">
                           <GitBranch size={12} />
                           <span>Root: {diffContent.git_root || '.'}</span>
