@@ -4,10 +4,12 @@ import { toast } from 'sonner';
 import {
   Zap, ArrowRight, ArrowLeft, Check, Bot, User, Flag, Cpu,
   Eye, EyeOff, Loader2, KeyRound, Plus, X, Wifi, Server, SkipForward,
-  Container, Copy, RefreshCw,
+  Copy, RefreshCw,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import type { Runtime, RuntimeTestResponse, RuntimeCapabilitiesResponse, RuntimeLifecycleResponse, RuntimeJob } from '../types/api';
+import { LocalRuntimeForm } from '../components/runtime/LocalRuntimeForm';
+import { RUNTIME_PROVIDER_TILES, buildManagedRuntimeBody } from '../lib/runtime-create';
+import type { Runtime, RuntimeProvider, RuntimeTestResponse, RuntimeCapabilitiesResponse, RuntimeLifecycleResponse, RuntimeJob } from '../types/api';
 import {
   buildAgentIdentityMemoryContent,
   buildUserProfileMemoryContent,
@@ -158,9 +160,9 @@ function RuntimeStep({
   verified: boolean;
   resolvedHome: string | null;
   capabilities: RuntimeCapabilitiesResponse | null;
-  selectedProvider: 'lima' | 'docker' | 'ssh' | null;
-  onPickProvider: (provider: 'lima' | 'docker' | 'ssh' | null) => void;
-  onCreateManaged: (provider: 'lima' | 'docker') => Promise<void>;
+  selectedProvider: RuntimeProvider | null;
+  onPickProvider: (provider: RuntimeProvider | null) => void;
+  onCreateManaged: (provider: Exclude<RuntimeProvider, 'ssh'>) => Promise<void>;
   onRefreshCapabilities: () => void;
   creatingProvider: string | null;
   creatingJobMessage: string | null;
@@ -174,11 +176,7 @@ function RuntimeStep({
 
   function renderChooser() {
     const capByProvider = new Map((capabilities?.providers ?? []).map((p) => [p.provider, p]));
-    const tiles: Array<{ id: 'lima' | 'docker' | 'ssh'; label: string; description: string; icon: typeof Cpu }> = [
-      { id: 'lima', label: 'Lima VM', description: 'Provisioned Linux VM via Lima.', icon: Cpu },
-      { id: 'docker', label: 'Docker', description: 'Provisioned Linux container via Docker.', icon: Container },
-      { id: 'ssh', label: 'Custom SSH', description: 'Bring your own SSH host.', icon: KeyRound },
-    ];
+    const tiles = RUNTIME_PROVIDER_TILES;
     return (
       <div className="rounded-xl border border-[color:var(--accent-solid)]/40 bg-[color:var(--surface-1)] p-4 space-y-3 animate-in fade-in slide-in-from-top-1 duration-200">
         <div className="flex items-center justify-between gap-2">
@@ -189,7 +187,7 @@ function RuntimeStep({
             </button>
           )}
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {tiles.map((tile) => {
             const cap = capByProvider.get(tile.id);
             const isSsh = tile.id === 'ssh';
@@ -317,6 +315,29 @@ function RuntimeStep({
           </>
         )}
       </div>
+    );
+  }
+
+  function renderLocalForm() {
+    const cap = capabilities?.providers.find((p) => p.provider === 'local');
+    return (
+      <LocalRuntimeForm
+        mode="create"
+        available={cap?.available ?? false}
+        detail={cap?.detail}
+        name={form.name}
+        onNameChange={(v) => updateForm({ name: v })}
+        workspacesDir={form.workspaces_dir}
+        onWorkspacesDirChange={(v) => updateForm({ workspaces_dir: v })}
+        isBusy={creatingProvider === 'local'}
+        jobMessage={creatingJobMessage}
+        inputClass={onboardingInputClass}
+        cancelLabel="Back"
+        onCancel={() => onPickProvider(null)}
+        onRecheck={onRefreshCapabilities}
+        onSubmit={() => void onCreateManaged('local')}
+        surface="panel"
+      />
     );
   }
 
@@ -448,7 +469,9 @@ function RuntimeStep({
           ? renderChooser()
           : selectedProvider === 'ssh'
             ? renderSshForm()
-            : renderManagedForm(selectedProvider)
+            : selectedProvider === 'local'
+              ? renderLocalForm()
+              : renderManagedForm(selectedProvider)
       ) : (
         <div className="space-y-2">
           {targets.map((target) => {
@@ -514,7 +537,9 @@ function RuntimeStep({
               ? renderChooser()
               : selectedProvider === 'ssh'
                 ? renderSshForm()
-                : renderManagedForm(selectedProvider)
+                : selectedProvider === 'local'
+                  ? renderLocalForm()
+                  : renderManagedForm(selectedProvider)
           ) : (
             <button
               type="button"
@@ -991,11 +1016,11 @@ export function OnboardingPage() {
   const [runtimeVerified, setRuntimeVerified] = useState(false);
   const [runtimeResolvedHome, setRuntimeResolvedHome] = useState<string | null>(null);
   const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilitiesResponse | null>(null);
-  const [selectedRuntimeProvider, setSelectedRuntimeProvider] = useState<'lima' | 'docker' | 'ssh' | null>(null);
+  const [selectedRuntimeProvider, setSelectedRuntimeProvider] = useState<RuntimeProvider | null>(null);
   const [creatingManagedProvider, setCreatingManagedProvider] = useState<string | null>(null);
   const [creatingManagedJobMessage, setCreatingManagedJobMessage] = useState<string | null>(null);
 
-  function autoSuggestRuntimeName(provider: 'lima' | 'docker' | 'ssh'): string {
+  function autoSuggestRuntimeName(provider: RuntimeProvider): string {
     const taken = new Set(runtimes.map((r) => r.name));
     for (let n = 1; n < 999; n++) {
       const candidate = `${provider}-${n}`;
@@ -1004,7 +1029,7 @@ export function OnboardingPage() {
     return `${provider}-new`;
   }
 
-  function pickRuntimeProvider(provider: 'lima' | 'docker' | 'ssh' | null) {
+  function pickRuntimeProvider(provider: RuntimeProvider | null) {
     setSelectedRuntimeProvider(provider);
     if (provider) {
       setRuntimeForm((f) => ({ ...f, name: f.name || autoSuggestRuntimeName(provider) }));
@@ -1024,7 +1049,7 @@ export function OnboardingPage() {
     }
   };
 
-  async function handleCreateManagedRuntime(provider: 'lima' | 'docker') {
+  async function handleCreateManagedRuntime(provider: Exclude<RuntimeProvider, 'ssh'>) {
     const name = runtimeForm.name.trim();
     if (!name) {
       toast.error('Runtime name is required');
@@ -1035,12 +1060,7 @@ export function OnboardingPage() {
     try {
       const response = await api.post<RuntimeLifecycleResponse>(
         '/runtimes',
-        {
-          provider,
-          name,
-          profile: provider === 'lima' ? 'sentinel-linux-xfce' : 'sentinel-docker-linux',
-          provider_config: { desktop: 'xfce' },
-        },
+        buildManagedRuntimeBody(provider, name, { workspacesDir: runtimeForm.workspaces_dir }),
         { timeoutMs: 30_000 },
       );
       // Refresh list to include the just-created runtime row.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import get_args
 from uuid import UUID
 
 from sqlalchemy import select
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.manager import Runtime, SentinelInstance
 from app.schemas.runtimes import (
     RuntimeCreateRequest,
+    RuntimeProvider,
     RuntimeProviderConfig,
     RuntimeProviderState,
     RuntimeResponse,
@@ -19,6 +21,10 @@ from app.schemas.runtimes import (
 from app.services.instances import normalize_instance_name
 from app.services.runtime.ssh_client import SSHClient, SSHCredentials
 from app.services.secrets import is_invalid_secret
+
+# Valid providers = the RuntimeProvider declaration (all resolve to SSH targets),
+# derived rather than re-listed so a new provider needs no second edit here.
+_KNOWN_PROVIDERS = frozenset(get_args(RuntimeProvider))
 
 
 class RuntimeErrorBase(RuntimeError):
@@ -210,7 +216,7 @@ async def resolve_instance_runtime(
 
 
 def resolve_runtime_secret(runtime: Runtime) -> ResolvedRuntime:
-    if runtime.provider not in {"ssh", "lima", "docker"}:
+    if runtime.provider not in _KNOWN_PROVIDERS:
         raise RuntimeErrorBase(f"Unsupported runtime provider: {runtime.provider}")
     if is_invalid_secret(runtime.encrypted_secret):
         raise RuntimeErrorBase("Runtime credentials could not be decrypted.")

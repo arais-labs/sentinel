@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import getpass
 import logging
 import os
+import platform
 import shutil
+import socket
 import subprocess
 import tempfile
 from collections.abc import Sequence
@@ -13,9 +16,10 @@ from pathlib import Path
 from shlex import quote
 from uuid import UUID, uuid4
 
+import asyncssh
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import is_desktop_app, settings
 from app.database import AsyncSessionLocal
 from app.models.manager import Runtime
 from app.schemas.runtimes import (
@@ -620,13 +624,200 @@ class DockerRuntimeProvider(LocalProviderBase):
         return f"sentinel-runtime-{safe}-workspaces"
 
 
+def _local_sshd_reachable(host: str = "127.0.0.1", port: int = 22, timeout: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _authorized_key_blob(entry: str) -> str | None:
+    """The 'ssh-ed25519 AAAA…' identity (type + base64) from a public key or
+    authorized_keys line, ignoring options prefix and comment — so keys are
+    revoked by identity, not exact text."""
+    parts = entry.split()
+    for index, part in enumerate(parts):
+        if part.startswith(("ssh-", "ecdsa-", "sk-")) and index + 1 < len(parts):
+            return f"{part} {parts[index + 1]}"
+    return None
+
+
+class LocalRuntimeProvider(RuntimeProviderBackend):
+    """This Mac over SSH, reusing macOS Remote Login (no infrastructure). create()
+    generates a key, authorizes it loopback-only, verifies login, and points an
+    SSH runtime at 127.0.0.1; unavailable (with a guide) when Remote Login is off."""
+
+    name: RuntimeProvider = "local"
+    label = "Local (this Mac)"
+
+    # Loopback-only: rejects the key from any non-local source. NOT `restrict` —
+    # the runtime needs SSH port-forwarding (e.g. the desktop view).
+    _LOOPBACK_PREFIX = 'from="127.0.0.1,::1"'
+
+    _REMOTE_LOGIN_HINT = (
+        "Enable Remote Login: System Settings → General → Sharing → turn on "
+        "Remote Login, then re-check."
+    )
+
+    def missing_requirements(self) -> list[str]:
+        if not is_desktop_app():
+            return ["Desktop app"]
+        if platform.system() != "Darwin":
+            return ["macOS"]
+        if not _local_sshd_reachable():
+            return ["macOS Remote Login"]
+        return []
+
+    def capability(self) -> RuntimeProviderCapability:
+        missing = self.missing_requirements()
+        if not missing:
+            detail = "Available"
+        elif missing == ["macOS Remote Login"]:
+            detail = self._REMOTE_LOGIN_HINT
+        elif missing == ["Desktop app"]:
+            detail = "Available only in the Sentinel desktop app."
+        else:
+            detail = "The local runtime is currently supported only on macOS."
+        return RuntimeProviderCapability(
+            provider=self.name,
+            available=not missing,
+            label=self.label,
+            detail=detail,
+            missing=missing,
+            has_lifecycle=False,
+        )
+
+    async def create(
+        self, runtime: Runtime, config: RuntimeProviderConfig, job: RuntimeJob
+    ) -> None:
+        if not await asyncio.to_thread(_local_sshd_reachable):
+            raise RuntimeProviderError(self._REMOTE_LOGIN_HINT)
+
+        username = getpass.getuser()
+        home = Path.home()
+
+        job.emit("Generating runtime SSH identity")
+        key = asyncssh.generate_private_key("ssh-ed25519", comment=f"sentinel-{runtime.name}")
+        private_key = key.export_private_key("openssh").decode()
+        public_key = key.export_public_key("openssh").decode().strip()
+        blob = _authorized_key_blob(public_key)
+        if blob is None or "\n" in public_key or "\r" in public_key:
+            raise RuntimeProviderError("Generated SSH public key was malformed.")
+        authorized_line = f"{self._LOOPBACK_PREFIX} {public_key}"
+        # Honour a workspace folder chosen at create time; else use the default.
+        provided = (runtime.workspaces_dir or "").strip()
+        workspaces_dir = (
+            Path(provided).expanduser() if provided else home / "sentinel" / "workspaces"
+        )
+
+        job.emit("Authorizing runtime key for local SSH")
+        await asyncio.to_thread(self._authorize_key, home, authorized_line, blob, workspaces_dir)
+
+        try:
+            await self._probe_auth(username, private_key)
+        except RuntimeProviderError:
+            await asyncio.to_thread(self._revoke_key, home, blob)
+            raise
+
+        runtime.host = "127.0.0.1"
+        runtime.port = 22
+        runtime.username = username
+        runtime.workspaces_dir = str(workspaces_dir)
+        runtime.auth_type = "private_key"
+        runtime.encrypted_secret = private_key
+        runtime.provider_state = {"local": True, "authorized_key_blob": blob}
+
+    async def _probe_auth(self, username: str, private_key: str) -> None:
+        """Verify the new key actually logs in — catches Remote Login restricted
+        to other users (which the TCP probe can't see), failing early instead of
+        registering a runtime that can never connect."""
+        try:
+            conn = await asyncio.wait_for(
+                asyncssh.connect(
+                    "127.0.0.1",
+                    port=22,
+                    username=username,
+                    client_keys=[asyncssh.import_private_key(private_key)],
+                    known_hosts=None,
+                ),
+                timeout=10,
+            )
+            conn.close()
+            await conn.wait_closed()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeProviderError(
+                f"Remote Login is reachable but rejected the key for user '{username}'. "
+                "If Remote Login is limited to specific users, add your user under "
+                "System Settings → General → Sharing → Remote Login, then retry."
+            ) from exc
+
+    @staticmethod
+    def _authorize_key(home: Path, authorized_line: str, blob: str, workspaces_dir: Path) -> None:
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(ssh_dir, 0o700)
+        authorized = ssh_dir / "authorized_keys"
+        existing = authorized.read_text() if authorized.exists() else ""
+        already = any(_authorized_key_blob(line) == blob for line in existing.splitlines())
+        if not already:
+            with authorized.open("a") as handle:
+                if existing and not existing.endswith("\n"):
+                    handle.write("\n")
+                handle.write(authorized_line + "\n")
+        os.chmod(authorized, 0o600)
+        workspaces_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _revoke_key(home: Path, blob: str) -> bool:
+        authorized = home / ".ssh" / "authorized_keys"
+        if not blob or not authorized.exists():
+            return False
+        lines = authorized.read_text().splitlines()
+        kept = [line for line in lines if _authorized_key_blob(line) != blob]
+        if len(kept) == len(lines):
+            return False
+        authorized.write_text("\n".join(kept) + ("\n" if kept else ""))
+        return True
+
+    async def start(self, runtime: Runtime, job: RuntimeJob) -> None:
+        job.emit("Local runtime uses the system SSH service; nothing to start.")
+
+    async def stop(self, runtime: Runtime, job: RuntimeJob) -> None:
+        job.emit("Local runtime uses the system SSH service; nothing to stop.")
+
+    async def delete(self, runtime: Runtime, job: RuntimeJob) -> None:
+        state = runtime.provider_state or {}
+        blob = state.get("authorized_key_blob") or _authorized_key_blob(
+            str(state.get("authorized_key") or "")
+        )
+        if not blob:
+            return
+        removed = await asyncio.to_thread(self._revoke_key, Path.home(), str(blob))
+        if removed:
+            job.emit("Removed runtime key from authorized_keys")
+
+    async def status_detail(self, runtime: Runtime) -> str | None:
+        if runtime.status in {"stopped", "deleted"}:
+            return None
+        if not await asyncio.to_thread(_local_sshd_reachable):
+            return "macOS Remote Login appears to be off."
+        return None
+
+
 class RuntimeProviderService:
     def __init__(self) -> None:
         self._providers: dict[str, RuntimeProviderBackend] = {
             "lima": LimaRuntimeProvider(),
             "docker": DockerRuntimeProvider(),
+            "local": LocalRuntimeProvider(),
         }
         self._jobs: dict[UUID, RuntimeJob] = {}
+
+    def is_managed(self, provider: str) -> bool:
+        """Whether the provider runs the managed create/start/stop/delete flow
+        (everything except custom SSH). Read from the registry, not a list."""
+        return provider in self._providers
 
     def capabilities(self) -> RuntimeCapabilitiesResponse:
         return RuntimeCapabilitiesResponse(
@@ -637,6 +828,7 @@ class RuntimeProviderService:
                     label="Custom SSH",
                     detail="Available",
                     missing=[],
+                    has_lifecycle=False,
                 ),
                 *[provider.capability() for provider in self._providers.values()],
             ]

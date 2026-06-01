@@ -417,7 +417,7 @@ export interface RuntimeStatusResponse {
   sandbox: 'bubblewrap' | 'seatbelt' | 'unavailable' | 'unknown';
   runtime: {
     name?: string | null;
-    provider?: 'ssh' | 'lima' | 'docker' | null;
+    provider?: RuntimeProvider | null;
     host: string | null;
     port: number | null;
     username: string | null;
@@ -427,7 +427,7 @@ export interface RuntimeStatusResponse {
   capabilities: Record<string, string>;
 }
 
-export type RuntimeProvider = 'ssh' | 'lima' | 'docker';
+export type RuntimeProvider = 'ssh' | 'lima' | 'docker' | 'local';
 export type RuntimeStatus = 'unknown' | 'creating' | 'stopped' | 'running' | 'ready' | 'error' | 'deleted';
 
 export interface Runtime {
@@ -474,6 +474,8 @@ export interface RuntimeProviderCapability {
   label: string;
   detail: string;
   missing: string[];
+  /** Whether this provider has real start/stop/rebuild actions (ssh + local don't). */
+  has_lifecycle: boolean;
 }
 
 export interface RuntimeCapabilitiesResponse {

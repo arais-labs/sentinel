@@ -66,7 +66,7 @@ async def create_runtime_row(
     db: AsyncSession = Depends(get_manager_db),
 ) -> RuntimeResponse | RuntimeActionResponse:
     try:
-        if payload.provider in {"lima", "docker"}:
+        if runtime_provider_service.is_managed(payload.provider):
             return await runtime_provider_service.create_managed(db, payload)
         runtime = await create_runtime(db, payload)
     except RuntimeConflict as exc:
@@ -131,7 +131,7 @@ async def delete_runtime_row(
 ) -> None:
     try:
         runtime = await get_runtime(db, runtime_id)
-        if runtime.provider != "ssh":
+        if runtime_provider_service.is_managed(runtime.provider):
             await runtime_provider_service.delete_managed_resources(runtime)
         await delete_runtime(db, runtime_id)
     except RuntimeNotFound as exc:
@@ -154,8 +154,8 @@ async def runtime_action(
         )
     try:
         runtime = await get_runtime(db, runtime_id)
-        if runtime.provider == "ssh":
-            raise RuntimeProviderError("Custom SSH runtimes do not have managed lifecycle actions.")
+        if not runtime_provider_service.is_managed(runtime.provider):
+            raise RuntimeProviderError("This runtime type has no managed lifecycle actions.")
         return await runtime_provider_service.action(db, runtime, action)
     except RuntimeNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

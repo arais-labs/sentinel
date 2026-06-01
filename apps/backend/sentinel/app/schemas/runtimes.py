@@ -5,9 +5,16 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-RuntimeProvider = Literal["ssh", "lima", "docker"]
+
+def _reject_control_chars(value: str | None) -> str | None:
+    if value is not None and any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ValueError("name must not contain control characters or line breaks.")
+    return value
+
+
+RuntimeProvider = Literal["ssh", "lima", "docker", "local"]
 RuntimeJobStatus = Literal["queued", "running", "succeeded", "failed"]
 RuntimeAuthType = Literal["private_key", "password"]
 RuntimeAction = Literal["start", "stop", "rebuild", "delete"]
@@ -53,6 +60,8 @@ class RuntimeBase(BaseModel):
     username: str | None = Field(default=None, min_length=1, max_length=120)
     workspaces_dir: str | None = Field(default=None, min_length=1)
 
+    _validate_name = field_validator("name")(_reject_control_chars)
+
 
 class RuntimeCreateRequest(RuntimeBase):
     auth_type: RuntimeAuthType | None = None
@@ -87,6 +96,8 @@ class RuntimeUpdateRequest(BaseModel):
     private_key: str | None = None
     password: str | None = None
     provider_config: RuntimeProviderConfig | None = None
+
+    _validate_name = field_validator("name")(_reject_control_chars)
 
     @model_validator(mode="after")
     def validate_secret_update(self) -> "RuntimeUpdateRequest":
@@ -154,6 +165,8 @@ class RuntimeProviderCapability(BaseModel):
     label: str
     detail: str
     missing: list[str] = Field(default_factory=list)
+    # Whether the provider has real start/stop/rebuild actions (ssh + local don't).
+    has_lifecycle: bool = True
 
 
 class RuntimeCapabilitiesResponse(BaseModel):

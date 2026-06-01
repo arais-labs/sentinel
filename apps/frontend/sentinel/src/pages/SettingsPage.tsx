@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import {
   LogOut, ShieldAlert, User, Cpu, Hash, Info, ChevronRight,
   Bot, Eye, EyeOff, Check, Loader2, RefreshCw, HelpCircle, X, KeyRound, Pencil, Plus,
-  Trash2, Server, Wifi, Container, Power, Square, RotateCcw, Copy, Unlink,
+  Trash2, Server, Wifi, Power, Square, RotateCcw, Copy, Unlink,
   Archive, Download, Upload, Lock,
 } from 'lucide-react';
 import { Link as RouterLink, useLocation } from 'react-router-dom';
@@ -11,6 +11,8 @@ import { Link as RouterLink, useLocation } from 'react-router-dom';
 import { AppShell } from '../components/AppShell';
 import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
+import { LocalRuntimeForm } from '../components/runtime/LocalRuntimeForm';
+import { RUNTIME_PROVIDER_TILES, buildManagedRuntimeBody } from '../lib/runtime-create';
 import { APP_VERSION } from '../lib/env';
 import { api, requestBlob } from '../lib/api';
 import { useInstanceName } from '../lib/workspace-context';
@@ -18,6 +20,7 @@ import { instanceRoute, instanceRouteFromPath } from '../lib/routes';
 import { useAuthStore } from '../store/auth-store';
 import type {
   Runtime,
+  RuntimeProvider,
   RuntimeLifecycleResponse,
   RuntimeCapabilitiesResponse,
   RuntimeJob,
@@ -379,7 +382,7 @@ export function SettingsPage() {
   const [runtimeResolvedHome, setRuntimeResolvedHome] = useState<string | null>(null);
   const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilitiesResponse | null>(null);
   const [creatingProvider, setCreatingProvider] = useState<string | null>(null);
-  const [selectedProvider, setSelectedProvider] = useState<'lima' | 'docker' | 'ssh' | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<RuntimeProvider | null>(null);
   const [creatingJobMessage, setCreatingJobMessage] = useState<string | null>(null);
 
   // ── backup & restore ──
@@ -665,7 +668,7 @@ export function SettingsPage() {
 
   function startEditingRuntime(target: Runtime) {
     setAddingNewTarget(false);
-    setSelectedProvider('ssh');
+    setSelectedProvider(target.provider);
     setConfirmDeleteTargetId(null);
     setEditingRuntimeId(target.id);
     setRuntimeForm({
@@ -692,7 +695,7 @@ export function SettingsPage() {
     setRuntimeResolvedHome(null);
   }
 
-  function autoSuggestName(provider: 'lima' | 'docker' | 'ssh'): string {
+  function autoSuggestName(provider: RuntimeProvider): string {
     const prefix = provider;
     const taken = new Set(runtimes.map((r) => r.name));
     for (let n = 1; n < 999; n++) {
@@ -702,7 +705,7 @@ export function SettingsPage() {
     return `${prefix}-new`;
   }
 
-  function pickProvider(provider: 'lima' | 'docker' | 'ssh') {
+  function pickProvider(provider: RuntimeProvider) {
     setSelectedProvider(provider);
     setRuntimeForm((f) => ({ ...f, name: f.name || autoSuggestName(provider) }));
     if (provider !== 'ssh') {
@@ -820,6 +823,27 @@ export function SettingsPage() {
     }
   }
 
+  async function saveLocalRuntimeEdit() {
+    if (!editingRuntimeId) return;
+    const name = runtimeForm.name.trim();
+    const workspaces_dir = runtimeForm.workspaces_dir.trim();
+    if (!name || !workspaces_dir) {
+      toast.error('Name and workspace folder are required');
+      return;
+    }
+    setSavingRuntime(true);
+    try {
+      await api.patch<Runtime>(`/runtimes/${editingRuntimeId}`, { name, workspaces_dir });
+      resetRuntimeForm();
+      await fetchRuntimes();
+      toast.success('Runtime updated');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to update runtime');
+    } finally {
+      setSavingRuntime(false);
+    }
+  }
+
   async function assignRuntime(targetId: string | null) {
     if (!instanceName) return;
     try {
@@ -834,7 +858,7 @@ export function SettingsPage() {
     }
   }
 
-  async function createRuntime(provider: 'lima' | 'docker') {
+  async function createRuntime(provider: Exclude<RuntimeProvider, 'ssh'>) {
     const name = runtimeForm.name.trim();
     if (!name) {
       toast.error('Runtime name is required');
@@ -845,12 +869,7 @@ export function SettingsPage() {
     try {
       const response = await api.post<RuntimeLifecycleResponse>(
         '/runtimes',
-        {
-          provider,
-          name,
-          profile: provider === 'lima' ? 'sentinel-linux-xfce' : 'sentinel-docker-linux',
-          provider_config: { desktop: 'xfce' },
-        },
+        buildManagedRuntimeBody(provider, name, { workspacesDir: runtimeForm.workspaces_dir }),
         { timeoutMs: 30_000 },
       );
       await fetchRuntimes();
@@ -1158,7 +1177,7 @@ export function SettingsPage() {
                     <Unlink size={13} />
                   </button>
                 )}
-                {target.provider === 'ssh' && (
+                {!(runtimeCapabilities?.providers.find((p) => p.provider === target.provider)?.has_lifecycle ?? true) && (
                   <button
                     type="button"
                     onClick={() => startEditingRuntime(target)}
@@ -1168,7 +1187,7 @@ export function SettingsPage() {
                     <Pencil size={13} />
                   </button>
                 )}
-                {target.provider !== 'ssh' && (
+                {(runtimeCapabilities?.providers.find((p) => p.provider === target.provider)?.has_lifecycle ?? false) && (
                   <>
                     <button type="button" onClick={() => void runRuntimeAction(target, 'start')} className="p-1.5 rounded-md text-[color:var(--text-muted)] hover:text-emerald-400 hover:bg-[color:var(--surface-2)] transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100" title="Start runtime">
                       <Power size={13} />
@@ -1403,7 +1422,25 @@ export function SettingsPage() {
             <div className="space-y-2">
               {runtimes.map((target) =>
                 editingRuntimeId === target.id
-                  ? <div key={target.id}>{renderRuntimeForm()}</div>
+                  ? (
+                    <div key={target.id}>
+                      {target.provider === 'local' ? (
+                        <LocalRuntimeForm
+                          mode="edit"
+                          name={runtimeForm.name}
+                          onNameChange={(v) => updateRuntimeForm({ name: v })}
+                          workspacesDir={runtimeForm.workspaces_dir}
+                          onWorkspacesDirChange={(v) => updateRuntimeForm({ workspaces_dir: v })}
+                          isBusy={savingRuntime}
+                          inputClass={runtimeInputClass}
+                          cancelLabel="Cancel"
+                          onCancel={resetRuntimeForm}
+                          onSubmit={() => void saveLocalRuntimeEdit()}
+                          surface="card"
+                        />
+                      ) : renderRuntimeForm()}
+                    </div>
+                  )
                   : renderTargetCard(target),
               )}
             </div>
@@ -1412,11 +1449,7 @@ export function SettingsPage() {
           {/* Add-runtime affordance — collapses chooser/form */}
           {addingNewTarget && !selectedProvider && (() => {
             const capByProvider = new Map((runtimeCapabilities?.providers ?? []).map((p) => [p.provider, p]));
-            const tiles: Array<{ id: 'lima' | 'docker' | 'ssh'; label: string; description: string; icon: typeof Cpu }> = [
-              { id: 'lima', label: 'Lima VM', description: 'Provisioned Linux VM via Lima.', icon: Cpu },
-              { id: 'docker', label: 'Docker', description: 'Provisioned Linux container via Docker.', icon: Container },
-              { id: 'ssh', label: 'Custom SSH', description: 'Bring your own SSH host.', icon: KeyRound },
-            ];
+            const tiles = RUNTIME_PROVIDER_TILES;
             return (
               <div className="rounded-xl border border-[color:var(--accent-solid)]/40 bg-[color:var(--surface-0)] p-4 space-y-3 animate-in fade-in slide-in-from-top-1 duration-200">
                 <div className="flex items-center justify-between gap-2">
@@ -1425,7 +1458,7 @@ export function SettingsPage() {
                     <X size={14} />
                   </button>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {tiles.map((tile) => {
                     const cap = capByProvider.get(tile.id);
                     const isSsh = tile.id === 'ssh';
@@ -1563,6 +1596,30 @@ export function SettingsPage() {
                   </>
                 )}
               </div>
+            );
+          })()}
+
+          {/* Local (this Mac) — selected from chooser */}
+          {addingNewTarget && selectedProvider === 'local' && (() => {
+            const cap = runtimeCapabilities?.providers.find((p) => p.provider === 'local');
+            return (
+              <LocalRuntimeForm
+                mode="create"
+                available={cap?.available ?? false}
+                detail={cap?.detail}
+                name={runtimeForm.name}
+                onNameChange={(v) => updateRuntimeForm({ name: v })}
+                workspacesDir={runtimeForm.workspaces_dir}
+                onWorkspacesDirChange={(v) => updateRuntimeForm({ workspaces_dir: v })}
+                isBusy={creatingProvider === 'local'}
+                jobMessage={creatingJobMessage}
+                inputClass={runtimeInputClass}
+                cancelLabel="Cancel"
+                onCancel={resetRuntimeForm}
+                onRecheck={() => { void fetchRuntimes(); }}
+                onSubmit={() => void createRuntime('local')}
+                surface="card"
+              />
             );
           })()}
 
