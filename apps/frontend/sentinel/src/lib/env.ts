@@ -9,7 +9,7 @@ export const SESSION_DEBUG_PANEL_ENABLED = rawSessionDebugPanel === '1' || rawSe
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 export const WS_BASE_URL = `${wsProtocol}//${window.location.host}`;
 
-export const APP_VERSION = '0.1.0';
+export const APP_VERSION = '0.1.1';
 
 export function wsSessionsBaseUrl(instanceName: string): string {
   return `${WS_BASE_URL}/ws/instances/${encodeURIComponent(instanceName)}/sessions`;
