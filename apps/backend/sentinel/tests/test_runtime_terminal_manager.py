@@ -212,7 +212,10 @@ def test_pane_feed_delivers_large_heredoc_intact(tmp_path: Path) -> None:
     assert sentinel.exists(), "command chained after the heredoc did not run"
 
 
-@pytest.mark.skipif(shutil.which("tmux") is None, reason="requires real tmux")
+@pytest.mark.skipif(
+    sys.platform != "darwin" or shutil.which("tmux") is None,
+    reason="verifies the macOS local-runtime DEBUG-trap OSC 133;C path; needs tmux",
+)
 def test_osc133_capture_is_clean_for_wrapped_multiline(tmp_path: Path) -> None:
     # The real rcfile emits OSC 133 A/B/C/D; capturing C->D must yield only the
     # command output (no echoed input/prompts) for a wrapped multiline command.
