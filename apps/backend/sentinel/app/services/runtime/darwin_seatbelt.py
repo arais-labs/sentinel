@@ -50,7 +50,7 @@ def build_append_seatbelt_tool_roots_script(
     *,
     tools: list[str] | None = None,
 ) -> str:
-    tool_names = tools or ["/bin/bash", "bash", "tmux", "git", "gh", "ssh"]
+    tool_names = tools or ["/bin/bash", "bash", "tmux", "git", "gh", "ssh", "python3"]
     output_path = (PurePosixPath(paths.runtime) / "seatbelt-tool-roots").as_posix()
     tool_list = " ".join(quote(tool) for tool in tool_names)
     return "\n".join(
@@ -109,7 +109,7 @@ def build_append_seatbelt_tool_roots_script(
             '    sentinel_tool_path="$sentinel_tool_path:/Library/Developer/CommandLineTools/usr/bin"',
             "  fi",
             f"done < {quote(output_path)}",
-            'export PATH="${sentinel_tool_path#:}:$PATH"',
+            'export PATH="$PATH:${sentinel_tool_path#:}"',
             "sentinel_sb_escape() {",
             "  printf '%s' \"$1\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'",
             "}",
@@ -117,6 +117,8 @@ def build_append_seatbelt_tool_roots_script(
             '  [ -n "$sentinel_root" ] || continue',
             '  sentinel_escaped=$(sentinel_sb_escape "$sentinel_root")',
             f'  printf \'(allow file-read* file-test-existence (subpath "%s"))\\n\' "$sentinel_escaped" >> {quote(profile_path)}',
+            # Ancestor traversal too, so realpath() on a symlinked tool resolves.
+            f'  printf \'(allow file-read-metadata file-test-existence (path-ancestors "%s"))\\n\' "$sentinel_escaped" >> {quote(profile_path)}',
             f"done < {quote(output_path)}",
         ]
     )
@@ -329,6 +331,10 @@ def build_seatbelt_profile(paths: RemoteWorkspacePaths) -> str:
     )
     lines.extend([")"])
     lines.extend(["(allow file-write*"])
+    lines.extend(f"  (subpath {_sb_string(path)})" for path in session_paths)
+    lines.extend([")"])
+    # Let the agent run binaries it builds/installs in its workspace.
+    lines.extend(["(allow file-map-executable"])
     lines.extend(f"  (subpath {_sb_string(path)})" for path in session_paths)
     lines.extend(
         [

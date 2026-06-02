@@ -39,12 +39,29 @@ alias ll='ls -lah --color=auto'
 alias grep='grep --color=auto'
 alias egrep='egrep --color=auto'
 alias fgrep='fgrep --color=auto'
+__sentinel_armed=0
+__sentinel_preexec() {
+  # OSC 133;C (output start), emitted once per command so capture can skip the
+  # echoed input. functrace lets it fire inside the subshell wrapper.
+  case "$BASH_COMMAND" in __sentinel_prompt_command*) return 0 ;; esac
+  local __f
+  for __f in "${FUNCNAME[@]}"; do
+    [ "$__f" = "__sentinel_prompt_command" ] && return 0
+  done
+  [ "$__sentinel_armed" = 1 ] || return 0
+  __sentinel_armed=0
+  printf '\033]133;C\033\\'
+}
+trap '__sentinel_preexec' DEBUG
+set -o functrace
 __sentinel_prompt_command() {
   local __rc=$?
   printf '\033]133;D;%s\033\\' "$__rc"
   set +e
   set +u
   set +o pipefail 2>/dev/null || true
+  set -o functrace 2>/dev/null || true
+  __sentinel_armed=1
   return $__rc
 }
 PROMPT_COMMAND='__sentinel_prompt_command'
@@ -117,6 +134,29 @@ def build_resolve_host_tmux_script(*, os_name: str = "linux") -> str:
             "  echo \"Required executable 'tmux' is not available in the runtime PATH.\" >&2",
             "  exit 127",
             "fi",
+        ]
+    )
+
+
+# Chunk size/delay for feeding input into the pane without overrunning the tty.
+PANE_FEED_CHUNK_BYTES = 512
+PANE_FEED_CHUNK_DELAY = "0.03"
+
+
+def build_pane_feed_script(socket: str, name: str, *, os_name: str = "linux") -> str:
+    """Script that types ``$1`` into the pane in paced chunks. Caller sends Enter."""
+    return "\n".join(
+        [
+            build_resolve_host_tmux_script(os_name=os_name),
+            'sentinel_cmd="$1"',
+            "sentinel_len=${#sentinel_cmd}",
+            "sentinel_i=0",
+            'while [ "$sentinel_i" -lt "$sentinel_len" ]; do',
+            f'  "$sentinel_tmux" -S {quote(socket)} send-keys -t {quote(name)} -l '
+            f'"${{sentinel_cmd:$sentinel_i:{PANE_FEED_CHUNK_BYTES}}}"',
+            f"  sentinel_i=$((sentinel_i + {PANE_FEED_CHUNK_BYTES}))",
+            f"  sleep {PANE_FEED_CHUNK_DELAY}",
+            "done",
         ]
     )
 

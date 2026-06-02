@@ -15,6 +15,7 @@ from app.services.runtime.remote_commands import load_remote_command
 from app.services.runtime.local_transport import RuntimeTransport
 from app.services.runtime.tmux import (
     build_host_tmux_command,
+    build_pane_feed_script,
     build_resolve_host_tmux_script,
     build_close_tmux_script,
     build_open_tmux_script,
@@ -34,6 +35,7 @@ from app.services.runtime.workspace import (
 _POLL_INTERVAL_SECONDS = 0.2
 _SHELL_FOREGROUND_COMMANDS = {"bash", "sh", "zsh", "fish", "dash"}
 _OSC_D_PATTERN = re.compile(rb"\x1b\]133;D(?:;(-?\d+))?(?:\x1b\\|\x07)")
+_OSC_C_PATTERN = re.compile(rb"\x1b\]133;C(?:\x1b\\|\x07)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -704,31 +706,23 @@ class RuntimeTerminalManager:
             session_id, terminal_id=terminal_id, root=self._workspaces_root
         )
         name = tmux_session_name(terminal_id)
+        environment = await self._require_supported_environment()
+        # Clear any partial input on the prompt.
         await self._ssh.run(
             await self._tmux_command(["-S", socket, "send-keys", "-t", name, "C-u"]),
             timeout=10,
         )
-        if "\n" in command:
-            await self._ssh.run(
-                await self._tmux_command(
-                    ["-S", socket, "send-keys", "-t", name, "-l", "\x1b[200~"]
-                ),
-                timeout=10,
-            )
-            await self._ssh.run(
-                await self._tmux_command(["-S", socket, "send-keys", "-t", name, "-l", command]),
-                timeout=15,
-            )
-            await self._ssh.run(
-                await self._tmux_command(
-                    ["-S", socket, "send-keys", "-t", name, "-l", "\x1b[201~"]
-                ),
-                timeout=10,
-            )
-        else:
-            await self._ssh.run(
-                await self._tmux_command(["-S", socket, "send-keys", "-t", name, "-l", command]),
-                timeout=15,
+        # Type the command into the pane in paced chunks; a single large send-keys
+        # overruns the tty and drops bytes (mangled heredocs).
+        feed = await self._ssh.run_script(
+            build_pane_feed_script(socket, name, os_name=environment.os),
+            args=[command],
+            timeout=120,
+        )
+        if feed.exit_status not in {0, None}:
+            raise TerminalUnavailableError(
+                "terminal_send_failed",
+                detail=(feed.stderr or feed.stdout or "").strip()[:500],
             )
         await self._ssh.run(
             await self._tmux_command(["-S", socket, "send-keys", "-t", name, "Enter"]),
@@ -764,7 +758,15 @@ class RuntimeTerminalManager:
                     match.group(1).decode("ascii", errors="replace") if match.group(1) else ""
                 )
                 exit_code = int(raw_code) if raw_code and raw_code.lstrip("-").isdigit() else -1
-                return self._parse_output(last_chunk[: match.start()], exit_code)
+                pre_d = last_chunk[: match.start()]
+                # Output starts at the OSC 133;C marker; fall back to dropping the
+                # echoed first line when it's absent (older sessions).
+                c_matches = list(_OSC_C_PATTERN.finditer(pre_d))
+                if c_matches:
+                    return self._parse_output(
+                        pre_d[c_matches[-1].end() :], exit_code, strip_command_echo=False
+                    )
+                return self._parse_output(pre_d, exit_code)
             if asyncio.get_running_loop().time() >= deadline:
                 parsed = self._parse_output(last_chunk, -1)
                 return RuntimeExecResult(
@@ -781,8 +783,6 @@ class RuntimeTerminalManager:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> str:
-        if not cwd and not env:
-            return command
         parts: list[str] = []
         if cwd:
             parts.append(f"cd {quote(cwd)}")
@@ -792,11 +792,15 @@ class RuntimeTerminalManager:
                     continue
                 parts.append(f"export {key}={quote(str(value))}")
         if "\n" in command:
+            # Wrap multiline in a subshell so it runs as one command (one marker)
+            # instead of submitting each line — which would split a heredoc.
             setup = list(parts)
             if cwd:
                 setup[0] = f"cd {quote(cwd)} || exit"
             body = command.rstrip("\n")
             return "(\n" + "\n".join([*setup, body, ")"])
+        if not parts:
+            return command
         if cwd:
             prefix = parts[0] + " && " + "; ".join(parts[1:] + [command])
         else:
@@ -930,11 +934,15 @@ class RuntimeTerminalManager:
             return None
         return payload
 
-    def _parse_output(self, raw: bytes, exit_code: int) -> RuntimeExecResult:
+    def _parse_output(
+        self, raw: bytes, exit_code: int, *, strip_command_echo: bool = True
+    ) -> RuntimeExecResult:
         text = _clean_terminal_text(raw)
-        newline = text.find("\n")
-        output = text[newline + 1 :] if newline >= 0 else ""
-        return RuntimeExecResult(exit_status=exit_code, stdout=output.rstrip(), stderr="")
+        if strip_command_echo:
+            # No C marker: the first line is the echoed command — drop it.
+            newline = text.find("\n")
+            text = text[newline + 1 :] if newline >= 0 else ""
+        return RuntimeExecResult(exit_status=exit_code, stdout=text.rstrip(), stderr="")
 
 
 def get_terminal_manager(

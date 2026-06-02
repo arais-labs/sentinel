@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentinel-backend"
-version = "0.1.3"
+version = "0.1.4"
 description = "Sentinel agent backend (FastAPI)"
 requires-python = ">=3.12"
 dependencies = [

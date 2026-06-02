@@ -19,7 +19,7 @@ _TERMINAL_IDS_PROPERTY: dict = {
 MODULE = ModuleDefinition(
     name="runtime",
     label="Runtime",
-    description="Run shell commands in the session workspace through the SSH/tmux runtime.",
+    description="Run shell commands in the session's isolated, persistent tmux workspace.",
     icon="terminal",
     system=True,
     grouped_tool=True,
@@ -28,8 +28,11 @@ MODULE = ModuleDefinition(
             id="user",
             label="Run Shell Command",
             description=(
-                "Run a shell command in the session runtime workspace. Commands execute inside "
-                "the session's tmux-backed OS sandbox."
+                "Run a shell command in the session's isolated, persistent workspace — an "
+                "OS-sandboxed tmux shell. State persists across commands (working directory, "
+                "shell environment, background processes), and the host's installed tools are on "
+                "PATH. You can install dependencies and build or download tools into the "
+                "workspace; they persist and run from there. Multiline commands and heredocs work."
             ),
             handler=handle_user,
             requires_runtime_context=True,

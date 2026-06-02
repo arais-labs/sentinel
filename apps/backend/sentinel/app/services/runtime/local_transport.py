@@ -16,15 +16,9 @@ _LOGIN_ENV_MARKER = "__SENTINEL_LOGIN_ENV__"
 
 
 async def _capture_login_environment() -> dict[str, str]:
-    """Resolve the desktop user's login-shell environment — the local equivalent
-    of SSH-ing into this machine.
-
-    ``env -i`` drops everything the backend inherited (so no secrets ever reach a
-    command); the user's login shell rebuilds the session from their Mac profile.
-    Identity comes from the OS account database, and the backend PATH is seeded so
-    path_helper keeps the bundled tools as a fallback at the tail. The env is
-    dumped after a marker so any profile stdout is discarded — commands then run
-    in a non-login shell with this env, never re-sourcing the profile.
+    """Resolve the user's login-shell environment once (env -i + login shell),
+    dumped after a marker so profile stdout is discarded. No backend secrets; the
+    seeded backend PATH stays a fallback at the tail via path_helper.
     """
     account = pwd.getpwuid(os.getuid())
     shell = account.pw_shell or "/bin/zsh"
@@ -255,8 +249,7 @@ class LocalTransport:
         term_size: tuple[int, int] = (80, 24),  # noqa: ARG002
         encoding: str | None = None,
     ) -> _LocalProcess:
-        # Non-login shell with the resolved env (no profile output to corrupt the
-        # tmux control stream); stderr merged into stdout, the only consumer read.
+        # Non-login shell with the resolved env; stderr merged into stdout.
         process = await asyncio.create_subprocess_shell(
             command,
             stdin=asyncio.subprocess.PIPE,
