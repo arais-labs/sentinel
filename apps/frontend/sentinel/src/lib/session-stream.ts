@@ -33,6 +33,8 @@ interface StreamEntry {
   ws: WebSocket | null;
   /** Increment on every (re)connect attempt; events from older sockets are dropped. */
   generation: number;
+  /** Last `connected` event (carries the terminal snapshot), replayed to late subscribers. */
+  lastConnected: WsEvent | null;
   connection: WsConnectionState;
   reconnectAttempts: number;
   reconnectTimer: number | null;
@@ -111,6 +113,9 @@ function connect(entry: StreamEntry): void {
 
   setConnection(entry, entry.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
+  // Drop the previous snapshot; the fresh socket will send its own `connected`.
+  entry.lastConnected = null;
+
   const generation = ++entry.generation;
   const ws = new WebSocket(
     `${wsSessionsBaseUrl(entry.instanceName)}/${entry.sessionId}/stream`,
@@ -127,6 +132,7 @@ function connect(entry: StreamEntry): void {
     if (generation !== entry.generation || ws !== entry.ws) return;
     try {
       const payload = JSON.parse(messageEvent.data) as WsEvent;
+      if (payload.type === 'connected') entry.lastConnected = payload;
       emitEvent(entry, payload);
     } catch {
       /* ignore malformed frames */
@@ -185,6 +191,7 @@ export function subscribeSessionStream(
       sessionId,
       ws: null,
       generation: 0,
+      lastConnected: null,
       connection: 'disconnected',
       reconnectAttempts: 0,
       reconnectTimer: null,
@@ -202,9 +209,12 @@ export function subscribeSessionStream(
 
   if (isFirstSubscriber) {
     connect(entry);
-  } else if (handlers.onState) {
-    // Bring a late subscriber in sync with the live connection state.
-    handlers.onState(entry.connection);
+  } else {
+    // Bring a late subscriber in sync with the live connection state...
+    if (handlers.onState) handlers.onState(entry.connection);
+    // ...and replay the `connected` snapshot it missed (the terminal list lives
+    // there), so a pane opened after the socket connected isn't left empty.
+    if (handlers.onEvent && entry.lastConnected) handlers.onEvent(entry.lastConnected);
   }
 
   const activeEntry = entry;

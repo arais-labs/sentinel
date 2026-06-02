@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from app.services.runtime.remote_commands import load_remote_command
-from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.local_transport import RuntimeTransport
 from app.services.runtime.terminal_manager import RuntimeTerminalManager
 from app.services.runtime.workspace import workspace_paths
 
@@ -50,7 +50,7 @@ class RuntimeDesktopManager:
         depth: int = 24,
     ) -> None:
         self._terminal_manager = terminal_manager
-        self._ssh: SSHClient = terminal_manager.ssh
+        self._ssh: RuntimeTransport = terminal_manager.ssh
         self._workspaces_root = workspaces_root
         self._geometry = geometry
         self._depth = depth

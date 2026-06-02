@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from app.services.runtime.environment import RuntimeEnvironment, detect_runtime_environment
 from app.services.runtime.remote_commands import load_remote_command
-from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.local_transport import RuntimeTransport
 from app.services.runtime.tmux import (
     build_host_tmux_command,
     build_resolve_host_tmux_script,
@@ -100,7 +100,7 @@ class RuntimeSandboxUnavailableError(TerminalUnavailableError):
 class RuntimeTerminalManager:
     """Backend-owned workspace and tmux lifecycle over SSH."""
 
-    def __init__(self, ssh: SSHClient, *, workspaces_root: str | None = None) -> None:
+    def __init__(self, ssh: RuntimeTransport, *, workspaces_root: str | None = None) -> None:
         self._ssh = ssh
         self._workspaces_root = workspaces_root
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -111,7 +111,7 @@ class RuntimeTerminalManager:
         self._environment: RuntimeEnvironment | None = None
 
     @property
-    def ssh(self) -> SSHClient:
+    def ssh(self) -> RuntimeTransport:
         return self._ssh
 
     @property
@@ -938,7 +938,7 @@ class RuntimeTerminalManager:
 
 
 def get_terminal_manager(
-    ssh: SSHClient, *, workspaces_root: str | None = None
+    ssh: RuntimeTransport, *, workspaces_root: str | None = None
 ) -> RuntimeTerminalManager:
     return RuntimeTerminalManager(ssh, workspaces_root=workspaces_root)
 

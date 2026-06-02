@@ -4,6 +4,11 @@ import { toast } from 'sonner';
 
 import { api } from '../lib/api';
 import { isSessionStreamOpen, sendSessionStreamMessage } from '../lib/session-stream';
+import {
+  getFocusedTerminal,
+  setFocusedTerminal,
+  useFocusedTerminal,
+} from '../store/focused-terminal-store';
 import { useSessionStream } from './useSessionStream';
 import type {
   RuntimeActionResponse,
@@ -179,7 +184,15 @@ export function useSessionRuntimeStream(
   const desktopViewActive = options.desktopViewActive ?? false;
 
   const [activeTerminals, setActiveTerminals] = useState<ActiveTerminal[]>([]);
-  const [focusedTerminalId, setFocusedTerminalId] = useState<string | null>(null);
+  // Focus is shared per session (see focused-terminal-store) so the pills in
+  // SessionsPage and the standalone Terminal tab stay in lock-step.
+  const focusedTerminalId = useFocusedTerminal(sessionId);
+  const setFocusedTerminalId = useCallback(
+    (terminalId: string | null) => {
+      if (sessionId) setFocusedTerminal(sessionId, terminalId);
+    },
+    [sessionId],
+  );
   const [liveView, setLiveView] = useState<RuntimeLiveView | null>(null);
   const [runtimeBooting, setRuntimeBooting] = useState(false);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
@@ -270,7 +283,8 @@ export function useSessionRuntimeStream(
 
   const dropTerminal = useCallback((terminalId: string) => {
     setActiveTerminals((current) => current.filter((t) => t.id !== terminalId));
-    setFocusedTerminalId((current) => (current === terminalId ? null : current));
+    const sid = sessionIdRef.current;
+    if (sid && getFocusedTerminal(sid) === terminalId) setFocusedTerminal(sid, null);
   }, []);
 
   const isStreamOpen = useCallback(() => {
@@ -412,9 +426,9 @@ export function useSessionRuntimeStream(
   );
 
   // Reset terminal + live-view state and (re)fetch when the session changes.
+  // Focus is per-session in the shared store, so it must NOT be cleared here.
   useEffect(() => {
     setActiveTerminals([]);
-    setFocusedTerminalId(null);
     if (!sessionId) {
       setLiveView(null);
       setRuntimeBooting(false);
@@ -460,6 +474,12 @@ export function useSessionRuntimeStream(
             .map(parseTerminal)
             .filter((item): item is ActiveTerminal => item !== null);
           setActiveTerminals(incoming);
+          // Drop a stale focus that points at a terminal this snapshot no longer has.
+          const sid = sessionIdRef.current;
+          const focused = sid ? getFocusedTerminal(sid) : null;
+          if (sid && focused && !incoming.some((t) => t.id === focused)) {
+            setFocusedTerminal(sid, null);
+          }
         }
         break;
       }
@@ -489,7 +509,8 @@ export function useSessionRuntimeStream(
         const id = typeof event.terminal_id === 'string' ? event.terminal_id : null;
         if (!id) break;
         setActiveTerminals((current) => current.filter((t) => t.id !== id));
-        setFocusedTerminalId((current) => (current === id ? null : current));
+        const sid = sessionIdRef.current;
+        if (sid && getFocusedTerminal(sid) === id) setFocusedTerminal(sid, null);
         break;
       }
       case 'terminal_busy': {

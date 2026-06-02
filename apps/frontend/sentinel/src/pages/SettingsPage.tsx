@@ -1133,7 +1133,11 @@ export function SettingsPage() {
                 />
               </div>
               <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
-                {target.username && target.host ? `${target.username}@${target.host}:${target.port ?? 22}` : 'SSH details pending'}
+                {target.provider === 'local'
+                  ? 'This Mac'
+                  : target.username && target.host
+                    ? `${target.username}@${target.host}:${target.port ?? 22}`
+                    : 'SSH details pending'}
               </div>
               <div className="font-mono text-[10px] text-[color:var(--text-muted)] truncate">
                 {target.workspaces_dir ?? 'Workspace root pending'}

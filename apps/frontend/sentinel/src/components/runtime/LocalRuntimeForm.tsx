@@ -1,7 +1,7 @@
 import { X, RefreshCw, Loader2, Plus, Check } from 'lucide-react';
 
 export interface LocalRuntimeFormProps {
-  /** 'create' generates a key and registers a runtime; 'edit' updates an existing one. */
+  /** 'create' registers a new runtime; 'edit' updates an existing one. */
   mode?: 'create' | 'edit';
   /** Create-mode gating: when false, show the guide + Recheck instead of the fields. */
   available?: boolean;
@@ -80,8 +80,8 @@ export function LocalRuntimeForm({
         <>
           <p className="text-[11px] text-[color:var(--text-muted)] leading-relaxed">
             {isEdit
-              ? 'The agent connects to this Mac at 127.0.0.1. Change where session workspaces live below.'
-              : 'Sentinel generates an SSH key, authorizes it for your macOS user (loopback-only), verifies it can log in, and connects to this machine at 127.0.0.1.'}
+              ? 'The agent runs directly on this Mac. Change where session workspaces live below.'
+              : 'The agent runs directly on this Mac as you — no SSH or Remote Login — sandboxed to the workspace folder below.'}
           </p>
 
           <label className="block space-y-1">

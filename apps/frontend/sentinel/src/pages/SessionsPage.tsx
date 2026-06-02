@@ -61,6 +61,8 @@ import {
 } from '../lib/sessionDeletion';
 import { useSetActiveSession } from '../store/active-session-store';
 import { useSessionRuntimeStream } from '../hooks/useSessionRuntimeStream';
+import { usePaneId } from '../components/workspace/WorkspacePane';
+import { getOpenTabsSnapshot, useWorkspaceStore } from '../store/workspace-store';
 import { useSessionWorkbench } from '../hooks/useSessionWorkbench';
 import {
   applyToolcallEnd,
@@ -655,6 +657,28 @@ export function SessionsPage() {
     runtimeBooting,
     setRuntimeBooting,
   } = runtime;
+
+  // Surface a terminal when its pill (or a tool card's "open terminal") is
+  // clicked: focus it (shared store → the Terminal tab follows) and, in
+  // workspace mode, open the Terminal view in a right split when it's closed or
+  // focus its pane when it's already open.
+  const paneId = usePaneId();
+  const openWorkspaceTab = useWorkspaceStore((s) => s.openTab);
+  const splitWorkspacePane = useWorkspaceStore((s) => s.splitPane);
+  const openOrFocusTerminal = useCallback(
+    (terminalId: string) => {
+      setFocusedTerminalId(terminalId);
+      if (!workspaceMode) return;
+      if (getOpenTabsSnapshot().terminal) {
+        openWorkspaceTab('terminal');
+      } else if (paneId) {
+        splitWorkspacePane(paneId, 'terminal', 'right');
+      } else {
+        openWorkspaceTab('terminal');
+      }
+    },
+    [workspaceMode, paneId, openWorkspaceTab, splitWorkspacePane, setFocusedTerminalId],
+  );
 
   // Files / workbench surface (directory browse, open-file view, diff, repo
   // changes, download). Owned by the shared workbench hook; SessionsPage just
@@ -3010,11 +3034,7 @@ export function SessionsPage() {
                           active={activeToolCallKeys.has(item.callKey)}
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
-                          onOpenTerminal={(tid) => {
-                            // Focus the terminal in the shared runtime state; the
-                            // standalone Terminal tab follows it.
-                            setFocusedTerminalId(tid);
-                          }}
+                          onOpenTerminal={openOrFocusTerminal}
                         />
                       );
                     })}
@@ -3028,11 +3048,7 @@ export function SessionsPage() {
                           active={false}
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
-                          onOpenTerminal={(tid) => {
-                            // Focus the terminal in the shared runtime state; the
-                            // standalone Terminal tab follows it.
-                            setFocusedTerminalId(tid);
-                          }}
+                          onOpenTerminal={openOrFocusTerminal}
                         />
                       ))}
                     {streaming.activeToolCalls
@@ -3044,11 +3060,7 @@ export function SessionsPage() {
                           active={true}
                           onResolveApproval={resolveApprovalInline}
                           resolvingApprovalKey={resolvingApprovalKey}
-                          onOpenTerminal={(tid) => {
-                            // Focus the terminal in the shared runtime state; the
-                            // standalone Terminal tab follows it.
-                            setFocusedTerminalId(tid);
-                          }}
+                          onOpenTerminal={openOrFocusTerminal}
                         />
                       ))}
 
@@ -3118,11 +3130,7 @@ export function SessionsPage() {
                                   >
                                     <button
                                       type="button"
-                                      onClick={() => {
-                                        // Focus this terminal in the shared runtime
-                                        // state; the standalone Terminal tab follows.
-                                        setFocusedTerminalId(terminal.id);
-                                      }}
+                                      onClick={() => openOrFocusTerminal(terminal.id)}
                                       className={`inline-flex items-center gap-1.5 ${closable ? 'pl-3 pr-2' : 'px-3'} h-7 text-[10px] font-bold uppercase tracking-wider active:scale-95`}
                                       title={tooltip}
                                     >

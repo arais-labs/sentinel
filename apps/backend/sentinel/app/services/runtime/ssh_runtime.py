@@ -10,6 +10,7 @@ from app.services.instance_runtime_context import instance_runtime_context_regis
 from app.services.runtime.desktop import RuntimeDesktopManager
 from app.services.runtime.files import RuntimeWorkspaceFiles
 from app.services.runtime.port_forwards import RuntimePortForwardManager
+from app.services.runtime.local_transport import LocalTransport
 from app.services.runtime.ssh_client import SSHClient
 from app.services.runtime.runtimes import (
     InstanceRuntimeNotConfigured,
@@ -143,10 +144,15 @@ async def _resolve_runtime(
 
 
 def _build_bundle(runtime: ResolvedRuntime) -> _RuntimeBundle:
-    ssh = SSHClient(runtime.credentials())
-    terminal = RuntimeTerminalManager(ssh, workspaces_root=runtime.workspaces_dir)
-    files = RuntimeWorkspaceFiles(ssh, workspaces_root=runtime.workspaces_dir)
-    forwards = RuntimePortForwardManager(ssh)
+    # A `local` runtime runs on the host itself (desktop mode) — there is no
+    # machine to SSH to, so it uses a direct subprocess transport. Both transports
+    # expose the same surface, so the managers below are identical either way.
+    transport = (
+        LocalTransport() if runtime.provider == "local" else SSHClient(runtime.credentials())
+    )
+    terminal = RuntimeTerminalManager(transport, workspaces_root=runtime.workspaces_dir)
+    files = RuntimeWorkspaceFiles(transport, workspaces_root=runtime.workspaces_dir)
+    forwards = RuntimePortForwardManager(transport)
     desktop = RuntimeDesktopManager(terminal, workspaces_root=runtime.workspaces_dir)
     return _RuntimeBundle(
         runtime_id=str(runtime.id),

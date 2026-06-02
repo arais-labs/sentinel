@@ -246,7 +246,7 @@ export const DesktopPreview = memo(function DesktopPreview({
         {isBooting ? 'Desktop starting' : 'Desktop unavailable'}
       </div>
       <p className="max-w-[260px] text-[11px] leading-relaxed text-white/40">
-        This SSH runtime does not currently expose a session desktop view.
+        This runtime does not currently expose a session desktop view.
       </p>
     </div>
   ) : (

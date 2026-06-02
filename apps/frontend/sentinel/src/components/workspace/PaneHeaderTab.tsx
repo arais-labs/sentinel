@@ -1,11 +1,10 @@
-import { useRef, useState, type CSSProperties, type SyntheticEvent } from 'react';
+import { useRef, useState, type SyntheticEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { IDockviewPanelHeaderProps } from 'dockview-react';
 import {
   ChevronDown,
   Check,
   SplitSquareHorizontal,
-  SplitSquareVertical,
   X,
 } from 'lucide-react';
 
@@ -163,12 +162,44 @@ interface SplitMenuProps {
   paneId: string;
 }
 
-const SPLIT_OPTIONS: { direction: SplitDirection; label: string }[] = [
+type EdgeDirection = 'left' | 'right' | 'above' | 'below';
+
+const SPLIT_OPTIONS: { direction: EdgeDirection; label: string }[] = [
   { direction: 'right', label: 'Split right' },
   { direction: 'below', label: 'Split down' },
   { direction: 'left', label: 'Split left' },
   { direction: 'above', label: 'Split up' },
 ];
+
+// Half of the pane (the side the new pane will land on) drawn as a filled path,
+// so the rounded outer rect + divider read as "panel goes here".
+const SPLIT_FILL_PATHS: Record<EdgeDirection, string> = {
+  right: 'M12 3 H19 a2 2 0 0 1 2 2 V19 a2 2 0 0 1 -2 2 H12 Z',
+  left: 'M12 3 H5 a2 2 0 0 0 -2 2 V19 a2 2 0 0 0 2 2 H12 Z',
+  below: 'M3 12 V19 a2 2 0 0 0 2 2 H19 a2 2 0 0 0 2 -2 V12 Z',
+  above: 'M3 12 V5 a2 2 0 0 1 2 -2 H19 a2 2 0 0 1 2 2 V12 Z',
+};
+
+function SplitDirectionIcon({ direction, size = 15 }: { direction: EdgeDirection; size?: number }) {
+  const divider = direction === 'left' || direction === 'right' ? 'M12 3 V21' : 'M3 12 H21';
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={SPLIT_FILL_PATHS[direction]} fill="currentColor" stroke="none" />
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d={divider} />
+    </svg>
+  );
+}
 
 /**
  * Split control: opens a new pane in the chosen direction hosting a tab that is
@@ -247,25 +278,7 @@ function SplitMenu({ paneId }: SplitMenuProps) {
                       : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-1)] hover:text-[color:var(--text-primary)]'
                   }`}
                 >
-                  {option.direction === 'right' || option.direction === 'left' ? (
-                    <SplitSquareHorizontal
-                      size={15}
-                      style={
-                        option.direction === 'left'
-                          ? ({ transform: 'scaleX(-1)' } as CSSProperties)
-                          : undefined
-                      }
-                    />
-                  ) : (
-                    <SplitSquareVertical
-                      size={15}
-                      style={
-                        option.direction === 'above'
-                          ? ({ transform: 'scaleY(-1)' } as CSSProperties)
-                          : undefined
-                      }
-                    />
-                  )}
+                  <SplitDirectionIcon direction={option.direction} size={15} />
                 </button>
               ))}
             </div>

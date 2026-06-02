@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import getpass
 from dataclasses import dataclass
 from typing import get_args
 from uuid import UUID
@@ -57,6 +58,10 @@ class ResolvedRuntime:
     updated_at_marker: str
 
     def credentials(self) -> SSHCredentials:
+        if self.provider == "local" or self.auth_type == "local":
+            raise RuntimeErrorBase(
+                "Local runtimes run directly on this machine and have no SSH credentials."
+            )
         return SSHCredentials(
             host=self.host,
             port=self.port,
@@ -218,6 +223,22 @@ async def resolve_instance_runtime(
 def resolve_runtime_secret(runtime: Runtime) -> ResolvedRuntime:
     if runtime.provider not in _KNOWN_PROVIDERS:
         raise RuntimeErrorBase(f"Unsupported runtime provider: {runtime.provider}")
+    # `local` runs on the host directly — no SSH host/credentials, only a workspace.
+    if runtime.provider == "local":
+        if not (runtime.workspaces_dir or "").strip():
+            raise RuntimeErrorBase("Local runtime is missing a workspace folder.")
+        return ResolvedRuntime(
+            id=runtime.id,
+            name=runtime.name,
+            provider=runtime.provider,
+            host="127.0.0.1",
+            port=22,
+            username=getpass.getuser(),
+            workspaces_dir=str(runtime.workspaces_dir),
+            auth_type="local",
+            secret="",
+            updated_at_marker=str(runtime.updated_at or ""),
+        )
     if is_invalid_secret(runtime.encrypted_secret):
         raise RuntimeErrorBase("Runtime credentials could not be decrypted.")
     missing = [

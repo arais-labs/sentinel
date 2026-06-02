@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.local_transport import RuntimeTransport
 
 
 class RuntimeForwardError(RuntimeError):
@@ -91,7 +91,7 @@ def _allocate_local_port() -> int:
 
 
 class RuntimePortForwardManager:
-    def __init__(self, ssh: SSHClient) -> None:
+    def __init__(self, ssh: RuntimeTransport) -> None:
         self._ssh = ssh
         self._forwards: dict[str, RuntimeForward] = {}
         self._lock = asyncio.Lock()

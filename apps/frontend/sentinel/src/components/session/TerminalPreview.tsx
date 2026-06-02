@@ -115,7 +115,7 @@ export function TerminalPreview({ sessionId, terminalId, instanceName }: Termina
   }, [instanceName, sessionId, terminalId]);
 
   return (
-    <div className="relative h-full min-h-[260px] w-full overflow-hidden bg-[#050608]">
+    <div className="relative h-full w-full overflow-hidden bg-[#050608]">
       <div ref={containerRef} className="h-full w-full p-2" />
       {status !== 'connected' ? (
         <div className="pointer-events-none absolute right-3 top-3 rounded-md border border-white/10 bg-black/70 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-white/60">

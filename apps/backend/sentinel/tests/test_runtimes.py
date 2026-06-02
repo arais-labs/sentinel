@@ -8,6 +8,7 @@ from app.models.manager import SentinelInstance
 from app.schemas.runtimes import RuntimeCreateRequest, RuntimeUpdateRequest
 from app.services.secrets import InvalidSecretValue
 from app.services.runtime.runtimes import (
+    ResolvedRuntime,
     RuntimeErrorBase,
     assign_instance_runtime,
     create_runtime,
@@ -17,6 +18,34 @@ from app.services.runtime.runtimes import (
     update_runtime,
 )
 from tests.fake_db import FakeDB
+
+
+def _resolved(provider: str, auth_type: str, secret: str = "") -> ResolvedRuntime:
+    return ResolvedRuntime(
+        id=uuid4(),
+        name=provider,
+        provider=provider,
+        host="127.0.0.1",
+        port=22,
+        username="tester",
+        workspaces_dir="/tmp/ws",
+        auth_type=auth_type,
+        secret=secret,
+        updated_at_marker="",
+    )
+
+
+def test_local_resolved_runtime_has_no_ssh_credentials() -> None:
+    resolved = _resolved("local", "local")
+    with pytest.raises(RuntimeErrorBase, match="no SSH credentials"):
+        resolved.credentials()
+
+
+def test_ssh_resolved_runtime_still_builds_credentials() -> None:
+    creds = _resolved("ssh", "private_key", secret="KEYDATA").credentials()
+    assert creds.host == "127.0.0.1"
+    assert creds.private_key == "KEYDATA"
+    assert creds.password is None
 
 
 @pytest.mark.asyncio

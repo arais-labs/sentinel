@@ -54,6 +54,10 @@ def _runtime_payload(runtime: object | None) -> dict[str, object | None]:
     }
 
 
+def _is_local(runtime: object | None) -> bool:
+    return getattr(runtime, "provider", None) == "local"
+
+
 def _config_checks(runtime: object | None, error: str | None) -> list[RuntimeStatusCheck]:
     if runtime is None:
         return [
@@ -73,22 +77,33 @@ def _config_checks(runtime: object | None, error: str | None) -> list[RuntimeSta
             detail=getattr(runtime, "name", None),
         )
     )
-    checks.append(
-        RuntimeStatusCheck(
-            id="config_ssh_host",
-            label="SSH host configured",
-            status="pass" if str(getattr(runtime, "host", "")).strip() else "fail",
-            detail=str(getattr(runtime, "host", "")).strip() or "Runtime host is empty",
+    local = _is_local(runtime)
+    if local:
+        checks.append(
+            RuntimeStatusCheck(
+                id="config_execution",
+                label="Execution mode",
+                status="pass",
+                detail="This Mac (direct, no SSH)",
+            )
         )
-    )
-    checks.append(
-        RuntimeStatusCheck(
-            id="config_ssh_username",
-            label="SSH username configured",
-            status="pass" if str(getattr(runtime, "username", "")).strip() else "fail",
-            detail=str(getattr(runtime, "username", "")).strip() or "Runtime username is empty",
+    else:
+        checks.append(
+            RuntimeStatusCheck(
+                id="config_ssh_host",
+                label="SSH host configured",
+                status="pass" if str(getattr(runtime, "host", "")).strip() else "fail",
+                detail=str(getattr(runtime, "host", "")).strip() or "Runtime host is empty",
+            )
         )
-    )
+        checks.append(
+            RuntimeStatusCheck(
+                id="config_ssh_username",
+                label="SSH username configured",
+                status="pass" if str(getattr(runtime, "username", "")).strip() else "fail",
+                detail=str(getattr(runtime, "username", "")).strip() or "Runtime username is empty",
+            )
+        )
     try:
         workspaces_root = normalize_workspaces_root(str(getattr(runtime, "workspaces_dir", "")))
         checks.append(
@@ -108,18 +123,19 @@ def _config_checks(runtime: object | None, error: str | None) -> list[RuntimeSta
                 detail=str(exc),
             )
         )
-    checks.append(
-        RuntimeStatusCheck(
-            id="config_auth",
-            label="SSH authentication configured",
-            status=(
-                "pass"
-                if getattr(runtime, "auth_type", "") in {"private_key", "password"}
-                else "fail"
-            ),
-            detail=str(getattr(runtime, "auth_type", "") or "No SSH auth configured"),
+    if not local:
+        checks.append(
+            RuntimeStatusCheck(
+                id="config_auth",
+                label="SSH authentication configured",
+                status=(
+                    "pass"
+                    if getattr(runtime, "auth_type", "") in {"private_key", "password"}
+                    else "fail"
+                ),
+                detail=str(getattr(runtime, "auth_type", "") or "No SSH auth configured"),
+            )
         )
-    )
     return checks
 
 
@@ -241,13 +257,14 @@ def _overall_status(
     return "ready"
 
 
-def _summary(status: str) -> str:
+def _summary(status: str, *, local: bool = False) -> str:
+    kind = "Local runtime" if local else "SSH runtime"
     return {
-        "ready": "SSH runtime is ready.",
-        "degraded": "SSH runtime is usable, but optional capabilities are missing or degraded.",
-        "not_configured": "SSH runtime is not configured.",
-        "unreachable": "SSH runtime is not reachable.",
-        "failed": "SSH runtime is configured but core checks failed.",
+        "ready": f"{kind} is ready.",
+        "degraded": f"{kind} is usable, but optional capabilities are missing or degraded.",
+        "not_configured": f"{kind} is not configured.",
+        "unreachable": f"{kind} is not reachable.",
+        "failed": f"{kind} is configured but core checks failed.",
     }[status]
 
 
@@ -262,11 +279,10 @@ async def runtime_status_payload(*, instance_name: str) -> dict[str, object]:
     except RuntimeErrorBase as exc:
         runtime_error = str(exc)
     checks = _config_checks(runtime, runtime_error)
-    configured = await runtime_configured(instance_name=instance_name) and all(
-        item.status == "pass"
-        for item in checks
-        if item.id
-        in {
+    required_config_ids = (
+        {"config_runtime", "config_execution", "config_workspaces_dir"}
+        if _is_local(runtime)
+        else {
             "config_runtime",
             "config_ssh_host",
             "config_ssh_username",
@@ -274,18 +290,29 @@ async def runtime_status_payload(*, instance_name: str) -> dict[str, object]:
             "config_auth",
         }
     )
+    configured = await runtime_configured(instance_name=instance_name) and all(
+        item.status == "pass" for item in checks if item.id in required_config_ids
+    )
     unreachable = False
     if configured:
         manager = await get_runtime_terminal_manager(instance_name=instance_name)
+        local = _is_local(runtime)
+        connect_label = "Local execution" if local else "SSH connection"
+        if local:
+            connect_detail: str | None = "This Mac"
+        elif runtime is not None:
+            connect_detail = f"{runtime.host}:{int(runtime.port)}"
+        else:
+            connect_detail = None
         started = time.perf_counter()
         try:
             await manager.ssh.wait_ready(timeout=5)
             checks.append(
                 RuntimeStatusCheck(
                     id="ssh_connect",
-                    label="SSH connection",
+                    label=connect_label,
                     status="pass",
-                    detail=f"{runtime.host}:{int(runtime.port)}" if runtime is not None else None,
+                    detail=connect_detail,
                     duration_ms=int((time.perf_counter() - started) * 1000),
                 )
             )
@@ -309,7 +336,7 @@ async def runtime_status_payload(*, instance_name: str) -> dict[str, object]:
             checks.append(
                 RuntimeStatusCheck(
                     id="ssh_connect",
-                    label="SSH connection",
+                    label=connect_label,
                     status="fail",
                     detail=str(exc),
                     duration_ms=int((time.perf_counter() - started) * 1000),
@@ -318,7 +345,7 @@ async def runtime_status_payload(*, instance_name: str) -> dict[str, object]:
     status = _overall_status(checks, configured=configured, unreachable=unreachable)
     return {
         "status": status,
-        "summary": _summary(status),
+        "summary": _summary(status, local=_is_local(runtime)),
         "checked_at": datetime.now(UTC),
         "os": _detected_os(checks),
         "sandbox": _detected_sandbox(checks),

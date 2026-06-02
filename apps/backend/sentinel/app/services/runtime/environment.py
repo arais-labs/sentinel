@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.local_transport import RuntimeTransport
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +34,7 @@ def expected_sandbox_for_os(os_name: str) -> str:
     return "unavailable"
 
 
-async def detect_runtime_environment(ssh: SSHClient) -> RuntimeEnvironment:
+async def detect_runtime_environment(ssh: RuntimeTransport) -> RuntimeEnvironment:
     uname = await ssh.run("uname -s 2>/dev/null || true", timeout=10)
     os_name = normalize_remote_os(uname.stdout or "")
     if os_name == "linux":

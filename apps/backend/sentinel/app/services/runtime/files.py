@@ -7,7 +7,7 @@ from uuid import UUID
 
 from app.services.runtime.environment import RuntimeEnvironment, detect_runtime_environment
 from app.services.runtime.remote_commands import load_remote_command
-from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.local_transport import RuntimeTransport
 from app.services.runtime.workspace import workspace_paths
 
 
@@ -35,7 +35,7 @@ class RuntimeDownload:
 
 
 class RuntimeWorkspaceFiles:
-    def __init__(self, ssh: SSHClient, *, workspaces_root: str | None = None) -> None:
+    def __init__(self, ssh: RuntimeTransport, *, workspaces_root: str | None = None) -> None:
         self._ssh = ssh
         self._workspaces_root = workspaces_root
         self._environment: RuntimeEnvironment | None = None

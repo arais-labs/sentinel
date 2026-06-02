@@ -11,7 +11,7 @@ export interface RuntimeProviderTile {
 /** Single catalog of selectable runtime providers, shared by the Settings and
  *  Onboarding choosers so labels/descriptions/icons can't drift between them. */
 export const RUNTIME_PROVIDER_TILES: RuntimeProviderTile[] = [
-  { id: 'local', label: 'Local (this Mac)', description: 'Run on this machine over SSH.', icon: Laptop },
+  { id: 'local', label: 'Local (this Mac)', description: 'Run directly on this Mac, sandboxed to a workspace.', icon: Laptop },
   { id: 'lima', label: 'Lima VM', description: 'Provisioned Linux VM via Lima.', icon: Cpu },
   { id: 'docker', label: 'Docker', description: 'Provisioned Linux container via Docker.', icon: Container },
   { id: 'ssh', label: 'Custom SSH', description: 'Bring your own SSH host.', icon: KeyRound },
