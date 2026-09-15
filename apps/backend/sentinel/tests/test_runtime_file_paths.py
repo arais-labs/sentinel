@@ -387,3 +387,26 @@ def test_typescript_files_remain_source_previews(file_runtime, name):
     assert preview["media_type"] == "text/typescript"
     assert preview["binary"] is False
     assert preview["content"] == "export const value = 1;\n"
+
+
+def test_delete_path_handles_files_directories_and_symlinks_safely(file_runtime):
+    workspace, outside, call = file_runtime
+    target = workspace / "report with spaces.txt"
+    target.write_text("report")
+    kept = outside / "keep.txt"
+    kept.write_text("keep")
+    link = workspace / "link.txt"
+    link.symlink_to(kept)
+    folder = workspace / "generated"
+    folder.mkdir()
+    (folder / "nested.txt").write_text("nested")
+    assert call("delete_path", path=target.name)["ok"]
+    assert not target.exists()
+    assert call("delete_path", path=link.name)["ok"]
+    assert not link.is_symlink()
+    assert kept.read_text() == "keep"
+    assert call("delete_path", path=folder.name)["ok"]
+    assert not folder.exists()
+    assert not call("delete_path", path=str(workspace))["ok"]
+    assert workspace.is_dir()
+    assert not call("delete_path", path="missing.txt")["ok"]

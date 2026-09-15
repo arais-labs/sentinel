@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -180,6 +181,33 @@ def str_replace() -> dict[str, Any]:
     }
 
 
+def delete_path() -> dict[str, Any]:
+    path = PAYLOAD.get("path")
+    if not isinstance(path, str) or not path or "\0" in path:
+        raise RuntimePathError("A path is required")
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = WORKSPACE / candidate
+    # Resolve the parent only: deleting a symlink must remove the link, not its target.
+    parent = candidate.parent.resolve()
+    try:
+        parent.relative_to(WORKSPACE.resolve())
+    except ValueError as exc:
+        raise RuntimePathError("Path is outside the workspace") from exc
+    target = parent / candidate.name
+    if not target.is_symlink() and target.resolve() == WORKSPACE.resolve():
+        raise RuntimePathError("The workspace root cannot be deleted")
+    if not target.is_symlink() and not target.exists():
+        resolve_container_path(path)  # Preserve the normal missing-file error.
+        raise RuntimePathError("Path does not exist")
+    kind = "directory" if target.is_dir() and not target.is_symlink() else "file"
+    if kind == "directory":
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    return {"path": path, "kind": kind, "deleted": True}
+
+
 def main() -> None:
     try:
         operations = {
@@ -192,6 +220,7 @@ def main() -> None:
             "git_history": git_history,
             "search_files": search_files,
             "str_replace": str_replace,
+            "delete_path": delete_path,
         }
         handler = operations.get(OPERATION)
         if handler is None:

@@ -1,3 +1,4 @@
+import { useSubAgentApprovals } from '../components/session/useSubAgentApprovals';
 import { RetainedSessionContext } from '../lib/workspace-context-values';
 import { SessionPermissions } from '../components/session/SessionPermissions';
 import { SESSION_PERMISSIONS_CHANGED, type ApprovalScope } from '../lib/approvals';
@@ -10,6 +11,7 @@ import { useAnimatedTextareaHeight } from '../hooks/useAnimatedTextareaHeight';
 import '../components/session/chat-composer.css';
 import '../components/session/chat-header.css';
 import '../components/session/session-activity.css';
+import { ComposerActivityPills } from '../components/session/ComposerActivityPills';
 import { ComposerTerminalPills } from '../components/session/ComposerTerminalPills';
 import { StreamToolCard } from '../components/session/StreamToolCard';
 import { WorkspaceRuntimeStats, WorkspaceMetricsProvider } from '../components/session/WorkspaceRuntimeStats';
@@ -630,7 +632,11 @@ export function SessionsPage() {
   const subagentTriggerRef = useRef<HTMLButtonElement>(null);
   const subagentPanelRef = useRef<HTMLDivElement>(null);
   const subagentRect = useAnchorRect(subagentTriggerRef, railOverlayOpen);
-  const activeTaskCount = tasks.filter(task => task.status === 'running' || task.status === 'pending').length;
+  const pendingSubAgentApprovals = useSubAgentApprovals(viewVisible ? activeInstanceName : null, tasks);
+  const activeTaskPills = useMemo(() => tasks
+    .filter(task => task.status === 'running' || task.status === 'pending')
+    .map(task => ({ id: task.id, label: task.name, title: task.name, busy: task.status === 'running', needsApproval: pendingSubAgentApprovals.has(String(task.result?.child_session_id)) })), [tasks, pendingSubAgentApprovals]);
+  const activeTaskCount = activeTaskPills.length;
   const failedTaskCount = tasks.filter(task => task.status === 'failed').length;
   const subagentStatus = activeTaskCount ? `${activeTaskCount} active` : failedTaskCount ? `${failedTaskCount} failed` : tasks.length ? `${tasks.length} finished` : 'Idle';
   useEffect(() => { setRailOverlayOpen(false); }, [activeSessionId]);
@@ -2255,7 +2261,7 @@ export function SessionsPage() {
                       </p>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => { setSelectedTask(t); setIsTaskModalOpen(true); }}
+                          onClick={() => { setRailOverlayOpen(false); setSelectedTask(t); setIsTaskModalOpen(true); }}
                           className="flex-1 inline-flex items-center justify-center h-7 rounded-full border border-(--border-subtle) bg-(--surface-1) text-[10px] font-bold uppercase tracking-wide text-(--text-secondary) hover:bg-(--surface-2) hover:text-(--text-primary) transition-all active:scale-95"
                         >
                           View Task
@@ -2842,15 +2848,49 @@ export function SessionsPage() {
             }} />}
 
             {/* Composer */}
-            <div className="chat-composer-area">
+            <div className="chat-composer-area"
+              onDragOver={event => {
+                if (event.dataTransfer.types.includes('application/x-sentinel-file-path')) {
+                  event.preventDefault(); event.dataTransfer.dropEffect = 'copy';
+                }
+              }}
+              onDrop={event => {
+                const path = event.dataTransfer.getData('application/x-sentinel-file-path');
+                if (!path) return;
+                event.preventDefault(); event.stopPropagation();
+                if (!activeInstanceName || creatingChat || isCompacting || streaming.isCompactingContext) return;
+                const input = composerRef.current;
+                const start = input?.selectionStart ?? composer.length;
+                const end = input?.selectionEnd ?? start;
+                const inserted = `${start && !/\s/.test(composer[start - 1]) ? ' ' : ''}${path} `;
+                setComposer(composer.slice(0, start) + inserted + composer.slice(end));
+                requestAnimationFrame(() => { input?.focus(); input?.setSelectionRange(start + inserted.length, start + inserted.length); });
+              }}>
               <>
-                <ComposerTerminalPills
+                {(activePanes.length > 0 || activeTaskPills.length > 0) && <div className="chat-composer-terminals">
+                {activePanes.length > 0 && <ComposerTerminalPills
                   key={`${activeInstanceName}:${activeSessionId}`}
                   panes={activePanes}
                   focusedPaneId={focusedPaneId}
                   onOpen={openOrFocusPane}
                   onClose={closePane}
-                />
+                />}
+                {activeTaskPills.length > 0 && <ComposerActivityPills
+                  key={`agents:${activeInstanceName}:${activeSessionId}`}
+                  entries={activeTaskPills}
+                  focusedId={isTaskModalOpen ? selectedTask?.id ?? null : null}
+                  icon={Users}
+                  label="Running sub-agents"
+                  variant="subagent"
+                  onOpen={id => {
+                    const task = tasks.find(task => task.id === id);
+                    if (!task) return;
+                    setRailOverlayOpen(false);
+                    setSelectedTask(task);
+                    setIsTaskModalOpen(true);
+                  }}
+                />}
+                </div>}
                 <form onSubmit={sendMessage} className="chat-composer" data-running={stopVisible || undefined}>
                     <button
                         type="button"
@@ -3012,6 +3052,7 @@ export function SessionsPage() {
         {isTaskModalOpen && selectedTask && (
             <SubAgentTaskModal
                 task={selectedTask}
+                instanceName={activeInstanceName}
                 onClose={() => setIsTaskModalOpen(false)}
                 onTerminate={terminateTask}
                 isTerminating={isTerminatingTask}
@@ -3035,8 +3076,8 @@ export function SessionsPage() {
           onConfirm={() => void switchModel(modelSwitch.tier, true, modelSwitch.choice)}
         />}
 
-        {confirmTerminateTaskId && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+        {confirmTerminateTaskId && createPortal(
+          <div className="fixed inset-0 z-[10030] flex items-center justify-center p-4 animate-in fade-in duration-150">
             <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setConfirmTerminateTaskId(null)} />
             <div className="relative rounded-xl border border-(--border-subtle) bg-(--surface-0) shadow-2xl p-6 w-full max-w-sm animate-in zoom-in-95 duration-150 space-y-4">
               <h2 className="text-sm font-bold uppercase tracking-widest">Terminate Sub-Agent?</h2>
@@ -3050,7 +3091,7 @@ export function SessionsPage() {
                 </button>
               </div>
             </div>
-          </div>
+          </div>, document.querySelector('.desktop-frame') ?? document.body,
         )}
       </AppShell>
   );

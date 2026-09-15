@@ -901,6 +901,16 @@ def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
         fake_db.add(row)
         payload = client.get(f"{SESSIONS_API}/{session_id}/context-usage", headers=headers).json()
         assert payload["last_request_usage"] == measured
+        snapshot = Message(
+            session_id=uuid.UUID(session_id),
+            role="system",
+            content="Context snapshot",
+            metadata_json={"run_context": {"context_token_budget": 1_010_000}},
+        )
+        fake_db.add(snapshot)
+        payload = client.get(f"{SESSIONS_API}/{session_id}/context-usage", headers=headers).json()
+        assert payload["context_token_budget"] == 1_010_000
+        assert payload["last_request_usage"] == measured
         assert "estimated_context_tokens" not in payload
         row.metadata_json = {"provider": "openai-codex"}
         payload = client.get(f"{SESSIONS_API}/{session_id}/context-usage", headers=headers).json()
