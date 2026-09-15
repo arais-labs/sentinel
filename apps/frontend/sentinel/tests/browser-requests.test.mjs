@@ -1,0 +1,65 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { BrowserRequests, pollVisible, statusRefreshDelay } from '../src/components/files/browserRequests.ts';
+
+const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+test('remounts share running requests and recent results; refresh never doubles an active scan', async () => {
+  let now = 0, calls = 0, finish;
+  const cache = new BrowserRequests(() => now);
+  const load = () => { calls++; return new Promise(resolve => { finish = resolve; }); };
+  const first = cache.get('workspace/changes', load);
+  assert.equal(cache.get('workspace/changes', load), first);
+  await flush();
+  assert.equal(calls, 1);
+  cache.invalidate('workspace/');
+  assert.equal(cache.get('workspace/changes', load), first);
+  finish('old'); await first;
+  const refreshed = cache.get('workspace/changes', load);
+  await flush(); assert.equal(calls, 2);
+  finish('new'); await refreshed;
+  assert.equal(await cache.get('workspace/changes', load), 'new');
+  assert.equal(calls, 2);
+  now = 3001;
+  const expired = cache.get('workspace/changes', load);
+  await flush(); assert.equal(calls, 3); finish('latest'); await expired;
+});
+test('errors retry immediately, completed entries are bounded, and workspaces stay isolated', async () => {
+  const cache = new BrowserRequests(() => 0, 2);
+  await assert.rejects(cache.get('a/context', () => Promise.reject(new Error('offline'))));
+  assert.equal(await cache.get('a/context', async () => 'a'), 'a');
+  assert.equal(await cache.get('b/context', async () => 'b'), 'b');
+  cache.invalidate('a/');
+  assert.equal(await cache.get('b/context', async () => 'incorrect'), 'b');
+  await cache.get('c/file', async () => 'c');
+  await cache.get('d/file', async () => 'd');
+  assert.equal(await cache.get('b/context', async () => 'reloaded'), 'reloaded');
+});
+test('polling waits until visible, never overlaps, respects due time, and stops on disposal', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const visibility = new EventTarget();
+  visibility.visibilityState = 'hidden';
+  const change = state => { visibility.visibilityState = state; visibility.dispatchEvent(new Event('visibilitychange')); };
+  let calls = 0, finish;
+  const stop = pollVisible(() => { calls++; return new Promise(resolve => { finish = resolve; }); }, visibility);
+  t.mock.timers.tick(120000); assert.equal(calls, 0);
+  change('visible'); assert.equal(calls, 1);
+  change('hidden'); change('visible'); t.mock.timers.tick(5000); assert.equal(calls, 1);
+  finish(true); await flush();
+  change('hidden'); change('visible'); assert.equal(calls, 1);
+  t.mock.timers.tick(19999); assert.equal(calls, 1);
+  t.mock.timers.tick(1); assert.equal(calls, 2);
+  finish(false); await flush();
+  t.mock.timers.tick(29999); assert.equal(calls, 2);
+  change('hidden'); t.mock.timers.tick(120000); assert.equal(calls, 2);
+  change('visible'); assert.equal(calls, 3);
+  stop(); finish(true); await flush();
+  t.mock.timers.tick(120000); change('visible'); assert.equal(calls, 3);
+});
+test('status cadence adapts to scan cost and repeated failures, with bounded backoff', () => {
+  assert.equal(statusRefreshDelay(1000, 0), 15000);
+  assert.equal(statusRefreshDelay(8000, 0), 32000);
+  assert.equal(statusRefreshDelay(20000, 0), 60000);
+  assert.equal(statusRefreshDelay(1000, 1), 30000);
+  assert.equal(statusRefreshDelay(1000, 2), 60000);
+  assert.equal(statusRefreshDelay(1000, 9), 120000);
+});

@@ -1,4 +1,4 @@
-import { CheckCircle2, Hash } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
 
 import { parsePayloadJson } from '../../lib/toolPayloadPreview';
 import { DiffViewer } from '../workbench/DiffViewer';
@@ -12,8 +12,8 @@ export interface CustomToolCardContext {
   inputRaw: string;
   outputRaw: string;
   outputError: boolean;
-  screenshotBase64: string | null;
-  openLightbox: () => void;
+  hasImages: boolean;
+  renderImages: () => React.JSX.Element;
   renderGenericCompact: (options?: { hideInput?: boolean }) => React.JSX.Element;
   renderGenericOutput: (options?: { showRawJson?: boolean }) => React.JSX.Element;
   renderPortForwardCompact: () => React.JSX.Element;
@@ -91,32 +91,11 @@ function strReplaceDiffData(context: CustomToolCardContext): {
 const CUSTOM_TOOL_CARDS: CustomToolCard[] = [
   {
     id: 'screenshot',
-    matches: (context) => Boolean(context.screenshotBase64) || normalizeToolName(context.toolName).includes('screenshot'),
-    autoExpand: (context) => Boolean(context.screenshotBase64),
+    matches: (context) => context.hasImages || normalizeToolName(context.toolName).includes('screenshot'),
+    autoExpand: (context) => context.hasImages,
     hideGenericArguments: () => true,
     renderCompact: (context) => context.renderGenericCompact({ hideInput: true }),
-    renderExpandedResult: (context) => {
-      if (!context.screenshotBase64) {
-        return context.renderGenericOutput({ showRawJson: false });
-      }
-      return (
-        <div className="space-y-3">
-          <div className="relative group/screenshot">
-            <img
-              src={`data:image/png;base64,${context.screenshotBase64}`}
-              alt="Browser screenshot"
-              onClick={context.openLightbox}
-              className="rounded-xl max-w-full border border-sky-500/20 mt-0.5 cursor-zoom-in group-hover/screenshot:border-sky-500/40 transition-all shadow-md"
-              style={{ maxHeight: '400px', objectFit: 'contain' }}
-            />
-          </div>
-          <div className="flex items-center gap-2 text-[9px] text-[color:var(--text-muted)] italic px-1 opacity-60">
-             <Hash size={9} className="opacity-40" />
-             Frame captured
-          </div>
-        </div>
-      );
-    },
+    renderExpandedResult: (context) => context.hasImages ? context.renderImages() : context.renderGenericOutput({ showRawJson: false }),
   },
   {
     id: 'port_forward',
@@ -135,11 +114,11 @@ const CUSTOM_TOOL_CARDS: CustomToolCard[] = [
           <div className="flex items-center gap-2 overflow-hidden px-1">
             <CheckCircle2 size={10} className="text-emerald-500/70 shrink-0" />
             <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500/60">patched</span>
-            <span className="min-w-0 truncate text-[10px] font-mono text-[color:var(--text-primary)] max-w-[520px]">
+            <span className="min-w-0 truncate text-[10px] font-mono text-(--text-primary) max-w-[520px]">
               {data.path}
             </span>
           </div>
-          <div className="h-[190px] min-w-[560px] max-w-full overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]">
+          <div className="h-[190px] min-w-[560px] max-w-full overflow-hidden rounded-xl border border-(--border-subtle) bg-(--surface-0)">
             <DiffViewer diff={data.patch} />
           </div>
         </div>
@@ -154,12 +133,12 @@ const CUSTOM_TOOL_CARDS: CustomToolCard[] = [
             <span className="inline-flex items-center rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-widest text-emerald-400">
               patched
             </span>
-            <span className="min-w-0 truncate text-[10px] font-mono text-[color:var(--text-primary)]">
+            <span className="min-w-0 truncate text-[10px] font-mono text-(--text-primary)">
               {data.path}
             </span>
-            <span className="text-[10px] text-[color:var(--text-muted)]">{data.message}</span>
+            <span className="text-[10px] text-(--text-muted)">{data.message}</span>
           </div>
-          <div className="h-[360px] overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]">
+          <div className="h-[360px] overflow-hidden rounded-xl border border-(--border-subtle) bg-(--surface-0)">
             <DiffViewer diff={data.patch} />
           </div>
         </div>

@@ -1,0 +1,30 @@
+.session-telemetry-panel { width: 320px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 90px); overflow-y: auto; padding: 14px; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--surface-0); color: var(--text-primary); box-shadow: 0 12px 40px #0004; pointer-events: none; font-size: 10px; }
+.workspace-runtime-stats { margin-top: 12px; padding-top: 12px; }
+.workspace-runtime-stats > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 3px; }
+.workspace-runtime-stats > header strong { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-runtime-stats > header span { color: var(--text-muted); font-size: 10px; }
+.workspace-stat-row { padding: 11px 0; }
+.workspace-stat-row[data-metric="cpu"] { --stat-color: #63b8ef; }
+.workspace-stat-row[data-metric="memory"] { --stat-color: #ad91ed; }
+.workspace-stat-row[data-metric="network"] { --stat-color: #55bd99; }
+.workspace-stat-row[data-metric="disk"] { --stat-color: #e4b366; }
+.workspace-stat-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11px; }
+.workspace-stat-line > span { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); }
+.workspace-stat-line > strong { font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.workspace-stat-line small { color: var(--text-muted); font-size: 10px; font-weight: 400; }
+.workspace-stat-meter { height: 2px; margin-top: 9px; overflow: hidden; border-radius: 2px; background: var(--border-subtle); }
+.workspace-stat-meter i { display: block; height: 100%; border-radius: inherit; background: var(--stat-color); transition: width .25s ease; }
+.workspace-stat-chart { position: relative; margin-top: 10px; padding-top: 13px; color: var(--stat-color); }
+.workspace-stat-chart > svg { display: block; width: 100%; height: 54px; overflow: hidden; }
+.workspace-stat-grid { stroke: var(--border-subtle); stroke-width: 1; stroke-dasharray: 2 4; vector-effect: non-scaling-stroke; }
+.workspace-stat-trace { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.workspace-stat-upload { color: #ad91ed; }
+.workspace-stat-upload .workspace-stat-trace { stroke-dasharray: 4 3; }
+.workspace-stat-ceiling { position: absolute; top: 0; right: 0; color: var(--text-secondary); font-size: 9px; line-height: 12px; font-variant-numeric: tabular-nums; }
+.workspace-stat-axis { display: flex; justify-content: space-between; color: var(--text-secondary); font-size: 9px; line-height: 12px; margin-top: 2px; }
+.workspace-stat-network { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px 12px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.workspace-stat-network span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.workspace-stat-network span:first-child svg { color: var(--stat-color); }
+.workspace-stat-network span:last-child svg { color: #ad91ed; }
+.workspace-runtime-stats > p { margin: 10px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
+@media (prefers-reduced-motion: reduce) { .workspace-stat-meter i { transition: none; } }

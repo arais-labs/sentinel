@@ -1,4 +1,4 @@
-import { Check, Copy } from 'lucide-react';
+import { ArrowUpRight, Check, Copy } from 'lucide-react';
 import { isValidElement, useEffect, useState } from 'react';
 import type { HTMLAttributes, ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -7,6 +7,8 @@ import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { PreviewLink } from './PreviewLink';
+import { previewTargetPath } from '../../../../../desktop/sentinel/src/shared/preview';
 
 interface MarkdownProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
   content: string;
@@ -22,12 +24,13 @@ function isExternalHref(href: string | undefined): boolean {
 
 const markdownComponents: Components = {
   a: ({ href, children, ...props }) => {
-    if (isExternalHref(href)) {
-      return (
-        <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
-          {children}
-        </a>
-      );
+    const external = isExternalHref(href);
+    const text = extractNodeText(children);
+    const label = external && text === href ? text.replace(/^https?:\/\//, '') : children;
+    const content = <>{label}{external && <ArrowUpRight className="markdown-link-icon" size={11} aria-hidden="true" />}</>;
+    if (href && previewTargetPath(href)) return <PreviewLink href={href} title={href} {...props}>{content}</PreviewLink>;
+    if (external) {
+      return <a href={href} title={href} target="_blank" rel="noopener noreferrer" {...props}>{content}</a>;
     }
     return (
       <a href={href} {...props}>
@@ -35,6 +38,7 @@ const markdownComponents: Components = {
       </a>
     );
   },
+  thead: ({ children, ...props }) => extractNodeText(children).trim() ? <thead {...props}>{children}</thead> : null,
   table: ({ children, ...props }) => (
     <div className="markdown-table-wrap">
       <table {...props}>{children}</table>
@@ -100,7 +104,7 @@ function CodeBlockShell({
         <button
           type="button"
           onClick={handleCopy}
-          className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-[color:var(--text-muted)] transition-colors hover:text-[color:var(--text-primary)] hover:bg-white/10"
+          className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-(--text-muted) transition-colors hover:text-(--text-primary) hover:bg-white/10"
           title="Copy code"
         >
           {copied ? <Check size={11} /> : <Copy size={11} />}

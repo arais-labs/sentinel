@@ -1,7 +1,9 @@
+import { ApprovalActions } from '../components/session/ApprovalActions';
+import { SESSION_PERMISSIONS_CHANGED, type ApprovalScope } from '../lib/approvals';
 import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { useLocation } from 'react-router-dom';
-import ReactMarkdown from 'react-markdown';
+import { Markdown } from '../components/ui/Markdown';
+import './module-markdown.css';
 import {
   Loader2,
   CheckCircle,
@@ -9,6 +11,7 @@ import {
   FileCode,
   LayoutGrid,
   Search,
+  Star,
   Plus,
   ArrowLeft,
   Trash2,
@@ -23,10 +26,17 @@ import {
   icons as lucideIcons,
   type LucideIcon,
 } from 'lucide-react';
-import { toast } from 'sonner';
+import { notificationPublisher } from '../lib/notifications';
 
 import { AppShell } from '../components/AppShell';
 import { api } from '../lib/api';
+import './modules-pane.css';
+import { useInstanceName } from '../lib/workspace-context';
+import { useModuleFavorites } from '../store/module-favorites-store';
+import './approvals-pane.css';
+import './permissions-pane.css';
+
+const notify = notificationPublisher('Modules');
 
 function resolveIcon(name: string | null | undefined): LucideIcon {
   if (!name) return LayoutGrid;
@@ -84,12 +94,12 @@ const APPROVAL_STATUS: Record<string, { label: string; tone: string }> = {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 function Spinner({ className = '' }: { className?: string }) {
-  return <Loader2 className={`animate-spin text-[color:var(--text-muted)] ${className}`} size={20} />;
+  return <Loader2 className={`animate-spin text-(--text-muted) ${className}`} size={20} />;
 }
 
 function EmptyState({ icon: Icon, label }: { icon: typeof LayoutGrid; label: string }) {
   return (
-    <div className="py-16 flex flex-col items-center justify-center text-[color:var(--text-muted)] opacity-40 gap-3">
+    <div className="py-16 flex flex-col items-center justify-center text-(--text-muted) opacity-40 gap-3">
       <Icon size={32} strokeWidth={1} />
       <p className="text-[10px] font-medium uppercase tracking-widest">{label}</p>
     </div>
@@ -98,7 +108,7 @@ function EmptyState({ icon: Icon, label }: { icon: typeof LayoutGrid; label: str
 
 function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: string }) {
   const colors: Record<string, string> = {
-    neutral: 'bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-[color:var(--border-subtle)]',
+    neutral: 'bg-(--surface-2) text-(--text-secondary) border-(--border-subtle)',
     success: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
     warn: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
     danger: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
@@ -115,11 +125,11 @@ function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: str
 function Modal({ children, onClose, title, maxWidth = '560px' }: { children: ReactNode; onClose: () => void; title: string; maxWidth?: string }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] shadow-2xl animate-in zoom-in-95 duration-150 overflow-hidden" style={{ maxWidth }}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={onClose} />
+      <div className="relative w-full rounded-xl border border-(--border-subtle) bg-(--surface-0) shadow-2xl animate-in zoom-in-95 duration-150 overflow-hidden" style={{ maxWidth }}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-(--border-subtle) bg-(--surface-1)">
           <h2 className="text-sm font-bold">{title}</h2>
-          <button onClick={onClose} className="p-1 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors">
+          <button onClick={onClose} className="p-1 text-(--text-muted) hover:text-(--text-primary) transition-colors">
             <X size={18} />
           </button>
         </div>
@@ -139,10 +149,10 @@ function ConfirmDialog({ title = 'Confirm', message, confirmLabel = 'Delete', on
   return (
     <Modal title={title} onClose={onCancel} maxWidth="400px">
       <div className="p-5">
-        <p className="text-sm leading-relaxed text-[color:var(--text-secondary)]">{message}</p>
+        <p className="text-sm leading-relaxed text-(--text-secondary)">{message}</p>
       </div>
-      <div className="flex items-center gap-3 px-5 py-3 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
-        <button className="flex-1 h-9 rounded-lg text-xs font-bold border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={onCancel}>Cancel</button>
+      <div className="flex items-center gap-3 px-5 py-3 border-t border-(--border-subtle) bg-(--surface-1)">
+        <button className="flex-1 h-9 rounded-lg text-xs font-bold border border-(--border-subtle) text-(--text-secondary) hover:bg-(--surface-2) transition-colors" onClick={onCancel}>Cancel</button>
         <button className="flex-1 h-9 rounded-lg text-xs font-bold bg-rose-600 text-white hover:bg-rose-700 transition-colors" onClick={onConfirm}>{confirmLabel}</button>
       </div>
     </Modal>
@@ -167,8 +177,8 @@ function ListCard({ active, onClick, avatarStyle, avatarContent, title, subtitle
     <article
       className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors rounded-lg ${
         active
-          ? 'bg-[color:var(--surface-accent)] border border-[color:var(--accent-solid)]/20'
-          : 'hover:bg-[color:var(--surface-1)] border border-transparent'
+          ? 'bg-(--surface-accent) border border-(--accent-solid)/20'
+          : 'hover:bg-(--surface-1) border border-transparent'
       }`}
       onClick={onClick}
     >
@@ -180,11 +190,11 @@ function ListCard({ active, onClick, avatarStyle, avatarContent, title, subtitle
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-semibold text-[color:var(--text-primary)] truncate">{title}</span>
-          {meta != null && <span className="text-[10px] text-[color:var(--text-muted)] font-mono shrink-0">{meta}</span>}
+          <span className="text-xs font-semibold text-(--text-primary) truncate">{title}</span>
+          {meta != null && <span className="text-[10px] text-(--text-muted) font-mono shrink-0">{meta}</span>}
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
-          <span className="text-[11px] text-[color:var(--text-muted)] truncate">{subtitle}</span>
+          <span className="text-[11px] text-(--text-muted) truncate">{subtitle}</span>
           {badge}
         </div>
       </div>
@@ -221,16 +231,16 @@ function DynamicForm({ title, fields, initial = {}, saving, onSubmit, onClose }:
       <form onSubmit={handleSubmit} className="p-5 space-y-4">
         {formFields.map((field: any, i: number) => (
           <div key={field.key} className="space-y-1.5">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">
               {field.label}
               {field.required && <span className="text-rose-400 ml-1">*</span>}
             </label>
             <FormFieldInput field={field} value={form[field.key]} onChange={(val: any) => set(field.key, val)} autoFocus={i === 0} />
           </div>
         ))}
-        <div className="flex items-center gap-3 pt-3 border-t border-[color:var(--border-subtle)]">
-          <button type="button" className="flex-1 h-9 rounded-lg text-xs font-bold border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={onClose}>Cancel</button>
-          <button type="submit" className="flex-1 h-9 rounded-lg text-xs font-bold bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity" disabled={saving}>
+        <div className="flex items-center gap-3 pt-3 border-t border-(--border-subtle)">
+          <button type="button" className="flex-1 h-9 rounded-lg text-xs font-bold border border-(--border-subtle) text-(--text-secondary) hover:bg-(--surface-2) transition-colors" onClick={onClose}>Cancel</button>
+          <button type="submit" className="flex-1 h-9 rounded-lg text-xs font-bold bg-(--accent-solid) text-(--app-bg) hover:opacity-90 transition-opacity" disabled={saving}>
             {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
@@ -240,7 +250,7 @@ function DynamicForm({ title, fields, initial = {}, saving, onSubmit, onClose }:
 }
 
 function FormFieldInput({ field, value, onChange, autoFocus = false }: { field: any; value: any; onChange: (v: any) => void; autoFocus?: boolean }) {
-  const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+  const inputCls = 'w-full h-9 rounded-lg border border-(--border-subtle) bg-(--surface-1) px-3 text-xs text-(--text-primary) placeholder:text-(--text-muted) focus:outline-hidden focus:border-(--accent-solid) transition-colors';
 
   if (field.type === 'textarea') {
     return (
@@ -295,7 +305,7 @@ function DynamicDetailPane({ config, record, saving, onPatch, onDelete, onAction
 }) {
   if (!record) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-[color:var(--text-muted)] gap-2 opacity-50">
+      <div className="flex flex-col items-center justify-center h-full text-(--text-muted) gap-2 opacity-50">
         <ArrowLeft size={24} strokeWidth={1} />
         <p className="text-xs font-medium">Select a record</p>
       </div>
@@ -309,12 +319,12 @@ function DynamicDetailPane({ config, record, saving, onPatch, onDelete, onAction
   return (
     <div className="flex flex-col h-full">
       {/* Hero */}
-      <div className="px-5 py-4 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+      <div className="px-5 py-4 border-b border-(--border-subtle) bg-(--surface-1)">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-sm font-bold text-[color:var(--text-primary)] truncate">{record[titleField] || record.id}</h2>
+            <h2 className="text-sm font-bold text-(--text-primary) truncate">{record[titleField] || record.id}</h2>
             {config.fields_config?.subtitleField && (
-              <p className="text-[11px] text-[color:var(--text-muted)] truncate mt-0.5">{record[config.fields_config.subtitleField]}</p>
+              <p className="text-[11px] text-(--text-muted) truncate mt-0.5">{record[config.fields_config.subtitleField]}</p>
             )}
           </div>
           {config.fields_config?.badgeField && record[config.fields_config.badgeField] && (
@@ -330,16 +340,16 @@ function DynamicDetailPane({ config, record, saving, onPatch, onDelete, onAction
         ))}
 
         {/* Actions */}
-        <div className="flex items-center gap-2 pt-4 border-t border-[color:var(--border-subtle)] flex-wrap">
+        <div className="flex items-center gap-2 pt-4 border-t border-(--border-subtle) flex-wrap">
           <button
-            className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors"
+            className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-(--border-subtle) text-(--text-secondary) hover:bg-(--surface-2) transition-colors"
             onClick={onEdit}
             disabled={saving}
           >
             <Pencil size={11} className="inline mr-1.5 -mt-0.5" />Edit
           </button>
           {detailActions.filter((a: any) => a.type !== 'delete').map((action: any) => (
-            <button key={action.id} className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => onAction(action.id)} disabled={saving}>
+            <button key={action.id} className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-(--border-subtle) text-(--text-secondary) hover:bg-(--surface-2) transition-colors" onClick={() => onAction(action.id)} disabled={saving}>
               {action.label}
             </button>
           ))}
@@ -374,15 +384,15 @@ function MarkdownFullscreenViewer({
   }, [onClose]);
 
   return createPortal(
-    <div className="fixed inset-0 z-[1200] flex flex-col bg-[color:var(--surface-1)] animate-in fade-in duration-150">
-      <div className="px-4 py-3 border-b border-[color:var(--border-subtle)] flex items-center justify-between gap-3">
+    <div role="dialog" aria-modal="true" aria-label={title ? `${title} — Markdown preview` : 'Markdown preview'} className="module-markdown-viewer fixed inset-0 z-1200 flex flex-col bg-(--surface-1) animate-in fade-in duration-150">
+      <div className="shrink-0 px-4 py-3 border-b border-(--border-subtle) flex items-center justify-between gap-3">
         <div className="min-w-0 flex items-center gap-2">
           <FileText size={14} className="text-sky-400 shrink-0" />
-          <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">
             Markdown Preview
           </span>
           {title ? (
-            <span className="text-xs font-bold text-[color:var(--text-primary)] truncate">
+            <span className="text-xs font-bold text-(--text-primary) truncate">
               · {title}
             </span>
           ) : null}
@@ -391,19 +401,20 @@ function MarkdownFullscreenViewer({
           type="button"
           onClick={onClose}
           aria-label="Close preview"
-          className="inline-flex items-center justify-center w-7 h-7 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-colors"
+          title="Close preview (Esc)"
+          className="module-markdown-close"
         >
-          <X size={14} />
+          <X size={16} />
         </button>
       </div>
-      <div className="flex-1 min-h-0 overflow-auto px-6 py-6">
-        <div className="mx-auto max-w-3xl prose prose-invert prose-sm prose-headings:tracking-tight prose-pre:bg-[color:var(--surface-2)] prose-pre:border prose-pre:border-[color:var(--border-subtle)] prose-code:before:hidden prose-code:after:hidden prose-a:text-sky-400">
+      <div className="module-markdown-scroll">
+        <article className="module-markdown-document">
           {content.trim() ? (
-            <ReactMarkdown>{content}</ReactMarkdown>
+            <Markdown content={content} className="module-markdown" />
           ) : (
-            <p className="text-[color:var(--text-muted)] italic">Empty content.</p>
+            <p className="text-(--text-muted) italic">Empty content.</p>
           )}
-        </div>
+        </article>
       </div>
     </div>,
     document.body,
@@ -423,7 +434,7 @@ function MarkdownPreviewButton({ getContent, title }: { getContent: () => string
         }}
         title="Preview as Markdown"
         aria-label="Preview as Markdown"
-        className="inline-flex items-center gap-1 px-2 h-6 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-colors"
+        className="inline-flex items-center gap-1 px-2 h-6 rounded-md border border-(--border-subtle) bg-(--surface-2) text-[9px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-primary) hover:border-(--border-strong) transition-colors"
       >
         <FileText size={10} />
         MD
@@ -456,7 +467,7 @@ function DetailTextareaWithPreview({
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <label className={`${labelCls} !mb-0`}>{field.label}</label>
+        <label className={`${labelCls} mb-0!`}>{field.label}</label>
         <MarkdownPreviewButton
           getContent={() => taRef.current?.value ?? String(value ?? '')}
           title={field.label}
@@ -476,8 +487,8 @@ function DetailTextareaWithPreview({
 function DetailFieldView({ field, value, onBlur }: { field: any; value: any; onBlur: (v: any) => void }) {
   if (value == null || value === '') return null;
 
-  const labelCls = 'text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] mb-1.5';
-  const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs text-[color:var(--text-primary)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+  const labelCls = 'text-[10px] font-bold uppercase tracking-widest text-(--text-muted) mb-1.5';
+  const inputCls = 'w-full h-9 rounded-lg border border-(--border-subtle) bg-(--surface-1) px-3 text-xs text-(--text-primary) focus:outline-hidden focus:border-(--accent-solid) transition-colors';
 
   if (field.type === 'textarea') {
     return <DetailTextareaWithPreview field={field} value={value} onBlur={onBlur} inputCls={inputCls} labelCls={labelCls} />;
@@ -504,7 +515,7 @@ function DetailFieldView({ field, value, onBlur }: { field: any; value: any; onB
     return (
       <div>
         <label className={labelCls}>{field.label}</label>
-        <a href={value} target="_blank" rel="noopener noreferrer" className="text-[color:var(--accent-solid)] text-xs hover:underline break-all">{value}</a>
+        <a href={value} target="_blank" rel="noopener noreferrer" className="text-(--accent-solid) text-xs hover:underline break-all">{value}</a>
       </div>
     );
   }
@@ -551,7 +562,7 @@ function ApiModule({ config, hideHeader = false, onModuleChanged }: { config: an
   useEffect(() => { loadSecrets(); }, [loadSecrets]);
 
   const copyPrompt = () => {
-    const BASE_URL = window.location.origin;
+    const BASE_URL = 'sentinel://app';
     const instanceMatch = window.location.pathname.match(/^\/instances\/([^/]+)/);
     const instanceName = instanceMatch?.[1] ?? 'main';
     const apiBase = `${BASE_URL}/api/v1/instances/${instanceName}`;
@@ -567,16 +578,16 @@ function ApiModule({ config, hideHeader = false, onModuleChanged }: { config: an
     }
     navigator.clipboard.writeText(lines.join('\n'));
     setCopied(true);
-    toast.success('Prompt copied');
+    notify.success('Prompt copied');
     setTimeout(() => setCopied(false), 2000);
   };
 
   const resetSecret = async (key: string, label: string) => {
     try {
       await api.delete(`/modules/${config.name}/secrets/${key}`);
-      toast.success(`${label} cleared`);
+      notify.success(`${label} cleared`);
       loadSecrets();
-    } catch { toast.error('Could not clear secret'); }
+    } catch { notify.error('Could not clear secret'); }
   };
 
   const allRequired = (config.secrets || []).filter((s: any) => s.required);
@@ -585,14 +596,14 @@ function ApiModule({ config, hideHeader = false, onModuleChanged }: { config: an
   return (
     <div className="flex flex-col h-full">
       {!hideHeader && (
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-(--border-subtle) bg-(--surface-1)">
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-sm font-semibold text-[color:var(--text-secondary)]">{config.label}</span>
+            <span className="text-sm font-semibold text-(--text-secondary)">{config.label}</span>
             {(config.secrets || []).map((s: any) =>
               secretsStatus[s.key] ? (
                 <span key={s.key} className="flex items-center gap-1">
                   <Badge tone="success">{'\\u2713'} {s.label}</Badge>
-                  <button className="text-xs text-[color:var(--text-muted)] hover:text-rose-400 transition-colors" onClick={() => resetSecret(s.key, s.label)} title="Clear">&times;</button>
+                  <button className="text-xs text-(--text-muted) hover:text-rose-400 transition-colors" onClick={() => resetSecret(s.key, s.label)} title="Clear">&times;</button>
                 </span>
               ) : (
                 <Badge key={s.key} tone="warn">{'\\u2717'} {s.label}</Badge>
@@ -602,9 +613,9 @@ function ApiModule({ config, hideHeader = false, onModuleChanged }: { config: an
           <div className="flex items-center gap-2">
             {(config.actions || []).length > 2 && (
               <div className="relative">
-                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)" />
                 <input
-                  className="h-8 w-48 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] pl-8 pr-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)]"
+                  className="h-8 w-48 rounded-lg border border-(--border-subtle) bg-(--surface-0) pl-8 pr-3 text-xs text-(--text-primary) placeholder:text-(--text-muted) focus:outline-hidden focus:border-(--accent-solid)"
                   placeholder="Search actions..."
                   value={search}
                   onChange={e => setSearch(e.target.value)}
@@ -612,7 +623,7 @@ function ApiModule({ config, hideHeader = false, onModuleChanged }: { config: an
               </div>
             )}
             <button
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-(--text-muted) hover:text-(--text-primary) hover:bg-(--surface-2) transition-colors"
               onClick={copyPrompt}
             >
               <Copy size={12} />
@@ -629,7 +640,7 @@ function ApiModule({ config, hideHeader = false, onModuleChanged }: { config: an
             <SecretCard key={s.key} moduleName={config.name} secret={s} isSet={!!secretsStatus[s.key]} onSaved={loadSecrets} />
           ))}
           {missingRequired.length > 0 && (config.actions || []).length > 0 && (
-            <div className="text-xs text-[color:var(--text-muted)] py-2 border-t border-[color:var(--border-subtle)]">
+            <div className="text-xs text-(--text-muted) py-2 border-t border-(--border-subtle)">
               Configure required secrets above to run actions
             </div>
           )}
@@ -658,26 +669,26 @@ function SecretCard({ moduleName, secret, isSet, onSaved }: { moduleName: string
       await api.put(`/modules/${moduleName}/secrets/${secret.key}`, { value });
       setValue('');
       setEditing(false);
-      toast.success(`${secret.label} saved`);
+      notify.success(`${secret.label} saved`);
       onSaved();
-    } catch { toast.error('Could not save secret'); }
+    } catch { notify.error('Could not save secret'); }
     finally { setSaving(false); }
   };
 
-  const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+  const inputCls = 'w-full h-9 rounded-lg border border-(--border-subtle) bg-(--surface-1) px-3 text-xs text-(--text-primary) placeholder:text-(--text-muted) focus:outline-hidden focus:border-(--accent-solid) transition-colors';
 
   if (isSet && !editing) {
     return (
       <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex items-center gap-3">
         <div className="flex-1 min-w-0">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">
             <span className="text-emerald-400 mr-1">✓</span>
             {secret.label}
-            {secret.hint && <span className="text-[color:var(--text-muted)] ml-2 font-normal normal-case">{secret.hint}</span>}
+            {secret.hint && <span className="text-(--text-muted) ml-2 font-normal normal-case">{secret.hint}</span>}
           </p>
-          <p className="text-xs text-[color:var(--text-muted)] mt-0.5">••••••••</p>
+          <p className="text-xs text-(--text-muted) mt-0.5">••••••••</p>
         </div>
-        <button className="h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors shrink-0" onClick={() => setEditing(true)}>
+        <button className="h-8 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-(--border-subtle) text-(--text-secondary) hover:bg-(--surface-2) transition-colors shrink-0" onClick={() => setEditing(true)}>
           Update
         </button>
       </div>
@@ -687,20 +698,20 @@ function SecretCard({ moduleName, secret, isSet, onSaved }: { moduleName: string
   return (
     <div className={`rounded-xl border p-4 flex items-end gap-3 ${isSet ? 'border-amber-500/30 bg-amber-500/5' : 'border-rose-500/30 bg-rose-500/5'}`}>
       <div className="flex-1 space-y-1.5">
-        <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+        <label className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">
           <span className={`mr-1 ${isSet ? 'text-amber-400' : 'text-rose-400'}`}>{isSet ? '↻' : '✗'}</span>
           {isSet ? `Update ${secret.label}` : secret.label}
-          {secret.hint && <span className="text-[color:var(--text-muted)] ml-2 font-normal normal-case">{secret.hint}</span>}
+          {secret.hint && <span className="text-(--text-muted) ml-2 font-normal normal-case">{secret.hint}</span>}
         </label>
         <input className={inputCls} type="password" placeholder="Paste new value..." value={value} onChange={e => setValue(e.target.value)} onKeyDown={e => e.key === 'Enter' && save()} autoFocus={isSet} />
       </div>
       <div className="flex items-center gap-2 shrink-0">
         {isSet && (
-          <button className="h-9 px-3 rounded-lg text-xs font-bold border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => { setEditing(false); setValue(''); }}>
+          <button className="h-9 px-3 rounded-lg text-xs font-bold border border-(--border-subtle) text-(--text-secondary) hover:bg-(--surface-2) transition-colors" onClick={() => { setEditing(false); setValue(''); }}>
             Cancel
           </button>
         )}
-        <button className="h-9 px-4 rounded-lg text-xs font-bold bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity" onClick={save} disabled={saving || !value.trim()}>
+        <button className="h-9 px-4 rounded-lg text-xs font-bold bg-(--accent-solid) text-(--app-bg) hover:opacity-90 transition-opacity" onClick={save} disabled={saving || !value.trim()}>
           {saving ? 'Saving...' : isSet ? 'Update' : 'Save'}
         </button>
       </div>
@@ -752,7 +763,7 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
 
   const titleField = fieldsConfig?.titleField || 'id';
 
-  const inputCls = 'w-full h-9 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+  const inputCls = 'w-full h-9 rounded-lg border border-(--border-subtle) bg-(--surface-0) px-3 text-xs text-(--text-primary) placeholder:text-(--text-muted) focus:outline-hidden focus:border-(--accent-solid) transition-colors';
 
   useEffect(() => {
     setCodeDraft(typeof action.code === 'string' ? action.code : '');
@@ -762,8 +773,8 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
 
   const run = async () => {
     const missing = params.filter((p: any) => p.required && !String(form[p.key] ?? '').trim());
-    if (missing.length) { toast.error(`Required: ${missing.map((p: any) => p.label).join(', ')}`); return; }
-    if (isRecordAction && !selectedRecordId) { toast.error('Select a record first'); return; }
+    if (missing.length) { notify.error(`Required: ${missing.map((p: any) => p.label).join(', ')}`); return; }
+    if (isRecordAction && !selectedRecordId) { notify.error('Select a record first'); return; }
     try {
       setRunning(true);
       setResult(null);
@@ -773,10 +784,10 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
       const res = await api.post<any>(url, form);
       const ok = res?.ok !== false;
       setResult({ ok, data: res });
-      if (!ok) toast.error(res?.error || 'Action returned an error');
+      if (!ok) notify.error(res?.error || 'Action returned an error');
     } catch (err: any) {
       setResult({ ok: false, error: err.message });
-      toast.error(err.message || 'Action failed');
+      notify.error(err.message || 'Action failed');
     } finally {
       setRunning(false);
       setExpanded(true);
@@ -787,9 +798,9 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
     if (!hasActionCode) return;
     try {
       await navigator.clipboard.writeText(action.code);
-      toast.success('Code copied');
+      notify.success('Code copied');
     } catch {
-      toast.error('Could not copy code');
+      notify.error('Could not copy code');
     }
   };
 
@@ -799,13 +810,13 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
       setSavingCode(true);
       setCodeError(null);
       await api.patch(`/modules/${moduleName}`, { actions: [{ ...action, code: codeDraft }] });
-      toast.success('Action code saved');
+      notify.success('Action code saved');
       setEditingCode(false);
       await onModuleChanged?.();
     } catch (err: any) {
       const message = err?.message || 'Could not save action code';
       setCodeError(message);
-      toast.error(message);
+      notify.error(message);
     } finally {
       setSavingCode(false);
     }
@@ -818,23 +829,23 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
   };
 
   return (
-    <div className={`rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-hidden ${disabled ? 'opacity-50' : ''}`}>
+    <div className={`modules-action-card rounded-xl border border-(--border-subtle) bg-(--surface-1) overflow-hidden ${disabled ? 'opacity-50' : ''}`}>
       <div className="flex items-start justify-between p-4 gap-4">
         <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">{action.label}</h3>
-          {action.description && <p className="text-xs text-[color:var(--text-muted)] mt-0.5">{action.description}</p>}
+          <h3 className="text-sm font-semibold text-(--text-primary)">{action.label}</h3>
+          {action.description && <p className="text-xs text-(--text-muted) mt-0.5">{action.description}</p>}
         </div>
-        <button className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity shrink-0 flex items-center gap-1.5" onClick={run} disabled={running || disabled}>
+        <button className="h-8 px-4 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-(--accent-solid) text-(--app-bg) hover:opacity-90 transition-opacity shrink-0 flex items-center gap-1.5" onClick={run} disabled={running || disabled}>
           {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
           {running ? 'Running...' : 'Run'}
         </button>
       </div>
 
       {(isRecordAction || params.length > 0) && (
-        <div className="px-4 pb-4 space-y-3 border-t border-[color:var(--border-subtle)] pt-3">
+        <div className="modules-action-fields px-4 pb-4 border-t border-(--border-subtle) pt-3">
           {isRecordAction && (
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+              <label className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">
                 Record <span className="text-rose-400 ml-1">*</span>
               </label>
               <select className={inputCls} value={selectedRecordId} onChange={e => setSelectedRecordId(e.target.value)}>
@@ -847,7 +858,7 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
           )}
           {params.map((param: any) => (
             <div key={param.key} className="space-y-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+              <label className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">
                 {param.label}
                 {param.required && <span className="text-rose-400 ml-1">*</span>}
               </label>
@@ -867,10 +878,10 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
       )}
 
       {hasActionCode && (
-        <div className="border-t border-[color:var(--border-subtle)]">
+        <div className="border-t border-(--border-subtle)">
           <div className="flex items-center justify-between gap-3 px-4 py-2">
             <button
-              className="flex min-w-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
+              className="flex min-w-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-primary) transition-colors"
               onClick={() => setCodeOpen(open => !open)}
             >
               {codeOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -880,7 +891,7 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
             {codeOpen && (
               <div className="flex items-center gap-1.5 shrink-0">
                 <button
-                  className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-1.5"
+                  className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-primary) hover:bg-(--surface-2) transition-colors flex items-center gap-1.5"
                   onClick={copyCode}
                 >
                   <Copy size={11} /> Copy
@@ -888,14 +899,14 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
                 {editingCode ? (
                   <>
                     <button
-                      className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors"
+                      className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-primary) hover:bg-(--surface-2) transition-colors"
                       onClick={cancelCodeEdit}
                       disabled={savingCode}
                     >
                       Cancel
                     </button>
                     <button
-                      className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity disabled:opacity-40"
+                      className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-(--accent-solid) text-(--app-bg) hover:opacity-90 transition-opacity disabled:opacity-40"
                       onClick={saveCode}
                       disabled={savingCode || !codeDirty}
                     >
@@ -904,7 +915,7 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
                   </>
                 ) : (
                   <button
-                    className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-1.5"
+                    className="h-7 px-2.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-primary) hover:bg-(--surface-2) transition-colors flex items-center gap-1.5"
                     onClick={() => setEditingCode(true)}
                   >
                     <Pencil size={11} /> Edit
@@ -917,13 +928,13 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
             <div className="px-4 pb-4 space-y-2">
               {editingCode ? (
                 <textarea
-                  className="w-full min-h-[260px] rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-3 text-[11px] leading-relaxed text-[color:var(--text-primary)] font-mono placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] resize-y transition-colors"
+                  className="w-full min-h-[260px] rounded-lg border border-(--border-subtle) bg-(--surface-0) p-3 text-[11px] leading-relaxed text-(--text-primary) font-mono placeholder:text-(--text-muted) focus:outline-hidden focus:border-(--accent-solid) resize-y transition-colors"
                   spellCheck={false}
                   value={codeDraft}
                   onChange={e => setCodeDraft(e.target.value)}
                 />
               ) : (
-                <pre className="max-h-[360px] overflow-auto rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-3 text-[11px] leading-relaxed text-[color:var(--text-secondary)] font-mono whitespace-pre">
+                <pre className="max-h-[360px] overflow-auto rounded-lg border border-(--border-subtle) bg-(--surface-0) p-3 text-[11px] leading-relaxed text-(--text-secondary) font-mono whitespace-pre">
                   {action.code}
                 </pre>
               )}
@@ -934,15 +945,15 @@ function ActionCard({ action, moduleName, secretsStatus, requiredSecrets, record
       )}
 
       {result && (
-        <div className="border-t border-[color:var(--border-subtle)]">
-          <button className="flex w-full items-center justify-between px-4 py-2 text-xs hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => setExpanded(e => !e)}>
+        <div className="border-t border-(--border-subtle)">
+          <button className="flex w-full items-center justify-between px-4 py-2 text-xs hover:bg-(--surface-2) transition-colors" onClick={() => setExpanded(e => !e)}>
             <span className={result.ok ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
               {result.ok ? '\u2713 Success' : '\u2717 Error'}
             </span>
-            <span className="text-[color:var(--text-muted)]">{expanded ? '\u25B2 hide' : '\u25BC show'}</span>
+            <span className="text-(--text-muted)">{expanded ? '\u25B2 hide' : '\u25BC show'}</span>
           </button>
           {expanded && (
-            <pre className="px-4 pb-4 text-[11px] text-[color:var(--text-secondary)] overflow-x-auto whitespace-pre-wrap break-all font-mono">
+            <pre className="px-4 pb-4 text-[11px] text-(--text-secondary) overflow-x-auto whitespace-pre-wrap break-all font-mono">
               {JSON.stringify(result.ok ? result.data : { error: result.error }, null, 2)}
             </pre>
           )}
@@ -966,29 +977,29 @@ function PageModule({ config }: { config: any }) {
     try {
       setSaving(true);
       await api.patch(`/modules/${config.name}`, { page_content: content });
-      toast.success('Page saved');
+      notify.success('Page saved');
       setDirty(false);
       setEditing(false);
-    } catch { toast.error('Could not save'); }
+    } catch { notify.error('Could not save'); }
     finally { setSaving(false); }
   };
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
-        <span className="text-sm font-medium text-[color:var(--text-secondary)]">{config.page_title}</span>
+      <div className="flex items-center justify-between px-4 py-2 border-b border-(--border-subtle) bg-(--surface-1)">
+        <span className="text-sm font-medium text-(--text-secondary)">{config.page_title}</span>
         <div className="flex items-center gap-2">
           {editing ? (
             <>
-              <button className="h-7 px-3 rounded-lg text-[10px] font-bold text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={() => { setEditing(false); setContent(config.page_content || ''); setDirty(false); }}>
+              <button className="h-7 px-3 rounded-lg text-[10px] font-bold text-(--text-muted) hover:bg-(--surface-2) transition-colors" onClick={() => { setEditing(false); setContent(config.page_content || ''); setDirty(false); }}>
                 Cancel
               </button>
-              <button className="h-7 px-3 rounded-lg text-[10px] font-bold bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity disabled:opacity-40" onClick={save} disabled={saving || !dirty}>
+              <button className="h-7 px-3 rounded-lg text-[10px] font-bold bg-(--accent-solid) text-(--app-bg) hover:opacity-90 transition-opacity disabled:opacity-40" onClick={save} disabled={saving || !dirty}>
                 {saving ? 'Saving...' : 'Save'}
               </button>
             </>
           ) : (
-            <button className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-1.5" onClick={() => setEditing(true)}>
+            <button className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-primary) hover:bg-(--surface-2) transition-colors flex items-center gap-1.5" onClick={() => setEditing(true)}>
               <Pencil size={11} /> Edit
             </button>
           )}
@@ -999,30 +1010,13 @@ function PageModule({ config }: { config: any }) {
         <div className="max-w-[720px] mx-auto">
           {editing ? (
             <textarea
-              className="w-full min-h-[400px] rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-4 text-sm font-mono text-[color:var(--text-primary)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors resize-y"
+              className="w-full min-h-[400px] rounded-lg border border-(--border-subtle) bg-(--surface-0) p-4 text-sm font-mono text-(--text-primary) focus:outline-hidden focus:border-(--accent-solid) transition-colors resize-y"
               value={content}
               onChange={e => { setContent(e.target.value); setDirty(true); }}
               placeholder="Write markdown content..."
             />
           ) : content ? (
-            <div className="space-y-2">
-              <ReactMarkdown components={{
-                h1: ({children}) => <h1 className="text-xl font-bold text-[color:var(--text-primary)] mt-6 mb-3">{children}</h1>,
-                h2: ({children}) => <h2 className="text-lg font-bold text-[color:var(--text-primary)] mt-5 mb-2">{children}</h2>,
-                h3: ({children}) => <h3 className="text-base font-semibold text-[color:var(--text-primary)] mt-4 mb-2">{children}</h3>,
-                p: ({children}) => <p className="text-sm text-[color:var(--text-secondary)] leading-relaxed mb-2">{children}</p>,
-                ul: ({children}) => <ul className="list-disc list-inside text-sm text-[color:var(--text-secondary)] mb-2 space-y-1">{children}</ul>,
-                ol: ({children}) => <ol className="list-decimal list-inside text-sm text-[color:var(--text-secondary)] mb-2 space-y-1">{children}</ol>,
-                li: ({children}) => <li className="text-sm text-[color:var(--text-secondary)]">{children}</li>,
-                code: ({children}) => <code className="bg-[color:var(--surface-2)] text-[color:var(--text-primary)] px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>,
-                pre: ({children}) => <pre className="bg-[color:var(--surface-2)] rounded-lg p-4 overflow-x-auto mb-3 text-xs font-mono text-[color:var(--text-primary)]">{children}</pre>,
-                a: ({href, children}) => <a href={href} className="text-[color:var(--accent-solid)] hover:underline" target="_blank" rel="noopener noreferrer">{children}</a>,
-                strong: ({children}) => <strong className="font-semibold text-[color:var(--text-primary)]">{children}</strong>,
-                em: ({children}) => <em className="italic text-[color:var(--text-secondary)]">{children}</em>,
-                blockquote: ({children}) => <blockquote className="border-l-4 border-[color:var(--border-subtle)] pl-4 italic text-[color:var(--text-muted)] mb-3">{children}</blockquote>,
-                hr: () => <hr className="border-[color:var(--border-subtle)] my-4" />,
-              }}>{content}</ReactMarkdown>
-            </div>
+            <Markdown content={content} className="module-markdown" />
           ) : (
             <EmptyState icon={FileText} label="No page content yet" />
           )}
@@ -1065,7 +1059,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
         if (prev && recs.some((r: any) => r.id === prev)) return prev;
         return recs[0]?.id || null;
       });
-    } catch { toast.error(`Failed to load ${moduleName}`); }
+    } catch { notify.error(`Failed to load ${moduleName}`); }
     finally { setLoading(false); }
   }, [moduleName]);
 
@@ -1117,10 +1111,10 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
       setSaving(true);
       const rec = await api.post<any>(`/modules/${moduleName}/records`, data);
       setCreateOpen(false);
-      toast.success('Created');
+      notify.success('Created');
       await loadAll(true);
       setSelectedId(rec.id);
-    } catch { toast.error('Create failed'); }
+    } catch { notify.error('Create failed'); }
     finally { setSaving(false); }
   };
 
@@ -1129,9 +1123,9 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
     try {
       setSaving(true);
       await api.patch(`/modules/${moduleName}/records/${selectedId}`, patch);
-      toast.success('Saved');
+      notify.success('Saved');
       await loadAll(true);
-    } catch { toast.error('Save failed'); }
+    } catch { notify.error('Save failed'); }
     finally { setSaving(false); }
   };
 
@@ -1141,18 +1135,18 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
       await api.delete(`/modules/${moduleName}/records/${id}`);
       setConfirmDeleteId(null);
       setSelectedId(null);
-      toast.success('Deleted');
+      notify.success('Deleted');
       await loadAll(true);
-    } catch { toast.error('Delete failed'); }
+    } catch { notify.error('Delete failed'); }
     finally { setSaving(false); }
   };
 
   const handleDeleteModule = async () => {
     try {
       await api.delete(`/modules/${moduleName}`);
-      toast.success(`${config?.label || moduleName} deleted`);
+      notify.success(`${config?.label || moduleName} deleted`);
       (onDeleted ?? onBack)?.();
-    } catch { toast.error('Failed to delete module'); }
+    } catch { notify.error('Failed to delete module'); }
   };
 
   const handleAction = async (actionId: string) => {
@@ -1160,16 +1154,16 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
     try {
       setSaving(true);
       const res = await api.post<any>(`/modules/${moduleName}/records/${selectedId}/action/${actionId}`, {});
-      if (res?.ok !== false) toast.success('Action completed');
-      else toast.error(res?.error || 'Action returned an error');
+      if (res?.ok !== false) notify.success('Action completed');
+      else notify.error(res?.error || 'Action returned an error');
       await loadAll(true);
-    } catch { toast.error('Action failed'); }
+    } catch { notify.error('Action failed'); }
     finally { setSaving(false); }
   };
 
   const copyPrompt = () => {
     if (!config) return;
-    const BASE_URL = window.location.origin;
+    const BASE_URL = 'sentinel://app';
     const instanceMatch = window.location.pathname.match(/^\/instances\/([^/]+)/);
     const instanceName = instanceMatch?.[1] ?? 'main';
     const base = `${BASE_URL}/api/v1/instances/${instanceName}/modules/${config.name}`;
@@ -1179,7 +1173,7 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
       `Fields: ${flds || 'none'}`];
     navigator.clipboard.writeText(lines.join('\n'));
     setCopied(true);
-    toast.success('Prompt copied');
+    notify.success('Prompt copied');
     setTimeout(() => setCopied(false), 2000);
   };
 
@@ -1201,27 +1195,26 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
   // Default to first available tab, but respect user's choice if valid
   const effectiveTab = tabs.includes(activeTab) ? activeTab : tabs[0];
 
-  const inputCls = 'h-7 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
+  const inputCls = 'h-7 rounded-lg border border-(--border-subtle) bg-(--surface-0) px-3 text-xs text-(--text-primary) placeholder:text-(--text-muted) focus:outline-hidden focus:border-(--accent-solid) transition-colors';
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header bar */}
-      <div className="flex items-center justify-between px-4 h-10 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] gap-3">
+    <div className="modules-detail flex flex-col h-full">
+      <div className="modules-toolbar modules-detail-toolbar chat-header-actions flex items-center gap-3">
         <div className="flex items-center gap-3">
           {onBack && (
-            <button onClick={onBack} className="p-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors">
+            <button onClick={onBack} className="chat-header-pill p-1.5 rounded-lg text-(--text-muted) hover:text-(--text-primary) hover:bg-(--surface-2) transition-colors">
               <ArrowLeft size={16} />
             </button>
           )}
-          <span className="text-sm font-semibold text-[color:var(--text-secondary)]">{config.label}</span>
+          <span className="text-sm font-semibold text-(--text-secondary)">{config.label}</span>
           {tabs.length > 1 && (
             <div className="flex items-center gap-1 ml-2">
               {tabs.map(tab => (
-                <button key={tab} onClick={() => setActiveTab(tab)}
-                  className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors ${
+                <button key={tab} aria-pressed={effectiveTab === tab} onClick={() => setActiveTab(tab)}
+                  className={`chat-header-pill px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors ${
                     effectiveTab === tab
-                      ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
-                      : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)]'
+                      ? 'bg-(--accent-solid) text-(--app-bg)'
+                      : 'text-(--text-muted) hover:text-(--text-primary) hover:bg-(--surface-2)'
                   }`}>{tab}</button>
               ))}
             </div>
@@ -1229,15 +1222,15 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
         </div>
         <div className="flex items-center gap-2">
           {effectiveTab === 'records' && (
-            <input className={`${inputCls} w-48`} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
+            <input className={`${inputCls} w-48`} aria-label="Search records" placeholder="Search records…" value={search} onChange={e => setSearch(e.target.value)} />
           )}
-          <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors" onClick={copyPrompt}>
+          <button className="chat-header-pill flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-(--text-muted) hover:text-(--text-primary) hover:bg-(--surface-2) transition-colors" onClick={copyPrompt}>
             <Copy size={12} />
             <span className="text-[10px] font-bold uppercase tracking-widest">{copied ? 'Copied!' : 'Prompt'}</span>
           </button>
           {!config?.system && (
             <button
-              className="p-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+              className="chat-header-pill p-1.5 rounded-lg text-(--text-muted) hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
               title="Delete module"
               onClick={() => setConfirmDeleteModule(true)}
             >
@@ -1245,13 +1238,14 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
             </button>
           )}
           {effectiveTab === 'records' && (
-            <button className="h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] hover:opacity-90 transition-opacity flex items-center gap-1.5" onClick={() => setCreateOpen(true)}>
+            <button className="chat-header-pill h-7 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-(--accent-solid) text-(--app-bg) hover:opacity-90 transition-opacity flex items-center gap-1.5" onClick={() => setCreateOpen(true)}>
               <Plus size={12} />{createAction?.label || `New`}
             </button>
           )}
         </div>
       </div>
 
+      {config.description && <p className="modules-detail-description">{config.description}</p>}
       {/* Actions tab */}
       {effectiveTab === 'actions' && (
         <div className="flex-1 min-h-0">
@@ -1266,24 +1260,24 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
 
       {/* Records tab */}
       {effectiveTab === 'records' && (
-        <div className="flex flex-1 min-h-0">
+        <div className="modules-records flex flex-1 min-h-0">
           {/* Left list */}
-          <div className="w-80 shrink-0 border-r border-[color:var(--border-subtle)] flex flex-col bg-[color:var(--surface-0)]">
+          <div className="modules-record-list w-80 shrink-0 border-r border-(--border-subtle) flex flex-col bg-(--surface-0)">
             {filterValues.length > 0 && (
-              <div className="flex items-center gap-1 px-3 py-2 border-b border-[color:var(--border-subtle)] flex-wrap">
+              <div className="flex items-center gap-1 px-3 py-2 border-b border-(--border-subtle) flex-wrap">
                 {['all', ...filterValues].map(v => (
                   <button key={v} onClick={() => setFilter(v)}
                     className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors ${
                       filter === v
-                        ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
-                        : 'text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)]'
+                        ? 'bg-(--accent-solid) text-(--app-bg)'
+                        : 'text-(--text-muted) hover:bg-(--surface-2)'
                     }`}>{v}</button>
                 ))}
               </div>
             )}
             <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
-              {loading && <div className="p-4 text-xs text-[color:var(--text-muted)]">Loading...</div>}
-              {!loading && filtered.length === 0 && <div className="p-4 text-xs text-[color:var(--text-muted)]">No records found.</div>}
+              {loading && <div className="p-4 text-xs text-(--text-muted)">Loading...</div>}
+              {!loading && filtered.length === 0 && <div className="p-4 text-xs text-(--text-muted)">No records found.</div>}
               {filtered.map((rec: any) => {
                 const title = rec[titleField] || rec.id;
                 const hue = avatarHue(title);
@@ -1366,20 +1360,27 @@ function ModulePage({ moduleName, onBack, onDeleted }: { moduleName: string; onB
    ═══════════════════════════════════════════════════════════════════════════ */
 
 function ModulesSection() {
+  const instanceName = useInstanceName();
+  const favoritesByInstance = useModuleFavorites(state => state.favorites);
+  const toggleFavorite = useModuleFavorites(state => state.toggle);
+  const favorites = useMemo(() => new Set(instanceName ? favoritesByInstance[instanceName] ?? [] : []), [favoritesByInstance, instanceName]);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [modules, setModules] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeModule, setActiveModule] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState('');
+  const [capability, setCapability] = useState('all');
+  const [customOnly, setCustomOnly] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
+  const matchesCapability = (mod: any, kind: string) => kind === 'all' || (kind === 'actions' && mod.actions?.length > 0) || (kind === 'records' && mod.fields?.length > 0) || (kind === 'page' && Boolean(mod.page_title));
   const filteredModules = useMemo(() => {
     const q = sidebarSearch.trim().toLowerCase();
-    if (!q) return modules;
-    return modules.filter(m =>
-      m.label?.toLowerCase().includes(q) || m.name?.toLowerCase().includes(q) || m.description?.toLowerCase().includes(q)
-    );
-  }, [modules, sidebarSearch]);
+    return modules.filter(mod => (!favoritesOnly || favorites.has(mod.name)) && (!customOnly || !mod.system) && matchesCapability(mod, capability) &&
+      (!q || [mod.label, mod.name, mod.description].some(value => value?.toLowerCase().includes(q))))
+      .sort((a, b) => Number(favorites.has(b.name)) - Number(favorites.has(a.name)));
+  }, [modules, sidebarSearch, capability, customOnly, favoritesOnly, favorites]);
 
   const load = useCallback(async (keepSelection = false) => {
     try {
@@ -1393,7 +1394,7 @@ function ModulesSection() {
         // After deletion: select first module that isn't the deleted one
         setActiveModule(prev => list.find((m: any) => m.name === prev) ? prev : (list[0]?.name || null));
       }
-    } catch { toast.error('Failed to load modules'); }
+    } catch { notify.error('Failed to load modules'); }
     finally { setLoading(false); }
   }, []);
 
@@ -1409,9 +1410,9 @@ function ModulesSection() {
       await load(true);
       if (response?.module?.name) setActiveModule(response.module.name);
       const importedCount = Number(response?.imported_records || 0);
-      toast.success(importedCount > 0 ? `Imported ${response.module.label} with ${importedCount} records` : `Imported ${response.module.label}`);
+      notify.success(importedCount > 0 ? `Imported ${response.module.label} with ${importedCount} records` : `Imported ${response.module.label}`);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Import failed');
+      notify.error(error instanceof Error ? error.message : 'Import failed');
     } finally {
       setImporting(false);
     }
@@ -1422,11 +1423,11 @@ function ModulesSection() {
   if (loading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
 
   return (
-    <div className="flex h-full">
+    <div className="modules-pane">
       {/* Left sidebar — module list */}
-      <div className="w-60 shrink-0 border-r border-[color:var(--border-subtle)] flex flex-col bg-[color:var(--surface-0)]">
-        <div className="flex items-center justify-between px-3 h-10 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
-          <span className="text-sm font-semibold text-[color:var(--text-secondary)]">Modules <span className="ml-1 text-xs font-normal text-[color:var(--text-muted)]">{modules.length}</span></span>
+      <div className="modules-catalog w-60 shrink-0 border-r border-(--border-subtle) flex flex-col bg-(--surface-0)">
+        <div className="modules-toolbar modules-catalog-toolbar chat-header-actions flex items-center gap-2">
+          <span className="modules-catalog-heading">CATALOG <small>{modules.length}</small></span>
           <div className="flex items-center gap-1">
             <input
               ref={importInputRef}
@@ -1438,27 +1439,31 @@ function ModulesSection() {
             <button
               onClick={() => importInputRef.current?.click()}
               disabled={importing}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:bg-[color:var(--surface-2)] transition-colors disabled:opacity-50"
+              className="chat-header-pill flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-(--text-muted) hover:text-(--text-primary) hover:bg-(--surface-2) transition-colors disabled:opacity-50"
             >
               <FileCode size={12} />
               <span className="text-[10px] font-bold uppercase tracking-widest">{importing ? 'Importing...' : 'Import'}</span>
             </button>
           </div>
         </div>
-        <div className="px-2 py-2 border-b border-[color:var(--border-subtle)]">
-          <div className="flex items-center gap-1.5 px-2 h-7 rounded-lg bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)]">
-            <Search size={11} className="text-[color:var(--text-muted)] shrink-0" />
+        <div className="px-2 py-2 border-b border-(--border-subtle)">
+          <div className="flex items-center gap-1.5 px-2 h-7 rounded-lg bg-(--surface-1) border border-(--border-subtle)">
+            <Search size={11} className="text-(--text-muted) shrink-0" />
             <input
-              className="flex-1 min-w-0 bg-transparent text-[11px] text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none"
-              placeholder="Search modules..."
+              className="flex-1 min-w-0 bg-transparent text-[11px] text-(--text-primary) placeholder:text-(--text-muted) focus:outline-hidden"
+              aria-label="Search modules" placeholder="Search modules…"
               value={sidebarSearch}
               onChange={e => setSidebarSearch(e.target.value)}
             />
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto py-1">
+        <div className="modules-filters">
+          <div className="modules-capabilities" role="group" aria-label="Module capabilities"><span className="modules-capability-indicator" aria-hidden="true" style={{ transform: `translateX(${['all', 'actions', 'records', 'page'].indexOf(capability) * 100}%)` }} />{['all', 'actions', 'records', 'page'].map(kind => <button key={kind} type="button" aria-pressed={capability === kind} onClick={() => setCapability(kind)}>{kind === 'page' ? 'Pages' : kind}<span>{modules.filter(mod => matchesCapability(mod, kind)).length}</span></button>)}</div>
+          <div className="modules-filter-summary"><span>{filteredModules.length} shown</span><div className="modules-filter-options"><button type="button" aria-label="Show favorites only" title="Favorites only" aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(value => !value)}><Star size={12} fill={favoritesOnly ? 'currentColor' : 'none'} />Favorites</button><button type="button" aria-pressed={customOnly} onClick={() => setCustomOnly(value => !value)}>Custom only</button></div></div>
+        </div>
+        <div className="modules-catalog-results flex-1 overflow-y-auto py-1">
           {filteredModules.length === 0 ? (
-            <p className="px-3 py-4 text-[11px] text-[color:var(--text-muted)]">No modules found</p>
+            <p className="px-3 py-4 text-[11px] text-(--text-muted)">No modules match these filters. <button className="underline" onClick={() => { setSidebarSearch(''); setCapability('all'); setCustomOnly(false); setFavoritesOnly(false); }}>Clear filters</button></p>
           ) : filteredModules.map((mod) => {
             const Icon = resolveIcon(mod.icon);
             const isActive = activeModule === mod.name;
@@ -1466,19 +1471,21 @@ function ModulesSection() {
             const hasActions = (mod.actions || []).length > 0;
             const hasPage = Boolean(mod.page_title);
             return (
+              <div key={mod.name} className="modules-catalog-row">
               <button
-                key={mod.name}
+                type="button"
                 onClick={() => setActiveModule(mod.name)}
-                className={`w-full text-left px-3 py-2.5 flex items-start gap-2.5 transition-colors ${
+                aria-pressed={isActive}
+                className={`modules-catalog-item w-full text-left px-3 py-2.5 flex items-start gap-2.5 transition-colors ${
                   isActive
-                    ? 'bg-[color:var(--surface-2)] border-l-2 border-[color:var(--accent-solid)]'
-                    : 'border-l-2 border-transparent hover:bg-[color:var(--surface-1)]'
+                    ? 'bg-(--surface-2) border-l-2 border-(--accent-solid)'
+                    : 'border-l-2 border-transparent hover:bg-(--surface-1)'
                 }`}
               >
-                <Icon size={14} className={`mt-0.5 shrink-0 ${isActive ? 'text-[color:var(--accent-solid)]' : 'text-[color:var(--text-muted)]'}`} />
+                <Icon size={14} className={`mt-0.5 shrink-0 ${isActive ? 'text-(--accent-solid)' : 'text-(--text-muted)'}`} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-1">
-                    <p className={`text-xs font-semibold truncate ${isActive ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]'}`}>
+                    <p className={`text-xs font-semibold truncate ${isActive ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`}>
                       {mod.label}
                     </p>
                     <div className="flex items-center gap-1 shrink-0">
@@ -1488,9 +1495,9 @@ function ModulesSection() {
                     </div>
                   </div>
                   {mod.description && (
-                    <p className="text-[10px] text-[color:var(--text-muted)] truncate leading-tight mt-0.5">{mod.description}</p>
+                    <p className="modules-catalog-description text-[11px] text-(--text-muted) leading-relaxed mt-1">{mod.description}</p>
                   )}
-                  <p className="text-[10px] text-[color:var(--text-muted)] mt-0.5">
+                  <p className="text-[10px] text-(--text-muted) mt-0.5">
                     {[
                       hasRecords && `${(mod.fields || []).length} fields`,
                       hasActions && `${(mod.actions || []).length} actions`,
@@ -1498,6 +1505,16 @@ function ModulesSection() {
                   </p>
                 </div>
               </button>
+              <button
+                type="button"
+                className="modules-favorite-button"
+                aria-label={`${favorites.has(mod.name) ? 'Remove' : 'Add'} ${mod.label} ${favorites.has(mod.name) ? 'from' : 'to'} favorites`}
+                aria-pressed={favorites.has(mod.name)}
+                title={favorites.has(mod.name) ? 'Remove from favorites' : 'Add to favorites'}
+                disabled={!instanceName}
+                onClick={() => { if (instanceName) toggleFavorite(instanceName, mod.name); }}
+              ><Star size={15} fill={favorites.has(mod.name) ? 'currentColor' : 'none'} /></button>
+              </div>
             );
           })}
         </div>
@@ -1525,7 +1542,7 @@ function ModulesSection() {
    ApprovalsSection
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function ApprovalsSection() {
+function ApprovalsSection({ headerTarget }: { headerTarget: HTMLDivElement | null }) {
   const [approvals, setApprovals] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<'pending' | 'approved' | 'rejected'>('pending');
@@ -1536,7 +1553,7 @@ function ApprovalsSection() {
       setLoading(true);
       const data = await api.get<{ items: any[]; total: number }>('/approvals');
       setApprovals(data.items || []);
-    } catch { toast.error('Failed to load approvals'); }
+    } catch { notify.error('Failed to load approvals', { source: 'Approvals' }); }
     finally { setLoading(false); }
   }, []);
 
@@ -1546,75 +1563,70 @@ function ApprovalsSection() {
   const counts = { pending: 0, approved: 0, rejected: 0 };
   approvals.forEach(a => { if (a.status in counts) counts[a.status as keyof typeof counts]++; });
 
-  const handleResolve = async (id: string, action: 'approve' | 'reject') => {
+  const handleResolve = async (id: string, action: 'approve' | 'reject', scope: ApprovalScope = 'once') => {
     try {
       setProcessingId(id);
       const approval = approvals.find(a => (a.approval_id ?? a.id) === id);
       const provider = approval?.provider ?? 'tool';
       const approvalId = approval?.approval_id ?? id;
-      await api.post(`/approvals/${provider}/${approvalId}/${action}`, {});
-      toast.success(action === 'approve' ? 'Approved' : 'Rejected');
+      await api.post(`/approvals/${provider}/${approvalId}/${action}`, { scope });
+      if (scope === 'session') window.dispatchEvent(new Event(SESSION_PERMISSIONS_CHANGED));
+      notify.success(scope === 'session' ? 'Action allowed for this session' : action === 'approve' ? 'Approved once' : 'Denied', { source: 'Approvals' });
       load();
-    } catch { toast.error(`Failed to ${action}`); }
+    } catch { notify.error(`Failed to ${action}`, { source: 'Approvals' }); }
     finally { setProcessingId(''); }
   };
 
-  if (loading) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
-
   return (
-    <div className="space-y-4">
-      {/* Status filter chips */}
-      <div className="flex items-center gap-2">
+    <div className="approvals-pane">
+      {headerTarget && createPortal(<div className="approvals-toolbar" role="group" aria-label="Approval status">
         {(['pending', 'approved', 'rejected'] as const).map(s => {
           const info = APPROVAL_STATUS[s];
           return (
             <button key={s} onClick={() => setStatusFilter(s)}
-              className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-1.5 ${
-                statusFilter === s
-                  ? 'bg-[color:var(--accent-solid)] text-[color:var(--app-bg)]'
-                  : 'bg-[color:var(--surface-2)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
-              }`}>
+              aria-pressed={statusFilter === s}
+              className="chat-header-pill approvals-filter">
               {info.label}
               <span className="text-[9px] opacity-70">({counts[s]})</span>
             </button>
           );
         })}
-      </div>
+      </div>, headerTarget)}
 
-      {filtered.length === 0 ? (
+      {loading ? <div className="flex items-center justify-center h-64" role="status" aria-label="Loading approvals"><Spinner /></div> : filtered.length === 0 ? (
         <EmptyState icon={CheckCircle} label={statusFilter === 'pending' ? 'No pending approvals' : `No ${statusFilter} approvals`} />
       ) : (
-        <div className="max-w-[900px] mx-auto space-y-4">
+        <div className="approvals-list">
           {filtered.map(approval => {
             const id = approval.approval_id ?? approval.id;
             const statusInfo = APPROVAL_STATUS[approval.status] || { label: approval.status, tone: 'neutral' };
             const isProcessing = processingId === id;
 
             return (
-              <div key={id} className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-5 space-y-4">
+              <div key={id} className="approval-card space-y-4">
                 {/* Header row */}
-                <div className="flex items-center justify-between gap-3">
+                <div className="approval-card-heading flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 flex-1 min-w-0 flex-wrap">
                     <Badge tone={statusInfo.tone}>{statusInfo.label}</Badge>
-                    <span className="text-xs font-mono font-bold text-[color:var(--text-primary)]">{approval.action}</span>
+                    <span className="approval-action text-xs font-mono font-medium text-(--text-primary)">{approval.action}</span>
                     {approval.label && approval.label !== approval.action && (
-                      <span className="text-[10px] font-bold text-[color:var(--text-muted)] uppercase tracking-widest bg-[color:var(--surface-2)] px-2 py-0.5 rounded">
+                      <span className="text-[10px] font-bold text-(--text-muted) uppercase tracking-widest bg-(--surface-2) px-2 py-0.5 rounded">
                         {approval.label}
                       </span>
                     )}
                   </div>
-                  <span className="text-[10px] font-mono text-[color:var(--text-muted)] shrink-0">{fmtDate(approval.created_at)}</span>
+                  <span className="text-[10px] font-mono text-(--text-muted) shrink-0">{fmtDate(approval.created_at)}</span>
                 </div>
 
                 {/* Description */}
                 {approval.description && (
-                  <p className="text-sm leading-relaxed text-[color:var(--text-secondary)]">{approval.description}</p>
+                  <p className="text-sm leading-relaxed text-(--text-secondary)">{approval.description}</p>
                 )}
 
                 {/* Payload JSON preview */}
                 {approval.payload && (
-                  <div className="rounded-lg bg-[color:var(--surface-1)] p-3 border border-[color:var(--border-subtle)]">
-                    <pre className="text-[11px] font-mono text-[color:var(--text-secondary)] whitespace-pre-wrap break-all m-0">
+                  <div className="approval-payload">
+                    <pre className="text-[11px] font-mono text-(--text-secondary) whitespace-pre-wrap break-all m-0">
                       {JSON.stringify(approval.payload, null, 2)}
                     </pre>
                   </div>
@@ -1622,27 +1634,13 @@ function ApprovalsSection() {
 
                 {/* Pending actions */}
                 {approval.status === 'pending' && (
-                  <div className="flex items-center gap-3">
-                    <button
-                      className="flex-1 h-9 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-emerald-500/10 text-emerald-500 hover:bg-emerald-600 hover:text-white transition-colors disabled:opacity-40"
-                      disabled={isProcessing}
-                      onClick={() => handleResolve(id, 'approve')}
-                    >
-                      {isProcessing ? 'Executing...' : 'Authorize Action'}
-                    </button>
-                    <button
-                      className="flex-1 h-9 rounded-lg text-[10px] font-bold uppercase tracking-widest border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] transition-colors disabled:opacity-40"
-                      disabled={isProcessing}
-                      onClick={() => handleResolve(id, 'reject')}
-                    >
-                      Decline
-                    </button>
-                  </div>
+                  <ApprovalActions busy={isProcessing} sessionId={approval.session_id} action={approval.action}
+                    onResolve={(decision, scope) => void handleResolve(id, decision, scope)} />
                 )}
 
                 {/* Resolution info */}
                 {(approval.resolvedAt || approval.resolved_at) && (
-                  <div className="pt-3 border-t border-[color:var(--border-subtle)] flex items-center justify-between text-[10px] font-bold text-[color:var(--text-muted)] uppercase tracking-widest">
+                  <div className="approval-resolved pt-3 border-t border-(--border-subtle) flex items-center justify-between text-[10px] font-bold text-(--text-muted) uppercase tracking-widest">
                     <span>Resolution complete</span>
                     <span>{fmtDate(approval.resolvedAt || approval.resolved_at)} {'\u2022'} {(approval.resolvedBy || approval.resolved_by || 'SYSTEM')}</span>
                   </div>
@@ -1660,7 +1658,7 @@ function ApprovalsSection() {
    PermissionsSection — grouped, 3-way toggle
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function PermissionsSection() {
+function PermissionsSection({ headerTarget }: { headerTarget: HTMLDivElement | null }) {
   const [permissions, setPermissions] = useState<{ action: string; level: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatingAction, setUpdatingAction] = useState('');
@@ -1671,7 +1669,7 @@ function PermissionsSection() {
       setLoading(true);
       const data = await api.get<{ permissions: { action: string; level: string }[] }>('/permissions');
       setPermissions(data.permissions || []);
-    } catch { toast.error('Failed to load permissions'); }
+    } catch { notify.error('Failed to load permissions', { source: 'Permissions' }); }
     finally { setLoading(false); }
   }, []);
 
@@ -1684,8 +1682,8 @@ function PermissionsSection() {
       setUpdatingAction(action);
       await api.patch(`/permissions/${action}`, { level: newLevel });
       setPermissions(prev => prev.map(p => p.action === action ? { ...p, level: newLevel } : p));
-      toast.success(`${action} \u2192 ${newLevel}`);
-    } catch { toast.error('Failed to update permission'); }
+      notify.success(`${action} \u2192 ${newLevel}`, { source: 'Permissions' });
+    } catch { notify.error('Failed to update permission', { source: 'Permissions' }); }
     finally { setUpdatingAction(''); }
   };
 
@@ -1702,50 +1700,35 @@ function PermissionsSection() {
     groups[resource].push(p);
   }
 
-  if (loading) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
-
-  const inputCls = 'h-7 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-xs text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] focus:outline-none focus:border-[color:var(--accent-solid)] transition-colors';
-
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h2 className="text-sm font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Permission Rules</h2>
-          <Badge>{permissions.length} policies</Badge>
-        </div>
-        <div className="relative">
-          <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
-          <input className={`${inputCls} w-56 pl-8`} placeholder="Search permissions..." value={search} onChange={e => setSearch(e.target.value)} />
-        </div>
-      </div>
-
-      <div className="max-w-[800px] mx-auto space-y-8">
+    <div className="permissions-pane">
+      {headerTarget && createPortal(<div className="permissions-toolbar">
+        <span className="chat-header-pill permissions-count">{permissions.length} policies</span>
+        <label className="chat-header-pill permissions-search"
+          onPointerDown={event => event.stopPropagation()}
+          onMouseDown={event => event.stopPropagation()}>
+          {/* Keep header drag prevention from cancelling native input focus. */}
+          <Search size={13} aria-hidden="true" />
+          <input aria-label="Search permissions" placeholder="Search permissions…" value={search} onChange={e => setSearch(e.target.value)} />
+        </label>
+      </div>, headerTarget)}
+      {loading ? <div className="permissions-empty" role="status"><Spinner /> Loading permissions…</div> : (
+      <div className="permissions-groups">
         {Object.entries(groups).map(([resource, perms]) => (
-          <section key={resource} className="space-y-3">
-            <h3 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent-solid)] border-l-[3px] border-[color:var(--accent-solid)] pl-3">
-              {resource.toUpperCase()} PROTOCOLS
-            </h3>
-            <div className="rounded-xl border border-[color:var(--border-subtle)] overflow-hidden">
-              {perms.map((p, i) => (
-                <div key={p.action} className={`flex items-center justify-between px-4 py-3 bg-[color:var(--surface-0)] ${i > 0 ? 'border-t border-[color:var(--border-subtle)]' : ''}`}>
-                  <span className="text-xs font-mono font-bold text-[color:var(--text-primary)]">{p.action}</span>
-                  <div className="flex items-center bg-[color:var(--surface-2)] p-0.5 rounded-lg border border-[color:var(--border-subtle)]">
+          <section key={resource} className="permissions-group" aria-label={`${resource} permissions`}>
+            <h3 className="permissions-group-heading"><span>{resource}</span><span>{perms.length}</span></h3>
+            <div className="permissions-card">
+              {perms.map(p => (
+                <div key={p.action} className="permissions-rule" aria-busy={updatingAction === p.action}>
+                  <span className="permissions-action">{p.action}</span>
+                  <div className="permissions-levels" role="group" aria-label={`Policy for ${p.action}`}>
                     {LEVELS.map(lvl => {
                       const active = p.level === lvl;
                       const isUpdating = updatingAction === p.action;
                       return (
-                        <button
-                          key={lvl}
-                          disabled={isUpdating}
-                          className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded-md transition-all ${
-                            active
-                              ? lvl === 'allow' ? 'bg-emerald-600 text-white shadow-sm'
-                                : lvl === 'approval' ? 'bg-white text-black shadow-sm'
-                                : 'bg-rose-600 text-white shadow-sm'
-                              : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
-                          }`}
-                          onClick={() => !active && handleToggle(p.action, lvl)}
-                        >
+                        <button key={lvl} disabled={isUpdating} aria-pressed={active}
+                          className="permissions-level" data-level={lvl}
+                          onClick={() => !active && handleToggle(p.action, lvl)}>
                           {lvl}
                         </button>
                       );
@@ -1756,7 +1739,8 @@ function PermissionsSection() {
             </div>
           </section>
         ))}
-      </div>
+        {!filtered.length && <div className="permissions-empty">{search.trim() ? 'No permissions match your search.' : 'No permission policies configured.'}</div>}
+      </div>)}
     </div>
   );
 }
@@ -1773,29 +1757,26 @@ const SECTION_LABELS: Record<ModuleSection, string> = {
   permissions: 'Permissions',
 };
 
-export function ModulesPage() {
-  const location = useLocation();
-  let activeSection: ModuleSection = 'modules';
-  const sectionPath = location.pathname.replace(/^\/instances\/[^/]+/, '');
-  if (sectionPath.startsWith('/approvals')) activeSection = 'approvals';
-  else if (sectionPath.startsWith('/permissions')) activeSection = 'permissions';
+export function ModulesPage({ section: activeSection = 'modules' }: { section?: ModuleSection } = {}) {
 
   const isFullHeight = activeSection === 'modules';
+  const [moduleHeaderTarget, setModuleHeaderTarget] = useState<HTMLDivElement | null>(null);
 
   return (
     <AppShell
       title={SECTION_LABELS[activeSection] || 'Modules'}
       subtitle="Module Engine"
-      contentClassName={isFullHeight ? '!p-0 overflow-hidden' : ''}
+      actions={<div className="modules-header-actions flex items-center gap-3" ref={setModuleHeaderTarget} />}
+      contentClassName={isFullHeight ? 'p-0! overflow-hidden' : ''}
     >
       {isFullHeight ? (
-        <div className="h-full overflow-hidden">
+        <div className="modules-layout-container h-full overflow-hidden">
           <ModulesSection />
         </div>
       ) : (
         <div className="max-w-5xl mx-auto">
-          {activeSection === 'approvals' && <ApprovalsSection />}
-          {activeSection === 'permissions' && <PermissionsSection />}
+          {activeSection === 'approvals' && <ApprovalsSection headerTarget={moduleHeaderTarget} />}
+          {activeSection === 'permissions' && <PermissionsSection headerTarget={moduleHeaderTarget} />}
         </div>
       )}
     </AppShell>

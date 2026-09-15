@@ -1,9 +1,15 @@
+import './logs-page.css';
+import { Popover, Menu, MenuItem } from '@mui/material';
+import { formatAgentCost } from '../lib/agent-usage';
+import { useInstanceName } from '../lib/workspace-context';
+import { useActiveSessionId } from '../store/active-session-store';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Brain,
   ChevronRight,
   Clock,
+  Coins,
   Layers,
   Loader2,
   Search,
@@ -12,34 +18,30 @@ import {
   Wrench,
   X,
   Zap,
-  BadgeCheck,
   Cpu,
   MessageSquare,
   Network,
   Send,
   Users,
 } from 'lucide-react';
-import { toast } from 'sonner';
+import { notificationPublisher } from '../lib/notifications';
 
 import { AppShell } from '../components/AppShell';
 import { RuntimeExplorerModal } from '../components/RuntimeExplorerModal';
-import { useSessionDeleteConfirmation } from '../components/session/SessionDeleteConfirmDialog';
-import { SessionHistorySidebar } from '../components/session/SessionHistorySidebar';
 import { JsonBlock } from '../components/ui/JsonBlock';
 import { Markdown } from '../components/ui/Markdown';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api } from '../lib/api';
 import { formatCompactDate, truncate } from '../lib/format';
-import { getSessionDeleteWorkspaceSummary } from '../lib/sessionDeletion';
 import type {
   Message,
   MessageListResponse,
   RuntimeStatusResponse,
   Session,
-  SessionListResponse,
 } from '../types/api';
 
-type SidebarTab = 'sessions' | 'sub_agents';
+const notify = notificationPublisher('Logs');
+
 
 type ArchitectureLayer =
   | 'ingress'
@@ -73,6 +75,7 @@ type PromptSection = {
 
 type RuntimeContextPayload = {
   contextMessageId: string;
+  requestUsage?: Record<string, unknown> | null;
   timestamp: string;
   runContext: Record<string, unknown>;
   structured: Record<string, unknown> | null;
@@ -250,7 +253,7 @@ function classifyMessage(message: Message): ArchitectureEvent {
   } else if (message.role === 'system' && lower.includes('runtime')) {
     layer = 'runtime';
     lens = 'logic';
-    label = 'Runtime state';
+    label = 'Machine state';
     summary = truncate(message.content, 220);
   } else if (message.role === 'assistant' && Array.isArray(message.metadata.tool_calls)) {
     layer = 'orchestration';
@@ -365,11 +368,6 @@ function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
   return sortMessagesDesc(Array.from(byId.values()));
 }
 
-function runtimeStatusLabel(runtime: RuntimeStatusResponse | null): string {
-  if (!runtime) return 'unavailable';
-  return runtime.status.replace('_', ' ');
-}
-
 function runtimeIsAvailable(runtime: RuntimeStatusResponse | null): boolean {
   return runtime?.status === 'ready' || runtime?.status === 'degraded';
 }
@@ -380,6 +378,7 @@ function extractRuntimeContextPayload(message: Message): RuntimeContextPayload |
   if (!isRecord(runContext)) return null;
   return {
     contextMessageId: message.id,
+    requestUsage: isRecord(runContext.request_usage) ? runContext.request_usage : null,
     timestamp: message.created_at,
     runContext,
     structured: isRecord(message.runtime_context_structured) ? message.runtime_context_structured : null,
@@ -390,17 +389,24 @@ function mapRuntimeContextToUserMessages(messages: Message[]): Map<string, Runti
   const ordered = [...messages].sort((a, b) => toTimestamp(a.created_at) - toTimestamp(b.created_at));
   const mapped = new Map<string, RuntimeContextPayload>();
   let pendingUserMessageId: string | null = null;
+  let activeContext: RuntimeContextPayload | null = null;
 
   for (const message of ordered) {
     if (message.role === 'user') {
       pendingUserMessageId = message.id;
+      activeContext = null;
       continue;
     }
 
+    if (message.role === 'assistant' && activeContext) {
+      if (!Object.hasOwn(activeContext.runContext, 'request_usage')) activeContext.requestUsage = isRecord(message.metadata.provider_usage) ? message.metadata.provider_usage : null;
+      activeContext = null; // Never substitute a later request if this one has no usage.
+    }
     const context = extractRuntimeContextPayload(message);
     if (context) {
       if (pendingUserMessageId && !mapped.has(pendingUserMessageId)) {
         mapped.set(pendingUserMessageId, context);
+        activeContext = context;
         pendingUserMessageId = null;
       }
     }
@@ -499,14 +505,14 @@ function assembleSystemContext(runContext: Record<string, unknown> | null | unde
 function runtimeContextErrorText(context: RuntimeContextPayload | null): string {
   if (!context) {
     return [
-      'Runtime context snapshot is missing for this message.',
+      'Machine context snapshot is missing for this message.',
       'Raw prompt cannot be rendered in strict mode.',
       'No fallback is applied.',
     ].join('\n');
   }
 
   return [
-    `Runtime context snapshot ${context.contextMessageId} is present but missing run_context.system_messages.`,
+    `Machine context snapshot ${context.contextMessageId} is present but missing run_context.system_messages.`,
     'Raw prompt cannot be rendered in strict mode.',
     'No fallback is applied.',
   ].join('\n');
@@ -553,10 +559,10 @@ function renderMemoryReferenceCard(block: Record<string, unknown>, key: string):
       : null;
 
   return (
-    <div key={key} className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 p-3 space-y-2">
+    <div key={key} className="rounded border border-(--border-subtle) bg-(--surface-1)/40 p-3 space-y-2">
       <div className="flex items-center gap-2 min-w-0">
-        <Brain size={12} className="text-[color:var(--text-muted)] shrink-0" />
-        <span className="text-xs font-medium text-[color:var(--text-primary)] truncate">{title}</span>
+        <Brain size={12} className="text-(--text-muted) shrink-0" />
+        <span className="text-xs font-medium text-(--text-primary) truncate">{title}</span>
         <StatusChip label={source} tone="default" className="h-4 text-[8px] ml-auto" />
       </div>
       <div className="flex items-center gap-1.5 flex-wrap">
@@ -568,11 +574,11 @@ function renderMemoryReferenceCard(block: Record<string, unknown>, key: string):
           <StatusChip label={`importance ${importance}`} tone="default" className="h-4 text-[8px]" />
         )}
       </div>
-      <p className="text-xs text-[color:var(--text-secondary)] leading-relaxed">
+      <p className="text-xs text-(--text-secondary) leading-relaxed">
         {summary ?? 'No summary available for this memory reference.'}
       </p>
       {(memoryId || rootId) && (
-        <p className="text-[10px] font-mono text-[color:var(--text-muted)] break-all">
+        <p className="text-[10px] font-mono text-(--text-muted) break-all">
           {memoryId ? `memory=${memoryId}` : ''}
           {memoryId && rootId ? ' ' : ''}
           {rootId ? `root=${rootId}` : ''}
@@ -665,15 +671,15 @@ function ContextLayersSection({
     <section className={`p-4 flex flex-col min-h-0 ${className}`}>
       <div className="flex items-center gap-2 mb-4 shrink-0">
         <StatusChip label={label} tone="info" className="h-5" />
-        <span className="text-[10px] font-mono text-[color:var(--text-muted)]">{entries.length}</span>
+        <span className="text-[10px] font-mono text-(--text-muted)">{entries.length}</span>
       </div>
       <div className="mb-4 space-y-2">
-        <p className="text-[10px] text-[color:var(--text-muted)] leading-relaxed">
+        <p className="text-[10px] text-(--text-muted) leading-relaxed">
           Layered snapshot of the exact context assembled at run start.
         </p>
       </div>
       {entries.length === 0 ? (
-        <p className="text-xs text-[color:var(--text-muted)]">No structured layers in this snapshot.</p>
+        <p className="text-xs text-(--text-muted)">No structured layers in this snapshot.</p>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-4 flex-1 overflow-hidden min-h-0">
           <div className="flex flex-col gap-1 overflow-y-auto pr-2 custom-scrollbar min-h-0 w-full">
@@ -693,8 +699,8 @@ function ContextLayersSection({
                     className={[
                       'w-full rounded-md px-3 py-2 text-left transition-all duration-150',
                       active
-                        ? 'bg-[color:var(--surface-0)] border border-[color:var(--border-strong)] shadow-sm'
-                        : 'border border-transparent hover:bg-[color:var(--surface-0)]/50',
+                        ? 'bg-(--surface-0) border border-(--border-strong) shadow-xs'
+                        : 'border border-transparent hover:bg-(--surface-0)/50',
                     ].join(' ')}
                   >
                     <div className="flex items-center gap-2 flex-wrap mb-1 min-w-0">
@@ -704,7 +710,7 @@ function ContextLayersSection({
                         className="h-4 text-[8px]"
                       />
                     </div>
-                    <p className={`text-xs font-medium truncate w-full ${active ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]'}`}>
+                    <p className={`text-xs font-medium truncate w-full ${active ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`}>
                       {entry.kind === 'layer' ? String(entry.layer.title ?? `Layer ${entry.index + 1}`) : entry.title}
                     </p>
                   </button>
@@ -714,14 +720,14 @@ function ContextLayersSection({
           </div>
 
           <div className="flex flex-col overflow-hidden min-h-0">
-            <div className="flex-1 overflow-y-auto pl-4 custom-scrollbar min-h-0 border-l border-[color:var(--border-subtle)]">
+            <div className="flex-1 overflow-y-auto pl-4 custom-scrollbar min-h-0 border-l border-(--border-subtle)">
               {selectedEntry ? (
                 <div className="space-y-6">
                   {selectedEntry.kind === 'user_message' && (
                     <div className="space-y-4">
-                      <div className="flex items-center gap-2 pb-2 border-b border-[color:var(--border-subtle)]">
-                        <MessageSquare size={14} className="text-[color:var(--text-muted)]" />
-                        <h4 className="text-sm font-medium text-[color:var(--text-primary)]">{selectedEntry.title}</h4>
+                      <div className="flex items-center gap-2 pb-2 border-b border-(--border-subtle)">
+                        <MessageSquare size={14} className="text-(--text-muted)" />
+                        <h4 className="text-sm font-medium text-(--text-primary)">{selectedEntry.title}</h4>
                       </div>
                       <Markdown content={selectedEntry.content} compact muted />
                     </div>
@@ -729,9 +735,9 @@ function ContextLayersSection({
 
                   {selectedEntry.kind === 'run_config' && (
                     <div className="space-y-4">
-                      <div className="flex items-center gap-2 pb-2 border-b border-[color:var(--border-subtle)]">
-                        <Cpu size={14} className="text-[color:var(--text-muted)]" />
-                        <h4 className="text-sm font-medium text-[color:var(--text-primary)]">{selectedEntry.title}</h4>
+                      <div className="flex items-center gap-2 pb-2 border-b border-(--border-subtle)">
+                        <Cpu size={14} className="text-(--text-muted)" />
+                        <h4 className="text-sm font-medium text-(--text-primary)">{selectedEntry.title}</h4>
                       </div>
                       {(() => {
                         const entries = Object.entries(selectedEntry.config);
@@ -755,9 +761,9 @@ function ContextLayersSection({
                             {scalarEntries.length > 0 && (
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 {scalarEntries.map(([k, v]) => (
-                                  <div key={k} className="flex flex-col gap-1 p-3 rounded bg-[color:var(--surface-1)]">
-                                    <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">{k.replace(/_/g, ' ')}</span>
-                                    <span className="text-xs font-mono font-medium text-[color:var(--text-primary)] break-all">{String(v ?? '—')}</span>
+                                  <div key={k} className="flex flex-col gap-1 p-3 rounded bg-(--surface-1)">
+                                    <span className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">{k.replace(/_/g, ' ')}</span>
+                                    <span className="text-xs font-mono font-medium text-(--text-primary) break-all">{String(v ?? '—')}</span>
                                   </div>
                                 ))}
                               </div>
@@ -765,7 +771,7 @@ function ContextLayersSection({
 
                             {tools.length > 0 && (
                               <div className="space-y-3">
-                                <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                                <p className="text-[10px] uppercase tracking-widest text-(--text-muted)">
                                   Tools ({tools.length})
                                 </p>
                                 {tools.map((tool, index) => {
@@ -787,22 +793,22 @@ function ContextLayersSection({
                                     : [];
 
                                   return (
-                                    <details key={`${name}-${index}`} className="group rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 overflow-hidden">
-                                      <summary className="list-none cursor-pointer px-3 py-2 hover:bg-[color:var(--surface-2)] transition-colors flex items-start gap-2">
-                                        <ChevronRight size={12} className="mt-0.5 text-[color:var(--text-muted)] transition-transform group-open:rotate-90" />
+                                    <details key={`${name}-${index}`} className="group rounded border border-(--border-subtle) bg-(--surface-1)/40 overflow-hidden">
+                                      <summary className="list-none cursor-pointer px-3 py-2 hover:bg-(--surface-2) transition-colors flex items-start gap-2">
+                                        <ChevronRight size={12} className="mt-0.5 text-(--text-muted) transition-transform group-open:rotate-90" />
                                         <div className="min-w-0 flex-1 space-y-1">
                                           <div className="flex items-center gap-2 flex-wrap">
                                             <StatusChip label={name} tone={toolTone(name)} className="h-4 text-[8px]" />
-                                            <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
+                                            <span className="text-[10px] font-mono text-(--text-muted)">
                                               {parameterKeys.length} params
                                               {required.length > 0 ? ` · ${required.length} required` : ''}
                                             </span>
                                           </div>
-                                          <p className="text-xs text-[color:var(--text-secondary)] leading-relaxed">
+                                          <p className="text-xs text-(--text-secondary) leading-relaxed">
                                             {description}
                                           </p>
                                           {parameterKeys.length > 0 && (
-                                            <p className="text-[10px] font-mono text-[color:var(--text-muted)] truncate">
+                                            <p className="text-[10px] font-mono text-(--text-muted) truncate">
                                               {parameterKeys.slice(0, 8).join(', ')}
                                               {parameterKeys.length > 8 ? ' ...' : ''}
                                             </p>
@@ -810,10 +816,10 @@ function ContextLayersSection({
                                         </div>
                                       </summary>
                                       {parameters && (
-                                        <div className="border-t border-[color:var(--border-subtle)] p-2">
+                                        <div className="border-t border-(--border-subtle) p-2">
                                           <JsonBlock
                                             value={JSON.stringify(parameters, null, 2)}
-                                            className="!border-0 !bg-transparent max-h-[260px] text-[10px]"
+                                            className="border-0! bg-transparent! max-h-[260px] text-[10px]"
                                           />
                                         </div>
                                       )}
@@ -825,21 +831,21 @@ function ContextLayersSection({
 
                             {nestedEntries.length > 0 && (
                               <div className="space-y-3">
-                                <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                                <p className="text-[10px] uppercase tracking-widest text-(--text-muted)">
                                   Other Nested Config
                                 </p>
                                 {nestedEntries.map(([k, v]) => (
-                                  <details key={k} className="group rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 overflow-hidden">
-                                    <summary className="list-none cursor-pointer px-3 py-2 hover:bg-[color:var(--surface-2)] transition-colors flex items-center gap-2">
-                                      <ChevronRight size={12} className="text-[color:var(--text-muted)] transition-transform group-open:rotate-90" />
-                                      <span className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+                                  <details key={k} className="group rounded border border-(--border-subtle) bg-(--surface-1)/40 overflow-hidden">
+                                    <summary className="list-none cursor-pointer px-3 py-2 hover:bg-(--surface-2) transition-colors flex items-center gap-2">
+                                      <ChevronRight size={12} className="text-(--text-muted) transition-transform group-open:rotate-90" />
+                                      <span className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">
                                         {k.replace(/_/g, ' ')}
                                       </span>
                                     </summary>
-                                    <div className="border-t border-[color:var(--border-subtle)] p-2">
+                                    <div className="border-t border-(--border-subtle) p-2">
                                       <JsonBlock
                                         value={JSON.stringify(v, null, 2)}
-                                        className="!border-0 !bg-transparent max-h-[260px] text-[10px]"
+                                        className="border-0! bg-transparent! max-h-[260px] text-[10px]"
                                       />
                                     </div>
                                   </details>
@@ -854,15 +860,15 @@ function ContextLayersSection({
 
                   {selectedEntry.kind === 'layer' && selectedLayer && (
                     <div className="space-y-4">
-                      <div className="flex items-center gap-2 pb-2 border-b border-[color:var(--border-subtle)]">
-                        <Layers size={14} className="text-[color:var(--text-muted)]" />
-                        <h4 className="text-sm font-medium text-[color:var(--text-primary)]">
+                      <div className="flex items-center gap-2 pb-2 border-b border-(--border-subtle)">
+                        <Layers size={14} className="text-(--text-muted)" />
+                        <h4 className="text-sm font-medium text-(--text-primary)">
                           {String(selectedLayer.title ?? `Layer ${selectedEntry.index + 1}`)}
                         </h4>
                       </div>
-                      
+
                       {typeof selectedLayer.explanation === 'string' && selectedLayer.explanation.trim().length > 0 && (
-                        <div className="p-4 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/50 text-xs text-[color:var(--text-secondary)] leading-relaxed italic">
+                        <div className="p-4 rounded border border-(--border-subtle) bg-(--surface-1)/50 text-xs text-(--text-secondary) leading-relaxed italic">
                           {selectedLayer.explanation}
                         </div>
                       )}
@@ -898,7 +904,7 @@ function ContextLayersSection({
                               return (
                                 <div
                                   key={`history-${idx}`}
-                                  className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/40 p-3 space-y-2"
+                                  className="rounded border border-(--border-subtle) bg-(--surface-1)/40 p-3 space-y-2"
                                 >
                                   <div className="flex items-center gap-1.5 flex-wrap">
                                     <StatusChip
@@ -919,11 +925,11 @@ function ContextLayersSection({
                                   </div>
 
                                   {preview ? (
-                                    <p className="text-xs text-[color:var(--text-secondary)] leading-relaxed whitespace-pre-wrap break-words">
+                                    <p className="text-xs text-(--text-secondary) leading-relaxed whitespace-pre-wrap wrap-break-word">
                                       {preview}
                                     </p>
                                   ) : (
-                                    <p className="text-[11px] text-[color:var(--text-muted)] italic">
+                                    <p className="text-[11px] text-(--text-muted) italic">
                                       No text preview available.
                                     </p>
                                   )}
@@ -946,7 +952,7 @@ function ContextLayersSection({
                                   </div>
 
                                   {toolCalls.length > 0 && (
-                                    <div className="text-[10px] font-mono text-[color:var(--text-muted)] break-words">
+                                    <div className="text-[10px] font-mono text-(--text-muted) wrap-break-word">
                                       {toolCalls
                                         .map((call) => {
                                           const name = typeof call.name === 'string' ? call.name.trim() : '';
@@ -963,29 +969,29 @@ function ContextLayersSection({
                             })}
                           </div>
                         ) : (
-                          <p className="text-xs text-[color:var(--text-muted)]">
+                          <p className="text-xs text-(--text-muted)">
                             No conversation history entries were captured for this run.
                           </p>
                         )
                       ) : selectedInjectedMemoryBlocks.length > 0 ? (
                         <div className="space-y-3">
                           {selectedInjectedMemoryBlocks.map((block, bIdx) => (
-                            <details key={bIdx} className="group bg-[color:var(--surface-1)]/50 rounded border border-[color:var(--border-subtle)] overflow-hidden">
-                              <summary className="list-none cursor-pointer px-4 py-3 hover:bg-[color:var(--surface-2)] transition-colors flex items-center justify-between">
+                            <details key={bIdx} className="group bg-(--surface-1)/50 rounded border border-(--border-subtle) overflow-hidden">
+                              <summary className="list-none cursor-pointer px-4 py-3 hover:bg-(--surface-2) transition-colors flex items-center justify-between">
                                 <div className="flex items-center gap-3 min-w-0">
-                                  <Brain size={14} className="text-[color:var(--text-muted)] shrink-0" />
-                                  <span className="text-xs font-medium text-[color:var(--text-primary)] truncate">{String(block.title ?? 'Untitled Memory')}</span>
+                                  <Brain size={14} className="text-(--text-muted) shrink-0" />
+                                  <span className="text-xs font-medium text-(--text-primary) truncate">{String(block.title ?? 'Untitled Memory')}</span>
                                 </div>
-                                <ChevronRight size={14} className="text-[color:var(--text-muted)] transition-transform group-open:rotate-90" />
+                                <ChevronRight size={14} className="text-(--text-muted) transition-transform group-open:rotate-90" />
                               </summary>
-                              <div className="p-5 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]">
+                              <div className="p-5 border-t border-(--border-subtle) bg-(--surface-0)">
                                 <Markdown content={String(block.content ?? '')} compact muted />
                               </div>
                             </details>
                           ))}
                           {selectedReferencedMemoryBlocks.length > 0 && (
                             <div className="space-y-2 pt-2">
-                              <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                              <p className="text-[10px] uppercase tracking-widest text-(--text-muted)">
                                 Linked Memory References ({selectedReferencedMemoryBlocks.length})
                               </p>
                               {selectedReferencedMemoryBlocks.map((block, bIdx) =>
@@ -996,7 +1002,7 @@ function ContextLayersSection({
                         </div>
                       ) : selectedReferencedMemoryBlocks.length > 0 ? (
                         <div className="space-y-2">
-                          <p className="text-[10px] uppercase tracking-widest text-[color:var(--text-muted)]">
+                          <p className="text-[10px] uppercase tracking-widest text-(--text-muted)">
                             Memory References ({selectedReferencedMemoryBlocks.length})
                           </p>
                           {selectedReferencedMemoryBlocks.map((block, bIdx) =>
@@ -1010,7 +1016,7 @@ function ContextLayersSection({
                   )}
                 </div>
               ) : (
-                <div className="h-full flex flex-col items-center justify-center text-[color:var(--text-muted)] gap-4 opacity-40">
+                <div className="h-full flex flex-col items-center justify-center text-(--text-muted) gap-4 opacity-40">
                   <Layers size={48} />
                   <p className="text-sm font-bold uppercase tracking-widest">Select a trace layer</p>
                 </div>
@@ -1053,9 +1059,9 @@ function UnifiedInspectorModal({
       return { tokens: null as number | null, budget: null as number | null, percent: null as number | null };
     }
 
-    const rawTokens = runContext.estimated_context_tokens;
+    const usage = context?.requestUsage?.usage;
+    const rawTokens = isRecord(usage) ? usage.input_tokens : null;
     const rawBudget = runContext.context_token_budget;
-    const rawPercent = runContext.estimated_context_percent;
 
     const tokens =
       typeof rawTokens === 'number' && Number.isFinite(rawTokens) && rawTokens >= 0
@@ -1067,9 +1073,7 @@ function UnifiedInspectorModal({
         : null;
 
     let percent: number | null = null;
-    if (typeof rawPercent === 'number' && Number.isFinite(rawPercent)) {
-      percent = Math.max(0, Math.min(100, Math.round(rawPercent)));
-    } else if (tokens !== null && budget !== null) {
+    if (tokens !== null && budget !== null) {
       percent = Math.max(0, Math.min(100, Math.round((tokens / budget) * 100)));
     }
 
@@ -1078,7 +1082,7 @@ function UnifiedInspectorModal({
 
   const tokenDotColor =
     contextUsage.percent === null
-      ? 'bg-[color:var(--text-muted)]'
+      ? 'bg-(--text-muted)'
       : contextUsage.percent < 70
         ? 'bg-emerald-500'
         : contextUsage.percent < 90
@@ -1086,10 +1090,10 @@ function UnifiedInspectorModal({
           : 'bg-rose-500';
   const tokenLabel =
     contextUsage.tokens === null
-      ? 'context tokens unavailable'
+      ? 'Input tokens: N/A'
       : contextUsage.budget === null
-        ? `${contextUsage.tokens.toLocaleString()} tokens`
-        : `${contextUsage.tokens.toLocaleString()} / ${contextUsage.budget.toLocaleString()} tokens${contextUsage.percent !== null ? ` (${contextUsage.percent}%)` : ''}`;
+        ? `Input: ${contextUsage.tokens.toLocaleString()} tokens`
+        : `Input: ${contextUsage.tokens.toLocaleString()} / ${contextUsage.budget.toLocaleString()} tokens${contextUsage.percent !== null ? ` (${contextUsage.percent}%)` : ''}`;
 
   if (!open || !session) return null;
 
@@ -1100,27 +1104,27 @@ function UnifiedInspectorModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-5xl h-[85vh] rounded-xl border border-[color:var(--border-strong)] bg-[color:var(--surface-1)] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={onClose} />
+      <div className="logs-dialog relative z-10 w-full max-w-5xl h-[85vh] rounded-xl border border-(--border-strong) bg-(--surface-1) shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
         {/* Header */}
-        <header className="px-6 py-4 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] flex items-center justify-between shrink-0">
+        <header className="px-6 py-4 border-b border-(--border-subtle) bg-(--surface-1) flex items-center justify-between shrink-0">
           <div className="flex items-center gap-4 min-w-0">
             <div className="min-w-0">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] leading-none mb-1">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted) leading-none mb-1">
                 {userMessage ? 'Execution Context' : 'Session Inspector'}
               </p>
-              <p className="text-xs font-mono font-medium text-[color:var(--text-primary)] truncate">
+              <p className="text-xs font-mono font-medium text-(--text-primary) truncate">
                 {userMessage ? `msg_${userMessage.id.slice(0, 8)}` : `session_${session.id.slice(0, 8)}`}
               </p>
             </div>
-            <span className="flex items-center gap-1.5 text-[9px] font-mono text-[color:var(--text-muted)]">
+            <span className="flex items-center gap-1.5 text-[9px] font-mono text-(--text-muted)">
               <span className={`w-1.5 h-1.5 rounded-full ${tokenDotColor}`} />
               {tokenLabel}
             </span>
           </div>
           <button
             onClick={onClose}
-            className="h-8 w-8 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] inline-flex items-center justify-center transition-colors text-[color:var(--text-secondary)]"
+            className="h-8 w-8 rounded border border-(--border-subtle) bg-(--surface-0) hover:bg-(--surface-1) inline-flex items-center justify-center transition-colors text-(--text-secondary)"
             aria-label="Close inspector"
           >
             <X size={16} />
@@ -1128,15 +1132,15 @@ function UnifiedInspectorModal({
         </header>
 
         {/* Tabs */}
-        <div className="px-6 py-2 border-b border-[color:var(--border-subtle)] flex items-center gap-1 shrink-0">
+        <div className="px-6 py-2 border-b border-(--border-subtle) flex items-center gap-1 shrink-0">
           {tabs.map(t => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
               className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded transition-colors ${
                 tab === t.id
-                  ? 'bg-[color:var(--surface-1)] text-[color:var(--text-primary)] shadow-sm border border-[color:var(--border-subtle)]'
-                  : 'border border-transparent text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)]/50'
+                  ? 'bg-(--surface-1) text-(--text-primary) shadow-xs border border-(--border-subtle)'
+                  : 'border border-transparent text-(--text-muted) hover:text-(--text-secondary) hover:bg-(--surface-1)/50'
               }`}
             >
               {t.label}
@@ -1158,7 +1162,7 @@ function UnifiedInspectorModal({
 
           {tab === 'raw' && (
             <div className="h-full overflow-y-auto p-6 custom-scrollbar animate-in fade-in duration-150">
-              <div className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/30 p-6">
+              <div className="rounded border border-(--border-subtle) bg-(--surface-1)/30 p-6">
                 {rawPrompt ? (
                   <Markdown content={rawPrompt} compact muted />
                 ) : (
@@ -1167,7 +1171,7 @@ function UnifiedInspectorModal({
                       <AlertTriangle size={12} />
                       Raw Context Unavailable
                     </div>
-                    <pre className="text-xs font-mono text-rose-400 whitespace-pre-wrap break-words">
+                    <pre className="text-xs font-mono text-rose-400 whitespace-pre-wrap wrap-break-word">
                       {runtimeContextErrorText(context)}
                     </pre>
                   </div>
@@ -1179,6 +1183,59 @@ function UnifiedInspectorModal({
         </div>
       </div>
     </div>
+  );
+}
+
+function ProviderUsageDetails({ message, expanded = false }: { message: Message; expanded?: boolean }) {
+  if (message.role !== 'assistant') return null;
+  const snapshot = isRecord(message.metadata.provider_usage) ? message.metadata.provider_usage : null;
+  const usage = snapshot && isRecord(snapshot.usage) ? snapshot.usage : null;
+  if (!usage) return <p className="my-3 text-xs text-(--text-muted)">Token usage: N/A — the provider did not report it for this step.</p>;
+  const input = isRecord(usage.input_tokens_details) ? usage.input_tokens_details : {};
+  const output = isRecord(usage.output_tokens_details) ? usage.output_tokens_details : {};
+  const price = isRecord(snapshot?.price) ? snapshot.price : null;
+  const rates = price && isRecord(price.rates_per_million) ? price.rates_per_million : {};
+  const equivalent = snapshot?.price_kind === 'api_equivalent';
+  const formatCount = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value.toLocaleString() : 'N/A';
+  const formatUsd = (value: unknown) => typeof value === 'string' && value.trim() && Number.isFinite(Number(value))
+    ? Number(value).toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 9 }) : 'Unavailable';
+  const metrics = [
+    ['Input', usage.input_tokens], ['Output', usage.output_tokens], ['Total', usage.total_tokens],
+    ['Cached input', input.cached_tokens], ['Cache writes', input.cache_write_tokens], ['Reasoning', output.reasoning_tokens],
+  ];
+  return (
+    <section className="logs-usage" aria-label="Provider token usage" onClick={(event) => event.stopPropagation()}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="font-mono text-(--text-primary) break-all">{String(snapshot?.model ?? 'Unknown model')}</span>
+        <span className="text-(--text-muted)">{snapshot?.provider === 'openai-codex' ? 'Codex OAuth' : snapshot?.provider === 'openai' ? 'OpenAI API' : snapshot?.provider === 'anthropic' ? (snapshot?.auth_mode === 'oauth' ? 'Claude OAuth' : 'Claude API') : String(snapshot?.provider ?? '')}</span>
+      </div>
+      <dl className="logs-usage-metrics">
+        {metrics.map(([label, value]) => <div key={String(label)}>
+          <dt className="text-[10px] text-(--text-muted)">{String(label)}</dt>
+          <dd className="mt-0.5 font-mono tabular-nums text-(--text-primary)">{formatCount(value)}</dd>
+        </div>)}
+      </dl>
+      <div className="flex flex-wrap justify-between gap-2">
+        <span className="text-(--text-secondary)">{equivalent ? 'API-equivalent token cost' : 'Token cost · list price'}</span>
+        <span className="font-mono tabular-nums text-amber-600 dark:text-amber-400">{formatUsd(price?.usd)}</span>
+      </div>
+      <details open={expanded || undefined}>
+        <summary className="logs-usage-disclosure"><ChevronRight size={12} aria-hidden="true" />Usage & pricing details</summary>
+        <div className="mt-2 space-y-2 text-(--text-muted)">
+          <p>Cache reads and writes are included in input. Reasoning is included in output.</p>
+          {equivalent && <p>This is an API price comparison. Your subscription charge is not reported.</p>}
+          <dl className="space-y-1">
+            <div className="flex flex-wrap justify-between gap-2"><dt>Processing tier</dt><dd className="font-mono">{String(snapshot?.service_tier ?? 'Not reported')}</dd></div>
+            {Object.entries(rates).map(([label, value]) => <div key={label} className="flex flex-wrap justify-between gap-2">
+              <dt>{label.replaceAll('_', ' ')} / 1M tokens</dt><dd className="font-mono">{formatUsd(value)}</dd>
+            </div>)}
+          </dl>
+          {price && <p>Published token rates as of {String(price.rates_as_of)}. Excludes separate tool fees and account-specific discounts.</p>}
+          <div className="break-all font-mono text-[10px]">Response: {String(snapshot?.response_id ?? 'Not reported')}</div>
+        </div>
+      </details>
+    </section>
   );
 }
 
@@ -1206,12 +1263,12 @@ function EventDetailModal({ open, event, onClose }: EventDetailModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
-      <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-3xl max-h-[80vh] rounded-xl border border-[color:var(--border-strong)] bg-[color:var(--surface-1)] shadow-2xl overflow-hidden flex flex-col">
-        <header className="px-6 py-4 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] flex items-center justify-between shrink-0">
+      <div className="absolute inset-0 bg-black/80 backdrop-blur-xs" onClick={onClose} />
+      <div className="logs-dialog relative z-10 w-full max-w-3xl max-h-[80vh] rounded-xl border border-(--border-strong) bg-(--surface-1) shadow-2xl overflow-hidden flex flex-col">
+        <header className="px-6 py-4 border-b border-(--border-subtle) bg-(--surface-1) flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            <span className="text-sm font-bold text-[color:var(--text-primary)]">{event.label}</span>
-            <span className="text-[9px] font-mono text-[color:var(--text-muted)]">{formatCompactDate(event.timestamp)}</span>
+            <span className="text-sm font-bold text-(--text-primary)">{event.label}</span>
+            <span className="text-[9px] font-mono text-(--text-muted)">{formatCompactDate(event.timestamp)}</span>
             {lensInfo && (
               <span className={`px-2 py-0.5 rounded border text-[9px] font-bold uppercase tracking-widest ${lensInfo.color}`}>
                 {lensInfo.label}
@@ -1220,7 +1277,7 @@ function EventDetailModal({ open, event, onClose }: EventDetailModalProps) {
           </div>
           <button
             onClick={onClose}
-            className="h-8 w-8 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] inline-flex items-center justify-center transition-colors text-[color:var(--text-secondary)]"
+            className="h-8 w-8 rounded border border-(--border-subtle) bg-(--surface-0) hover:bg-(--surface-1) inline-flex items-center justify-center transition-colors text-(--text-secondary)"
             aria-label="Close"
           >
             <X size={16} />
@@ -1242,28 +1299,28 @@ function EventDetailModal({ open, event, onClose }: EventDetailModalProps) {
                   : isRecord(rawArgs) ? rawArgs
                   : null;
                 return (
-                  <div key={i} className="rounded-lg border border-[color:var(--border-subtle)] overflow-hidden">
-                    <div className="px-4 py-2.5 bg-[color:var(--surface-1)] flex items-center gap-2 border-b border-[color:var(--border-subtle)]">
-                      <Wrench size={12} className="text-[color:var(--text-muted)]" />
+                  <div key={i} className="rounded-lg border border-(--border-subtle) overflow-hidden">
+                    <div className="px-4 py-2.5 bg-(--surface-1) flex items-center gap-2 border-b border-(--border-subtle)">
+                      <Wrench size={12} className="text-(--text-muted)" />
                       <StatusChip label={name} tone={toolTone(name)} className="text-[8px]" />
                     </div>
                     {argsObj ? (
                       <div className="px-4 py-3 space-y-2">
                         {Object.entries(argsObj).map(([k, v]) => (
                           <div key={k} className="flex flex-col gap-0.5">
-                            <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">{k}</span>
+                            <span className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted)">{k}</span>
                             {typeof v === 'string' && v.length > 120 ? (
-                              <p className="text-xs text-[color:var(--text-primary)] leading-relaxed whitespace-pre-wrap break-words">{v}</p>
+                              <p className="text-xs text-(--text-primary) leading-relaxed whitespace-pre-wrap wrap-break-word">{v}</p>
                             ) : typeof v === 'object' && v !== null ? (
-                              <pre className="text-[10px] font-mono text-[color:var(--text-secondary)] bg-[color:var(--surface-1)] rounded p-2 overflow-x-auto">{JSON.stringify(v, null, 2)}</pre>
+                              <pre className="text-[10px] font-mono text-(--text-secondary) bg-(--surface-1) rounded p-2 overflow-x-auto">{JSON.stringify(v, null, 2)}</pre>
                             ) : (
-                              <span className="text-xs font-mono text-[color:var(--text-primary)]">{String(v ?? '—')}</span>
+                              <span className="text-xs font-mono text-(--text-primary)">{String(v ?? '—')}</span>
                             )}
                           </div>
                         ))}
                       </div>
                     ) : rawArgs ? (
-                      <p className="px-4 py-3 text-xs text-[color:var(--text-secondary)] whitespace-pre-wrap break-words">{String(rawArgs)}</p>
+                      <p className="px-4 py-3 text-xs text-(--text-secondary) whitespace-pre-wrap wrap-break-word">{String(rawArgs)}</p>
                     ) : null}
                   </div>
                 );
@@ -1274,23 +1331,23 @@ function EventDetailModal({ open, event, onClose }: EventDetailModalProps) {
               {event.message.content && !isJson && (
                 <Markdown content={event.message.content} compact />
               )}
-              <div className="rounded-lg border border-[color:var(--border-subtle)] overflow-hidden">
+              <div className="rounded-lg border border-(--border-subtle) overflow-hidden">
                 {event.tools.length > 0 && (
-                  <div className="px-4 py-2.5 bg-[color:var(--surface-0)] flex items-center gap-2 border-b border-[color:var(--border-subtle)]">
-                    <Zap size={12} className="text-[color:var(--text-muted)]" />
+                  <div className="px-4 py-2.5 bg-(--surface-0) flex items-center gap-2 border-b border-(--border-subtle)">
+                    <Zap size={12} className="text-(--text-muted)" />
                     <StatusChip label={event.tools[0]} tone={toolTone(event.tools[0])} className="text-[8px]" />
                   </div>
                 )}
                 <div className="px-4 py-3 space-y-2">
                   {Object.entries(event.payload as Record<string, unknown>).map(([k, v]) => (
                     <div key={k} className="flex flex-col gap-0.5">
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">{k}</span>
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted)">{k}</span>
                       {typeof v === 'string' && v.length > 120 ? (
-                        <p className="text-xs text-[color:var(--text-primary)] leading-relaxed whitespace-pre-wrap break-words">{v}</p>
+                        <p className="text-xs text-(--text-primary) leading-relaxed whitespace-pre-wrap wrap-break-word">{v}</p>
                       ) : typeof v === 'object' && v !== null ? (
-                        <pre className="text-[10px] font-mono text-[color:var(--text-secondary)] bg-[color:var(--surface-0)] rounded p-2 overflow-x-auto max-h-[200px]">{JSON.stringify(v, null, 2)}</pre>
+                        <pre className="text-[10px] font-mono text-(--text-secondary) bg-(--surface-0) rounded p-2 overflow-x-auto max-h-[200px]">{JSON.stringify(v, null, 2)}</pre>
                       ) : (
-                        <span className="text-xs font-mono text-[color:var(--text-primary)]">{String(v ?? '—')}</span>
+                        <span className="text-xs font-mono text-(--text-primary)">{String(v ?? '—')}</span>
                       )}
                     </div>
                   ))}
@@ -1298,22 +1355,24 @@ function EventDetailModal({ open, event, onClose }: EventDetailModalProps) {
               </div>
             </div>
           ) : event.message.role === 'tool_result' && event.message.content.trimStart().startsWith('{') ? (
-            <div className="rounded-lg border border-[color:var(--border-subtle)] overflow-hidden">
+            <div className="rounded-lg border border-(--border-subtle) overflow-hidden">
               {event.tools.length > 0 && (
-                <div className="px-4 py-2.5 bg-[color:var(--surface-0)] flex items-center gap-2 border-b border-[color:var(--border-subtle)]">
-                  <Zap size={12} className="text-[color:var(--text-muted)]" />
+                <div className="px-4 py-2.5 bg-(--surface-0) flex items-center gap-2 border-b border-(--border-subtle)">
+                  <Zap size={12} className="text-(--text-muted)" />
                   <StatusChip label={event.tools[0]} tone={toolTone(event.tools[0])} className="text-[8px]" />
                 </div>
               )}
-              <pre className="px-4 py-3 text-[10px] font-mono text-[color:var(--text-secondary)] whitespace-pre-wrap break-all overflow-y-auto max-h-[400px]">{event.message.content}</pre>
+              <pre className="px-4 py-3 text-[10px] font-mono text-(--text-secondary) whitespace-pre-wrap break-all overflow-y-auto max-h-[400px]">{event.message.content}</pre>
             </div>
           ) : (
             <Markdown content={event.message.content || '[empty]'} compact />
           )}
 
+          <ProviderUsageDetails message={event.message} expanded />
+
           {/* Tool & source badges */}
           {(event.tools.length > 0 || event.source) && (
-            <div className="flex items-center gap-2 flex-wrap pt-2 border-t border-[color:var(--border-subtle)]">
+            <div className="flex items-center gap-2 flex-wrap pt-2 border-t border-(--border-subtle)">
               {event.tools.map(t => (
                 <StatusChip key={t} label={t} tone={toolTone(t)} className="text-[8px]" />
               ))}
@@ -1324,12 +1383,12 @@ function EventDetailModal({ open, event, onClose }: EventDetailModalProps) {
           )}
 
           <details className="group">
-            <summary className="cursor-pointer text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)] transition-colors flex items-center gap-2 py-2">
+            <summary className="cursor-pointer text-[10px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-secondary) transition-colors flex items-center gap-2 py-2">
               <ChevronRight size={12} className="transition-transform group-open:rotate-90" />
               Raw Metadata
             </summary>
-            <div className="mt-2 rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-2">
-              <JsonBlock value={JSON.stringify(event.message.metadata, null, 2)} className="!border-0 !bg-transparent max-h-[300px] text-[10px]" />
+            <div className="mt-2 rounded border border-(--border-subtle) bg-(--surface-1) p-2">
+              <JsonBlock value={JSON.stringify(event.message.metadata, null, 2)} className="border-0! bg-transparent! max-h-[300px] text-[10px]" />
             </div>
           </details>
         </div>
@@ -1338,192 +1397,109 @@ function EventDetailModal({ open, event, onClose }: EventDetailModalProps) {
   );
 }
 
+type SessionUsageTotal = {
+  session_id: string;
+  requests: number;
+  unreported_requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  history_incomplete: boolean;
+  main?: SessionUsageTotal;
+  delegated?: SessionUsageTotal;
+  sub_agents?: (SessionUsageTotal & { name: string | null })[];
+  costs: Record<string, { usd: string; priced_requests: number; unpriced_requests: number }>;
+};
+
+function SessionCost({ usage }: { usage: SessionUsageTotal | null }) {
+  const costs = Object.entries(usage?.costs ?? {});
+  const priced = costs.some(([, cost]) => cost.priced_requests > 0);
+  const total = costs.reduce((sum, [, cost]) => sum + Number(cost.usd), 0);
+  const equivalent = costs.some(([kind]) => kind === 'api_equivalent');
+  const partial = usage && (usage.history_incomplete || usage.unreported_requests > 0 || costs.some(([, cost]) => cost.unpriced_requests > 0));
+  const money = (value: number, precise = false) => value.toLocaleString('en-US', {
+    style: 'currency', currency: 'USD', minimumFractionDigits: 2,
+    maximumFractionDigits: precise || (value > 0 && value < .01) ? 9 : 2,
+  });
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+  return <>
+    <button type="button" className="chat-header-pill inline-flex items-center uppercase" aria-label="Session cost" aria-haspopup="dialog" aria-expanded={Boolean(anchor)} onClick={event => setAnchor(anchor ? null : event.currentTarget)}>
+      <Coins size={13} />
+      <span>Session cost</span>
+      <span className="text-(--text-primary) tabular-nums">{priced ? `${equivalent ? '≈ ' : ''}${money(total)}` : usage?.requests === 0 ? '$0.00' : '—'}</span>
+      {partial && <span className="text-amber-500">*</span>}
+      <ChevronRight size={12} className={`transition-transform ${anchor ? '-rotate-90' : 'rotate-90'}`} />
+    </button>
+    <Popover open={Boolean(anchor)} anchorEl={anchor} onClose={() => setAnchor(null)} disableScrollLock data-pane-menu sx={{ zIndex:10001 }} anchorOrigin={{ vertical:'bottom', horizontal:'right' }} transformOrigin={{ vertical:'top', horizontal:'right' }} slotProps={{ paper: { className:'logs-cost-popover', role:'dialog', 'aria-label':'Session usage' } }}>
+    <div className="text-xs space-y-3">
+      <div className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">Session usage</div>
+      {usage ? <>
+        {(usage.sub_agents?.length ?? 0) > 0 && <dl className="logs-cost-breakdown">
+          <div><dt>Main conversation</dt><dd>{formatAgentCost(usage.main)}</dd></div>
+          <div><dt>Sub-agents · {usage.sub_agents?.length}</dt><dd>{formatAgentCost(usage.delegated)}</dd></div>
+        </dl>}
+        <dl className="space-y-2">
+          {[['Requests', usage.requests], ['Input tokens', usage.input_tokens], ['Output tokens', usage.output_tokens]].map(([label, value]) => <div key={String(label)} className="flex justify-between gap-4"><dt className="text-(--text-secondary)">{label}</dt><dd className="tabular-nums text-(--text-primary)">{Number(value).toLocaleString()}</dd></div>)}
+          {costs.map(([kind, cost]) => <div key={kind} className="flex justify-between gap-4"><dt className="text-(--text-secondary)">{kind === 'api_equivalent' ? 'Subscription · API equivalent' : 'API · list price'}</dt><dd className="tabular-nums text-(--text-primary)">{cost.priced_requests ? money(Number(cost.usd), true) : 'Unavailable'}</dd></div>)}
+        </dl>
+        <p className="text-(--text-muted)">Each request keeps its original model and rates, including when you switch providers.</p>
+        {equivalent && <p className="text-(--text-muted)">Includes the API-equivalent value of subscription usage, not a subscription charge.</p>}
+        {partial && <p className="text-amber-500">Partial total: some usage or pricing was not recorded.</p>}
+      </> : <p className="text-(--text-muted)">Usage unavailable.</p>}
+    </div>
+    </Popover>
+  </>;
+}
+
 export function LogsPage() {
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [defaultSessionId, setDefaultSessionId] = useState<string | null>(null);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const sessionId = useActiveSessionId();
+  const instanceName = useInstanceName();
+  return <ScopedSessionLogs key={`${instanceName}:${sessionId}`} rootSessionId={sessionId} />;
+}
+
+function ScopedSessionLogs({ rootSessionId }: { rootSessionId: string | null }) {
+  const [selected, setSelected] = useState(rootSessionId);
+  const [usage, setUsage] = useState<SessionUsageTotal | null>(null);
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!rootSessionId) return;
+    let disposed = false;
+    const refresh = () => api.get<SessionUsageTotal>(`/sessions/${rootSessionId}/usage`).then(value => {
+      if (!disposed) setUsage(value);
+    }).catch(() => {});
+    void refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [rootSessionId]);
+  const choices = [{ session_id: rootSessionId, name: 'Main conversation', usage: usage?.main },
+    ...(usage?.sub_agents ?? []).map(agent => ({ session_id: agent.session_id, name: agent.name?.replace(/^sub-agent:/, '') || 'Sub-agent', usage: agent }))];
+  const label = choices.find(choice => choice.session_id === selected)?.name || 'Main conversation';
+  const selector = choices.length > 1 ? <>
+    <button type="button" className="chat-header-pill logs-trace-selector" aria-label="Choose agent trace" aria-haspopup="menu" aria-expanded={Boolean(anchor)} title={label} onClick={event => setAnchor(event.currentTarget)}>
+      <Users size={13} /><span>{label}</span><ChevronRight size={12} className="rotate-90" />
+    </button>
+    <Menu anchorEl={anchor} open={Boolean(anchor)} onClose={() => setAnchor(null)} disableScrollLock slotProps={{ paper: { className: 'logs-agent-menu' } }}>
+      {choices.map(choice => <MenuItem key={choice.session_id} selected={selected === choice.session_id} onClick={() => { setSelected(choice.session_id); setAnchor(null); }}>
+        <span className="logs-agent-name">{choice.name}</span><span className="logs-agent-cost">{formatAgentCost(choice.usage)}</span>
+      </MenuItem>)}
+    </Menu>
+  </> : null;
+  return <SessionLogs key={selected} selectedSessionId={selected} rootUsage={usage} traceSelector={selector} />;
+}
+
+function SessionLogs({ selectedSessionId, rootUsage, traceSelector }: { selectedSessionId: string | null; rootUsage: SessionUsageTotal | null; traceSelector: React.ReactNode }) {
+  const [activeSession, setActiveSession] = useState<Session | null>(null);
+  const [sessionError, setSessionError] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [sessionUsage, setSessionUsage] = useState<SessionUsageTotal | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
 
-  const [loadingSessions, setLoadingSessions] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
 
-  const [historyTab, setHistoryTab] = useState<SidebarTab>('sessions');
-  const [sessionFilter, setSessionFilter] = useState('');
-  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
-  const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
-  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
-  const { confirmSessionDelete, sessionDeleteConfirmDialog } = useSessionDeleteConfirmation();
   const [search, setSearch] = useState('');
   const [activeLenses, setActiveLenses] = useState<Set<OperationalLens>>(new Set());
   const [sourceFilter, setSourceFilter] = useState('all');
-  
-  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
-  const [editingSessionTitle, setEditingSessionTitle] = useState('');
-  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
-
-  const sessionsInTab = useMemo(() => {
-    return sessions.filter((s) => {
-      if (historyTab === 'sub_agents') return Boolean(s.parent_session_id);
-      return !s.parent_session_id;
-    });
-  }, [sessions, historyTab]);
-
-  const filteredSessions = useMemo(() => {
-    const f = sessionFilter.trim().toLowerCase();
-    if (!f) return sessionsInTab;
-    return sessionsInTab.filter((s) =>
-      (s.title || '').toLowerCase().includes(f) || s.id.toLowerCase().includes(f),
-    );
-  }, [sessionsInTab, sessionFilter]);
-
-  const selectableVisibleSessionIds = useMemo(() => {
-    return filteredSessions
-      .filter((session) => Boolean(defaultSessionId) && session.id !== defaultSessionId)
-      .map((session) => session.id);
-  }, [filteredSessions, defaultSessionId]);
-
-  const allVisibleSelected = useMemo(() => {
-    return (
-      selectableVisibleSessionIds.length > 0 &&
-      selectableVisibleSessionIds.every((id) => selectedSessionIds.includes(id))
-    );
-  }, [selectableVisibleSessionIds, selectedSessionIds]);
-
-  async function deleteSession(session: Session) {
-    if (deletingSessionId) return;
-    if (session.id === defaultSessionId) {
-      toast.error('Main session cannot be deleted');
-      return;
-    }
-    setDeletingSessionId(session.id);
-    try {
-      const label = (session.title || 'Session').trim() || 'Session';
-      const workspaceSummary = await getSessionDeleteWorkspaceSummary(session.id);
-      if (workspaceSummary.needsConfirmation) {
-        const confirmed = await confirmSessionDelete({
-          kind: 'single',
-          label,
-          topLevelEntries: workspaceSummary.topLevelEntries,
-        });
-        if (!confirmed) return;
-      }
-
-      await api.delete<{ status: string }>(`/sessions/${session.id}`);
-      setSessions((current) => current.filter((item) => item.id !== session.id));
-      setSelectedSessionIds((current) => current.filter((id) => id !== session.id));
-      if (selectedSessionId === session.id) {
-        setSelectedSessionId(null);
-      }
-      toast.success('Session deleted');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to delete session');
-    } finally {
-      setDeletingSessionId(null);
-    }
-  }
-
-  async function deleteSelectedSessions() {
-    if (deletingSessionId) return;
-    const targetIds = selectedSessionIds.filter((id) => id !== defaultSessionId);
-    if (targetIds.length === 0) return;
-
-    setDeletingSessionId('bulk');
-    try {
-      const workspaceSummaries = await Promise.all(
-        targetIds.map((id) => getSessionDeleteWorkspaceSummary(id)),
-      );
-      const nonEmptyWorkspaceCount = workspaceSummaries.filter((summary) => summary.needsConfirmation).length;
-      if (nonEmptyWorkspaceCount > 0) {
-        const topLevelEntries = Array.from(
-          new Set(workspaceSummaries.flatMap((summary) => summary.topLevelEntries)),
-        ).slice(0, 10);
-        const confirmed = await confirmSessionDelete({
-          kind: 'bulk',
-          sessionCount: targetIds.length,
-          workspaceSessionCount: nonEmptyWorkspaceCount,
-          topLevelEntries,
-        });
-        if (!confirmed) return;
-      }
-
-      const results = await Promise.allSettled(
-        targetIds.map((id) => api.delete<{ status: string }>(`/sessions/${id}`)),
-      );
-      const deletedIds = targetIds.filter((_, index) => results[index]?.status === 'fulfilled');
-      const failedCount = targetIds.length - deletedIds.length;
-
-      if (deletedIds.length > 0) {
-        setSessions((current) => current.filter((session) => !deletedIds.includes(session.id)));
-        setSelectedSessionIds((current) => current.filter((id) => !deletedIds.includes(id)));
-        if (selectedSessionId && deletedIds.includes(selectedSessionId)) {
-          setSelectedSessionId(null);
-        }
-      }
-
-      if (failedCount === 0) {
-        toast.success(`${deletedIds.length} sessions deleted`);
-      } else {
-        toast.error(`${failedCount} sessions could not be deleted`);
-      }
-    } finally {
-      setDeletingSessionId(null);
-    }
-  }
-
-  function startRenameSession(session: Session) {
-    setEditingSessionId(session.id);
-    setEditingSessionTitle((session.title || '').trim());
-  }
-
-  function cancelRenameSession() {
-    setEditingSessionId(null);
-    setEditingSessionTitle('');
-  }
-
-  async function submitRenameSession(session: Session) {
-    const title = editingSessionTitle.trim();
-    if (title === (session.title || '').trim()) {
-      setEditingSessionId(null);
-      return;
-    }
-
-    setRenamingSessionId(session.id);
-    try {
-      const updated = await api.patch<Session>(`/sessions/${session.id}`, {
-        title: title.length > 0 ? title : null,
-      });
-      setSessions((current) =>
-        current.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
-      );
-      setEditingSessionId(null);
-      setEditingSessionTitle('');
-      toast.success('Session renamed');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to rename session');
-    } finally {
-      setRenamingSessionId(null);
-    }
-  }
-
-  async function setMainSession(session: Session) {
-    try {
-      const updated = await api.post<Session>(`/sessions/${session.id}/main`, {});
-      setDefaultSessionId(updated.id);
-      setSessions((current) =>
-        current.map((item) =>
-          item.id === updated.id
-            ? { ...item, ...updated, is_main: true }
-            : { ...item, is_main: false },
-        ),
-      );
-      toast.success('Main session updated');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to set main session');
-    }
-  }
 
   const [inspector, setInspector] = useState<{
     session: Session | null;
@@ -1538,8 +1514,15 @@ export function LogsPage() {
   const collapseTimersRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
-    void loadSessions();
-  }, []);
+    if (!selectedSessionId) return;
+    let cancelled = false;
+    api.get<Session>(`/sessions/${selectedSessionId}`).then(session => {
+      if (!cancelled) setActiveSession(session);
+    }).catch(error => {
+      if (!cancelled) setSessionError(error instanceof Error ? error.message : 'Could not load this session.');
+    });
+    return () => { cancelled = true; };
+  }, [selectedSessionId]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -1548,45 +1531,22 @@ export function LogsPage() {
 
   useEffect(() => {
     if (!selectedSessionId) return;
+    let cancelled = false;
+    const refreshUsage = async () => {
+      try {
+        const usage = await api.get<SessionUsageTotal>(`/sessions/${selectedSessionId}/usage`);
+        if (!cancelled) setSessionUsage(usage);
+      } catch {
+        if (!cancelled) setSessionUsage(null);
+      }
+    };
+    void refreshUsage();
     const timer = window.setInterval(() => {
       void refreshMessages(selectedSessionId, true);
+      void refreshUsage();
     }, 5000);
-    return () => window.clearInterval(timer);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [selectedSessionId]);
-
-  async function loadSessions() {
-    const pageSize = 100;
-    setLoadingSessions(true);
-    try {
-      let offset = 0;
-      const all: Session[] = [];
-      while (true) {
-        const payload = await api.get<SessionListResponse>(
-          `/sessions?limit=${pageSize}&offset=${offset}&include_sub_agents=true`,
-        );
-        const items = Array.isArray(payload?.items) ? payload.items : [];
-        all.push(...items);
-        if (items.length < pageSize) break;
-        offset += pageSize;
-      }
-
-      const byId = new Map<string, Session>();
-      for (const session of all) {
-        if (!byId.has(session.id)) byId.set(session.id, session);
-      }
-      const ordered = Array.from(byId.values());
-      const main = ordered.find((s) => s.is_main) || ordered[0];
-      if (main) {
-        setDefaultSessionId(main.id);
-      }
-      setSessions(ordered);
-      setSelectedSessionId((current) => current ?? main?.id ?? null);
-    } catch {
-      toast.error('Failed to load sessions');
-    } finally {
-      setLoadingSessions(false);
-    }
-  }
 
   async function loadMessages(sessionId: string, silent = false) {
     if (!silent) setLoadingMessages(true);
@@ -1597,7 +1557,7 @@ export function LogsPage() {
       setHasMore(Boolean(payload?.has_more));
       void refreshRuntimeStatus();
     } catch {
-      if (!silent) toast.error('Failed to load logs');
+      if (!silent) notify.error('Failed to load logs');
     } finally {
       if (!silent) setLoadingMessages(false);
     }
@@ -1611,13 +1571,13 @@ export function LogsPage() {
       setHasMore((current) => current || Boolean(payload?.has_more));
       void refreshRuntimeStatus();
     } catch {
-      if (!silent) toast.error('Failed to refresh logs');
+      if (!silent) notify.error('Failed to refresh logs');
     }
   }
 
   async function refreshRuntimeStatus() {
     try {
-      const payload = await api.get<RuntimeStatusResponse>('/runtime/status');
+      const payload = await api.get<RuntimeStatusResponse>(`/runtime/status${selectedSessionId ? `?session_id=${encodeURIComponent(selectedSessionId)}` : ''}`);
       setRuntimeStatus(payload);
     } catch {
       setRuntimeStatus(null);
@@ -1636,7 +1596,7 @@ export function LogsPage() {
       setMessages((current) => mergeMessages(current, items));
       setHasMore(Boolean(payload?.has_more));
     } catch {
-      toast.error('Failed to load older logs');
+      notify.error('Failed to load older logs');
     } finally {
       setLoadingMore(false);
     }
@@ -1678,21 +1638,18 @@ export function LogsPage() {
       setHasMore(workingHasMore);
 
       if (!context && workingHasMore && pagesLoaded >= CONTEXT_AUTOFETCH_MAX_PAGES) {
-        toast.error('Context snapshot not found yet. Load more history and try again.');
+        notify.error('Context snapshot not found yet. Load more history and try again.');
       }
       return context;
     } catch {
-      toast.error('Failed to load older logs for context lookup');
+      notify.error('Failed to load older logs for context lookup');
       return null;
     } finally {
       setLoadingMore(false);
     }
   }
 
-  const activeSession = useMemo(
-    () => sessions.find((item) => item.id === selectedSessionId) ?? null,
-    [sessions, selectedSessionId],
-  );
+  const totalUsage = sessionUsage?.session_id === selectedSessionId ? sessionUsage : null;
   const activeRuntime = selectedSessionId ? runtimeStatus : null;
   const runtimeAvailable = runtimeIsAvailable(activeRuntime);
 
@@ -1700,7 +1657,7 @@ export function LogsPage() {
     () => mapRuntimeContextToUserMessages(messages),
     [messages],
   );
-  
+
   const allEvents = useMemo(
     () =>
       messages
@@ -1710,11 +1667,12 @@ export function LogsPage() {
   );
 
   const latestRuntimeContext = useMemo(() => {
+    const contexts = [...mapRuntimeContextToUserMessages(messages).values()];
     for (const message of messages) {
-      const payload = extractRuntimeContextPayload(message);
-      if (payload) return payload;
+      const context = extractRuntimeContextPayload(message);
+      if (context && !contexts.some((item) => item.contextMessageId === context.contextMessageId)) contexts.push(context);
     }
-    return null;
+    return contexts.sort((a, b) => toTimestamp(b.timestamp) - toTimestamp(a.timestamp))[0] ?? null;
   }, [messages]);
 
   const sourceOptions = useMemo(() => {
@@ -1730,7 +1688,7 @@ export function LogsPage() {
     return allEvents.filter((event) => {
       if (activeLenses.size > 0 && !activeLenses.has(event.lens)) return false;
       if (sourceFilter !== 'all' && event.source !== sourceFilter) return false;
-      
+
       if (!query) return true;
       const haystack = [
         event.label,
@@ -1975,35 +1933,35 @@ export function LogsPage() {
 
     return (
       <div
-        className={`rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-sm hover:border-[color:var(--border-strong)] hover:shadow-md transition-all ${compact ? 'p-3' : 'p-4'} ${options?.onClick ? 'cursor-pointer' : ''}`}
+        className={`logs-event rounded-lg border border-(--border-subtle) bg-(--surface-1) shadow-xs hover:border-(--border-strong) hover:shadow-md transition-all ${compact ? 'p-3' : 'p-4'} ${options?.onClick ? 'cursor-pointer' : ''}`}
         onClick={options?.onClick ? (e) => options.onClick?.(e) : undefined}
       >
-        <div className={`flex items-center justify-between border-b border-[color:var(--border-subtle)]/50 ${compact ? 'mb-2 pb-2' : 'mb-3 pb-2'}`}>
-          <span className={`font-bold uppercase tracking-widest text-[color:var(--text-primary)] ${compact ? 'text-[9px]' : 'text-[10px]'}`}>
+        <div className={`flex items-center justify-between border-b border-(--border-subtle)/50 ${compact ? 'mb-2 pb-2' : 'mb-3 pb-2'}`}>
+          <span className={`font-bold uppercase tracking-widest text-(--text-primary) ${compact ? 'text-[9px]' : 'text-[10px]'}`}>
             {event.label}
           </span>
           <div className="flex items-center gap-2">
             {options?.headerBadge}
-            <span className="text-[9px] font-mono text-[color:var(--text-muted)]">
+            <span className="text-[9px] font-mono text-(--text-muted)">
               {event.timestamp.split('T')[1].slice(0, 8)}
             </span>
           </div>
         </div>
 
-        <div className={`font-medium text-[color:var(--text-primary)] leading-relaxed ${compact ? 'text-xs mb-2' : 'text-sm mb-3'}`}>
+        <div className={`font-medium text-(--text-primary) leading-relaxed ${compact ? 'text-xs mb-2' : 'text-sm mb-3'}`}>
           {isJson && isRecord(event.payload) ? (
             <div className="space-y-1.5">
               {Object.entries(event.payload as Record<string, unknown>).slice(0, compact ? 3 : 4).map(([k, v]) => (
                 <div key={k} className="flex items-baseline gap-2 text-xs">
-                  <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">{k}</span>
-                  <span className="font-mono text-[11px] text-[color:var(--text-secondary)] truncate">{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—')}</span>
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted) shrink-0">{k}</span>
+                  <span className="font-mono text-[11px] text-(--text-secondary) truncate">{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—')}</span>
                 </div>
               ))}
             </div>
           ) : cardToolCalls.length > 0 ? (
             <div className="space-y-2">
               {event.message.content && (
-                <p className="text-xs text-[color:var(--text-secondary)]">{event.summary}</p>
+                <p className="text-xs text-(--text-secondary)">{event.summary}</p>
               )}
               {cardToolCalls.slice(0, compact ? 1 : 2).map((call, ci) => {
                 const cName = typeof call.name === 'string' ? call.name : `call_${ci}`;
@@ -2011,29 +1969,31 @@ export function LogsPage() {
                 const argsObj = rawArgs && typeof rawArgs === 'string' ? safeJsonParse(rawArgs) : isRecord(rawArgs) ? rawArgs : null;
                 const topKeys = isRecord(argsObj) ? Object.entries(argsObj).slice(0, compact ? 2 : 3) : [];
                 return (
-                  <div key={ci} className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)]/50 p-2 space-y-1">
+                  <div key={ci} className="rounded border border-(--border-subtle) bg-(--surface-2)/50 p-2 space-y-1">
                     <StatusChip label={cName} tone={toolTone(cName)} className="text-[8px]" />
                     {topKeys.map(([k, v]) => (
                       <div key={k} className="flex items-baseline gap-2 text-[11px]">
-                        <span className="text-[8px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] shrink-0">{k}</span>
-                        <span className="font-mono text-[10px] text-[color:var(--text-secondary)] truncate">{typeof v === 'string' ? truncate(v, 80) : String(v ?? '—')}</span>
+                        <span className="text-[8px] font-bold uppercase tracking-widest text-(--text-muted) shrink-0">{k}</span>
+                        <span className="font-mono text-[10px] text-(--text-secondary) truncate">{typeof v === 'string' ? truncate(v, 80) : String(v ?? '—')}</span>
                       </div>
                     ))}
                   </div>
                 );
               })}
               {cardToolCalls.length > (compact ? 1 : 2) && (
-                <p className="text-[9px] text-[color:var(--text-muted)]">+{cardToolCalls.length - (compact ? 1 : 2)} more</p>
+                <p className="text-[9px] text-(--text-muted)">+{cardToolCalls.length - (compact ? 1 : 2)} more</p>
               )}
             </div>
           ) : event.message.role === 'tool_result' && event.message.content.trimStart().startsWith('{') ? (
-            <pre className="text-[10px] font-mono text-[color:var(--text-secondary)] bg-[color:var(--surface-2)] rounded p-2 overflow-hidden max-h-24 whitespace-pre-wrap break-all line-clamp-4">{event.summary}</pre>
+            <pre className="text-[10px] font-mono text-(--text-secondary) bg-(--surface-2) rounded p-2 overflow-hidden max-h-24 whitespace-pre-wrap break-all line-clamp-4">{event.summary}</pre>
           ) : (
             <div className={compact ? 'line-clamp-3' : 'line-clamp-4'}>
               <Markdown content={event.summary} compact />
             </div>
           )}
         </div>
+
+        <ProviderUsageDetails message={event.message} />
 
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -2075,7 +2035,8 @@ export function LogsPage() {
       title="Session Logs"
       subtitle="Operational Diagnostics"
       actions={
-        <div className="flex items-center gap-2">
+        <div className="logs-actions chat-header-actions flex items-center gap-2">
+          {traceSelector}
           {activeSession && (
             <>
               <button
@@ -2083,105 +2044,71 @@ export function LogsPage() {
                   session: activeSession,
                   context: latestRuntimeContext
                 })}
-                className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+                className="chat-header-pill inline-flex items-center uppercase"
               >
                 <Cpu size={14} className="text-sky-500/80" />
                 Latest Snapshot
               </button>
               <button
                 onClick={() => setRuntimeExplorerOpen(true)}
-                className="inline-flex h-9 items-center gap-2.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--text-secondary)] transition-all hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] active:scale-95 shadow-sm"
+                className="chat-header-pill inline-flex items-center uppercase"
               >
                 <Terminal size={14} className="text-amber-500/80" />
-                Runtime Info
+                Machine Info
               </button>
+              <SessionCost key={selectedSessionId} usage={rootUsage ?? totalUsage} />
             </>
           )}
         </div>
       }
-      contentClassName="h-full !p-0 overflow-hidden bg-[color:var(--app-bg)]"
+      contentClassName="logs-page h-full p-0! overflow-hidden bg-(--app-bg)"
     >
-      <div className="flex h-full overflow-hidden">
-        {/* IDE-Style Sidebar */}
-        <aside className="w-64 border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] flex flex-col shrink-0">
-          <SessionHistorySidebar
-            historyTab={historyTab}
-            setHistoryTab={setHistoryTab}
-            sessionFilter={sessionFilter}
-            setSessionFilter={setSessionFilter}
-            isMultiSelectMode={isMultiSelectMode}
-            setIsMultiSelectMode={setIsMultiSelectMode}
-            selectedSessionIds={selectedSessionIds}
-            setSelectedSessionIds={setSelectedSessionIds}
-            allVisibleSelected={allVisibleSelected}
-            selectableVisibleSessionIds={selectableVisibleSessionIds}
-            deleteSelectedSessions={deleteSelectedSessions}
-            deletingSessionId={deletingSessionId}
-            filteredSessions={filteredSessions}
-            activeSessionId={selectedSessionId}
-            onSessionClick={(id) => setSelectedSessionId(id)}
-            defaultSessionId={defaultSessionId}
-            editingSessionId={editingSessionId}
-            editingSessionTitle={editingSessionTitle}
-            setEditingSessionTitle={setEditingSessionTitle}
-            submitRenameSession={submitRenameSession}
-            cancelRenameSession={cancelRenameSession}
-            startRenameSession={startRenameSession}
-            setMainSession={setMainSession}
-            deleteSession={deleteSession}
-            renamingSessionId={renamingSessionId}
-            loadingSessions={loadingSessions}
-          />
-        </aside>
-
+      <div className="logs-layout flex h-full overflow-hidden">
         {/* Command Center Main */}
-        <main className="flex-1 flex flex-col min-w-0 bg-[color:var(--app-bg)] relative">
+        <main className="flex-1 flex flex-col min-w-0 bg-(--app-bg) relative">
           {!activeSession ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-[color:var(--text-muted)] gap-4">
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-(--text-muted) gap-4">
               <Terminal size={32} className="opacity-20" />
-              <p className="text-[10px] font-mono uppercase tracking-widest opacity-50">Awaiting Target Selection</p>
+              <p className="text-xs text-center px-6">{sessionError || (selectedSessionId ? 'Loading session logs…' : 'Select a session to view its logs.')}</p>
             </div>
           ) : (
             <>
-              {/* Control Ribbon */}
-              <header className="shrink-0 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] z-10">
+              {/* Session context and filters belong to the scrollable content. */}
+              <div className="logs-timeline isolate flex-1 overflow-y-auto bg-(--surface-0) custom-scrollbar">
+              <section className="logs-toolbar relative z-10" aria-label="Session context and filters">
                 {/* Row 1: Identity & Primary Status */}
-                <div className="px-6 h-14 flex items-center justify-between border-b border-[color:var(--border-subtle)]/30">
-                  <div className="flex items-center gap-4 min-w-0">
-                    <div className="flex items-center gap-2 shrink-0">
-                      <div className={`w-2 h-2 rounded-full transition-all duration-500 ${runtimeAvailable ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-[color:var(--border-strong)]'}`} />
-                      <h2 className="text-sm font-bold text-[color:var(--text-primary)] uppercase tracking-wider truncate max-w-[400px]">
+                <div className="px-6 pt-6 pb-2 flex flex-wrap items-center justify-between gap-3">
+                  <div className="logs-session-identity">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className={`w-2 h-2 rounded-full transition-all duration-500 ${runtimeAvailable ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-(--border-strong)'}`} />
+                      <h2 className="text-sm font-medium text-(--text-primary) truncate max-w-[400px]">
                         {activeSession.title || 'Live Process'}
                       </h2>
                     </div>
-                    <div className="flex items-center gap-3 text-[10px] font-mono font-bold text-[color:var(--text-muted)] border-l border-[color:var(--border-subtle)] pl-4 truncate">
-                      <span className="opacity-40">ID: {activeSession.id.slice(0, 12)}…</span>
-                      <span className={`px-2 py-0.5 rounded-full border transition-colors ${runtimeAvailable ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]'} uppercase font-bold tracking-widest text-[8px]`}>
-                        {runtimeStatusLabel(activeRuntime)}
-                      </span>
-                    </div>
+                    <span className="logs-session-id">ID: {activeSession.id}</span>
                   </div>
                 </div>
 
                 {/* Row 2: Operational Lenses & Search */}
-                <div className="px-6 py-2 bg-[color:var(--surface-1)]/30 flex items-center justify-between gap-6">
+                <div className="logs-filters px-6 py-2 bg-(--surface-1)/30 flex items-center justify-between gap-6">
                   {/* Lenses Switcher */}
-                  <div className="flex items-center gap-1 bg-[color:var(--surface-0)] border border-[color:var(--border-subtle)] p-0.5 rounded-md shadow-sm shrink-0">
+                  <div className="logs-lenses flex items-center gap-1 bg-(--surface-0) border border-(--border-subtle) p-0.5 rounded-md shadow-xs shrink-0">
                     {LENSES.map(lens => {
                       const isActive = activeLenses.has(lens.id);
                       return (
                         <button
                           key={lens.id}
+                          aria-pressed={isActive}
                           onClick={() => toggleLens(lens.id)}
                           className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition-all ${
-                            isActive 
-                              ? 'bg-[color:var(--surface-1)] text-[color:var(--text-primary)] shadow-sm border border-[color:var(--border-subtle)]' 
-                              : 'border border-transparent text-[color:var(--text-muted)] hover:text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)]/50'
+                            isActive
+                              ? 'bg-(--surface-1) text-(--text-primary) shadow-xs border border-(--border-subtle)'
+                              : 'border border-transparent text-(--text-muted) hover:text-(--text-secondary) hover:bg-(--surface-1)/50'
                           }`}
                         >
                           <lens.icon size={11} className={isActive ? lens.color : 'opacity-40'} />
                           <span className="text-[9px] font-bold uppercase tracking-wider">{lens.label}</span>
-                          <span className={`text-[9px] font-mono ml-1 ${isActive ? 'text-[color:var(--text-primary)]' : 'opacity-30'}`}>{lensCounts[lens.id]}</span>
+                          <span className={`text-[9px] font-mono ml-1 ${isActive ? 'text-(--text-primary)' : 'opacity-30'}`}>{lensCounts[lens.id]}</span>
                         </button>
                       );
                     })}
@@ -2190,20 +2117,22 @@ export function LogsPage() {
                   {/* Search & Secondary Filters */}
                   <div className="flex-1 flex items-center gap-3 min-w-0 max-w-xl">
                     <div className="relative flex-1">
-                      <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                      <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)" />
                       <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         placeholder="Search trace activity..."
-                        className="w-full h-8 pl-8 pr-3 text-[11px] bg-[color:var(--surface-0)] border border-[color:var(--border-subtle)] rounded-md outline-none focus:border-sky-500/40 transition-all font-mono"
+                        aria-label="Search trace activity"
+                        className="w-full h-8 pl-8 pr-3 text-[11px] bg-(--surface-0) border border-(--border-subtle) rounded-md outline-hidden focus:border-sky-500/40 transition-all font-mono"
                       />
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
                       <select
                         value={sourceFilter}
+                        aria-label="Filter by source"
                         onChange={(e) => setSourceFilter(e.target.value)}
-                        className="h-8 px-2 bg-[color:var(--surface-0)] border border-[color:var(--border-subtle)] rounded text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-secondary)] outline-none cursor-pointer hover:border-[color:var(--border-strong)] transition-colors"
+                        className="h-8 px-2 bg-(--surface-0) border border-(--border-subtle) rounded text-[9px] font-bold uppercase tracking-widest text-(--text-secondary) outline-hidden cursor-pointer hover:border-(--border-strong) transition-colors"
                       >
                         <option value="all">ALL SOURCES</option>
                         {sourceOptions.map(s => <option key={s} value={s}>{s}</option>)}
@@ -2225,26 +2154,25 @@ export function LogsPage() {
                     </div>
                   </div>
                 </div>
-              </header>
+              </section>
 
               {/* Diagnostic Stream (Timeline) */}
-              <div className="flex-1 overflow-y-auto bg-[color:var(--surface-0)] custom-scrollbar">
                 <div className="max-w-[1000px] mx-auto py-8 px-6">
                   {loadingMessages && messages.length === 0 && (
-                    <div className="flex flex-col items-center justify-center py-20 text-[color:var(--text-muted)] gap-3">
+                    <div className="flex flex-col items-center justify-center py-20 text-(--text-muted) gap-3">
                       <Loader2 size={16} className="animate-spin" />
                       <p className="text-[10px] font-mono uppercase tracking-widest">Streaming Trace...</p>
                     </div>
                   )}
 
                   {!loadingMessages && filteredEvents.length === 0 && (
-                    <div className="flex flex-col items-center justify-center py-20 text-[color:var(--text-muted)] opacity-50">
+                    <div className="flex flex-col items-center justify-center py-20 text-(--text-muted) opacity-50">
                       <Terminal size={24} className="mb-2" />
                       <p className="text-[10px] font-mono uppercase tracking-widest">No events in current view</p>
                     </div>
                   )}
 
-                  <div className="relative before:absolute before:inset-0 before:ml-4 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-px before:bg-[color:var(--border-subtle)]">
+                  <div className="logs-events relative before:absolute before:inset-0 before:ml-4 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-px before:bg-(--border-subtle)">
                     {renderedTimelineEntries.map((entry, idx) => {
                       const event = entry.kind === 'event' ? entry.event : entry.representative;
                       const lensMap = LENSES.find((l) => l.id === event.lens) || LENSES[1];
@@ -2284,10 +2212,10 @@ export function LogsPage() {
                       return (
                         <div
                           key={entry.key}
-                          className={`relative flex items-center justify-between md:justify-normal ${isRight ? 'md:flex-row-reverse' : ''} group pointer-events-none ${rowZClass}`}
+                          className={`logs-timeline-row relative flex items-center justify-between md:justify-normal ${isRight ? 'md:flex-row-reverse' : ''} group pointer-events-none ${rowZClass}`}
                           style={idx === 0 ? undefined : { marginTop: isOpposite ? '-40px' : '24px' }}
                         >
-                          <div className={`flex items-center justify-center w-8 h-8 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shrink-0 md:order-1 ${isRight ? 'md:-translate-x-1/2' : 'md:translate-x-1/2'} z-10 shadow-sm transition-transform group-hover:scale-110`}>
+                          <div className={`flex items-center justify-center w-8 h-8 rounded-full border border-(--border-subtle) bg-(--surface-1) shrink-0 md:order-1 ${isRight ? 'md:-translate-x-1/2' : 'md:translate-x-1/2'} z-10 shadow-xs transition-transform group-hover:scale-110`}>
                             <lensMap.icon size={12} className={lensMap.color} />
                           </div>
 
@@ -2314,7 +2242,7 @@ export function LogsPage() {
                                         e.stopPropagation();
                                         toggleCluster(entry.parentClusterKey);
                                       }}
-                                      className="px-5 py-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+                                      className="px-5 py-1.5 rounded-full border border-(--border-subtle) bg-(--surface-1) text-[10px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-primary) hover:border-(--border-strong) transition-all shadow-xs flex items-center gap-1.5 whitespace-nowrap"
                                     >
                                       <ChevronRight size={11} className="-rotate-90" />
                                       Collapse Trace
@@ -2338,7 +2266,7 @@ export function LogsPage() {
                                           transform: `scale(${1 - (shadowIndex + 1) * 0.01})`,
                                         }}
                                       >
-                                        <div className="h-24 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]/70 shadow-sm" />
+                                        <div className="logs-stack-card h-24 rounded-lg border border-(--border-subtle) bg-(--surface-1)/70 shadow-xs" />
                                       </div>
                                     ))}
                                   </div>
@@ -2361,7 +2289,7 @@ export function LogsPage() {
                                         e.stopPropagation();
                                         toggleCluster(entry.key);
                                       }}
-                                      className="px-5 py-1.5 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+                                      className="px-5 py-1.5 rounded-full border border-(--border-subtle) bg-(--surface-1) text-[10px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-primary) hover:border-(--border-strong) transition-all shadow-xs flex items-center gap-1.5 whitespace-nowrap"
                                     >
                                       <ChevronRight size={11} className="rotate-90" />
                                       Expand {entry.events.length} Step Trace
@@ -2381,7 +2309,7 @@ export function LogsPage() {
                       <button
                         onClick={() => void loadMoreLogs()}
                         disabled={loadingMore}
-                        className="px-6 py-2 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:border-[color:var(--border-strong)] transition-all shadow-sm flex items-center gap-2"
+                        className="px-6 py-2 rounded-full border border-(--border-subtle) bg-(--surface-1) text-[10px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-primary) hover:border-(--border-strong) transition-all shadow-xs flex items-center gap-2"
                       >
                         {loadingMore ? <Loader2 size={12} className="animate-spin" /> : <Clock size={12} />}
                         Fetch History
@@ -2399,7 +2327,7 @@ export function LogsPage() {
         open={Boolean(inspector)}
         session={inspector?.session ?? null}
         userMessage={inspector?.userMessage ?? null}
-        context={inspector?.context ?? null}
+        context={inspector?.userMessage ? loopContextByUserMessageId.get(inspector.userMessage.id) ?? inspector.context : latestRuntimeContext ?? inspector?.context ?? null}
         onClose={() => setInspector(null)}
       />
 
@@ -2416,7 +2344,6 @@ export function LogsPage() {
         onClose={() => setRuntimeExplorerOpen(false)}
       />
 
-      {sessionDeleteConfirmDialog}
 
     </AppShell>
   );

@@ -1,0 +1,32 @@
+.permissions-pane { container: permissions / inline-size; --permission-face: var(--surface-1); --permission-depth: 2px 3px 8px #0000000a, 7px 8px 24px #0000000b, inset 0 1px 0 #ffffff40; min-width: 0; }
+html.dark .permissions-pane { --permission-face: #101012; --permission-depth: 2px 3px 8px #0000001a, 7px 8px 24px #00000030, -4px -4px 15px #ffffff03, inset 0 1px 0 #ffffff06; }
+.permissions-toolbar { display: flex; align-items: center; gap: 8px; }
+.permissions-count { display: inline-flex; align-items: center; text-transform: uppercase; }
+.permissions-search { display: flex; align-items: center; }
+.permissions-search input { width: 160px; min-width: 0; background: transparent; border: 0; outline: 0; color: var(--text-primary); font-size: 11px; letter-spacing: normal; }
+.permissions-search input::placeholder { color: var(--text-muted); }
+.permissions-search:focus-within { outline: 1px solid var(--accent-solid); outline-offset: 2px; }
+.pane-actions-menu .permissions-toolbar { flex-wrap: wrap; padding: 10px; }
+.permissions-groups { display: grid; gap: 26px; max-width: 900px; margin: 0 auto; }
+.permissions-group { min-width: 0; }
+.permissions-group-heading { display: flex; align-items: center; gap: 9px; margin: 0 0 10px; padding-inline: 12px; color: var(--text-secondary); font-size: 11px; font-weight: 550; letter-spacing: .08em; text-transform: uppercase; }
+.permissions-group-heading > span:last-child { font-size: 10px; color: var(--text-muted); font-weight: 400; letter-spacing: normal; }
+.permissions-card { border-radius: 22px; overflow: hidden; background: var(--permission-face); border: 1px solid color-mix(in srgb, var(--text-primary) 4%, transparent); box-shadow: var(--permission-depth); }
+.permissions-rule { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 18px; }
+.permissions-rule + .permissions-rule { border-top: 1px solid color-mix(in srgb, var(--text-primary) 5%, transparent); }
+.permissions-action { min-width: 0; overflow-wrap: anywhere; color: var(--text-primary); font-size: 12px; line-height: 1.6; }
+.permissions-levels { display: flex; flex-shrink: 0; gap: 2px; padding: 3px; border-radius: 999px; background: color-mix(in srgb, var(--text-primary) 3%, var(--permission-face)); box-shadow: inset 1px 1px 3px #00000012; }
+.permissions-level { min-height: 28px; padding: 5px 13px; border-radius: 999px; border: 1px solid transparent; color: var(--text-muted); background: transparent; font-size: 10px; font-weight: 500; text-transform: capitalize; transition: background 180ms, color 180ms, box-shadow 180ms; }
+.permissions-level:hover:not(:disabled) { background: color-mix(in srgb, var(--text-primary) 6%, transparent); color: var(--text-primary); }
+.permissions-level[aria-pressed="true"] { color: var(--text-primary); background: color-mix(in srgb, var(--text-primary) 9%, var(--permission-face)); box-shadow: 1px 2px 5px #00000014, inset 0 1px 0 #ffffff08; }
+.permissions-level[data-level="allow"][aria-pressed="true"] { color: #398559; background: color-mix(in srgb, #51bc83 13%, var(--permission-face)); }
+.permissions-level[data-level="deny"][aria-pressed="true"] { color: #ad5464; background: color-mix(in srgb, #ca7f90 13%, var(--permission-face)); }
+html.dark .permissions-level[data-level="allow"][aria-pressed="true"] { color: #89cba5; }
+html.dark .permissions-level[data-level="deny"][aria-pressed="true"] { color: #d8a4b0; }
+.permissions-level:focus-visible { outline: 1px solid var(--accent-solid); outline-offset: 1px; }
+.permissions-level:disabled { opacity: .55; }
+.permissions-empty { min-height: 180px; display: flex; justify-content: center; align-items: center; gap: 10px; color: var(--text-muted); font-size: 12px; text-align: center; }
+@container permissions (max-width: 440px) { .permissions-rule { align-items: stretch; flex-direction: column; gap: 10px; padding: 14px; } .permissions-levels { align-self: flex-start; max-width: 100%; } .permissions-card { border-radius: 18px; } }
+@media (prefers-reduced-motion: no-preference) { .permissions-group { animation: permission-reveal 220ms ease-out; } }
+@keyframes permission-reveal { from { opacity: .6; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .permissions-pane *, .permissions-toolbar * { transition: none !important; animation: none !important; } }

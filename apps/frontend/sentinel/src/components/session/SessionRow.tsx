@@ -1,6 +1,6 @@
 import {
-  BadgeCheck,
   Check,
+  GitFork,
   Loader2,
   Pencil,
   Send,
@@ -20,13 +20,14 @@ export function sessionChannelKind(session: Session): 'default' | 'telegram_grou
 }
 
 interface SessionRowProps {
+  onFork?: (session: Session) => void;
+  isForking?: boolean;
   session: Session;
   isActive: boolean;
   onClick: (id: string) => void;
   canDelete: boolean;
   isDeleting: boolean;
   onDelete: (s: Session) => void;
-  onSetMain: (s: Session) => void;
   canRename: boolean;
   isEditing: boolean;
   isRenaming: boolean;
@@ -42,12 +43,13 @@ interface SessionRowProps {
 
 export const SessionRow = memo(({
   session,
+  onFork,
+  isForking,
   isActive,
   onClick,
   canDelete,
   isDeleting,
   onDelete,
-  onSetMain,
   canRename,
   isEditing,
   isRenaming,
@@ -60,7 +62,7 @@ export const SessionRow = memo(({
   selected,
   onToggleSelect,
 }: SessionRowProps) => (
-  <div className="group session-row relative">
+  <div className="group session-row relative" data-session-id={session.id}>
     {multiSelectMode && canDelete ? (
       <button
         onClick={() => onToggleSelect(session.id)}
@@ -68,7 +70,7 @@ export const SessionRow = memo(({
         className={`absolute left-2.5 top-3 h-5 w-5 rounded-full border flex items-center justify-center transition-all z-20 ${
           selected
             ? 'border-sky-500 bg-sky-500 shadow-[0_0_8px_rgba(14,165,233,0.4)]'
-            : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)]'
+            : 'border-(--border-subtle) bg-(--surface-1) hover:border-(--border-strong)'
         }`}
       >
         {selected && <Check size={10} className="text-white" strokeWidth={4} />}
@@ -78,8 +80,8 @@ export const SessionRow = memo(({
       <div
         className={`w-full flex flex-col gap-1 p-3 rounded-xl text-left transition-all duration-200 border ${
           isActive
-            ? 'bg-[color:var(--surface-0)] shadow-md border-[color:var(--border-strong)]'
-            : 'bg-[color:var(--surface-1)] border-[color:var(--border-subtle)]'
+            ? 'bg-(--surface-0) shadow-md border-(--border-strong)'
+            : 'bg-(--surface-1) border-(--border-subtle)'
         } ${multiSelectMode ? 'pl-10 pr-3' : 'pr-3'}`}
       >
         <div className="flex items-center gap-2">
@@ -96,7 +98,7 @@ export const SessionRow = memo(({
                 onCancelRename();
               }
             }}
-            className="min-w-0 flex-1 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 py-1 text-xs font-semibold text-[color:var(--text-primary)] focus:border-[color:var(--accent-solid)] focus:outline-none"
+            className="min-w-0 flex-1 rounded-full border border-(--border-subtle) bg-(--surface-0) px-3 py-1 text-xs font-semibold text-(--text-primary) focus:border-(--accent-solid) focus:outline-hidden"
             placeholder="Session title"
             maxLength={200}
           />
@@ -109,7 +111,7 @@ export const SessionRow = memo(({
               }}
               disabled={isRenaming}
               title="Save title"
-              className="h-7 w-7 rounded-full border border-emerald-500/35 text-emerald-400 bg-[color:var(--surface-1)] hover:bg-emerald-500/10 flex items-center justify-center disabled:opacity-40 transition-colors"
+              className="h-7 w-7 rounded-full border border-emerald-500/35 text-emerald-400 bg-(--surface-1) hover:bg-emerald-500/10 flex items-center justify-center disabled:opacity-40 transition-colors"
             >
               {isRenaming ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
             </button>
@@ -121,13 +123,13 @@ export const SessionRow = memo(({
               }}
               disabled={isRenaming}
               title="Cancel rename"
-              className="h-7 w-7 rounded-full border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center disabled:opacity-40 transition-colors"
+              className="h-7 w-7 rounded-full border border-(--border-subtle) text-(--text-secondary) bg-(--surface-1) hover:bg-(--surface-0) flex items-center justify-center disabled:opacity-40 transition-colors"
             >
               <X size={13} />
             </button>
           </div>
         </div>
-        <span className="text-[10px] font-medium uppercase tracking-tight text-[color:var(--text-muted)] px-1 opacity-60">{formatCompactDate(session.started_at)}</span>
+        <span className="text-[10px] font-medium uppercase tracking-tight text-(--text-muted) px-1 opacity-60">{formatCompactDate(session.started_at)}</span>
       </div>
     ) : (
       <button
@@ -141,8 +143,8 @@ export const SessionRow = memo(({
         }}
         className={`session-row-main w-full flex flex-col gap-1 p-3 rounded-xl text-left transition-all duration-200 border active:scale-[0.98] ${
           isActive
-            ? 'bg-[color:var(--surface-0)] shadow-md border-[color:var(--border-strong)] scale-[1.02] z-10'
-            : 'hover:bg-[color:var(--surface-2)] text-[color:var(--text-secondary)] border-transparent'
+            ? 'bg-(--surface-0) shadow-md border-(--border-strong) scale-[1.02] z-10'
+            : 'hover:bg-(--surface-2) text-(--text-secondary) border-transparent'
         } ${multiSelectMode ? 'pl-10' : ''}`}
       >
         <div className="flex items-center justify-between gap-2">
@@ -165,24 +167,20 @@ export const SessionRow = memo(({
                 <span>DM</span>
               </span>
             ) : null}
-            {session.is_main ? (
-              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-emerald-400">
-                <BadgeCheck size={8} />
-                Main
-              </span>
-            ) : null}
           </div>
         </div>
-        <span className="text-[9px] font-medium uppercase tracking-tight text-[color:var(--text-muted)] opacity-60">{formatCompactDate(session.started_at)}</span>
+        <span className="text-[9px] font-medium uppercase tracking-tight text-(--text-muted) opacity-60">{formatCompactDate(session.started_at)}</span>
       </button>
     )}
-    {!isEditing && !multiSelectMode && !session.is_main ? (
+    {!isEditing && !multiSelectMode && onFork ? (
       <button
-        onClick={() => onSetMain(session)}
-        title="Set as main session"
-        className="session-row-action absolute right-16 top-3 h-7 w-7 rounded-full border border-emerald-500/35 text-emerald-400 bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center transition-all opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto z-20 shadow-sm"
+        onClick={() => onFork(session)}
+        disabled={isForking || isDeleting}
+        title="Fork session"
+        aria-label="Fork session"
+        className="session-row-action absolute right-16 top-3 h-7 w-7 rounded-full border border-(--border-subtle) text-(--text-secondary) bg-(--surface-1) hover:bg-(--surface-0) flex items-center justify-center transition-all opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto disabled:opacity-40 z-20"
       >
-        <BadgeCheck size={13} />
+        {isForking ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />}
       </button>
     ) : null}
     {!isEditing && !multiSelectMode && canRename ? (
@@ -190,7 +188,7 @@ export const SessionRow = memo(({
         onClick={() => onRename(session)}
         disabled={isRenaming}
         title="Rename session"
-        className="session-row-action absolute right-9 top-3 h-7 w-7 rounded-full border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center transition-all opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto disabled:opacity-40 disabled:pointer-events-none z-20 shadow-sm"
+        className="session-row-action absolute right-9 top-3 h-7 w-7 rounded-full border border-(--border-subtle) text-(--text-secondary) bg-(--surface-1) hover:bg-(--surface-0) flex items-center justify-center transition-all opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto disabled:opacity-40 disabled:pointer-events-none z-20 shadow-xs"
       >
         {isRenaming ? <Loader2 size={13} className="animate-spin" /> : <Pencil size={13} />}
       </button>
@@ -200,7 +198,7 @@ export const SessionRow = memo(({
         onClick={() => onDelete(session)}
         disabled={isDeleting}
         title="Delete session"
-        className="session-row-action absolute right-2 top-3 h-7 w-7 rounded-full border border-rose-500/20 text-rose-500 bg-[color:var(--surface-1)] hover:bg-[color:var(--surface-0)] flex items-center justify-center transition-all opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto z-20 shadow-sm"
+        className="session-row-action absolute right-2 top-3 h-7 w-7 rounded-full border border-rose-500/20 text-rose-500 bg-(--surface-1) hover:bg-(--surface-0) flex items-center justify-center transition-all opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto z-20 shadow-xs"
       >
         {isDeleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
       </button>

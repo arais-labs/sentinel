@@ -1,0 +1,122 @@
+/* Header surfaces only. Portaled menus and overflow-menu controls retain their styles. */
+:is(.sentinel-pane-header, .chat-header-actions) {
+  --chat-header-face: linear-gradient(145deg, #1b1c20, #151619);
+  --chat-header-hover: linear-gradient(145deg, #23252a, #1b1d21);
+  --chat-header-edge: #ffffff08;
+  --chat-header-label: #b7bac3;
+  --chat-header-shadow: 3px 3px 7px #0005, -2px -2px 6px #ffffff04, inset 0 1px 0 #ffffff09;
+}
+.dockview-pane-header .sentinel-pane-header {
+  background: #0c0c0e;
+  border-bottom-color: transparent;
+  padding-inline: 10px;
+}
+.sentinel-pane-header .pane-header-title { font-weight: 500; color: #d1d2d8; }
+.sentinel-pane-header .pane-header-title > svg { color: #7e8491; stroke-width: 1.7; }
+.sentinel-pane-header .pane-header-actions { align-self: stretch; }
+.sentinel-pane-header .pane-actions-strip { height: 100%; }
+.sentinel-pane-header [data-action-slot] { padding-inline: 2px; }
+
+:is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill {
+  height: 28px;
+  padding: 0 12px;
+  gap: 8px;
+  border: 1px solid var(--chat-header-edge);
+  border-radius: 999px;
+  background: var(--chat-header-face);
+  color: var(--chat-header-label);
+  box-shadow: var(--chat-header-shadow);
+  font-size: 10px;
+  font-weight: 550;
+  letter-spacing: .065em;
+  white-space: nowrap;
+  transform: none;
+  transition: background 160ms, border-color 160ms, box-shadow 160ms, color 160ms;
+}
+:is(.sentinel-pane-header, .chat-header-actions) button.chat-header-pill { cursor: pointer; }
+:is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill > span {
+  font-weight: 550;
+  letter-spacing: inherit;
+}
+:is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill > svg { stroke-width: 1.7; }
+:is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill:hover:not(:disabled) {
+  background: var(--chat-header-hover);
+  border-color: #ffffff10;
+  color: #e5e7ee;
+}
+:is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill[aria-expanded="true"] {
+  border-color: #67caff38;
+  box-shadow: var(--chat-header-shadow), 0 0 10px #38bdf80b;
+}
+:is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill:active:not(:disabled) {
+  box-shadow: inset 2px 2px 4px #0004, inset -1px -1px 3px #ffffff05;
+  transform: none;
+}
+:is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill:focus-visible {
+  outline: 1px solid var(--sentinel-blue);
+  outline-offset: 2px;
+}
+:is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill:disabled { cursor: default; }
+:is(.sentinel-pane-header, .chat-header-actions) .chat-header-connection > span:not([style]) { color: inherit; }
+:is(.sentinel-pane-header, .chat-header-actions) .subagent-float-status {
+  color: #858b98;
+  font-size: 9px;
+  letter-spacing: .04em;
+}
+
+.sentinel-pane-header .pane-header-tools { gap: 5px; }
+.sentinel-pane-header .pane-header-tools > button,
+.sentinel-pane-header .pane-actions-strip > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--chat-header-edge);
+  border-radius: 9px;
+  background: var(--chat-header-face);
+  color: var(--chat-header-label);
+  box-shadow: var(--chat-header-shadow);
+  transition: background 160ms, color 160ms, border-color 160ms;
+}
+.sentinel-pane-header .pane-header-tools > button:hover:not(:disabled),
+.sentinel-pane-header .pane-actions-strip > button:hover {
+  background: var(--chat-header-hover);
+  color: #edf0f5;
+}
+.sentinel-pane-header .pane-header-tools > button[aria-expanded="true"],
+.sentinel-pane-header .pane-header-tools > button[aria-pressed="true"],
+.sentinel-pane-header .pane-actions-strip > button[aria-expanded="true"] { border-color: #67caff38; }
+.sentinel-pane-header .pane-header-tools > button > svg { width: 15px; height: 15px; stroke-width: 1.7; }
+
+html:not(.dark) :is(.sentinel-pane-header, .chat-header-actions) {
+  --chat-header-face: linear-gradient(145deg, #fff, #e9edf2);
+  --chat-header-hover: linear-gradient(145deg, #fff, #e2e8ef);
+  --chat-header-edge: #dce2e94d;
+  --chat-header-label: #515c6b;
+  --chat-header-shadow: 2px 3px 6px #182b4514, -2px -2px 5px #fff, inset 0 1px 0 #fff;
+}
+html:not(.dark) .sentinel-pane-header { background: var(--surface-0); border-bottom-color: transparent; }
+html:not(.dark) .sentinel-pane-header .pane-header-title { color: var(--text-primary); }
+html:not(.dark) :is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill:hover:not(:disabled),
+html:not(.dark) .sentinel-pane-header .pane-header-tools > button:hover:not(:disabled),
+html:not(.dark) .sentinel-pane-header .pane-actions-strip > button:hover { color: #26374b; border-color: #bbc8d64d; }
+html:not(.dark) :is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill:active:not(:disabled) {
+  box-shadow: inset 2px 2px 4px #182b4514, inset -1px -1px 3px #fff;
+}
+html:not(.dark) :is(.sentinel-pane-header, .chat-header-actions) .subagent-float-status { color: #718094; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.sentinel-pane-header, .chat-header-actions) .chat-header-pill,
+  .sentinel-pane-header .pane-header-tools > button,
+  .sentinel-pane-header .pane-actions-strip > button { transition: none; }
+}
+
+/* Match the Desktop trial: sidebar-hover relief at rest, existing geometry. */
+html.dark :is(.sentinel-pane-header[data-tour-pane='sessions'], .chat-header-actions) {
+  --chat-header-face: #101012;
+  --chat-header-hover: #141416;
+  --chat-header-edge: #f4f4f50d;
+  --chat-header-label: #d1d2d8;
+  --chat-header-shadow: 2px 3px 8px #0000001a, 7px 8px 24px #00000030, -4px -4px 15px #ffffff03, inset 0 1px 0 #ffffff06;
+}

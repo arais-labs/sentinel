@@ -1,0 +1,29 @@
+.chat-turn { --turn-gap: 24px; position: relative; min-width: 0; }
+.chat-turn[data-collapsed] { --turn-gap: 12px; }
+.chat-turn-rail { position: absolute; top: 6px; bottom: 2px; left: -23px; width: 18px; padding: 0; border: 0; background: none; color: #60b9e8; cursor: pointer; }
+.chat-turn-rail::before { content: ''; position: absolute; inset: 0 0 0 6px; border: 1px solid #60b9e880; border-right: 0; border-radius: 11px 0 0 11px; }
+.chat-turn-grip { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); width: 5px; height: 22px; border-radius: 999px; background: #60b9e8; transition: box-shadow 180ms; }
+.chat-turn-rail:hover .chat-turn-grip, .chat-turn-rail:focus-visible .chat-turn-grip { box-shadow: 0 0 4px #60b9e850, 0 0 8px #60b9e820; }
+.chat-turn-rail:focus-visible { outline: 1px solid #60b9e8; outline-offset: 2px; border-radius: 9px; }
+.chat-turn-content { display: flex; flex-direction: column; gap: 0; }
+.chat-turn-history { margin-bottom: var(--turn-gap); display: grid; grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows 450ms cubic-bezier(.22,1,.36,1), opacity 220ms, margin 450ms cubic-bezier(.22,1,.36,1); }
+.chat-turn-history-inner { min-height: 0; overflow: clip; overflow-clip-margin: 12px; display: flex; flex-direction: column; gap: 24px; }
+.chat-turn-history[data-hidden] { grid-template-rows: 0fr; opacity: 0; margin-bottom: 0; }
+.chat-turn-summary { display: grid; grid-template-rows: 0fr; opacity: 0; margin-bottom: 0; transition: grid-template-rows 450ms cubic-bezier(.22,1,.36,1), opacity 220ms, margin 450ms cubic-bezier(.22,1,.36,1); }
+.chat-turn-summary > div { min-height: 0; overflow: hidden; }
+.chat-turn[data-collapsed] .chat-turn-summary { grid-template-rows: 1fr; opacity: 1; margin-bottom: 12px; }
+.chat-turn-summary button { background: none; border: 0; padding: 0; color: #7dbadd; font-size: 11px; cursor: pointer; }
+/* Keep the brace in the existing gutter without narrowing the conversation. */
+.focus-chat-surface .session-chat-messages:has(.chat-turn) { padding-left: max(32px, calc((100% - var(--chat-column-width)) / 2)); }
+@media (prefers-reduced-motion: reduce) { .chat-turn-content, .chat-turn-history, .chat-turn-summary, .chat-turn-grip { transition: none; } }
+
+/* Align the collapsed brace's top tip with the summary label. */
+.chat-turn-summary button { display: block; line-height: 20px; }
+.chat-turn[data-collapsed] .chat-turn-rail { top: 10px; }
+
+.chat-turn-history:last-child { margin-bottom: 0; }
+
+/* A long code line must not set the intrinsic width of the history grid. */
+.chat-turn-content, .chat-turn-history, .chat-turn-history-inner, .chat-turn-summary { min-width:0; max-width:100%; }
+.chat-turn-history, .chat-turn-summary { grid-template-columns:minmax(0, 1fr); }
+.chat-turn-history-inner > * { min-width:0; max-width:100%; }

@@ -1,0 +1,5 @@
+.explorer-sidebar{display:flex;flex-shrink:0;min-height:0;overflow:hidden;transition:width 240ms cubic-bezier(.22,1,.36,1)}
+.explorer-sidebar-inner{display:flex;flex:none;min-height:0;height:100%;transition:opacity 180ms ease,transform 240ms cubic-bezier(.22,1,.36,1),visibility 240ms}
+.explorer-sidebar[data-open=false]>.explorer-sidebar-inner{opacity:0;transform:translateX(-12px);visibility:hidden;pointer-events:none}
+.explorer-sidebar[data-overlay=true]{position:absolute;inset:0 auto 0 0;z-index:15;max-width:100%;background:var(--app-bg)}
+@media(prefers-reduced-motion:reduce){.explorer-sidebar,.explorer-sidebar-inner{transition:none}}

@@ -18,7 +18,7 @@ const GENERIC_INPUT_PRIORITY = [
   'method',
   'url',
   'endpoint',
-  'command',
+  'action',
   'query',
   'params',
   'id',
@@ -50,44 +50,48 @@ const TOOL_CRITICAL_FIELDS: Record<string, { input: readonly string[]; output: r
     output: ['share_url', 'url', 'error'],
   },
   git: {
-    input: ['command', 'cli_command', 'cwd', 'host', 'repo_url'],
+    input: ['action', 'cli_command', 'cwd', 'host', 'repo_url'],
     output: ['ok', 'stdout', 'stderr', 'returncode', 'timed_out', 'total', 'accounts'],
   },
   coordination: {
-    input: ['command', 'agent', 'message', 'context', 'limit'],
+    input: ['action', 'agent', 'message', 'context', 'limit'],
     output: ['messages', 'id', 'agent', 'message', 'createdAt'],
   },
   documents: {
-    input: ['command', 'id', 'slug', 'title', 'tag', 'author'],
+    input: ['action', 'id', 'slug', 'title', 'tag', 'author'],
     output: ['documents', 'id', 'slug', 'title', 'version', 'ok', 'message'],
   },
   memory: {
-    input: ['command', 'query', 'id', 'parent_id', 'root_id', 'content', 'node_ids', 'target_parent_id'],
+    input: ['action', 'query', 'id', 'parent_id', 'root_id', 'content', 'node_ids', 'target_parent_id'],
     output: ['items', 'roots', 'total', 'id', 'deleted', 'moved_node_ids', 'expanded_items'],
   },
   module_manager: {
-    input: ['command', 'module', 'name', 'record_id', 'action_id', 'data', 'params'],
+    input: ['action', 'module', 'name', 'record_id', 'action_id', 'data', 'params'],
     output: ['modules', 'records', 'count', 'ok', 'message', 'result'],
   },
   delegate: {
-    input: ['command', 'session_id', 'task_id', 'objective', 'scope', 'browser_tab_id'],
+    input: ['action', 'session_id', 'task_id', 'objective', 'scope', 'browser_tab_id'],
     output: ['task_id', 'status', 'objective', 'result', 'items', 'note'],
   },
   tasks: {
-    input: ['command', 'id', 'title', 'status', 'priority', 'owner'],
+    input: ['action', 'id', 'title', 'status', 'priority', 'owner'],
     output: ['tasks', 'id', 'title', 'status', 'priority', 'ok', 'message'],
   },
+  host_runtime: {
+    input: ['action', 'shell_command', 'cwd', 'process_id', 'yield_time_ms', 'force'],
+    output: ['status', 'exit_code', 'stdout', 'stderr', 'process_id', 'processes'],
+  },
   runtime: {
-    input: ['command', 'shell_command', 'cwd', 'job_id', 'detached'],
+    input: ['action', 'shell_command', 'cwd', 'job_id', 'detached'],
     output: ['stdout', 'ok', 'returncode', 'timed_out', 'stderr', 'job', 'items'],
   },
   triggers: {
-    input: ['command', 'session_id', 'trigger_id', 'name', 'type', 'config', 'action_type', 'action_config', 'enabled', 'enabled_only'],
+    input: ['action', 'session_id', 'trigger_id', 'name', 'type', 'config', 'action_type', 'action_config', 'enabled', 'enabled_only'],
     output: ['trigger_id', 'triggers', 'total', 'updated', 'deleted', 'name', 'type', 'action_type', 'enabled', 'next_fire_at'],
   },
   telegram: {
-    input: ['command', 'chat_id', 'message', 'session_id', 'bot_token', 'telegram_user_id'],
-    output: ['success', 'chat_id', 'message_sent', 'running', 'bot_username', 'connected_chats', 'main_session_id'],
+    input: ['action', 'chat_id', 'message', 'session_id', 'bot_token', 'telegram_user_id'],
+    output: ['success', 'chat_id', 'message_sent', 'running', 'bot_username', 'connected_chats'],
   },
 };
 

@@ -1,0 +1,20 @@
+.sentinel-terminal.wterm {
+  --term-font-family: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --term-font-size: 12px;
+  --term-line-height: 1.25;
+  --term-row-height: 15px;
+  --term-fg: var(--text-primary);
+  --term-bg: var(--surface-0);
+  --term-cursor: var(--sentinel-blue);
+  width: 100%;
+  height: 100% !important;
+  padding: 0;
+  border-radius: 0;
+  box-shadow: none;
+  letter-spacing: 0;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.sentinel-terminal::-webkit-scrollbar { width: 6px; }
+.sentinel-terminal::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+.sentinel-terminal ::selection { background: var(--terminal-selection, var(--surface-3)); }

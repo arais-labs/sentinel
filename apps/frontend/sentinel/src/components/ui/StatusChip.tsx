@@ -5,7 +5,7 @@ interface StatusChipProps {
 }
 
 const toneStyles: Record<NonNullable<StatusChipProps['tone']>, string> = {
-  default: 'bg-[color:var(--surface-2)] text-[color:var(--text-secondary)]',
+  default: 'bg-(--surface-2) text-(--text-secondary)',
   good: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
   warn: 'bg-orange-500/15 text-orange-300',
   danger: 'bg-rose-500/10 text-rose-600 dark:text-rose-400',

@@ -1,0 +1,22 @@
+.message-images { display: grid; gap: 12px; min-width: 0; }
+.message-images[data-multiple=true] { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+.message-images figure { margin: 0; min-width: 0; border: 1px solid var(--border-subtle); border-radius: 10px; overflow: hidden; background: var(--surface-0); color: var(--text-primary); }
+.message-images figure[data-selected=true] { border-color: var(--accent-solid); }
+.message-image-thumbnail { display: block; width: 100%; padding: 8px; cursor: zoom-in; }
+.message-image-thumbnail img { display: block; width: 100%; height: 240px; object-fit: contain; }
+.message-images figcaption { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; font-size: 11px; }
+.message-images figcaption > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.message-images figcaption button, .message-image-viewer header button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex-shrink: 0; padding: 6px 8px; border-radius: 6px; font-size: 11px; }
+.message-images button:hover, .message-image-viewer header button:hover { background: var(--surface-2); }
+.message-images button:focus-visible, .message-image-viewer button:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: -2px; }
+.message-image-viewer { margin: auto; padding: 0; width: calc(100vw - 48px); height: calc(100dvh - 48px); max-width: none; max-height: none; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-0); color: var(--text-primary); overflow: hidden; }
+.message-image-viewer[open] { display: flex; flex-direction: column; }
+.message-image-viewer::backdrop { background: rgb(0 0 0 / 45%); }
+.message-image-viewer header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; flex-shrink: 0; background: var(--surface-1); }
+.message-image-title { min-width: 0; flex: 1; overflow-wrap: anywhere; font-size: 12px; }
+.message-image-title small { display: block; margin-top: 3px; color: var(--text-secondary); font-size: 10px; }
+.message-image-navigation { display: flex; align-items: center; gap: 4px; font-size: 11px; }
+.message-image-viewer button:disabled { opacity: .35; cursor: default; }
+.message-image-viewport { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px; }
+.message-image-viewport img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.message-image-viewport[data-actual-size=true] img { width: auto; height: auto; max-width: none; margin: 0 auto; }

@@ -1,0 +1,38 @@
+export const toolNames: Record<string, string> = {
+  "kind": "kind",
+  "k3s": "K3s",
+  "kubectl": "kubectl",
+  "helm": "Helm",
+  "docker-builder": "Docker Builder",
+  "desktop": "Desktop",
+  "git": "Git",
+  "node": "Node.js",
+  "bun": "Bun",
+  "deno": "Deno",
+  "pnpm": "pnpm",
+  "yarn": "Yarn",
+  "typescript": "TypeScript",
+  "python": "Python",
+  "uv": "uv",
+  "poetry": "Poetry",
+  "go": "Go",
+  "rust": "Rust",
+  "php": "PHP",
+  "composer": "Composer",
+  "ruby": "Ruby",
+  "java": "Java",
+  "maven": "Maven",
+  "gradle": "Gradle",
+  "dotnet": ".NET",
+  "cpp": "C / C++",
+  "clang": "Clang",
+  "cmake": "CMake",
+  "ninja": "Ninja",
+  "chromium": "Chromium",
+  "postgres": "PostgreSQL",
+  "mysql": "MySQL",
+  "redis": "Redis"
+};
+
+const logos = import.meta.glob<string>('../../assets/tool-logos/*.svg', { eager: true, query: '?url', import: 'default' });
+export const toolLogos = Object.fromEntries(Object.entries(logos).map(([file, url]) => [file.split('/').pop()!.replace('.svg', ''), url]));

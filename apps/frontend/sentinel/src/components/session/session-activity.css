@@ -1,0 +1,87 @@
+/* Float over the scrolling history. Only the controls intercept pointer input. */
+.chat-composer-terminals { position: absolute; z-index: 1; bottom: calc(100% - var(--composer-top-inset) + 12px); inset-inline: calc(var(--composer-side-inset) + 52px); pointer-events: none; }
+.session-terminal-pill, .session-terminal-overflow { pointer-events: auto; }
+.session-terminal-row { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 6px; margin: -6px; }
+.session-terminal-selection { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.session-terminal-selection:empty { display: none; }
+.session-terminal-measure { position: absolute; inset: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
+.session-terminal-measure > div { display: flex; width: max-content; }
+.session-terminal-measure .session-terminal-pill { max-width: 280px; }
+.session-terminal-slot { display: flex; flex: 0 0 auto; min-width: 0; max-width: min(100%, 288px); padding: 6px 4px; margin-block: -6px; }
+.session-stop-button {
+  border: 1px solid;
+  border-radius: 999px;
+  backdrop-filter: blur(10px) saturate(125%);
+  -webkit-backdrop-filter: blur(10px) saturate(125%);
+  transition: background-color .16s, border-color .16s, color .16s, box-shadow .16s;
+}
+.session-terminal-pill, .session-latest-button { --composer-raised-shadow: 3px 3px 7px #00000065, -2px -2px 5px #ffffff05, inset 0 1px 0 #ffffff08, inset 0 0 0 #0000, inset 0 0 0 #fff0; --composer-pressed-shadow: 0 0 0 #0000, 0 0 0 #fff0, inset 0 0 0 #fff0, inset 2px 2px 5px #00000065, inset -1px -1px 3px #ffffff07; border: 1px solid #ffffff06; border-radius: 999px; background: linear-gradient(145deg, #24262b, #1b1c20); color: #b7bac5; box-shadow: var(--composer-raised-shadow); transition: background 180ms, color 180ms, box-shadow 240ms, transform 240ms, opacity 240ms, visibility 240ms; }
+.session-terminal-pill { display: inline-flex; align-items: stretch; flex: 0 0 auto; max-width: 100%; min-width: 58px; overflow: hidden; color: #58c7ff; background: linear-gradient(145deg, #1c3445, #142735); border-color: #38bdf830; }
+.session-terminal-pill button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 30px; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.session-terminal-pill svg { flex-shrink: 0; }
+.session-terminal-open { padding: 0 6px 0 11px; min-width: 0; font-size: 11px; }
+.session-terminal-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.session-terminal-close { padding: 0 9px 0 6px; flex-shrink: 0; opacity: .6; }
+.session-terminal-pill:hover, .session-terminal-pill:focus-within { background: linear-gradient(145deg, #24455c, #19354a); color: #89daff; }
+.session-terminal-pill[data-focused="true"] { color: #91ddff; background: linear-gradient(145deg, #234a62, #19374c); border-color: #61cdff70; box-shadow: var(--composer-raised-shadow), 0 0 0 1px #38bdf814, 0 0 12px #38bdf830; }
+.session-terminal-pill:active { transform: scale(.98); }
+.session-terminal-pill .session-terminal-close:hover, .session-terminal-pill .session-terminal-close:focus-visible { color: #ff9aa6; opacity: 1; }
+.session-terminal-overflow { display: grid; place-items: center; flex: 0 0 auto; height: 30px; min-width: 36px; padding: 0 10px; border: 1px solid #38bdf830; border-radius: 999px; background: linear-gradient(145deg, #1c3445, #142735); color: #58c7ff; box-shadow: 3px 3px 7px #00000065, -2px -2px 5px #ffffff05, inset 0 1px 0 #ffffff08; font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; cursor: pointer; transition: background 180ms, box-shadow 240ms, transform 240ms; }
+.session-terminal-overflow:hover, .session-terminal-overflow[aria-expanded="true"] { background: linear-gradient(145deg, #24455c, #19354a); color: #89daff; }
+.session-terminal-overflow:active, .session-terminal-overflow[aria-expanded="true"] { box-shadow: inset 2px 2px 5px #00000065, inset -1px -1px 3px #ffffff07; transform: translateY(1px); }
+.session-terminal-overflow-all { display: none; align-items: center; gap: 7px; }
+.chat-composer-terminals[data-compact="true"] .session-terminal-overflow-more { display: none; }
+.chat-composer-terminals[data-compact="true"] .session-terminal-overflow-all { display: inline-flex; }
+.session-terminal-menu { position: fixed; z-index: 10000; display: flex; flex-direction: column; width: min(340px, calc(100vw - 24px)); padding: 8px; border: 1px solid #ffffff0c; border-radius: 18px; background: linear-gradient(145deg, #191a1e, #111215); color: var(--text-primary); box-shadow: 8px 12px 30px #00000065, -3px -3px 12px #ffffff03, inset 0 1px 0 #ffffff08; animation: terminalMenuIn 200ms cubic-bezier(.22, 1, .36, 1); transform-origin: bottom center; }
+.session-terminal-menu-heading { display: flex; align-items: center; justify-content: space-between; padding: 3px 5px 7px 9px; font-size: 11px; font-weight: 500; color: var(--text-secondary); }
+.session-terminal-menu-heading span span { margin-left: 5px; color: var(--sentinel-blue); font-variant-numeric: tabular-nums; }
+.session-terminal-menu-heading button { display: grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.session-terminal-menu-list { min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+.session-terminal-menu-item { display: flex; align-items: stretch; border-radius: 11px; color: var(--text-secondary); }
+.session-terminal-menu-item:hover { background: #ffffff05; }
+.session-terminal-menu-item[data-focused="true"] { color: var(--sentinel-blue); background: #69c4ff0b; }
+.session-terminal-menu-open { display: flex; flex: 1; align-items: center; gap: 9px; min-width: 0; padding: 11px 9px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; font-size: 12px; }
+.session-terminal-menu-open svg { flex-shrink: 0; color: var(--sentinel-blue); }
+.session-terminal-menu-open span { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.5; }
+.session-terminal-menu-close { display: grid; place-items: center; flex-shrink: 0; align-self: center; width: 28px; height: 28px; margin-right: 3px; border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.session-terminal-menu-close:hover { background: #ff9aa60d; color: #ff9aa6; }
+.session-terminal-menu button:focus-visible { outline: 1px solid var(--sentinel-blue); outline-offset: -2px; border-radius: 8px; }
+@keyframes terminalMenuIn { from { opacity: 0; transform: translateY(4px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.session-stop-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 34px; padding: 8px 17px; font-size: 12px; font-weight: 500; cursor: pointer; }
+.session-stop-button { color: #ff95a7; background: rgb(112 38 57 / 22%); border-color: rgb(238 128 150 / 35%); }
+.session-stop-button:hover:not(:disabled) { background: rgb(145 44 70 / 34%); border-color: rgb(238 128 150 / 80%); color: #ffb3c2; box-shadow: 0 0 13px #ee809624; }
+.session-stop-button:disabled { opacity: .5; cursor: default; }
+.session-latest-button { position: absolute; right: 12px; bottom: calc(100% + 13px); z-index: 1; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; cursor: pointer; }
+.session-latest-button:hover { background: linear-gradient(145deg, #30333a, #24262c); color: #fff; transform: translateY(1px); }
+.session-latest-button:active { box-shadow: var(--composer-pressed-shadow); }
+.session-latest-button[data-visible="false"] { opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(4px) scale(.88); box-shadow: var(--composer-pressed-shadow); }
+@starting-style { .session-latest-button[data-visible="true"] { opacity: 0; transform: translateY(4px) scale(.88); box-shadow: var(--composer-pressed-shadow); } }
+.session-terminal-pill button:focus-visible, .session-terminal-overflow:focus-visible, .session-latest-button:focus-visible { outline: 2px solid var(--sentinel-blue); outline-offset: -3px; border-radius: 999px; }
+.session-latest-button:focus-visible { outline-color: var(--accent-solid); }
+.session-thinking { display: inline-flex; align-items: center; gap: 13px; font-size: 14px; color: var(--text-secondary); }
+.session-thinking-dots { display: flex; gap: 4px; align-items: center; width: 28px; flex-shrink: 0; }
+.session-thinking-dots i { height: 4px; width: 4px; border-radius: 50%; background: #69c4ff; animation: session-thinking-dot 1.8s ease-in-out infinite; }
+.session-thinking-dots i:nth-child(2) { animation-delay: .18s; }
+.session-thinking-dots i:nth-child(3) { animation-delay: .36s; }
+.session-thinking-shimmer { background: linear-gradient(100deg,#90909e 20%,#90909e 35%,#b4e3ff 50%,#90909e 65%,#90909e 80%); background-size: 260% 100%; background-clip: text; -webkit-background-clip: text; color: transparent; animation: session-thinking-shine 3.5s linear infinite; }
+@keyframes session-thinking-dot { 0%,65%,100% { opacity: .3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-2px); } }
+@keyframes session-thinking-shine { from { background-position: 150% 0; } to { background-position: -100% 0; } }
+html:not(.dark) .session-terminal-pill, html:not(.dark) .session-latest-button { --composer-raised-shadow: 2px 3px 6px #182b4520, -2px -2px 5px #ffffffcc, inset 0 1px 0 #fff, inset 0 0 0 #0000, inset 0 0 0 #fff0; --composer-pressed-shadow: 0 0 0 #0000, 0 0 0 #fff0, inset 0 0 0 #fff0, inset 2px 2px 5px #182b4520, inset -1px -1px 3px #ffffffb3; background: linear-gradient(145deg, #ffffff, #e5e9ef); border-color: #e2e6ed; color: #536174; }
+html:not(.dark) .session-terminal-pill:hover, html:not(.dark) .session-terminal-pill:focus-within, html:not(.dark) .session-latest-button:hover { background: linear-gradient(145deg, #fff, #dce3eb); color: #334155; }
+html:not(.dark) .session-terminal-pill { color: #2876a8; background: linear-gradient(145deg, #f5faff, #e0eaf4); border-color: #cddfec; }
+html:not(.dark) .session-terminal-pill:hover, html:not(.dark) .session-terminal-pill:focus-within { color: #0369a1; background: linear-gradient(145deg, #edf7ff, #d6e7f4); }
+html:not(.dark) .session-terminal-pill[data-focused="true"] { background: linear-gradient(145deg, #eef9ff, #d9efff); border-color: #38aee580; color: #0876b2; box-shadow: var(--composer-raised-shadow), 0 0 0 1px #0284c70f, 0 0 12px #0284c726; }
+html:not(.dark) .session-terminal-pill .session-terminal-close:hover, html:not(.dark) .session-terminal-pill .session-terminal-close:focus-visible { color: #be2844; }
+html:not(.dark) .session-terminal-overflow { color: #2876a8; background: linear-gradient(145deg, #f5faff, #e0eaf4); border-color: #cddfec; box-shadow: 2px 3px 6px #182b4520, -2px -2px 5px #ffffffcc, inset 0 1px 0 #fff; }
+html:not(.dark) .session-terminal-overflow[aria-expanded="true"] { box-shadow: inset 2px 2px 5px #182b4520, inset -1px -1px 3px #ffffffb3; }
+html:not(.dark) .session-terminal-menu { background: linear-gradient(145deg, #fff, #f1f3f6); border-color: #e2e6ed; box-shadow: 6px 9px 24px #182b4526, -2px -2px 7px #ffffffb3, inset 0 1px 0 #fff; }
+html:not(.dark) .session-terminal-menu-item:hover { background: #182b4505; }
+html:not(.dark) .session-terminal-menu-close:hover { background: #be28440a; color: #be2844; }
+html:not(.dark) .session-stop-button { background-color: rgb(255 228 235 / 55%); color: #be123c; }
+html:not(.dark) .session-stop-button:hover:not(:disabled) { background-color: rgb(253 205 218 / 65%); color: #9f1239; }
+html:not(.dark) .session-thinking-shimmer { background-image: linear-gradient(100deg,#64748b 20%,#64748b 35%,#0284c7 50%,#64748b 65%,#64748b 80%); }
+@media (prefers-reduced-motion: reduce) { .session-thinking-dots i, .session-thinking-shimmer { animation: none; } .session-terminal-pill, .session-latest-button { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .session-terminal-overflow { transition: none; } .session-terminal-menu { animation: none; } }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .session-stop-button { background-color: var(--surface-1); }
+}

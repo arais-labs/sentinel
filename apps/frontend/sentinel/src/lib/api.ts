@@ -1,12 +1,11 @@
-import { useAuthStore } from '../store/auth-store';
 import { API_BASE_URL } from './env';
 
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
-  authenticated?: boolean;
   timeoutMs?: number;
-  allowRefresh?: boolean;
+  signal?: AbortSignal;
+  rawBody?: Blob;
 }
 
 interface ErrorShape {
@@ -68,15 +67,10 @@ function currentInstanceName(): string | null {
 function scopedPath(path: string): string {
   if (!path.startsWith('/')) return path;
   if (path === '/instances' || path.startsWith('/instances/')) return path;
-  if (path === '/runtimes' || path.startsWith('/runtimes/')) return path;
-  if (path === '/auth' || path.startsWith('/auth/')) return path;
+  if (path === '/machines' || path.startsWith('/machines/')) return path;
   if (path === '/agent-modes' || path.startsWith('/agent-modes/')) return path;
   const instanceName = currentInstanceName();
   if (!instanceName) {
-    // /admin/* is dual-mounted in the backend (manager router at /api/v1/admin/*
-    // and instance router at /api/v1/instances/.../admin/*). When called outside
-    // an instance context, the manager-level mount is the intended target.
-    if (path === '/admin' || path.startsWith('/admin/')) return path;
     throw new Error(
       `API call to "${path}" requires an instance context but the current URL has none.`,
     );
@@ -84,39 +78,45 @@ function scopedPath(path: string): string {
   return `/instances/${encodeURIComponent(instanceName)}${path}`;
 }
 
+export function apiUrl(path: string): string {
+  return `${API_BASE_URL}${scopedPath(path)}`;
+}
+
+/** Let Chromium stream downloads to disk; never materialize file bodies as Blobs. */
+export function downloadFile(path: string, filename: string): void {
+  const anchor = document.createElement('a');
+  anchor.href = apiUrl(path);
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
 export async function requestJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const {
     method = 'GET',
     body,
-    authenticated = true,
     timeoutMs = 30_000,
-    allowRefresh = true,
   } = options;
 
   const headers = new Headers();
-  headers.set('Content-Type', 'application/json');
+  headers.set('Content-Type', options.rawBody ? 'application/octet-stream' : 'application/json');
 
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const cancel = () => controller.abort();
+  options.signal?.addEventListener('abort', cancel, { once: true });
+  if (options.signal?.aborted) controller.abort();
 
   try {
     const response = await fetch(`${API_BASE_URL}${scopedPath(path)}`, {
       method,
       headers,
-      credentials: 'include',
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: options.rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
       signal: controller.signal,
     });
 
     const payload = (await response.json().catch(() => null)) as T | ErrorShape | null;
-
-    if (response.status === 401 && authenticated && allowRefresh) {
-      const refreshed = await useAuthStore.getState().refresh();
-      if (refreshed) {
-        return requestJson<T>(path, { ...options, allowRefresh: false });
-      }
-      useAuthStore.getState().clearSession();
-    }
 
     if (!response.ok) {
       const shape = payload as ErrorShape | null;
@@ -134,11 +134,13 @@ export async function requestJson<T>(path: string, options: RequestOptions = {})
       throw error;
     }
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new ApiError('Request timed out. Check your connection and retry.', 408);
+      if (options.signal?.aborted) throw new ApiError('Upload cancelled.', 499);
+      throw new ApiError('Sentinel service took too long to respond. Please retry.', 408);
     }
-    throw new ApiError('Network error. Please retry.', 0);
+    throw new ApiError('Sentinel service is unavailable. Please retry.', 0);
   } finally {
     window.clearTimeout(timeoutId);
+    options.signal?.removeEventListener('abort', cancel);
   }
 }
 
@@ -146,9 +148,7 @@ export async function requestBlob(path: string, options: RequestOptions = {}): P
   const {
     method = 'GET',
     body,
-    authenticated = true,
     timeoutMs = 30_000,
-    allowRefresh = true,
   } = options;
 
   const headers = new Headers();
@@ -158,23 +158,17 @@ export async function requestBlob(path: string, options: RequestOptions = {}): P
 
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const cancel = () => controller.abort();
+  options.signal?.addEventListener('abort', cancel, { once: true });
+  if (options.signal?.aborted) controller.abort();
 
   try {
     const response = await fetch(`${API_BASE_URL}${scopedPath(path)}`, {
       method,
       headers,
-      credentials: 'include',
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
     });
-
-    if (response.status === 401 && authenticated && allowRefresh) {
-      const refreshed = await useAuthStore.getState().refresh();
-      if (refreshed) {
-        return requestBlob(path, { ...options, allowRefresh: false });
-      }
-      useAuthStore.getState().clearSession();
-    }
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as ErrorShape | null;
@@ -195,15 +189,18 @@ export async function requestBlob(path: string, options: RequestOptions = {}): P
       throw error;
     }
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new ApiError('Request timed out. Check your connection and retry.', 408);
+      throw new ApiError('Sentinel service took too long to respond. Please retry.', 408);
     }
-    throw new ApiError('Network error. Please retry.', 0);
+    throw new ApiError('Sentinel service is unavailable. Please retry.', 0);
   } finally {
     window.clearTimeout(timeoutId);
+    options.signal?.removeEventListener('abort', cancel);
   }
 }
 
 export const api = {
+  upload: <T>(path: string, body: Blob, signal?: AbortSignal) =>
+    requestJson<T>(path, { method: 'POST', rawBody: body, signal, timeoutMs: 1800_000 }),
   get: <T>(path: string, options?: Omit<RequestOptions, 'method' | 'body'>) =>
     requestJson<T>(path, { ...options, method: 'GET' }),
   post: <T>(path: string, body?: unknown, options?: Omit<RequestOptions, 'method' | 'body'>) =>

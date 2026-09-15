@@ -1,0 +1,107 @@
+/* Chrome only: terminal rendering, cell metrics and native selection stay unchanged. */
+.terminal-preview,
+.terminal-control,
+.terminal-empty {
+  --terminal-face: var(--surface-1);
+  --terminal-edge: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --terminal-relief: 2px 3px 8px #00000008, 7px 8px 24px #0000000c, -4px -4px 15px #ffffff80, inset 0 1px 0 #ffffff90;
+}
+html.dark .terminal-preview,
+html.dark .terminal-control,
+html.dark .terminal-empty {
+  --terminal-face: #101012;
+  --terminal-relief: 2px 3px 8px #0000001a, 7px 8px 24px #00000030, -4px -4px 15px #ffffff03, inset 0 1px 0 #ffffff06;
+}
+.terminal-preview .terminal-toolbar {
+  gap: 4px;
+  padding: 10px 10px 8px;
+  border-color: transparent;
+  background: var(--surface-0);
+}
+html.dark .terminal-preview .terminal-toolbar { background: #0c0c0e; }
+.terminal-control {
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  transition: color 160ms ease, background-color 160ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+.terminal-control:hover:not(:disabled),
+.terminal-preview .terminal-reconnect:hover:not(:disabled) {
+  background: var(--terminal-face);
+  border-color: var(--terminal-edge);
+  color: var(--text-primary);
+  box-shadow: var(--terminal-relief);
+}
+.terminal-control:focus-visible,
+.terminal-preview .terminal-reconnect:focus-visible {
+  outline: 1px solid var(--sentinel-blue);
+  outline-offset: -1px;
+}
+.terminal-preview .terminal-reconnect,
+.terminal-empty .terminal-empty-icon {
+  background: var(--terminal-face);
+  border: 1px solid var(--terminal-edge);
+  box-shadow: var(--terminal-relief);
+}
+.terminal-preview .terminal-reconnect {
+  border-radius: 999px;
+  transition: background-color 160ms ease, box-shadow 180ms ease;
+}
+.terminal-empty .terminal-empty-icon { color: var(--text-secondary); }
+.terminal-connection-state [role="status"] > svg { color: var(--sentinel-blue); }
+@media (prefers-reduced-motion: reduce) {
+  .terminal-control,
+  .terminal-preview .terminal-reconnect { transition: none; }
+}
+
+
+/* Windows have a dedicated tab strip; pane controls remain in the header. */
+.terminal-window-strip { flex-shrink: 0; min-width: 0; padding: 0 10px 6px; background: var(--surface-0); border-top: 1px solid var(--terminal-edge); }
+.terminal-window-rail { display: flex; align-items: stretch; gap: 4px; min-width: 0; overflow-x: auto; padding: 5px 0 0; scrollbar-width: thin; scrollbar-color: var(--border-subtle) transparent; overscroll-behavior-inline: contain; }
+.terminal-window-tab { position: relative; display: inline-flex; align-items: center; gap: 9px; flex-shrink: 0; max-width: 200px; min-height: 33px; padding: 7px 13px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font-size: 12px; cursor: default; transition: background-color 180ms, color 180ms, box-shadow 180ms; }
+.terminal-window-tab > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-window-index { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.terminal-window-tab:hover { background: var(--terminal-face); color: var(--text-primary); }
+.terminal-window-tab[aria-selected="true"] { background: color-mix(in srgb, var(--text-primary) 3%, transparent); color: var(--text-primary); box-shadow: none; }
+.terminal-window-tab[aria-selected="true"]::before { content: ''; position: absolute; top: -6px; left: 13px; right: 13px; height: 2px; border-radius: 99px; background: var(--sentinel-blue); }
+.terminal-window-tab[aria-selected="true"] .terminal-window-index { color: var(--sentinel-blue); }
+.terminal-window-tab:focus-visible { outline: 1px solid var(--sentinel-blue); outline-offset: -1px; }
+html.dark :is(.sentinel-pane-header[data-tour-pane='terminal'], .terminal-toolbar.sentinel-pane-header) {
+  --chat-header-face: #101012;
+  --chat-header-hover: #141416;
+  --chat-header-edge: #f4f4f50d;
+  --chat-header-label: #d1d2d8;
+  --chat-header-shadow: 2px 3px 8px #0000001a, 7px 8px 24px #00000030, -4px -4px 15px #ffffff03, inset 0 1px 0 #ffffff06;
+}
+@media (prefers-reduced-motion: reduce) { .terminal-window-tab { transition: none; } }
+
+/* Action labels follow the header language; shell/window names retain their case. */
+.terminal-control.chat-header-pill { text-transform: uppercase; }
+
+/* Flat top tabs: names lead, with a quiet baseline and active underline. */
+.terminal-window-strip { padding: 0 12px; border-top: 0; border-bottom: 1px solid var(--terminal-edge); }
+.terminal-window-rail { gap: 0; padding: 0; }
+.terminal-window-tab { min-height: 38px; padding: 9px 18px; border-radius: 0; background: transparent; }
+.terminal-window-tab + .terminal-window-tab::after { content: ''; position: absolute; left: 0; top: 13px; bottom: 13px; width: 1px; background: var(--terminal-edge); }
+.terminal-window-index { font-size: 9px; opacity: .7; }
+.terminal-window-tab:hover { background: color-mix(in srgb, var(--text-primary) 2%, transparent); }
+.terminal-window-tab[aria-selected="true"] { background: transparent; color: var(--text-primary); }
+.terminal-window-tab[aria-selected="true"]::before { top: auto; bottom: 0; left: 18px; right: 18px; height: 2px; }
+
+/* A single indicator moves between tabs instead of drawing separate underlines. */
+.terminal-window-rail { position: relative; }
+.terminal-window-tab[aria-selected="true"]::before { content: none; }
+.terminal-window-indicator { position: absolute; bottom: 0; left: 0; height: 2px; border-radius: 99px; background: var(--sentinel-blue); pointer-events: none; transition: transform 260ms cubic-bezier(.22,1,.36,1), width 260ms cubic-bezier(.22,1,.36,1); }
+.terminal-window-index { transition: color 180ms ease, opacity 180ms ease; }
+@media (prefers-reduced-motion: reduce) { .terminal-window-indicator, .terminal-window-index { transition: none; } }
+
+.terminal-shell-close { position: absolute; top: 5px; right: 17px; z-index: 20; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: var(--terminal-face); color: var(--text-secondary); opacity: .25; cursor: default; transition: opacity 160ms, background-color 160ms, color 160ms; }
+.terminal-shell:hover .terminal-shell-close, .terminal-shell-close:focus-visible { opacity: 1; }
+.terminal-shell-close:hover:not(:disabled) { color: #cda0ab; background: color-mix(in srgb, #cda0ab 8%, var(--terminal-face)); }
+.terminal-shell-close:focus-visible { outline: 1px solid var(--sentinel-blue); outline-offset: 2px; }
+.terminal-shell-close:disabled { opacity: .15; }
+@media (prefers-reduced-motion: reduce) { .terminal-shell-close { transition: none; } }
+
+/* Place pane chrome in the gutter above the terminal, outside its text rows. */
+.terminal-shell-close { top: -20px; right: 2px; width: 18px; height: 18px; border-radius: 5px; background: transparent; }

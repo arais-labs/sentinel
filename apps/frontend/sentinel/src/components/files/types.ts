@@ -1,0 +1,11 @@
+import type { SessionRuntimeFileEntry, SessionRuntimeFilePreviewResponse, SessionRuntimeGitChangedFile, SessionRuntimeGitDiffResponse, SessionRuntimeGitRoot } from '../../types/api';
+export type FileEntry = SessionRuntimeFileEntry;
+export type FilePreview = Omit<SessionRuntimeFilePreviewResponse, 'session_id'> & { workspace_id: string; binary?: boolean; media_type?: string };
+export type Diff = SessionRuntimeGitDiffResponse & { repository?: Repo };
+export type Change = SessionRuntimeGitChangedFile & { conflicted?: boolean; original_path?: string };
+export type Repo = SessionRuntimeGitRoot & { common_dir?: string; upstream?: string | null };
+export type Worktree = { path: string; branch: string | null; head: string | null; available: boolean; current: boolean; locked: boolean; prunable: boolean; last_commit_at?: number | null };
+export type Context = { repository: Repo | null; worktrees: Worktree[] };
+export type Commit = { id: string; short_id: string; subject: string; author: string; date: string };
+export type FileTab = { path: string; mode: 'file' | 'working' | 'staged' | 'combined'; base: string };
+export const filename = (path: string) => path.split('/').pop() || path;

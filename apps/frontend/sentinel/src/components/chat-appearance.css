@@ -1,0 +1,27 @@
+.chat-appearance { padding: 20px; }
+.chat-appearance header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.chat-appearance h2 { font-size: 15px; font-weight: 500; }
+.chat-appearance button { cursor: pointer; }
+.chat-appearance header button { padding: 5px; color: var(--text-secondary); }
+.chat-appearance fieldset { border: 0; margin: 0; padding: 0; }
+.chat-appearance legend, .chat-font-choice { font-size: 11px; color: var(--text-secondary); }
+.chat-appearance legend { margin-bottom: 10px; }
+.chat-preset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.chat-preset-grid button { padding: 12px; border-radius: 10px; border: 1px solid var(--border-subtle); background: var(--surface-1); text-align: left; font-size: 12px; }
+.chat-preset-grid small { display: block; margin-top: 5px; font-size: 10px; color: var(--text-secondary); }
+.chat-preset-grid button[aria-pressed=true] { border-color: var(--sentinel-blue); background: color-mix(in srgb, var(--sentinel-blue) 8%, var(--surface-1)); }
+.chat-font-choice { display: flex; align-items: center; justify-content: space-between; margin: 18px 0; }
+.chat-font-choice select { border: 1px solid var(--border-subtle); border-radius: 7px; padding: 6px 10px; color: var(--text-primary); background: var(--surface-1); }
+.chat-font-preview { padding: 12px; border-radius: 10px; background: var(--surface-1); font-family: var(--chat-font-family); font-size: var(--chat-font-size); line-height: var(--chat-line-height); }
+.chat-font-preview small { display: block; margin-top: 7px; font: 10px/1.5 -apple-system, sans-serif; color: var(--text-secondary); }
+.chat-appearance footer { display: flex; justify-content: space-between; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
+.chat-appearance footer button { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 11px; }
+.chat-appearance button:hover { color: var(--text-primary); }
+.chat-appearance button:focus-visible, .chat-appearance select:focus-visible { outline: 2px solid var(--sentinel-blue); outline-offset: 2px; }
+.chat-appearance button:disabled { opacity: .4; cursor: default; }
+
+.chat-app-settings { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 0; border: 0; border-radius: 0; background: transparent; color: var(--text-primary); text-align: left; font-size: 13px; }
+.chat-app-settings span { flex: 1; }
+.chat-app-settings svg { color: var(--text-secondary); }
+.chat-app-settings:hover:not(:disabled) svg { color: var(--text-primary); }
+.chat-appearance-heading { margin: 14px 0; padding-top: 18px; border-top: 1px solid var(--border-subtle); font-size: 13px; font-weight: 500; }
