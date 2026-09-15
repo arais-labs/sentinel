@@ -3,9 +3,8 @@ import { Loader2, RefreshCw, Server, Power } from 'lucide-react';
 import { ServiceLogs } from './ServiceLogs';
 import { Panel } from './ui/Panel';
 import { StatusChip } from './ui/StatusChip';
-import type { DesktopStatus, FactoryResetScopes, LogEntry, PayloadProgress, PayloadUpdate, ReleaseChannel } from '../../../../desktop/sentinel/src/shared/ipc';
+import type { DesktopStatus, LogEntry, PayloadProgress, PayloadUpdate, ReleaseChannel } from '../../../../desktop/sentinel/src/shared/ipc';
 const labels: Record<string,string> = { backend:'Sentinel service', frontend:'Interface', manager:'App' };
-const emptyScopes: FactoryResetScopes = { db:false, runState:false, appPayload:false, logs:false };
 export function DesktopManagement({ sectionId = 'services' }: { sectionId?: 'services' | 'updates' }) {
   const api = window.sentinelDesktop;
   const [status, setStatus] = useState<DesktopStatus>();
@@ -16,8 +15,6 @@ export function DesktopManagement({ sectionId = 'services' }: { sectionId?: 'ser
   const [update, setUpdate] = useState<PayloadUpdate | null>();
   const [channel, setChannel] = useState<ReleaseChannel>('stable');
   const [devMode, setDevMode] = useState(false);
-  const [confirm, setConfirm] = useState<'reset' | null>(null);
-  const [scopes, setScopes] = useState(emptyScopes);
   useEffect(() => {
     if (!api) return;
     let active = true;
@@ -85,7 +82,7 @@ export function DesktopManagement({ sectionId = 'services' }: { sectionId?: 'ser
         <div className="flex flex-wrap gap-3 items-center">
           <label className="text-sm">Channel <select aria-label="Update channel" className="ml-2 rounded border border-(--border-subtle) bg-(--app-bg) px-3 py-2" value={channel} onChange={e => { setChannel(e.target.value as ReleaseChannel); setUpdate(undefined); }}><option value="stable">Stable</option><option value="beta">Beta</option></select></label>
           <button className={button} disabled={busy} onClick={() => void run(async () => { setUpdate(await api.checkForUpdate(channel)); })}>Check for updates</button>
-          <button className={button} disabled={busy} onClick={() => void run(() => api.installPayloadFromFile())}>Install from file</button>
+          {devMode && <button className={button} disabled={busy} onClick={() => void run(() => api.installPayloadFromFile())}>Install PR app bundle…</button>}
           {update && <button className="btn-primary px-4 py-2 text-sm" disabled={busy} onClick={() => void run(() => api.applyUpdate(update))}>Install {update.version}</button>}
         </div>
         {update === null && <p role="status" className="text-sm">No update available on this channel.</p>}
@@ -98,8 +95,6 @@ export function DesktopManagement({ sectionId = 'services' }: { sectionId?: 'ser
         <h2 className="text-sm font-bold uppercase tracking-widest">Recovery</h2>
         <p className="text-sm text-(--text-muted)">Find your app data and manage recovery options.</p>
         <button className={button} onClick={() => void run(() => api.revealAppSupport())}>Open app data</button>
-        {devMode && <div className="space-y-3 border-t border-(--border-subtle) pt-4"><p className="text-sm break-all">{status?.appSupportPath}</p><div className="flex gap-3"><button className={dangerButton} onClick={() => { setScopes(emptyScopes); setConfirm('reset'); }}>Reset app data…</button></div></div>}
       </section>}
-      {confirm && <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6"><section role="dialog" aria-modal="true" aria-labelledby="reset-title" className="desktop-reset-dialog"><h2 id="reset-title" className="text-lg font-semibold">Reset app data?</h2><p className="text-sm">Selected data will be permanently deleted and Sentinel will restart.</p>{(Object.entries({ db: 'All instances and conversations', runState: 'Service state', appPayload: 'Installed app service', logs: 'Logs' }) as [keyof FactoryResetScopes, string][]).map(([key,label]) => <label className="flex gap-3 text-sm" key={key}><input type="checkbox" checked={scopes[key]} onChange={e => setScopes(s => ({ ...s, [key]: e.target.checked }))} />{label}</label>)}<div className="flex justify-end gap-3"><button className={button} disabled={busy} onClick={() => setConfirm(null)}>Cancel</button><button className={dangerButton} disabled={busy || !Object.values(scopes).some(Boolean)} onClick={() => void run(async () => { await api.factoryReset(scopes); setConfirm(null); })}>Confirm reset</button></div></section></div>}
   </div>;
 }

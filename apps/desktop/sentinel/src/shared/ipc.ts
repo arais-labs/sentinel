@@ -42,13 +42,6 @@ export interface LogEntry {
   at: string;
 }
 
-export interface FactoryResetScopes {
-  db: boolean;
-  runState: boolean;
-  appPayload: boolean;
-  logs: boolean;
-}
-
 // A newer payload available on a release channel, discovered by comparing the
 // installed manifest against the channel's release index.
 export interface PayloadUpdate {
@@ -115,7 +108,6 @@ export interface DesktopApi {
   onSocketEvent(listener: (event: SocketEvent) => void): () => void;
   getStatus(): Promise<DesktopStatus>;
   stopServices(): Promise<DesktopStatus>;
-  factoryReset(scopes: FactoryResetScopes): Promise<DesktopStatus>;
   startServices(): Promise<DesktopStatus>;
   onGuidedTour?(listener: () => void): () => void;
   onNavigate(listener: (path: string) => void): () => void;
@@ -157,7 +149,6 @@ export const IPC = {
   socketEvent: 'desktop:socketEvent',
   getStatus: 'desktop:getStatus',
   stopServices: 'desktop:stopServices',
-  factoryReset: 'desktop:factoryReset',
   startServices: 'desktop:startServices',
   navigate: 'desktop:navigate',
   guidedTour: 'desktop:guided-tour',

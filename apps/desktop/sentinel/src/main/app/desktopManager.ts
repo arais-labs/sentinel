@@ -7,7 +7,6 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   DesktopStatus,
-  FactoryResetScopes,
   LogEntry,
   PayloadFailure,
   PayloadInfo,
@@ -20,8 +19,6 @@ import * as payload from './payloadManager.js';
 import {
   hostStateRoot,
   backendPath,
-  payloadRoot,
-  payloadStagingRoot,
   resourceRoot,
 } from '../paths.js';
 import { execFileText } from './shell.js';
@@ -155,55 +152,6 @@ export class DesktopManager {
     await this.clearPidFile('backend');
     this.operation = undefined;
     this.supervisor.appendManagerLog('Stopped local Sentinel services');
-    return this.emitStatus();
-  }
-
-  async factoryReset(scopes: FactoryResetScopes | undefined): Promise<DesktopStatus> {
-    const resetScopes: FactoryResetScopes = {
-      db: Boolean(scopes?.db),
-      runState: Boolean(scopes?.runState),
-      appPayload: Boolean(scopes?.appPayload),
-      logs: Boolean(scopes?.logs),
-    };
-    if (!resetScopes.db && !resetScopes.runState && !resetScopes.appPayload && !resetScopes.logs) {
-      throw new Error('Select at least one factory reset scope.');
-    }
-    await this.stopServices();
-    await this.releaseDesktopOwnership();
-    if (resetScopes.db) {
-      await rm(path.join(hostStateRoot(), 'storage'), { recursive: true, force: true });
-    }
-    if (resetScopes.runState) {
-      await rm(desktopRunRoot(), { recursive: true, force: true });
-    }
-    if (resetScopes.appPayload) {
-      // Drop the installed payload (and any half-applied swap state). The app
-      // returns to the no-payload state; the user reinstalls from file/update.
-      await rm(payloadRoot(), { recursive: true, force: true });
-      await rm(payloadStagingRoot(), { recursive: true, force: true });
-      await rm(path.join(hostStateRoot(), 'payload.old'), { recursive: true, force: true });
-    }
-    if (resetScopes.logs) {
-      await this.logWriter?.flush();
-      this.logWriter = undefined;
-      await rm(app.getPath('logs'), { recursive: true, force: true });
-    }
-    this.transport = undefined;
-    if (this.socketDirectory) await rm(this.socketDirectory, { recursive: true, force: true });
-    this.socketDirectory = undefined;
-    this.secrets = undefined;
-    if (!resetScopes.logs) {
-      this.supervisor.appendManagerLog(
-        `Factory reset complete; removed ${[
-          resetScopes.db ? 'db' : undefined,
-          resetScopes.runState ? 'run state' : undefined,
-          resetScopes.appPayload ? 'app payload' : undefined,
-          resetScopes.logs ? 'logs' : undefined,
-        ]
-          .filter(Boolean)
-          .join(', ')}.`,
-      );
-    }
     return this.emitStatus();
   }
 
@@ -361,6 +309,7 @@ export class DesktopManager {
   }
 
   async shutdown(): Promise<void> {
+    await this.serviceQueue.catch(() => {});
     await this.supervisor.stopAll();
     await this.workspaceRuntimeBridge?.close();
     this.workspaceRuntimeBridge = undefined;

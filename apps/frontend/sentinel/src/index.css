@@ -549,8 +549,6 @@ html.dark .desktop-titlebar { background: #0c0c0e; }
 .desktop-settings-panels { min-width: 0; min-height: 0; overflow: hidden; }
 .desktop-settings-panel { height: 100%; padding: 24px; overflow: auto; }
 .desktop-settings-panel > * + * { margin-top: 20px; }
-.desktop-reset-dialog { padding: 24px; width: min(100%, 480px); max-height: 90dvh; overflow: auto; background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: 10px; }
-.desktop-reset-dialog > * + * { margin-top: 16px; }
 @media (max-width: 700px) {
   .desktop-settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .desktop-settings-nav { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--border-subtle); padding: 8px; }

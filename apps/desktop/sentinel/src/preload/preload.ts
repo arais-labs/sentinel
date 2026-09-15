@@ -41,7 +41,6 @@ const api: DesktopApi = {
   onSocketEvent: listener => subscribe(IPC.socketEvent, listener),
   getStatus: () => ipcRenderer.invoke(IPC.getStatus),
   stopServices: () => ipcRenderer.invoke(IPC.stopServices),
-  factoryReset: (scopes) => ipcRenderer.invoke(IPC.factoryReset, scopes),
   startServices: () => ipcRenderer.invoke(IPC.startServices),
   onGuidedTour: (listener) => subscribe(IPC.guidedTour, listener),
   onNavigate: (listener) => subscribe(IPC.navigate, listener),

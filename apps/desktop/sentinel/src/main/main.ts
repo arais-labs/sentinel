@@ -4,6 +4,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { installRendererTransport } from './transport/rendererTransport.js';
 import { DesktopManager } from './app/desktopManager.js';
+import { validateBackupFolder } from './app/backupReset.js';
+import { BACKUP_RESET_ARGUMENT, runBackupReset } from './app/backupResetWindow.js';
 import { openPreviewWindow } from './app/previewWindow.js';
 import { IPC, type CompletionSound, type NotificationSettings, type SessionCompletion, type PendingFormWindow, type DesktopStatus, type PayloadUpdate, type ReleaseChannel } from '../shared/ipc.js';
 
@@ -15,6 +17,14 @@ if (!app.isPackaged) {
   app.setPath('userData', developmentData);
 }
 
+app.setAppLogsPath(app.isPackaged ? undefined : path.join(app.getPath('userData'), 'logs'));
+const backupRoots = [
+  { name: 'app-data', path: app.getPath('userData') },
+  { name: 'logs', path: app.getPath('logs') },
+];
+const resetArgument = process.argv.find(arg => arg.startsWith(BACKUP_RESET_ARGUMENT));
+if (resetArgument) await runBackupReset(resetArgument.slice(BACKUP_RESET_ARGUMENT.length), backupRoots);
+
 let mainWindow: BrowserWindow | undefined;
 type FormWindowEntry = { window: BrowserWindow; instanceName: string; formId: string; resolved: boolean };
 let formWindow: FormWindowEntry | undefined;
@@ -24,14 +34,17 @@ const shownForms = new Set<string>();
 const manager = new DesktopManager();
 let activeSentinelOrigin: string | undefined;
 let isQuitting = false;
+let resetInProgress = false;
+let startupInProgress = true;
+let payloadInProgress = false;
+manager.onPayloadProgress(progress => { payloadInProgress = progress.phase !== 'done'; });
+manager.onPayloadFailed(() => { payloadInProgress = false; });
 // The development watcher launches the replacement while the old process shuts down.
 // DesktopManager transfers ownership after that process releases its services.
 const singleInstanceLock = !app.isPackaged || app.requestSingleInstanceLock();
-app.setAppLogsPath(app.isPackaged ? undefined : path.join(app.getPath('userData'), 'logs'));
 
-// Developer Mode is a UI-only preference (toggled from the OS menu) that reveals
-// the per-service detail, state-folder path, and payload-from-file install. It
-// lives in a small settings file in userData so it survives restarts.
+// Developer Mode exposes explicit bundle installation and backup/reset actions.
+// Toggling the preference itself never changes workspace or app data.
 const desktopSettings = loadDesktopSettings();
 let devMode = desktopSettings.devMode === true;
 let formAlertsEnabled = desktopSettings.formAlertsEnabled !== false;
@@ -64,6 +77,7 @@ function setDevMode(value: boolean): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC.devModeChanged, value);
   }
+  installMenu();
 }
 
 function preloadPath(): string {
@@ -173,14 +187,45 @@ async function navigateTo(route: string): Promise<void> {
 // Opens a native picker for a locally-built payload tarball and installs it.
 // Returns false when the user cancels.
 async function installPayloadFromFile(): Promise<boolean> {
+  if (resetInProgress) throw new Error('A backup and reset is in progress.');
+  if (!devMode) throw new Error('Enable Developer Mode to install a PR app bundle.');
   const result = await dialog.showOpenDialog({
-    title: 'Install Sentinel Payload',
+    title: 'Install PR app bundle',
+    message: 'Select the sentinel-payload tarball from the downloaded PR build artifacts.',
     properties: ['openFile'],
     filters: [{ name: 'Payload archive', extensions: ['gz', 'tgz', 'tar.gz'] }],
   });
   if (result.canceled || result.filePaths.length === 0) return false;
+  if (!devMode) throw new Error('Developer Mode was disabled. The bundle was not installed.');
   await manager.installPayloadFromFile(result.filePaths[0]);
   return true;
+}
+
+async function backupAndResetFromMenu(): Promise<void> {
+  if (!devMode || resetInProgress) return;
+  resetInProgress = true;
+  try {
+    const selection = await dialog.showOpenDialog({ title: 'Choose where to back up Sentinel',
+      properties: ['openDirectory', 'createDirectory'], buttonLabel: 'Choose backup folder' });
+    if (selection.canceled || !selection.filePaths[0]) return;
+    const folder = await validateBackupFolder(selection.filePaths[0], backupRoots);
+    const confirmation = await dialog.showMessageBox({ type: 'warning',
+      message: 'Back up all local Sentinel data and start fresh?',
+      detail: `Backup location: ${folder}\n\nSentinel will stop running tasks and local workspaces, then back up and verify conversations, credentials, settings, installed bundles, local workspace storage, and logs before removing them. External project folders and remote machines are untouched.\n\nThe backup contains sensitive data. Keep it private. Sentinel will restart into clean setup and may need to download an app bundle.`,
+      buttons: ['Cancel', 'Back up and reset'], defaultId: 0, cancelId: 0, noLink: true });
+    if (confirmation.response !== 1 || !devMode) return;
+    if (startupInProgress || payloadInProgress) throw new Error('Wait for Sentinel startup or bundle installation to finish, then retry.');
+    // Restart into the dedicated backup launch after shutdown: no running
+    // Chromium profile, database, or VM can change the files during copying.
+    Menu.setApplicationMenu(null);
+    isQuitting = true;
+    for (const window of BrowserWindow.getAllWindows()) window.destroy();
+    await manager.shutdown();
+    app.relaunch({ args: [...process.argv.slice(1), `${BACKUP_RESET_ARGUMENT}${folder}`] });
+    app.exit(0);
+  } finally {
+    resetInProgress = false;
+  }
 }
 
 async function ensureWindow(): Promise<void> {
@@ -233,20 +278,24 @@ function installMenu(): void {
     {
       label: 'Developer',
       submenu: [
-        { role: 'toggleDevTools' },
-        {
-          label: 'Install app bundle from file…',
-          click: () => { void installPayloadFromFile().catch((error) => {
-            dialog.showErrorBox('Could not install app bundle', error instanceof Error ? error.message : String(error));
-          }); },
-        },
-        { type: 'separator' },
         {
           label: 'Developer Mode',
           type: 'checkbox',
           checked: devMode,
           click: (item) => setDevMode(item.checked),
         },
+        ...(devMode ? [{
+          label: 'Install PR app bundle…',
+          click: () => { void installPayloadFromFile().catch((error) => {
+            dialog.showErrorBox('Could not install PR app bundle', error instanceof Error ? error.message : String(error));
+          }); },
+        }, {
+          label: 'Back up and reset Sentinel…',
+          click: () => { void backupAndResetFromMenu().catch((error) => {
+            dialog.showErrorBox('Could not back up and reset Sentinel', error instanceof Error ? error.message : String(error));
+            if (isQuitting) { app.relaunch(); app.exit(1); }
+          }); },
+        }] : []),
       ],
     },
     {
@@ -303,6 +352,7 @@ manager.notifications.events.on('published', (item: AppNotification, meaningful:
 
 function registerIpc(): void {
   const handle: typeof ipcMain.handle = (channel, listener) => ipcMain.handle(channel, (event, ...args) => {
+    if (resetInProgress) throw new Error('A backup and reset is in progress.');
     if (!event.senderFrame || event.senderFrame !== mainWindow?.webContents.mainFrame || !isSentinelUrl(event.senderFrame.url)) {
       throw new Error('Untrusted desktop request');
     }
@@ -406,12 +456,6 @@ function registerIpc(): void {
   });
   handle(IPC.getStatus, () => manager.getStatus());
   handle(IPC.stopServices, () => manager.stopServices());
-  handle(IPC.factoryReset, async (_event, scopes) => {
-    const status = await manager.factoryReset(scopes);
-    app.relaunch();
-    app.exit(0);
-    return status;
-  });
   handle(IPC.startServices, () => manager.startServices());
   handle(IPC.revealAppSupport, () => manager.revealAppSupport());
   handle(IPC.openLogFolder, () => manager.openLogFolder());
@@ -477,7 +521,7 @@ if (!singleInstanceLock) {
           const message = String(error?.stack || error);
           console.error(message);
 
-        });
+        }).finally(() => { startupInProgress = false; });
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
           void createWindow();
