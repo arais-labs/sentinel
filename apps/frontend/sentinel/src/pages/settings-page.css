@@ -100,11 +100,11 @@ html.dark .settings-pane {
 
 .settings-desktop-management .service-log-view { height:560px; max-height:70vh; }
 
-.settings-pane .chat-appearance { padding:8px 4px 24px; }
-.settings-pane .chat-appearance header { margin-bottom:24px; }
-.settings-pane .chat-appearance h2 { font-size:16px; font-weight:550; }
-.settings-pane .chat-appearance .settings-global-note { margin:6px 0 0; }
-.settings-pane .chat-appearance footer button { text-transform:uppercase; font-size:10px; letter-spacing:.065em; }
+.settings-pane .app-appearance { padding:8px 4px 24px; }
+.settings-pane .app-appearance header { margin-bottom:24px; }
+.settings-pane .app-appearance h2 { font-size:16px; font-weight:550; }
+.settings-pane .app-appearance .settings-global-note { margin:6px 0 0; }
+.settings-pane .app-appearance footer button { text-transform:uppercase; font-size:10px; letter-spacing:.065em; }
 
 .settings-integration { min-width: 0; background: transparent; }
 .settings-integration .git-page-content { max-width: none; }
