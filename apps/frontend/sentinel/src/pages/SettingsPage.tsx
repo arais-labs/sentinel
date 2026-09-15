@@ -25,6 +25,7 @@ const notify = notificationPublisher('Settings');
 interface ProviderStatus {
   configured: boolean;
   auth_method: 'oauth' | 'api_key' | null;
+  auth_source: 'manual' | 'cli' | null;
   masked_key: string | null;
 }
 
@@ -75,7 +76,7 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: stri
       'Install the Claude CLI: npm install -g @anthropic-ai/claude-code',
       'Run: claude auth login',
       'A browser window opens — log in with your Anthropic account and authorize.',
-      'Click Import from Claude CLI. You can also paste an OAuth token manually.',
+      'Choose Auto-sync CLI so Sentinel reads the current login for every request. You can also enter a token manually.',
     ],
     command: 'claude auth login',
   },
@@ -86,7 +87,7 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: stri
       'Run: codex login',
       'Click Sign in with ChatGPT and complete the browser flow.',
       'After authorization, credentials are stored locally in ~/.codex/auth.json.',
-      'Copy the access_token value and paste it here.',
+      'Choose Auto-sync CLI, or enter an access_token manually.',
     ],
     command: 'codex login',
   },
@@ -95,7 +96,7 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: stri
     steps: [
       'Install Antigravity CLI from antigravity.google and run agy.',
       'Sign in with your personal Google account.',
-      'On macOS, click Import from Antigravity CLI.',
+      'On macOS, choose Auto-sync CLI.',
       'You can also paste an exported Antigravity OAuth credential bundle containing a refresh_token.',
     ],
     command: 'agy',
@@ -106,7 +107,7 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: stri
 
 function ProviderRow({
   name, status, onSave, saving, providerId, isPrimary, onSetPrimary, onRemove,
-  canImportOauth = false, importingOauth = false, onImportOauth,
+  canSyncOauth = false, syncingOauth = false, onSyncOauth,
 }: {
   name: string;
   status: ProviderStatus | null;
@@ -116,21 +117,23 @@ function ProviderRow({
   isPrimary: boolean;
   onSetPrimary: () => void;
   onRemove: () => void;
-  canImportOauth?: boolean;
-  importingOauth?: boolean;
-  onImportOauth?: () => void;
+  canSyncOauth?: boolean;
+  syncingOauth?: boolean;
+  onSyncOauth?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const help = OAUTH_HELP[providerId];
   const [mode, setMode] = useState<'oauth' | 'api'>('api');
+  const [oauthSource, setOauthSource] = useState<'cli' | 'manual'>('cli');
   const [value, setValue] = useState('');
   const [showValue, setShowValue] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   const configured = status?.configured ?? false;
-  const isGeminiOauth = providerId === 'gemini' && mode === 'oauth';
-  const oauthLabel = providerId === 'gemini' ? 'OAuth Credentials' : 'OAuth Token';
+  const isGeminiOauth = providerId === 'gemini' && mode === 'oauth' && oauthSource === 'manual';
+  const oauthLabel = 'OAuth';
+  const cliName = providerId === 'anthropic' ? 'Claude' : providerId === 'gemini' ? 'Antigravity' : 'Codex';
 
   function handleSave() {
     if (!value.trim()) return;
@@ -154,7 +157,7 @@ function ProviderRow({
             <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-(--surface-2) text-(--text-muted)">Fallback</span>
           )}
           {configured && (
-            <StatusChip label={status?.auth_method === 'oauth' ? 'OAuth' : 'API Key'} tone="info" className="scale-90" />
+            <StatusChip label={status?.auth_method === 'oauth' ? status.auth_source === 'cli' ? 'OAuth · Auto-sync' : 'OAuth' : 'API Key'} tone="info" className="scale-90" />
           )}
           {!configured && (
             <StatusChip label="Not configured" tone="warn" className="scale-90" />
@@ -175,7 +178,10 @@ function ProviderRow({
             </button>
           )}
           <button onClick={() => {
-              if (!editing) setMode(status?.auth_method === 'oauth' ? 'oauth' : 'api');
+              if (!editing) {
+                setMode(status?.auth_method === 'oauth' ? 'oauth' : 'api');
+                setOauthSource(status?.auth_method === 'oauth' && status.auth_source !== 'cli' ? 'manual' : 'cli');
+              }
               setEditing(v => !v);
               setConfirmRemove(false);
             }}
@@ -255,7 +261,20 @@ function ProviderRow({
             </div>
           )}
 
-          <div className="flex gap-2">
+          {mode === 'oauth' && canSyncOauth && (
+            <div className="flex rounded-lg bg-(--surface-2) p-0.5 w-fit">
+              <button type="button" onClick={() => setOauthSource('cli')}
+                className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${oauthSource === 'cli' ? 'bg-(--accent-solid) text-(--app-bg)' : 'text-(--text-muted) hover:text-(--text-primary)'}`}>
+                Auto-sync CLI
+              </button>
+              <button type="button" onClick={() => setOauthSource('manual')}
+                className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${oauthSource === 'manual' ? 'bg-(--accent-solid) text-(--app-bg)' : 'text-(--text-muted) hover:text-(--text-primary)'}`}>
+                Enter manually
+              </button>
+            </div>
+          )}
+
+          {(mode === 'api' || oauthSource === 'manual' || !canSyncOauth) && <div className="flex gap-2">
             <div className="relative flex-1 min-w-0">
               {isGeminiOauth ? (
                 <textarea
@@ -283,17 +302,22 @@ function ProviderRow({
               {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
               Save
             </button>
-          </div>
-          {canImportOauth && mode === 'oauth' && onImportOauth && (
+          </div>}
+          {canSyncOauth && mode === 'oauth' && oauthSource === 'cli' && onSyncOauth && (
             <button
               type="button"
-              onClick={onImportOauth}
-              disabled={importingOauth}
+              onClick={onSyncOauth}
+              disabled={syncingOauth}
               className="btn-secondary h-10 w-full justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
             >
-              {importingOauth ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}
-              Import from {providerId === 'anthropic' ? 'Claude' : providerId === 'gemini' ? 'Antigravity' : 'Codex'} CLI
+              {syncingOauth ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}
+              {status?.auth_source === 'cli' ? `Reconnect ${cliName} auto-sync` : `Use ${cliName} CLI automatically`}
             </button>
+          )}
+          {mode === 'oauth' && oauthSource === 'cli' && (
+            <p className="text-[10px] text-(--text-muted)">
+              Sentinel reads the latest credential from {cliName} before each model request. The credential is not copied into Sentinel.
+            </p>
           )}
           {isGeminiOauth && (
             <p className="text-[10px] text-(--text-muted)">
@@ -554,40 +578,40 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
     }
   }
 
-  async function handleImportClaudeOauth() {
+  async function handleSyncClaudeOauth() {
     setImportingClaudeOauth(true);
     try {
-      await api.post('/settings/desktop-claude-oauth/import');
-      notify.success('Claude OAuth token imported');
+      await api.post('/settings/desktop-claude-oauth/connect');
+      notify.success('Claude CLI auto-sync enabled');
       await fetchStatus();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : 'Failed to import Claude OAuth token');
+      notify.error(error instanceof Error ? error.message : 'Failed to enable Claude CLI auto-sync');
     } finally {
       setImportingClaudeOauth(false);
     }
   }
 
-  async function handleImportCodexOauth() {
+  async function handleSyncCodexOauth() {
     setImportingCodexOauth(true);
     try {
-      await api.post('/settings/desktop-codex-oauth/import');
-      notify.success('Codex OAuth token imported');
+      await api.post('/settings/desktop-codex-oauth/connect');
+      notify.success('Codex CLI auto-sync enabled');
       await fetchStatus();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : 'Failed to import Codex OAuth token');
+      notify.error(error instanceof Error ? error.message : 'Failed to enable Codex CLI auto-sync');
     } finally {
       setImportingCodexOauth(false);
     }
   }
 
-  async function handleImportGeminiOauth() {
+  async function handleSyncGeminiOauth() {
     setImportingGeminiOauth(true);
     try {
-      await api.post('/settings/desktop-gemini-oauth/import');
-      notify.success('Antigravity OAuth credentials imported');
+      await api.post('/settings/desktop-gemini-oauth/connect');
+      notify.success('Antigravity auto-sync enabled');
       await fetchStatus();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : 'Failed to import Antigravity OAuth credentials');
+      notify.error(error instanceof Error ? error.message : 'Failed to enable Antigravity auto-sync');
     } finally {
       setImportingGeminiOauth(false);
     }
@@ -636,9 +660,9 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
               <ProviderRow
                 name="Anthropic"
                 providerId="anthropic"
-                canImportOauth
-                importingOauth={importingClaudeOauth}
-                onImportOauth={handleImportClaudeOauth}
+                canSyncOauth
+                syncingOauth={importingClaudeOauth}
+                onSyncOauth={handleSyncClaudeOauth}
                 status={providerStatus?.providers.anthropic ?? null}
                 onSave={(data) => handleSaveProvider('anthropic', data)}
                 saving={savingProvider === 'anthropic'}
@@ -655,16 +679,16 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
                 isPrimary={primaryProvider === 'openai'}
                 onSetPrimary={() => handleSetPrimary('openai')}
                 onRemove={() => handleRemoveProvider('openai')}
-                canImportOauth={codexOauthImportAvailable}
-                importingOauth={importingCodexOauth}
-                onImportOauth={handleImportCodexOauth}
+                canSyncOauth={codexOauthImportAvailable}
+                syncingOauth={importingCodexOauth}
+                onSyncOauth={handleSyncCodexOauth}
               />
               <ProviderRow
                 name="Google Gemini"
                 providerId="gemini"
-                canImportOauth
-                importingOauth={importingGeminiOauth}
-                onImportOauth={handleImportGeminiOauth}
+                canSyncOauth
+                syncingOauth={importingGeminiOauth}
+                onSyncOauth={handleSyncGeminiOauth}
                 status={providerStatus?.providers.gemini ?? null}
                 onSave={(data) => handleSaveProvider('gemini', data)}
                 saving={savingProvider === 'gemini'}

@@ -17,6 +17,8 @@ class CompleteOnboardingRequest(BaseModel):
     agent_name: str | None = None
     agent_role: str | None = None
     agent_personality: str | None = None
+    user_name: str | None = None
+    user_context: str | None = None
 
 
 @router.get("/status")
@@ -39,5 +41,7 @@ async def complete_onboarding(
         agent_name=payload.agent_name,
         agent_role=payload.agent_role,
         agent_personality=payload.agent_personality,
+        user_name=payload.user_name,
+        user_context=payload.user_context,
     )
     return {"completed": True}

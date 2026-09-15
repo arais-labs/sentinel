@@ -100,15 +100,10 @@ html.dark .settings-pane {
 
 .settings-desktop-management .service-log-view { height:560px; max-height:70vh; }
 
-.settings-pane .chat-appearance { padding:24px; }
+.settings-pane .chat-appearance { padding:8px 4px 24px; }
 .settings-pane .chat-appearance header { margin-bottom:24px; }
 .settings-pane .chat-appearance h2 { font-size:16px; font-weight:550; }
 .settings-pane .chat-appearance .settings-global-note { margin:6px 0 0; }
-.settings-pane .chat-preset-grid { gap:12px; }
-.settings-pane .chat-preset-grid button { padding:16px; border-radius:14px; background:var(--surface-0); transition:background-color 180ms,border-color 180ms; }
-.settings-pane .chat-preset-grid button[aria-pressed=true] { border-color:color-mix(in srgb,var(--sentinel-blue) 28%,transparent); background:color-mix(in srgb,var(--sentinel-blue) 8%,var(--surface-0)); }
-.settings-pane .chat-font-preview { padding:18px; background:var(--surface-0); border-radius:14px; }
-.settings-pane .chat-appearance footer { border-top:0; padding-top:0; }
 .settings-pane .chat-appearance footer button { text-transform:uppercase; font-size:10px; letter-spacing:.065em; }
 
 .settings-integration { min-width: 0; background: transparent; }
