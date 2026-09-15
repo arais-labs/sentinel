@@ -4,7 +4,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.dependencies import get_manager_db
-from app.middleware.auth import TokenPayload, require_admin
 from app.routers import instances as instances_router
 from app.services.instances import InstanceRegistryService
 from tests.fake_db import FakeDB
@@ -39,21 +38,14 @@ def _client() -> tuple[TestClient, FakeDB, _TestRegistryService]:
     async def _manager_db():
         yield fake_db
 
-    async def _admin():
-        return TokenPayload(
-            sub="admin",
-            role="admin",
-            agent_id=None,
-            exp=9999999999,
-            iat=1,
-            jti="test",
-            token_type="access",
-        )
-
     app.dependency_overrides[get_manager_db] = _manager_db
-    app.dependency_overrides[require_admin] = _admin
+
     app.dependency_overrides[instances_router._service] = lambda: service
-    return TestClient(app), fake_db, service
+    return (
+        TestClient(app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}),
+        fake_db,
+        service,
+    )
 
 
 def test_instances_api_create_and_list():
@@ -63,7 +55,7 @@ def test_instances_api_create_and_list():
     assert create_response.status_code == 201
     created = create_response.json()
     assert created["name"] == "main"
-    assert created["database_name"].startswith("sentinel_main_")
+    assert len(created["database_name"]) == 36
     assert "runtime_backend" not in created
     assert "runtime_config" not in created
     assert service.created == [created["database_name"]]
@@ -134,3 +126,45 @@ def test_instances_api_removes_normalized_runtime_context_names(monkeypatch):
     assert delete_response.status_code == 204
 
     assert removed == ["main", "client-a"]
+
+
+def test_appearance_validation_and_update_without_runtime_restart():
+    from unittest.mock import AsyncMock, patch
+
+    client, _db, _service = _client()
+    created = client.post("/api/v1/instances", json={"name": "design"})
+    assert created.json()["appearance"] == {"color": None, "icon": "initial"}
+    client.app.state.instance_stop_event = object()
+    with patch.object(
+        instances_router.instance_runtime_context_registry, "rebuild", new_callable=AsyncMock
+    ) as rebuild:
+        updated = client.patch(
+            "/api/v1/instances/design",
+            json={
+                "display_name": "Design studio",
+                "appearance": {"color": "#AABBCC", "icon": "flask"},
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["appearance"] == {"color": "#AABBCC", "icon": "flask"}
+        assert updated.json()["display_name"] == "Design studio"
+        rebuild.assert_not_awaited()
+    for invalid in [{"color": "red"}, {"color": "#fff"}, {"icon": "../invalid"}, {"url": "x"}]:
+        assert (
+            client.patch("/api/v1/instances/design", json={"appearance": invalid}).status_code
+            == 422
+        )
+    renamed = client.patch("/api/v1/instances/design", json={"display_name": "Studio"})
+    assert renamed.json()["appearance"] == {"color": "#AABBCC", "icon": "flask"}
+    reset = client.patch("/api/v1/instances/design", json={"appearance": {}})
+    assert reset.json()["appearance"] == {"color": None, "icon": "initial"}
+
+
+def test_appearance_accepts_library_icon_names():
+    client, _db, _service = _client()
+    client.post("/api/v1/instances", json={"name": "icons"})
+    updated = client.patch(
+        "/api/v1/instances/icons", json={"appearance": {"icon": "cloud-lightning"}}
+    )
+    assert updated.status_code == 200
+    assert updated.json()["appearance"]["icon"] == "cloud-lightning"

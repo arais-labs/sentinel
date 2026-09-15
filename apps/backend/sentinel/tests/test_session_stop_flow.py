@@ -71,7 +71,7 @@ async def test_stop_generation_waits_for_cancelled_run_to_materialize_tool_resul
                                 "id": "toolu_cancelled_1",
                                 "name": "runtime",
                                 "arguments": {
-                                    "command": "user",
+                                    "action": "exec",
                                     "shell_command": "sleep 20",
                                 },
                             }

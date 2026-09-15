@@ -1,89 +1,79 @@
-import os
-from ipaddress import ip_address
-import uuid
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
-import jwt
+import pytest
 from fastapi.testclient import TestClient
-
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.main import app
-from app.models.manager import ManagerAuditLog
+from app.models import AuditLog
+from app.routers.admin import list_audit_logs
 from tests.fake_db import FakeDB
 from tests.helpers import install_fake_db_overrides, restore_test_app
 
 
-def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") -> str:
-    secret = os.getenv("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-    return jwt.encode(
-        {
-            "sub": sub,
-            "role": role,
-            "agent_id": agent_id,
-            "exp": 1999999999,
-            "iat": 1771810000,
-            "jti": str(uuid.uuid4()),
-            "token_type": "access",
-        },
-        secret,
-        algorithm="HS256",
-    )
-
-
-def test_admin_audit_and_config():
-    fake_db = FakeDB()
-    old_init = install_fake_db_overrides(app_db=fake_db)
-
+def test_admin_config():
+    old_init = install_fake_db_overrides(app_db=FakeDB())
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        admin_token = login.json()["access_token"]
-        admin_headers = {"Authorization": f"Bearer {admin_token}"}
-
-        user_token = _make_token(sub="user-1", role="agent")
-        user_headers = {"Authorization": f"Bearer {user_token}"}
-        forbidden = client.get("/api/v1/instances/main/admin/config", headers=user_headers)
-        assert forbidden.status_code == 403
-
-        audits = client.get("/api/v1/admin/audit", headers=admin_headers)
-        assert audits.status_code == 200
-        assert audits.json()["total"] >= 1
-
-        login_audits = client.get("/api/v1/admin/audit?action=auth.login", headers=admin_headers)
-        assert login_audits.status_code == 200
-        assert login_audits.json()["total"] >= 1
-        assert all(item["action"] == "auth.login" for item in login_audits.json()["items"])
-
-        config = client.get("/api/v1/instances/main/admin/config", headers=admin_headers)
-        assert config.status_code == 200
-        payload = config.json()
-        assert payload["jwt_secret_key"] == "***"
-    finally:
-        restore_test_app(old_init)
-
-
-def test_admin_audit_serializes_inet_ip_address():
-    fake_db = FakeDB()
-    fake_db.add(
-        ManagerAuditLog(
-            user_id="admin",
-            action="admin.test",
-            ip_address=ip_address("172.64.153.85"),
-            status_code=200,
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
         )
-    )
-    old_init = install_fake_db_overrides(app_db=fake_db)
-
-    try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
-        response = client.get("/api/v1/admin/audit", headers=headers)
+        response = client.get("/api/v1/instances/main/admin/config")
         assert response.status_code == 200
-        payload = response.json()["items"]
-        target = next((item for item in payload if item["action"] == "admin.test"), None)
-        assert target is not None
-        assert target["ip_address"] == "172.64.153.85"
+        assert "jwt_secret_key" not in response.json()
+        assert response.json()["app_name"]
     finally:
         restore_test_app(old_init)
+
+
+@pytest.mark.asyncio
+async def test_instance_audit_sql_pagination():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(AuditLog.__table__.create)
+        async with async_sessionmaker(engine)() as db:
+            timestamp = datetime(2026, 1, 1, tzinfo=UTC)
+            for index, user, action, seconds in [
+                (1, "alice", "read", 0),
+                (2, "alice", "read", 0),
+                (3, "bob", "read", 1),
+                (4, "alice", "write", 2),
+            ]:
+                db.add(
+                    AuditLog(
+                        id=UUID(int=index),
+                        timestamp=timestamp + timedelta(seconds=seconds),
+                        user_id=user,
+                        action=action,
+                        ip_address="172.64.153.85",
+                    )
+                )
+            await db.commit()
+
+            async def page(action=None, user_id=None, limit=2, offset=0):
+                return await list_audit_logs(
+                    action=action, user_id=user_id, limit=limit, offset=offset, db=db
+                )
+
+            first = await page()
+            assert first.total == 4
+            assert [item.id for item in first.items] == [UUID(int=4), UUID(int=3)]
+            second = await page(offset=2)
+            assert second.total == 4
+            assert [item.id for item in second.items] == [UUID(int=2), UUID(int=1)]
+            assert second.items[1].ip_address == "172.64.153.85"
+            assert (await page(action="read")).total == 3
+            assert (await page(user_id="alice")).total == 3
+            filtered = await page(action="read", user_id="alice", limit=1, offset=1)
+            assert filtered.total == 2
+            assert [item.id for item in filtered.items] == [UUID(int=1)]
+            assert (await page(offset=100)).items == []
+            missing = await page(action="absent")
+            assert missing.total == 0 and missing.items == []
+    finally:
+        await engine.dispose()
+
+
+def test_manager_audit_route_removed():
+    assert "/api/v1/admin/audit" not in app.openapi()["paths"]

@@ -5,22 +5,23 @@ import asyncio
 import pytest
 
 from app.models import Memory, Message, Session
-from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
-from app.services.araios.system_modules.memory import handlers as memory_module
-from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
-from app.services.agent import ContextBuilder, SentinelRuntimeSupport
-from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import (
+from sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
+from app.services.agent.context_builder import ContextBuilder
+from app.services.agent.runtime_support import SentinelRuntimeSupport
+from app.services.agent_runtime_adapters.runtime import SentinelLoopRuntimeAdapter
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import (
     AgentEvent,
     AssistantMessage,
     TextContent,
-    ToolCallContent,
     TokenUsage,
+    ToolCallContent,
 )
 from app.services.memory.search import MemorySearchResult, MemorySearchService
+from app.services.modules.builtins.memory import handlers as memory_module
+from app.services.modules.runtime_services import configure_runtime_services, reset_runtime_services
 from app.services.tools import ToolExecutor
-from app.services.tools.executor import ToolValidationError
+from sentral.errors import ToolValidationError
 from app.services.tools.registry_builder import build_default_registry
 from tests.fake_db import FakeDB
 
@@ -30,7 +31,7 @@ def _run(coro):
 
 
 def _memory_input(command: str, **payload):
-    data = {"command": command}
+    data = {"action": command}
     data.update(payload)
     return data
 
@@ -102,7 +103,13 @@ class _SequenceProvider(LLMProvider):
         return "seq"
 
     async def chat(
-        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+        self,
+        messages,
+        model,
+        tools=None,
+        temperature=0.7,
+        reasoning_config=None,
+        tool_choice=None,
     ):
         idx = min(self.calls, len(self._responses) - 1)
         _ = tool_choice
@@ -110,7 +117,13 @@ class _SequenceProvider(LLMProvider):
         return self._responses[idx]
 
     async def stream(
-        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+        self,
+        messages,
+        model,
+        tools=None,
+        temperature=0.7,
+        reasoning_config=None,
+        tool_choice=None,
     ):
         _ = tool_choice
         if False:
@@ -154,7 +167,7 @@ def test_runtime_support_can_call_memory_search_tool():
                     ToolCallContent(
                         id="call_mem",
                         name="memory",
-                        arguments={"command": "search", "query": "alpha"},
+                        arguments={"action": "search", "query": "alpha"},
                     )
                 ],
                 model="m",
@@ -491,7 +504,7 @@ def test_memory_move_tool_rejects_system_memory_nodes():
             executor.execute(
                 "memory",
                 {
-                    "command": "move",
+                    "action": "move",
                     "node_ids": [str(system_root.id)],
                     "target_parent_id": str(other_root.id),
                 },
@@ -527,7 +540,7 @@ def test_memory_move_tool_rejects_target_parent_that_is_system_memory():
             executor.execute(
                 "memory",
                 {
-                    "command": "move",
+                    "action": "move",
                     "node_ids": [str(other_root.id)],
                     "target_parent_id": str(system_root.id),
                 },
@@ -588,7 +601,9 @@ def test_context_builder_injects_all_root_memories_and_auto_branches():
         msg for msg in system_messages if "## Hierarchical Memory Policy" in msg
     )
     assert "Pinned memories are high-priority anchors" in memory_policy_block
-    assert "ask whether the user wants memory reorganization" in memory_policy_block
+    assert "Proactively save explicit user corrections" in memory_policy_block
+    assert "Routine saves and corrections do not require confirmation" in memory_policy_block
+    assert "Subagents report memory-worthy findings to the parent" in memory_policy_block
 
     relevant_block = next(
         msg for msg in system_messages if "Potentially Relevant Memory Branches" in msg
@@ -631,8 +646,11 @@ def test_context_builder_skips_runtime_context_system_history_rows():
         Message(
             session_id=session.id,
             role="system",
-            content="[Runtime Context Snapshot] model=hint:normal tools=5 system_blocks=12",
-            metadata_json={"source": "runtime_context", "run_context": {"model": "hint:normal"}},
+            content="[Machine Context Snapshot] model=hint:normal tools=5 system_blocks=12",
+            metadata_json={
+                "source": "runtime_context",
+                "run_context": {"model": "hint:normal"},
+            },
         )
     )
     db.add(
@@ -656,7 +674,7 @@ def test_context_builder_skips_runtime_context_system_history_rows():
     messages = _run(builder.build(db, session.id, pending_user_message="next"))
 
     system_contents = [m.content for m in messages if getattr(m, "role", "") == "system"]
-    assert all("Runtime Context Snapshot" not in content for content in system_contents)
+    assert all("Machine Context Snapshot" not in content for content in system_contents)
 
     history_user = [m for m in messages if getattr(m, "role", "") == "user"]
     history_assistant = [m for m in messages if getattr(m, "role", "") == "assistant"]
@@ -684,7 +702,7 @@ def test_context_builder_strips_orphan_tool_use_for_anthropic_compat():
                     {
                         "id": "toolu_orphan",
                         "name": "memory",
-                        "arguments": {"command": "search", "query": "alpha"},
+                        "arguments": {"action": "search", "query": "alpha"},
                     }
                 ]
             },
@@ -723,12 +741,12 @@ def test_context_builder_keeps_only_matching_tool_results_for_tool_use_turn():
                     {
                         "id": "toolu_a",
                         "name": "memory",
-                        "arguments": {"command": "search", "query": "alpha"},
+                        "arguments": {"action": "search", "query": "alpha"},
                     },
                     {
                         "id": "toolu_b",
                         "name": "memory",
-                        "arguments": {"command": "search", "query": "beta"},
+                        "arguments": {"action": "search", "query": "beta"},
                     },
                 ]
             },
@@ -790,9 +808,6 @@ def test_context_builder_adds_delegation_policy_when_tools_available():
     delegation = next((msg for msg in system_messages if "## Delegation Policy" in msg), None)
     assert delegation is not None
     assert "independent branches" in delegation
-    assert (
-        "Use delegate instead of doing multiple exploratory or checking tool calls yourself"
-        in delegation
-    )
-    assert "command=spawn" in delegation
-    assert "do not immediately poll with command=status" in delegation
+    assert "trust their reported results by default" in delegation
+    assert "ask the same sub-agent a focused follow-up question first" in delegation
+    assert "Completion notifications arrive automatically" in delegation

@@ -8,7 +8,7 @@ def test_manager_metadata_does_not_include_app_tables():
 
     assert "instances" in manager_tables
     assert "manager_settings" in manager_tables
-    assert "manager_revoked_tokens" in manager_tables
+    assert "manager_revoked_tokens" not in manager_tables
     assert "revoked_tokens" not in app_tables
     assert "sessions" in app_tables
     assert "messages" in app_tables

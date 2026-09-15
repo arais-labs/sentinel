@@ -7,15 +7,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
 from app.config import Settings, settings
-from app.database.database import ManagerSessionLocal, get_db_session
+from app.database.database import ManagerSessionLocal
 from app.database.instance_sessions import instance_session_registry
 from app.models.manager import SentinelInstance
-from app.services.instances import InvalidInstanceNameError, normalize_instance_name
 from app.services.instance_runtime_context import (
     InstanceRuntimeContext,
     instance_runtime_context_registry,
 )
+from app.services.instances import InvalidInstanceNameError, normalize_instance_name
 from app.services.onboarding.onboarding_service import OnboardingService
+from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.settings.settings_service import SettingsService
 
 
@@ -56,7 +57,7 @@ async def get_db(connection: HTTPConnection) -> AsyncGenerator[AsyncSession, Non
 
 
 async def get_manager_db() -> AsyncGenerator[AsyncSession, None]:
-    async for session in get_db_session():
+    async with ManagerSessionLocal() as session:
         yield session
 
 
@@ -81,7 +82,7 @@ async def get_instance_record(instance_name: str) -> SentinelInstance:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Instance not found: {instance_name}",
         )
-    async for manager_db in get_db_session():
+    async with ManagerSessionLocal() as manager_db:
         result = await manager_db.execute(
             select(SentinelInstance).where(SentinelInstance.name == normalized)
         )
@@ -115,5 +116,20 @@ def get_request_instance_runtime_context(request: Request) -> InstanceRuntimeCon
 def get_connection_instance_runtime_context(connection: HTTPConnection) -> InstanceRuntimeContext:
     context = getattr(connection.state, "instance_runtime_context", None)
     if isinstance(context, InstanceRuntimeContext):
+        # Settings rebuild the registered context; a long-lived websocket still
+        # holds the previous object. Resolve once at run boundaries, without I/O.
+        current = instance_runtime_context_registry.get(context.name)
+        if current is not None and current.database_name == context.database_name:
+            connection.state.instance_runtime_context = current
+            return current
         return context
     raise RuntimeError("Instance runtime context is missing; route is not instance-scoped")
+
+
+def get_request_run_registry(request: Request) -> AgentRunRegistry:
+    """Return the application's run registry for HTTP lifecycle operations."""
+    registry = getattr(request.app.state, "agent_run_registry", None)
+    if not isinstance(registry, AgentRunRegistry):
+        registry = AgentRunRegistry()
+        request.app.state.agent_run_registry = registry
+    return registry

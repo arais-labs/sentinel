@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -32,3 +32,12 @@ class ApprovalListResponse(BaseModel):
 
 class ResolveApprovalRequest(BaseModel):
     note: str | None = None
+    scope: Literal["once", "session"] = "once"
+
+
+class SessionActionGrantResponse(BaseModel):
+    id: UUID
+    session_id: UUID
+    action: str
+    approved_by: str
+    created_at: datetime

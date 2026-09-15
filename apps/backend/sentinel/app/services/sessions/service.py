@@ -3,51 +3,97 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import func as sa_func, select, update
+from sqlalchemy import (
+    JSON,
+    and_,
+    delete,
+    literal_column,
+    or_,
+    select,
+    type_coerce,
+    update,
+)
+from sqlalchemy import (
+    func as sa_func,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased, with_expression
 
-from app.sentral import ConversationItem, GenerationConfig, ImageBlock, RunTurnRequest, TextBlock
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import Memory, Message, Session, ToolApproval
-from app.services.sessions.context_usage import (
-    build_context_usage_metrics,
-    estimate_agent_messages_tokens,
-    estimate_db_messages_tokens,
-    extract_runtime_context_metrics,
-    normalize_context_budget,
+from app.models import Message, Session, SessionSummary, ToolApproval
+from app.models.session_bindings import SessionBinding
+from app.models.triggers import Trigger
+from sentral import (
+    ConversationItem,
+    GenerationConfig,
+    ImageBlock,
+    RunTurnRequest,
+    TextBlock,
 )
-from app.services.sessions import session_bindings
 from app.services.agent.agent_modes import AgentMode, get_default_agent_mode
+import app.services.agent_runtime_adapters.runtime as runtime_adapter_module
+from sentral.llm.ids import TierName
+from app.services.llm.session_selection import selection_model
+from app.services.messages import (
+    normalize_generation_metadata,
+    with_generation_metadata,
+)
+from app.services.runtime.session_cleanup import cleanup_records
+from app.services.sessions import session_bindings
 from app.services.sessions.agent_run_registry import AgentRunRegistry
-from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
-from app.services.llm.ids import TierName
-from app.services.memory import MemoryRepository, MemoryService
-from app.services.messages import normalize_generation_metadata, with_generation_metadata
+from app.services.sessions.context_usage import normalize_context_budget
+from app.services.sessions.errors import (
+    AgentRuntimeUnavailableError,
+    ChatPayloadRequiredError,
+    MessageNotFoundError,
+    SessionNotFoundError,
+    SessionRenameNotAllowedError,
+    SessionWorkspaceCleanupError,
+)
 from app.services.sessions.session_naming import (
     SessionNamingService,
     apply_conversation_message_delta,
     conversation_delta_for_role,
 )
-from app.services.sessions.errors import (
-    AgentRuntimeUnavailableError,
-    ChatPayloadRequiredError,
-    MainSessionDeletionError,
-    MainSessionTargetInvalidError,
-    MessageNotFoundError,
-    SessionRenameNotAllowedError,
-    SessionNotFoundError,
-    SessionWorkspaceCleanupError,
-)
+from app.services.sessions.usage import conversation_usage, merge_usage
 
 logger = logging.getLogger(__name__)
 
 SessionDeleteCleanup = Callable[[list[UUID]], Awaitable[None]]
+
+
+def _final_response_condition():
+    """Use the same final-response boundary for previews, unread state and alerts."""
+    output = sa_func.json_each(Message.metadata_json["responses_output"]).table_valued("value")
+    phase = sa_func.json_extract(output.c.value, "$.phase")
+    message_output = sa_func.json_extract(output.c.value, "$.type") == "message"
+    commentary = (
+        select(1)
+        .select_from(output)
+        .where(message_output, phase == "commentary")
+        .correlate(Message)
+        .exists()
+    )
+    final = (
+        select(1)
+        .select_from(output)
+        .where(message_output, phase == "final_answer")
+        .correlate(Message)
+        .exists()
+    )
+    return and_(
+        Message.role == "assistant",
+        Message.metadata_json["stop_reason"].as_string().in_(["stop", "end_turn"]),
+        sa_func.coalesce(sa_func.json_array_length(Message.metadata_json["tool_calls"]), 0) == 0,
+        ~commentary | final,
+    )
 
 
 @dataclass(slots=True)
@@ -92,7 +138,7 @@ class SessionService:
         limit: int,
         offset: int,
     ) -> SessionPage:
-        query = select(Session).where(Session.user_id == user_id)
+        query = select(Session)
         if not include_sub_agents:
             query = query.where(Session.parent_session_id.is_(None))
         query = query.order_by(
@@ -127,86 +173,108 @@ class SessionService:
         await db.refresh(session)
         return session
 
-    async def get_default_session(
-        self,
-        db: AsyncSession,
-        *,
-        user_id: str,
-        agent_id: str | None,
-    ) -> Session:
-        session = await session_bindings.resolve_or_create_main_session(
-            db,
-            user_id=user_id,
-            agent_id=agent_id,
+    async def fork_session(self, db: AsyncSession, *, session_id: UUID, user_id: str) -> Session:
+        """Snapshot persisted history only. Never register a run or copy live bindings."""
+        source = await self.get_session(db, session_id=session_id, user_id=user_id)
+        summaries = (
+            (
+                await db.execute(
+                    select(SessionSummary).where(SessionSummary.session_id == session_id)
+                )
+            )
+            .scalars()
+            .all()
         )
-        await db.commit()
-        await db.refresh(session)
-        return session
-
-    async def reset_default_session(
-        self,
-        db: AsyncSession,
-        *,
-        user_id: str,
-        agent_id: str | None,
-    ) -> Session:
-        current_main = await session_bindings.resolve_or_create_main_session(
-            db,
-            user_id=user_id,
-            agent_id=agent_id,
+        messages = (
+            (
+                await db.execute(
+                    select(Message)
+                    .where(Message.session_id == session_id)
+                    .order_by(Message.created_at, Message.id)
+                )
+            )
+            .scalars()
+            .all()
         )
-
         now = datetime.now(UTC)
-        session = Session(
+        fork = Session(
+            id=uuid4(),
             user_id=user_id,
-            agent_id=agent_id,
-            title="Main",
+            agent_id=source.agent_id,
+            workspace_id=source.workspace_id,
+            title=f"{(source.title or 'Session')[:248]} (fork)",
+            status="active",
+            initial_prompt=source.initial_prompt,
             started_at=now,
             created_at=now,
             updated_at=now,
+            last_read_at=now,
+            conversation_message_count=sum(conversation_delta_for_role(m.role) for m in messages),
         )
-        db.add(session)
-        await db.flush()
-        await session_bindings.set_main_session(
-            db,
-            user_id=user_id,
-            session_id=session.id,
-        )
-        await db.commit()
-        await db.refresh(session)
-        return session
-
-    async def set_main_session(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        user_id: str,
-    ) -> Session:
-        _ = await self.get_session(db, session_id=session_id, user_id=user_id)
-        is_telegram_channel = await session_bindings.is_session_bound(
-            db,
-            user_id=user_id,
-            session_id=session_id,
-            binding_types={
-                session_bindings.TELEGRAM_GROUP_BINDING_TYPE,
-                session_bindings.TELEGRAM_DM_BINDING_TYPE,
-            },
-            active_only=True,
-        )
-        if is_telegram_channel:
-            raise MainSessionTargetInvalidError("Telegram channel sessions cannot be set as main")
-        try:
-            session = await session_bindings.set_main_session(
-                db,
-                user_id=user_id,
-                session_id=session_id,
+        fork.last_auto_rename_count = fork.conversation_message_count
+        db.add(fork)
+        # Preserve ordering even when several original messages have identical timestamps.
+        identifiers = dict(
+            zip(
+                (str(m.id) for m in messages),
+                sorted((uuid4() for _ in messages), key=str),
+                strict=True,
             )
-        except session_bindings.SessionBindingTargetInvalidError as exc:
-            raise MainSessionTargetInvalidError(str(exc)) from exc
+        )
+        for message in messages:
+            metadata = deepcopy(message.metadata_json or {})
+            metadata["forked_from_message_id"] = str(message.id)
+            anchor = metadata.get("steering_after_message_id")
+            if anchor in identifiers:
+                metadata["steering_after_message_id"] = str(identifiers[anchor])
+            # Historical approvals/retries must not become actionable in the new session.
+            for key in ("approval", "pending", "retry_settings", "retryable_error"):
+                metadata.pop(key, None)
+            if metadata.get("steering") == "pending":
+                metadata["steering"] = "cancelled"
+            db.add(
+                Message(
+                    id=identifiers[str(message.id)],
+                    session_id=fork.id,
+                    role=message.role,
+                    content=message.content,
+                    metadata_json=metadata,
+                    token_count=message.token_count,
+                    tool_call_id=message.tool_call_id,
+                    tool_name=message.tool_name,
+                    created_at=message.created_at,
+                )
+            )
+        for summary in summaries:
+            payload = deepcopy(summary.summary or {})
+            boundary = payload.get("through_message_id")
+            if boundary in identifiers:
+                payload["through_message_id"] = str(identifiers[boundary])
+            db.add(
+                SessionSummary(session_id=fork.id, summary=payload, created_at=summary.created_at)
+            )
+        db.add(
+            Message(
+                session_id=fork.id,
+                role="system",
+                created_at=now,
+                content=(
+                    f"This session is a fork of {source.title or 'Session'} ({source.id}). "
+                    "The conversation above is copied history. The workspace is shared with the "
+                    "original session. No running tasks, approvals, or automations were copied. "
+                    "Wait for the user's follow-up; do not resume prior tasks or repeat tool actions "
+                    "merely because they appear in the copied history."
+                ),
+                metadata_json={
+                    "source": "session_fork",
+                    "source_session_id": str(source.id),
+                    "notice": {"title": "Session fork"},
+                },
+            )
+        )
         await db.commit()
-        await db.refresh(session)
-        return session
+        await db.refresh(fork)
+        return fork
 
     async def rename_session(
         self,
@@ -235,13 +303,36 @@ class SessionService:
         return session
 
     async def get_session(self, db: AsyncSession, *, session_id: UUID, user_id: str) -> Session:
-        result = await db.execute(
-            select(Session).where(Session.id == session_id, Session.user_id == user_id)
-        )
+        result = await db.execute(select(Session).where(Session.id == session_id))
         session = result.scalars().first()
         if session is None:
             raise SessionNotFoundError("Session not found")
         return session
+
+    async def get_usage(self, db: AsyncSession, *, session_id: UUID, user_id: str) -> dict:
+        await self.get_session(db, session_id=session_id, user_id=user_id)
+
+        main = await conversation_usage(db, session_id)
+        children = await self._get_descendant_sessions(
+            db, root_session_id=session_id, user_id=user_id
+        )
+        agents = []
+        for child in children:
+            agents.append(
+                {
+                    "session_id": str(child.id),
+                    "name": child.title,
+                    **await conversation_usage(db, child.id),
+                }
+            )
+        delegated = merge_usage(agents)
+        return {
+            "session_id": str(session_id),
+            **merge_usage([main, delegated]),
+            "main": main,
+            "sub_agents": agents,
+            "delegated": delegated,
+        }
 
     async def get_context_usage(
         self,
@@ -252,101 +343,21 @@ class SessionService:
     ) -> dict[str, Any]:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
         budget = normalize_context_budget(settings.context_token_budget)
-        system_result = await db.execute(
+        latest_result = await db.execute(
             select(Message)
-            .where(
-                Message.session_id == session.id,
-                Message.role == "system",
-            )
-            .order_by(Message.created_at.desc())
-            .limit(200)
+            .where(Message.session_id == session.id, Message.role == "assistant")
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(1)
         )
-        system_messages = system_result.scalars().all()
-
-        usage_tokens: int | None = None
-        usage_percent: int | None = None
-        snapshot_created_at: datetime | None = None
-        source = "runtime_context"
-        for message in system_messages:
-            metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
-            if str(metadata.get("source") or "").strip().lower() != "runtime_context":
-                continue
-            metrics = extract_runtime_context_metrics(
-                (
-                    metadata.get("run_context")
-                    if isinstance(metadata.get("run_context"), dict)
-                    else None
-                ),
-                default_budget=budget,
-            )
-            if metrics is None:
-                continue
-            budget = metrics.context_token_budget
-            usage_tokens = metrics.estimated_context_tokens
-            usage_percent = metrics.estimated_context_percent
-            snapshot_created_at = message.created_at
-            break
-
-        if usage_tokens is None:
-            rebuilt = await self._estimate_rebuilt_context_usage(
-                db,
-                session_id=session.id,
-                context_budget=budget,
-            )
-            if rebuilt is not None:
-                budget = rebuilt.context_token_budget
-                usage_tokens = rebuilt.estimated_context_tokens
-                usage_percent = rebuilt.estimated_context_percent
-                source = "rebuilt_context_estimate"
-            else:
-                message_result = await db.execute(
-                    select(Message)
-                    .where(Message.session_id == session.id)
-                    .order_by(Message.created_at.asc())
-                )
-                messages = message_result.scalars().all()
-                fallback = build_context_usage_metrics(
-                    estimated_tokens=estimate_db_messages_tokens(messages),
-                    context_budget=budget,
-                )
-                budget = fallback.context_token_budget
-                usage_tokens = fallback.estimated_context_tokens
-                usage_percent = fallback.estimated_context_percent
-                source = "db_messages_fallback"
-
+        latest = latest_result.scalar_one_or_none()
+        measured = (latest.metadata_json or {}).get("provider_usage") if latest else None
         return {
             "session_id": session.id,
             "context_token_budget": budget,
-            "estimated_context_tokens": usage_tokens,
-            "estimated_context_percent": usage_percent,
-            "snapshot_created_at": snapshot_created_at,
-            "source": source,
+            "last_request_usage": measured,
+            "snapshot_created_at": latest.created_at if latest else None,
+            "source": "provider_response" if measured else "unavailable",
         }
-
-    async def _estimate_rebuilt_context_usage(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: UUID,
-        context_budget: int,
-    ):
-        """Estimate context using the same builder path used before actual runs."""
-        context_builder = getattr(self._agent_runtime_support, "context_builder", None)
-        if context_builder is None or not hasattr(context_builder, "build"):
-            return None
-        try:
-            built = await context_builder.build(
-                db,
-                session_id,
-                system_prompt=None,
-                pending_user_message=None,
-            )
-        except Exception:
-            return None
-        return build_context_usage_metrics(
-            estimated_tokens=estimate_agent_messages_tokens(built),
-            context_budget=context_budget,
-        )
 
     async def delete_session(
         self,
@@ -357,9 +368,6 @@ class SessionService:
         before_delete: SessionDeleteCleanup | None = None,
     ) -> int:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
-        main_session_id = await self._get_main_session_id(db, user_id=user_id)
-        if main_session_id is not None and session.id == main_session_id:
-            raise MainSessionDeletionError("Main session cannot be deleted")
         descendants = await self._get_descendant_sessions(
             db, root_session_id=session.id, user_id=user_id
         )
@@ -372,14 +380,59 @@ class SessionService:
             except Exception as exc:
                 detail = str(exc).strip() or exc.__class__.__name__
                 raise SessionWorkspaceCleanupError(
-                    "Runtime workspace cleanup failed; session was not deleted.",
+                    "Machine workspace cleanup failed; session was not deleted.",
                     detail=detail,
                 ) from exc
+
+        for record in await cleanup_records(db, [session, *descendants]):
+            db.add(record)
         for child in descendants:
             await db.delete(child)
         await db.delete(session)
         await db.commit()
         return len(descendants)
+
+    async def discard_empty_session(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: UUID,
+        user_id: str,
+        before_delete: SessionDeleteCleanup | None = None,
+    ) -> bool:
+
+        async with self._run_registry.idle_guard(str(session_id)) as idle:
+            if not idle:
+                return False
+            child = aliased(Session)
+            # Repeat these predicates in DELETE so messages arriving concurrently
+            # cannot be removed based on an earlier empty-history snapshot.
+            eligible = (
+                Session.id == session_id,
+                Session.user_id == user_id,
+                Session.parent_session_id.is_(None),
+                (Session.initial_prompt.is_(None) | (Session.initial_prompt == "")),
+                Session.conversation_message_count == 0,
+                ~select(Message.id).where(Message.session_id == session_id).exists(),
+                ~select(child.id).where(child.parent_session_id == session_id).exists(),
+                ~select(SessionBinding.id).where(SessionBinding.session_id == session_id).exists(),
+                ~select(Trigger.id)
+                .where(Trigger.action_config["target_session_id"].as_string() == str(session_id))
+                .exists(),
+            )
+            if not await db.scalar(select(Session.id).where(*eligible)):
+                return False
+            if before_delete:
+                await before_delete([session_id])
+
+            session = await db.get(Session, session_id)
+            cleanup = await cleanup_records(db, [session]) if session else []
+            deleted = await db.scalar(delete(Session).where(*eligible).returning(Session.id))
+            if deleted is not None:
+                for record in cleanup:
+                    db.add(record)
+            await db.commit()
+            return deleted is not None
 
     async def stop_generation(
         self,
@@ -583,24 +636,57 @@ class SessionService:
         user_id: str,
         limit: int,
         before: UUID | None,
+        final_only: bool = False,
+        chat_view: bool = False,
     ) -> MessagePage:
         _ = await self.get_session(db, session_id=session_id, user_id=user_id)
-        result = await db.execute(select(Message).where(Message.session_id == session_id))
-        messages = result.scalars().all()
-        messages.sort(key=lambda m: m.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
-
+        query = select(Message).where(Message.session_id == session_id)
+        if final_only:
+            query = query.where(_final_response_condition())
         if before:
-            before_message = next((msg for msg in messages if msg.id == before), None)
-            if before_message is None:
+            cursor = (
+                await db.execute(
+                    select(Message.created_at, literal_column("messages.rowid")).where(
+                        Message.session_id == session_id, Message.id == before
+                    )
+                )
+            ).first()
+            if cursor is None:
                 raise MessageNotFoundError("Message not found")
-            before_created_at = before_message.created_at
-            messages = [
-                msg for msg in messages if msg.created_at and msg.created_at < before_created_at
-            ]
-
-        sliced = messages[: limit + 1]
-        has_more = len(sliced) > limit
-        return MessagePage(items=sliced[:limit], has_more=has_more)
+            query = query.where(
+                or_(
+                    Message.created_at < cursor[0],
+                    and_(
+                        Message.created_at == cursor[0],
+                        literal_column("messages.rowid") < cursor[1],
+                    ),
+                )
+            )
+        order = (Message.created_at.desc(), literal_column("messages.rowid").desc())
+        # Select the page before reading/processing large message bodies. SQLite
+        # otherwise evaluates projected JSON for rows later discarded by LIMIT.
+        page_ids = query.with_only_columns(Message.id).order_by(*order).limit(limit + 1)
+        query = select(Message).where(Message.session_id == session_id, Message.id.in_(page_ids))
+        if chat_view:
+            # Logs retain the full record. Chat does not render model attribution,
+            # prompt snapshots, or raw provider output; omit them before JSON decoding.
+            query = query.options(
+                with_expression(
+                    Message.metadata_json,
+                    type_coerce(
+                        sa_func.json_remove(
+                            Message.metadata_json,
+                            "$.provider_usage",
+                            "$.run_context",
+                            "$.responses_output",
+                        ),
+                        JSON,
+                    ),
+                )
+            )
+        query = query.order_by(*order)
+        messages = (await db.execute(query)).scalars().all()
+        return MessagePage(items=messages[:limit], has_more=len(messages) > limit)
 
     async def run_chat(
         self,
@@ -615,6 +701,9 @@ class SessionService:
         system_prompt: str | None,
         temperature: float,
         max_iterations: int,
+        provider_id: str | None = None,
+        reasoning_level: str | None = None,
+        fast_mode: bool = False,
     ) -> ChatRunResult:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
         if self._agent_runtime_support is None:
@@ -643,9 +732,8 @@ class SessionService:
             user_blocks_payload = [TextBlock(text=text)]
 
         mode = agent_mode or get_default_agent_mode()
-        from app.services.agent_runtime_adapters import SentinelLoopRuntimeAdapter
 
-        runtime = SentinelLoopRuntimeAdapter(
+        runtime = runtime_adapter_module.SentinelLoopRuntimeAdapter(
             loop=self._agent_runtime_support,
             db=db,
             session_id=session.id,
@@ -661,7 +749,7 @@ class SessionService:
                     )
                 ],
                 config=GenerationConfig(
-                    model=(tier or TierName.NORMAL).value,
+                    model=selection_model(tier, provider_id, reasoning_level, fast_mode),
                     temperature=temperature,
                     max_iterations=max_iterations,
                     stream=False,
@@ -687,30 +775,52 @@ class SessionService:
     async def is_session_running(self, session_id: UUID) -> bool:
         return await self._run_registry.is_running(str(session_id))
 
+    async def completion_ids(self, db: AsyncSession, sessions: list[Session]) -> dict[UUID, str]:
+        completed = await self.completion_details(db, sessions)
+        return {session_id: str(value[0]) for session_id, value in completed.items()}
+
+    async def completion_details(self, db: AsyncSession, sessions: list[Session]) -> dict:
+        if not sessions:
+            return {}
+        result = await db.execute(
+            select(Message.session_id, Message.id, Message.created_at)
+            .where(
+                Message.session_id.in_([s.id for s in sessions]),
+                _final_response_condition(),
+            )
+            .order_by(Message.created_at, literal_column("messages.rowid"))
+        )
+        return {row.session_id: (row.id, row.created_at) for row in result}
+
     async def compute_unread_flags(
         self,
         db: AsyncSession,
         sessions: list[Session],
+        *,
+        latest_by_session: dict[UUID, datetime] | None = None,
     ) -> dict[UUID, bool]:
         if not sessions:
             return {}
-        session_ids = [s.id for s in sessions]
-        result = await db.execute(
-            select(
-                Message.session_id,
-                sa_func.max(Message.created_at).label("latest_msg"),
+        if latest_by_session is None:
+            session_ids = [s.id for s in sessions]
+            result = await db.execute(
+                select(
+                    Message.session_id,
+                    sa_func.max(Message.created_at).label("latest_msg"),
+                )
+                .where(
+                    Message.session_id.in_(session_ids),
+                    _final_response_condition(),
+                )
+                .group_by(Message.session_id)
             )
-            .where(
-                Message.session_id.in_(session_ids),
-                Message.role.in_(["assistant", "tool_result"]),
-            )
-            .group_by(Message.session_id)
-        )
-        latest_by_session: dict[UUID, datetime] = {row.session_id: row.latest_msg for row in result}
+            latest_by_session: dict[UUID, datetime] = {
+                row.session_id: row.latest_msg for row in result
+            }
         flags: dict[UUID, bool] = {}
         for session in sessions:
             latest_msg = latest_by_session.get(session.id)
-            if latest_msg is None:
+            if latest_msg is None or await self.is_session_running(session.id):
                 flags[session.id] = False
             elif session.last_read_at is None:
                 flags[session.id] = True
@@ -728,143 +838,12 @@ class SessionService:
         session = await self.get_session(db, session_id=session_id, user_id=user_id)
         await db.execute(
             update(Session)
-            .where(Session.id == session_id, Session.user_id == user_id)
+            .where(Session.id == session_id)
             .values(last_read_at=datetime.now(UTC), updated_at=Session.updated_at)
         )
         await db.commit()
         await db.refresh(session)
         return session
-
-    async def get_main_session_id(self, db: AsyncSession, *, user_id: str) -> UUID | None:
-        return await self._get_main_session_id(db, user_id=user_id)
-
-    async def extract_session_memories(self, session_ids: list[UUID], user_id: str) -> None:
-        """Summarize prior sessions into memory nodes (fire-and-forget)."""
-        if self._agent_runtime_support is None:
-            return
-        try:
-            memory_service = MemoryService(MemoryRepository())
-            async with self._db_factory() as db:
-                for session_id in session_ids:
-                    messages = await self._session_messages_for_distillation(db, session_id)
-                    if not messages:
-                        continue
-
-                    transcript = self._build_transcript(messages)
-                    prompt = (
-                        "You are a memory distillation agent. Given a conversation transcript, "
-                        "extract the most important durable facts, decisions, user preferences, "
-                        "and outcomes. Write a concise structured summary (max 300 words) that "
-                        "would help an assistant in a future session understand what happened "
-                        "and what matters. Focus on facts, not chat pleasantries.\n\n"
-                        f"TRANSCRIPT:\n{transcript}"
-                    )
-                    result = await self._agent_runtime_support.provider.chat(
-                        [UserMessage(content=prompt)],
-                        model=TierName.FAST.value,
-                        tools=[],
-                        temperature=0.3,
-                    )
-                    summary_text = "".join(
-                        block.text for block in result.content if isinstance(block, TextContent)
-                    ).strip()
-                    if not summary_text:
-                        continue
-
-                    root = await self._get_or_create_previous_sessions_root(
-                        db,
-                        memory_service=memory_service,
-                    )
-                    date_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-                    await memory_service.create_memory(
-                        db,
-                        content=summary_text,
-                        title=f"Session summary ({date_str})",
-                        summary=summary_text[:200],
-                        category="core",
-                        importance=65,
-                        parent_id=root.id,
-                        pinned=False,
-                        metadata={"source": "session_reset", "user_id": user_id},
-                        embedding=None,
-                        embedding_service=None,
-                        ignore_embedding_errors=True,
-                    )
-        except Exception:
-            logger.warning("Memory extraction on reset failed", exc_info=True)
-
-    async def _session_messages_for_distillation(
-        self, db: AsyncSession, session_id: UUID
-    ) -> list[Message]:
-        result = await db.execute(
-            select(Message).where(
-                Message.session_id == session_id,
-                Message.role.in_(["user", "assistant"]),
-            )
-        )
-        return result.scalars().all()
-
-    def _build_transcript(self, messages: list[Message]) -> str:
-        lines: list[str] = []
-        for message in sorted(
-            messages, key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC)
-        ):
-            role = message.role.upper()
-            snippet = (message.content or "")[:400].replace("\n", " ")
-            lines.append(f"{role}: {snippet}")
-        return "\n".join(lines)[:6000]
-
-    async def _get_or_create_previous_sessions_root(
-        self,
-        db: AsyncSession,
-        *,
-        memory_service: MemoryService,
-    ) -> Memory:
-        roots = await memory_service.list_root_memories(db, category="core")
-        root = next(
-            (item for item in roots if (item.title or "").strip() == "Previous Sessions"), None
-        )
-        if root is not None:
-            if not bool(root.pinned):
-                await memory_service.update_memory(
-                    db,
-                    memory_id=root.id,
-                    updates={"pinned": True},
-                    embedding_service=None,
-                    ignore_embedding_errors=True,
-                )
-            return root
-
-        return await memory_service.create_memory(
-            db,
-            content=(
-                "Archive of past session summaries. "
-                "Reference these when context from previous conversations may be relevant."
-            ),
-            title="Previous Sessions",
-            summary="Past session summaries — reference if needed.",
-            category="core",
-            importance=80,
-            parent_id=None,
-            pinned=True,
-            metadata={"source": "session_reset_root"},
-            embedding=None,
-            embedding_service=None,
-            ignore_embedding_errors=True,
-        )
-
-    async def _get_main_session_id(self, db: AsyncSession, *, user_id: str) -> UUID | None:
-        existing = await session_bindings.resolve_main_session_id(db, user_id=user_id)
-        if existing is not None:
-            return existing
-
-        session = await session_bindings.resolve_or_create_main_session(
-            db,
-            user_id=user_id,
-            agent_id=None,
-        )
-        await db.commit()
-        return session.id
 
     async def _get_descendant_sessions(
         self,
@@ -873,7 +852,7 @@ class SessionService:
         root_session_id: UUID,
         user_id: str,
     ) -> list[Session]:
-        result = await db.execute(select(Session).where(Session.user_id == user_id))
+        result = await db.execute(select(Session))
         sessions = result.scalars().all()
         by_parent: dict[UUID, list[Session]] = {}
         for session in sessions:

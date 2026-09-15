@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
-from app.models.araios import AraiosModule, AraiosModuleRecord, AraiosModuleSecret
-from app.routers.araios.modules import list_modules
+from app.models.modules import Module, ModuleRecord, ModuleSecret
+from app.routers.modules import list_modules
 from tests.fake_db import FakeDB
 
 
@@ -17,22 +17,22 @@ def _dt(day: int) -> datetime:
 
 
 def test_modules_are_ordered_by_recent_activity_with_native_modules_last():
-    db = FakeDB(seed_auth=False)
-    alpha = AraiosModule(
+    db = FakeDB()
+    alpha = Module(
         name="alpha",
         label="Alpha",
         order=1,
         created_at=_dt(1),
         updated_at=_dt(1),
     )
-    beta = AraiosModule(
+    beta = Module(
         name="beta",
         label="Beta",
         order=1,
         created_at=_dt(1),
         updated_at=_dt(1),
     )
-    gamma = AraiosModule(
+    gamma = Module(
         name="gamma",
         label="Gamma",
         order=1,
@@ -43,7 +43,7 @@ def test_modules_are_ordered_by_recent_activity_with_native_modules_last():
     db.add(beta)
     db.add(gamma)
     db.add(
-        AraiosModuleRecord(
+        ModuleRecord(
             id="beta-record",
             module_name="beta",
             data={},
@@ -52,7 +52,7 @@ def test_modules_are_ordered_by_recent_activity_with_native_modules_last():
         )
     )
     db.add(
-        AraiosModuleSecret(
+        ModuleSecret(
             module_name="gamma",
             key="token",
             value="redacted",

@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.models import Message, Session
 from app.services.sessions import session_bindings
-from app.services.llm.generic.types import TextContent, UserMessage
-from app.services.llm.ids import TierName
+from sentral.llm.generic.types import TextContent, UserMessage
+from sentral.llm.ids import TierName
 from app.services.ws.ws_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)

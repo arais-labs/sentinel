@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import ToolApproval
+from app.models import SessionActionGrant, ToolApproval
 from app.services.tools.registry import (
     ToolApprovalOutcome,
     ToolApprovalOutcomeStatus,
@@ -21,19 +21,18 @@ from app.services.tools.registry import (
 _POLL_INTERVAL_SECONDS = 1.5
 
 
-def _jsonb_safe(value: Any) -> Any:
-    """Remove values PostgreSQL JSONB cannot store.
+def _json_safe(value: Any) -> Any:
+    """Normalize tool results for JSON storage.
 
-    PostgreSQL text/jsonb rejects U+0000 even when JSON-escaped as "\\u0000".
     Tool results can include terminal bytes, so sanitize recursively before
     preserving approval results.
     """
     if isinstance(value, str):
         return value.replace("\x00", "")
     if isinstance(value, dict):
-        return {str(key): _jsonb_safe(item) for key, item in value.items()}
+        return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_jsonb_safe(item) for item in value]
+        return [_json_safe(item) for item in value]
     return value
 
 
@@ -66,20 +65,42 @@ def build_tool_db_approval_waiter(
                 tool_name=tool_name,
                 session_id=session_id,
                 action=requirement.action.strip(),
-                description=requirement.description.strip() if requirement.description else None,
+                description=(requirement.description.strip() if requirement.description else None),
                 status="pending",
                 requested_by=requested_by,
                 payload_json=metadata or None,
                 expires_at=expires_at,
             )
             db.add(row)
+            # Flush first: serialize grant lookup with grants/revocations and
+            # approval resolution using the instance database's writer lock.
+            await db.flush()
+            if session_id is not None:
+                grant = await db.scalar(
+                    select(SessionActionGrant).where(
+                        SessionActionGrant.session_id == session_id,
+                        SessionActionGrant.action == row.action,
+                    )
+                )
+                if grant is not None:
+                    row.status = "approved"
+                    row.resolved_at = now
+                    row.decision_by = grant.approved_by
+                    row.decision_note = "Allowed for this session"
+                    row.payload_json = {
+                        **metadata,
+                        "approval_scope": "session",
+                        "session_grant_id": str(grant.id),
+                    }
             await db.commit()
             await db.refresh(row)
 
         approval_payload = _approval_payload(row)
-        if callable(pending_callback):
-            await pending_callback(approval_payload)
+        if row.status == "approved":
+            return _resolved_outcome(row)
         try:
+            if callable(pending_callback):
+                await pending_callback(approval_payload)
             decision = await _wait_for_resolution(
                 session_factory=session_factory,
                 approval_id=row.id,
@@ -106,6 +127,7 @@ def build_tool_db_approval_waiter(
             status=decision.status,
             approval={
                 **approval_payload,
+                **decision.approval,
                 "status": decision.status.value,
                 "pending": False,
                 "can_resolve": False,
@@ -135,7 +157,7 @@ def build_tool_db_approval_result_recorder(
             approval = db_result.scalars().first()
             if approval is None:
                 return
-            approval.result_json = _jsonb_safe(
+            approval.result_json = _json_safe(
                 result if isinstance(result, dict) else {"result": result}
             )
             await db.commit()
@@ -167,31 +189,31 @@ async def _wait_for_resolution(
                 ToolApprovalOutcomeStatus.TIMED_OUT.value,
                 ToolApprovalOutcomeStatus.CANCELLED.value,
             }:
-                return ToolApprovalOutcome(
-                    status=ToolApprovalOutcomeStatus(status_value),
-                    approval={
-                        "decision_note": row.decision_note,
-                        "decision_by": row.decision_by,
-                    },
-                    message=_status_message(status_value, row.decision_note),
-                )
+                return _resolved_outcome(row)
 
         if asyncio.get_running_loop().time() >= deadline:
             async with session_factory() as db:
                 now = datetime.now(UTC)
-                result = await db.execute(
-                    select(ToolApproval).where(ToolApproval.id == approval_id)
+                await db.execute(
+                    update(ToolApproval)
+                    .where(
+                        ToolApproval.id == approval_id,
+                        ToolApproval.status == "pending",
+                    )
+                    .values(
+                        status="timed_out",
+                        decision_note="Timed out waiting for approval",
+                        resolved_at=now,
+                    )
                 )
-                row = result.scalars().first()
-                if row is not None and row.status == "pending":
-                    row.status = "timed_out"
-                    row.decision_note = "Timed out waiting for approval"
-                    row.resolved_at = now
-                    await db.commit()
+                await db.commit()
+                row = await db.get(ToolApproval, approval_id)
+                if row is not None:
+                    return _resolved_outcome(row)
             return ToolApprovalOutcome(
-                status=ToolApprovalOutcomeStatus.TIMED_OUT,
+                status=ToolApprovalOutcomeStatus.CANCELLED,
                 approval={},
-                message="Approval timed out.",
+                message="Approval removed.",
             )
 
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
@@ -204,13 +226,14 @@ async def _cancel_pending_approval(
     note: str,
 ) -> None:
     async with session_factory() as db:
-        result = await db.execute(select(ToolApproval).where(ToolApproval.id == approval_id))
-        row = result.scalars().first()
-        if row is None or row.status != "pending":
-            return
-        row.status = "cancelled"
-        row.decision_note = note
-        row.resolved_at = datetime.now(UTC)
+        await db.execute(
+            update(ToolApproval)
+            .where(
+                ToolApproval.id == approval_id,
+                ToolApproval.status == "pending",
+            )
+            .values(status="cancelled", decision_note=note, resolved_at=datetime.now(UTC))
+        )
         await db.commit()
 
 
@@ -225,7 +248,19 @@ def _approval_payload(row: ToolApproval) -> dict[str, Any]:
         "action": row.action,
         "description": row.description,
         "session_id": str(row.session_id) if row.session_id else None,
+        "decision_by": row.decision_by,
+        "decision_note": row.decision_note,
+        "approval_scope": (row.payload_json or {}).get("approval_scope", "once"),
+        "session_grant_id": (row.payload_json or {}).get("session_grant_id"),
     }
+
+
+def _resolved_outcome(row: ToolApproval) -> ToolApprovalOutcome:
+    return ToolApprovalOutcome(
+        status=ToolApprovalOutcomeStatus(row.status),
+        approval=_approval_payload(row),
+        message=_status_message(row.status, row.decision_note),
+    )
 
 
 def _status_message(status: str, decision_note: str | None) -> str:

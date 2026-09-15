@@ -1,37 +1,29 @@
 import json
 from pathlib import Path
-from urllib.parse import quote
+from uuid import UUID
+
+from sqlalchemy.engine import URL
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Literal
 
-from app.services.llm.ids import ProviderChoice
+from sentral.llm.ids import ProviderChoice
+from sentral.llm.tier_defaults import TierDefaults
 from app.services.onboarding.onboarding_defaults import DEFAULT_SYSTEM_PROMPT
 
 
-class Settings(BaseSettings):
+class Settings(TierDefaults, BaseSettings):
+    sentinel_desktop_token: str = Field(min_length=1)
+    workspace_runtime_socket: str | None = Field(
+        default=None, validation_alias="SENTINEL_WORKSPACE_RUNTIME_SOCKET"
+    )
     app_name: str = "Sentinel API"
-    app_env: str = "development"
-    app_host: str = "0.0.0.0"
-    app_port: int = 8000
-    database_host: str = "localhost"
-    database_port: int = 5432
-    database_user: str = "sentinel"
-    database_password: str = "sentinel"
-    database_maintenance_name: str = "postgres"
-    database_manager_name: str = "sentinel_manager"
-    jwt_secret_key: str = Field(min_length=1)
+    app_env: str = "desktop"
+    storage_root: Path = Field(
+        validation_alias="SENTINEL_STORAGE_ROOT",
+        default_factory=lambda: Path.home() / "Library/Application Support/Sentinel/data",
+    )
     data_encryption_key: str = Field(min_length=1)
-    jwt_algorithm: str = "HS256"
-    access_token_ttl_seconds: int = 3600
-    refresh_token_ttl_seconds: int = 604800
-    auth_cookie_secure: bool = False
-    auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
-    # Required in server mode (enforced at startup); optional in desktop mode.
-    sentinel_auth_username: str = ""
-    sentinel_auth_password: str = ""
-    dev_user_id: str = "dev-admin"
 
     # LLM provider credentials live in the per-instance `system_settings` DB
     # table and are populated by SettingsService.build_instance_settings at
@@ -63,40 +55,8 @@ class Settings(BaseSettings):
     memory_embedding_backfill_on_start: bool = True
     memory_embedding_backfill_batch_size: int = 100
     memory_embedding_backfill_max_rows: int = 0
-    default_model: str = "claude-sonnet-4-6"
+    default_model: str = "claude-opus-5"
 
-    # --- Tier: Fast ---
-    tier_fast_anthropic_model: str = "claude-haiku-4-5-20251001"
-    tier_fast_openai_model: str = "gpt-4o-mini"
-    tier_fast_codex_model: str = "gpt-5.4-mini"
-    tier_fast_gemini_model: str = "gemini-3-flash-preview"
-    tier_fast_max_tokens: int = 4096
-    tier_fast_temperature: float = 0.3
-    tier_fast_anthropic_thinking_budget: int = 0
-    tier_fast_openai_reasoning_effort: str = ""
-    tier_fast_gemini_thinking_budget: int = 0
-
-    # --- Tier: Normal ---
-    tier_normal_anthropic_model: str = "claude-sonnet-4-6"
-    tier_normal_openai_model: str = "gpt-4o"
-    tier_normal_codex_model: str = "gpt-5.3-codex"
-    tier_normal_gemini_model: str = "gemini-3-flash-preview"
-    tier_normal_max_tokens: int = 8192
-    tier_normal_temperature: float = 0.7
-    tier_normal_anthropic_thinking_budget: int = 5000
-    tier_normal_openai_reasoning_effort: str = "medium"
-    tier_normal_gemini_thinking_budget: int = 0
-
-    # --- Tier: Hard ---
-    tier_hard_anthropic_model: str = "claude-opus-4-6"
-    tier_hard_openai_model: str = "o3"
-    tier_hard_codex_model: str = "gpt-5.5"
-    tier_hard_gemini_model: str = "gemini-3.1-pro-preview"
-    tier_hard_max_tokens: int = 40000
-    tier_hard_temperature: float = 0.7
-    tier_hard_anthropic_thinking_budget: int = 32000
-    tier_hard_openai_reasoning_effort: str = "high"
-    tier_hard_gemini_thinking_budget: int = 32000
     default_system_prompt: str = DEFAULT_SYSTEM_PROMPT
     agent_loop_timeout: float = 1080.0
     tool_image_reinjection_enabled: bool = True
@@ -105,14 +65,11 @@ class Settings(BaseSettings):
     tool_image_reinjection_max_total_bytes: int = 4_000_000
     llm_max_retries: int = 3
     llm_timeout_seconds: int = 60
-    chat_default_iterations: int = 25
+    chat_default_iterations: int = 0
     chat_max_iterations: int = 100
     context_token_budget: int = 200_000
     stored_tool_result_max_chars: int = 4_000
     stored_tool_call_args_max_chars: int = 1_200
-    runtime_lima_yaml: str = ""
-    runtime_docker_base_image: str = "debian:trixie"
-    runtime_docker_ssh_host: str = "host.docker.internal"
     session_auto_rename_enabled: bool = True
     session_auto_rename_every_messages: int = 10
     session_auto_rename_context_messages: int = 24
@@ -128,24 +85,28 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    def database_path(self, database_name: str) -> Path:
+        identifier = str(UUID(database_name))
+        if identifier != database_name:
+            raise ValueError("Instance database identifier must be a canonical UUID")
+        return (
+            self.storage_root.expanduser().resolve() / "instances" / identifier / "instance.sqlite"
+        )
+
     def database_url(self, database_name: str) -> str:
-        user = quote(self.database_user, safe="")
-        password = quote(self.database_password, safe="")
-        host = self.database_host
-        port = int(self.database_port)
-        database = quote(database_name, safe="")
-        return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
+        return URL.create(
+            "sqlite+aiosqlite", database=str(self.database_path(database_name))
+        ).render_as_string(hide_password=False)
 
     @property
     def manager_database_url(self) -> str:
-        return self.database_url(self.database_manager_name)
+        path = self.storage_root.expanduser().resolve() / "app.sqlite"
+        return URL.create("sqlite+aiosqlite", database=str(path)).render_as_string(
+            hide_password=False
+        )
 
 
 settings = Settings()
-
-
-def is_desktop_app() -> bool:
-    return (settings.app_env or "").strip().lower() == "desktop"
 
 
 # ── app version / build identity ──
@@ -194,6 +155,6 @@ def build_identity() -> dict[str, str | None]:
 
 CHAT_MAX_ITERATIONS = max(1, int(settings.chat_max_iterations))
 CHAT_DEFAULT_ITERATIONS = max(
-    1,
+    0,
     min(int(settings.chat_default_iterations), CHAT_MAX_ITERATIONS),
 )

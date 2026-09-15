@@ -11,7 +11,6 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db, get_request_instance_runtime_context
-from app.middleware.auth import TokenPayload, require_auth
 from app.services.instance_runtime_context import instance_runtime_context_registry
 from app.schemas.backup import (
     BackupInfoResponse,
@@ -23,7 +22,6 @@ from app.schemas.backup import (
     ItemsResponse,
 )
 from app.services.backup import (
-    BackupCompatibilityError,
     BackupFormatError,
     BackupPassphraseError,
     available_items,
@@ -46,10 +44,7 @@ def _decode_blob(data: str) -> bytes:
 
 
 @router.get("/items", response_model=ItemsResponse)
-async def list_items(
-    user: TokenPayload = Depends(require_auth),
-) -> ItemsResponse:
-    _ = user
+async def list_items() -> ItemsResponse:
     return ItemsResponse(items=[ItemInfo(**i) for i in available_items()])
 
 
@@ -57,10 +52,8 @@ async def list_items(
 async def export_archive(
     payload: ExportRequest,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    _ = user
     if not payload.passphrase:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="A passphrase is required."
@@ -93,9 +86,7 @@ async def export_archive(
 @router.post("/inspect", response_model=BackupInfoResponse)
 async def inspect_uploaded_backup(
     payload: InspectRequest,
-    user: TokenPayload = Depends(require_auth),
 ) -> BackupInfoResponse:
-    _ = user
     blob = _decode_blob(payload.data)
     try:
         info = inspect_backup(blob, payload.passphrase)
@@ -112,7 +103,6 @@ async def inspect_uploaded_backup(
 async def import_archive(
     payload: ImportRequest,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> ImportResponse:
     blob = _decode_blob(payload.data)
@@ -122,11 +112,11 @@ async def import_archive(
             blob,
             payload.passphrase,
             items=payload.items,
-            owner_user_id=user.sub,
+            owner_user_id="local",
         )
     except BackupPassphraseError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except (BackupFormatError, BackupCompatibilityError) as exc:
+    except BackupFormatError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc

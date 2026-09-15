@@ -18,3 +18,10 @@ def test_parse_ws_message_accepts_explicit_agent_mode():
 def test_parse_ws_message_rejects_invalid_agent_mode():
     parsed = parse_ws_message('{"type":"message","content":"hello","agent_mode":"invalid_mode"}')
     assert parsed is None
+
+
+def test_parse_ws_message_supports_auto_and_custom_step_limits():
+    for raw, expected in [("", 0), (',"max_iterations":0', 0), (',"max_iterations":50', 50)]:
+        parsed = parse_ws_message('{"type":"message","content":"hello"' + raw + "}")
+        assert parsed is not None
+        assert parsed.max_iterations == expected

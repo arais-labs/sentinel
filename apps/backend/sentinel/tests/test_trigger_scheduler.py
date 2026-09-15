@@ -5,9 +5,9 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.models import Session, SessionBinding, Trigger, TriggerLog
-from app.services.agent import PreparedRuntimeTurnContext
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import AgentEvent, TextContent
+from app.services.agent.runtime_support import PreparedRuntimeTurnContext
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import AgentEvent
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRegistry
@@ -272,6 +272,8 @@ def test_compute_next_fire_at_for_cron_and_heartbeat():
 
 def test_scheduler_agent_message_action_calls_runtime_support():
     db = FakeDB()
+    session = Session(user_id="user-1", title="Main", status="active")
+    db.add(session)
     trigger = Trigger(
         name="agent-job",
         user_id="user-1",
@@ -279,7 +281,7 @@ def test_scheduler_agent_message_action_calls_runtime_support():
         enabled=True,
         config={"interval_seconds": 60},
         action_type="agent_message",
-        action_config={"message": "ping"},
+        action_config={"message": "ping", "target_session_id": str(session.id)},
         next_fire_at=datetime.now(UTC),
     )
     db.add(trigger)
@@ -319,7 +321,7 @@ def test_scheduler_agent_message_ack_uses_plain_content_and_trigger_metadata():
         enabled=True,
         config={"interval_seconds": 60},
         action_type="agent_message",
-        action_config={"message": "   ping from trigger   ", "session_id": str(session.id)},
+        action_config={"message": "   ping from trigger   ", "target_session_id": str(session.id)},
         next_fire_at=datetime.now(UTC),
     )
     db.add(trigger)
@@ -344,6 +346,8 @@ def test_scheduler_agent_message_ack_uses_plain_content_and_trigger_metadata():
 
 def test_scheduler_runtime_support_can_be_updated_after_init():
     db = FakeDB()
+    session = Session(user_id="user-1", title="Main", status="active")
+    db.add(session)
     trigger = Trigger(
         name="agent-job",
         user_id="user-1",
@@ -351,7 +355,7 @@ def test_scheduler_runtime_support_can_be_updated_after_init():
         enabled=True,
         config={"interval_seconds": 60},
         action_type="agent_message",
-        action_config={"message": "ping"},
+        action_config={"message": "ping", "target_session_id": str(session.id)},
         next_fire_at=datetime.now(UTC),
     )
     db.add(trigger)
@@ -402,33 +406,6 @@ def test_scheduler_fire_now_records_signal_payload():
     assert trigger.fire_count == 1
 
 
-def test_scheduler_disables_ownerless_agent_trigger_without_session_context():
-    db = FakeDB()
-    trigger = Trigger(
-        name="dangling-agent-job",
-        type="heartbeat",
-        enabled=True,
-        config={"interval_seconds": 60},
-        action_type="agent_message",
-        action_config={"message": "ping"},
-        next_fire_at=datetime.now(UTC),
-    )
-    db.add(trigger)
-
-    scheduler = TriggerScheduler(
-        agent_runtime_support=_RuntimeSupportStub(),
-        tool_executor=None,
-        db_factory=_SessionFactory(db),
-        poll_interval_seconds=0.01,
-    )
-    _run(scheduler._fire_trigger(trigger.id))
-
-    assert trigger.enabled is False
-    assert trigger.next_fire_at is None
-    assert trigger.last_error is not None
-    assert "no owner user_id" in trigger.last_error
-
-
 def test_scheduler_routes_agent_message_to_specific_root_session():
     db = FakeDB()
     main = Session(user_id="user-1", title="Main", status="active")
@@ -442,7 +419,7 @@ def test_scheduler_routes_agent_message_to_specific_root_session():
         enabled=True,
         config={"interval_seconds": 60},
         action_type="agent_message",
-        action_config={"message": "ping", "session_id": str(random.id)},
+        action_config={"message": "ping", "target_session_id": str(random.id)},
         next_fire_at=datetime.now(UTC),
     )
     db.add(trigger)
@@ -458,12 +435,13 @@ def test_scheduler_routes_agent_message_to_specific_root_session():
 
     assert agent.calls
     assert agent.calls[0]["session_id"] == random.id
-    assert trigger.action_config.get("session_id") == str(random.id)
-    assert trigger.action_config.get("route_mode") == "session"
     assert trigger.action_config.get("target_session_id") == str(random.id)
+    assert trigger.action_config.get("resolved_session_id") == str(random.id)
+    assert "session_id" not in trigger.action_config
+    assert "route_mode" not in trigger.action_config
 
 
-def test_scheduler_falls_back_to_main_when_target_session_missing():
+def test_scheduler_records_route_error_when_target_session_missing():
     db = FakeDB()
     main = Session(user_id="user-1", title="Main", status="active")
     db.add(main)
@@ -476,7 +454,6 @@ def test_scheduler_falls_back_to_main_when_target_session_missing():
         action_type="agent_message",
         action_config={
             "message": "ping",
-            "route_mode": "session",
             "target_session_id": "0fb4e3d8-4238-4fae-a5df-7bf1a615b38b",
         },
         next_fire_at=datetime.now(UTC),
@@ -492,12 +469,11 @@ def test_scheduler_falls_back_to_main_when_target_session_missing():
     )
     _run(scheduler._fire_trigger(trigger.id))
 
-    assert agent.calls
-    assert agent.calls[0]["session_id"] == main.id
-    assert trigger.action_config.get("session_id") == str(main.id)
-    assert trigger.action_config.get("route_mode") == "main"
-    assert trigger.action_config.get("target_session_id") is None
-    assert trigger.action_config.get("route_fallback_reason") == "invalid_or_deleted_target_session"
+    assert agent.calls == []
+    assert trigger.last_error is not None
+    assert "target session is missing or deleted" in trigger.last_error
+    assert db.storage[TriggerLog][-1].status == "failed"
+    assert "target session is missing or deleted" in db.storage[TriggerLog][-1].error_message
 
 
 def test_scheduler_allows_telegram_route_session_target():
@@ -523,7 +499,7 @@ def test_scheduler_allows_telegram_route_session_target():
         enabled=True,
         config={"interval_seconds": 60},
         action_type="agent_message",
-        action_config={"message": "ping", "session_id": str(telegram_session.id)},
+        action_config={"message": "ping", "target_session_id": str(telegram_session.id)},
         next_fire_at=datetime.now(UTC),
     )
     db.add(trigger)
@@ -539,7 +515,9 @@ def test_scheduler_allows_telegram_route_session_target():
 
     assert agent.calls
     assert agent.calls[0]["session_id"] == telegram_session.id
-    assert trigger.action_config.get("session_id") == str(telegram_session.id)
+    assert trigger.action_config.get("target_session_id") == str(telegram_session.id)
+    assert trigger.action_config.get("resolved_session_id") == str(telegram_session.id)
+    assert "session_id" not in trigger.action_config
 
 
 def test_scheduler_tool_call_action_uses_tool_executor():
@@ -737,7 +715,7 @@ def test_scheduler_cancellation_advances_next_fire_and_marks_log_cancelled():
         enabled=True,
         config={"expr": "0 * * * *"},
         action_type="agent_message",
-        action_config={"message": "ping", "session_id": str(session.id)},
+        action_config={"message": "ping", "target_session_id": str(session.id)},
         next_fire_at=datetime.now(UTC) - timedelta(seconds=1),
     )
     db.add(trigger)

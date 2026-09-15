@@ -8,7 +8,6 @@ from app.dependencies import (
     get_db,
     get_onboarding_service,
 )
-from app.middleware.auth import TokenPayload, require_auth
 from app.services.onboarding.onboarding_service import OnboardingService
 
 router = APIRouter()
@@ -22,23 +21,21 @@ class CompleteOnboardingRequest(BaseModel):
 
 @router.get("/status")
 async def get_status(
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     onboarding_service: OnboardingService = Depends(get_onboarding_service),
 ) -> dict[str, bool]:
-    return {"completed": await onboarding_service.is_completed(db, user_id=user.sub)}
+    return {"completed": await onboarding_service.is_completed(db, user_id="local")}
 
 
 @router.post("/complete")
 async def complete_onboarding(
     payload: CompleteOnboardingRequest,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     onboarding_service: OnboardingService = Depends(get_onboarding_service),
 ) -> dict[str, bool]:
     await onboarding_service.complete(
         db,
-        user_id=user.sub,
+        user_id="local",
         agent_name=payload.agent_name,
         agent_role=payload.agent_role,
         agent_personality=payload.agent_personality,

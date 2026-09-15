@@ -1,8 +1,5 @@
-import os
-import pytest
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
 from app.main import app
 from tests.fake_db import FakeDB
@@ -17,13 +14,15 @@ def test_trigger_type_and_action_type_update():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        token_resp = client.post(
-            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
         )
-        assert token_resp.status_code == 200
-        token = token_resp.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        session_resp = client.post(
+            "/api/v1/instances/main/sessions", json={"title": "trigger-target"}, headers=headers
+        )
+        assert session_resp.status_code == 200
+        session_id = session_resp.json()["id"]
 
         # 1. Create a cron trigger
         create = client.post(
@@ -33,7 +32,7 @@ def test_trigger_type_and_action_type_update():
                 "type": "cron",
                 "config": {"expr": "*/5 * * * *"},
                 "action_type": "agent_message",
-                "action_config": {"message": "ping"},
+                "action_config": {"message": "ping", "target_session_id": session_id},
             },
             headers=headers,
         )

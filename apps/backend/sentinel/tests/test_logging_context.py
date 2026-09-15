@@ -8,7 +8,6 @@ from app.logging_context import (
     configure_logging,
     get_logging_config_snapshot,
 )
-from app.middleware.auth import TokenPayload, require_auth
 
 
 def test_logging_defaults_silence_httpx():
@@ -48,19 +47,9 @@ def test_logging_routes_allow_runtime_override():
     app_main.init_db = _noop_init_db
     try:
 
-        async def _fake_auth() -> TokenPayload:
-            return TokenPayload(
-                sub="dev-admin",
-                role="admin",
-                agent_id=None,
-                exp=1999999999,
-                iat=1771810000,
-                jti="test-jti",
-                token_type="access",
-            )
-
-        app.dependency_overrides[require_auth] = _fake_auth
-        client = TestClient(app)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
         get_resp = client.get("/api/v1/instances/main/settings/logging")
         assert get_resp.status_code == 200
         assert get_resp.json()["default_logger_levels"]["httpx"] == "WARNING"

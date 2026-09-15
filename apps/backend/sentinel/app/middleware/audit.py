@@ -6,12 +6,10 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AuditLog
-from app.models.manager import ManagerAuditLog
 
 
-async def _write_audit(
+async def log_audit(
     db: AsyncSession,
-    model: type,
     *,
     user_id: str | None,
     action: str,
@@ -32,7 +30,7 @@ async def _write_audit(
     else:
         normalized_request_id = request_id
 
-    entry = model(
+    entry = AuditLog(
         timestamp=datetime.now(UTC),
         user_id=user_id,
         action=action,
@@ -46,13 +44,3 @@ async def _write_audit(
     )
     db.add(entry)
     await db.commit()
-
-
-async def log_audit(db: AsyncSession, **fields) -> None:
-    """Record a per-instance audit event (writes to the instance DB)."""
-    await _write_audit(db, AuditLog, **fields)
-
-
-async def log_manager_audit(db: AsyncSession, **fields) -> None:
-    """Record a manager-scoped audit event (writes to the manager DB)."""
-    await _write_audit(db, ManagerAuditLog, **fields)

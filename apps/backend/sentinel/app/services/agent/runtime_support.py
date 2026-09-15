@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -14,12 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import Message, Session
 from app.services.agent.agent_modes import AgentMode, parse_agent_mode
-from app.services.agent.context_builder import ContextBuilder
+import app.services.agent.context_builder as context_builder_module
 from app.services.agent.interactive_output import post_process_assistant_html
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRegistry
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import (
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import (
     AgentMessage,
     AssistantMessage,
     ImageContent,
@@ -30,12 +31,9 @@ from app.services.llm.generic.types import (
     SystemMessage,
     UserMessage,
 )
-from app.services.llm.ids import TierName
+from sentral.llm.ids import TierName
 from app.services.messages import build_generation_metadata, with_generation_metadata
-from app.services.sessions.context_usage import (
-    build_context_usage_metrics,
-    estimate_agent_messages_tokens,
-)
+
 from app.services.sessions.session_naming import (
     apply_conversation_message_delta,
     conversation_delta_for_role,
@@ -85,7 +83,7 @@ class SentinelRuntimeSupport:
     def __init__(
         self,
         provider: LLMProvider,
-        context_builder: ContextBuilder,
+        context_builder: context_builder_module.ContextBuilder,
         tool_registry: ToolRegistry,
         tool_executor: ToolExecutor,
     ) -> None:
@@ -107,12 +105,18 @@ class SentinelRuntimeSupport:
         max_iterations: int,
         stream: bool,
     ) -> PreparedRuntimeTurnContext:
+        context_options = {}
+        if isinstance(self.context_builder, context_builder_module.ContextBuilder):
+            limits = self.provider.model_context(model)
+            context_options["token_budget"] = limits["context_token_budget"]
+            context_options["include_full_history"] = True
         messages = await self.context_builder.build(
             db,
             session_id,
             system_prompt,
             pending_user_message=pending_user_message,
             agent_mode=agent_mode,
+            **context_options,
         )
         tools = self.tool_registry.list_schemas()
         return PreparedRuntimeTurnContext(
@@ -179,6 +183,11 @@ class SentinelRuntimeSupport:
             max_iterations=max_iterations,
             stream=stream,
             agent_mode=agent_mode,
+            context_budget=(
+                self.provider.model_context(model)["context_token_budget"]
+                if self.provider
+                else None
+            ),
         )
 
     def extract_final_text(self, messages: list[AgentMessage]) -> str:
@@ -233,8 +242,15 @@ class SentinelRuntimeSupport:
         conversation_delta = 0
         start_offset = 0
         if runtime_context_snapshot:
+            first_response = next((m for m in created if isinstance(m, AssistantMessage)), None)
+            runtime_context_snapshot = {
+                **runtime_context_snapshot,
+                "request_usage": (
+                    deepcopy(first_response.provider_usage) if first_response else None
+                ),
+            }
             summary = (
-                f"[Runtime Context Snapshot] model={runtime_context_snapshot.get('model', '')} "
+                f"[Machine Context Snapshot] model={runtime_context_snapshot.get('model', '')} "
                 f"tools={runtime_context_snapshot.get('tool_count', 0)} "
                 f"system_blocks={runtime_context_snapshot.get('system_message_count', 0)}"
             )
@@ -253,6 +269,17 @@ class SentinelRuntimeSupport:
             start_offset = 1
         for idx, message in enumerate(created):
             created_at = base_time + timedelta(milliseconds=idx + start_offset)
+            if isinstance(message, SystemMessage) and message.metadata.get("notice"):
+                db.add(
+                    Message(
+                        session_id=session_id,
+                        role="system",
+                        content=message.content,
+                        metadata_json=dict(message.metadata),
+                        created_at=created_at,
+                    )
+                )
+                continue
             if isinstance(message, UserMessage):
                 metadata = dict(message.metadata or {})
                 text_content = self._user_text(message.content)
@@ -303,6 +330,9 @@ class SentinelRuntimeSupport:
                         }
                     )
                 metadata: dict[str, Any] = {
+                    "responses_output": deepcopy(message.responses_output),
+                    "responses_context_reset": message.responses_context_reset,
+                    "provider_usage": deepcopy(message.provider_usage),
                     "provider": message.provider,
                     "model": message.model,
                     "stop_reason": message.stop_reason,
@@ -310,6 +340,8 @@ class SentinelRuntimeSupport:
                     "output_tokens": message.usage.output_tokens,
                     "iteration": int(assistant_iterations.get(id(message), 0)),
                 }
+                if message.presentation:
+                    metadata["presentation"] = message.presentation
                 if tool_calls_data:
                     metadata["tool_calls"] = tool_calls_data
                 assistant_generation = build_generation_metadata(
@@ -486,6 +518,7 @@ class SentinelRuntimeSupport:
         max_iterations: int,
         stream: bool,
         agent_mode: AgentMode | str,
+        context_budget: int | None = None,
     ) -> dict[str, Any]:
         system_blocks: list[str] = []
         layered_context: list[dict[str, Any]] = []
@@ -560,10 +593,6 @@ class SentinelRuntimeSupport:
                     pinned_memories.append(
                         {"title": title or "Untitled", "content": remainder.strip()}
                     )
-        usage_metrics = build_context_usage_metrics(
-            estimated_tokens=estimate_agent_messages_tokens(messages),
-            context_budget=settings.context_token_budget,
-        )
         return {
             "timestamp": datetime.now(UTC).isoformat(),
             "model": model,
@@ -584,9 +613,7 @@ class SentinelRuntimeSupport:
                 "memory_block_count": len(memory_blocks),
                 "history_message_count": len(history_messages),
             },
-            "context_token_budget": usage_metrics.context_token_budget,
-            "estimated_context_tokens": usage_metrics.estimated_context_tokens,
-            "estimated_context_percent": usage_metrics.estimated_context_percent,
+            "context_token_budget": context_budget or settings.context_token_budget,
             "tool_count": len(tools),
             "tools": [
                 {"name": tool.name, "description": tool.description, "parameters": tool.parameters}

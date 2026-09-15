@@ -3,7 +3,6 @@ from app.schemas.admin import (
     AuditLogResponse,
     ConfigResponse,
 )
-from app.schemas.auth import RefreshRequest, TokenPairResponse
 from app.schemas.compaction import CompactionResponse
 from app.schemas.memory import (
     MemoryListResponse,
@@ -40,8 +39,6 @@ __all__ = [
     "AuditLogResponse",
     "ConfigResponse",
     "CompactionResponse",
-    "RefreshRequest",
-    "TokenPairResponse",
     "CreateMessageRequest",
     "CreateSessionRequest",
     "CreateSubAgentTaskRequest",

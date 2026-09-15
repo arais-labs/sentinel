@@ -10,16 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Message, Session, SessionSummary
+from app.services.sessions.history import context_history
 from app.services.sessions.context_usage import (
-    estimate_db_message_tokens,
-    estimate_db_messages_tokens,
-    estimate_text_tokens,
-    extract_runtime_context_metrics,
+    latest_request_input_tokens,
     normalize_context_budget,
 )
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import TextContent
-from app.services.llm.ids import TierName
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import TextContent
+from sentral.llm.ids import TierName
 
 ACTIVE_CONTEXT_MESSAGE_COUNT = 10
 
@@ -29,8 +27,7 @@ class CompactionResult:
     """Outcome metadata for a compaction run."""
 
     session_id: UUID
-    raw_token_count: int
-    compressed_token_count: int
+    compacted: bool
     summary_preview: str
 
 
@@ -43,8 +40,8 @@ class CompactionService:
     async def compact_session(
         self, db: AsyncSession, *, session_id: UUID, user_id: str
     ) -> CompactionResult:
-        """Compact one owned session immediately."""
-        session = await self._get_owned_session(db, session_id=session_id, user_id=user_id)
+        """Compact one session immediately."""
+        session = await self._get_session_record(db, session_id=session_id, user_id=user_id)
         return await self._compact(db, session)
 
     async def auto_compact_if_needed(
@@ -54,16 +51,13 @@ class CompactionService:
         session_id: UUID,
         threshold_tokens: int | None = None,
     ) -> CompactionResult | None:
-        """Compact only when the estimated token budget exceeds threshold."""
-        messages = await self._session_messages(db, session_id=session_id)
+        """Compact only when reported request usage exceeds the threshold."""
+        summary, messages = await context_history(db, session_id)
         token_limit = normalize_context_budget(
-            int(threshold_tokens) if threshold_tokens is not None else None
+            int(threshold_tokens) if threshold_tokens is not None else self._model_budget(messages)
         )
-        estimated_tokens = self._estimate_session_context_tokens(
-            messages,
-            default_budget=token_limit,
-        )
-        if estimated_tokens <= token_limit:
+        tokens = self._reported_context_tokens(summary, messages)
+        if tokens is None or tokens <= token_limit:
             return None
         result = await db.execute(select(Session).where(Session.id == session_id))
         session = result.scalars().first()
@@ -79,25 +73,41 @@ class CompactionService:
         threshold_tokens: int | None = None,
     ) -> bool:
         """Return whether the session currently exceeds compaction token threshold."""
-        messages = await self._session_messages(db, session_id=session_id)
+        summary, messages = await context_history(db, session_id)
         token_limit = normalize_context_budget(
-            int(threshold_tokens) if threshold_tokens is not None else None
+            int(threshold_tokens) if threshold_tokens is not None else self._model_budget(messages)
         )
-        estimated_tokens = self._estimate_session_context_tokens(
-            messages,
-            default_budget=token_limit,
-        )
-        return estimated_tokens > token_limit
+        tokens = self._reported_context_tokens(summary, messages)
+        return tokens is not None and tokens > token_limit
+
+    def _reported_context_tokens(self, summary, messages):
+        if summary is not None:
+            # A pre-compaction request describes the old context, not the new one.
+            raw_boundary = (summary.summary or {}).get("compacted_at")
+            boundary = datetime.fromisoformat(raw_boundary) if raw_boundary else summary.created_at
+            if boundary is not None:
+                messages = [m for m in messages if m.created_at and m.created_at > boundary]
+        return latest_request_input_tokens(messages)
+
+    def _model_budget(self, messages):
+        if self._provider is None:
+            return None
+        for message in reversed(messages):
+            snapshot = (message.metadata_json or {}).get("provider_usage") or {}
+            model = snapshot.get("model")
+            if model:
+                return self._provider.model_context(model)["context_token_budget"]
+        return self._provider.model_context("normal")["context_token_budget"]
 
     async def _compact(self, db: AsyncSession, session: Session) -> CompactionResult:
-        """Summarize older messages, persist summary payload, and trim historical rows."""
-        messages = await self._session_messages(db, session_id=session.id)
+        """Atomically advance the model context boundary while retaining every message."""
+        summary, messages = await context_history(db, session.id)
+        messages = [m for m in messages if (m.metadata_json or {}).get("steering") != "pending"]
         active_context = self._select_active_context_messages(messages)
         if len(messages) <= len(active_context):
             return CompactionResult(
                 session_id=session.id,
-                raw_token_count=0,
-                compressed_token_count=0,
+                compacted=False,
                 summary_preview="No compaction needed yet.",
             )
 
@@ -106,33 +116,49 @@ class CompactionService:
         if not older:
             return CompactionResult(
                 session_id=session.id,
-                raw_token_count=0,
-                compressed_token_count=0,
+                compacted=False,
                 summary_preview="No compaction needed yet.",
             )
         context_start = older[0].created_at or datetime.now(UTC)
         context_end = older[-1].created_at or datetime.now(UTC)
 
+        previous = str((summary.summary or {}).get("summary_text") or "") if summary else ""
+        to_summarize = list(older)
+        if previous:
+            to_summarize.insert(
+                0,
+                Message(role="system", content="Previous summary:\n" + previous, metadata_json={}),
+            )
         if self._provider is not None:
-            summary_payload = await self._llm_summary_payload(older)
+            summary_payload = await self._llm_summary_payload(to_summarize)
             summary_text = str(
                 summary_payload.get("context_summary") or summary_payload.get("summary_text") or ""
             ).strip()
             if not summary_text:
-                summary_text = self._fallback_summary_text(older)
-                summary_payload["context_summary"] = summary_text
+                raise ValueError(
+                    "The model returned an empty summary; history and context were not changed."
+                )
         else:
-            summary_text = self._fallback_summary_text(older)
+            summary_text = self._fallback_summary_text(to_summarize)
             summary_payload = {"summary_text": summary_text}
 
-        raw_token_count = self._estimate_messages_tokens(older)
-        compressed_token_count = self._estimate_text_tokens(summary_text)
-
-        result = await db.execute(
-            select(SessionSummary).where(SessionSummary.session_id == session.id)
-        )
-        summary = result.scalars().first()
         payload = dict(summary_payload)
+        measured = payload.pop("provider_usage", None)
+        if self._provider is not None:
+            db.add(
+                Message(
+                    session_id=session.id,
+                    role="system",
+                    content="Context compacted",
+                    metadata_json={
+                        "source": "usage",
+                        "purpose": "compaction",
+                        "provider_usage": measured,
+                    },
+                )
+            )
+        payload["compacted_at"] = datetime.now(UTC).isoformat()
+        payload["through_message_id"] = str(older[-1].id)
         payload["summary_text"] = summary_text
         payload["context_window_start"] = context_start.isoformat()
         payload["context_window_end"] = context_end.isoformat()
@@ -142,27 +168,17 @@ class CompactionService:
             summary = SessionSummary(
                 session_id=session.id,
                 summary=payload,
-                raw_token_count=raw_token_count,
-                compressed_token_count=compressed_token_count,
             )
             db.add(summary)
         else:
             summary.summary = payload
-            summary.raw_token_count = raw_token_count
-            summary.compressed_token_count = compressed_token_count
-
-        # Delete the old messages — they are now represented by the summary.
-        # The most recent messages remain as active context.
-        for message in older:
-            await db.delete(message)
 
         await db.commit()
         await db.refresh(summary)
         preview = summary_text[:200]
         return CompactionResult(
             session_id=session.id,
-            raw_token_count=raw_token_count,
-            compressed_token_count=compressed_token_count,
+            compacted=True,
             summary_preview=preview,
         )
 
@@ -211,22 +227,14 @@ class CompactionService:
             return messages[-ACTIVE_CONTEXT_MESSAGE_COUNT:]
         return retained
 
-    async def _get_owned_session(
+    async def _get_session_record(
         self, db: AsyncSession, *, session_id: UUID, user_id: str
     ) -> Session:
-        result = await db.execute(
-            select(Session).where(Session.id == session_id, Session.user_id == user_id)
-        )
+        result = await db.execute(select(Session).where(Session.id == session_id))
         session = result.scalars().first()
         if session is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
         return session
-
-    async def _session_messages(self, db: AsyncSession, *, session_id: UUID) -> list[Message]:
-        result = await db.execute(select(Message).where(Message.session_id == session_id))
-        items = result.scalars().all()
-        items.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC))
-        return items
 
     def _bullet_line(self, role: str, content: str) -> str:
         trimmed = content.replace("\n", " ").strip()
@@ -236,57 +244,19 @@ class CompactionService:
     def _word_count(self, text: str) -> int:
         return len([part for part in text.split() if part])
 
-    def _estimate_text_tokens(self, text: str) -> int:
-        return estimate_text_tokens(text)
-
-    def _estimate_message_tokens(self, message: Message) -> int:
-        return estimate_db_message_tokens(message)
-
-    def _estimate_messages_tokens(self, messages: list[Message]) -> int:
-        return estimate_db_messages_tokens(messages)
-
-    def _estimate_session_context_tokens(
-        self,
-        messages: list[Message],
-        *,
-        default_budget: int,
-    ) -> int:
-        metrics = self._latest_runtime_context_metrics(messages, default_budget=default_budget)
-        if metrics is not None:
-            return metrics.estimated_context_tokens
-        return self._estimate_messages_tokens(messages)
-
-    def _latest_runtime_context_metrics(
-        self,
-        messages: list[Message],
-        *,
-        default_budget: int,
-    ):
-        for message in reversed(messages):
-            if message.role != "system":
-                continue
-            metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
-            if str(metadata.get("source") or "").strip().lower() != "runtime_context":
-                continue
-            metrics = extract_runtime_context_metrics(
-                (
-                    metadata.get("run_context")
-                    if isinstance(metadata.get("run_context"), dict)
-                    else None
-                ),
-                default_budget=default_budget,
-            )
-            if metrics is not None:
-                return metrics
-        return None
-
     def _fallback_summary_text(self, messages: list[Message]) -> str:
         bullet_lines = [self._bullet_line(message.role, message.content) for message in messages]
         return "\n".join(bullet_lines)
 
     async def _llm_summary_payload(self, messages: list[Message]) -> dict:
         """Generate structured compaction payload via provider JSON response."""
-        prompt_lines = [self._bullet_line(message.role, message.content) for message in messages]
+        prompt_lines = []
+        for message in messages:
+            line = f"[{message.role}]\n{message.content}"
+            calls = (message.metadata_json or {}).get("tool_calls")
+            if calls:
+                line += "\nTool calls: " + json.dumps(calls)
+            prompt_lines.append(line)
         prompt = (
             "Summarize the following conversation into strict JSON with keys: "
             "key_decisions (array of strings), tool_results (array of strings), "
@@ -311,6 +281,7 @@ class CompactionService:
         raw_text = "\n".join(text_parts).strip()
         parsed = self._parse_summary_json(raw_text)
         return {
+            "provider_usage": getattr(response, "provider_usage", None),
             "key_decisions": (
                 parsed.get("key_decisions") if isinstance(parsed.get("key_decisions"), list) else []
             ),

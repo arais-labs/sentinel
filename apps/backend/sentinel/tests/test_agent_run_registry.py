@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from app.sentral import ConversationItem, TextBlock
+from sentral import ConversationItem, TextBlock
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 
 

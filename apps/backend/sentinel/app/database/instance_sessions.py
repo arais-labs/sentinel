@@ -6,15 +6,13 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
 
 from app.config import settings
+from app.database.engine import create_database_engine
 
 
 class InstanceSessionRegistry:
-    # TODO: add LRU / idle eviction when active instances exceed ~30
-    # (15 max connections per engine × Postgres default max_connections=100).
     def __init__(self) -> None:
         self._engines: dict[str, AsyncEngine] = {}
         self._factories: dict[str, async_sessionmaker[AsyncSession]] = {}
@@ -24,10 +22,8 @@ class InstanceSessionRegistry:
         if factory is not None:
             return factory
 
-        engine = create_async_engine(
+        engine = create_database_engine(
             settings.database_url(database_name),
-            pool_pre_ping=True,
-            echo=False,
         )
         factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         self._engines[database_name] = engine

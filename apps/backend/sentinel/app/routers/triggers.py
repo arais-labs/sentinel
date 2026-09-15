@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db, get_request_instance_runtime_context
 from app.middleware.audit import log_audit
-from app.middleware.auth import TokenPayload, require_auth
 from app.models import Trigger, TriggerLog
 from app.schemas.triggers import (
     CreateTriggerRequest,
@@ -22,8 +21,8 @@ from app.schemas.triggers import (
     TriggerResponse,
     UpdateTriggerRequest,
 )
-from app.services.triggers.trigger_scheduler import TriggerScheduler, compute_next_fire_at
-from app.services.triggers.routing import resolve_agent_message_route
+from app.services.triggers.trigger_scheduler import compute_next_fire_at
+from app.services.triggers.routing import AgentMessageRouteError, resolve_agent_message_route
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -35,10 +34,9 @@ async def list_triggers(
     enabled: bool | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> TriggerListResponse:
-    stmt = select(Trigger).where(Trigger.user_id == user.sub)
+    stmt = select(Trigger)
     if type is not None:
         stmt = stmt.where(Trigger.type == type)
     if enabled is not None:
@@ -55,7 +53,6 @@ async def list_triggers(
 @router.post("")
 async def create_trigger(
     payload: CreateTriggerRequest,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> TriggerResponse:
     next_fire_at = None
@@ -70,13 +67,13 @@ async def create_trigger(
     if payload.action_type == "agent_message":
         action_config = await _normalize_agent_message_action_config(
             db,
-            user_id=user.sub,
+            user_id="local",
             action_config=payload.action_config,
         )
 
     trigger = Trigger(
         name=payload.name,
-        user_id=user.sub,
+        user_id="local",
         type=payload.type,
         enabled=payload.enabled,
         config=payload.config,
@@ -96,10 +93,9 @@ async def create_trigger(
 @router.get("/{id}")
 async def get_trigger(
     id: UUID,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> TriggerResponse:
-    trigger = await _get_trigger_or_404(db, id, user.sub)
+    trigger = await _get_trigger_or_404(db, id)
     return _trigger_response(trigger)
 
 
@@ -107,10 +103,9 @@ async def get_trigger(
 async def update_trigger(
     id: UUID,
     payload: UpdateTriggerRequest,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> TriggerResponse:
-    trigger = await _get_trigger_or_404(db, id, user.sub)
+    trigger = await _get_trigger_or_404(db, id)
 
     if payload.name is not None:
         trigger.name = payload.name
@@ -126,7 +121,7 @@ async def update_trigger(
         if new_action_type == "agent_message":
             trigger.action_config = await _normalize_agent_message_action_config(
                 db,
-                user_id=user.sub,
+                user_id="local",
                 action_config=(
                     payload.action_config
                     if payload.action_config is not None
@@ -165,10 +160,9 @@ async def update_trigger(
 @router.delete("/{id}")
 async def delete_trigger(
     id: UUID,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    trigger = await _get_trigger_or_404(db, id, user.sub)
+    trigger = await _get_trigger_or_404(db, id)
     await db.delete(trigger)
     await db.commit()
     return {"status": "deleted"}
@@ -179,10 +173,9 @@ async def fire_trigger(
     id: UUID,
     payload: FireTriggerRequest,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> FireTriggerResponse:
-    trigger = await _get_trigger_or_404(db, id, user.sub)
+    trigger = await _get_trigger_or_404(db, id)
     scheduler = get_request_instance_runtime_context(request).trigger_scheduler
     outcome = await scheduler.fire_now_nonblocking(
         db,
@@ -209,7 +202,7 @@ async def fire_trigger(
 
     await log_audit(
         db,
-        user_id=user.sub,
+        user_id="local",
         action="trigger.fire",
         resource_type="trigger",
         resource_id=str(trigger.id),
@@ -220,8 +213,6 @@ async def fire_trigger(
     return FireTriggerResponse(
         log=_trigger_log_response(log),
         resolved_session_id=action.resolved_session_id,
-        route_mode=action.route_mode,
-        used_fallback=action.used_fallback,
     )
 
 
@@ -231,10 +222,9 @@ async def list_trigger_logs(
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> TriggerLogListResponse:
-    await _get_trigger_or_404(db, id, user.sub)
+    await _get_trigger_or_404(db, id)
 
     stmt = select(TriggerLog).where(TriggerLog.trigger_id == id)
     if status_filter is not None:
@@ -250,10 +240,8 @@ async def list_trigger_logs(
     )
 
 
-async def _get_trigger_or_404(db: AsyncSession, trigger_id: UUID, user_id: str) -> Trigger:
-    result = await db.execute(
-        select(Trigger).where(Trigger.id == trigger_id, Trigger.user_id == user_id)
-    )
+async def _get_trigger_or_404(db: AsyncSession, trigger_id: UUID) -> Trigger:
+    result = await db.execute(select(Trigger).where(Trigger.id == trigger_id))
     trigger = result.scalars().first()
     if trigger is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trigger not found")
@@ -307,9 +295,15 @@ async def _normalize_agent_message_action_config(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="agent_message action requires non-empty action_config.message",
         )
-    route = await resolve_agent_message_route(
-        db,
-        user_id=user_id,
-        action_config=action_config,
-    )
+    try:
+        route = await resolve_agent_message_route(
+            db,
+            user_id=user_id,
+            action_config=action_config,
+        )
+    except AgentMessageRouteError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     return route.normalized_action_config

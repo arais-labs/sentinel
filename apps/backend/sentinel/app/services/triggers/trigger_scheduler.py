@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -14,17 +14,15 @@ from croniter import croniter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
-from app.models import Session, Trigger, TriggerLog
-from app.services.agent import SentinelRuntimeSupport
-from app.services.agent_runtime_adapters import (
-    SentinelLoopRuntimeAdapter,
-    runtime_event_to_sentinel_event,
-)
+from sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
+from app.models import Trigger, TriggerLog
+import app.services.agent.runtime_support as runtime_support
+import app.services.agent_runtime_adapters.runtime as runtime_adapters
+from sentral.llm.runtime_conversions import runtime_event_to_sentinel_event
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.messages import trigger_ingress_metadata
 from app.services.triggers.routing import (
-    extract_agent_message_target_session_id,
+    AgentMessageRouteError,
     resolve_agent_message_route,
 )
 from app.services.tools import ToolExecutor
@@ -34,16 +32,10 @@ from app.services.ws.ws_manager import ConnectionManager
 logger = logging.getLogger(__name__)
 
 
-class TriggerOwnershipError(ValueError):
-    """Raised when a trigger cannot be safely mapped to a real user owner."""
-
-
 @dataclass(slots=True)
 class TriggerActionOutcome:
     output_summary: str
     resolved_session_id: UUID | None = None
-    route_mode: str | None = None
-    used_fallback: bool | None = None
 
 
 @dataclass(slots=True)
@@ -84,7 +76,7 @@ class TriggerScheduler:
     def __init__(
         self,
         *,
-        agent_runtime_support: SentinelRuntimeSupport | None,
+        agent_runtime_support: runtime_support.SentinelRuntimeSupport | None,
         tool_executor: ToolExecutor | None,
         ws_manager: ConnectionManager | None = None,
         run_registry: AgentRunRegistry | None = None,
@@ -100,7 +92,7 @@ class TriggerScheduler:
         self._in_flight: set[str] = set()
 
     def set_agent_runtime_support(
-        self, agent_runtime_support: SentinelRuntimeSupport | None
+        self, agent_runtime_support: runtime_support.SentinelRuntimeSupport | None
     ) -> None:
         """Hot-swap the runtime support used for agent_message actions."""
         self._agent_runtime_support = agent_runtime_support
@@ -159,18 +151,22 @@ class TriggerScheduler:
         if not isinstance(message, str) or not message.strip():
             raise ValueError("agent_message action requires non-empty 'message'")
 
-        effective_user_id = await self._resolve_effective_user_id(db, trigger, action)
-        route = await resolve_agent_message_route(
-            db,
-            user_id=effective_user_id,
-            action_config=action,
-        )
+        effective_user_id = "local"
+        try:
+            route = await resolve_agent_message_route(
+                db,
+                user_id=effective_user_id,
+                action_config=action,
+            )
+        except AgentMessageRouteError:
+            return await self.fire_now(
+                db,
+                trigger_id=trigger_id,
+                input_payload=input_payload,
+                force=force,
+            )
         trigger.action_config = route.normalized_action_config
         session_id = route.session_id
-        route_mode = route.normalized_action_config.get("route_mode")
-        normalized_route_mode = (
-            str(route_mode) if isinstance(route_mode, str) and route_mode else None
-        )
 
         queued_log = TriggerLog(
             trigger_id=trigger.id,
@@ -196,8 +192,6 @@ class TriggerScheduler:
             action=TriggerActionOutcome(
                 output_summary="agent_message:queued",
                 resolved_session_id=session_id,
-                route_mode=normalized_route_mode,
-                used_fallback=route.used_fallback,
             ),
         )
 
@@ -345,15 +339,11 @@ class TriggerScheduler:
         except Exception as exc:  # noqa: BLE001
             duration_ms = max(0, int((time.perf_counter() - started) * 1000))
             message = str(exc)
-            ownership_error = isinstance(exc, TriggerOwnershipError)
 
             trigger.error_count = int(trigger.error_count or 0) + 1
             trigger.consecutive_errors = int(trigger.consecutive_errors or 0) + 1
             trigger.last_error = message
-            if ownership_error:
-                trigger.enabled = False
-                trigger.next_fire_at = None
-            elif trigger.consecutive_errors >= 5:
+            if trigger.consecutive_errors >= 5:
                 trigger.enabled = False
                 trigger.next_fire_at = None
             elif trigger.enabled:
@@ -449,7 +439,7 @@ class TriggerScheduler:
             trigger_name=trigger.name or "",
             trigger_type=trigger.type,
         )
-        effective_user_id = await self._resolve_effective_user_id(db, trigger, action)
+        effective_user_id = "local"
         route = await resolve_agent_message_route(
             db,
             user_id=effective_user_id,
@@ -458,13 +448,6 @@ class TriggerScheduler:
         trigger.action_config = route.normalized_action_config
         session_id = route.session_id
         session_key = str(session_id)
-        if route.used_fallback:
-            logger.info(
-                "Trigger %s route fallback applied (%s), resolved to main session %s",
-                trigger.id,
-                route.fallback_reason or "unknown",
-                session_id,
-            )
 
         async def _on_event(event: Any) -> None:
             if self._ws_manager:
@@ -483,51 +466,48 @@ class TriggerScheduler:
             )
             await self._ws_manager.broadcast_agent_thinking(session_key)
 
-        runtime = SentinelLoopRuntimeAdapter(
+        runtime = runtime_adapters.SentinelLoopRuntimeAdapter(
             loop=self._agent_runtime_support,
             db=db,
             session_id=session_id,
         )
-        run_task = asyncio.create_task(
-            runtime.run_turn(
-                RunTurnRequest(
-                    conversation_id=session_key,
-                    new_items=[
-                        ConversationItem(
-                            id=f"trigger-{trigger.id}",
-                            role="user",
-                            content=[TextBlock(text=message_text)],
-                            metadata=dict(ingress_metadata),
-                        )
-                    ],
-                    config=GenerationConfig(
-                        model="normal",
-                        stream=True,
-                        provider_metadata={
-                            "user_metadata": ingress_metadata,
-                        },
-                    ),
-                    interjection_source=(
-                        (lambda: self._run_registry.drain_interjections(session_key))
-                        if self._run_registry is not None
-                        else None
-                    ),
+        run = runtime.run_turn(
+            RunTurnRequest(
+                conversation_id=session_key,
+                new_items=[
+                    ConversationItem(
+                        id=f"trigger-{trigger.id}",
+                        role="user",
+                        content=[TextBlock(text=message_text)],
+                        metadata=dict(ingress_metadata),
+                    )
+                ],
+                config=GenerationConfig(
+                    model="normal",
+                    stream=True,
+                    provider_metadata={
+                        "user_metadata": ingress_metadata,
+                    },
                 ),
-                sink=_on_event,
-            )
+                interjection_source=(
+                    (lambda: self._run_registry.drain_interjections(session_key))
+                    if self._run_registry is not None
+                    else None
+                ),
+            ),
+            sink=_on_event,
         )
-        registered = False
-        if self._run_registry is not None:
-            registered = await self._run_registry.register(session_key, run_task)
-            if not registered:
-                run_task.cancel("cancelled: session already has an active run")
-                with contextlib.suppress(asyncio.CancelledError):
-                    await run_task
-                raise RuntimeError("Agent is already processing this session.")
+        run_task = (
+            await self._run_registry.start(session_key, run)
+            if self._run_registry is not None
+            else asyncio.create_task(run)
+        )
+        if run_task is None:
+            raise RuntimeError("Agent is already processing this session.")
         try:
             result = await run_task
         finally:
-            if self._run_registry is not None and registered:
+            if self._run_registry is not None:
                 await self._run_registry.clear(session_key, run_task)
         if result.status == "aborted":
             raise asyncio.CancelledError(result.error or "Cancelled while running trigger action")
@@ -538,40 +518,9 @@ class TriggerScheduler:
                 for block in result.final_item.content
                 if isinstance(block, TextBlock) and block.text
             ).strip()
-        route_mode = route.normalized_action_config.get("route_mode")
-        normalized_route_mode = (
-            str(route_mode) if isinstance(route_mode, str) and route_mode else None
-        )
         return TriggerActionOutcome(
             output_summary=f"agent_message:{final_text[:500]}",
             resolved_session_id=session_id,
-            route_mode=normalized_route_mode,
-            used_fallback=route.used_fallback,
-        )
-
-    async def _resolve_effective_user_id(
-        self,
-        db: AsyncSession,
-        trigger: Trigger,
-        action: dict,
-    ) -> str:
-        user_id = (trigger.user_id or "").strip()
-        if user_id:
-            return user_id
-
-        candidate_session_id = extract_agent_message_target_session_id(action)
-        if candidate_session_id is not None:
-            result = await db.execute(select(Session).where(Session.id == candidate_session_id))
-            session = result.scalars().first()
-            if session is not None:
-                trigger.user_id = session.user_id
-                return session.user_id
-            raise TriggerOwnershipError(
-                f"Trigger {trigger.id} references missing action session: {candidate_session_id}"
-            )
-
-        raise TriggerOwnershipError(
-            f"Trigger {trigger.id} has no owner user_id and no action_config target session"
         )
 
     async def _execute_tool_call(self, trigger: Trigger) -> TriggerActionOutcome:

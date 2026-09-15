@@ -27,8 +27,6 @@ class BackupInfoResponse(BaseModel):
     created_at: str | None = None
     created_by_version: str | None = None
     items: list[str] = Field(default_factory=list)
-    restorable: bool = True
-    compatibility: str | None = None
 
 
 class ImportRequest(BaseModel):

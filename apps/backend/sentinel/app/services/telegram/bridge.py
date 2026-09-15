@@ -1,17 +1,17 @@
 from __future__ import annotations
 
+from app.services.sessions.compaction import CompactionService
+
 import asyncio
 import base64
-import html
 import json
 import logging
-import re
 from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from telegram import (
     BotCommand,
     BotCommandScopeChat,
@@ -20,7 +20,6 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
-from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -30,225 +29,36 @@ from telegram.ext import (
     filters,
 )
 
-from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
-from app.models import Message as MessageModel, Session as SessionModel
-from app.services.agent_runtime_adapters import (
-    SentinelLoopRuntimeAdapter,
-    runtime_event_to_sentinel_event,
-)
-from app.services.sessions import session_bindings
-from app.services.llm.ids import TierName
+from app.models import Message as MessageModel
+from app.models import Session as SessionModel
+from sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
+import app.services.agent_runtime_adapters.runtime as runtime_adapter_module
+from sentral.llm.runtime_conversions import runtime_event_to_sentinel_event
+from app.services.agent_runtime_adapters.conversions import db_messages_to_runtime_items
+from sentral.llm.ids import TierName
 from app.services.messages import (
     build_generation_metadata,
     telegram_ingress_metadata,
     with_generation_metadata,
 )
+from app.services.sessions import session_bindings
 from app.services.sessions.session_naming import (
     SessionNamingService,
     apply_conversation_message_delta,
     conversation_delta_for_role,
 )
 
+from .delivery import RichReplyDraft, send_rich_message
 from .shared import (
-    TELEGRAM_BUSY_POLL_ATTEMPTS,
-    TELEGRAM_BUSY_POLL_INTERVAL_SECONDS,
-    TELEGRAM_MAX_MSG_LEN,
-    _RuntimeSupportProtocol,
     _PersistedInboundMessage,
     _RouteContext,
     _RunRegistryProtocol,
+    _RuntimeSupportProtocol,
     _ToolDeliveryState,
     _WSManagerProtocol,
 )
 
 logger = logging.getLogger(__name__)
-_TELEGRAM_INLINE_STREAM_INTERVAL_SECONDS = 0.75
-
-_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
-_BOLD_RE = re.compile(r"\*\*([^\n*][^*]*?)\*\*|__([^\n_][^_]*?)__")
-_ITALIC_RE = re.compile(r"(?<!\*)\*([^\n*][^*]*?)\*(?!\*)|(?<!_)_([^\n_][^_]*?)_(?!_)")
-
-
-def _format_telegram_inline_markdown(text: str) -> str:
-    placeholders: dict[str, str] = {}
-
-    def _stash(rendered: str) -> str:
-        token = f"@@TG{len(placeholders)}@@"
-        placeholders[token] = rendered
-        return token
-
-    text = _MARKDOWN_LINK_RE.sub(
-        lambda match: _stash(
-            f'<a href="{html.escape(match.group(2), quote=True)}">{html.escape(match.group(1))}</a>'
-        ),
-        text,
-    )
-    text = _INLINE_CODE_RE.sub(
-        lambda match: _stash(f"<code>{html.escape(match.group(1))}</code>"),
-        text,
-    )
-
-    escaped = html.escape(text)
-    escaped = _BOLD_RE.sub(
-        lambda match: f"<b>{match.group(1) or match.group(2) or ''}</b>",
-        escaped,
-    )
-    escaped = _ITALIC_RE.sub(
-        lambda match: f"<i>{match.group(1) or match.group(2) or ''}</i>",
-        escaped,
-    )
-
-    for token, rendered in placeholders.items():
-        escaped = escaped.replace(token, rendered)
-    return escaped
-
-
-def _split_text_blocks(text: str) -> list[tuple[str, str]]:
-    blocks: list[tuple[str, str]] = []
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    in_code = False
-    code_lines: list[str] = []
-    prose_lines: list[str] = []
-
-    def _flush_prose() -> None:
-        nonlocal prose_lines
-        prose = "\n".join(prose_lines).strip()
-        prose_lines = []
-        if not prose:
-            return
-        for paragraph in re.split(r"\n{2,}", prose):
-            paragraph = paragraph.strip()
-            if paragraph:
-                blocks.append(("text", paragraph))
-
-    for line in normalized.split("\n"):
-        if line.startswith("```"):
-            if in_code:
-                blocks.append(("code", "\n".join(code_lines).rstrip("\n")))
-                code_lines = []
-                in_code = False
-            else:
-                _flush_prose()
-                in_code = True
-            continue
-        if in_code:
-            code_lines.append(line)
-        else:
-            prose_lines.append(line)
-
-    if in_code:
-        blocks.append(("code", "\n".join(code_lines).rstrip("\n")))
-    else:
-        _flush_prose()
-    return blocks
-
-
-def _format_text_block_for_telegram(block: str) -> str:
-    return _format_telegram_inline_markdown(block)
-
-
-def _split_large_text_block_for_telegram(block: str) -> list[str]:
-    tokens = re.split(r"(\s+)", block)
-    chunks: list[str] = []
-    current = ""
-
-    def _formatted_length(raw: str) -> int:
-        return len(_format_text_block_for_telegram(raw))
-
-    for token in tokens:
-        if not token:
-            continue
-        candidate = f"{current}{token}"
-        if current and _formatted_length(candidate) > TELEGRAM_MAX_MSG_LEN:
-            chunks.append(_format_text_block_for_telegram(current.strip()))
-            current = token.lstrip()
-            if _formatted_length(current) > TELEGRAM_MAX_MSG_LEN:
-                hard_limit = max(1, TELEGRAM_MAX_MSG_LEN - 64)
-                while len(current) > hard_limit:
-                    piece = current[:hard_limit]
-                    chunks.append(_format_text_block_for_telegram(piece))
-                    current = current[hard_limit:]
-        else:
-            current = candidate
-
-    if current.strip():
-        chunks.append(_format_text_block_for_telegram(current.strip()))
-    return chunks or [""]
-
-
-def _split_large_code_block_for_telegram(block: str) -> list[str]:
-    max_code_len = TELEGRAM_MAX_MSG_LEN - len("<pre></pre>")
-    lines = block.splitlines(keepends=True) or [block]
-    chunks: list[str] = []
-    current = ""
-
-    for line in lines:
-        if current and len(html.escape(current + line)) > max_code_len:
-            chunks.append(f"<pre>{html.escape(current.rstrip())}</pre>")
-            current = line
-        else:
-            current += line
-
-    if current or not chunks:
-        chunks.append(f"<pre>{html.escape(current.rstrip())}</pre>")
-    return chunks
-
-
-def _telegram_formatted_chunks(text: str) -> list[str]:
-    blocks = _split_text_blocks(text)
-    if not blocks:
-        return [html.escape(text)]
-
-    rendered_blocks: list[str] = []
-    for kind, block in blocks:
-        if kind == "code":
-            candidate = f"<pre>{html.escape(block)}</pre>"
-            if len(candidate) <= TELEGRAM_MAX_MSG_LEN:
-                rendered_blocks.append(candidate)
-            else:
-                rendered_blocks.extend(_split_large_code_block_for_telegram(block))
-        else:
-            candidate = _format_text_block_for_telegram(block)
-            if len(candidate) <= TELEGRAM_MAX_MSG_LEN:
-                rendered_blocks.append(candidate)
-            else:
-                rendered_blocks.extend(_split_large_text_block_for_telegram(block))
-
-    chunks: list[str] = []
-    current = ""
-    for block in rendered_blocks:
-        if not current:
-            current = block
-            continue
-        candidate = f"{current}\n\n{block}"
-        if len(candidate) <= TELEGRAM_MAX_MSG_LEN:
-            current = candidate
-        else:
-            chunks.append(current)
-            current = block
-    if current:
-        chunks.append(current)
-    return chunks
-
-
-def _telegram_tool_result_summary(
-    *,
-    tool_name: str,
-    content: str,
-    is_error: bool,
-) -> str | None:
-    normalized_name = (tool_name or "").strip()
-    if not normalized_name or normalized_name == "telegram":
-        return None
-    normalized_content = (content or "").strip()
-    if not normalized_content:
-        normalized_content = "No output payload."
-    max_chars = 1200
-    if len(normalized_content) > max_chars:
-        normalized_content = f"{normalized_content[:max_chars].rstrip()}…"
-    label = "Tool Error" if is_error else "Tool Result"
-    return f"{label} · {normalized_name}\n\n```\n{normalized_content}\n```"
 
 
 class TelegramBridge:
@@ -274,8 +84,7 @@ class TelegramBridge:
         self._instance_settings = instance_settings
 
         self._app: Application | None = None
-        self._queue: asyncio.Queue[tuple[Update, dict]] = asyncio.Queue()
-        self._worker_task: asyncio.Task | None = None
+        self._reply_tasks: set[asyncio.Task] = set()
         self._running = False
         self._bot_username: str | None = None
         self._can_read_all_group_messages: bool | None = None
@@ -443,15 +252,13 @@ class TelegramBridge:
         return None
 
     async def _resolve_owner_active_session(self, db: object) -> UUID | None:
-        """Resolve owner DM route session from the owner_active binding (defaults to main)."""
+        """Resolve owner DM route session from the explicit owner_active binding."""
         session = await session_bindings.resolve_owner_active_session(
             db,
             user_id=self._user_id,
             agent_id="dev-agent",
         )
-        await db.commit()
-        await db.refresh(session)
-        return session.id
+        return session.id if session is not None else None
 
     async def _resolve_or_create_routed_session(
         self,
@@ -534,7 +341,10 @@ class TelegramBridge:
     ) -> tuple[UUID | None, str]:
         """Map inbound Telegram chat/user tuple to the correct Sentinel session."""
         if self._should_reply_inline(chat, metadata):
-            return (await self._resolve_owner_active_session(db), "owner_main")
+            session_id = await self._resolve_owner_active_session(db)
+            if session_id is None:
+                return (None, "owner_dm_missing")
+            return (session_id, "owner_dm")
 
         chat_type = str(getattr(chat, "type", "")).lower()
         chat_id = self._to_int(getattr(chat, "id", None))
@@ -570,20 +380,15 @@ class TelegramBridge:
         if not self._running or self._app is None:
             return False
         try:
-            await self._send_chunked_to_chat(chat_id, text)
+            await self._send_rich_to_chat(chat_id, text)
             return True
         except Exception:
             logger.exception("Failed to send message to chat %s", chat_id)
             return False
 
-    async def _send_chunked_to_chat(self, chat_id: int, text: str) -> None:
-        """Send a message to a chat_id, splitting at Telegram's 4096-char limit."""
-        for chunk in _telegram_formatted_chunks(text):
-            await self._app.bot.send_message(
-                chat_id=chat_id,
-                text=chunk,
-                parse_mode=ParseMode.HTML,
-            )
+    async def _send_rich_to_chat(self, chat_id: int, text: str) -> None:
+        """Send a native rich reply using the shared delivery path."""
+        await send_rich_message(self._app.bot, chat_id, text)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -612,7 +417,7 @@ class TelegramBridge:
             logger.exception("Failed to set Telegram command menu")
 
     async def start(self, stop_event: asyncio.Event) -> None:
-        """Start the Telegram bot with long-polling + message worker."""
+        """Start the Telegram bot with sequential inbound update dispatch."""
         try:
             app = Application.builder().token(self._bot_token).build()
             self._app = app
@@ -651,8 +456,6 @@ class TelegramBridge:
 
             await self._register_bot_commands(app)
 
-            self._worker_task = asyncio.create_task(self._message_worker())
-
             await app.updater.start_polling(drop_pending_updates=True)
             await app.start()
 
@@ -666,19 +469,24 @@ class TelegramBridge:
 
     async def stop(self) -> None:
         self._running = False
-        if self._worker_task and not self._worker_task.done():
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except asyncio.CancelledError:
-                pass
-
+        # Drain short ingress handlers before taking the owned-task snapshot.
+        # Otherwise an in-flight handler could register a run during shutdown.
         if self._app is not None:
             try:
                 if self._app.updater and self._app.updater.running:
                     await self._app.updater.stop()
                 if self._app.running:
                     await self._app.stop()
+            except Exception:
+                logger.exception("Error stopping Telegram updates")
+        tasks = tuple(self._reply_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        if self._app is not None:
+            try:
                 await self._app.shutdown()
             except Exception:
                 logger.exception("Error stopping Telegram bridge")
@@ -752,7 +560,7 @@ class TelegramBridge:
         chat = update.effective_chat
         if chat is not None:
             logger.info("Telegram /ask: chat_id=%s type=%s", chat.id, chat.type)
-        await self._enqueue_message(update, text_override=text)
+        await self._dispatch_message(update, text_override=text)
 
     async def _handle_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """List the owner's recent sessions as inline buttons to switch DM routing."""
@@ -776,13 +584,9 @@ class TelegramBridge:
                 db,
                 user_id=self._user_id,
                 binding_type=session_bindings.OWNER_ACTIVE_BINDING_TYPE,
-                binding_key=session_bindings.MAIN_BINDING_KEY,
+                binding_key=session_bindings.OWNER_ACTIVE_BINDING_KEY,
             )
-            current_id = (
-                current.id
-                if current is not None
-                else await session_bindings.resolve_main_session_id(db, user_id=self._user_id)
-            )
+            current_id = current.id if current is not None else None
 
         if not sessions:
             await update.message.reply_text("No sessions yet.")
@@ -842,7 +646,7 @@ class TelegramBridge:
             logger.exception("Failed to confirm Telegram session switch")
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._enqueue_message(update)
+        await self._dispatch_message(update)
 
     def _resolve_incoming_text(self, update: Update, text_override: str | None = None) -> str:
         """Extract text payload from message body/caption with optional override."""
@@ -852,8 +656,8 @@ class TelegramBridge:
             return ""
         return (update.message.text or update.message.caption or "").strip()
 
-    async def _enqueue_message(self, update: Update, *, text_override: str | None = None) -> None:
-        """Normalize inbound update and enqueue it for serialized processing."""
+    async def _dispatch_message(self, update: Update, *, text_override: str | None = None) -> None:
+        """Dispatch in Telegram update order; only the agent turn runs in background."""
         if not update.message:
             return
         incoming_text = self._resolve_incoming_text(update, text_override)
@@ -902,7 +706,11 @@ class TelegramBridge:
             metadata.get("telegram_user_id"),
             metadata.get("telegram_is_owner"),
         )
-        await self._queue.put((update, metadata))
+        try:
+            await self._process_message(update, metadata)
+        except Exception:
+            logger.exception("Error accepting Telegram message")
+            await update.message.reply_text("An error occurred processing your message.")
 
     @staticmethod
     def _apply_route_guardrails(metadata: dict, route_scope: str) -> None:
@@ -931,6 +739,7 @@ class TelegramBridge:
             metadata=metadata,
         )
         if session_id is None:
+            metadata["telegram_route_error"] = route_scope
             return None
         self._apply_route_guardrails(metadata, route_scope)
         chat_id = self._to_int(getattr(chat, "id", None))
@@ -939,27 +748,10 @@ class TelegramBridge:
             session_id=session_id,
             session_key=str(session_id),
             route_scope=route_scope,
-            inline_reply_mode=(route_scope == "owner_main"),
+            inline_reply_mode=(route_scope == "owner_dm"),
             chat_id=chat_id,
             chat_type=chat_type,
         )
-
-    async def _wait_for_session_ready(self, update: Update, *, session_key: str) -> bool:
-        """Wait for active run on target session to finish before starting another."""
-        busy = await self._run_registry.is_running(session_key)
-        if not busy:
-            return True
-        await update.message.reply_text(
-            "The agent is currently processing another request. Please wait..."
-        )
-        for _ in range(TELEGRAM_BUSY_POLL_ATTEMPTS):
-            await asyncio.sleep(TELEGRAM_BUSY_POLL_INTERVAL_SECONDS)
-            if not await self._run_registry.is_running(session_key):
-                return True
-        await update.message.reply_text(
-            "Agent is still busy after 60 seconds. Please try again later."
-        )
-        return False
 
     async def _persist_inbound_user_message(
         self,
@@ -970,7 +762,6 @@ class TelegramBridge:
         metadata: dict,
     ) -> _PersistedInboundMessage:
         """Persist inbound Telegram user message and detect first-message sessions."""
-        from sqlalchemy import func, select
 
         count_result = await db.execute(
             select(func.count())
@@ -1015,24 +806,9 @@ class TelegramBridge:
         streamed_message: Any | None = None,
     ) -> None:
         """Deliver owner DM response directly in Telegram chat."""
-        if final_text:
-            if streamed_message is not None:
-                await self._finalize_streamed_inline_reply(
-                    update,
-                    chat_id=chat_id,
-                    streamed_message=streamed_message,
-                    final_text=final_text,
-                )
-            else:
-                await self._send_chunked(update, final_text)
-        else:
-            if streamed_message is not None:
-                await self._edit_stream_message(
-                    streamed_message,
-                    "(Agent produced no text response)",
-                )
-            else:
-                await update.message.reply_text("(Agent produced no text response)")
+        if streamed_message is not None:
+            await streamed_message.close()
+        await self._reply_rich(update, final_text or "(Agent produced no text response)")
         if chat_id is None:
             return
         for att in attachments:
@@ -1056,7 +832,7 @@ class TelegramBridge:
             and isinstance(final_text, str)
             and final_text.strip()
         ):
-            await self._send_chunked_to_chat(route.chat_id, final_text.strip())
+            await self._send_rich_to_chat(route.chat_id, final_text.strip())
             delivery_state.delivered = True
             delivery_state.delivered_chat_id = route.chat_id
             delivery_state.fallback_used = True
@@ -1085,7 +861,6 @@ class TelegramBridge:
     async def _auto_compact_after_run(self, db: Any, *, session_id: UUID) -> None:
         """Run best-effort auto-compaction after each Telegram-triggered run."""
         try:
-            from app.services.sessions.compaction import CompactionService
 
             await CompactionService(
                 provider=self._agent_runtime_support.provider
@@ -1093,26 +868,7 @@ class TelegramBridge:
         except Exception:
             return
 
-    # -- sequential message worker -------------------------------------------
-
-    async def _message_worker(self) -> None:
-        """Process queued Telegram messages one at a time."""
-        while self._running:
-            try:
-                update, metadata = await asyncio.wait_for(self._queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                return
-
-            try:
-                await self._process_message(update, metadata)
-            except Exception:
-                logger.exception("Error processing Telegram message")
-                try:
-                    await update.message.reply_text("An error occurred processing your message.")
-                except Exception:
-                    pass
+    # -- serialized ingress and session-owned turns --------------------------
 
     async def _process_message(self, update: Update, metadata: dict) -> None:
         """Persist inbound message, run agent runtime support, and deliver Telegram/web outputs."""
@@ -1140,38 +896,93 @@ class TelegramBridge:
                 metadata=metadata,
             )
             if route is None:
-                await update.message.reply_text("Could not resolve agent session.")
+                if metadata.get("telegram_route_error") == "owner_dm_missing":
+                    await update.message.reply_text(
+                        "Choose a session with /session before sending owner DM messages."
+                    )
+                else:
+                    await update.message.reply_text("Could not resolve agent session.")
                 return
 
-        if not await self._wait_for_session_ready(update, session_key=route.session_key):
+        # Match the desktop steering contract: persistence and enqueue are
+        # serialized against completion. Telegram handlers remain sequential,
+        # so a later /session callback cannot redirect this accepted message.
+        async with self._run_registry.idle_guard(route.session_key) as idle:
+            async with self._db_factory() as db:
+                persisted = await self._persist_inbound_user_message(
+                    db, route=route, content=content, metadata=metadata
+                )
+                if not idle:
+                    await self._enqueue_steering(db, route, persisted)
+        await self._ws_manager.broadcast_message_ack(
+            route.session_key,
+            str(persisted.message.id),
+            content,
+            persisted.message.created_at,
+            metadata=persisted.message.metadata_json,
+        )
+        if not idle:
+            await self._run_registry.notify_idle_interjections(route.session_key)
+            await update.message.reply_text("Direction added to the current run.")
             return
 
+        task = await self._run_registry.start(
+            route.session_key,
+            self._run_reply(update, metadata, route, persisted, content),
+        )
+        if task is None:
+            # Another transport can start the session between the guard and
+            # registration. Preserve this exact message as steering, not a retry.
+            async with self._run_registry.idle_guard(route.session_key):
+                async with self._db_factory() as db:
+                    message = await db.get(MessageModel, persisted.message.id)
+                    persisted = _PersistedInboundMessage(
+                        message=message, is_first_message=persisted.is_first_message
+                    )
+                    await self._enqueue_steering(db, route, persisted)
+            await self._run_registry.notify_idle_interjections(route.session_key)
+            return
+        self._reply_tasks.add(task)
+        task.add_done_callback(self._reply_finished)
+
+    def _reply_finished(self, task: asyncio.Task) -> None:
+        self._reply_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("Telegram reply task failed", exc_info=task.exception())
+
+    async def _enqueue_steering(
+        self, db: Any, route: _RouteContext, persisted: _PersistedInboundMessage
+    ) -> None:
+        message = persisted.message
+        message.metadata_json = {
+            **(message.metadata_json or {}),
+            "steering": "pending",
+            "steering_id": str(message.id),
+        }
+        await db.commit()
+        self._run_registry.enqueue_interjection(
+            route.session_key, db_messages_to_runtime_items([message])[0]
+        )
+
+    async def _run_reply(self, update, metadata, route, persisted, content) -> None:
+        try:
+            await self._run_reply_body(update, metadata, route, persisted, content)
+        finally:
+            await self._run_registry.clear(route.session_key, asyncio.current_task())
+
+    async def _run_reply_body(self, update, metadata, route, persisted, content) -> None:
         async with self._db_factory() as db:
             naming_service = SessionNamingService(
                 provider=getattr(self._agent_runtime_support, "provider", None),
                 ws_manager=self._ws_manager,
                 db_factory=self._db_factory,
             )
-            persisted = await self._persist_inbound_user_message(
-                db,
-                route=route,
-                content=content,
-                metadata=metadata,
-            )
-
-            await self._ws_manager.broadcast_message_ack(
-                route.session_key,
-                str(persisted.message.id),
-                persisted.message.content,
-                persisted.message.created_at,
-            )
-
             if persisted.is_first_message and route.inline_reply_mode:
                 asyncio.create_task(
                     naming_service.maybe_auto_rename(
                         session_id=route.session_id,
                         force=True,
-                        first_message=text,
+                        first_message=content,
                     )
                 )
 
@@ -1179,14 +990,17 @@ class TelegramBridge:
 
             delivery_state = _ToolDeliveryState(expected_chat_id=route.chat_id)
             inline_stream_text = ""
-            inline_stream_message: Any | None = None
-            inline_stream_last_sent = ""
-            inline_stream_last_at = 0.0
+            inline_stream_message = (
+                RichReplyDraft(
+                    self._app.bot,
+                    route.chat_id,
+                    thread_id=getattr(update.message, "message_thread_id", None),
+                )
+                if route.inline_reply_mode
+                else None
+            )
 
             async def _on_event(event: Any) -> None:
-                nonlocal inline_stream_last_at
-                nonlocal inline_stream_last_sent
-                nonlocal inline_stream_message
                 nonlocal inline_stream_text
                 sentinel_event = runtime_event_to_sentinel_event(event)
                 await self._ws_manager.broadcast_agent_event(route.session_key, sentinel_event)
@@ -1195,42 +1009,28 @@ class TelegramBridge:
                         delta = getattr(sentinel_event, "delta", None)
                         if isinstance(delta, str) and delta:
                             inline_stream_text += delta
-                            now = asyncio.get_running_loop().time()
-                            should_flush = (
-                                inline_stream_message is None
-                                or (now - inline_stream_last_at)
-                                >= _TELEGRAM_INLINE_STREAM_INTERVAL_SECONDS
-                                or delta.endswith("\n")
-                            )
-                            if should_flush:
-                                preview = inline_stream_text.strip()
-                                if preview and preview != inline_stream_last_sent:
-                                    if inline_stream_message is None:
-                                        inline_stream_message = await update.message.reply_text("…")
-                                    try:
-                                        await self._edit_stream_message(
-                                            inline_stream_message,
-                                            preview,
-                                        )
-                                        inline_stream_last_sent = preview
-                                        inline_stream_last_at = now
-                                    except Exception:
-                                        logger.exception("Failed to stream Telegram inline reply")
+                            inline_stream_message.update(inline_stream_text)
+                    elif (
+                        sentinel_event.type == "toolcall_start"
+                        and sentinel_event.tool_call is not None
+                    ):
+                        inline_stream_message.update(
+                            f"{inline_stream_text}\n\n*Working: {sentinel_event.tool_call.name}*"
+                        )
                     elif (
                         sentinel_event.type == "tool_result"
                         and sentinel_event.tool_result is not None
                     ):
                         tool_result = sentinel_event.tool_result
-                        tool_summary = _telegram_tool_result_summary(
-                            tool_name=tool_result.tool_name,
-                            content=tool_result.content,
-                            is_error=tool_result.is_error,
-                        )
-                        if tool_summary:
-                            try:
-                                await self._send_chunked(update, tool_summary)
-                            except Exception:
-                                logger.exception("Failed to send Telegram tool result summary")
+                        if tool_result.tool_name != "telegram":
+                            status = (
+                                "Waiting for approval"
+                                if event.approval_request is not None
+                                else "Needs attention" if tool_result.is_error else "Completed"
+                            )
+                            inline_stream_message.update(
+                                f"{inline_stream_text}\n\n*{status}: {tool_result.tool_name}*"
+                            )
                     return
                 if sentinel_event.type != "tool_result" or sentinel_event.tool_result is None:
                     return
@@ -1251,49 +1051,41 @@ class TelegramBridge:
                 delivery_state.delivered = True
                 delivery_state.delivered_chat_id = outbound_chat_id
 
-            runtime = SentinelLoopRuntimeAdapter(
+            runtime = runtime_adapter_module.SentinelLoopRuntimeAdapter(
                 loop=self._agent_runtime_support,
                 db=db,
                 session_id=route.session_id,
             )
 
-            run_task = asyncio.create_task(
-                runtime.run_turn(
-                    RunTurnRequest(
-                        conversation_id=route.session_key,
-                        new_items=[
-                            ConversationItem(
-                                id="telegram-user-input",
-                                role="user",
-                                content=[TextBlock(text=content)],
-                                metadata=dict(metadata),
-                            )
-                        ],
-                        config=GenerationConfig(
-                            model=TierName.NORMAL.value,
-                            max_iterations=25,
-                            stream=True,
-                            provider_metadata={
-                                "persist_user_message": False,
-                            },
-                        ),
-                        interjection_source=lambda: self._run_registry.drain_interjections(
-                            route.session_key
-                        ),
+            run = runtime.run_turn(
+                RunTurnRequest(
+                    conversation_id=route.session_key,
+                    new_items=[
+                        ConversationItem(
+                            id="telegram-user-input",
+                            role="user",
+                            content=[TextBlock(text=content)],
+                            metadata=dict(metadata),
+                        )
+                    ],
+                    config=GenerationConfig(
+                        model=TierName.NORMAL.value,
+                        max_iterations=25,
+                        stream=True,
+                        provider_metadata={
+                            "persist_user_message": False,
+                        },
                     ),
-                    sink=_on_event,
-                )
+                    interjection_source=lambda: self._run_registry.drain_interjections(
+                        route.session_key
+                    ),
+                ),
+                sink=_on_event,
             )
-
-            registered = await self._run_registry.register(route.session_key, run_task)
-            if not registered:
-                run_task.cancel()
-                await update.message.reply_text("Agent is already processing this session.")
-                return
 
             run_completed_successfully = False
             try:
-                result = await run_task
+                result = await run
                 final_text = ""
                 if result and result.final_item is not None:
                     final_text = "\n".join(
@@ -1322,62 +1114,30 @@ class TelegramBridge:
 
             except asyncio.CancelledError:
                 await update.message.reply_text("Agent run was cancelled.")
+                raise
             except Exception as exc:
                 logger.exception("Agent run failed for Telegram message")
                 await self._ws_manager.broadcast_agent_error(route.session_key, str(exc))
                 await self._ws_manager.broadcast_done(route.session_key, "error")
                 await update.message.reply_text("An error occurred while processing your request.")
             finally:
-                await self._run_registry.clear(route.session_key, run_task)
+                if inline_stream_message is not None:
+                    await inline_stream_message.close()
                 await self._auto_compact_after_run(db, session_id=route.session_id)
                 if run_completed_successfully:
                     await naming_service.maybe_auto_rename(session_id=route.session_id)
 
     # -- helpers -------------------------------------------------------------
 
-    async def _send_chunked(self, update: Update, text: str) -> None:
-        """Send a message, splitting at Telegram's 4096-char limit."""
-        for chunk in _telegram_formatted_chunks(text):
-            try:
-                await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
-            except Exception:
-                logger.exception("Failed to send Telegram chunk")
-
-    async def _edit_stream_message(self, message: Any, text: str) -> None:
-        formatted_chunks = _telegram_formatted_chunks(text)
-        chunk = formatted_chunks[0] if formatted_chunks else html.escape(text)
-        await message.edit_text(chunk, parse_mode=ParseMode.HTML)
-
-    async def _finalize_streamed_inline_reply(
-        self,
-        update: Update,
-        *,
-        chat_id: int | None,
-        streamed_message: Any,
-        final_text: str,
-    ) -> None:
-        chunks = _telegram_formatted_chunks(final_text)
-        if not chunks:
-            await self._edit_stream_message(streamed_message, "(Agent produced no text response)")
-            return
-        try:
-            await streamed_message.edit_text(chunks[0], parse_mode=ParseMode.HTML)
-        except Exception:
-            logger.exception("Failed to finalize streamed Telegram message")
-            await self._send_chunked(update, final_text)
-            return
-
-        if chat_id is None or self._app is None:
-            return
-        for chunk in chunks[1:]:
-            try:
-                await self._app.bot.send_message(
-                    chat_id=chat_id,
-                    text=chunk,
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception:
-                logger.exception("Failed to send trailing Telegram chunk")
+    async def _reply_rich(self, update: Update, text: str) -> None:
+        """Reply with the same renderer and transport as module sends."""
+        await send_rich_message(
+            self._app.bot,
+            update.effective_chat.id,
+            text,
+            reply_to=update.message.message_id,
+            thread_id=getattr(update.message, "message_thread_id", None),
+        )
 
     async def _send_photo(
         self, chat_id: int, image_base64: str, caption: str | None = None

@@ -6,7 +6,7 @@ import pytest
 
 from app.routers import settings as settings_router
 from app.routers.settings import DeleteProviderRequest, SetApiKeysRequest, SetPrimaryProviderRequest
-from app.services.llm.ids import ProviderChoice
+from sentral.llm.ids import ProviderChoice
 
 
 class _SettingsService:
@@ -34,13 +34,11 @@ async def test_settings_mutations_rebuild_current_instance_context(
 
     monkeypatch.setattr(settings_router, "_rebuild_current_instance_runtime_context", rebuild)
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
-    user = object()
     service = _SettingsService()
 
     response = await settings_router.set_api_keys(
         SetApiKeysRequest(openai_api_key="sk-test"),
         request,  # type: ignore[arg-type]
-        user,
         object(),  # type: ignore[arg-type]
         service,  # type: ignore[arg-type]
     )
@@ -49,7 +47,6 @@ async def test_settings_mutations_rebuild_current_instance_context(
     response = await settings_router.delete_api_keys(
         DeleteProviderRequest(provider=ProviderChoice.OPENAI),
         request,  # type: ignore[arg-type]
-        user,
         object(),  # type: ignore[arg-type]
         service,  # type: ignore[arg-type]
     )
@@ -58,7 +55,6 @@ async def test_settings_mutations_rebuild_current_instance_context(
     response = await settings_router.set_primary_provider(
         SetPrimaryProviderRequest(provider=ProviderChoice.GEMINI),
         request,  # type: ignore[arg-type]
-        user,
         object(),  # type: ignore[arg-type]
         service,  # type: ignore[arg-type]
     )
@@ -70,3 +66,43 @@ async def test_settings_mutations_rebuild_current_instance_context(
         "set_primary_provider:gemini",
     ]
     assert rebuilt == ["rebuild", "rebuild", "rebuild"]
+
+
+@pytest.mark.asyncio
+async def test_claude_import_rebuilds_runtime_and_returns_mask_only(monkeypatch):
+    calls = []
+
+    class Service:
+        async def import_desktop_claude_oauth_token(self, db):
+            calls.append("import")
+            return SimpleNamespace(masked_key="sk-a...test")
+
+    async def rebuild(request):
+        calls.append("rebuild")
+
+    monkeypatch.setattr(settings_router, "_rebuild_current_instance_runtime_context", rebuild)
+    result = await settings_router.import_desktop_claude_oauth(
+        SimpleNamespace(), object(), Service()
+    )
+    assert result == {"success": True, "masked_key": "sk-a...test"}
+    assert calls == ["import", "rebuild"]
+
+
+@pytest.mark.asyncio
+async def test_gemini_import_rebuilds_runtime_and_returns_mask_only(monkeypatch):
+    calls = []
+
+    class Service:
+        async def import_desktop_gemini_oauth_token(self, db):
+            calls.append("import")
+            return SimpleNamespace(masked_key="refr...oken")
+
+    async def rebuild(request):
+        calls.append("rebuild")
+
+    monkeypatch.setattr(settings_router, "_rebuild_current_instance_runtime_context", rebuild)
+    result = await settings_router.import_desktop_gemini_oauth(
+        SimpleNamespace(), object(), Service()
+    )
+    assert result == {"success": True, "masked_key": "refr...oken"}
+    assert calls == ["import", "rebuild"]

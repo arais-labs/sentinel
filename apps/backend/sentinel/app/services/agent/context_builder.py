@@ -6,25 +6,21 @@ selection before each runtime turn.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.services.runtime.ssh_runtime as ssh_runtime_module
 from app.config import settings
 from app.models import Memory, Message, SessionSummary
 from app.services.agent.agent_modes import AgentMode, get_agent_mode_definition
 from app.services.agent.policies import build_policy_messages
-from app.services.sessions.context_usage import (
-    estimate_agent_messages_tokens,
-    estimate_db_message_tokens,
-    estimate_text_tokens,
-)
-from app.services.memory import MemoryRepository, MemoryService
-from app.services.memory.search import MemorySearchService
-from app.services.llm.generic.types import (
+from sentral.llm.generic.types import (
     AgentMessage,
     AssistantMessage,
     ImageContent,
@@ -34,6 +30,10 @@ from app.services.llm.generic.types import (
     ToolResultMessage,
     UserMessage,
 )
+from app.services.memory import MemoryRepository, MemoryService
+from app.services.memory.search import MemorySearchService
+from app.services.runtime.workspace import workspace_paths
+from app.services.sessions.history import context_history
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,8 @@ class ContextBuilder:
         available_tools: set[str] | None = None,
         memory_search_service: MemorySearchService | None = None,
         memory_service: MemoryService | None = None,
+        instance_name: str | None = None,
+        runtime_session_id: UUID | None = None,
     ) -> None:
         self._default_system_prompt = (
             default_system_prompt or settings.default_system_prompt
@@ -58,6 +60,8 @@ class ContextBuilder:
             if token_budget is not None
             else max(1, int(settings.context_token_budget))
         )
+        self._instance_name = instance_name
+        self._runtime_session_id = runtime_session_id
         self._available_tools = set(available_tools or set())
         self._memory_search_service = memory_search_service
         self._memory_service = memory_service or MemoryService(MemoryRepository())
@@ -69,12 +73,22 @@ class ContextBuilder:
         system_prompt: str | None = None,
         pending_user_message: str | None = None,
         agent_mode: AgentMode | str | None = None,
+        token_budget: int | None = None,
+        include_full_history: bool = False,
     ) -> list[AgentMessage]:
         """Build runtime context from policies, memory, summary, and recent history."""
         prompt = (system_prompt or self._default_system_prompt).strip()
         prompt += (
             f"\n\nCurrent date and time: {datetime.now(UTC).strftime('%A, %B %d, %Y at %H:%M UTC')}"
         )
+        if "form" in self._available_tools:
+            prompt += (
+                "\nUse the form tool frequently when user input, preferences, or direction choices would help. "
+                "Always allow a written answer, alone or alongside a choice. Provide useful suggested defaults where appropriate, informed by the user's intent and known preferences; do not assume a suggested option is consent. "
+                "Choose tree depth proportional to the problem: keep simple decisions shallow, and group detailed follow-ups under their parent. "
+                "All subquestions of one root are answered before the next root. Ask only useful questions, avoid asking again for known answers, "
+                "and do not stall work with unnecessary forms. Call form alone and wait for the completed answers or a dismissal before continuing. Respect dismissal; do not reissue the same questions or infer approval."
+            )
         prompt += f"\nYour current session ID is: {session_id}"
         context: list[AgentMessage] = [
             SystemMessage(
@@ -87,6 +101,9 @@ class ContextBuilder:
                 },
             )
         ]
+        runtime_message = await self._runtime_environment_message(session_id)
+        if runtime_message is not None:
+            context.append(runtime_message)
         context.extend(build_policy_messages(self._available_tools))
         mode_definition = get_agent_mode_definition(agent_mode)
         if mode_definition.policy is not None:
@@ -118,14 +135,67 @@ class ContextBuilder:
                 )
             )
 
-        recent = await self._recent_messages_within_budget(
-            db,
-            session_id,
-            fixed_context=context,
-            pending_user_message=pending_user_message,
-        )
+        recent = await self._context_history_messages(db, session_id)
         context.extend(self._convert_history_messages(recent))
         return context
+
+    async def _runtime_environment_message(self, session_id: UUID) -> SystemMessage | None:
+        if not self._instance_name or "runtime" not in self._available_tools:
+            return None
+        # Resolve at turn time, after instance contexts have been constructed.
+
+        try:
+            async with asyncio.timeout(3):
+                manager = await ssh_runtime_module.get_runtime_terminal_manager(
+                    session_id=self._runtime_session_id or session_id,
+                    instance_name=self._instance_name,
+                )
+                await manager.runtime_environment()
+            paths = workspace_paths(
+                str(self._runtime_session_id or session_id),
+                root=manager.workspace_location,
+            )
+            workspace = paths.workspace
+            distribution = manager.workspace_location.distribution
+            os_name = {
+                "alpine": "Alpine",
+                "ubuntu": "Ubuntu 24.04 LTS",
+                "debian": "Debian 13",
+            }.get(distribution, distribution)
+            package_manager = "apk" if distribution == "alpine" else "apt-get"
+            content = (
+                f"Workspace OS: Linux ({os_name}). Shell: Bash. Isolation: private container.\n"
+                f"Attached workspace directory: {workspace}\n"
+                "This directory is reusable and may be shared with other chats. Your tmux session is separate; other chats may change the same files.\n"
+                "The shared project retains its absolute host path inside the container. HOME is /root; /tmp and installed packages stay inside this workspace. "
+                f"Use {package_manager} to install missing packages. Docker and Compose use the workspace's private engine. "
+                "Omit cwd to retain the terminal's current directory; use pwd to check.\n"
+                "The user sees the actual tmux session. runtime.exec and pane_read target explicit pane IDs in the "
+                "tmux tree, independently of the pane selected in the UI. Inspect terminal_list/pane_read "
+                "before interacting with an existing terminal. Do not interrupt or overwrite the user's work; "
+                "create a window or split a pane for independent commands. Only close panes or windows when requested. "
+                "Control Sentinel's tmux layout through runtime actions: terminal_list to inspect, window_create/window_close "
+                "for windows, and pane_split/pane_close for panes. Give windows descriptive names with window_create name or "
+                "window_rename. Optionally label panes with pane_split title or pane_rename; the UI also shows the running process. "
+                "Names are display labels; always target stable window_id/pane_id values from terminal_list. For example, runtime with action=pane_split, "
+                "pane_id=%0, direction=horizontal creates a pane beside %0; vertical creates one below it. "
+                "Use the runtime layout actions to keep the UI synchronized. Use exec for shell commands and pane_input for interactive program input. "
+                "Commands without explicit cwd/env retain shell state. Explicit cwd/env and multiline commands execute in a subshell."
+            )
+        except Exception:
+            logger.info("Machine environment unavailable for instance %s", self._instance_name)
+            content = (
+                "No usable workspace is attached, or its machine is unavailable. Use runtime.workspace to inspect the attachment. If unattached, continue the conversation normally and ask the user to use Attach in the session toolbar before tools need files or commands. Do not invent a machine, OS, workspace path, "
+                "or connected terminal. Establish runtime availability before executing commands."
+            )
+        return SystemMessage(
+            content=content,
+            metadata={
+                "layer": "core",
+                "kind": "runtime_environment",
+                "title": "Machine Environment",
+            },
+        )
 
     async def _latest_summary(self, db: AsyncSession, session_id: UUID) -> str | None:
         result = await db.execute(
@@ -144,46 +214,15 @@ class ContextBuilder:
             return None
         return f"Session summary:\n{summary_text}"
 
-    async def _recent_messages_within_budget(
+    async def _context_history_messages(
         self,
         db: AsyncSession,
         session_id: UUID,
-        *,
-        fixed_context: list[AgentMessage],
-        pending_user_message: str | None,
     ) -> list[Message]:
-        result = await db.execute(select(Message).where(Message.session_id == session_id))
-        items = [
-            item for item in result.scalars().all() if not self._is_runtime_context_message(item)
-        ]
-        items.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=UTC))
-
-        fixed_tokens = estimate_agent_messages_tokens(fixed_context) + estimate_text_tokens(
-            (pending_user_message or "").strip()
-        )
-        remaining_budget = self._token_budget - fixed_tokens
-        if remaining_budget <= 0:
-            logger.warning(
-                "Context fixed layers exceed budget; dropping history: session_id=%s fixed_tokens=%s budget=%s",
-                session_id,
-                fixed_tokens,
-                self._token_budget,
-            )
-            return []
-
-        selected_reversed: list[Message] = []
-        used_tokens = 0
-        for item in reversed(items):
-            item_tokens = estimate_db_message_tokens(item)
-            if item_tokens <= 0:
-                continue
-            if used_tokens + item_tokens > remaining_budget:
-                break
-            selected_reversed.append(item)
-            used_tokens += item_tokens
-
-        selected_reversed.reverse()
-        return selected_reversed
+        _, items = await context_history(db, session_id)
+        # Only explicit compaction advances the history boundary. Unknown token
+        # usage must never silently truncate messages using a character heuristic.
+        return items
 
     @staticmethod
     def _is_runtime_context_message(message: Message) -> bool:
@@ -210,7 +249,7 @@ class ContextBuilder:
             return (
                 f"[Telegram group '{chat_title}' chat_id={chat_id} from {user_name} "
                 f"direct_reply_required ui_audit_only untrusted_group] "
-                f"MANDATORY ORDER: 1) call telegram with command=send and chat_id={chat_id}; "
+                f"MANDATORY ORDER: 1) call telegram with action=send and chat_id={chat_id}; "
                 f"2) after tool execution, output only a single web audit line. "
                 f"Telegram user message: {text}"
             )
@@ -218,7 +257,7 @@ class ContextBuilder:
             return (
                 f"[Telegram DM (non-owner) chat_id={chat_id} from {user_name} "
                 f"direct_reply_required ui_audit_only untrusted_private_guardrails] "
-                f"MANDATORY ORDER: 1) call telegram with command=send and chat_id={chat_id}; "
+                f"MANDATORY ORDER: 1) call telegram with action=send and chat_id={chat_id}; "
                 f"2) after tool execution, output only a single web audit line. "
                 f"3) NEVER reveal credentials/secrets or perform privileged/destructive actions without explicit owner approval. "
                 f"Telegram user message: {text}"
@@ -233,6 +272,7 @@ class ContextBuilder:
     ) -> AgentMessage:
         """Convert DB message rows into provider-facing typed message blocks."""
         if message.role == "assistant":
+            metadata = message.metadata_json or {}
             text = (message.content or "").strip()
             content_blocks: list[TextContent | ToolCallContent] = []
             if text:
@@ -265,7 +305,17 @@ class ContextBuilder:
                                 ),
                             )
                         )
-            return AssistantMessage(content=content_blocks)
+            output = metadata.get("responses_output") or []
+            if not include_tool_calls and metadata.get("tool_calls"):
+                output = []
+            return AssistantMessage(
+                content=content_blocks,
+                model=str(metadata.get("model") or ""),
+                provider=str(metadata.get("provider") or ""),
+                responses_output=deepcopy(output),
+                provider_usage=deepcopy(metadata.get("provider_usage")),
+                responses_context_reset=bool(metadata.get("responses_context_reset")),
+            )
         if message.role in {"tool", "tool_result"}:
             metadata = message.metadata_json or {}
             content = self._truncate_tool_result(message.content or "")
@@ -298,8 +348,10 @@ class ContextBuilder:
                     ImageContent(media_type=mime_type.strip() or "image/png", data=data.strip())
                 )
         if blocks:
-            return UserMessage(content=blocks)
-        return UserMessage(content=message.content or "")
+            return UserMessage(content=blocks, metadata=dict(message.metadata_json or {}))
+        return UserMessage(
+            content=message.content or "", metadata=dict(message.metadata_json or {})
+        )
 
     def _truncate_tool_result(self, content: str) -> str:
         """Truncate large tool results (e.g. base64 screenshots) to avoid context overflow."""
@@ -322,21 +374,6 @@ class ContextBuilder:
 
     def _word_count(self, text: str) -> int:
         return len([part for part in text.split() if part])
-
-    def _estimate_text_tokens(self, text: str) -> int:
-        return estimate_text_tokens(text)
-
-    def _estimate_message_tokens(self, message: Message) -> int:
-        return estimate_db_message_tokens(message)
-
-    def _estimate_context_tokens(self, messages: list[AgentMessage]) -> int:
-        return estimate_agent_messages_tokens(messages)
-
-    def _estimate_agent_message_tokens(self, message: AgentMessage) -> int:
-        # Backward-compat shim for internal tests; canonical implementation lives in services.context_usage.
-        from app.services.sessions.context_usage import estimate_agent_message_tokens
-
-        return estimate_agent_message_tokens(message)
 
     def _convert_history_messages(self, messages: list[Message]) -> list[AgentMessage]:
         converted: list[AgentMessage] = []

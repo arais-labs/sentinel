@@ -7,9 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db, get_request_instance_runtime_context
-from app.middleware.auth import TokenPayload, require_auth
 from app.services.instance_runtime_context import instance_runtime_context_registry
-from app.services.sessions import session_bindings
 from app.services.settings.system_settings import delete_system_setting, upsert_system_setting
 from app.services.telegram.lifecycle import mask_telegram_token
 
@@ -20,17 +18,6 @@ router = APIRouter()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
-
-
-async def _resolve_main_session_id(db: AsyncSession, user_id: str) -> str | None:
-    session = await session_bindings.resolve_or_create_main_session(
-        db,
-        user_id=user_id,
-        agent_id=None,
-    )
-    await db.commit()
-    await db.refresh(session)
-    return str(session.id)
 
 
 async def _rebuild(request: Request) -> None:
@@ -68,13 +55,11 @@ def _assert_token_unique(request: Request, token: str) -> None:
 @router.get("/status")
 async def get_status(
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     context = get_request_instance_runtime_context(request)
     instance_settings = context.instance_settings
     bridge: TelegramBridge | None = context.telegram_bridge
-    main_session_id = await _resolve_main_session_id(db, user.sub)
     return {
         "running": bridge.is_running if bridge else False,
         "bot_username": bridge.bot_username if bridge else None,
@@ -82,8 +67,7 @@ async def get_status(
         "connected_chats": bridge.connected_chats if bridge else {},
         "token_configured": bool(instance_settings.telegram_bot_token),
         "masked_token": mask_telegram_token(instance_settings.telegram_bot_token),
-        "owner_user_id": instance_settings.telegram_owner_user_id or instance_settings.dev_user_id,
-        "main_session_id": main_session_id,
+        "owner_user_id": instance_settings.telegram_owner_user_id or "local",
         "owner_chat_id": instance_settings.telegram_owner_chat_id,
         "owner_telegram_user_id": instance_settings.telegram_owner_telegram_user_id,
     }
@@ -102,7 +86,6 @@ class OwnerBindingRequest(BaseModel):
 async def configure(
     payload: ConfigureRequest,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     bot_token = payload.bot_token.strip()
@@ -110,22 +93,20 @@ async def configure(
     instance_settings = get_request_instance_runtime_context(request).instance_settings
     owner_changed = bool(
         instance_settings.telegram_owner_user_id
-        and instance_settings.telegram_owner_user_id != user.sub
+        and instance_settings.telegram_owner_user_id != "local"
     )
-    main_session_id = await _resolve_main_session_id(db, user.sub)
     await upsert_system_setting(db, key="telegram_bot_token", value=bot_token)
-    await upsert_system_setting(db, key="telegram_owner_user_id", value=user.sub)
+    await upsert_system_setting(db, key="telegram_owner_user_id", value="local")
     if owner_changed:
         await delete_system_setting(db, key="telegram_owner_chat_id")
         await delete_system_setting(db, key="telegram_owner_telegram_user_id")
     await _rebuild(request)
-    return {"success": True, "main_session_id": main_session_id}
+    return {"success": True}
 
 
 @router.post("/start")
 async def start_bridge(
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     instance_settings = get_request_instance_runtime_context(request).instance_settings
@@ -133,22 +114,20 @@ async def start_bridge(
         return {"success": False, "error": "No bot token configured"}
     owner_changed = bool(
         instance_settings.telegram_owner_user_id
-        and instance_settings.telegram_owner_user_id != user.sub
+        and instance_settings.telegram_owner_user_id != "local"
     )
-    main_session_id = await _resolve_main_session_id(db, user.sub)
-    await upsert_system_setting(db, key="telegram_owner_user_id", value=user.sub)
+    await upsert_system_setting(db, key="telegram_owner_user_id", value="local")
     if owner_changed:
         await delete_system_setting(db, key="telegram_owner_chat_id")
         await delete_system_setting(db, key="telegram_owner_telegram_user_id")
     await _rebuild(request)
-    return {"success": True, "main_session_id": main_session_id}
+    return {"success": True}
 
 
 @router.post("/owner")
 async def bind_owner_telegram_identity(
     payload: OwnerBindingRequest,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     bridge: TelegramBridge | None = get_request_instance_runtime_context(request).telegram_bridge
@@ -168,7 +147,7 @@ async def bind_owner_telegram_identity(
     )
     owner_chat_id = str(payload.chat_id)
 
-    await upsert_system_setting(db, key="telegram_owner_user_id", value=user.sub)
+    await upsert_system_setting(db, key="telegram_owner_user_id", value="local")
     await upsert_system_setting(db, key="telegram_owner_chat_id", value=owner_chat_id)
     if owner_tg_user_id:
         await upsert_system_setting(
@@ -188,7 +167,6 @@ async def bind_owner_telegram_identity(
 @router.delete("/owner")
 async def clear_owner_telegram_identity(
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     await delete_system_setting(db, key="telegram_owner_chat_id")
@@ -200,7 +178,6 @@ async def clear_owner_telegram_identity(
 @router.post("/stop")
 async def stop_bridge(
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     await delete_system_setting(db, key="telegram_bot_token")
@@ -211,7 +188,6 @@ async def stop_bridge(
 @router.delete("/configure")
 async def delete_config(
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     await delete_system_setting(db, key="telegram_bot_token")

@@ -7,7 +7,8 @@ import pytest
 from app.models import GitAccount
 from app.schemas.runtime import RuntimeExecResult
 from app.services.runtime.environment import RuntimeEnvironment
-from app.services.tools.executor import ToolExecutor, ToolValidationError
+from sentral.errors import ToolValidationError
+from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.registry_builder import build_default_registry
 from tests.fake_db import FakeDB
@@ -53,7 +54,7 @@ class _SSHStub:
         if "remote get-url" in command:
             return RuntimeExecResult(
                 exit_status=0,
-                stdout="https://github.com/arais-labs/sentinel.git\n",
+                stdout="https://github.com/example-org/sample-app.git\n",
                 stderr="",
             )
         return RuntimeExecResult(exit_status=0, stdout="ok\n", stderr="")
@@ -63,8 +64,10 @@ class _TerminalManagerStub:
     def __init__(self, *, environment: RuntimeEnvironment | None = None) -> None:
         self.ssh = _SSHStub()
         self.prepared: list[str] = []
-        self.workspaces_root = "/srv/sentinel"
-        self._environment = environment or RuntimeEnvironment(os="linux", sandbox="bubblewrap")
+        from app.services.runtime.workspace import WorkspaceLocation
+
+        self.workspace_location = WorkspaceLocation("/Users/test/project", "/var/lib/sentinel")
+        self._environment = environment or RuntimeEnvironment(os="linux", sandbox="container")
 
     async def runtime_environment(self) -> RuntimeEnvironment:
         return self._environment
@@ -79,11 +82,10 @@ def _fake_db_with_account(*, write: bool = True) -> FakeDB:
         GitAccount(
             name="github-main",
             host="github.com",
-            scope_pattern="github.com/arais-labs/*",
+            scope_pattern="github.com/example-org/*",
             author_name="Sentinel Bot",
             author_email="sentinel@example.com",
-            token_read="read-token",
-            token_write="write-token" if write else "",
+            token="account-token" if write else "",
         )
     )
     return db
@@ -110,13 +112,21 @@ async def test_git_tool_is_registered() -> None:
     tool = registry.get("git")
 
     assert tool is not None
-    assert tool.parameters_schema["properties"]["command"]["enum"] == ["accounts", "read", "write"]
+    assert tool.parameters_schema["properties"]["action"]["enum"] == [
+        "accounts",
+        "gh_read",
+        "gh_write",
+        "read",
+        "repos",
+        "run_script",
+        "write",
+    ]
     assert "cli_command" in tool.parameters_schema["properties"]
 
 
 @pytest.mark.asyncio
 async def test_git_read_runs_hidden_in_ssh_runtime(monkeypatch) -> None:
-    from app.services.araios.system_modules.git_tool import handlers
+    from app.services.modules.builtins.git_tool import handlers
 
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
@@ -131,8 +141,8 @@ async def test_git_read_runs_hidden_in_ssh_runtime(monkeypatch) -> None:
     result, _duration_ms = await executor.execute(
         "git",
         {
-            "command": "read",
-            "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
+            "action": "read",
+            "cli_command": "git clone https://github.com/example-org/sample-app.git",
             "timeout_seconds": 30,
         },
         runtime=_runtime_context(session_id),
@@ -142,16 +152,16 @@ async def test_git_read_runs_hidden_in_ssh_runtime(monkeypatch) -> None:
     assert result["network_mode"] == "read"
     assert result["account"]["name"] == "github-main"
     assert result["stdout"] == "ok\n"
-    assert manager.prepared == [str(session_id)]
+    assert manager.brokered is True
     assert len(manager.ssh.calls) == 1
     call = manager.ssh.calls[0]
-    assert "bwrap" in str(call["command"])
-    assert "git clone https://github.com/arais-labs/sentinel.git" in str(call["command"])
+    assert str(call["command"]).startswith("cd /Users/test/project && exec git ")
+    assert "git clone https://github.com/example-org/sample-app.git" in str(call["command"])
     assert call["timeout"] == 30
     env = call["env"]
     assert isinstance(env, dict)
     assert env["GIT_TERMINAL_PROMPT"] == "0"
-    assert "read-token" not in str(call["command"])
+    assert "account-token" not in str(call["command"])
     assert "tmux" not in str(call["command"])
 
 
@@ -160,10 +170,10 @@ async def test_git_write_requires_write_command() -> None:
     registry = build_default_registry()
     executor = ToolExecutor(registry)
 
-    with pytest.raises(ToolValidationError, match="must be 'read'"):
+    with pytest.raises(ToolValidationError, match="action=read"):
         await executor.execute(
             "git",
-            {"command": "write", "cli_command": "git status"},
+            {"action": "write", "cli_command": "git status"},
             runtime=ToolRuntimeContext(session_id=uuid4()),
             agent_mode="full_permission",
         )
@@ -171,7 +181,7 @@ async def test_git_write_requires_write_command() -> None:
 
 @pytest.mark.asyncio
 async def test_git_accounts_filters_by_repo(monkeypatch) -> None:
-    from app.services.araios.system_modules.git_tool import handlers
+    from app.services.modules.builtins.git_tool import handlers
 
     db = _fake_db_with_account()
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
@@ -182,19 +192,19 @@ async def test_git_accounts_filters_by_repo(monkeypatch) -> None:
     result, _duration_ms = await executor.execute(
         "git",
         {
-            "command": "accounts",
-            "repo_url": "https://github.com/arais-labs/sentinel.git",
+            "action": "accounts",
+            "repo_url": "https://github.com/example-org/sample-app.git",
         },
     )
 
     assert result["total"] == 1
     assert result["accounts"][0]["name"] == "github-main"
-    assert result["accounts"][0]["has_read_token"] is True
+    assert result["accounts"][0]["has_token"] is True
 
 
 @pytest.mark.asyncio
-async def test_git_gh_uses_ephemeral_token_env(monkeypatch) -> None:
-    from app.services.araios.system_modules.git_tool import handlers
+async def test_git_gh_routes_authentication_through_broker(monkeypatch) -> None:
+    from app.services.modules.builtins.git_tool import handlers
 
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
@@ -208,8 +218,8 @@ async def test_git_gh_uses_ephemeral_token_env(monkeypatch) -> None:
     result, _duration_ms = await executor.execute(
         "git",
         {
-            "command": "read",
-            "cli_command": "gh repo view arais-labs/sentinel",
+            "action": "gh_read",
+            "cli_command": "gh repo view example-org/sample-app",
         },
         runtime=_runtime_context(uuid4()),
     )
@@ -218,14 +228,15 @@ async def test_git_gh_uses_ephemeral_token_env(monkeypatch) -> None:
     call = manager.ssh.calls[0]
     env = call["env"]
     assert isinstance(env, dict)
-    assert env["GH_TOKEN"] == "read-token"
-    assert env["GITHUB_TOKEN"] == "read-token"
-    assert "read-token" not in str(call["command"])
+    assert "GH_TOKEN" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert manager.brokered is True
+    assert "account-token" not in str(call["command"])
 
 
 @pytest.mark.asyncio
 async def test_git_gh_pr_view_infers_owner_from_origin(monkeypatch) -> None:
-    from app.services.araios.system_modules.git_tool import handlers
+    from app.services.modules.builtins.git_tool import handlers
 
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
@@ -239,9 +250,9 @@ async def test_git_gh_pr_view_infers_owner_from_origin(monkeypatch) -> None:
     result, _duration_ms = await executor.execute(
         "git",
         {
-            "command": "read",
+            "action": "gh_read",
             "cli_command": "gh pr view 123",
-            "cwd": "/workspace/sentinel",
+            "cwd": "/Users/test/project/sentinel",
         },
         runtime=_runtime_context(uuid4()),
     )
@@ -255,7 +266,7 @@ async def test_git_gh_pr_view_infers_owner_from_origin(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_git_reports_missing_runtime_executable(monkeypatch) -> None:
-    from app.services.araios.system_modules.git_tool import handlers
+    from app.services.modules.builtins.git_tool import handlers
 
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
@@ -272,8 +283,8 @@ async def test_git_reports_missing_runtime_executable(monkeypatch) -> None:
     result, _duration_ms = await executor.execute(
         "git",
         {
-            "command": "read",
-            "cli_command": "gh repo view arais-labs/sentinel",
+            "action": "gh_read",
+            "cli_command": "gh repo view example-org/sample-app",
         },
         runtime=_runtime_context(uuid4()),
     )
@@ -284,11 +295,11 @@ async def test_git_reports_missing_runtime_executable(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_git_read_runs_hidden_in_macos_seatbelt_runtime(monkeypatch) -> None:
-    from app.services.araios.system_modules.git_tool import handlers
+async def test_git_read_targets_project_subdirectory_in_container(monkeypatch) -> None:
+    from app.services.modules.builtins.git_tool import handlers
 
     db = _fake_db_with_account()
-    manager = _TerminalManagerStub(environment=RuntimeEnvironment(os="darwin", sandbox="seatbelt"))
+    manager = _TerminalManagerStub(environment=RuntimeEnvironment(os="linux", sandbox="container"))
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
     monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
     monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
@@ -300,9 +311,9 @@ async def test_git_read_runs_hidden_in_macos_seatbelt_runtime(monkeypatch) -> No
     result, _duration_ms = await executor.execute(
         "git",
         {
-            "command": "read",
-            "cli_command": "git clone https://github.com/arais-labs/sentinel.git",
-            "cwd": "/workspace/subdir",
+            "action": "read",
+            "cli_command": "git clone https://github.com/example-org/sample-app.git",
+            "cwd": "/Users/test/project/subdir",
             "timeout_seconds": 30,
         },
         runtime=_runtime_context(session_id),
@@ -311,13 +322,59 @@ async def test_git_read_runs_hidden_in_macos_seatbelt_runtime(monkeypatch) -> No
     assert result["ok"] is True
     call = manager.ssh.calls[0]
     command = str(call["command"])
-    assert "sandbox-exec -f /srv/sentinel/" in command
-    assert "/bin/sh -lc" not in command
-    assert "bwrap" not in command
-    assert f"/srv/sentinel/{session_id}/workspace/subdir" in command
-    assert f"HOME=/srv/sentinel/{session_id}/state/home" in command
-    assert f"TMPDIR=/srv/sentinel/{session_id}/tmp" in command
-    assert "/Library/Developer" in command
-    assert "xcrun --find git" in command
-    assert "sentinel_resolve_tool" in command
-    assert " git " in command
+    assert (
+        command
+        == "cd /Users/test/project/subdir && exec git clone https://github.com/example-org/sample-app.git"
+    )
+
+
+def test_project_paths_use_real_root_without_virtual_path_translation():
+    from app.services.modules.builtins.git_tool.handlers import (
+        _build_hidden_runtime_command,
+        _project_cwd,
+    )
+    from app.services.runtime.workspace import WorkspaceLocation, workspace_paths
+
+    project = "/Users/test/My Projects/repo"
+    assert _project_cwd(None, project) == project
+    assert _project_cwd("src", project) == project + "/src"
+    assert _project_cwd(project + "/src", project) == project + "/src"
+    assert _project_cwd("/tmp/repo", project) == "/tmp/repo"
+    assert _project_cwd("../outside", project) == "/Users/test/My Projects/outside"
+    paths = workspace_paths("test", root=WorkspaceLocation(project, "/var/lib/sentinel"))
+    command = _build_hidden_runtime_command(
+        paths,
+        os_name="linux",
+        sandbox="container",
+        cwd=project,
+        tokens=["git", "status"],
+    )
+    assert command == "cd '/Users/test/My Projects/repo' && exec git status"
+
+
+@pytest.fixture(autouse=True)
+def broker_stub(monkeypatch):
+    """Handler tests isolate transport; test_git_surface exercises the real broker."""
+    import shlex
+
+    from app.services.modules.builtins.git_tool import credential_broker
+
+    async def run(*, terminal, tokens, cwd, account, mode, timeout, repo=None, env=None):
+        terminal.brokered = True
+        result = await terminal.ssh.run(
+            "cd " + shlex.quote(cwd) + " && exec " + shlex.join(tokens),
+            timeout=timeout,
+            env={"GIT_TERMINAL_PROMPT": "0", **(env or {})},
+        )
+        stderr = result.stderr
+        if result.exit_status == 127:
+            stderr = f"Required executable '{tokens[0]}' is not available. " + stderr
+        return {
+            "ok": result.exit_status == 0,
+            "returncode": result.exit_status,
+            "stdout": result.stdout,
+            "stderr": stderr,
+            "cwd": cwd,
+        }
+
+    monkeypatch.setattr(credential_broker, "run_brokered", run)

@@ -3,15 +3,14 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
 
 from app.main import app
 from app.config import settings
 from app.services.instance_runtime_context import InstanceRuntimeContext
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent
-from app.services.sub_agents import SubAgentOrchestrator
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import AgentEvent, AssistantMessage, TextContent
+from app.services.sub_agents.orchestrator import SubAgentOrchestrator
 from app.services.tools import ToolExecutor, ToolRegistry
 from app.services.triggers.trigger_scheduler import TriggerScheduler
 from tests.fake_db import FakeDB
@@ -33,7 +32,7 @@ class _NoopProvider(LLMProvider):
         tool_choice=None,
     ):
         return AssistantMessage(
-            content=[TextContent(text="noop")],
+            content=[TextContent(text='{"context_summary":"Summary of earlier turns"}')],
             model=model,
             provider=self.name,
         )
@@ -74,23 +73,18 @@ def test_full_integration_happy_path():
         background_tasks=[],
     )
 
-    from app.routers import ws as ws_router
-
-    old_manager_session = ws_router.ManagerSessionLocal
     old_init = install_fake_db_overrides(
         app_db=fake_db,
         instance_context=instance_context,
         session_factory=session_factory,
     )
-    ws_router.ManagerSessionLocal = session_factory
 
     try:
-        client = TestClient(app)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
 
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         created_session = client.post(
             "/api/v1/instances/main/sessions", json={"title": "integration-e2e"}, headers=headers
@@ -114,14 +108,16 @@ def test_full_integration_happy_path():
             f"/api/v1/instances/main/sessions/{session_id}/compact", headers=headers
         )
         assert compacted.status_code == 200
-        assert compacted.json()["raw_token_count"] > compacted.json()["compressed_token_count"]
+        assert compacted.json()["compacted"] is True
 
         spawned = client.post(
             f"/api/v1/instances/main/sessions/{session_id}/sub-agents",
-            json={"name": "triage blockers", "scope": "recent messages", "max_steps": 4},
+            json={"name": "triage blockers", "scope": "recent messages"},
             headers=headers,
         )
         assert spawned.status_code == 202
+        # This fixture has no child runtime; unavailable execution must fail honestly.
+        assert spawned.json()["status"] == "failed"
         task_id = spawned.json()["id"]
 
         task_list = client.get(
@@ -134,7 +130,7 @@ def test_full_integration_happy_path():
             f"/api/v1/instances/main/sessions/{session_id}/sub-agents/{task_id}", headers=headers
         )
         assert cancelled.status_code == 200
-        assert cancelled.json()["status"] == "cancelled"
+        assert cancelled.json()["status"] == "failed"
 
         trigger = client.post(
             "/api/v1/instances/main/triggers",
@@ -143,7 +139,7 @@ def test_full_integration_happy_path():
                 "type": "cron",
                 "config": {"cron": "*/15 * * * *"},
                 "action_type": "agent_message",
-                "action_config": {"message": "run"},
+                "action_config": {"message": "run", "target_session_id": session_id},
             },
             headers=headers,
         )
@@ -170,9 +166,7 @@ def test_full_integration_happy_path():
         assert live_view.status_code == 200
         assert "enabled" in live_view.json()
 
-        with client.websocket_connect(
-            f"/ws/instances/main/sessions/{session_id}/stream?token={token}"
-        ) as ws:
+        with client.websocket_connect(f"/ws/instances/main/sessions/{session_id}/stream") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             ws.send_json({"type": "message", "content": "integration websocket message"})
@@ -183,9 +177,5 @@ def test_full_integration_happy_path():
         config = client.get("/api/v1/instances/main/admin/config", headers=headers)
         assert config.status_code == 200
 
-        audits = client.get("/api/v1/admin/audit", headers=headers)
-        assert audits.status_code == 200
-        assert audits.json()["total"] >= 1
     finally:
         restore_test_app(old_init)
-        ws_router.ManagerSessionLocal = old_manager_session

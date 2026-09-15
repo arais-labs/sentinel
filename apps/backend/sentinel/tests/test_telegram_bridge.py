@@ -6,22 +6,22 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-from telegram.constants import ParseMode
 
 from app.config import Settings
 from app.models import Session, SessionBinding
-from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
-from app.services.araios.system_modules.telegram.module import MODULE as TELEGRAM_MODULE
 from app.services.instance_runtime_context import (
     InstanceRuntimeContext,
     instance_runtime_context_registry,
 )
+from app.services.modules.builtins.telegram.module import MODULE as TELEGRAM_MODULE
+from app.services.modules.runtime_services import configure_runtime_services, reset_runtime_services
+from app.services.modules.tool_adapter import build_module_tools
 from app.services.sessions import session_bindings
-from app.services.sub_agents import SubAgentOrchestrator
-from app.services.telegram import TelegramBridge
-from app.services.telegram.bridge import _telegram_tool_result_summary
+from app.services.sub_agents.orchestrator import SubAgentOrchestrator
+from app.services.telegram.bridge import TelegramBridge
 from app.services.tools import ToolExecutor, ToolRegistry
-from app.services.tools.executor import ToolExecutionError, ToolValidationError
+from sentral.errors import ToolValidationError
+from app.services.tools.executor import ToolExecutionError
 from app.services.tools.registry import ToolRuntimeContext
 from app.services.triggers.trigger_scheduler import TriggerScheduler
 from tests.fake_db import FakeDB
@@ -32,9 +32,8 @@ def _run(coro):
 
 
 def _make_instance_settings(**overrides) -> Settings:
-    """Build a per-instance Settings stub exposing telegram_* + dev_user_id."""
+    """Build a per-instance Settings stub exposing Telegram settings."""
     instance_settings = Settings(_env_file=None)
-    instance_settings.dev_user_id = overrides.pop("dev_user_id", "admin")
     instance_settings.telegram_bot_token = overrides.pop("telegram_bot_token", None)
     instance_settings.telegram_owner_user_id = overrides.pop("telegram_owner_user_id", None)
     instance_settings.telegram_owner_chat_id = overrides.pop("telegram_owner_chat_id", None)
@@ -119,10 +118,12 @@ def _clear_registry() -> None:
 def _telegram_tool():
     reset_runtime_services()
     configure_runtime_services(app_state=SimpleNamespace())
-    return TELEGRAM_MODULE.to_tool_definitions()[0]
+    return build_module_tools(
+        TELEGRAM_MODULE,
+    )[0]
 
 
-def test_owner_dm_route_creates_main_session_when_missing():
+def test_owner_dm_route_requires_explicit_session_when_missing():
     db = FakeDB()
     bridge = _build_bridge(db=db, user_id="admin")
     private_chat = SimpleNamespace(id=123, type="private", title=None)
@@ -136,36 +137,19 @@ def test_owner_dm_route_creates_main_session_when_missing():
             metadata={"telegram_is_owner": True},
         )
     )
-    assert scope == "owner_main"
-    assert session_id is not None
-
-    sessions = db.storage[Session]
-    bindings = db.storage[SessionBinding]
-    assert len(sessions) == 1
-    assert sessions[0].id == session_id
-    assert sessions[0].title == "Main"
-    assert any(
-        b.binding_type == session_bindings.MAIN_BINDING_TYPE
-        and b.binding_key == session_bindings.MAIN_BINDING_KEY
-        and b.session_id == session_id
-        and b.is_active
-        for b in bindings
-    )
+    assert scope == "owner_dm_missing"
+    assert session_id is None
+    assert db.storage[Session] == []
+    assert db.storage[SessionBinding] == []
 
 
-def test_owner_dm_route_uses_canonical_main_binding():
+def test_owner_dm_route_uses_owner_active_binding():
     db = FakeDB()
     older = Session(user_id="admin", title="Old")
     newer = Session(user_id="admin", title="New")
     db.add(older)
     db.add(newer)
-    _run(
-        session_bindings.set_main_session(
-            db,
-            user_id="admin",
-            session_id=older.id,
-        )
-    )
+    _run(session_bindings.set_owner_active_session(db, user_id="admin", session_id=older.id))
     bridge = _build_bridge(db=db, user_id="admin")
     private_chat = SimpleNamespace(id=123, type="private", title=None)
     owner_user = SimpleNamespace(id=123, full_name="Owner", first_name="Owner")
@@ -179,14 +163,13 @@ def test_owner_dm_route_uses_canonical_main_binding():
         )
     )
 
-    assert scope == "owner_main"
+    assert scope == "owner_dm"
     assert session_id == older.id
 
 
-def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
+def test_telegram_manage_tool_configure_sets_owner():
     db = FakeDB()
     instance_settings = _make_instance_settings(
-        dev_user_id="dev-admin",
         telegram_bot_token=None,
         telegram_owner_user_id=None,
     )
@@ -200,7 +183,6 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
     tool = _telegram_tool()
 
     rebuilt_settings = _make_instance_settings(
-        dev_user_id="dev-admin",
         telegram_owner_user_id="admin",
     )
     rebuilt = _build_context(
@@ -217,11 +199,11 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
     try:
         with (
             patch(
-                "app.services.telegram.resolve_owner_user_id_from_session",
+                "app.services.telegram.lifecycle.resolve_owner_user_id_from_session",
                 new=AsyncMock(return_value="admin"),
             ),
             patch(
-                "app.services.araios.system_modules.telegram.handlers._persist_telegram_settings",
+                "app.services.modules.builtins.telegram.handlers._persist_telegram_settings",
                 new=AsyncMock(return_value=None),
             ) as persist_mock,
             patch.object(
@@ -229,19 +211,11 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
                 "rebuild_context",
                 new=AsyncMock(side_effect=_fake_rebuild),
             ) as rebuild_mock,
-            patch(
-                "app.services.araios.system_modules.telegram.handlers.session_bindings.resolve_or_create_main_session",
-                new=AsyncMock(return_value=Session(user_id="admin", title="Main")),
-            ),
-            patch(
-                "app.services.telegram.resolve_latest_active_root_session_id_for_user",
-                new=AsyncMock(return_value="main-session-id"),
-            ),
         ):
             result = _run(
                 tool.execute(
                     {
-                        "command": "configure",
+                        "action": "configure",
                         "bot_token": "12345:abcde",
                     },
                     ToolRuntimeContext(session_id=uuid4(), instance_name="main"),
@@ -250,7 +224,7 @@ def test_telegram_manage_tool_configure_sets_owner_and_ensures_main():
 
         assert result["success"] is True
         assert result.get("owner_user_id") == "admin"
-        assert result.get("main_session_id") == "main-session-id"
+        assert "main_session_id" not in result
         persist_mock.assert_awaited_once()
         rebuild_mock.assert_awaited_once()
     finally:
@@ -270,7 +244,7 @@ def test_telegram_manage_tool_requires_session_for_mutations():
 
     try:
         with pytest.raises(ToolValidationError, match="session"):
-            _run(tool.execute({"command": "start"}, ToolRuntimeContext(instance_name="main")))
+            _run(tool.execute({"action": "start"}, ToolRuntimeContext(instance_name="main")))
     finally:
         _clear_registry()
 
@@ -279,7 +253,7 @@ def test_telegram_manage_tool_requires_active_instance_runtime():
     _clear_registry()
     tool = _telegram_tool()
     with pytest.raises(ToolValidationError, match="No active instance runtime for Telegram"):
-        _run(tool.execute({"command": "status"}, ToolRuntimeContext(instance_name="missing")))
+        _run(tool.execute({"action": "status"}, ToolRuntimeContext(instance_name="missing")))
 
 
 def test_telegram_manage_tool_bind_owner_requires_connected_chat():
@@ -295,14 +269,14 @@ def test_telegram_manage_tool_bind_owner_requires_connected_chat():
 
     try:
         with patch(
-            "app.services.telegram.resolve_owner_user_id_from_session",
+            "app.services.telegram.lifecycle.resolve_owner_user_id_from_session",
             new=AsyncMock(return_value="admin"),
         ):
             with pytest.raises(ToolExecutionError, match="Chat not connected"):
                 _run(
                     tool.execute(
                         {
-                            "command": "bind_owner",
+                            "action": "bind_owner",
                             "chat_id": 12345,
                         },
                         ToolRuntimeContext(session_id=uuid4(), instance_name="main"),
@@ -347,15 +321,15 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
     try:
         with (
             patch(
-                "app.services.telegram.resolve_owner_user_id_from_session",
+                "app.services.telegram.lifecycle.resolve_owner_user_id_from_session",
                 new=AsyncMock(return_value="new-admin"),
             ),
             patch(
-                "app.services.araios.system_modules.telegram.handlers._upsert_setting",
+                "app.services.modules.builtins.telegram.handlers._upsert_setting",
                 new=AsyncMock(return_value=None),
             ) as upsert_mock,
             patch(
-                "app.services.araios.system_modules.telegram.handlers._delete_setting",
+                "app.services.modules.builtins.telegram.handlers._delete_setting",
                 new=AsyncMock(return_value=None),
             ) as delete_mock,
             patch.object(
@@ -363,25 +337,18 @@ def test_telegram_manage_tool_start_clears_owner_binding_on_owner_change():
                 "rebuild_context",
                 new=AsyncMock(side_effect=_fake_rebuild),
             ) as rebuild_mock,
-            patch(
-                "app.services.araios.system_modules.telegram.handlers.session_bindings.resolve_or_create_main_session",
-                new=AsyncMock(return_value=Session(user_id="new-admin", title="Main")),
-            ),
-            patch(
-                "app.services.telegram.resolve_latest_active_root_session_id_for_user",
-                new=AsyncMock(return_value="main-session-id"),
-            ),
         ):
             result = _run(
                 tool.execute(
                     {
-                        "command": "start",
+                        "action": "start",
                     },
                     ToolRuntimeContext(session_id=uuid4(), instance_name="main"),
                 )
             )
         assert result["success"] is True
         assert result.get("owner_user_id") == "new-admin"
+        assert "main_session_id" not in result
         upsert_mock.assert_any_await(context, "telegram_owner_user_id", "new-admin")
         delete_mock.assert_any_await(context, "telegram_owner_chat_id")
         delete_mock.assert_any_await(context, "telegram_owner_telegram_user_id")
@@ -417,7 +384,7 @@ def test_telegram_send_refuses_owner_chat_by_default():
         with pytest.raises(ToolExecutionError, match="owner Telegram DM"):
             _run(
                 tool.execute(
-                    {"command": "send", "chat_id": 12345, "message": "hello"},
+                    {"action": "send", "chat_id": 12345, "message": "hello"},
                     ToolRuntimeContext(instance_name="main"),
                 )
             )
@@ -492,16 +459,17 @@ def test_configure_rejects_duplicate_bot_token_across_instances():
 
     try:
         with patch(
-            "app.services.telegram.resolve_owner_user_id_from_session",
+            "app.services.telegram.lifecycle.resolve_owner_user_id_from_session",
             new=AsyncMock(return_value="admin"),
         ):
             with pytest.raises(
-                ToolValidationError, match="Telegram bot token already used by another instance"
+                ToolValidationError,
+                match="Telegram bot token already used by another instance",
             ):
                 _run(
                     tool.execute(
                         {
-                            "command": "configure",
+                            "action": "configure",
                             "bot_token": "dup-token",
                         },
                         ToolRuntimeContext(session_id=uuid4(), instance_name="main"),
@@ -554,7 +522,7 @@ def test_rebuild_context_stops_old_bridge():
         _clear_registry()
 
 
-def test_handle_ask_queues_override_text():
+def test_handle_ask_dispatches_override_text():
     db = FakeDB()
     bridge = _build_bridge(db=db, user_id="admin")
     update = SimpleNamespace(
@@ -565,18 +533,18 @@ def test_handle_ask_queues_override_text():
         ),
     )
     context = SimpleNamespace(args=["hello", "world"])
+    bridge._process_message = AsyncMock()
 
     async def _exercise() -> dict:
         await bridge._handle_ask(update, context)  # noqa: SLF001
-        _queued_update, metadata = await bridge._queue.get()  # noqa: SLF001
-        return metadata
+        return bridge._process_message.await_args.args[1]
 
     metadata = _run(_exercise())
     assert metadata["telegram_text_override"] == "hello world"
     assert metadata["telegram_chat_type"] == "group"
 
 
-def test_handle_ask_without_args_shows_usage_and_does_not_queue():
+def test_handle_ask_without_args_shows_usage_and_does_not_dispatch():
     db = FakeDB()
     bridge = _build_bridge(db=db, user_id="admin")
     reply_text = AsyncMock()
@@ -589,9 +557,10 @@ def test_handle_ask_without_args_shows_usage_and_does_not_queue():
     )
     context = SimpleNamespace(args=[])
 
+    bridge._process_message = AsyncMock()
     _run(bridge._handle_ask(update, context))  # noqa: SLF001
     reply_text.assert_awaited_once()
-    assert bridge._queue.empty()  # noqa: SLF001
+    bridge._process_message.assert_not_awaited()
 
 
 def test_enqueue_marks_owner_by_owner_chat_id_fallback():
@@ -612,85 +581,52 @@ def test_enqueue_marks_owner_by_owner_chat_id_fallback():
 
     async def _exercise() -> dict:
         await bridge._handle_message(update, context)  # noqa: SLF001
-        _queued_update, metadata = await bridge._queue.get()  # noqa: SLF001
-        return metadata
+        return bridge._process_message.await_args.args[1]
 
+    bridge._process_message = AsyncMock()
     metadata = _run(_exercise())
     assert metadata["telegram_is_owner"] is True
 
 
-def test_send_chunked_to_chat_formats_markdown_using_html_parse_mode():
-    db = FakeDB()
-    bridge = _build_bridge(db=db, user_id="admin")
-    bridge._app = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))  # noqa: SLF001
-    bridge._running = True  # noqa: SLF001
-
-    _run(
-        bridge._send_chunked_to_chat(  # noqa: SLF001
-            123,
-            "**bold** `code` [site](https://example.com)\n\n```py\nprint('x')\n```",
-        )
+def test_module_and_reply_send_native_rich_markdown():
+    bridge = _build_bridge(db=FakeDB(), user_id="admin")
+    bot = SimpleNamespace(do_api_request=AsyncMock())
+    bridge._app = SimpleNamespace(bot=bot)
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=123),
+        message=SimpleNamespace(message_id=42, message_thread_id=7),
     )
-
-    calls = bridge._app.bot.send_message.await_args_list  # noqa: SLF001
-    assert len(calls) == 1
-    assert calls[0].kwargs["chat_id"] == 123
-    assert calls[0].kwargs["parse_mode"] == ParseMode.HTML
-    rendered = calls[0].kwargs["text"]
-    assert "<b>bold</b>" in rendered
-    assert "<code>code</code>" in rendered
-    assert '<a href="https://example.com">site</a>' in rendered
-    assert "<pre>print(&#x27;x&#x27;)</pre>" in rendered
-
-
-def test_send_chunked_reply_formats_markdown_using_html_parse_mode():
-    db = FakeDB()
-    bridge = _build_bridge(db=db, user_id="admin")
-    update = SimpleNamespace(message=SimpleNamespace(reply_text=AsyncMock()))
-
-    _run(bridge._send_chunked(update, "*italic* and **bold**"))  # noqa: SLF001
-
-    calls = update.message.reply_text.await_args_list
-    assert len(calls) == 1
-    assert calls[0].kwargs["parse_mode"] == ParseMode.HTML
-    assert calls[0].args[0] == "<i>italic</i> and <b>bold</b>"
+    text = "# Heading\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n```python\nprint('x')\n```"
+    _run(bridge._send_rich_to_chat(123, text))
+    _run(bridge._reply_rich(update, text))
+    calls = bot.do_api_request.await_args_list
+    assert len(calls) == 2
+    for call in calls:
+        assert call.args == ("sendRichMessage",)
+        assert call.kwargs["api_kwargs"]["rich_message"] == {"markdown": text}
+    assert calls[1].kwargs["api_kwargs"]["reply_parameters"] == {"message_id": 42}
+    assert calls[1].kwargs["api_kwargs"]["message_thread_id"] == 7
 
 
-def test_deliver_inline_owner_reply_finalizes_existing_stream_message():
-    db = FakeDB()
-    bridge = _build_bridge(db=db, user_id="admin")
-    bridge._app = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))  # noqa: SLF001
-    update = SimpleNamespace(message=SimpleNamespace(reply_text=AsyncMock()))
-    streamed_message = SimpleNamespace(edit_text=AsyncMock())
-
+def test_owner_reply_stops_draft_and_sends_final_once():
+    bridge = _build_bridge(db=FakeDB(), user_id="admin")
+    bridge._app = SimpleNamespace(bot=SimpleNamespace(do_api_request=AsyncMock()))
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=123),
+        message=SimpleNamespace(message_id=42),
+    )
+    draft = SimpleNamespace(close=AsyncMock())
     _run(
-        bridge._deliver_inline_owner_reply(  # noqa: SLF001
+        bridge._deliver_inline_owner_reply(
             update,
             chat_id=123,
             final_text="**done**",
             attachments=[],
-            streamed_message=streamed_message,
+            streamed_message=draft,
         )
     )
-
-    streamed_message.edit_text.assert_awaited_once_with(
-        "<b>done</b>",
-        parse_mode=ParseMode.HTML,
-    )
-    update.message.reply_text.assert_not_called()
-
-
-def test_telegram_tool_result_summary_skips_internal_telegram_tool():
-    assert _telegram_tool_result_summary(tool_name="telegram", content="{}", is_error=False) is None
-
-
-def test_telegram_tool_result_summary_formats_compact_code_block():
-    summary = _telegram_tool_result_summary(
-        tool_name="runtime",
-        content="line 1\nline 2",
-        is_error=False,
-    )
-    assert summary == "Tool Result · runtime\n\n```\nline 1\nline 2\n```"
+    draft.close.assert_awaited_once()
+    bridge._app.bot.do_api_request.assert_awaited_once()
 
 
 def test_should_reply_inline_owner_private_only():
@@ -818,7 +754,7 @@ def test_handle_session_owner_dm_returns_keyboard():
     project = Session(user_id="admin", title="Project Alpha")
     db.add(main)
     db.add(project)
-    _run(session_bindings.set_main_session(db, user_id="admin", session_id=main.id))
+    _run(session_bindings.set_owner_active_session(db, user_id="admin", session_id=main.id))
 
     bridge = _build_bridge(db=db, user_id="admin", instance_settings=_owner_instance_settings())
     reply_text = AsyncMock()
@@ -840,7 +776,7 @@ def test_handle_session_owner_dm_returns_keyboard():
     assert any("Main" in text for text in button_texts)
     assert any("Project Alpha" in text for text in button_texts)
     assert f"sess:{main.id}" in callback_targets
-    # The current (main) session is marked with the checkmark prefix.
+    # The current owner DM session is marked with the checkmark prefix.
     assert any(text.startswith("✅ ") and "Main" in text for text in button_texts)
 
 
@@ -848,7 +784,6 @@ def test_handle_session_refuses_non_owner():
     db = FakeDB()
     main = Session(user_id="admin", title="Main")
     db.add(main)
-    _run(session_bindings.set_main_session(db, user_id="admin", session_id=main.id))
 
     bridge = _build_bridge(db=db, user_id="admin", instance_settings=_owner_instance_settings())
     reply_text = AsyncMock()
@@ -874,7 +809,6 @@ def test_handle_session_callback_owner_switches_binding():
     project = Session(user_id="admin", title="Project Alpha")
     db.add(main)
     db.add(project)
-    _run(session_bindings.set_main_session(db, user_id="admin", session_id=main.id))
 
     bridge = _build_bridge(db=db, user_id="admin", instance_settings=_owner_instance_settings())
     query = SimpleNamespace(
@@ -896,8 +830,6 @@ def test_handle_session_callback_owner_switches_binding():
         session_bindings.resolve_owner_active_session(db, user_id="admin", agent_id="dev-agent")
     )
     assert resolved.id == project.id
-    # Main remains isolated.
-    assert _run(session_bindings.resolve_main_session_id(db, user_id="admin")) == main.id
 
 
 def test_handle_session_callback_refuses_non_owner_and_does_not_switch():
@@ -906,7 +838,6 @@ def test_handle_session_callback_refuses_non_owner_and_does_not_switch():
     project = Session(user_id="admin", title="Project Alpha")
     db.add(main)
     db.add(project)
-    _run(session_bindings.set_main_session(db, user_id="admin", session_id=main.id))
 
     bridge = _build_bridge(db=db, user_id="admin", instance_settings=_owner_instance_settings())
     query = SimpleNamespace(
@@ -923,7 +854,7 @@ def test_handle_session_callback_refuses_non_owner_and_does_not_switch():
 
     query.answer.assert_awaited_once_with("Not authorized", show_alert=True)
     query.edit_message_text.assert_not_called()
-    # No owner_active binding was created -> still defaults to main.
+    # No owner_active binding was created.
     assert not any(
         b.binding_type == session_bindings.OWNER_ACTIVE_BINDING_TYPE
         for b in db.storage[SessionBinding]
@@ -931,7 +862,7 @@ def test_handle_session_callback_refuses_non_owner_and_does_not_switch():
     resolved = _run(
         session_bindings.resolve_owner_active_session(db, user_id="admin", agent_id="dev-agent")
     )
-    assert resolved.id == main.id
+    assert resolved is None
 
 
 def test_register_bot_commands_scopes_session_to_owner_chat():
@@ -961,3 +892,182 @@ def test_register_bot_commands_without_owner_omits_session():
     calls = app.bot.set_my_commands.call_args_list
     assert len(calls) == 1  # only the default-scope menu, no owner-scoped one
     assert "session" not in [c.command for c in calls[0].args[0]]
+
+
+def test_running_turn_accepts_steering_and_session_switch_without_rerouting():
+    from app.models import Message
+    from app.services.sessions.agent_run_registry import AgentRunRegistry
+    from app.services.telegram.shared import _RouteContext
+
+    async def exercise():
+        db = FakeDB()
+        first, second = uuid4(), uuid4()
+        bridge = _build_bridge(
+            db=db,
+            user_id="admin",
+            agent_runtime_support=object(),
+            instance_settings=_make_instance_settings(telegram_owner_chat_id="123"),
+        )
+        registry = AgentRunRegistry()
+        bridge._run_registry = registry
+        bridge._ws_manager = SimpleNamespace(broadcast_message_ack=AsyncMock())
+        active = first
+        started = []
+        release = asyncio.Event()
+
+        async def route(_db, **kwargs):
+            return _RouteContext(
+                session_id=active,
+                session_key=str(active),
+                route_scope="owner_dm",
+                inline_reply_mode=True,
+                chat_id=123,
+                chat_type="private",
+            )
+
+        async def run(update, metadata, target, persisted, content):
+            started.append((target.session_id, content))
+            await release.wait()
+
+        bridge._resolve_route_context = route
+        bridge._run_reply_body = run
+        user = SimpleNamespace(id=123, full_name="Owner", first_name="Owner", username=None)
+        chat = SimpleNamespace(id=123, type="private", title=None, full_name="Owner")
+
+        def update(text):
+            return SimpleNamespace(
+                message=SimpleNamespace(text=text, caption=None, reply_text=AsyncMock()),
+                effective_chat=chat,
+                effective_user=user,
+            )
+
+        await asyncio.wait_for(bridge._handle_message(update("first task"), None), 1)
+        await asyncio.sleep(0)
+        assert started == [(first, "first task")]
+        await asyncio.wait_for(bridge._handle_message(update("change direction"), None), 1)
+        queued = registry.peek_interjections(str(first))
+        assert len(queued) == 1
+        assert queued[0].metadata["steering"] == "pending"
+        assert queued[0].content[0].text == "change direction"
+        assert len(started) == 1
+
+        async def switch(_db, *, session_id, **kwargs):
+            nonlocal active
+            active = session_id
+            return SimpleNamespace(title="Second")
+
+        query = SimpleNamespace(
+            data=f"sess:{second}",
+            message=SimpleNamespace(chat=chat),
+            from_user=user,
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        with patch.object(session_bindings, "set_owner_active_session", switch):
+            await asyncio.wait_for(
+                bridge._handle_session_callback(SimpleNamespace(callback_query=query), None), 1
+            )
+        query.answer.assert_awaited_once_with("Switched")
+        await asyncio.wait_for(bridge._handle_message(update("second task"), None), 1)
+        await asyncio.sleep(0)
+        assert started == [(first, "first task"), (second, "second task")]
+        assert await registry.is_running(str(first))
+        assert await registry.is_running(str(second))
+        rows = db.storage[Message]
+        assert [(m.session_id, m.content) for m in rows] == [
+            (first, "first task"),
+            (first, "change direction"),
+            (second, "second task"),
+        ]
+        await bridge.stop()
+        assert not await registry.is_running(str(first))
+        assert not await registry.is_running(str(second))
+        assert not bridge._reply_tasks
+
+    _run(exercise())
+
+
+def test_run_registration_race_preserves_message_as_steering():
+    from app.models import Message
+    from app.services.sessions.agent_run_registry import AgentRunRegistry
+    from app.services.telegram.shared import _RouteContext
+
+    async def exercise():
+        db = FakeDB()
+        session_id = uuid4()
+        bridge = _build_bridge(db=db, user_id="admin", agent_runtime_support=object())
+        registry = AgentRunRegistry()
+        bridge._run_registry = registry
+        bridge._ws_manager = SimpleNamespace(broadcast_message_ack=AsyncMock())
+        bridge._resolve_route_context = AsyncMock(
+            return_value=_RouteContext(
+                session_id=session_id,
+                session_key=str(session_id),
+                route_scope="owner_dm",
+                inline_reply_mode=True,
+                chat_id=123,
+                chat_type="private",
+            )
+        )
+        blocker = asyncio.Event()
+        start = registry.start
+
+        async def race(key, run):
+            task = await start(key, blocker.wait())
+            assert task is not None
+            return await start(key, run)
+
+        registry.start = race
+        update = SimpleNamespace(
+            message=SimpleNamespace(text="keep this", caption=None, reply_text=AsyncMock()),
+            effective_chat=SimpleNamespace(id=123),
+            effective_user=None,
+        )
+        await bridge._process_message(update, {})
+        assert len(db.storage[Message]) == 1
+        queued = registry.peek_interjections(str(session_id))
+        assert len(queued) == 1
+        assert queued[0].metadata["steering_id"] == str(db.storage[Message][0].id)
+        assert not bridge._reply_tasks  # the existing run belongs to another transport
+        await registry.cancel_all()
+
+    _run(exercise())
+
+
+def test_stop_drains_ingress_before_cancelling_owned_turns():
+    from app.services.sessions.agent_run_registry import AgentRunRegistry
+
+    async def exercise():
+        bridge = _build_bridge(db=FakeDB(), user_id="admin")
+        registry = AgentRunRegistry()
+        bridge._run_registry = registry
+        started = asyncio.Event()
+        release = asyncio.Event()
+        key = str(uuid4())
+
+        async def turn():
+            try:
+                started.set()
+                await release.wait()
+            finally:
+                await registry.clear(key, asyncio.current_task())
+
+        async def drain():
+            task = await registry.start(key, turn())
+            bridge._reply_tasks.add(task)
+            task.add_done_callback(bridge._reply_finished)
+            await started.wait()
+
+        app = SimpleNamespace(
+            updater=SimpleNamespace(running=True, stop=AsyncMock()),
+            running=True,
+            stop=AsyncMock(side_effect=drain),
+            shutdown=AsyncMock(),
+        )
+        bridge._app = app
+        await bridge.stop()
+        app.shutdown.assert_awaited_once()
+        assert not await registry.is_running(key)
+        assert not bridge._reply_tasks
+
+    _run(exercise())

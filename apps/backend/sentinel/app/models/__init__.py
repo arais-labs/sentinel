@@ -1,36 +1,40 @@
-from app.models.araios import (
-    AraiosModule,
-    AraiosModuleRecord,
-    AraiosModuleSecret,
-    AraiosPermission,
-)
 from app.models.audit import AuditLog
 from app.models.base import Base
 from app.models.git import GitAccount
 from app.models.memory import Memory, SessionSummary
+from app.models.modules import (
+    Module,
+    ModulePermission,
+    ModuleRecord,
+    ModuleSecret,
+)
 from app.models.session_bindings import SessionBinding
 from app.models.sessions import Message, Session
 from app.models.sub_agents import SubAgentTask
 from app.models.system import SystemSetting
-from app.models.tool_approvals import ToolApproval
+from app.models.tool_approvals import SessionActionGrant, ToolApproval
 from app.models.triggers import Trigger, TriggerLog
+from app.models.workspaces import SessionRuntimeCleanup, Workspace
 
 __all__ = [
-    "AraiosModule",
-    "AraiosModuleRecord",
-    "AraiosModuleSecret",
-    "AraiosPermission",
+    "Module",
+    "ModuleRecord",
+    "ModuleSecret",
+    "ModulePermission",
     "AuditLog",
     "Base",
     "GitAccount",
     "Memory",
     "Message",
     "Session",
+    "Workspace",
+    "SessionRuntimeCleanup",
     "SessionBinding",
     "SessionSummary",
     "SubAgentTask",
     "SystemSetting",
     "ToolApproval",
+    "SessionActionGrant",
     "Trigger",
     "TriggerLog",
 ]

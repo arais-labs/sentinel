@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from app.services.llm.ids import ProviderId, TierName
+from sentral.llm.ids import ProviderId, TierName
 
 
 class ModelFallbackResponse(BaseModel):
@@ -11,6 +11,7 @@ class ModelFallbackResponse(BaseModel):
 
 
 class ModelOptionResponse(BaseModel):
+    provider_options: list[dict] = Field(default_factory=list)
     label: str
     description: str
     tier: TierName
@@ -19,6 +20,9 @@ class ModelOptionResponse(BaseModel):
     fallback_providers: list[ModelFallbackResponse] = Field(default_factory=list)
     thinking_budget: int | None = None
     reasoning_effort: str | None = None
+    context_window_tokens: int | None = None
+    context_token_budget: int | None = None
+    output_reserve_tokens: int | None = None
 
 
 class ModelsResponse(BaseModel):

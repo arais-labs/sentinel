@@ -1,16 +1,14 @@
-import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
 from app.routers import sessions as sessions_router
 from app.main import app
-from app.services.agent import PreparedRuntimeTurnContext
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import AssistantMessage, TextContent, TokenUsage
+from app.services.agent.runtime_support import PreparedRuntimeTurnContext
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import AssistantMessage, TextContent, TokenUsage
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRegistry
 from tests.fake_db import FakeDB
@@ -111,15 +109,14 @@ def test_chat_endpoint_calls_runtime_support_and_returns_response():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
         old_runtime_context = sessions_router.get_request_instance_runtime_context
         sessions_router.get_request_instance_runtime_context = lambda _request: SimpleNamespace(
             agent_runtime_support=fake_loop
         )
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
             "/api/v1/instances/main/sessions", json={"title": "chat"}, headers=headers
@@ -155,14 +152,14 @@ def test_chat_endpoint_returns_503_when_no_provider_configured():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
         old_runtime_context = sessions_router.get_request_instance_runtime_context
         sessions_router.get_request_instance_runtime_context = lambda _request: SimpleNamespace(
             agent_runtime_support=None
         )
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
             "/api/v1/instances/main/sessions", json={"title": "chat"}, headers=headers

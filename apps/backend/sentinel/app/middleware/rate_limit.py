@@ -18,10 +18,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     # Route-level limits from API contract (v1 subset currently implemented in code)
     _RULES: list[tuple[str, re.Pattern[str], int, str]] = [
-        ("POST", re.compile(r"^/api/v1/auth/login$"), 10, "public_ip"),
-        ("POST", re.compile(r"^/api/v1/auth/refresh$"), 30, "token_or_ip"),
-        ("POST", re.compile(r"^/api/v1/auth/change-password$"), 10, "token_or_ip"),
-        ("DELETE", re.compile(r"^/api/v1/auth/session$"), 30, "token_or_ip"),
         ("GET", re.compile(r"^/api/v1/sessions$"), 60, "token_or_ip"),
         ("POST", re.compile(r"^/api/v1/sessions$"), 20, "token_or_ip"),
         ("POST", re.compile(r"^/api/v1/sessions/[^/]+/stop$"), 30, "token_or_ip"),
@@ -69,16 +65,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return fwd.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
 
-    @staticmethod
-    def _bearer_token(request: Request) -> str | None:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.lower().startswith("bearer "):
-            return auth_header.split(" ", 1)[1].strip()
-        cookie_token = request.cookies.get("sentinel_access_token")
-        if cookie_token:
-            return cookie_token.strip()
-        return None
-
     async def dispatch(self, request: Request, call_next) -> Response:
         rule = self._match_rule(request.method, request.url.path)
         if not rule:
@@ -88,7 +74,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if scope == "public_ip":
             identity = self._client_ip(request)
         else:
-            identity = self._bearer_token(request) or self._client_ip(request)
+            identity = "desktop"
 
         bucket_key = f"{request.method}:{request.url.path}:{identity}"
         now = time.time()

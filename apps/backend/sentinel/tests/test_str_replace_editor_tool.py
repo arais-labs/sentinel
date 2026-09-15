@@ -4,11 +4,9 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.araios.system_modules.str_replace_editor.handlers import _parse_str_replace_output
-from app.services.tools.executor import ToolValidationError
-from app.services.tools.registry_builder import build_default_registry
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRuntimeContext
+from app.services.tools.registry_builder import build_default_registry
 
 
 class _WorkspaceFilesStub:
@@ -38,17 +36,6 @@ class _WorkspaceFilesStub:
         }
 
 
-def test_parse_str_replace_output_accepts_last_json_line() -> None:
-    payload = _parse_str_replace_output('\nnoise\n{"ok":true,"path":"a"}\n')
-    assert payload["ok"] is True
-    assert payload["path"] == "a"
-
-
-def test_parse_str_replace_output_rejects_invalid() -> None:
-    with pytest.raises(ToolValidationError):
-        _parse_str_replace_output("not-json")
-
-
 def test_str_replace_editor_tool_is_registered() -> None:
     registry = build_default_registry()
     tool = registry.get("str_replace_editor")
@@ -58,8 +45,11 @@ def test_str_replace_editor_tool_is_registered() -> None:
 
 
 @pytest.mark.asyncio
-async def test_str_replace_editor_runs_through_runtime_workspace(monkeypatch) -> None:
-    from app.services.araios.system_modules.str_replace_editor import handlers
+@pytest.mark.parametrize(
+    "path", ["app.py", "/workspace/app.py", "/root/.config/app", "/tmp/result", " spaced name "]
+)
+async def test_str_replace_editor_runs_through_runtime_workspace(monkeypatch, path) -> None:
+    from app.services.modules.builtins.str_replace_editor import handlers
 
     stub = _WorkspaceFilesStub()
 
@@ -79,19 +69,19 @@ async def test_str_replace_editor_runs_through_runtime_workspace(monkeypatch) ->
     result, _duration_ms = await executor.execute(
         "str_replace_editor",
         {
-            "path": "app.py",
+            "path": path,
             "old_str": "hello",
             "new_str": "goodbye",
         },
         runtime=ToolRuntimeContext(session_id=session_id),
     )
 
-    assert result["path"] == "app.py"
+    assert result["path"] == path
     assert result["old_str_count"] == 1
     assert stub.calls == [
         {
             "session_id": str(session_id),
-            "path": "app.py",
+            "path": path,
             "old_str": "hello",
             "new_str": "goodbye",
         }

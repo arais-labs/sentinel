@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import is_desktop_app
 from app.dependencies import (
     get_db,
     get_request_instance_runtime_context,
@@ -17,9 +16,8 @@ from app.logging_context import (
     get_logging_config_snapshot,
     set_runtime_logger_override,
 )
-from app.middleware.auth import TokenPayload, require_auth
 from app.services.instance_runtime_context import instance_runtime_context_registry
-from app.services.llm.ids import ProviderChoice
+from sentral.llm.ids import ProviderChoice
 from app.services.settings.settings_service import SettingsService
 
 router = APIRouter()
@@ -32,11 +30,6 @@ class SetApiKeysRequest(BaseModel):
     openai_oauth_token: str | None = None
     gemini_api_key: str | None = None
     gemini_oauth_credentials: str | None = None
-
-
-def _require_desktop_mode() -> None:
-    if not is_desktop_app():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
 async def _rebuild_current_instance_runtime_context(request: Request) -> None:
@@ -54,7 +47,6 @@ async def _rebuild_current_instance_runtime_context(request: Request) -> None:
 async def set_api_keys(
     payload: SetApiKeysRequest,
     request: Request,
-    _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict[str, bool]:
@@ -73,7 +65,6 @@ async def set_api_keys(
 
 @router.get("/api-keys/status")
 async def get_api_keys_status(
-    _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict:
@@ -95,7 +86,6 @@ async def get_api_keys_status(
 
 @router.get("/desktop-codex-oauth/status")
 async def get_desktop_codex_oauth_status(
-    _: TokenPayload = Depends(require_auth),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict[str, bool]:
     status_result = settings_service.get_desktop_codex_oauth_status()
@@ -108,12 +98,32 @@ async def get_desktop_codex_oauth_status(
 @router.post("/desktop-codex-oauth/import")
 async def import_desktop_codex_oauth(
     request: Request,
-    _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict[str, str | bool]:
-    _require_desktop_mode()
     result = await settings_service.import_desktop_codex_oauth_token(db)
+    await _rebuild_current_instance_runtime_context(request)
+    return {"success": True, "masked_key": result.masked_key}
+
+
+@router.post("/desktop-claude-oauth/import")
+async def import_desktop_claude_oauth(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings_service: SettingsService = Depends(get_settings_service),
+) -> dict[str, str | bool]:
+    result = await settings_service.import_desktop_claude_oauth_token(db)
+    await _rebuild_current_instance_runtime_context(request)
+    return {"success": True, "masked_key": result.masked_key}
+
+
+@router.post("/desktop-gemini-oauth/import")
+async def import_desktop_gemini_oauth(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings_service: SettingsService = Depends(get_settings_service),
+) -> dict[str, str | bool]:
+    result = await settings_service.import_desktop_gemini_oauth_token(db)
     await _rebuild_current_instance_runtime_context(request)
     return {"success": True, "masked_key": result.masked_key}
 
@@ -126,7 +136,6 @@ class DeleteProviderRequest(BaseModel):
 async def delete_api_keys(
     payload: DeleteProviderRequest,
     request: Request,
-    _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict[str, bool]:
@@ -143,7 +152,6 @@ class SetPrimaryProviderRequest(BaseModel):
 async def set_primary_provider(
     payload: SetPrimaryProviderRequest,
     request: Request,
-    _: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict[str, str | bool]:
@@ -158,16 +166,13 @@ class SetLoggerLevelRequest(BaseModel):
 
 
 @router.get("/logging")
-async def get_logging_config(
-    _: TokenPayload = Depends(require_auth),
-) -> dict:
+async def get_logging_config() -> dict:
     return get_logging_config_snapshot()
 
 
 @router.post("/logging/levels")
 async def set_logging_level(
     payload: SetLoggerLevelRequest,
-    _: TokenPayload = Depends(require_auth),
 ) -> dict:
     try:
         return set_runtime_logger_override(payload.logger, payload.level)
@@ -178,7 +183,6 @@ async def set_logging_level(
 @router.delete("/logging/levels")
 async def delete_logging_level(
     logger: str,
-    _: TokenPayload = Depends(require_auth),
 ) -> dict:
     try:
         return clear_runtime_logger_override(logger)
@@ -187,7 +191,5 @@ async def delete_logging_level(
 
 
 @router.post("/logging/reset")
-async def reset_logging_overrides(
-    _: TokenPayload = Depends(require_auth),
-) -> dict:
+async def reset_logging_overrides() -> dict:
     return clear_all_runtime_logger_overrides()

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from app.services.llm.session_selection import selection_model
+
 import asyncio
 import json
 import logging
 from collections import defaultdict
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -13,55 +16,57 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import ManagerSessionLocal
 from app.dependencies import get_connection_instance_runtime_context, get_db
 from app.logging_context import reset_log_session, set_log_session
-from app.middleware.auth import ACCESS_TOKEN_COOKIE_NAME, decode_and_validate_token
 from app.models import Message, ToolApproval
+from app.services.messages import (
+    normalize_generation_metadata,
+    with_generation_metadata,
+)
+from app.services.runtime.panes import TmuxPanes
+from app.services.runtime.ssh_runtime import (
+    get_runtime_terminal_manager,
+    runtime_configured,
+)
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.compaction import CompactionService
-from app.services.messages import normalize_generation_metadata, with_generation_metadata
-from app.services.runtime.ssh_runtime import get_runtime_terminal_manager, runtime_configured
 from app.services.sessions.session_naming import SessionNamingService
 from app.services.ws.ws_manager import ConnectionManager
 from app.services.ws.ws_stream_parser import parse_ws_message
 from app.services.ws.ws_stream_service import (
     build_user_payload,
-    get_owned_session,
+    get_session_record,
     load_history,
-    unresolved_tool_calls_from_history,
     maybe_auto_compact_after_run,
     persist_user_message,
     run_agent_once,
+    unresolved_tool_calls_from_history,
 )
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def _persist_retryable_error(
-    db: AsyncSession,
-    *,
-    message: Message,
-    error: str,
+@router.websocket("/{id}/layout")
+async def layout_session(
+    websocket: WebSocket, id: UUID, db: AsyncSession = Depends(get_db)
 ) -> None:
-    metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
-    metadata["retryable_error"] = error
-    message.metadata_json = metadata
-    await db.commit()
-
-
-async def _clear_retryable_error(
-    db: AsyncSession,
-    *,
-    message: Message,
-) -> None:
-    metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
-    if "retryable_error" not in metadata:
+    """Keep layout replies flowing while the chat stream awaits the agent run."""
+    if await get_session_record(db, id) is None:
+        await websocket.close(code=4004, reason="Session not found")
         return
-    metadata.pop("retryable_error", None)
-    message.metadata_json = metadata
     await db.commit()
+    manager = _resolve_manager(websocket)
+    await websocket.accept()
+    try:
+        while True:
+            payload = await websocket.receive_json()
+            if isinstance(payload, dict):
+                manager.layout_message(str(id), websocket, payload)
+    except (WebSocketDisconnect, RuntimeError, ValueError):
+        pass
+    finally:
+        await manager.disconnect(str(id), websocket)
 
 
 @router.websocket("/{id}/stream")
@@ -73,22 +78,7 @@ async def stream_session(
     manager = _resolve_manager(websocket)
     run_registry = _resolve_run_registry(websocket)
 
-    token = websocket.query_params.get("token")
-    if not token:
-        token = websocket.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
-    if not token:
-        await websocket.close(code=4001, reason="Missing token")
-        return
-
-    # Manager DB only needed for the JWT revocation check; release immediately.
-    try:
-        async with ManagerSessionLocal() as manager_db:
-            user = await decode_and_validate_token(token, manager_db, expected_type="access")
-    except Exception:
-        await websocket.close(code=4001, reason="Invalid token")
-        return
-
-    session = await get_owned_session(db, id, user.sub)
+    session = await get_session_record(db, id)
     if session is None:
         await websocket.close(code=4004, reason="Session not found")
         return
@@ -104,25 +94,29 @@ async def stream_session(
         db_factory=instance_context.session_factory,
     )
 
-    history = await load_history(db, id)
+    history = await load_history(db, id, tool_state_only=True)
     unresolved_calls = unresolved_tool_calls_from_history(history)
     session_running = await run_registry.is_running(session_key)
     if unresolved_calls and not session_running:
         await _materialize_interrupted_tool_results(
             db, session_id=id, unresolved_calls=unresolved_calls
         )
-        history = await load_history(db, id)
+        history = await load_history(db, id, tool_state_only=True)
         unresolved_calls = []
-    terminals_payload = await _initial_terminal_descriptors(instance_context.name)
+    # Finish the read transaction before touching runtime services.
+    await db.commit()
 
     if not await _try_send_json(
         websocket,
         {
             "type": "connected",
             "session_id": session_key,
-            "history": history,
+            # History can contain many MB of screenshots. Fetch it through the
+            # paginated HTTP endpoint, never in one desktop WebSocket frame.
+            "history_via_http": True,
             "context_token_budget": int(settings.context_token_budget),
-            "terminals": terminals_payload,
+            "panes": [],
+            "run_active": await run_registry.is_running(session_key),
         },
     ):
         reset_log_session(session_log_token)
@@ -191,26 +185,85 @@ async def stream_session(
         await manager.broadcast_thinking_start(session_key)
     session_has_messages = len(history) > 0
 
+    async def publish_initial_panes():
+        try:
+            panes = await _initial_panes(
+                instance_context.name, session_key, instance_context.session_factory
+            )
+            if panes:
+                await _try_send_json(websocket, {"type": "panes_changed", "panes": panes})
+        except Exception:
+            logger.warning("Initial terminal state unavailable for %s", session_key, exc_info=True)
+
+    # Remote terminal discovery must not gate chat readiness or input.
+    panes_task = asyncio.create_task(publish_initial_panes())
     try:
         while True:
+            # Idle sockets do not reserve a connection from the database pool.
+            await db.commit()
             payload = await websocket.receive_text()
             parsed = parse_ws_message(payload)
             if parsed is None:
                 await websocket.send_json({"type": "error", "code": "invalid_payload"})
                 continue
 
+            if (
+                parsed.provider_id is not None
+                or parsed.reasoning_level is not None
+                or parsed.fast_mode
+            ):
+
+                try:
+                    selection_support = get_connection_instance_runtime_context(
+                        websocket
+                    ).agent_runtime_support
+                    if selection_support is None:
+                        raise ValueError("Configure a model provider before switching models")
+                    selection_support.provider.model_context(
+                        selection_model(
+                            parsed.tier,
+                            parsed.provider_id,
+                            parsed.reasoning_level,
+                            parsed.fast_mode,
+                        )
+                    )
+                except (ValueError, KeyError) as exc:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "code": "invalid_model_selection",
+                            "message": str(exc),
+                        }
+                    )
+                    continue
+
             is_first_message = not session_has_messages
-            message = await persist_user_message(
-                db,
-                session_id=id,
-                session=session,
-                content=parsed.content,
-                attachments=parsed.attachments,
-                requested_tier=parsed.tier,
-                temperature=0.7,
-                max_iterations=parsed.max_iterations,
-                agent_mode=parsed.agent_mode,
-            )
+            try:
+                message = await persist_user_message(
+                    db,
+                    session_id=id,
+                    session=session,
+                    content=parsed.content,
+                    form_response=parsed.form_response,
+                    attachments=parsed.attachments,
+                    requested_tier=parsed.tier,
+                    provider_id=parsed.provider_id,
+                    reasoning_level=parsed.reasoning_level,
+                    fast_mode=parsed.fast_mode,
+                    temperature=0.7,
+                    max_iterations=parsed.max_iterations,
+                    agent_mode=parsed.agent_mode,
+                )
+            except ValueError as exc:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "invalid_form_response",
+                        "message": str(exc),
+                    }
+                )
+                continue
+            parsed = replace(parsed, content=message.content)
             session_has_messages = True
 
             await manager.broadcast_message_ack(
@@ -221,9 +274,19 @@ async def stream_session(
                 metadata=message.metadata_json or {},
             )
 
-            agent_runtime_support = get_connection_instance_runtime_context(
-                websocket
-            ).agent_runtime_support
+            form_response = (message.metadata_json or {}).get("form_response")
+            if isinstance(form_response, dict) and form_response.get("status") == "dismissed":
+                continue
+
+            current_context = get_connection_instance_runtime_context(websocket)
+            if current_context is not instance_context:
+                instance_context = current_context
+                naming_service = SessionNamingService(
+                    provider=getattr(instance_context.agent_runtime_support, "provider", None),
+                    ws_manager=manager,
+                    db_factory=instance_context.session_factory,
+                )
+            agent_runtime_support = current_context.agent_runtime_support
             if agent_runtime_support is None:
                 await manager.broadcast_agent_error(
                     session_key, "No provider connected for agent reply."
@@ -250,18 +313,14 @@ async def stream_session(
                 agent_runtime_support=agent_runtime_support,
                 payload=build_user_payload(parsed),
                 tier=parsed.tier,
+                provider_id=parsed.provider_id,
+                reasoning_level=parsed.reasoning_level,
+                fast_mode=parsed.fast_mode,
                 max_iterations=parsed.max_iterations,
                 agent_mode=parsed.agent_mode,
                 persist_user_message=False,
+                user_message=message,
             )
-            if outcome.failed or (outcome.run_error and not outcome.cancelled):
-                await _persist_retryable_error(
-                    db,
-                    message=message,
-                    error=outcome.run_error or "Agent failed",
-                )
-                continue
-            await _clear_retryable_error(db, message=message)
             if outcome.failed:
                 continue
 
@@ -278,6 +337,8 @@ async def stream_session(
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
+        panes_task.cancel()
+        await asyncio.gather(panes_task, return_exceptions=True)
         reset_log_session(session_log_token)
         await manager.disconnect(session_key, websocket)
 
@@ -352,10 +413,10 @@ def _expected_approval_action(call: dict[str, object]) -> str | None:
     arguments = call.get("arguments")
     if not tool_name or not isinstance(arguments, dict):
         return None
-    command = arguments.get("command")
-    if not isinstance(command, str):
+    action = arguments.get("action")
+    if not isinstance(action, str):
         return None
-    normalized = command.strip()
+    normalized = action.strip()
     if not normalized:
         return None
     return f"{tool_name}.{normalized}"
@@ -482,66 +543,69 @@ def _apply_terminal_tool_result_update(
     message.metadata_json = metadata
 
 
-async def _initial_terminal_descriptors(instance_name: str) -> list[dict[str, Any]]:
-    if not await runtime_configured(instance_name=instance_name):
+async def _initial_panes(
+    instance_name: str, session_id: str, session_factory=None
+) -> list[dict[str, Any]]:
+    if not await runtime_configured(
+        instance_name=instance_name,
+        session_id=session_id,
+        session_factory=session_factory,
+    ):
         return []
-    return [
-        {
-            "terminal_id": "0",
-            "label": "main",
-            "created_by": "runtime",
-            "created_at": 0,
-            "auto": False,
-            "last_command": None,
-            "last_cwd": None,
-        }
-    ]
+
+    terminal = await get_runtime_terminal_manager(
+        instance_name=instance_name,
+        session_id=session_id,
+        session_factory=session_factory,
+    )
+    try:
+        async with asyncio.timeout(3):
+            return [
+                pane
+                for window in await TmuxPanes(terminal).tree(session_id)
+                for pane in window["panes"]
+            ]
+    except (TimeoutError, RuntimeError):
+        return []
 
 
-@router.websocket("/{id}/terminals/{terminal_id}")
+@router.websocket("/{id}/terminal")
 async def stream_terminal(
     websocket: WebSocket,
     id: UUID,
-    terminal_id: str,
+    retry: bool = False,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    token = websocket.query_params.get("token")
-    if not token:
-        token = websocket.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
-    if not token:
-        await websocket.close(code=4001, reason="Missing token")
-        return
 
-    try:
-        async with ManagerSessionLocal() as manager_db:
-            user = await decode_and_validate_token(token, manager_db, expected_type="access")
-    except Exception:
-        await websocket.close(code=4001, reason="Invalid token")
-        return
-
-    session = await get_owned_session(db, id, user.sub)
+    session = await get_session_record(db, id)
+    await db.close()
     if session is None:
         await websocket.close(code=4004, reason="Session not found")
         return
 
     await websocket.accept()
+
+    async def publish_panes(panes):
+        manager = websocket.app.state.ws_manager
+        await manager.broadcast(str(id), {"type": "panes_changed", "panes": panes})
+
     try:
         await (
             await get_runtime_terminal_manager(
-                instance_name=str(websocket.path_params["instance_name"])
+                session_id=id, instance_name=str(websocket.path_params["instance_name"])
             )
-        ).attach_ws(str(id), terminal_id, websocket)
+        ).attach_ws(str(id), websocket, on_panes=publish_panes, retry_setup=retry)
     except WebSocketDisconnect:
         return
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "terminal websocket failed session=%s terminal_id=%s: %s",
+            "terminal websocket failed session=%s: %s",
             id,
-            terminal_id,
             exc,
             exc_info=True,
         )
         try:
-            await websocket.close(code=4005, reason="Runtime terminal unavailable")
+            await websocket.send_json({"type": "terminal_error", "message": str(exc)[-1000:]})
+            await websocket.close(code=4005, reason="Workspace terminal unavailable")
         except Exception:
             pass

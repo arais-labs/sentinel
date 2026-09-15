@@ -5,8 +5,8 @@ import asyncio
 from app.models import Message, Session, SessionSummary
 from app.services.agent.context_builder import ContextBuilder
 from app.services.sessions.compaction import CompactionService
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import AgentEvent, AssistantMessage, TextContent, TokenUsage
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import AgentEvent, AssistantMessage, TextContent, TokenUsage
 from tests.fake_db import FakeDB
 
 
@@ -65,7 +65,7 @@ def test_compaction_uses_llm_structured_summary_when_provider_available():
     service = CompactionService(provider=provider)
     result = _run(service.compact_session(db, session_id=session.id, user_id="dev-admin"))
 
-    assert result.raw_token_count > result.compressed_token_count
+    assert result.compacted is True
     assert provider.calls
     assert provider.calls[0]["model"] == "fast"
     assert provider.calls[0]["temperature"] == 0.3
@@ -83,8 +83,7 @@ def test_compaction_falls_back_without_provider():
     service = CompactionService(provider=None)
 
     result = _run(service.compact_session(db, session_id=session.id, user_id="dev-admin"))
-    assert result.raw_token_count > 0
-    assert result.compressed_token_count > 0
+    assert result.compacted is True
 
     summary = db.storage[SessionSummary][0]
     assert "summary_text" in summary.summary
@@ -99,8 +98,6 @@ def test_context_builder_includes_session_summary_when_available():
         SessionSummary(
             session_id=session.id,
             summary={"summary_text": "Decision log"},
-            raw_token_count=100,
-            compressed_token_count=20,
         )
     )
 
@@ -113,14 +110,10 @@ def test_context_builder_includes_session_summary_when_available():
     assert "Decision log" in system_text
 
 
-def test_context_builder_limits_history_by_token_budget():
+def test_context_builder_does_not_drop_history_using_token_estimates():
     db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="ctx-budget")
     db.add(session)
-
-    probe_builder = ContextBuilder(default_system_prompt="Base", token_budget=1_000_000)
-    fixed_context = _run(probe_builder.build(db, session.id))
-    fixed_tokens = probe_builder._estimate_context_tokens(fixed_context)
 
     db.add(
         Message(
@@ -150,12 +143,12 @@ def test_context_builder_limits_history_by_token_budget():
         )
     )
 
-    builder = ContextBuilder(default_system_prompt="Base", token_budget=fixed_tokens + 50)
+    builder = ContextBuilder(default_system_prompt="Base", token_budget=1)
     context = _run(builder.build(db, session.id))
     user_messages = [m for m in context if getattr(m, "role", "") == "user"]
-    assert len(user_messages) == 1
+    assert len(user_messages) == 3
     assert isinstance(user_messages[0].content, list)
-    text_blocks = [b.text for b in user_messages[0].content if isinstance(b, TextContent)]
+    text_blocks = [b.text for b in user_messages[-1].content if isinstance(b, TextContent)]
     assert text_blocks and text_blocks[-1] == "history message three"
 
 
@@ -175,10 +168,12 @@ def test_should_auto_compact_is_token_based_not_message_count():
 
     service = CompactionService(provider=None)
     assert _run(service.should_auto_compact(db, session_id=session.id)) is False
-    assert _run(service.should_auto_compact(db, session_id=session.id, threshold_tokens=20)) is True
+    assert (
+        _run(service.should_auto_compact(db, session_id=session.id, threshold_tokens=20)) is False
+    )
 
 
-def test_should_auto_compact_prefers_message_token_count_when_present():
+def test_should_auto_compact_does_not_use_legacy_message_token_counts():
     db = FakeDB()
     session = Session(user_id="dev-admin", status="active", title="token-count-field")
     db.add(session)
@@ -203,7 +198,7 @@ def test_should_auto_compact_prefers_message_token_count_when_present():
 
     service = CompactionService(provider=None)
     assert (
-        _run(service.should_auto_compact(db, session_id=session.id, threshold_tokens=1500)) is True
+        _run(service.should_auto_compact(db, session_id=session.id, threshold_tokens=1500)) is False
     )
 
 

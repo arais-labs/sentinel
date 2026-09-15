@@ -1,8 +1,5 @@
-import os
-
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
 from app.main import app
 from tests.fake_db import FakeDB
@@ -18,13 +15,10 @@ def test_memory_store_search_stats_delete():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        token_resp = client.post(
-            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
         )
-        assert token_resp.status_code == 200
-        token = token_resp.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         create = client.post(
             MEMORY_API,
@@ -61,13 +55,10 @@ def test_memory_hierarchy_endpoints():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        token_resp = client.post(
-            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
         )
-        assert token_resp.status_code == 200
-        token = token_resp.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         create_root = client.post(
             MEMORY_API,
@@ -142,13 +133,10 @@ def test_system_memories_are_backend_protected():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        token_resp = client.post(
-            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
         )
-        assert token_resp.status_code == 200
-        token = token_resp.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         complete = client.post(ONBOARDING_COMPLETE_API, json={}, headers=headers)
         assert complete.status_code == 200

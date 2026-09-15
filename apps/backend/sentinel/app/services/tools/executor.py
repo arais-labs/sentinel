@@ -4,6 +4,7 @@ import inspect
 import logging
 import time
 from typing import Any
+from sentral.errors import ToolValidationError
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -13,7 +14,6 @@ from app.services.tools.registry import (
     ToolApprovalDecision,
     ToolApprovalEvaluation,
     ToolApprovalOutcomeStatus,
-    ToolApprovalRequirement,
     ToolApprovalResultRecorderFn,
     ToolApprovalWaiterFn,
     ToolDefinition,
@@ -25,12 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 class ToolExecutionError(RuntimeError):
-    def __init__(self, message: str, *, approval: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.approval = approval
-
-
-class ToolValidationError(ValueError):
     def __init__(self, message: str, *, approval: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.approval = approval
@@ -89,7 +83,7 @@ class ToolExecutor:
             runtime_context.sub_agent_orchestrator = self._sub_agent_orchestrator
         if runtime_context.instance_name is None:
             runtime_context.instance_name = self._instance_name
-        self._validate_payload(tool, payload)
+        validate_payload(tool.parameters_schema or {}, payload)
         with runtime_db_session_factory(runtime_context.db_session_factory):
             mode_definition = get_agent_mode_definition(agent_mode)
             approved_metadata = await self._resolve_tool_approval(
@@ -153,7 +147,7 @@ class ToolExecutor:
         if approval_check is None:
             return None
 
-        evaluation = await self._run_approval_check(tool.name, approval_check, payload, runtime)
+        evaluation = await evaluate_approval_check(tool.name, approval_check, payload, runtime)
         requirement = evaluation.requirement
         logger.info(
             "tool_approval_eval tool=%s decision=%s action=%s session_id=%s",
@@ -232,80 +226,126 @@ class ToolExecutor:
         if outcome.status != ToolApprovalOutcomeStatus.APPROVED:
             message = (outcome.message or "").strip() or f"Approval {outcome.status.value}."
             raise ToolExecutionError(message, approval=approval_payload)
+        # Permissions may change while the user is deciding. Session grants
+        # satisfy approval requirements, but can never override an explicit deny.
+        current = await evaluate_approval_check(tool.name, approval_check, payload, runtime)
+        if current.decision == ToolApprovalDecision.DENY:
+            raise ToolExecutionError(
+                current.reason or "Execution denied by approval policy.",
+                approval=approval_payload,
+            )
         return approval_payload
 
-    async def _run_approval_check(
-        self,
-        tool_name: str,
-        approval_check: Any,
-        payload: dict[str, Any],
-        runtime: ToolRuntimeContext,
-    ) -> ToolApprovalEvaluation:
-        evaluator_signature = inspect.signature(approval_check)
-        positional_params = [
-            parameter
-            for parameter in evaluator_signature.parameters.values()
-            if parameter.kind
-            in {
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            }
-        ]
-        if len(positional_params) >= 2:
-            evaluated = approval_check(payload, runtime)
-        elif positional_params:
-            evaluated = approval_check(payload)
-        else:
-            evaluated = approval_check()
-        if inspect.isawaitable(evaluated):
-            evaluated = await evaluated
-        if not isinstance(evaluated, ToolApprovalEvaluation):
-            raise ToolExecutionError(
-                f"Tool '{tool_name}' approval check returned invalid response type."
-            )
-        return evaluated
 
-    def _validate_payload(self, tool: ToolDefinition, payload: dict[str, Any]) -> None:
-        schema = tool.parameters_schema or {}
-        properties = schema.get("properties", {})
-        required = schema.get("required", [])
-        additional_properties = schema.get("additionalProperties", True)
+async def evaluate_approval_check(
+    tool_name: str,
+    approval_check: Any,
+    payload: dict[str, Any],
+    runtime: ToolRuntimeContext,
+) -> ToolApprovalEvaluation:
 
-        if not isinstance(payload, dict):
-            raise ToolValidationError("Input payload must be an object")
+    evaluator_signature = inspect.signature(approval_check)
 
-        missing = [field for field in required if field not in payload]
-        if missing:
-            raise ToolValidationError(f"Missing required field(s): {', '.join(missing)}")
+    positional_params = [
+        parameter
+        for parameter in evaluator_signature.parameters.values()
+        if parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+    ]
 
-        if not additional_properties:
-            unknown = [field for field in payload.keys() if field not in properties]
-            if unknown:
-                raise ToolValidationError(f"Unknown field(s): {', '.join(unknown)}")
+    if len(positional_params) >= 2:
 
-        for field_name, field_schema in properties.items():
-            if field_name not in payload:
-                continue
-            self._validate_field(field_name, payload[field_name], field_schema)
+        evaluated = approval_check(payload, runtime)
 
-    def _validate_field(self, field_name: str, value: Any, field_schema: dict[str, Any]) -> None:
-        expected_type = field_schema.get("type")
-        if expected_type:
-            if expected_type == "string" and not isinstance(value, str):
-                raise ToolValidationError(f"Field '{field_name}' must be a string")
-            if expected_type == "integer" and (
-                not isinstance(value, int) or isinstance(value, bool)
-            ):
-                raise ToolValidationError(f"Field '{field_name}' must be an integer")
-            if expected_type == "boolean" and not isinstance(value, bool):
-                raise ToolValidationError(f"Field '{field_name}' must be a boolean")
-            if expected_type == "object" and not isinstance(value, dict):
-                raise ToolValidationError(f"Field '{field_name}' must be an object")
-            if expected_type == "array" and not isinstance(value, list):
-                raise ToolValidationError(f"Field '{field_name}' must be an array")
+    elif positional_params:
 
-        enum = field_schema.get("enum")
-        if enum and value not in enum:
-            raise ToolValidationError(
-                f"Field '{field_name}' must be one of: {', '.join(map(str, enum))}"
-            )
+        evaluated = approval_check(payload)
+
+    else:
+
+        evaluated = approval_check()
+
+    if inspect.isawaitable(evaluated):
+
+        evaluated = await evaluated
+
+    if not isinstance(evaluated, ToolApprovalEvaluation):
+
+        raise ToolExecutionError(
+            f"Tool '{tool_name}' approval check returned invalid response type."
+        )
+
+    return evaluated
+
+
+def validate_payload(schema: dict[str, Any], payload: dict[str, Any]) -> None:
+
+    properties = schema.get("properties", {})
+
+    required = schema.get("required", [])
+
+    additional_properties = schema.get("additionalProperties", True)
+
+    if not isinstance(payload, dict):
+
+        raise ToolValidationError("Input payload must be an object")
+
+    missing = [field for field in required if field not in payload]
+
+    if missing:
+
+        raise ToolValidationError(f"Missing required field(s): {', '.join(missing)}")
+
+    if not additional_properties:
+
+        unknown = [field for field in payload.keys() if field not in properties]
+
+        if unknown:
+
+            raise ToolValidationError(f"Unknown field(s): {', '.join(unknown)}")
+
+    for field_name, field_schema in properties.items():
+
+        if field_name not in payload:
+
+            continue
+
+        _validate_field(field_name, payload[field_name], field_schema)
+
+
+def _validate_field(field_name: str, value: Any, field_schema: dict[str, Any]) -> None:
+
+    expected_type = field_schema.get("type")
+
+    if expected_type:
+
+        if expected_type == "string" and not isinstance(value, str):
+
+            raise ToolValidationError(f"Field '{field_name}' must be a string")
+
+        if expected_type == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
+
+            raise ToolValidationError(f"Field '{field_name}' must be an integer")
+
+        if expected_type == "boolean" and not isinstance(value, bool):
+
+            raise ToolValidationError(f"Field '{field_name}' must be a boolean")
+
+        if expected_type == "object" and not isinstance(value, dict):
+
+            raise ToolValidationError(f"Field '{field_name}' must be an object")
+
+        if expected_type == "array" and not isinstance(value, list):
+
+            raise ToolValidationError(f"Field '{field_name}' must be an array")
+
+    enum = field_schema.get("enum")
+
+    if enum and value not in enum:
+
+        raise ToolValidationError(
+            f"Field '{field_name}' must be one of: {', '.join(map(str, enum))}"
+        )

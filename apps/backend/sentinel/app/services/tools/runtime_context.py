@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from app.services.tools.executor import ToolValidationError
+from sentral.errors import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
 
 
