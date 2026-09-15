@@ -116,7 +116,6 @@ async function stageSitePackages(stagingDir) {
   // tree (no venv, no pyvenv.cfg, no absolute shebangs).
   run(bundledPython, [
     '-m', 'pip', 'install',
-    '--no-cache-dir',
     '--target', sitePackages,
     '-r', requirementsPath,
   ], { cwd: backendDir });

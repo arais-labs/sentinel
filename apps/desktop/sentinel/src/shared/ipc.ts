@@ -28,6 +28,8 @@ export interface PayloadInfo {
 export interface DesktopStatus {
   appUrl?: string;
   ready: boolean;
+  preparing?: boolean;
+  payloadProgress?: PayloadProgress;
   development: boolean;
   operation?: 'starting' | 'stopping';
   error?: string;
