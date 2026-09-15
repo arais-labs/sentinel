@@ -1,15 +1,12 @@
 import { app } from 'electron';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 export function repoRoot(): string {
   if (process.env.SENTINEL_REPO_ROOT) {
     return process.env.SENTINEL_REPO_ROOT;
   }
-  return path.resolve(__dirname, '../../../../..');
+  return path.resolve(import.meta.dirname, '../../../../..');
 }
 
 export function resourceRoot(): string {
@@ -24,7 +21,7 @@ export function hostStateRoot(): string {
 }
 
 export function desktopAppRoot(): string {
-  return path.resolve(__dirname, '../..');
+  return path.resolve(import.meta.dirname, '../..');
 }
 
 // The updatable app payload lives in writable userData (not read-only
@@ -57,9 +54,12 @@ export function payloadManifestPath(): string {
 
 export function frontendDistPath(): string {
   if (!app.isPackaged) {
-    return path.join(repoRoot(), 'apps/frontend/sentinel/dist');
+    return path.join(desktopAppRoot(), 'dist/renderer');
   }
-  return payloadFrontendDistDir();
+  const installed = payloadFrontendDistDir();
+  return existsSync(path.join(installed, 'index.html'))
+    ? installed
+    : path.join(desktopAppRoot(), 'dist/renderer');
 }
 
 export function backendPath(): string {
