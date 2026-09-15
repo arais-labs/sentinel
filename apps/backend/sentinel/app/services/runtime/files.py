@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import base64
+from app.services.runtime.workspace import WorkspaceLocation
+
 import json
-from dataclasses import dataclass
+from types import SimpleNamespace
 from uuid import UUID
 
 from app.services.runtime.environment import RuntimeEnvironment, detect_runtime_environment
-from app.services.runtime.remote_commands import load_remote_command
-from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.guest_commands import guest_python_command
+import app.services.runtime.file_stream as file_stream
+import app.services.runtime.container_transport as container_transport
+from app.services.runtime.local_transport import RuntimeTransport
 from app.services.runtime.workspace import workspace_paths
 
 
@@ -27,17 +30,10 @@ class RuntimeSandboxUnavailableError(RuntimePathInvalidError):
     pass
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeDownload:
-    content: bytes
-    download_name: str
-    media_type: str
-
-
 class RuntimeWorkspaceFiles:
-    def __init__(self, ssh: SSHClient, *, workspaces_root: str | None = None) -> None:
+    def __init__(self, ssh: RuntimeTransport, *, workspace_location: WorkspaceLocation) -> None:
         self._ssh = ssh
-        self._workspaces_root = workspaces_root
+        self._workspace_location = workspace_location
         self._environment: RuntimeEnvironment | None = None
 
     async def list_files(self, session_id: UUID | str, *, path: str = "", limit: int = 400) -> dict:
@@ -62,18 +58,19 @@ class RuntimeWorkspaceFiles:
             timeout=20,
         )
 
-    async def download(self, session_id: UUID | str, *, path: str) -> RuntimeDownload:
-        payload = await self._run_json(
-            session_id,
-            "download",
-            {"path": path},
-            timeout=120,
+    async def download(
+        self, session_id: UUID | str, *, path: str, range_header=None, if_range=None, head=False
+    ):
+        await self._require_supported_environment()
+        if not isinstance(self._ssh, container_transport.ContainerTransport):
+            raise RuntimeSandboxUnavailableError("An attached workspace container is required")
+        workspace = SimpleNamespace(
+            id=self._ssh.workspace_id,
+            directory=self._ssh.directory,
+            development_tools=self._ssh.tools,
         )
-        encoded = str(payload.get("content_base64") or "")
-        return RuntimeDownload(
-            content=base64.b64decode(encoded.encode("ascii")),
-            download_name=str(payload.get("download_name") or "download"),
-            media_type=str(payload.get("media_type") or "application/octet-stream"),
+        return await file_stream.open_file(
+            workspace, path, download=True, range_header=range_header, if_range=if_range, head=head
         )
 
     async def git_roots(self, session_id: UUID | str, *, path: str = "", limit: int = 200) -> dict:
@@ -140,7 +137,7 @@ class RuntimeWorkspaceFiles:
         *,
         timeout: int,
     ) -> dict:
-        paths = workspace_paths(str(session_id), root=self._workspaces_root)
+        paths = workspace_paths(str(session_id), root=self._workspace_location)
         await self._require_supported_environment()
         request = {
             "operation": operation,
@@ -149,9 +146,10 @@ class RuntimeWorkspaceFiles:
             "workspace": paths.workspace,
             "payload": payload,
         }
-        result = await self._ssh.run_script(
-            load_remote_command("common/workspace/files.sh"),
-            args=[json.dumps(request, separators=(",", ":"))],
+        result = await self._ssh.run(
+            guest_python_command(
+                "common/files/operations.py", [json.dumps(request, separators=(",", ":"))]
+            ),
             timeout=timeout,
         )
         if result.exit_status not in {0, None}:
@@ -160,9 +158,9 @@ class RuntimeWorkspaceFiles:
         try:
             response = json.loads(result.stdout or "{}")
         except json.JSONDecodeError as exc:
-            raise RuntimePathInvalidError("Runtime file response was not valid JSON") from exc
+            raise RuntimePathInvalidError("Machine file response was not valid JSON") from exc
         if not isinstance(response, dict):
-            raise RuntimePathInvalidError("Runtime file response was not an object")
+            raise RuntimePathInvalidError("Machine file response was not an object")
         if response.get("ok") is False:
             _raise_remote_error(
                 str(response.get("error") or "runtime_error"), str(response.get("detail") or "")
@@ -177,7 +175,7 @@ class RuntimeWorkspaceFiles:
             self._environment = environment
         if not environment.supported:
             raise RuntimeSandboxUnavailableError(
-                "Runtime must be Linux with bubblewrap or macOS with sandbox-exec "
+                "An attached workspace container is required "
                 f"(detected os={environment.os}, sandbox={environment.sandbox})."
             )
         return environment
@@ -185,7 +183,7 @@ class RuntimeWorkspaceFiles:
 
 def _raise_remote_error(error: str, detail: str) -> None:
     if error == "not_found":
-        raise RuntimePathNotFoundError(detail or "Runtime path not found")
+        raise RuntimePathNotFoundError(detail or "Machine path not found")
     if error == "is_directory":
-        raise RuntimePathIsDirectoryError(detail or "Runtime path is a directory")
+        raise RuntimePathIsDirectoryError(detail or "Machine path is a directory")
     raise RuntimePathInvalidError(detail or "Invalid runtime path")

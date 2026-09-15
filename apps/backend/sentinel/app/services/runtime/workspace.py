@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
-from app.services.runtime.remote_commands import load_remote_command
+from app.services.runtime.guest_commands import load_guest_command
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -16,12 +16,25 @@ class RuntimeWorkspaceError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceLocation:
+    """User project and Sentinel-owned storage for one persistent workspace."""
+
+    directory: str
+    state_root: str
+    workspace_id: str = ""
+    host_directory: str = ""
+    tools: tuple[str, ...] = ()
+    distribution: str = "alpine"
+
+
+@dataclass(frozen=True, slots=True)
 class RemoteWorkspacePaths:
     session_id: str
-    workspaces_root: str
+    control_root: str
     session_root: str
     workspace: str
-    state: str
+    cache: str
+    scratch_runtime: str
     home: str
     runtime: str
     tmux: str
@@ -39,10 +52,10 @@ class RemoteWorkspacePaths:
             .isoformat()
             .replace("+00:00", "Z"),
             "paths": {
-                "workspaces_root": self.workspaces_root,
+                "control_root": self.control_root,
                 "session_root": self.session_root,
                 "workspace": self.workspace,
-                "state": self.state,
+                "cache": self.cache,
                 "home": self.home,
                 "runtime": self.runtime,
                 "tmux": self.tmux,
@@ -59,48 +72,54 @@ def validate_session_id(session_id: str) -> str:
     return session_id
 
 
-def normalize_workspaces_root(root: str | None = None) -> str:
-    value = (root or "").strip()
-    if not value:
-        raise RuntimeWorkspaceError("runtime workspaces dir cannot be empty")
-    if "\x00" in value or "\n" in value:
-        raise RuntimeWorkspaceError("runtime workspaces dir cannot contain NUL or newline")
+def validate_absolute_directory(value: str) -> str:
     path = PurePosixPath(value)
-    if not path.is_absolute():
-        raise RuntimeWorkspaceError("runtime workspaces dir must be an absolute POSIX path")
-    return path.as_posix().rstrip("/") or "/"
+    if (
+        not value
+        or any(c in value for c in ("\x00", "\n", "\r"))
+        or not path.is_absolute()
+        or ".." in path.parts
+        or str(path) == "/"
+    ):
+        raise RuntimeWorkspaceError("Expected an absolute non-root directory without traversal")
+    return str(path)
 
 
-def workspace_paths(session_id: str, *, root: str | None = None) -> RemoteWorkspacePaths:
+def workspace_paths(session_id: str, *, root: WorkspaceLocation) -> RemoteWorkspacePaths:
     session_id = validate_session_id(session_id)
-    workspaces_root = normalize_workspaces_root(root)
-    session_root = (PurePosixPath(workspaces_root) / session_id).as_posix()
-    state = (PurePosixPath(session_root) / "state").as_posix()
+    if not isinstance(root, WorkspaceLocation):
+        raise RuntimeWorkspaceError("An explicit workspace location is required")
+    project = validate_absolute_directory(root.directory)
+    managed = PurePosixPath(validate_absolute_directory(root.state_root))
+    control_root = managed / "control"
+    session_root = control_root / session_id
     return RemoteWorkspacePaths(
         session_id=session_id,
-        workspaces_root=workspaces_root,
-        session_root=session_root,
-        workspace=(PurePosixPath(session_root) / "workspace").as_posix(),
-        state=state,
-        home=(PurePosixPath(state) / "home").as_posix(),
-        runtime=(PurePosixPath(state) / "runtime").as_posix(),
-        tmux=(PurePosixPath(state) / "tmux").as_posix(),
-        browser=(PurePosixPath(state) / "browser").as_posix(),
-        tmp=(PurePosixPath(session_root) / "tmp").as_posix(),
-        logs=(PurePosixPath(session_root) / "logs").as_posix(),
-        manifest=(PurePosixPath(session_root) / "manifest.json").as_posix(),
+        control_root=str(control_root),
+        session_root=str(session_root),
+        workspace=project,
+        home="/root",
+        cache="/root/.cache",
+        scratch_runtime="/run/user/0",
+        tmp="/tmp",
+        runtime=str(session_root / "runtime"),
+        tmux=str(session_root / "tmux"),
+        browser=str(session_root / "browser"),
+        logs=str(session_root / "logs"),
+        manifest=str(session_root / "manifest.json"),
     )
 
 
 def build_prepare_workspace_script(
-    session_id: str, *, root: str | None = None
+    session_id: str, *, root: WorkspaceLocation
 ) -> tuple[str, list[str]]:
     paths = workspace_paths(session_id, root=root)
     directories = [
-        paths.workspaces_root,
+        paths.control_root,
         paths.session_root,
         paths.workspace,
-        paths.state,
+        paths.cache,
+        paths.scratch_runtime,
         paths.home,
         paths.runtime,
         paths.tmux,
@@ -108,37 +127,20 @@ def build_prepare_workspace_script(
         paths.tmp,
         paths.logs,
     ]
-    request = {
-        "session_root": paths.session_root,
-        "workspaces_root": paths.workspaces_root,
-        "manifest_path": paths.manifest,
-        "directories": directories,
-        "private_directories": [
-            paths.session_root,
-            paths.workspace,
-            paths.state,
-            paths.home,
-            paths.runtime,
-            paths.tmux,
-            paths.browser,
-            paths.tmp,
-            paths.logs,
-        ],
-        "manifest": paths.manifest_payload(),
-    }
-    return load_remote_command("common/workspace/prepare.sh"), [
-        json.dumps(request, separators=(",", ":"))
+    return load_guest_command("common/workspace/prepare.sh"), [
+        paths.workspace,
+        paths.control_root,
+        paths.session_root,
+        json.dumps(paths.manifest_payload(), separators=(",", ":")),
+        *[path for path in directories if path not in {paths.workspace, paths.control_root}],
     ]
 
 
-def build_delete_workspace_script(
-    session_id: str, *, root: str | None = None
+def build_delete_session_script(
+    session_id: str, *, root: WorkspaceLocation
 ) -> tuple[str, list[str]]:
     paths = workspace_paths(session_id, root=root)
-    request = {
-        "session_root": paths.session_root,
-        "workspaces_root": paths.workspaces_root,
-    }
-    return load_remote_command("common/workspace/delete.sh"), [
-        json.dumps(request, separators=(",", ":"))
+    return load_guest_command("common/workspace/delete.sh"), [
+        paths.control_root,
+        paths.session_root,
     ]

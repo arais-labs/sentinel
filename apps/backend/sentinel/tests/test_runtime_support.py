@@ -4,9 +4,9 @@ import asyncio
 import json
 
 from app.models import Message, Session
-from app.services.agent import SentinelRuntimeSupport
+from app.services.agent.runtime_support import SentinelRuntimeSupport
 from app.services.agent.runtime_support import humanize_error
-from app.services.llm.generic.types import (
+from sentral.llm.generic.types import (
     AssistantMessage,
     ImageContent,
     SystemMessage,
@@ -53,7 +53,7 @@ def test_runtime_context_snapshot_includes_conversation_history_layer():
                 ToolCallContent(
                     id="call_1",
                     name="git",
-                    arguments={"command": "read", "cli_command": "git status"},
+                    arguments={"action": "read", "cli_command": "git status"},
                 ),
             ]
         ),
@@ -191,3 +191,42 @@ def test_runtime_support_truncates_large_tool_results_for_storage():
     )
     assert tool_record.metadata_json.get("storage_truncated") is True
     assert int(tool_record.metadata_json.get("original_chars") or 0) > len(tool_record.content)
+
+
+def test_execution_snapshot_records_only_its_first_request_usage():
+    for first_usage in (None, {"usage": {"input_tokens": 321, "output_tokens": 5}}):
+        db = FakeDB()
+        session = _new_session(db)
+        created = [
+            AssistantMessage(
+                content=[TextContent(text="first")],
+                model="m",
+                provider="p",
+                provider_usage=first_usage,
+            ),
+            AssistantMessage(
+                content=[TextContent(text="second")],
+                model="m",
+                provider="p",
+                provider_usage={"usage": {"input_tokens": 999}},
+            ),
+        ]
+        _run(
+            _support()._persist_messages(
+                db,
+                session.id,
+                created,
+                {},
+                requested_tier="normal",
+                temperature=0.7,
+                max_iterations=50,
+                runtime_context_snapshot={"model": "m", "context_token_budget": 1000},
+            )
+        )
+        context = next(
+            row
+            for row in db.storage[Message]
+            if (row.metadata_json or {}).get("source") == "runtime_context"
+        )
+        assert context.metadata_json["run_context"]["request_usage"] == first_usage
+        assert "estimated_context_tokens" not in context.metadata_json["run_context"]

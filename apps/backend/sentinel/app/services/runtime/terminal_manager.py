@@ -1,89 +1,29 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import PurePosixPath
 from shlex import quote
-from typing import Any, Awaitable, Callable
-from uuid import uuid4
+from typing import Any
 
+from app.schemas.runtime import RuntimeExecResult
+import app.services.runtime.container_transport as container_transport
 from app.services.runtime.environment import RuntimeEnvironment, detect_runtime_environment
-from app.services.runtime.remote_commands import load_remote_command
-from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.local_transport import RuntimeTransport
+from app.services.runtime.terminal_view import serve_terminal
 from app.services.runtime.tmux import (
     build_host_tmux_command,
-    build_resolve_host_tmux_script,
-    build_close_tmux_script,
     build_open_tmux_script,
-    build_tmux_status_script,
-    tmux_host_log_path,
     tmux_host_socket_path,
-    tmux_session_name,
-    validate_terminal_id,
 )
-from app.schemas.runtime import RuntimeExecResult
 from app.services.runtime.workspace import (
-    build_delete_workspace_script,
+    WorkspaceLocation,
+    build_delete_session_script,
     build_prepare_workspace_script,
-    workspace_paths,
 )
 
 _POLL_INTERVAL_SECONDS = 0.2
-_SHELL_FOREGROUND_COMMANDS = {"bash", "sh", "zsh", "fish", "dash"}
 _OSC_D_PATTERN = re.compile(rb"\x1b\]133;D(?:;(-?\d+))?(?:\x1b\\|\x07)")
-
-
-@dataclass(frozen=True, slots=True)
-class TerminalStatus:
-    session_id: str
-    terminal_id: str
-    status: str
-
-
-@dataclass(frozen=True, slots=True)
-class TerminalDescriptor:
-    terminal_id: str
-    label: str
-    status: str
-    busy: bool
-    last_command: str | None = None
-    last_cwd: str | None = None
-    auto: bool = False
-    created_by: str = "runtime"
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "terminal_id": self.terminal_id,
-            "label": self.label,
-            "status": self.status,
-            "busy": self.busy,
-            "last_command": self.last_command,
-            "last_cwd": self.last_cwd,
-            "auto": self.auto,
-            "created_by": self.created_by,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class BackgroundJobHandle:
-    id: str
-    session_id: str
-    terminal_id: str
-    command: str
-    status: str
-    run_path: str
-    result_path: str
-    log_offset: int
-
-
-class TerminalBlockedError(RuntimeError):
-    def __init__(self, reason: str, *, current_command: str | None = None) -> None:
-        super().__init__(reason)
-        self.reason = reason
-        self.current_command = current_command
+_OSC_C_PATTERN = re.compile(rb"\x1b\]133;C(?:\x1b\\|\x07)")
 
 
 class TerminalUnavailableError(RuntimeError):
@@ -98,32 +38,31 @@ class RuntimeSandboxUnavailableError(TerminalUnavailableError):
 
 
 class RuntimeTerminalManager:
-    """Backend-owned workspace and tmux lifecycle over SSH."""
+    """Tmux session lifecycle and viewer bridge over a machine transport."""
 
-    def __init__(self, ssh: SSHClient, *, workspaces_root: str | None = None) -> None:
+    def __init__(self, ssh: RuntimeTransport, *, workspace_location: WorkspaceLocation) -> None:
         self._ssh = ssh
-        self._workspaces_root = workspaces_root
+        self._workspace_location = workspace_location
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
-        self._running_terminals: set[tuple[str, str]] = set()
         self._background_tasks: set[asyncio.Task[None]] = set()
-        self._background_tasks_by_terminal: dict[tuple[str, str], set[asyncio.Task[None]]] = {}
-        self._terminal_metadata: dict[tuple[str, str], dict[str, object]] = {}
+        self._background_tasks_by_pane: dict[tuple[str, str], set[asyncio.Task[None]]] = {}
         self._environment: RuntimeEnvironment | None = None
+        self._open_locks: dict[str, asyncio.Lock] = {}
 
     @property
-    def ssh(self) -> SSHClient:
+    def ssh(self) -> RuntimeTransport:
         return self._ssh
 
     @property
-    def workspaces_root(self) -> str | None:
-        return self._workspaces_root
+    def workspace_location(self) -> WorkspaceLocation:
+        return self._workspace_location
 
     async def runtime_environment(self) -> RuntimeEnvironment:
         return await self._require_supported_environment()
 
     async def prepare_workspace(self, session_id: str) -> None:
         await self._require_supported_environment()
-        script, args = build_prepare_workspace_script(session_id, root=self._workspaces_root)
+        script, args = build_prepare_workspace_script(session_id, root=self._workspace_location)
         await self._run_required_script(
             script,
             args,
@@ -131,410 +70,87 @@ class RuntimeTerminalManager:
             reason="workspace_prepare_failed",
         )
 
-    async def delete_workspace(self, session_id: str) -> None:
-        terminal_ids = {
-            terminal_id
-            for current_session, terminal_id in self._running_terminals
-            if current_session == session_id
-        }
-        terminal_ids.add("0")
-        for terminal_id in terminal_ids:
-            await self.close_terminal(session_id, terminal_id=terminal_id)
-        script, args = build_delete_workspace_script(session_id, root=self._workspaces_root)
-        await self._run_required_script(
-            script,
-            args,
-            timeout=60,
-            reason="workspace_delete_failed",
-        )
-
-    async def open_terminal(self, session_id: str, *, terminal_id: str = "0") -> TerminalStatus:
-        validate_terminal_id(terminal_id)
-        lock = self._lock_for(session_id, terminal_id)
-        async with lock:
-            return await self._open_terminal_unlocked(session_id, terminal_id=terminal_id)
-
-    async def _open_terminal_unlocked(
-        self, session_id: str, *, terminal_id: str = "0"
-    ) -> TerminalStatus:
-        key = (session_id, terminal_id)
-        if key in self._running_terminals:
-            return TerminalStatus(session_id=session_id, terminal_id=terminal_id, status="running")
-        await self.prepare_workspace(session_id)
-        environment = await self._require_supported_environment()
-        script, args = build_open_tmux_script(
-            session_id,
-            terminal_id=terminal_id,
-            root=self._workspaces_root,
-            os_name=environment.os,
-            sandbox=environment.sandbox,
-        )
-        await self._run_required_script(
-            script,
-            args,
-            timeout=30,
-            reason="terminal_open_failed",
-        )
-        self._running_terminals.add(key)
-        self._terminal_metadata.setdefault(
-            key,
-            {
-                "label": "main" if terminal_id == "0" else terminal_id,
-                "created_by": "runtime",
-                "auto": terminal_id.startswith("bg-"),
-                "last_command": None,
-                "last_cwd": None,
-            },
-        )
-        return TerminalStatus(session_id=session_id, terminal_id=terminal_id, status="running")
-
-    async def close_terminal(self, session_id: str, *, terminal_id: str = "0") -> TerminalStatus:
-        validate_terminal_id(terminal_id)
-        environment = await self._require_supported_environment()
-        script, args = build_close_tmux_script(
-            session_id,
-            terminal_id=terminal_id,
-            root=self._workspaces_root,
-            os_name=environment.os,
-        )
-        result = await self._ssh.run_script(
-            script,
-            args=args,
-            timeout=30,
-        )
-        if result.exit_status not in {0, None}:
-            raise TerminalUnavailableError(
-                "terminal_close_failed",
-                detail=(result.stderr or result.stdout or "").strip()[:500],
-            )
-        key = (session_id, terminal_id)
-        for task in list(self._background_tasks_by_terminal.get(key, set())):
-            task.cancel()
-        self._running_terminals.discard(key)
-        self._terminal_metadata.pop(key, None)
-        return TerminalStatus(session_id=session_id, terminal_id=terminal_id, status="stopped")
-
-    async def status(self, session_id: str, *, terminal_id: str = "0") -> TerminalStatus:
-        validate_terminal_id(terminal_id)
-        environment = await self._require_supported_environment()
-        script, args = build_tmux_status_script(
-            session_id,
-            terminal_id=terminal_id,
-            root=self._workspaces_root,
-            os_name=environment.os,
-        )
-        result = await self._ssh.run_script(
-            script,
-            args=args,
+    async def delete_session_state(self, session_id: str) -> None:
+        socket = tmux_host_socket_path(session_id, root=self._workspace_location)
+        await self._ssh.run(
+            (await self._tmux_command(["-S", socket, "kill-server"])) + " 2>/dev/null || true",
             timeout=15,
         )
-        if result.exit_status not in {0, None}:
-            raise TerminalUnavailableError(
-                "terminal_status_failed",
-                detail=(result.stderr or result.stdout or "").strip()[:500],
-            )
-        status = (
-            (result.stdout or "").strip().splitlines()[-1] if result.stdout.strip() else "unknown"
-        )
-        key = (session_id, terminal_id)
-        if status == "running":
-            self._running_terminals.add(key)
-        elif status in {"missing", "stopped"}:
-            self._running_terminals.discard(key)
-        return TerminalStatus(session_id=session_id, terminal_id=terminal_id, status=status)
+        for (chat, pane), tasks in list(self._background_tasks_by_pane.items()):
+            if chat == session_id:
+                for task in list(tasks):
+                    task.cancel()
+        script, args = build_delete_session_script(session_id, root=self._workspace_location)
+        await self._run_required_script(script, args, timeout=60, reason="session_delete_failed")
 
-    async def run_command(
-        self,
-        session_id: str,
-        command: str,
-        *,
-        terminal_id: str = "0",
-        timeout: int = 300,
-        cwd: str | None = None,
-        env: dict[str, str] | None = None,
-    ) -> RuntimeExecResult:
-        validate_terminal_id(terminal_id)
-        timeout = max(1, int(timeout or 300))
-        lock = self._lock_for(session_id, terminal_id)
-        async with lock:
-            await self._open_terminal_unlocked(session_id, terminal_id=terminal_id)
-            await self._refuse_if_foreground_busy(session_id, terminal_id=terminal_id)
-            offset = await self._pane_log_size(session_id, terminal_id=terminal_id)
-            await self._send_to_pane(
+    async def ensure_session(self, session_id: str) -> None:
+        async with self._open_locks.setdefault(session_id, asyncio.Lock()):
+            await self.prepare_workspace(session_id)
+            environment = await self._require_supported_environment()
+            script, args = build_open_tmux_script(
                 session_id,
-                terminal_id=terminal_id,
-                command=self._build_visible_command(command, cwd=cwd, env=env),
+                root=self._workspace_location,
+                os_name=environment.os,
+                sandbox=environment.sandbox,
             )
-            self._remember_terminal_command(
-                session_id,
-                terminal_id,
-                command=command,
-                cwd=cwd,
-                created_by="agent",
-                auto=terminal_id.startswith("bg-"),
-            )
-            return await self._await_command_complete(
-                session_id,
-                terminal_id=terminal_id,
-                since_offset=offset,
-                timeout=timeout,
+            await self._run_required_script(
+                script, args, timeout=30, reason="tmux_session_open_failed"
             )
 
-    async def start_background_command(
-        self,
-        session_id: str,
-        command: str,
-        *,
-        terminal_id: str | None = None,
-        cwd: str | None = None,
-        env: dict[str, str] | None = None,
-        on_complete: Callable[[dict[str, object], str, str], Awaitable[None]] | None = None,
-        on_terminal_idle: Callable[[], Awaitable[None]] | None = None,
-        defer_watch: bool = False,
-    ) -> BackgroundJobHandle:
-        job_id = uuid4().hex
-        terminal_id = validate_terminal_id(terminal_id or f"bg-{job_id[:8]}")
-        if terminal_id == "0":
-            raise TerminalUnavailableError(
-                "background_terminal_invalid",
-                detail="Background runtime commands cannot use terminal 0.",
-            )
-        lock = self._lock_for(session_id, terminal_id)
-        async with lock:
-            await self._open_terminal_unlocked(session_id, terminal_id=terminal_id)
-            await self._refuse_if_foreground_busy(session_id, terminal_id=terminal_id)
-            offset = await self._pane_log_size(session_id, terminal_id=terminal_id)
-            handle = await self._write_background_job_script(
-                session_id,
-                job_id=job_id,
-                terminal_id=terminal_id,
-                command=command,
-                cwd=cwd,
-                env=env,
-                log_offset=offset,
-            )
-            await self._send_to_pane(
-                session_id,
-                terminal_id=terminal_id,
-                command=f"bash {quote(handle.run_path)}",
-            )
-            self._remember_terminal_command(
-                session_id,
-                terminal_id,
-                command=command,
-                cwd=cwd,
-                created_by="agent",
-                auto=terminal_id.startswith("bg-"),
-            )
-        if not defer_watch:
-            self.watch_background_command(
-                handle,
-                on_complete=on_complete,
-                on_terminal_idle=on_terminal_idle,
-            )
-        return handle
-
-    def watch_background_command(
-        self,
-        handle: BackgroundJobHandle,
-        *,
-        on_complete: Callable[[dict[str, object], str, str], Awaitable[None]] | None = None,
-        on_terminal_idle: Callable[[], Awaitable[None]] | None = None,
+    async def attach_ws(
+        self, session_id: str, websocket: Any, *, on_panes=None, retry_setup=False
     ) -> None:
-        task = asyncio.create_task(
-            self._watch_background_command(
-                handle,
-                on_complete=on_complete,
-                on_terminal_idle=on_terminal_idle,
-            )
-        )
-        self._track_background_task((handle.session_id, handle.terminal_id), task)
+        # Observe disconnects while setup is pending, before a guest process exists.
+        # A closed UI must not keep an HTTP worker alive through a download.
+        messages: asyncio.Queue = asyncio.Queue(maxsize=16)
 
-    async def list_terminals(
-        self,
-        session_id: str,
-        *,
-        terminal_ids: list[str] | None = None,
-    ) -> list[TerminalDescriptor]:
-        requested = {validate_terminal_id(item) for item in terminal_ids} if terminal_ids else None
-        discovered = await self._discover_running_terminal_ids(session_id)
-        for terminal_id in discovered:
-            self._running_terminals.add((session_id, terminal_id))
-        for current_session, terminal_id in list(self._running_terminals):
-            if current_session != session_id:
-                continue
-            if terminal_id not in discovered:
-                self._running_terminals.discard((current_session, terminal_id))
-        terminal_ids_to_report = sorted(
-            discovered | {item[1] for item in self._running_terminals if item[0] == session_id}
-        )
-        if requested is not None:
-            terminal_ids_to_report = [
-                terminal_id for terminal_id in terminal_ids_to_report if terminal_id in requested
-            ]
-        return [
-            self._descriptor_for(session_id, terminal_id) for terminal_id in terminal_ids_to_report
-        ]
-
-    async def read_tails(
-        self,
-        session_id: str,
-        *,
-        terminal_ids: list[str],
-        tail_bytes: int = 8_000,
-    ) -> list[dict[str, object]]:
-        results: list[dict[str, object]] = []
-        for terminal_id in terminal_ids:
-            terminal_id = validate_terminal_id(terminal_id)
-            try:
-                output = await self.read_tail(
-                    session_id, terminal_id=terminal_id, tail_bytes=tail_bytes
-                )
-            except Exception as exc:  # noqa: BLE001
-                results.append(
-                    {"terminal_id": terminal_id, "ok": False, "error": str(exc), "output": ""}
-                )
-                continue
-            results.append({"terminal_id": terminal_id, "ok": True, "output": output})
-        return results
-
-    async def close_terminals(
-        self,
-        session_id: str,
-        *,
-        terminal_ids: list[str],
-    ) -> list[dict[str, object]]:
-        results: list[dict[str, object]] = []
-        for terminal_id in terminal_ids:
-            terminal_id = validate_terminal_id(terminal_id)
-            existed = (session_id, terminal_id) in self._running_terminals
-            try:
-                status = await self.close_terminal(session_id, terminal_id=terminal_id)
-            except Exception as exc:  # noqa: BLE001
-                results.append(
-                    {"terminal_id": terminal_id, "closed": False, "ok": False, "error": str(exc)}
-                )
-                continue
-            results.append(
-                {
-                    "terminal_id": terminal_id,
-                    "closed": True,
-                    "existed": existed,
-                    "ok": True,
-                    "status": status.status,
-                }
-            )
-        return results
-
-    async def read_tail(
-        self,
-        session_id: str,
-        *,
-        terminal_id: str = "0",
-        tail_bytes: int = 8_000,
-    ) -> str:
-        count = max(256, min(int(tail_bytes), 200_000))
-        socket = tmux_host_socket_path(
-            session_id, terminal_id=terminal_id, root=self._workspaces_root
-        )
-        name = tmux_session_name(terminal_id)
-        history_lines = max(100, min(5_000, (count // 80) + 100))
-        command = await self._tmux_command(
-            [
-                "-S",
-                socket,
-                "capture-pane",
-                "-p",
-                "-J",
-                "-t",
-                name,
-                "-S",
-                f"-{history_lines}",
-            ]
-        )
-        result = await self._ssh.run(f"{command} 2>/dev/null", timeout=15)
-        if result.exit_status not in {0, None}:
-            raise TerminalUnavailableError(
-                "terminal_read_failed",
-                detail=(result.stderr or result.stdout or "").strip()[:500],
-            )
-        return _truncate_terminal_text((result.stdout or ""), max_chars=count)
-
-    async def attach_ws(self, session_id: str, terminal_id: str, websocket: Any) -> None:
-        validate_terminal_id(terminal_id)
-        if (session_id, terminal_id) not in self._running_terminals:
-            await self.open_terminal(session_id, terminal_id=terminal_id)
-        socket = tmux_host_socket_path(
-            session_id, terminal_id=terminal_id, root=self._workspaces_root
-        )
-        name = tmux_session_name(terminal_id)
-        command = await self._tmux_command(["-S", socket, "-C", "attach-session", "-t", name])
-        process = await self._ssh.create_process(
-            command,
-            term_type=None,
-            encoding="utf-8",
-        )
-        out_task: asyncio.Task[None] | None = None
-        try:
-            process.stdin.write(f"refresh-client -C 80x24\n")
-            process.stdin.write(f"capture-pane -p -e -t {name}\n")
-
-            async def out_pump() -> None:
-                in_command_block = False
-                while True:
-                    line = await process.stdout.readline()
-                    if not line:
-                        return
-                    if line.startswith("%begin "):
-                        in_command_block = True
-                        continue
-                    if line.startswith("%end ") or line.startswith("%error "):
-                        in_command_block = False
-                        continue
-                    data = (
-                        line.encode("utf-8", errors="replace")
-                        if in_command_block
-                        else _parse_tmux_control_output(line)
-                    )
-                    if data:
-                        await websocket.send_bytes(data)
-
-            out_task = asyncio.create_task(out_pump())
+        async def receive() -> None:
             while True:
                 message = await websocket.receive()
                 if message.get("type") == "websocket.disconnect":
                     return
-                if message.get("type") != "websocket.receive":
-                    continue
-                text = message.get("text")
-                if isinstance(text, str) and text.startswith("{"):
-                    try:
-                        import json
-
-                        payload = json.loads(text)
-                    except Exception:
-                        payload = None
-                    if isinstance(payload, dict) and payload.get("type") == "resize":
-                        cols = max(20, int(payload.get("cols") or 80))
-                        rows = max(5, int(payload.get("rows") or 24))
-                        process.stdin.write(f"refresh-client -C {cols}x{rows}\n")
-                        continue
-                raw = message.get("bytes")
-                data = (
-                    raw
-                    if raw is not None
-                    else text.encode("utf-8", errors="replace") if text is not None else b""
-                )
-                if data:
-                    _write_tmux_control_keys(process, name, data)
-        finally:
-            if out_task is not None:
-                out_task.cancel()
+                if len(message.get("bytes") or message.get("text") or "") > 1024 * 1024:
+                    await websocket.close(code=1009)
+                    return
                 try:
-                    await out_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            process.terminate()
+                    messages.put_nowait(message)
+                except asyncio.QueueFull:
+                    await websocket.close(code=1009)
+                    return
+
+        tasks = [
+            asyncio.create_task(receive()),
+            asyncio.create_task(
+                self._attach_ws(
+                    session_id, websocket, messages, on_panes=on_panes, retry_setup=retry_setup
+                )
+            ),
+        ]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _attach_ws(
+        self,
+        session_id: str,
+        websocket: Any,
+        messages: asyncio.Queue,
+        *,
+        on_panes=None,
+        retry_setup=False,
+    ) -> None:
+        if retry_setup:
+
+            if isinstance(self._ssh, container_transport.ContainerTransport):
+                await self._ssh.wait_ready(retry=True)
+        await self.ensure_session(session_id)
+
+        await serve_terminal(self, session_id, websocket, messages, on_panes=on_panes)
 
     async def close(self) -> None:
         for task in list(self._background_tasks):
@@ -545,86 +161,21 @@ class RuntimeTerminalManager:
 
     def _track_background_task(self, key: tuple[str, str], task: asyncio.Task[None]) -> None:
         self._background_tasks.add(task)
-        self._background_tasks_by_terminal.setdefault(key, set()).add(task)
+        self._background_tasks_by_pane.setdefault(key, set()).add(task)
 
         def _discard(done: asyncio.Task[None]) -> None:
             self._background_tasks.discard(done)
-            terminal_tasks = self._background_tasks_by_terminal.get(key)
-            if terminal_tasks is None:
+            pane_tasks = self._background_tasks_by_pane.get(key)
+            if pane_tasks is None:
                 return
-            terminal_tasks.discard(done)
-            if not terminal_tasks:
-                self._background_tasks_by_terminal.pop(key, None)
+            pane_tasks.discard(done)
+            if not pane_tasks:
+                self._background_tasks_by_pane.pop(key, None)
 
         task.add_done_callback(_discard)
 
-    def _remember_terminal_command(
-        self,
-        session_id: str,
-        terminal_id: str,
-        *,
-        command: str,
-        cwd: str | None,
-        created_by: str,
-        auto: bool,
-    ) -> None:
-        key = (session_id, terminal_id)
-        metadata = self._terminal_metadata.setdefault(
-            key,
-            {
-                "label": "main" if terminal_id == "0" else terminal_id,
-                "created_by": created_by,
-                "auto": auto,
-            },
-        )
-        metadata["last_command"] = command
-        metadata["last_cwd"] = cwd
-        metadata["created_by"] = created_by
-        metadata["auto"] = auto
-
-    def _descriptor_for(self, session_id: str, terminal_id: str) -> TerminalDescriptor:
-        key = (session_id, terminal_id)
-        metadata = self._terminal_metadata.get(key, {})
-        busy = any(not task.done() for task in self._background_tasks_by_terminal.get(key, set()))
-        return TerminalDescriptor(
-            terminal_id=terminal_id,
-            label=str(metadata.get("label") or ("main" if terminal_id == "0" else terminal_id)),
-            status="running",
-            busy=busy,
-            last_command=(
-                str(metadata["last_command"]) if metadata.get("last_command") is not None else None
-            ),
-            last_cwd=str(metadata["last_cwd"]) if metadata.get("last_cwd") is not None else None,
-            auto=bool(
-                metadata.get("auto") if "auto" in metadata else terminal_id.startswith("bg-")
-            ),
-            created_by=str(metadata.get("created_by") or "runtime"),
-        )
-
-    async def _discover_running_terminal_ids(self, session_id: str) -> set[str]:
-        paths = workspace_paths(session_id, root=self._workspaces_root)
-        environment = await self._require_supported_environment()
-        script = (
-            load_remote_command("common/tmux/discover.sh")
-            .replace("__TMUX_DIR__", quote(paths.tmux))
-            .replace(
-                "__RESOLVE_HOST_TMUX__", build_resolve_host_tmux_script(os_name=environment.os)
-            )
-        )
-        result = await self._ssh.run_script(script, timeout=15)
-        if result.exit_status not in {0, None}:
-            raise TerminalUnavailableError(
-                "terminal_list_failed",
-                detail=(result.stderr or result.stdout or "").strip()[:500],
-            )
-        return {
-            validate_terminal_id(line.strip())
-            for line in (result.stdout or "").splitlines()
-            if line.strip()
-        }
-
-    def _lock_for(self, session_id: str, terminal_id: str) -> asyncio.Lock:
-        key = (session_id, terminal_id)
+    def _lock_for(self, session_id: str, pane_id: str) -> asyncio.Lock:
+        key = (session_id, pane_id)
         lock = self._locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
@@ -640,7 +191,7 @@ class RuntimeTerminalManager:
             raise RuntimeSandboxUnavailableError(
                 "runtime_sandbox_unavailable",
                 detail=(
-                    "Runtime must be Linux with bubblewrap or macOS with sandbox-exec "
+                    "An attached workspace container is required "
                     f"(detected os={environment.os}, sandbox={environment.sandbox})."
                 ),
             )
@@ -648,92 +199,14 @@ class RuntimeTerminalManager:
 
     async def _run_required_script(
         self, script: str, args: list[str], *, timeout: int, reason: str
-    ) -> None:
+    ) -> RuntimeExecResult:
         result = await self._ssh.run_script(script, args=args, timeout=timeout)
         if result.exit_status not in {0, None}:
             raise TerminalUnavailableError(
                 reason,
                 detail=(result.stderr or result.stdout or "").strip()[:500],
             )
-
-    async def _refuse_if_foreground_busy(self, session_id: str, *, terminal_id: str) -> None:
-        socket = tmux_host_socket_path(
-            session_id, terminal_id=terminal_id, root=self._workspaces_root
-        )
-        name = tmux_session_name(terminal_id)
-        command = await self._tmux_command(
-            [
-                "-S",
-                socket,
-                "display-message",
-                "-p",
-                "-t",
-                name,
-                "#{pane_current_command}",
-            ]
-        )
-        result = await self._ssh.run(
-            command,
-            timeout=10,
-        )
-        current = (result.stdout or "").strip()
-        if current and current not in _SHELL_FOREGROUND_COMMANDS:
-            raise TerminalBlockedError("foreground_process_running", current_command=current)
-
-    async def _pane_log_size(self, session_id: str, *, terminal_id: str) -> int:
-        log_path = tmux_host_log_path(
-            session_id, terminal_id=terminal_id, root=self._workspaces_root
-        )
-        environment = await self._require_supported_environment()
-        stat_command = (
-            f"stat -f %z {quote(log_path)} 2>/dev/null || echo 0"
-            if environment.os == "darwin"
-            else f"stat -c %s {quote(log_path)} 2>/dev/null || echo 0"
-        )
-        result = await self._ssh.run(
-            stat_command,
-            timeout=10,
-        )
-        try:
-            return int((result.stdout or "").strip())
-        except (TypeError, ValueError):
-            return 0
-
-    async def _send_to_pane(self, session_id: str, *, terminal_id: str, command: str) -> None:
-        socket = tmux_host_socket_path(
-            session_id, terminal_id=terminal_id, root=self._workspaces_root
-        )
-        name = tmux_session_name(terminal_id)
-        await self._ssh.run(
-            await self._tmux_command(["-S", socket, "send-keys", "-t", name, "C-u"]),
-            timeout=10,
-        )
-        if "\n" in command:
-            await self._ssh.run(
-                await self._tmux_command(
-                    ["-S", socket, "send-keys", "-t", name, "-l", "\x1b[200~"]
-                ),
-                timeout=10,
-            )
-            await self._ssh.run(
-                await self._tmux_command(["-S", socket, "send-keys", "-t", name, "-l", command]),
-                timeout=15,
-            )
-            await self._ssh.run(
-                await self._tmux_command(
-                    ["-S", socket, "send-keys", "-t", name, "-l", "\x1b[201~"]
-                ),
-                timeout=10,
-            )
-        else:
-            await self._ssh.run(
-                await self._tmux_command(["-S", socket, "send-keys", "-t", name, "-l", command]),
-                timeout=15,
-            )
-        await self._ssh.run(
-            await self._tmux_command(["-S", socket, "send-keys", "-t", name, "Enter"]),
-            timeout=10,
-        )
+        return result
 
     async def _tmux_command(self, args: list[str]) -> str:
         environment = await self._require_supported_environment()
@@ -743,13 +216,11 @@ class RuntimeTerminalManager:
         self,
         session_id: str,
         *,
-        terminal_id: str,
         since_offset: int,
         timeout: int,
+        log_path: str,
+        pane_id: str,
     ) -> RuntimeExecResult:
-        log_path = tmux_host_log_path(
-            session_id, terminal_id=terminal_id, root=self._workspaces_root
-        )
         deadline = asyncio.get_running_loop().time() + timeout
         last_chunk = b""
         while True:
@@ -764,7 +235,38 @@ class RuntimeTerminalManager:
                     match.group(1).decode("ascii", errors="replace") if match.group(1) else ""
                 )
                 exit_code = int(raw_code) if raw_code and raw_code.lstrip("-").isdigit() else -1
-                return self._parse_output(last_chunk[: match.start()], exit_code)
+                pre_d = last_chunk[: match.start()]
+                # Output starts at the OSC 133;C marker; fall back to dropping the
+                # echoed first line if shell integration did not emit a start marker.
+                c_matches = list(_OSC_C_PATTERN.finditer(pre_d))
+                if c_matches:
+                    return self._parse_output(
+                        pre_d[c_matches[-1].end() :], exit_code, strip_command_echo=False
+                    )
+                return self._parse_output(pre_d, exit_code)
+            if pane_id:
+                socket = tmux_host_socket_path(session_id, root=self._workspace_location)
+                state = await self._ssh.run(
+                    await self._tmux_command(
+                        [
+                            "-S",
+                            socket,
+                            "display-message",
+                            "-p",
+                            "-t",
+                            pane_id,
+                            "#{pane_dead}|#{pane_dead_status}",
+                        ]
+                    ),
+                    timeout=10,
+                )
+                if state.exit_status != 0 or state.stdout.startswith("1|"):
+                    parsed = self._parse_output(last_chunk, -1)
+                    return RuntimeExecResult(
+                        exit_status=-1,
+                        stdout=parsed.stdout,
+                        stderr="Pane exited before reporting command completion",
+                    )
             if asyncio.get_running_loop().time() >= deadline:
                 parsed = self._parse_output(last_chunk, -1)
                 return RuntimeExecResult(
@@ -781,8 +283,6 @@ class RuntimeTerminalManager:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> str:
-        if not cwd and not env:
-            return command
         parts: list[str] = []
         if cwd:
             parts.append(f"cd {quote(cwd)}")
@@ -792,159 +292,47 @@ class RuntimeTerminalManager:
                     continue
                 parts.append(f"export {key}={quote(str(value))}")
         if "\n" in command:
+            # Wrap multiline in a subshell so it runs as one command (one marker)
+            # instead of submitting each line — which would split a heredoc.
             setup = list(parts)
             if cwd:
                 setup[0] = f"cd {quote(cwd)} || exit"
             body = command.rstrip("\n")
-            return "(\n" + "\n".join([*setup, body, ")"])
+            script = "(\n" + "\n".join([*setup, body, ")"])
+            # One physical input line avoids Readline repeatedly echoing queued
+            # multiline input at continuation prompts (including on Bash 3.2).
+            # ANSI-C quoting preserves the script without expanding its contents
+            # until eval executes it. Keep the subshell's existing isolation.
+            escaped = "".join(
+                (
+                    "\\n"
+                    if char == "\n"
+                    else (
+                        f"\\{ord(char):03o}"
+                        if ord(char) < 32 or ord(char) == 127
+                        else "\\" + char if char in "\\'" else char
+                    )
+                )
+                for char in script
+            )
+            return "eval $'" + escaped + "'"
+        if not parts:
+            return command
         if cwd:
             prefix = parts[0] + " && " + "; ".join(parts[1:] + [command])
         else:
             prefix = "; ".join(parts + [command])
         return f"({prefix})"
 
-    async def _write_background_job_script(
-        self,
-        session_id: str,
-        *,
-        job_id: str,
-        terminal_id: str,
-        command: str,
-        cwd: str | None,
-        env: dict[str, str] | None,
-        log_offset: int,
-    ) -> BackgroundJobHandle:
-        paths = workspace_paths(session_id, root=self._workspaces_root)
-        host_job_dir = (PurePosixPath(paths.runtime) / "jobs" / job_id).as_posix()
-        inner_job_dir = (PurePosixPath("/state/runtime/jobs") / job_id).as_posix()
-        inner_run_path = (PurePosixPath(inner_job_dir) / "run.sh").as_posix()
-        inner_done_path = (PurePosixPath(inner_job_dir) / "done.json").as_posix()
-        host_done_path = (PurePosixPath(host_job_dir) / "done.json").as_posix()
-        manifest = {
-            "id": job_id,
-            "session_id": session_id,
-            "terminal_id": terminal_id,
-            "command": command,
-            "cwd": cwd,
-            "status": "running",
-            "created_at": _utc_now(),
-            "started_at": _utc_now(),
-        }
-        request = {
-            "job_dir": host_job_dir,
-            "runner": load_remote_command("common/jobs/run.sh"),
-            "config": {
-                "job_id": job_id,
-                "command": command,
-                "cwd": cwd,
-                "env": env or {},
-                "done_path": inner_done_path,
-            },
-            "manifest": manifest,
-        }
-        result = await self._ssh.run_script(
-            load_remote_command("common/jobs/write.sh"),
-            args=[json.dumps(request, separators=(",", ":"))],
-            timeout=30,
-        )
-        if result.exit_status not in {0, None}:
-            raise TerminalUnavailableError(
-                "background_job_prepare_failed",
-                detail=(result.stderr or result.stdout or "").strip()[:500],
-            )
-        return BackgroundJobHandle(
-            id=job_id,
-            session_id=session_id,
-            terminal_id=terminal_id,
-            command=command,
-            status="running",
-            run_path=inner_run_path,
-            result_path=host_done_path,
-            log_offset=log_offset,
-        )
-
-    async def _watch_background_command(
-        self,
-        handle: BackgroundJobHandle,
-        *,
-        on_complete: Callable[[dict[str, object], str, str], Awaitable[None]] | None,
-        on_terminal_idle: Callable[[], Awaitable[None]] | None,
-    ) -> None:
-        stdout_tail = ""
-        cancelled = False
-        job: dict[str, object] = {
-            "id": handle.id,
-            "status": "failed",
-            "command": handle.command,
-            "terminal_id": handle.terminal_id,
-            "returncode": None,
-        }
-        try:
-            result = await self._await_command_complete(
-                handle.session_id,
-                terminal_id=handle.terminal_id,
-                since_offset=handle.log_offset,
-                timeout=7 * 24 * 60 * 60,
-            )
-            stdout_tail = result.stdout
-            done = await self._read_background_job_result(handle)
-            if done is not None:
-                job.update(done)
-            else:
-                job.update(
-                    {
-                        "status": "completed" if result.exit_status == 0 else "failed",
-                        "returncode": result.exit_status,
-                        "ended_at": _utc_now(),
-                    }
-                )
-        except asyncio.CancelledError:
-            cancelled = True
-            raise
-        except Exception as exc:  # noqa: BLE001
-            job.update({"status": "failed", "error": str(exc), "ended_at": _utc_now()})
-        finally:
-            if on_terminal_idle is not None:
-                try:
-                    await on_terminal_idle()
-                except Exception:  # noqa: BLE001
-                    pass
-            if not cancelled and on_complete is not None:
-                await on_complete(job, stdout_tail[-8_000:], "")
-
-    async def _read_background_job_result(
-        self, handle: BackgroundJobHandle
-    ) -> dict[str, object] | None:
-        result = await self._ssh.run(
-            f"test -f {quote(handle.result_path)} && cat {quote(handle.result_path)} || true",
-            timeout=15,
-        )
-        text = (result.stdout or "").strip()
-        if not text:
-            return None
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(payload, dict):
-            return None
-        return payload
-
-    def _parse_output(self, raw: bytes, exit_code: int) -> RuntimeExecResult:
+    def _parse_output(
+        self, raw: bytes, exit_code: int, *, strip_command_echo: bool = True
+    ) -> RuntimeExecResult:
         text = _clean_terminal_text(raw)
-        newline = text.find("\n")
-        output = text[newline + 1 :] if newline >= 0 else ""
-        return RuntimeExecResult(exit_status=exit_code, stdout=output.rstrip(), stderr="")
-
-
-def get_terminal_manager(
-    ssh: SSHClient, *, workspaces_root: str | None = None
-) -> RuntimeTerminalManager:
-    return RuntimeTerminalManager(ssh, workspaces_root=workspaces_root)
-
-
-def _utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        if strip_command_echo:
+            # No C marker: the first line is the echoed command — drop it.
+            newline = text.find("\n")
+            text = text[newline + 1 :] if newline >= 0 else ""
+        return RuntimeExecResult(exit_status=exit_code, stdout=text.rstrip(), stderr="")
 
 
 def _clean_terminal_text(raw: bytes) -> str:
@@ -1024,54 +412,3 @@ def _clean_terminal_text(raw: bytes) -> str:
 
     lines.append("".join(line).rstrip())
     return "\n".join(lines)
-
-
-def _truncate_terminal_text(text: str, *, max_chars: int) -> str:
-    text = text.replace("\x00", "")
-    if len(text) <= max_chars:
-        return text.rstrip()
-    clipped = text[-max_chars:]
-    newline = clipped.find("\n")
-    if newline >= 0:
-        clipped = clipped[newline + 1 :]
-    return clipped.rstrip()
-
-
-def _parse_tmux_control_output(line: str) -> bytes:
-    if line.startswith("%output "):
-        parts = line.rstrip("\n").split(" ", 2)
-        if len(parts) == 3:
-            return _decode_tmux_control_value(parts[2])
-    if line.startswith("%extended-output "):
-        prefix, _, value = line.rstrip("\n").partition(" : ")
-        if prefix and value:
-            return _decode_tmux_control_value(value)
-    if line.startswith("%"):
-        return b""
-    return b""
-
-
-def _decode_tmux_control_value(value: str) -> bytes:
-    output = bytearray()
-    index = 0
-    while index < len(value):
-        char = value[index]
-        if char == "\\" and index + 3 < len(value) and value[index + 1 : index + 4].isdigit():
-            try:
-                output.append(int(value[index + 1 : index + 4], 8))
-                index += 4
-                continue
-            except ValueError:
-                pass
-        output.extend(char.encode("utf-8", errors="replace"))
-        index += 1
-    return bytes(output)
-
-
-def _write_tmux_control_keys(process: Any, target: str, data: bytes) -> None:
-    for offset in range(0, len(data), 128):
-        chunk = data[offset : offset + 128]
-        if not chunk:
-            continue
-        hex_bytes = " ".join(f"{byte:02x}" for byte in chunk)
-        process.stdin.write(f"send-keys -t {target} -H {hex_bytes}\n")

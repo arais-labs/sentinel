@@ -1,16 +1,18 @@
+"""On-demand graphical desktop shared by sessions attached to one workspace."""
+
 from __future__ import annotations
 
 import asyncio
 import json
-import socket
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from uuid import UUID
+from typing import Literal
+from uuid import UUID, uuid4
 
-from app.services.runtime.remote_commands import load_remote_command
-from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.guest_commands import guest_python_command
+from app.services.runtime.desktop_appearance import desktop_default_files
 from app.services.runtime.terminal_manager import RuntimeTerminalManager
-from app.services.runtime.workspace import workspace_paths
+from app.services.runtime.workspace import WorkspaceLocation
+from app.services.runtime import workspace_containers
 
 
 class RuntimeDesktopError(RuntimeError):
@@ -24,8 +26,8 @@ class RuntimeDesktop:
     target_host: str
     target_port: int
     geometry: str
-    local_host: str
-    local_port: int
+    socket_path: str
+    vnc_update_mode: Literal["native", "paced"] = "paced"
 
 
 @dataclass(slots=True)
@@ -34,125 +36,196 @@ class _DesktopHandle:
     listener: object
 
 
-def _allocate_local_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
 class RuntimeDesktopManager:
     def __init__(
         self,
         terminal_manager: RuntimeTerminalManager,
         *,
-        workspaces_root: str | None = None,
+        workspace_location: WorkspaceLocation,
         geometry: str = "1920x1200",
         depth: int = 24,
     ) -> None:
-        self._terminal_manager = terminal_manager
-        self._ssh: SSHClient = terminal_manager.ssh
-        self._workspaces_root = workspaces_root
+        self._transport = terminal_manager.ssh
+        self._workspace_location = workspace_location
         self._geometry = geometry
-        self._depth = depth
         self._handles: dict[str, _DesktopHandle] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._lock = asyncio.Lock()
+
+    @property
+    def enabled(self) -> bool:
+        return "desktop" in self._workspace_location.tools
+
+    async def _command(self, action: str, geometry: str | None = None) -> dict:
+        result = await self._transport.run(
+            guest_python_command(
+                "linux/desktop/control.py",
+                [
+                    json.dumps(
+                        {
+                            "action": action,
+                            "geometry": geometry,
+                            "defaults": desktop_default_files() if action == "start" else {},
+                        }
+                    )
+                ],
+            ),
+            timeout=25,
+        )
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except ValueError as exc:
+            raise RuntimeDesktopError("Invalid workspace desktop response.") from exc
+        if result.exit_status not in (0, None) or not payload.get("ok"):
+            raise RuntimeDesktopError(
+                payload.get("reason") or result.stderr or "Desktop operation failed."
+            )
+        return payload
+
+    async def status(self) -> dict:
+        if not self.enabled:
+            return {
+                "state": "not_installed",
+                "reason": "Add Desktop to this workspace to use graphical applications.",
+            }
+        workspace = await self._transport.workspace_status()
+        if workspace.get("state") != "running":
+            state = workspace.get("state", "stopped")
+            return {
+                "state": "workspace_stopped" if state == "stopped" else state,
+                "reason": workspace.get("error")
+                or workspace.get("message")
+                or "Start the workspace to use its desktop.",
+            }
+        return await self._command("status")
+
+    async def _connect(self, session_id: str, payload: dict) -> RuntimeDesktop:
+        existing = self._handles.get(session_id)
+        socket_path, listener = await self._transport.desktop_socket(
+            payload["port"], existing.listener if existing else None
+        )
+        if existing and existing.listener is not listener:
+            await _close_listener(existing.listener)
+        desktop = RuntimeDesktop(
+            session_id,
+            payload["display"],
+            "127.0.0.1",
+            payload["port"],
+            payload["geometry"],
+            socket_path,
+            # SSH needs VNC's flow control and continuous streaming. The local
+            # transport keeps its existing pacing until separately validated.
+            vnc_update_mode="native" if listener is not None else "paced",
+        )
+        self._handles[session_id] = _DesktopHandle(desktop, listener)
+        return desktop
 
     async def ensure_session_desktop(
         self, session_id: UUID | str, *, geometry: str | None = None
     ) -> RuntimeDesktop:
-        sid = str(session_id)
-        target_geometry = geometry or self._geometry
-        lock = self._locks.setdefault(sid, asyncio.Lock())
-        async with lock:
-            environment = await self._terminal_manager.runtime_environment()
-            if environment.os != "linux":
+        async with self._lock:
+            if not self.enabled:
                 raise RuntimeDesktopError(
-                    "Desktop live view is currently supported only on Linux SSH targets."
+                    "Add the Desktop package in workspace settings before starting graphical applications."
                 )
-            existing = self._handles.get(sid)
-            if existing is not None:
-                if geometry is None or existing.desktop.geometry == target_geometry:
-                    return existing.desktop
-                await _close_listener(existing.listener)
-                self._handles.pop(sid, None)
-                script, args = _build_stop_desktop_script(sid, root=self._workspaces_root)
-                await self._ssh.run_script(
-                    script,
-                    args=args,
-                    timeout=30,
-                )
+            if not await self._transport.is_ready():
+                raise RuntimeDesktopError("Start the workspace before starting its desktop.")
+            await self._ensure_graphics()
+            payload = await self._command("status") if geometry is None else {}
+            if payload.get("state") != "running":
+                payload = await self._command("start", geometry or self._geometry)
+            if payload.get("state") != "running":
+                raise RuntimeDesktopError(payload.get("reason") or "Desktop did not start.")
+            return await self._connect(str(session_id), payload)
 
-            await self._terminal_manager.prepare_workspace(sid)
-            script, args = _build_ensure_desktop_script(
-                sid,
-                root=self._workspaces_root,
-                geometry=target_geometry,
-                depth=self._depth,
+    async def get_session_desktop(
+        self, session_id: UUID | str, *, status: dict | None = None
+    ) -> RuntimeDesktop:
+        # Viewing/reconnecting never starts a stopped desktop.
+        async with self._lock:
+            payload = status if status is not None else await self.status()
+            if payload.get("state") != "running":
+                raise RuntimeDesktopError(
+                    payload.get("reason") or "Desktop is stopped. Start it to connect."
+                )
+            await self._ensure_graphics()
+            return await self._connect(str(session_id), payload)
+
+    async def computer(self, session_id: UUID | str, request: dict) -> dict:
+        """Execute only inside this workspace's existing container transport."""
+        await self.ensure_session_desktop(session_id)
+        request_id = str(uuid4())
+        task = asyncio.create_task(
+            self._transport.run(
+                guest_python_command(
+                    "linux/desktop/computer.py", [json.dumps({**request, "request_id": request_id})]
+                ),
+                timeout=35,
             )
-            result = await self._ssh.run_script(
-                script,
-                args=args,
-                timeout=45,
-            )
-            if result.exit_status not in {0, None}:
-                detail = (result.stderr or result.stdout or "desktop start failed").strip()[:1200]
-                raise RuntimeDesktopError(detail)
+        )
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
             try:
-                payload = json.loads(result.stdout or "{}")
-            except json.JSONDecodeError as exc:
-                raise RuntimeDesktopError("Desktop start response was not valid JSON.") from exc
-            if not isinstance(payload, dict) or payload.get("ok") is not True:
-                raise RuntimeDesktopError(str(payload.get("detail") or "Desktop start failed."))
-
-            display_number = int(payload["display"])
-            target_port = int(payload["port"])
-            local_port = _allocate_local_port()
-            try:
-                listener = await self._ssh.forward_local_port(
-                    "127.0.0.1",
-                    local_port,
-                    "127.0.0.1",
-                    target_port,
+                await asyncio.shield(
+                    self._transport.run(
+                        guest_python_command("linux/desktop/cancel_computer.py", [request_id]),
+                        timeout=5,
+                    )
                 )
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeDesktopError(f"Failed to open VNC SSH tunnel: {exc}") from exc
-
-            desktop = RuntimeDesktop(
-                session_id=sid,
-                display=f":{display_number}",
-                target_host="127.0.0.1",
-                target_port=target_port,
-                geometry=str(payload.get("geometry") or self._geometry),
-                local_host="127.0.0.1",
-                local_port=local_port,
+            finally:
+                # Observe completion even if the caller has gone away.
+                task.add_done_callback(
+                    lambda done: done.exception() if not done.cancelled() else None
+                )
+            raise
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except ValueError as exc:
+            raise RuntimeDesktopError(
+                "Invalid workspace computer response; observe before retrying"
+            ) from exc
+        if not isinstance(payload, dict) or "ok" not in payload:
+            raise RuntimeDesktopError(
+                "Workspace computer worker failed; install Desktop dependencies: py3-xlib, py3-pillow, xdotool"
             )
-            self._handles[sid] = _DesktopHandle(desktop=desktop, listener=listener)
-            return desktop
+        # Keep partial completion and the screenshot visible instead of hiding
+        # them in an exception that could encourage replay of completed actions.
+        return payload
 
-    async def get_session_desktop(self, session_id: UUID | str) -> RuntimeDesktop:
-        sid = str(session_id)
-        existing = self._handles.get(sid)
-        if existing is not None:
-            return existing.desktop
-        return await self.ensure_session_desktop(sid)
+    async def _ensure_graphics(self) -> None:
+        try:
+            await workspace_containers.request(
+                "graphics_start", workspace=self._workspace_location.workspace_id
+            )
+        except workspace_containers.WorkspaceContainerError as exc:
+            raise RuntimeDesktopError(f"Metal desktop graphics unavailable: {exc}") from exc
 
-    async def close_session(self, session_id: UUID | str) -> None:
-        sid = str(session_id)
-        lock = self._locks.setdefault(sid, asyncio.Lock())
-        async with lock:
-            handle = self._handles.pop(sid, None)
-            if handle is not None:
+    async def stop(self) -> None:
+        async with self._lock:
+            # Do not resurrect a stopped/deleted workspace for cleanup.
+            try:
+                if await self._transport.is_ready():
+                    await self._command("stop")
+                    await workspace_containers.request(
+                        "graphics_stop", workspace=self._workspace_location.workspace_id
+                    )
+            except workspace_containers.WorkspaceContainerError as exc:
+                raise RuntimeDesktopError(f"Desktop graphics could not stop: {exc}") from exc
+            finally:
+                for handle in self._handles.values():
+                    await _close_listener(handle.listener)
+                self._handles.clear()
+
+    async def close_session(self, session_id: UUID | str, *, stop_remote: bool = True) -> None:
+        # Session disposal closes its tunnel, not another session's shared desktop.
+        async with self._lock:
+            handle = self._handles.pop(str(session_id), None)
+            if handle:
                 await _close_listener(handle.listener)
-            script, args = _build_stop_desktop_script(sid, root=self._workspaces_root)
-            await self._ssh.run_script(
-                script,
-                args=args,
-                timeout=30,
-            )
 
-    async def close_all(self) -> None:
+    async def close_all(self, *, stop_remote: bool = True) -> None:
         for sid in list(self._handles):
-            await self.close_session(sid)
+            await self.close_session(sid, stop_remote=stop_remote)
 
 
 async def _close_listener(listener: object) -> None:
@@ -161,39 +234,6 @@ async def _close_listener(listener: object) -> None:
         close()
     wait_closed = getattr(listener, "wait_closed", None)
     if callable(wait_closed):
-        maybe_coro = wait_closed()
-        if asyncio.iscoroutine(maybe_coro):
-            await maybe_coro
-
-
-def _build_ensure_desktop_script(
-    session_id: str,
-    *,
-    root: str | None,
-    geometry: str,
-    depth: int,
-) -> tuple[str, list[str]]:
-    paths = workspace_paths(session_id, root=root)
-    request = {
-        "session_id": paths.session_id,
-        "session_root": paths.session_root,
-        "home": paths.home,
-        "runtime": paths.runtime,
-        "logs": paths.logs,
-        "geometry": geometry,
-        "depth": depth,
-    }
-    return load_remote_command("linux/desktop/ensure.sh"), [
-        json.dumps(request, separators=(",", ":"))
-    ]
-
-
-def _build_stop_desktop_script(session_id: str, *, root: str | None) -> tuple[str, list[str]]:
-    paths = workspace_paths(session_id, root=root)
-    request = {
-        "home": paths.home,
-        "runtime": paths.runtime,
-    }
-    return load_remote_command("linux/desktop/stop.sh"), [
-        json.dumps(request, separators=(",", ":"))
-    ]
+        result = wait_closed()
+        if asyncio.iscoroutine(result):
+            await result
