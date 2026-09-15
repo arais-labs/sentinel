@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { PayloadInfo, PayloadUpdate, ReleaseChannel } from '../../shared/ipc.js';
 import { execFileText } from './shell.js';
@@ -192,13 +193,26 @@ export async function checkForUpdate(channel: ReleaseChannel): Promise<PayloadUp
   };
 }
 
-export async function downloadTarball(url: string, destPath: string): Promise<void> {
+export async function downloadTarball(url: string, destPath: string, onProgress?: (fraction: number) => void): Promise<void> {
   const response = await fetch(url);
   if (!response.ok || !response.body) {
     throw new Error(`Payload download failed (${response.status}) from ${url}.`);
   }
   await mkdir(path.dirname(destPath), { recursive: true });
-  await writeFile(destPath, Buffer.from(await response.arrayBuffer()));
+  const total = Number(response.headers.get('content-length'));
+  let received = 0;
+  let lastPercent = -1;
+  const progress = new Transform({
+    transform(chunk, _encoding, callback) {
+      received += chunk.length;
+      if (total > 0) {
+        const percent = Math.min(100, Math.floor(received / total * 100));
+        if (percent !== lastPercent) { lastPercent = percent; onProgress?.(percent / 100); }
+      }
+      callback(null, chunk);
+    },
+  });
+  await pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), progress, createWriteStream(destPath));
 }
 
 export function downloadScratchPath(): string {

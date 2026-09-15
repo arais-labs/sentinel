@@ -76,3 +76,10 @@ using the workspace's pinned images and graphics build script. The macOS 26 job
 uses Xcode 26.3 and receives those artifacts through `SENTINEL_GUEST_GRAPHICS_DIR`;
 their checksums and build inputs must match before packaging. Local Mac builds
 without that variable continue to use a disposable build VM.
+
+CI caches checksum-verified guest graphics, input-stamped native runtimes, and
+package downloads. Native caches use exact source/build-input and toolchain keys;
+download caches may be reused across dependency changes. Application builds,
+signing, and DMG verification always run. GitHub cache scope means the first run
+on a release branch may still be cold; subsequent PRs can reuse their base branch's
+cache. Superseded PR runs are cancelled, while release runs finish publishing.
