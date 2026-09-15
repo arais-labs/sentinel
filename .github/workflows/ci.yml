@@ -4,6 +4,7 @@ name: CI
 # separate job, restricted to version bumps on main/beta or manual dispatch.
 on:
   push:
+    branches: [main, beta]
   pull_request:
   workflow_dispatch:
     inputs:
