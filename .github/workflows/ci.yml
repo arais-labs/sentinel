@@ -217,6 +217,8 @@ jobs:
           SENTINEL_INTERNAL_BUILD: '1'
           # Explicit ad-hoc identity, with strict verification after signing.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # PR builds use the ad-hoc identity above, with no signing secrets.
+          CSC_FOR_PULL_REQUEST: 'true'
         run: npm run desktop:build
 
       - name: Verify DMG checksum
