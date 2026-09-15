@@ -1,201 +1,121 @@
 <p align="center">
-  <img src="docs/logo.png" alt="Sentinel logo" width="120" />
+  <img src="docs-site/static/img/brandmark.png" alt="Sentinel logo" width="120" />
 </p>
 
 <h1 align="center">Sentinel</h1>
-<p align="center"><strong>One autonomous agent. Full execution stack.</strong></p>
-
+<p align="center"><strong>An AI workspace for getting work done.</strong></p>
 <p align="center">
-  <a href="https://github.com/arais-labs/sentinel/blob/main/LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg"></a>
-  <img alt="Deployment" src="https://img.shields.io/badge/deploy-Docker%20Compose-2496ED">
-  <a href="https://sentinel.arais.us"><img alt="Docs" src="https://img.shields.io/badge/docs-sentinel.arais.us-informational"></a>
-  <a href="https://github.com/arais-labs/sentinel/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/arais-labs/sentinel?branch=main"></a>
-  <a href="https://github.com/arais-labs/sentinel/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/arais-labs/sentinel"></a>
-  <a href="https://github.com/arais-labs/sentinel/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/arais-labs/sentinel"></a>
-  <a href="https://github.com/arais-labs/sentinel/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/arais-labs/sentinel"></a>
-  <a href="https://github.com/arais-labs/sentinel/pulls"><img alt="Open pull requests" src="https://img.shields.io/github/issues-pr/arais-labs/sentinel?label=open%20PRs"></a>
-  <img alt="Top language" src="https://img.shields.io/github/languages/top/arais-labs/sentinel">
+  <a href="https://sentinel.arais.us">Documentation</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="SECURITY.md">Security</a> ·
+  <a href="LICENSE">AGPL-3.0</a>
 </p>
 
-Sentinel is a self hosted AI operator that turns intent into execution.
-It combines an agent runtime, browser automation, scheduling, memory, approvals, and tool access in one product.
-
-One deployment hosts multiple isolated **instances** — each with its own database, agent runtime, and LLM provider — managed from a single control plane (the CLI or the desktop app).
+Sentinel brings chat, a live desktop, terminals, files, browser automation, and
+agent tools into one desktop app. Work in a Linux workspace on your Mac or connect
+to a remote machine over SSH. Follow the agent's work, steer it while it runs, and
+review actions that need your approval.
 
 Built by [ARAIS](https://arais.us).
 
-📖 **Docs:** **[sentinel.arais.us](https://sentinel.arais.us)**
+## What you can do
 
-## Quick links
+| Capability | What it provides |
+| --- | --- |
+| Workspaces | Persistent files and installed tools, a shared project folder, configurable resources, and Linux distribution selection. |
+| Desktop and terminals | Interact with the same workspace the agent uses, with live desktop viewing and tmux terminals. |
+| Files | Browse, edit, upload, and download workspace files. Preview supported documents and media inline. |
+| Agents | Stream responses, steer ongoing work, delegate to sub-agents, and resume conversations. |
+| Modules | Built-in tools and custom modules for actions, integrations, and structured records. |
+| Approvals | Allow, request approval, or deny module actions; grant approval for a session when appropriate. |
+| Memory and automation | Persistent memory, scheduled tasks, and event-driven triggers. |
+| Telegram | Chat with Sentinel, switch sessions, and steer an active turn from Telegram. |
 
-- [Quick Start](#quick-start)
-- [Architecture](#architecture)
-- [What Sentinel can do](#what-sentinel-can-do)
-- [Documentation](#documentation)
-- [Security model](#security-model)
-- [Contributing](#contributing)
+Connect Anthropic, OpenAI, or Gemini in Settings using the supported API-key or
+OAuth options. Provider credentials and settings belong to each instance.
 
-## What Sentinel can do
+## Start developing
 
-- Run multi step tasks with tool calls and recovery.
-- Use a real browser with Playwright and live VNC monitoring.
-- Execute scheduled runs with cron or heartbeat triggers.
-- Keep persistent hierarchical memory across sessions.
-- Delegate bounded work to sub agents.
-- Gate risky actions behind human approvals.
-- Connect to custom modules for data and actions.
-- Run git operations freely and only gate at push or PR creation, so the agent moves fast without surprise commits to main.
-- Authenticate with your existing Claude Code or Codex CLI OAuth token, no extra API subscription needed.
+On macOS, install Xcode Command Line Tools and Homebrew, then run:
 
-## Architecture
+```bash
+make setup
+make dev
+```
+
+Electron starts the local backend and frontend. Complete onboarding, configure a
+model provider, and create a workspace on this computer or an SSH machine.
+Frontend and backend changes reload during development. Quit Electron or press
+Ctrl+C to stop the app; stored data is preserved.
+
+See the [installation guide](docs-site/docs/guides/installation.md) for setup,
+[Contributing](CONTRIBUTING.md) for development, and the
+[desktop README](apps/desktop/sentinel/README.md) for packaging.
+
+## How it fits together
 
 ```text
-User / Telegram / Trigger
-        ↓
-  Sentinel UI
-        ↓
-  Agent Runtime (Python)
-  ├── Context builder (memory + history)
-  ├── LLM provider (Anthropic / OpenAI / failover)
-  ├── Tool adapter (modules + browser + runtime + git)
-  ├── Approval gate (pause/resume on sensitive actions)
-  └── Estop service (freeze or kill execution at any depth)
-        ↓
-  Module Control Plane
-  ├── Custom tool modules (sandboxed Python)
-  ├── Data modules (persistent record stores)
-  ├── Permissions (allow / approval / deny per action)
-  └── Approval queue (async human review)
-        ↓
-  Browser + External APIs + Git
+Desktop app / Telegram / scheduled triggers
+                    │
+             Sentinel backend
+             ├── Conversations and agent execution
+             ├── Providers, memory, and sub-agents
+             ├── Modules, approvals, and automation
+             └── Workspace connections
+                    │
+        Local or remote Linux workspace
+        └── Desktop · terminals · browser · files · tools
 ```
 
-## Quick Start
+A deployment can host multiple instances with separate databases, conversations,
+provider settings, and module configuration. Machines are shared across instances;
+multiple conversations can attach to the same workspace.
 
-### 1) Clone
+On Apple Silicon, the workspace runtime uses Apple Containerization. SSH connects
+the app to a remote machine running that runtime. Project folders are shared with
+the workspace, and its other files and installed tools live on persistent storage.
+See [workspace execution](docs-site/docs/guides/runtime-exec-security.md) for the
+execution boundary and paths.
 
-```bash
-git clone https://github.com/arais-labs/sentinel.git
-cd sentinel
-```
+## Repository guide
 
-### 2) Launch Sentinel CLI
+| Location | Responsibility |
+| --- | --- |
+| [Backend](apps/backend/sentinel) | Agent integration, instances, modules, storage, and workspace orchestration. |
+| [Frontend](apps/frontend/sentinel) | Chat, workspace panes, settings, and approvals. |
+| [Desktop](apps/desktop/sentinel) | Electron shell, local services, native runtime, and packaging. |
+| [Shared runtime](packages/sentral) | Reusable agent engine, model providers, and shared tools. |
+| [Standalone TUI](apps/tui) | Terminal chat using Sentral with local command execution and HTTP tools. |
+| [Documentation](docs-site) | Product guides and reference documentation. |
+| [Scripts](scripts) | Development setup and project tooling. |
 
-```bash
-bash ./sentinel-cli.sh
-```
+The standalone TUI has its own entry point and configuration. It uses the shared
+agent engine without starting the desktop app or its workspace services.
 
-For first run:
+## Controls and security
 
-1. Let the CLI create or reconcile the root `.env`. Prod mode proposes
-   generated values and rejects placeholders/default credentials. Dev mode is
-   explicit via `./sentinel-cli.sh --dev` and may write local dev defaults.
-2. Choose `Start Stack`
-3. Choose `Instances` -> `Create Instance`
-4. Create the default logical instance, for example `main`
+Module permissions determine whether an action executes, requests approval, or is
+blocked. Session approvals apply to that session; they do not change the global
+policy. Emergency-stop controls can interrupt agent execution.
 
-### 3) Open Sentinel
+Custom module Python runs in the backend, separately from workspace command
+execution. Review code and permissions before enabling a custom module. An
+instance is a data/configuration boundary, not a separate operating-system process.
 
-Default URLs:
+Read [approvals](docs-site/docs/concepts/approvals.md),
+[modules and permissions](docs-site/docs/concepts/modules-and-permissions.md), and
+[SECURITY.md](SECURITY.md) for details.
 
-- `http://localhost:4747/` Sentinel
-- `http://localhost:4747/modules` modules
-- `http://localhost:4747/vnc/` live browser monitor
+## Documentation and checks
 
-### 4) Sign in
+- [Quickstart](docs-site/docs/quickstart.md)
+- [Creating modules](docs-site/docs/guides/creating-modules.md)
+- [Telegram](docs-site/docs/guides/telegram.md)
+- [API reference](docs-site/docs/reference/api.md)
+- [Backend development](apps/backend/sentinel/README.md)
 
-Use the admin username and password from the root `.env`.
-
-> **Compose / server mode:** admin credentials live in `.env`
-> (`SENTINEL_AUTH_USERNAME` / `SENTINEL_AUTH_PASSWORD`) and are re-applied to the
-> manager database on every backend startup. Rotate by editing `.env` and
-> restarting the backend; the `POST /auth/change-password` endpoint is disabled.
->
-> **Desktop mode** (`APP_ENV=desktop`): the manager database is the source of
-> truth. `.env` values, if present, are only used to seed credentials on the
-> very first launch. Use the in-app password-change flow to rotate.
-
-## Installation paths
-
-### Recommended
-
-- Use `sentinel-cli.sh` for instance lifecycle, auth seeding, startup, status, logs, and cleanup.
-- The CLI defaults to production mode and uses `docker-compose.yml`.
-- Create a root `.env` from `.env.example` for the default production-shaped
-  path.
-- Use `./sentinel-cli.sh --dev` for explicit local development mode. The CLI
-  can write a complete root `.env` with dev-safe defaults.
-
-### Manual compose
-
-```bash
-cp .env.example .env
-# edit .env and replace the placeholder secrets
-docker compose up --build -d
-```
-
-`docker-compose.yml` is the production-shaped compose file and fails clearly
-unless these secrets are provided. For local development defaults, use
-`docker-compose.dev.yml`.
-
-### Dev mode
-
-```bash
-docker compose -f docker-compose.dev.yml up --build
-```
-
-### Desktop app
-
-The Electron desktop package is under [`apps/desktop/sentinel`](apps/desktop/sentinel).
-It is a native management shell for local Sentinel instances. The CLI remains
-supported for terminal workflows.
-
-## Repository layout
-
-- `apps/backend/sentinel` Sentinel backend
-- `apps/desktop/sentinel` Sentinel Electron desktop shell
-- `apps/frontend/sentinel` Sentinel frontend
-- `infra/` gateway and runtime wiring
-- `docs-site/` full documentation source
-- `docs/` project notes and assets
-
-## Documentation
-
-- **Live docs site: [sentinel.arais.us](https://sentinel.arais.us)**
-- Docs site source: [`docs-site/`](docs-site)
-- Intro: [`docs-site/docs/introduction.md`](docs-site/docs/introduction.md)
-- Quickstart: [`docs-site/docs/quickstart.md`](docs-site/docs/quickstart.md)
-- Installation guide: [`docs-site/docs/guides/installation.md`](docs-site/docs/guides/installation.md)
-- CLI reference: [`docs-site/docs/guides/cli-reference.md`](docs-site/docs/guides/cli-reference.md)
-- API reference: [`docs-site/docs/reference/api.md`](docs-site/docs/reference/api.md)
-
-## Security model
-
-Sentinel uses explicit policy based controls for module actions:
-
-- `allow` executes immediately
-- `approval` pauses and requests human review
-- `deny` blocks action
-
-High risk actions can be reviewed before execution.
-Emergency stop levels can freeze active execution when needed.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
-
-## Runtime Exec Security Model
-
-The agent runs shell commands through the `runtime` system module, which executes
-on each instance's managed **SSH/tmux runtime target** inside an OS-level sandbox —
-**Bubblewrap** on Linux runtimes and **macOS Seatbelt** (`sandbox-exec`) on macOS.
-All commands run confined; there is no unconfined or "root" execution mode.
-
-The module exposes four actions: `runtime.user` (run a command in the session
-workspace) plus `runtime.terminal_list`, `runtime.terminal_read`, and
-`runtime.terminal_close` for managing tmux-backed terminals. Use `background=true`
-for long-running commands. See
-[Runtime Exec Security](docs-site/docs/guides/runtime-exec-security.md).
+Run `make check` for formatting, lint, backend and desktop tests, and TypeScript
+checks. See each component's README for its additional commands.
 
 ## License
 

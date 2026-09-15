@@ -10,9 +10,9 @@ schema, callable actions (Python code), secrets, and optional page content, and
 exposes them both to the operator UI and to the agent as tools.
 
 This page is code-accurate to the module schema (`app/schemas/modules.py`), the
-module router (`app/routers/araios/modules.py`), the dynamic-module tool builder
-(`app/services/araios/dynamic_modules.py`), and the action executor
-(`app/services/araios/executor.py`).
+module router (`app/routers/modules.py`), the custom-module tool builder
+(`app/services/modules/custom_modules.py`), and the action executor
+(`app/services/modules/action_executor.py`).
 
 :::info Modules are per-instance
 Sentinel runs **one deployment hosting multiple logical instances**. Modules
@@ -42,7 +42,7 @@ and a page at once. The UI renders the relevant panes based on what is present.
 
 ## Creating a module
 
-Endpoint (admin-scoped, per instance):
+Endpoint (per instance):
 
 ```http
 POST /api/v1/instances/{instance_name}/modules
@@ -89,26 +89,25 @@ is no `type` key; do not send one.
 
 ```json
 {
-  "name": "slack",
-  "label": "Slack",
-  "description": "Slack actions",
-  "secrets": [
-    { "key": "SLACK_BOT_TOKEN", "label": "Slack Bot Token", "required": true }
-  ],
+  "name": "text_tools",
+  "label": "Text tools",
+  "description": "Small text utilities",
   "actions": [
     {
-      "id": "send_message",
-      "label": "Send message",
-      "description": "Send text to a channel",
+      "id": "count_words",
+      "label": "Count words",
+      "description": "Count whitespace-separated words in supplied text",
       "params": [
-        { "key": "channel", "label": "Channel", "type": "text", "required": true },
-        { "key": "message", "label": "Message", "type": "text", "required": true }
+        { "key": "text", "label": "Text", "type": "textarea", "required": true }
       ],
-      "code": "token = secrets.get('SLACK_BOT_TOKEN')\nif not token:\n    result = {'ok': False, 'error': 'missing token'}\nelse:\n    # call the Slack API via the injected http client\n    result = {'ok': True}"
+      "code": "result = {'words': len(params['text'].split())}"
     }
   ]
 }
 ```
+
+This example needs no credentials or external service. An integration can declare
+secrets separately and use the injected HTTP client, as shown below.
 
 ### Field, param, and secret conventions
 
@@ -193,8 +192,8 @@ Module actions carry a three-level permission level:
 
 :::warning Where the permission gate applies
 The three-level gate is enforced on the **agent tool path** — i.e. when the
-agent invokes a module command through its tool registry (the dynamic-module
-tool definitions built in `dynamic_modules.py`). The operator-facing REST
+agent invokes a module command through its tool registry (the custom-module
+tool definitions built in `custom_modules.py`). The operator-facing REST
 action endpoints (`POST .../action/{action_id}` and
 `.../records/{id}/action/{action_id}`) execute the action code directly and do
 **not** consult the permission level. Do not rely on `deny`/`approval` to block
@@ -248,13 +247,14 @@ If `result` is not a dict (or unset), the executor returns `{"ok": True}`. If th
 code raises, the executor returns `{"ok": False, "error": "<message>"}`.
 
 ```python
-token = secrets.get("SLACK_BOT_TOKEN")
+token = secrets["API_TOKEN"]
 resp = await http.post(
-    "https://slack.com/api/chat.postMessage",
+    "https://api.example.com/events",
     headers={"Authorization": f"Bearer {token}"},
-    json={"channel": params["channel"], "text": params["message"]},
+    json={"message": params["message"]},
 )
-result = {"ok": resp.status_code == 200, "status": resp.status_code}
+resp.raise_for_status()
+result = {"ok": True, "status": resp.status_code}
 ```
 
 ---

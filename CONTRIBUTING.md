@@ -11,26 +11,55 @@ Thanks for contributing to Sentinel by ARAIS.
 
 ## Development Setup
 
-```bash
-docker compose -f docker-compose.dev.yml up --build
-```
-
-The development compose file uses local-only defaults. The production-shaped
-`docker-compose.yml` requires explicit `SENTINEL_POSTGRES_PASSWORD`,
-`SENTINEL_JWT_SECRET_KEY`, `SENTINEL_DATA_ENCRYPTION_KEY`, and
-`SENTINEL_AUTH_PASSWORD` values.
-
-Install Python formatting tooling:
+On macOS, install [Homebrew](https://brew.sh) and Xcode Command Line Tools
+(`xcode-select --install`), then run from the repository root:
 
 ```bash
-python3 -m pip install black
+make setup
+make dev
 ```
 
-Enable repository git hooks:
+`make setup` installs missing uv/Node tooling, uv-managed Python 3.12, locked backend development
+dependencies, frontend and Electron dependencies, and the repository Git hooks.
+SQLite storage requires no separate database installation. The managed Python
+build supports SQLite extension loading, required by sqlite-vec; system Python
+builds that disable extension loading are not supported. Setup verifies that
+sqlite-vec loads successfully.
+
+`make dev` opens Electron. Its service manager generates secrets and starts the
+backend, which creates its SQLite databases under the dev profile's `state/storage/`. Vite provides
+frontend hot reload, Uvicorn reloads backend changes, and Electron source changes
+rebuild and restart the shell. Quit Electron or press Ctrl+C to stop everything.
+Compilation errors are printed in the launching terminal.
+
+The renderer uses the electron-vite development URL for hot reload, and packaged
+builds use `sentinel://app`. Backend requests and streams pass through Electron
+to a private Unix socket. FastAPI has no TCP listener or user-login flow.
+
+Development data, configuration, logs, and workspace disks live in
+`~/Library/Application Support/Sentinel Dev/` on macOS, separate from the installed
+desktop app. Data survives restarts and stays outside the checkout, so the Sentinel
+repository itself can be mounted as a workspace. Unix sockets use temporary storage.
+The app manages its development configuration and database startup.
+
+Python uses `apps/backend/sentinel/.venv` with uv-managed Python 3.12. Select
+`apps/backend/sentinel/.venv/bin/python` as your IDE interpreter.
 
 ```bash
-bash scripts/install-git-hooks.sh
+make logs           # Follow desktop and backend service logs
+make lint           # Black formatting check and Ruff lint
+make format         # Apply Black formatting
+make test           # Backend and desktop transport tests
+make typecheck      # Frontend and Electron TypeScript checks
+make check          # All the checks above
+make desktop-build  # Build the Electron desktop distribution
 ```
+
+Black owns formatting; Ruff checks Python correctness. To fix individual lint
+findings, run `uv run --project apps/backend/sentinel ruff check --fix <files>`
+and review the changes. The Makefile wraps the existing tools; they can also be
+run directly. `npm --prefix apps/desktop/sentinel run dev` starts the same desktop
+development workflow.
 
 ## Pull Request Checklist
 
@@ -39,21 +68,6 @@ bash scripts/install-git-hooks.sh
 3. New env vars, endpoints, or UI flows are documented.
 4. Commit messages are clear and include DCO sign-off.
 5. For approval-gated flows, verify create -> stream -> refresh/rehydrate -> approve/reject.
-
-## CLI and Compose Checks
-
-For CLI, Compose, or documentation cleanup, run:
-
-```bash
-bash -n sentinel-cli.sh
-SENTINEL_POSTGRES_PASSWORD=test-postgres-password \
-  SENTINEL_JWT_SECRET_KEY=test-jwt-secret-at-least-local-config \
-  SENTINEL_DATA_ENCRYPTION_KEY=test-data-encryption-key-at-least-32 \
-  SENTINEL_AUTH_PASSWORD=test-admin-password \
-  docker compose config -q
-docker compose -f docker-compose.dev.yml config -q
-git diff --check
-```
 
 ## Git Hook Policy
 
@@ -65,7 +79,7 @@ This repository ships local hooks in `.githooks/`:
 Enforced checks:
 
 1. Whitespace and conflict marker validation.
-2. Black formatting check for staged Python files.
+2. Black formatting and Ruff lint checks for staged Python files.
 3. Block common secret file patterns and large staged files.
 4. Heuristic secret scanning in staged text content.
 5. Commit message hygiene (no WIP/fixup/squash, <=72 char subject).
@@ -77,7 +91,7 @@ Enforced checks:
 2. Preserve third-party license notices when redistributing source or images.
 3. Generate dependency license inventories before release:
    `bash scripts/generate-license-reports.sh`
-4. If distributing Docker images, include `LICENSE` and `NOTICE` in release artifacts.
+4. When distributing desktop builds, include `LICENSE` and `NOTICE` in release artifacts.
 5. For OAuth deployment, ensure privacy policy and provider terms are configured.
 
 ## DCO (Developer Certificate of Origin)

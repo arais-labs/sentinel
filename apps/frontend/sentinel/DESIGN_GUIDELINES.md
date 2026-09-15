@@ -1,165 +1,137 @@
-# Sentinel Frontend Design Guidelines
+# Frontend design guidelines
 
-## Direction
-The Sentinel UI is an operator control plane: dense, calm, and precise. It is built to
-drive **multiple logical instances from one deployment** — the same React app runs
-in the Docker Compose stack and inside the bundled macOS desktop app — so every screen
-is instance-aware and optimized for sustained, high-signal monitoring rather than
-marketing polish.
+Sentinel is a desktop workspace for conversations, tools, files, terminals, and live
+desktops. Keep actions recognizable across panes and preserve the user's working
+context when they resize, focus, or switch conversations.
 
-## Principles
-1. Prioritize signal over decoration.
-2. Keep interaction surfaces flat and predictable.
-3. Use space for hierarchy, not for visual effects.
-4. Make live state obvious (streaming, running, failed, disconnected).
-5. Every pane should have explicit scroll boundaries.
-6. Keep the active instance unambiguous — the user always knows which instance a view targets.
+These guidelines describe the existing UI. The linked components and styles are the
+source of truth for appearance and behavior; extend their owners rather than copying
+a second implementation into a page.
 
-## Visual System
+## Owners to start with
 
-### Theming and tokens
-Colors are driven by **CSS custom properties**, not hard-coded hex values, so the app
-supports both a **dark** and a **light** theme. The theme defaults to **dark**, is
-toggled via the theme store (`src/store/theme-store.ts`), persisted to
-`localStorage`, and applied by toggling the `dark` class on `<html>` (Tailwind runs in
-`darkMode: 'class'`). Always style against the tokens below — never inline a raw color
-that only works in one theme.
+| Area | Source |
+| --- | --- |
+| Theme colors, base typography, scrollbars, common button classes | [index.css](src/index.css), [theme store](src/store/theme-store.ts) |
+| Compact actions and dropdown triggers | [HeaderActions](src/components/ui/HeaderActions.tsx), [header styles](src/components/session/chat-header.css) |
+| Pane chrome, action overflow, view selection | [PaneHeaderTab](src/components/workspace/PaneHeaderTab.tsx), [PaneActions](src/components/workspace/PaneActions.tsx) |
+| View registry and layout ownership | [workspace-tabs](src/lib/workspace-tabs.tsx), [Workspace](src/components/workspace/Workspace.tsx), [workspace store](src/store/workspace-store.ts) |
+| Anchored overlays | [portal-menu](src/lib/portal-menu.ts) |
+| Runtime confirmation and progress | [RemoteRuntimeDialog](src/components/runtime/RemoteRuntimeDialog.tsx), [dialog styles](src/components/runtime/remote-runtime-dialog.css) |
+| Workspace forms | [WorkspaceEditor](src/components/runtime/WorkspaceEditor.tsx) |
+| File browsing and preview states | [WorkspaceBrowser](src/components/files/WorkspaceBrowser.tsx), [browser styles](src/components/files/workspace-browser.css) |
+| Shared content and feedback | [Markdown](src/components/ui/Markdown.tsx), [StatusChip](src/components/ui/StatusChip.tsx), [NotificationHost](src/components/NotificationHost.tsx) |
 
-Tokens are defined in `src/index.css` (`:root` for light, `html.dark` for dark):
+## Theme and visual language
 
-| Token | Light | Dark | Use |
-| --- | --- | --- | --- |
-| `--app-bg` / `--surface-0` | `#ffffff` | `#09090b` | App background / primary surface |
-| `--surface-1` | `#f8fafc` | `#111113` | Raised surface |
-| `--surface-2` | `#f1f5f9` | `#18181b` | Inset / hover surface |
-| `--surface-3` | `#e2e8f0` | `#27272a` | Strong fill |
-| `--border-subtle` | `#e2e8f0` | `#1f1f22` | Default 1px borders |
-| `--border-strong` | `#cbd5e1` | `#2e2e32` | Emphasis borders |
-| `--text-primary` | `#0f172a` | `#f4f4f5` | Body / headings |
-| `--text-secondary` | `#475569` | `#a1a1aa` | Secondary text |
-| `--text-muted` | `#94a3b8` | `#52525b` | Metadata / disabled |
-| `--accent-solid` | `#0f172a` | `#ffffff` | Filled primary action |
+The theme store persists `light` or `dark`, defaults to dark, and updates both the
+`dark` class and `data-theme` on the document root. Test both themes; do not infer the
+current theme from a pane's background.
 
-In Tailwind, reference tokens with the arbitrary-value syntax, e.g.
-`bg-[color:var(--surface-0)]`, `border-[color:var(--border-subtle)]`,
-`text-[color:var(--text-secondary)]`.
+Use the existing CSS custom properties for ordinary surfaces and text:
 
-### Status colors
-Status uses semantic Tailwind scales (with dark-mode variants) rather than tokens, so a
-failing run reads the same in both themes:
+- `--app-bg`, `--surface-0` through `--surface-3`: background and surface hierarchy.
+- `--border-subtle`, `--border-strong`: boundaries and emphasis.
+- `--text-primary`, `--text-secondary`, `--text-muted`: text hierarchy.
+- `--accent-solid`, `--sentinel-blue`: primary actions and blue accents.
+- `--scroll-thumb`, `--scroll-thumb-hover`: shared scrollbar treatment.
 
-- Success / good: emerald
-- Warning: amber / orange
-- Danger: rose
-- Info: sky
+Tailwind accepts these directly, for example `bg-(--surface-1)` and
+`text-(--text-secondary)`. Do not duplicate the token values in this document or in a
+new component. Feature styles may define scoped tokens with explicit light/dark
+variants; the shared header styles demonstrate this pattern.
 
-Reuse the `StatusChip` component (see below) instead of re-deriving these per call site.
+The UI uses rounded pills, larger rounded dialogs and cards, subtle gradients,
+shadows, and selected-state glow. Preserve the treatment of the surrounding surface;
+a blanket flat-surface or small-radius rule does not describe Sentinel. Use existing
+control classes and scoped styles instead of introducing another visual family.
 
-### Typography
-- UI font: **Inter**; monospace (code, IDs, diffs): **JetBrains Mono** (loaded in `src/index.css`).
-- Base: 14px
-- Tight hierarchy:
-  - Page title: 18px semibold
-  - Section label: 11-12px uppercase/medium
-  - Body: 13-14px
-  - Metadata: 11-12px
+Inter is the UI family and JetBrains Mono is used for code. Follow the typography of
+the component being extended: compact uppercase action labels, normal-case body copy,
+and larger dialog headings serve different purposes. There is no single font size or
+corner radius for every page. Keep identifiers and long filenames from forcing panes
+wider than their available space.
 
-### Spacing & Radius
-- Spacing scale: 4 / 8 / 12 / 16 / 24
-- Radius is restrained: chips/badges use `rounded` (4px), most controls `rounded-md`
-  (6px), panels/cards use `rounded-lg` (8px). Avoid larger radii.
-- Avoid oversized paddings and giant hero gaps.
+`StatusChip` provides `default`, `good`, `warn`, `danger`, and `info` tones. Pair color
+with a meaningful label. Theme support alone does not establish contrast compliance;
+check the rendered text, disabled states, and status colors in each theme.
 
-### Effects
-- No gradient backgrounds on surfaces
-- No ornamental blobs/glows
-- No heavy shadows
-- Use subtle borders and hover states only
-- Scrollbars are thin (6px) and token-colored — do not restyle per view.
+## Panes and navigation
 
-## Layout Rules
-1. The app shell fills the viewport (`h-screen`); `body` sets `overflow: hidden` so the
-   workspace never page-scrolls. Only inner panes scroll.
-2. Any screen with paneled workflows (chat, memory, modules) must set `min-h-0` and an
-   explicit `overflow` on each pane so scroll is contained, not inherited.
-3. The chat timeline scrolls independently from the session sidebar and the right rail.
-4. Preserve high information density on desktop; the left nav and secondary rails
-   collapse on smaller screens (`hidden md:flex`).
+The document does not scroll; pane bodies own their scroll areas. Preserve `min-h-0`
+and `min-w-0` through flex layouts and give the actual scrolling element its overflow
+behavior. Headers, composers, and dialog actions should remain reachable while their
+content scrolls.
 
-## App Shell & Navigation
-`AppShell` (`src/components/AppShell.tsx`) renders the collapsible left nav. Nav items,
-in order: **Sessions, Session Logs, Memory, Triggers, Modules, Approvals, Permissions,
-Git, Telegram, Showcase (dev builds only), Settings.**
+Views are registered in `workspace-tabs`; the shell and pane picker consume that
+registry. Use its labels and visibility flags rather than maintaining another nav
+list. [AppShell](src/components/AppShell.tsx) owns shell navigation. Routes and view
+state must retain the intended instance, conversation, and workspace context.
 
-Navigation is **instance-scoped**: routes are built from the current instance via the
-`/instances/:instanceName/<route>` pattern, and instance selection happens on the
-manager-level `InstancePickerPage` at `/`. When running inside the desktop app, the
-shell may expose desktop-only affordances through `window.sentinelDesktop` (e.g. the
-control center); guard all such calls because they are undefined in the browser/compose
-build.
+Chat, terminal, files, and desktop are tiling panes, not a fixed three-column layout.
+Use the workspace's existing split, close, and focus actions. Focus behavior belongs
+to [Workspace](src/components/workspace/Workspace.tsx) and the
+[focus-mode store](src/store/focus-mode-store.ts); a feature should not introduce its
+own fullscreen layer or unrelated exit-focus control.
 
-## Component Rules
-Prefer the shared primitives in `src/components/ui/` over bespoke markup.
+Conversation views can remain mounted while hidden. Use the existing visibility
+context when scheduling view work and preserve scroll position, selections, and
+in-flight state. Do not use remounting as a routine refresh mechanism.
 
-### Buttons
-- Primary: filled with `--accent-solid`, concise label, no gradients
-- Secondary: surface background with a 1px border
-- Danger actions: secondary style + rose text
+## Actions, menus, and dialogs
 
-### Inputs
-- Flat surface background
-- Single border color family (`--border-subtle`, `--border-strong` on focus/hover)
-- Focus ring subtle and consistent
+Use `HeaderActionButton`, `HeaderPrimaryButton`, and `HeaderActionDropdown` for compact
+header controls. Icon-only controls need an accessible name; labels and active states
+must still make sense when the header becomes narrow. Header CSS is intentionally
+scoped so its raised button styling does not leak into menu rows.
 
-### Status Chips
-- Use `StatusChip` (`src/components/ui/StatusChip.tsx`).
-- Tones: `default | good | warn | danger | info`.
-- Small rectangular chips, uppercase, semantic colors only — never a decorative palette.
+Register pane actions through the existing pane action mechanism. `PaneActions`
+measures available width and moves overflow into a portaled panel. Keep the same
+controls and action order in both locations. Do not build a separate desktop-only
+overflow menu. Use the anchor helpers for menus that must track their trigger while
+nested panes scroll or resize, and keep overlays within the viewport.
 
-### Panels
-- Use `Panel` (`src/components/ui/Panel.tsx`): `--surface-0` background, 1px
-  `--border-subtle`, `rounded-lg`.
-- No blur/frosted glass.
+For confirmations and forms, follow the appropriate existing dialog component.
+`RemoteRuntimeDialog` uses the native `<dialog>` element and a portal; other named
+dialogs manage their own focus and dismissal. There is no universal `Modal` component
+to import. Prefer these in-app patterns over blocking `window.alert` or
+`window.confirm` calls.
 
-### Other primitives
-- `Markdown` — markdown with KaTeX + highlight.js, used in chat and page modules.
-- `Modal` — portal-based backdrop for confirmations and forms.
-- `DynamicForm` / `DynamicDetailPane` — drive module CRUD (data modules) from specs.
-- Native browser dialogs (`alert` / `confirm` / `prompt`) are forbidden; use `Modal` and
-  in-UI error/toast state instead.
+Provide a clear title, named close control, and an explicit action. Match the existing
+Escape/backdrop dismissal behavior; where an operation prevents dismissal, reflect
+that state consistently in the controls. Keep long content scrollable without hiding
+the footer. Explain the affected items and consequences before destructive actions.
+Detailed paths, verification output, and identifiers belong below the primary task,
+not above the decision the user needs to make.
 
-## Product-Specific UX
+## Forms, feedback, and file content
 
-### Sessions / Chat
-- Left: conversations list (per-instance sessions).
-- Center: message timeline + composer.
-- Right: workbench — tabbed file explorer, git diff viewer, and runtime live view.
-- Tool calls render as structured execution cards with payload details.
-- Streaming state is always visible in the header (events arrive over the per-session
-  runtime WebSocket).
-- Approval-gated tool calls surface as pending, not failed — reflect the `pending →
-  approved/rejected/timed_out/cancelled` lifecycle in the UI.
+Follow `WorkspaceEditor` for labeled inputs, grouped choices, keyboard-accessible
+steps, validation, and loading states. Creation steps and editing tabs have different
+navigation rules. Preserve native input semantics and submit behavior instead of
+making a clickable container impersonate a form control. Reuse the existing logo
+assets for distribution and tool choices.
 
-### Modules
-- Three module shapes: API/tool modules (actions, secrets, code editing), page modules
-  (markdown), and data modules (CRUD grid with filter/search + detail pane).
-- The module registry is per-instance, so module views always reflect the active
-  instance.
+Represent loading, empty, unavailable, failed, and completed states explicitly. Show
+the action that can resolve an error near the affected content, and keep independent
+panes usable. Machine connectivity, installed runtime version, and workspace readiness
+are different facts; one green badge must not imply all three succeeded.
 
-### Memory Explorer
-- Left: tree/search navigator.
-- Right: inspector/details/actions.
-- Fast select, clear hierarchy, minimal modal friction.
-- Distinguish pinned vs non-pinned nodes; node actions live near the inspected context.
+File content belongs in the Files pane's preview area. Reuse its common loading/error
+layout and download action. Text, sandboxed HTML, and media have different renderers;
+unsupported types or codecs need an honest fallback. Native PDF/image/audio/video
+previews should retain their accessible titles or alternative text and playback
+controls. Upload progress belongs to the workspace operation and must remain meaningful
+when the user switches conversations.
 
-### Admin / Ops Views
-- Table/list first.
-- Controls grouped by risk (critical actions separated).
-- Clear system state badges (status codes, run phases).
+## Review a UI change
 
+Check the result in light and dark themes, a narrow split pane, and focus mode. Verify
+long content, loading/error states, keyboard operation, visible focus, and overlay
+dismissal. Respect `prefers-reduced-motion` when adding motion. Preserve accessible
+names, labels, and state attributes rather than relying on color or icons alone.
 
-## Accessibility
-- Keyboard-first navigation in core flows.
-- Target minimum contrast AA on text/status (not yet formally validated).
-- Focus outlines visible on interactive controls.
-- Both themes must remain legible — verify new colors in dark and light.
+Use the relevant browser tests under [tests](tests/) for behavior that crosses layout,
+focus, or retained-state boundaries. Prefer a small test of the real interaction over
+reconstructing component internals or asserting incidental markup. A screenshot is
+useful for visual review, but does not establish keyboard or accessibility correctness.

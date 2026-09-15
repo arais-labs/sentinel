@@ -1,34 +1,30 @@
 # Sentinel Frontend
 
-React operator UI for the Sentinel runtime.
+React UI for the Sentinel desktop app.
 
-## Source Of Truth
-
-Use the root docs for full stack setup and routing:
-- [Root README](../../../README.md)
-
-## Run (Via Stack Compose)
-
-From repo root:
+From the repository root:
 
 ```bash
-docker compose -f docker-compose.dev.yml up --build sentinel-frontend sentinel-backend
+make setup
+make dev
 ```
 
-## Standalone Frontend Dev (Optional)
+Electron opens the UI from the electron-vite development URL with hot reload.
+Packaged builds load `sentinel://app`. API requests and streams go through the
+desktop bridge to FastAPI over a private Unix socket. There is no Sentinel login;
+the app opens to Instances in App Settings. See [Contributing](../../../CONTRIBUTING.md) for setup and checks.
 
-If you only need UI development:
+Opening an instance shows its tiling workspace. Click a sidebar page to replace
+the focused pane, or drag it onto a pane edge to split the workspace. Drag pane
+headers to rearrange views and drag dividers to resize them. Layouts are saved
+across reloads. Desktop, Terminal, and Files are independent panes that follow
+the selected session and share its desktop IPC stream.
+
+The top-right settings control opens App Settings and returns to the workspace
+when closed; instance management stays in that menu.
+
+To build or type-check only the frontend:
 
 ```bash
-npm ci
-cp .env.example .env.local
-```
-
-Then run:
-
-```bash
-VITE_BASE_PATH=/ \
-VITE_ROUTER_BASENAME=/ \
-VITE_SENTINEL_API_BASE_URL=/api/v1 \
-npm run dev -- --host --port 5173
+npm --prefix apps/frontend/sentinel run build
 ```

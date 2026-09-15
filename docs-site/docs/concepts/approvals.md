@@ -17,7 +17,7 @@ Sentinel gates work at two layers. Both end up writing rows to the same `tool_ap
 
 ### 1. Tool-level approval gate (blocking)
 
-System tools (for example `runtime_exec`) can require approval before they run. When this happens the tool call **does not return** — it creates a pending approval record and blocks, polling the database every **1.5 seconds** until an operator resolves it or the request times out.
+System tools (for example `runtime`) can require approval before they run. When this happens the tool call **does not return** — it creates a pending approval record and blocks, polling the database every **1.5 seconds** until an operator resolves it or the request times out.
 
 - A pending callback fires immediately so the UI can surface the request.
 - The waiter resolves to `approved`, `rejected`, `timed_out`, or `cancelled`.
@@ -27,7 +27,7 @@ This path is implemented by the tool executor and its approval waiter. The agent
 
 ### 2. Module-action permission gate (202 / 403)
 
-ARAIOS module actions are governed by the three-level permission map. The permission level set for an action determines what happens when the agent calls it:
+Module actions are governed by the three-level permission map. The permission level set for an action determines what happens when the agent calls it:
 
 | Permission level | Behavior |
 |---|---|
@@ -60,7 +60,7 @@ Treating a 202 response as an error and surfacing it as a failure to the user is
 
 ## How approvals are identified
 
-Every approval row carries a `provider` field. **The provider is the tool or module name that requested it** (for example `runtime_exec`, or a module name) — it is not a fixed category like `tool` / `git` / `araios`. There is a single approval backend (`ToolApprovalProvider`) that serves every record; the provider value simply tells you which tool raised the request and is required when you resolve it.
+Every approval row carries a `provider` field. **The provider is the tool or module name that requested it** (for example `runtime`, or a module name) — it is not a fixed category such as `tool` or `git`. There is a single approval backend (`ToolApprovalProvider`) that serves every record; the provider value simply tells you which tool raised the request and is required when you resolve it.
 
 Each record also stores:
 
@@ -112,7 +112,42 @@ For a tool-level gate the agent simply waits on the blocked tool call; once the 
 
 ## Resolving an approval (API)
 
-Resolution endpoints are admin-only and instance-scoped:
+### Allow an action for this session
+
+Approval cards offer **Deny**, **Approve once**, and **Allow for this session**.
+The session option approves the current request and remembers its exact module
+action, such as `git.write`, for this conversation. Future calls to that action
+can use different arguments without another prompt. Other actions still ask.
+
+Matching pending requests in the conversation are also approved. Cancelled,
+expired, or previously rejected requests are never revived. Each automatically
+approved call retains its own approval record and identifies the session grant.
+
+The permission survives conversation switching, reconnects, and app restarts.
+It is isolated to the instance and conversation: other chats, forks, and
+sub-agent conversations do not inherit it. Explicitly denied module actions
+remain denied. Session grants are excluded from portable backups; restored
+conversations require fresh consent.
+
+Open **Run settings → Session permissions** to revoke an action. Subsequent calls
+ask again; revocation does not cancel calls already approved or executing.
+Deleting the conversation deletes its grants.
+
+The approve endpoint accepts `scope: "once"` (default) or `scope: "session"`.
+The server derives the conversation and action from the pending approval, so
+clients cannot substitute another session or broaden the action. Rejection
+only accepts `scope: "once"`. Sessionless approvals cannot create grants.
+
+Desktop-only management endpoints:
+
+```
+GET /api/v1/instances/{instance_name}/approvals/sessions/{session_id}/grants
+DELETE /api/v1/instances/{instance_name}/approvals/sessions/{session_id}/grants/{grant_id}
+```
+
+### Resolve a pending request
+
+Resolution endpoints are instance-scoped and reached through the desktop bridge:
 
 ```
 POST /api/v1/instances/{instance_name}/approvals/{provider}/{approval_id}/approve
@@ -134,7 +169,7 @@ Status codes:
 
 ## Who can resolve approvals
 
-Only users with the `admin` role can resolve approvals; the `agent` role cannot. This is intentional — agents cannot self-approve their own requests. In the permission map, `approvals.resolve` is hard-set to `deny` for the agent.
+The desktop operator resolves approvals. Agents cannot self-approve their own requests: in the permission map, `approvals.resolve` is hard-set to `deny` for the agent.
 
 ---
 
@@ -143,7 +178,7 @@ Only users with the `admin` role can resolve approvals; the `agent` role cannot.
 ```
 GET /api/v1/instances/{instance_name}/approvals?status=pending
 GET /api/v1/instances/{instance_name}/approvals?status=approved
-GET /api/v1/instances/{instance_name}/approvals?provider=runtime_exec
+GET /api/v1/instances/{instance_name}/approvals?provider=runtime
 GET /api/v1/instances/{instance_name}/approvals?session_id=<uuid>
 ```
 

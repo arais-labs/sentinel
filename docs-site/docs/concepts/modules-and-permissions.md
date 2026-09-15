@@ -5,108 +5,74 @@ title: Modules and Permissions
 
 # Modules and Permissions
 
-Sentinel includes a module control plane for custom tools, persistent data stores,
-permissions, human approval gates, and agent coordination.
+A **module** is a capability available to the operator and agent: records,
+actions, a page, or a combination of these. Permissions determine which actions
+can run and which require your review.
 
-Agents interact with modules through the instance-scoped module REST API. Every action is auditable.
+## Built-in and custom modules
 
----
+| Kind | Ownership | Typical use |
+|---|---|---|
+| Built-in | Shipped with Sentinel | Runtime tools, memory, forms, and agent coordination |
+| Custom | Defined inside an instance | Project records, API integrations, and reference pages |
 
-## Module system
+Custom modules can combine these features:
 
-Sentinel modules are either data stores or callable tools.
+- **Records:** fields and validation for structured data, such as tasks or contacts.
+- **Actions:** Python code that performs work using the action execution context.
+- **Pages:** Markdown content that operators and agents can read and update.
+- **Secrets:** credentials supplied to action code without returning their values
+  in module API responses.
 
-### Data modules
-Persistent record stores with full CRUD. You define fields, types, and validation. Agents read, create, update, and delete records through scoped permission rules.
-
-Examples: leads, clients, proposals, tasks, competitors.
-
-### Tool modules
-Callable actions backed by sandboxed Python. No stored records — just execution. You write the Python code; Sentinel runs it in a controlled environment and passes secrets through a `secrets` dictionary in action execution context.
-
-Examples: send a Slack message, call an external API, run a calculation, trigger a webhook.
-
----
+There is no mutually exclusive module `type` field. See
+[Creating Modules](../guides/creating-modules.md) for the schema and examples.
 
 ## Permission model
 
-Every agent action maps to one of three policies:
-
-| Policy | What happens |
+| Policy | Module action behavior |
 |---|---|
-| `allow` | Agent executes immediately, no interruption |
-| `approval` | Agent pauses, creates an approval request, waits for operator review |
-| `deny` | Action is blocked, agent receives a 403 immediately |
+| `allow` | Execute immediately |
+| `approval` | Create a pending approval and return HTTP 202 |
+| `deny` | Block the action with HTTP 403 |
 
-The default policy for any unlisted action is `allow`. The `agent` role cannot resolve approvals — only `admin` can.
+Built-in defaults and configured overrides determine the effective policy.
+Operators resolve approvals; agents cannot approve their own requests.
 
-:::important
-When an action hits `approval`, the module API returns **HTTP 202**, not an error. The agent must handle 202 responses correctly — they mean "created and pending" not "failed". A 403 means "denied" and is permanent.
+:::info Pending is not failed
+HTTP 202 means the action needs a decision. Do not retry it as a failed request.
+HTTP 403 means the current policy blocks it. Tool-level approval gates wait
+inside tool execution instead of exposing an HTTP response to the agent.
 :::
 
----
+## Review an action
 
-## Approval flow
+1. The agent attempts an action that needs approval.
+2. Sentinel records the request with its tool or module identifier and session.
+3. Review the action and payload in its approval card.
+4. Choose **Deny**, **Approve once**, or **Allow for this session**.
 
-When a `202` is returned:
+Session approval grants apply to that action in that conversation, not every
+module action or other conversations. See [Approvals](./approvals.md) for grant
+scope, revocation, and the full execution contract.
 
-1. Sentinel creates an `Approval` record with a `match_key`
-2. The agent sees the 202, pauses the current action
-3. The approval appears in the Modules workspace under **Approvals**
-4. The operator reviews the action, payload, and context
-5. The operator approves or denies
-6. The agent polls for resolution and resumes on approval, or surfaces the denial to the user
+## Discover modules through the API
 
-Approvals are matched to pending agent actions via `match_key`. If the key does not match — for example, if the request came from a different session — the approval will never resolve that action.
+All routes are scoped to an instance:
 
----
-
-## Secrets management
-
-API keys and credentials are stored at the module level. Agents never see raw secret values. Secrets are available to action code via a `secrets` dictionary and are never returned in API responses.
-
----
-
-## Agent coordination
-
-Sentinel provides a coordination bus for multi-agent setups. Agents post messages, hand off tasks, and read coordination state through the same API. This is useful for orchestrating parallel sub-agents or signaling between agents in different sessions.
-
----
-
-## Task system
-
-Built-in task management shared between agents and operators:
-
-- Status, priority, owner fields
-- `workPackage` field for attaching plans, code, and artifacts
-- Handoff workflows between agents and humans
-- Supports filtering by client, status, owner, and date
-
----
-
-## Discovering what is available
-
-Start by discovering modules and permissions:
-
-```
-GET /api/instances/{instance_name}/modules
-GET /api/instances/{instance_name}/permissions
+```http
+GET /api/v1/instances/{instance_name}/modules
+GET /api/v1/instances/{instance_name}/permissions
+GET /api/v1/instances/{instance_name}/modules/{name}/records
+POST /api/v1/instances/{instance_name}/modules/{name}/records
+POST /api/v1/instances/{instance_name}/modules/{name}/action/{action_id}
 ```
 
-The modules endpoint returns native and database-backed modules with their fields
-and actions. The permissions endpoint returns the effective policy for module
-actions.
+To resolve a request, use both the `provider` and `id` from its approval record:
 
----
-
-## Key endpoints
-
+```http
+GET /api/v1/instances/{instance_name}/approvals?status=pending
+POST /api/v1/instances/{instance_name}/approvals/{provider}/{approval_id}/approve
+POST /api/v1/instances/{instance_name}/approvals/{provider}/{approval_id}/reject
 ```
-GET  /api/instances/{instance_name}/modules
-GET  /api/instances/{instance_name}/permissions
-GET  /api/instances/{instance_name}/modules/:name/records
-POST /api/instances/{instance_name}/modules/:name/records
-POST /api/instances/{instance_name}/modules/:name/action/:id
-GET  /api/v1/instances/{instance_name}/approvals?status=pending
-POST /api/v1/instances/{instance_name}/approvals/:id/approve or /reject
-```
+
+For request bodies and response codes, use the [API reference](../reference/api.md).

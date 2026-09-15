@@ -5,8 +5,7 @@ modules, and operator controls.
 
 ## Source Of Truth
 
-Start with the root setup and operations guide; it covers stack-level config, the CLI,
-and the desktop app:
+Start with the root setup and operations guide; it covers the desktop development workflow:
 
 - [Root README](../../../README.md)
 
@@ -16,11 +15,11 @@ and commands. For deeper architecture and API docs see the Docusaurus site under
 
 ## Architecture (Multi-Instance)
 
-The backend is **multi-tenant**: a single process hosts **multiple logical instances**.
+The backend is **multi-instance**: a single process hosts **multiple logical instances**.
 
-- **One manager database** (`sentinel_manager`) holds global state: instance metadata,
-  revoked tokens, manager settings, audit logs, and the runtimes catalog.
-- **One database per instance** (`sentinel_{name}_{hash}`) holds that instance's sessions,
+- **One manager database** (`app.sqlite`) holds global state: instance metadata,
+  manager settings, audit logs, and the runtimes catalog.
+- **One database per instance** (`instances/<UUID>/instance.sqlite`) holds that instance's sessions,
   messages, memories, triggers, modules, approvals, and `system_settings`. Instance
   databases are created on demand at startup and at instance-creation time, then migrated
   to the instance Alembic head.
@@ -30,8 +29,7 @@ The backend is **multi-tenant**: a single process hosts **multiple logical insta
   configured). The registry lives in
   `app/services/instance_runtime_context.py`.
 - **Instance-scoped routes** carry the instance name in the path, e.g.
-  `/api/v1/instances/{instance_name}/sessions`. Global routes (`/api/v1/auth`,
-  `/api/v1/instances`, `/api/v1/runtimes`) are not instance-scoped.
+  `/api/v1/instances/{instance_name}/sessions`. Global routes (`/api/v1/instances`, `/api/v1/machines`) are not instance-scoped.
 
 ### LLM provider credentials are DB-only
 
@@ -40,44 +38,42 @@ LLM provider credentials (`anthropic_api_key`, `anthropic_oauth_token`, `openai_
 encrypted in each instance's `system_settings` table and configured via the UI or
 `POST /api/v1/instances/{instance_name}/settings/api-keys`. Legacy env vars are blocked at
 the `Settings` level and trigger a startup warning. Infrastructure secrets
-(`DATA_ENCRYPTION_KEY`, `JWT_SECRET_KEY`, Postgres credentials) still come from the
-environment / root `.env`.
+(`DATA_ENCRYPTION_KEY`, the private transport token) still come from the
+environment supplied by the desktop service manager.
 
-## Run (Via Stack Compose)
+Configure providers in Settings or onboarding. For supported login options, see
+[Provider connections](../../../docs-site/docs/guides/providers.md).
 
-From the repo root (brings up Postgres + this backend with reload):
+## Development and Tests
 
-```bash
-docker compose -f docker-compose.dev.yml up --build postgres sentinel-backend
-```
+From the repository root, run `make setup` then `make dev`. Electron starts the
+backend using embedded SQLite, with automatic reload when Python files change.
+FastAPI runs through Uvicorn on a private Unix socket. Electron bridges requests
+and streams to that socket. Sentinel has no user login or account system;
+provider and runtime credentials are independent.
 
-The dev backend runs Uvicorn on container port `8000`. `DATA_ENCRYPTION_KEY` and
-`JWT_SECRET_KEY` are required and apply to every instance.
-
-## Tests
-
-This package uses `uv`. From the repo root, run the suite inside the backend container:
+Run the backend tests directly with:
 
 ```bash
-docker compose -f docker-compose.dev.yml exec -T sentinel-backend python -m pytest -q
+uv run --locked --directory apps/backend/sentinel pytest tests/ -q
 ```
 
-To run locally against the backend venv (created by `uv`, at `apps/backend/sentinel/.venv`):
+Run `make check` from the root for all project checks.
 
-```bash
-uv run --project apps/backend/sentinel python -m pytest -q
-```
-
-## Database Migrations
+## Database Schema
 
 Two Alembic trees are configured (see `alembic.manager.ini` and `alembic.instance.ini`):
 
-- **Manager** schema under `db/alembic/manager/` (current head: the latest `000x_*` revision).
-- **Instance** schema under `db/alembic/instance/` (baseline head: `0000_instance_v1`).
+- **Manager** schema under `db/alembic/manager/`, initial revision `0001_manager_initial`.
+- **Instance** schema under `db/alembic/instance/`, initial revision `0001_instance_initial`.
 
-Backup/restore is pinned to `VERIFIED_INSTANCE_ALEMBIC_HEAD=0000_instance_v1`; when an
-instance migration moves the head it must be re-affirmed in
-`app/services/backup/engine.py` or restores will fail the schema check.
+These are fresh-release baselines, not upgrade paths for previous development
+revision histories. This change does not reset existing developer databases.
+
+Backups use an explicit payload format (`schema_version: 3`), validated after
+decryption. `created_by_version` is informational; restore is not gated by the
+application version or a manually pinned Alembic head. Older backup formats are
+not supported.
 
 ## Health Check
 
@@ -86,27 +82,24 @@ The health router is mounted without a prefix:
 - `GET /health` — liveness, returns `{"status": "ok"}`.
 - `GET /health/ready` — startup/readiness probe, returns `{"status": "ready"}`.
 
-## Runtime Tool Module
+## Workspace Runtime Module
 
-Shell execution runs through the SSH/tmux managed runtime (`runtime` system module). Its
-actions are:
+The built-in `runtime` module executes commands inside the attached Linux
+workspace. Its grouped actions include `workspace`, `exec`, `terminal_list`,
+window/pane management, `pane_input`, and `pane_read`. Commands run in tmux panes;
+SSH connects Sentinel to remote machines running the workspace runtime.
 
-- `user` — run a shell command in the session's tmux-backed sandbox workspace. Supports
-  `cwd`, `terminal_id`, `timeout_seconds` (default 300), `background`, and `env`.
-- `terminal_list` — list active tmux-backed terminals for the session.
-- `terminal_read` — read recent ANSI-stripped output from one or more terminals.
-- `terminal_close` — close one or more terminals (terminal `0` is the prioritized main
-  terminal and is recreated on demand).
+See [Workspace Runtime](../../../docs-site/docs/guides/runtime-exec-security.md)
+for storage, project paths, and execution behavior. Custom module Python actions
+execute in the backend, not inside that workspace isolation boundary.
 
-macOS runtimes apply Seatbelt sandboxing; Linux uses bubblewrap. There is no separate
-`root` action or job-control (`jobs`/`job_status`/...) action in the current module.
+## Built-in Modules
 
-## System Tool Modules
+`app/services/modules/builtins/__init__.py` registers the built-in definitions
+through `get_builtins()`. Custom modules are defined in each instance's database.
+`app/services/modules/tool_adapter.py` converts module definitions into tools
+for the shared execution and approval pipeline.
 
-Fourteen native modules are registered (see
-`app/services/araios/system_modules/__init__.py`): `http_request`, `browser`, `runtime`,
-`port_forward`, `git_tool`, `str_replace_editor`, `memory`, `sub_agents`, `telegram`,
-`triggers`, `module_manager`, `tasks`, `documents`, `coordination`. Instances can also
-define dynamic (user-defined) modules. Each module action carries one of three permission
-levels: `allow` (run), `approval` (create an approval record, return HTTP 202), or `deny`
-(return HTTP 403).
+Module actions use `allow`, `approval`, or `deny` permissions. Operator-facing
+module HTTP actions return 202 when queued for approval; agent tool-level gates
+wait for a decision inside tool execution.

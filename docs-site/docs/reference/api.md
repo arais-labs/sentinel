@@ -5,8 +5,8 @@ title: API Reference
 
 # API Reference
 
-Sentinel exposes a single FastAPI HTTP surface for the whole deployment. One
-deployment hosts **multiple logical instances**, so almost every feature route is
+Sentinel uses FastAPI over a private Unix socket managed by Electron. The
+desktop app hosts **multiple logical instances**, so almost every feature route is
 scoped by an instance name in the path:
 
 ```
@@ -14,7 +14,7 @@ scoped by an instance name in the path:
 ```
 
 A handful of routes are **manager-scoped** (not tied to a single instance):
-authentication, instance CRUD, runtime targets, and manager admin/audit.
+instance management, machines, and application-level configuration.
 
 :::tip Start here
 - `GET /api/v1/version` — identify the running build.
@@ -25,12 +25,13 @@ authentication, instance CRUD, runtime targets, and manager admin/audit.
 
 ---
 
-## Auth and scoping
+## Desktop transport and scoping
 
-Human users authenticate under `/api/v1/auth`. On success the server sets two
-httponly cookies — `sentinel_access_token` and `sentinel_refresh_token` — which
-carry the JWT used for all subsequent requests. All routes except `/api/v1/auth`,
-`/health*`, and `/api/v1/version` require a valid session.
+The React renderer sends requests through Electron's desktop bridge. Electron
+forwards them to FastAPI over a private Unix socket; the backend does not listen
+on a TCP port. HTTP route semantics remain unchanged inside that transport.
+Sentinel has no user accounts, login, session cookies, or user roles. Provider
+credentials and remote-runtime authentication remain configured separately.
 
 Instance-scoped routes resolve the target instance from the
 `{instance_name}` path segment. The name is normalized (lowercase
@@ -49,30 +50,7 @@ from environment variables. They live encrypted in each instance's
 
 ## Manager-scoped routes
 
-### Authentication — `/api/v1/auth`
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/v1/auth/login` | Exchange username/password for a token pair (sets cookies) |
-| `GET` | `/api/v1/auth/status` | Whether auth is configured |
-| `POST` | `/api/v1/auth/bootstrap` | First-run credential bootstrap — **desktop mode only** |
-| `POST` | `/api/v1/auth/refresh` | Rotate the access token from the refresh token |
-| `POST` | `/api/v1/auth/change-password` | Change password — **desktop mode only** (returns `404` in server/compose mode) |
-| `GET` | `/api/v1/auth/me` | Current identity |
-| `DELETE` | `/api/v1/auth/session` | Log out and revoke the session |
-
-:::warning Server vs desktop auth
-In **server/compose mode** the root `.env` is the source of truth: the backend
-reads `SENTINEL_AUTH_USERNAME` / `SENTINEL_AUTH_PASSWORD` on every startup and
-syncs them to the manager database, so `/auth/bootstrap` and
-`/auth/change-password` are disabled (`404`). Rotate credentials via `.env` +
-restart. In **desktop mode** (`APP_ENV=desktop`) the manager database is the
-source of truth after first launch, and both endpoints are enabled.
-:::
-
 ### Instances — `/api/v1/instances`
-
-All instance management endpoints require the `admin` role.
 
 | Method | Path | Description |
 |---|---|---|
@@ -84,34 +62,42 @@ All instance management endpoints require the `admin` role.
 | `DELETE` | `/api/v1/instances/{name}` | Delete an instance (`204`) |
 
 :::note
-Deleting an instance does not automatically drop its Postgres database — the
-`database_name` can be left orphaned and must be dropped manually if you want to
-reclaim it.
+Deleting an instance removes its SQLite database and attachments directory after
+closing its database connections. Export a backup first if needed.
 :::
 
-### Runtimes — `/api/v1/runtimes`
+### Machines — `/api/v1/machines`
 
-SSH-managed runtime targets registered in the manager database and optionally
-linked to an instance.
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/v1/runtimes` | List runtime targets |
-| `POST` | `/api/v1/runtimes` | Create a runtime target |
-| `GET` | `/api/v1/runtimes/capabilities` | Supported runtime capabilities |
-| `GET` | `/api/v1/runtimes/{runtime_id}` | Get one runtime target |
-| `PATCH` | `/api/v1/runtimes/{runtime_id}` | Update a runtime target |
-| `DELETE` | `/api/v1/runtimes/{runtime_id}` | Delete a runtime target (`204`) |
-| `POST` | `/api/v1/runtimes/{runtime_id}/{action}` | Run an action (`start` / `stop` / `test` …) |
-| `POST` | `/api/v1/runtimes/test` | Test a connection without persisting |
-| `GET` | `/api/v1/runtimes/jobs/{job_id}` | Poll an async runtime job |
-| `PATCH` | `/api/v1/instances/{name}/runtime` | Link an instance to a runtime target |
-
-### Manager admin — `/api/v1/admin`
+Local or SSH machines registered in the manager database. Workspaces
+reference a machine; instances do not select a machine directly.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1/admin/audit` | Manager-level audit log |
+| `GET` | `/api/v1/machines` | List machines |
+| `POST` | `/api/v1/machines` | Create a machine |
+| `GET` | `/api/v1/machines/capabilities` | Supported machine capabilities |
+| `GET` | `/api/v1/machines/{machine_id}` | Get one machine |
+| `PATCH` | `/api/v1/machines/{machine_id}` | Update a machine |
+| `DELETE` | `/api/v1/machines/{machine_id}` | Delete a machine (`204`) |
+| `POST` | `/api/v1/machines/{machine_id}/{action}` | Run an action (`start` / `stop` / `test` …) |
+| `POST` | `/api/v1/machines/test` | Test a connection without persisting |
+| `GET` | `/api/v1/machines/jobs/{job_id}` | Poll an async machine job |
+
+### Workspaces — instance-scoped
+
+Paths below use `/api/v1/instances/{instance_name}`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET`, `POST` | `/workspaces` | List or register named directories on machines |
+| `PATCH` | `/workspaces/{id}` | Rename a workspace |
+| `DELETE` | `/workspaces/{id}` | Remove an unattached registration; retain files |
+| `GET` | `/sessions/{id}/workspace` | Get the session attachment, or null |
+| `PUT` | `/sessions/{id}/workspace` | Attach or detach using `workspace_id` (null to detach) |
+
+New sessions start unattached. Attachments cannot change while the agent or its
+terminal commands are running. Sub-agents inherit their parent's attachment.
+Machine deletion or rebuilding is blocked while workspaces reference it.
 
 ### System
 
@@ -133,11 +119,8 @@ All of the following are prefixed with `/api/v1/instances/{instance_name}`.
 |---|---|---|
 | `GET` | `/sessions` | List sessions |
 | `POST` | `/sessions` | Create a session |
-| `GET` | `/sessions/default` | Get the main session |
-| `POST` | `/sessions/default/reset` | Reset the main session |
 | `GET` | `/sessions/{id}` | Get a session |
 | `PATCH` | `/sessions/{id}` | Update a session |
-| `POST` | `/sessions/{id}/main` | Mark a session as the main session |
 | `DELETE` | `/sessions/{id}` | Delete a session (cascades messages, sub-agent tasks, summaries) |
 | `POST` | `/sessions/{id}/chat` | Run the agent for one turn |
 | `POST` | `/sessions/{id}/stop` | Cancel the active agent run |
@@ -147,7 +130,7 @@ All of the following are prefixed with `/api/v1/instances/{instance_name}`.
 | `POST` | `/sessions/{id}/read` | Mark read |
 | `GET` | `/sessions/{id}/context-usage` | Token budget / usage metrics |
 
-Runtime workbench (file explorer, git diff, port forwarding) hangs off the same
+Machine workbench (file explorer, git diff, port forwarding) hangs off the same
 session prefix:
 
 | Method | Path | Description |
@@ -196,7 +179,7 @@ session prefix:
 | `DELETE` | `/settings/api-keys` | Clear provider credentials |
 | `POST` | `/settings/primary-provider` | Set the primary provider |
 | `GET` | `/settings/logging` | Current logging levels |
-| `POST` | `/settings/logging/levels` | Override logging levels (desktop mode) |
+| `POST` | `/settings/logging/levels` | Override logging levels |
 | `DELETE` | `/settings/logging/levels` | Remove a logging override |
 | `POST` | `/settings/logging/reset` | Reset logging levels |
 
@@ -207,12 +190,16 @@ session prefix:
 | `GET` | `/backup/items` | Selectable item categories (`sessions`, `memories`, `modules`, `triggers`) |
 | `POST` | `/backup/export` | Export an encrypted, passphrase-protected backup |
 | `POST` | `/backup/inspect` | Inspect a backup file (version, items) |
-| `POST` | `/backup/import` | Restore (version-gated; rebuilds the runtime context if `modules` are imported) |
+| `POST` | `/backup/import` | Restore a validated backup (rebuilds the runtime context if `modules` are imported) |
 
-Restores are version-gated (`MIN_RESTORABLE_VERSION = 0.1.0`, plus a forward
-guard on the major version) and schema-verified against the pinned instance
-Alembic head. Backups are encrypted with AES-GCM using a scrypt-derived key
-from the passphrase, which is required for both export and import.
+Restore accepts the supported payload format (`schema_version: 3`) and validates
+its contents after decryption. The originating app's `created_by_version` is
+informational, not an app-version compatibility gate. Invalid or unsupported
+payloads are rejected during inspection/unlock; older backup formats are not
+supported. Restores do not depend on a manually pinned Alembic revision.
+
+Backups are encrypted with AES-GCM using a scrypt-derived key from the passphrase,
+which is required for both export and import.
 
 ### Git
 
@@ -258,7 +245,8 @@ Sentinel uses a three-level permission model per action:
 
 Approval records are created by the agent runtime when an action's level is
 `approval`; there is no generic "create approval" endpoint. Resolve them by
-provider (`tool`, `git`, `araios`).
+the `provider` returned in the approval record (the requesting tool or module
+identifier), together with its approval ID. Do not substitute a category name.
 
 | Method | Path | Description |
 |---|---|---|
@@ -284,18 +272,16 @@ treat `202` as "wait for resolution," not as an error. Approval state transition
 
 ## Modules
 
-Modules are the agent's tools and data surfaces. The catalog includes static
-**system modules** (e.g. `http_request`, `browser`, `runtime`, `git_tool`,
-`memory`, `sub_agents`, `triggers`, `telegram`, `module_manager`, `tasks`,
-`documents`, `coordination`) and dynamic **user-defined modules**. The module
-registry is per-instance.
+Modules are the agent's tools and data surfaces. The instance catalog combines
+built-in modules with custom modules. Use `GET /modules` to discover the current
+catalog and action schemas instead of hard-coding a fixed list.
 
 ### Module registry
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/modules` | List modules (system + custom) |
-| `POST` | `/modules` | Create a dynamic module (`201`) |
+| `POST` | `/modules` | Create a custom module (`201`) |
 | `POST` | `/modules/import` | Import a module package (with optional seed records / permissions) |
 | `GET` | `/modules/{name}` | Get module config |
 | `PATCH` | `/modules/{name}` | Update a module |
@@ -344,18 +330,17 @@ dedicated prefix:
 | `WS /ws/instances/{instance_name}/sessions/{id}/stream` | Stream agent run events for a session |
 | `WS /ws/instances/{instance_name}/sessions/{id}/terminals/{terminal_id}` | Attach to a runtime terminal |
 
-Authentication uses the session cookie (or a token query parameter).
+Electron bridges these streams over the private backend socket. Renderer code
+uses the desktop IPC channel; there are no session cookies or token query
+parameters.
 
 ---
 
 ## Current limitations
 
-- **Password change / bootstrap are server-mode disabled.** In server/compose
-  mode `/auth/bootstrap` and `/auth/change-password` return `404`; rotate
-  credentials via `.env` + restart.
 - **Instance rename keeps the database name.** Renaming an instance does not
-  rename its underlying Postgres database.
-- **Instance deletion does not drop the database.** Orphaned `database_name`
-  rows must be cleaned up manually.
-- **Embeddings are process-global, not per-instance.** The embedding service is
-  initialized once at boot and is not scoped to an instance's settings.
+  move its UUID-based SQLite database directory.
+- **Instance deletion is destructive.** Deleting an instance drops its database.
+  Export a backup before deleting an instance you may need again.
+- **Embedding model loading is shared.** The local model is reused across
+  instances, while stored memories and searches remain instance-scoped.

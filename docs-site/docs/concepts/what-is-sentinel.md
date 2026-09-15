@@ -31,13 +31,14 @@ Agents chain steps, use tools, recover from failures, and delegate to sub-agents
 Memory is hierarchical and persistent. Agents retain domain knowledge, user preferences, and project state across sessions — without re-briefing every turn.
 
 ### Operate a real browser
-Playwright is built in. Agents navigate, click, fill forms, extract data, and screenshot pages. Operators watch execution live via VNC at `/vnc/`.
+Playwright is built in. Agents navigate, click, fill forms, extract data, and screenshot pages. Operators can open the workspace desktop inside Sentinel to view and interact
+with graphical applications.
 
 ### Run on a schedule
 Cron and heartbeat triggers fire agents automatically. Agents can create and manage their own triggers when permitted.
 
 ### Gate actions behind human approval
-High-risk operations pause the agent and surface a request for operator review. The agent resumes only after approval.
+Actions configured to require approval wait for operator review before execution. Other actions follow the configured allow/deny policy.
 
 ---
 
@@ -46,7 +47,7 @@ High-risk operations pause the agent and surface a request for operator review. 
 | Feature | Description |
 |---|---|
 | Session view | Active turn, tool calls, and live streaming output |
-| Live browser monitor | VNC view of the agent's browser |
+| Live desktop | VNC view of the shared workspace desktop |
 | Memory inspector | Browse and edit the full memory tree |
 | Trigger manager | View, create, enable, and disable scheduled triggers |
 | Modules workspace | Tools, permissions, approvals, and module management |
@@ -60,7 +61,7 @@ User / Telegram / Trigger
         ↓
   Sentinel UI
         ↓
-  Agent Runtime (Python)
+  Agent Machine (Python)
   ├── Context builder (memory + history)
   ├── LLM provider (Anthropic / OpenAI / failover)
   ├── Tool adapter (modules + browser + runtime + git)
@@ -68,7 +69,7 @@ User / Telegram / Trigger
   └── Per-session stop controls
         ↓
   Module Control Plane
-  ├── Custom tool modules (sandboxed Python)
+  ├── Custom tool modules (backend Python actions)
   ├── Data modules (persistent record stores)
   ├── Permissions (allow / approval / deny per action)
   └── Approval queue (async human review)
@@ -80,4 +81,4 @@ User / Telegram / Trigger
 
 ## Open source
 
-Sentinel is licensed under **AGPL-3.0** and built by [ARAIS](https://arais.us). Fully self-hosted — no telemetry, no cloud dependency, no usage fees.
+Sentinel is licensed under **AGPL-3.0** and built by [ARAIS](https://arais.us). Your configured model providers and external integrations have their own account requirements and usage charges.

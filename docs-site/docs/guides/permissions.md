@@ -112,7 +112,7 @@ For how the agent handles a pending `202` and the approval lifecycle, see
 ## Related
 
 - [Modules & permissions](../concepts/modules-and-permissions.md) — system vs.
-  dynamic modules and how the registry works
+  custom modules and how the registry works
 - [Creating modules](./creating-modules.md) — defining actions and their
   permission defaults
 - [Approvals](../concepts/approvals.md) — the `202` contract and approval states
