@@ -9,3 +9,67 @@
 .workspace-preparation-progress svg { flex-shrink: 0; color: var(--accent-solid); }
 .workspace-preparation-note { max-width: 320px; margin: 14px 0 0; font-size: 12px; line-height: 1.7; color: var(--text-muted); }
 @media (prefers-reduced-motion: reduce) { .workspace-preparation .animate-spin { animation: none; } }
+
+.workspace-preparation-bar {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  width: min(100%, 360px);
+  height: 6px;
+  margin-top: 20px;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.workspace-preparation-bar::-webkit-progress-bar {
+  background: var(--surface-2);
+  border-radius: 999px;
+}
+.workspace-preparation-bar::-webkit-progress-value {
+  background: var(--accent-solid);
+  border-radius: 999px;
+  transition: width 180ms ease;
+}
+.workspace-preparation-bar::-moz-progress-bar {
+  background: var(--accent-solid);
+  border-radius: 999px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-preparation-bar::-webkit-progress-value { transition: none; }
+}
+
+.workspace-preparation-action {
+  min-height: 36px;
+  margin-top: 20px;
+  padding: 0 18px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+.workspace-preparation-action:focus-visible {
+  outline: 2px solid var(--accent-solid);
+  outline-offset: 3px;
+}
+
+.workspace-preparation-step { animation: preparation-step-in 200ms ease-out; }
+@keyframes preparation-step-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.workspace-preparation-details {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  width: min(100%, 960px);
+  transition: grid-template-rows 220ms ease, opacity 180ms ease;
+}
+.workspace-preparation-details > div { min-height: 0; overflow: hidden; }
+.workspace-preparation-details.is-open { grid-template-rows: 1fr; opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .workspace-preparation-step { animation: none; }
+  .workspace-preparation-details, .workspace-preparation-action { transition: none; }
+}

@@ -29,8 +29,11 @@ export function DesktopShell({ children }: { children: ReactNode }) {
     return () => { active = false; off.forEach(fn => fn()); };
   }, [api, navigate]);
   if (!api) return <>{children}</>;
-  if (!status && startupError) return <main className="desktop-home-services settings-pane"><p role="alert">{startupError}</p><DesktopManagement /></main>;
-  if (!status || (!status.ready && status.operation === 'starting' && !status.error)) return <WorkspacePreparation />;
+  if (!status || (!status.ready && (status.preparing || status.operation === 'starting' || status.error || !status.payload.installed))) {
+    return <WorkspacePreparation preparing={Boolean(status && !status.development && (!status.payload.installed || status.payloadProgress))}
+      progress={status?.payloadProgress} error={startupError || status?.error}
+      onRetry={() => { setStartupError(''); void api.startServices().then(setStatus).catch(error => setStartupError(String(error))); }} />;
+  }
   const instance = location.pathname.match(/^\/instances\/([^/]+)/)?.[1];
   const home = location.pathname === '/' || location.pathname.startsWith('/desktop');
   const onboarding = location.pathname.includes('/onboarding');

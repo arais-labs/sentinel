@@ -445,7 +445,7 @@ export function startDesktopApplication(): void {
     });
     handle(IPC.getStatus, () => manager.getStatus());
     handle(IPC.stopServices, () => manager.stopServices());
-    handle(IPC.startServices, () => manager.startServices());
+    handle(IPC.startServices, () => manager.initialize());
     handle(IPC.revealAppSupport, () => manager.revealAppSupport());
     handle(IPC.openLogFolder, () => manager.openLogFolder());
     handle(IPC.getLogs, () => manager.logs());
@@ -497,15 +497,6 @@ export function startDesktopApplication(): void {
         installMenu();
         await createWindow();
         void manager.initialize()
-          .then(async (status) => {
-            // Fresh shell with no payload: pull and install the latest release
-            // automatically (stable, then beta) before opening Sentinel.
-            if (app.isPackaged && !status.payload.installed) {
-              const installed = await manager.autoInstallLatest();
-              if (installed) await manager.startServices();
-            }
-
-          })
           .catch((error) => {
             const message = String(error?.stack || error);
             console.error(message);

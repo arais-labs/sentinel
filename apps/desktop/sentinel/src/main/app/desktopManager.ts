@@ -93,9 +93,33 @@ export class DesktopManager {
     return this.appUrl();
   }
 
-  async initialize(): Promise<DesktopStatus> {
-    await this.ensureInitialized();
-    return this.startServices();
+  private preparation?: Promise<DesktopStatus>;
+  private preparing = true;
+  private payloadProgress?: PayloadProgress;
+
+  initialize(): Promise<DesktopStatus> {
+    if (this.preparation) return this.preparation;
+    this.preparation = this.prepareApp().finally(() => { this.preparation = undefined; });
+    return this.preparation;
+  }
+
+  private async prepareApp(): Promise<DesktopStatus> {
+    this.preparing = true;
+    this.startupError = undefined;
+    this.payloadProgress = undefined;
+    try {
+      await this.emitStatus();
+      const status = await this.startServices();
+      if (app.isPackaged && !status.payload.installed) {
+        if (!await this.autoInstallLatest()) throw new Error('Could not find a Sentinel release. Check your connection and retry.');
+      }
+    } catch (error) {
+      this.startupError = error instanceof Error ? error.message : String(error);
+      this.supervisor.appendManagerLog(this.startupError);
+    } finally {
+      this.preparing = false;
+    }
+    return this.emitStatus();
   }
 
   // Packaged builds with no installed payload have nothing to run yet — the
@@ -195,6 +219,8 @@ export class DesktopManager {
 
   private emitPayloadProgress(phase: PayloadPhase, message: string, fractionComplete?: number): void {
     const progress: PayloadProgress = { phase, message, fractionComplete };
+    this.payloadProgress = progress;
+    void this.emitStatus();
     for (const listener of this.payloadProgressListeners) listener(progress);
     this.supervisor.appendManagerLog(`[payload:${phase}] ${message}`);
   }
@@ -205,6 +231,8 @@ export class DesktopManager {
       appUrl,
       development: !app.isPackaged,
       operation: this.operation,
+      preparing: this.preparing,
+      payloadProgress: this.payloadProgress,
       ready: this.servicesReady && this.supervisor.isRunning('backend'),
       error: this.startupError,
       appSupportPath: hostStateRoot(),
@@ -232,7 +260,10 @@ export class DesktopManager {
     const scratch = payload.downloadScratchPath();
     try {
       this.emitPayloadProgress('download', `Downloading ${update.version}…`);
-      await payload.downloadTarball(update.url, scratch);
+      await payload.downloadTarball(update.url, scratch, fraction => {
+        this.payloadProgress = { phase: 'download', message: 'Downloading your app…', fractionComplete: fraction };
+        void this.emitStatus();
+      });
       this.emitPayloadProgress('verify', 'Verifying download…');
       await payload.verifySha256(scratch, update.sha256);
       await this.applyPayloadFromTarball(scratch);
