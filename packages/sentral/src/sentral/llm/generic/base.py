@@ -1,0 +1,80 @@
+"""Base provider contract for chat/stream interactions."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Sequence
+
+from sentral.llm.generic.types import (
+    AgentEvent,
+    AgentMessage,
+    AssistantMessage,
+    ProviderCapabilities,
+    ReasoningConfig,
+    ToolSchema,
+)
+from sentral.llm.ids import ProviderId
+from sentral.llm.model_limits import model_context
+
+
+class LLMProvider(ABC):
+    """Abstract provider interface for chat and streaming completion APIs."""
+
+    async def count_input_tokens(self, messages, model, tools=None, reasoning_config=None):
+        """Provider preflight count; None means this transport does not support it."""
+        return None
+
+    def supports_fast_mode(self, model: str) -> bool:
+        """Whether this transport/model supports opt-in premium processing."""
+        return False
+
+    def model_context(self, model):
+
+        return model_context(model)
+
+    @abstractmethod
+    async def chat(
+        self,
+        messages: Sequence[AgentMessage | dict],
+        model: str,
+        tools: Sequence[ToolSchema] | None = None,
+        temperature: float = 0.7,
+        reasoning_config: ReasoningConfig | None = None,
+        tool_choice: str | None = None,
+    ) -> AssistantMessage:
+        """Return one fully assembled assistant response."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def stream(
+        self,
+        messages: Sequence[AgentMessage | dict],
+        model: str,
+        tools: Sequence[ToolSchema] | None = None,
+        temperature: float = 0.7,
+        reasoning_config: ReasoningConfig | None = None,
+        tool_choice: str | None = None,
+    ) -> AsyncIterator[AgentEvent]:
+        """Yield incremental agent events for one assistant response."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Stable provider identifier used in logs and routing."""
+        raise NotImplementedError
+
+    @property
+    def provider_id(self) -> ProviderId | None:
+        """Typed external provider id when this adapter maps to one provider."""
+        return None
+
+    def capabilities(self) -> ProviderCapabilities:
+        """Provider capability flags used for runtime behavior decisions."""
+        return ProviderCapabilities()
+
+    def resolve_generation_hint(self, model: str) -> tuple[str, str] | None:
+        """Best-effort `(provider, model)` hint for metadata before stream events arrive."""
+        if not isinstance(model, str) or not model.strip():
+            return None
+        return self.name, model.strip()

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinel-tui"
+version = "0.1.0"
+description = "Standalone Sentral terminal chat with machine-local tools"
+requires-python = ">=3.12"
+dependencies = ["sentral-runtime==0.1.0", "textual>=8.2.8,<9", "jsonschema>=4.23,<5"]
+
+[project.scripts]
+sentinel-tui = "sentinel_tui.__main__:main"
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.setuptools.packages.find]
+include = ["sentinel_tui*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.uv.sources]
+sentral-runtime = { path = "../../packages/sentral", editable = true }

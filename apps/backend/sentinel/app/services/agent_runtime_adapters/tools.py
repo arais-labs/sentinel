@@ -5,25 +5,18 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
 
-from app.sentral import (
+from sentral import (
     ToolDefinition as RuntimeToolDefinition,
     ToolExecutionResult,
     ToolRegistry as RuntimeToolRegistry,
 )
 from app.services.agent.agent_modes import AgentMode
 from app.services.agent.attachments import extract_attachments
-from app.services.agent_runtime_adapters.conversions import approval_payload_to_request
-from app.services.tools.approval.extractors import extract_approval_metadata_from_tool_result
-from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
+from sentral.llm.runtime_conversions import approval_payload_to_request
+from sentral.approval_payload import extract_approval_metadata_from_tool_result
+from sentral.errors import ToolValidationError
+from app.services.tools.executor import ToolExecutionError, ToolExecutor
 from app.services.tools.registry import ToolDefinition, ToolRegistry, ToolRuntimeContext
-
-try:
-    from app.services.secrets.resolver import resolve_secrets_in_payload
-except ModuleNotFoundError:  # pragma: no cover - optional until secrets module lands
-
-    async def resolve_secrets_in_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        return payload
-
 
 # Top-level keys stripped from tool results before they reach the model —
 # tools echo these for logging; the model already has them from turn scaffold.
@@ -71,9 +64,9 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
     def _wrap_tool(self, tool: ToolDefinition) -> RuntimeToolDefinition:
         async def _execute(payload: dict[str, Any]) -> ToolExecutionResult:
             pending_approval_payload: dict[str, Any] | None = None
-            execution_payload = await resolve_secrets_in_payload(dict(payload))
+            execution_payload = dict(payload)
             runtime = ToolRuntimeContext(
-                session_id=UUID(self._session_id) if self._session_id is not None else None,
+                session_id=(UUID(self._session_id) if self._session_id is not None else None),
                 runtime_session_id=(
                     UUID(self._runtime_session_id) if self._runtime_session_id is not None else None
                 ),
@@ -95,7 +88,12 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
                     agent_mode=self._agent_mode,
                     on_pending_approval=_on_pending_approval,
                 )
-            except (ToolExecutionError, ToolValidationError, PermissionError, KeyError) as exc:
+            except (
+                ToolExecutionError,
+                ToolValidationError,
+                PermissionError,
+                KeyError,
+            ) as exc:
                 approval_metadata = getattr(exc, "approval", None)
                 if not isinstance(approval_metadata, dict) and pending_approval_payload is not None:
                     approval_metadata = pending_approval_payload

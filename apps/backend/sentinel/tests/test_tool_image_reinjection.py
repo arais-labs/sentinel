@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from app.services.agent.tool_image_reinjection import (
+from sentral.llm.tool_images import (
     ToolImageReinjectionPolicy,
     build_tool_image_reinjection_messages,
 )
-from app.services.llm.generic.types import ImageContent, ToolResultMessage
+from sentral.llm.generic.types import ImageContent, ToolResultMessage
 
 PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s8bVgAAAABJRU5ErkJggg=="
