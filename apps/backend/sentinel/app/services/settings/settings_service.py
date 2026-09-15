@@ -12,7 +12,7 @@ import sentral.llm.claude_credentials as claude_credentials_module
 from app.config import Settings, settings
 from app.models.system import SystemSetting
 import sentral.llm.antigravity_credentials as antigravity_credentials_module
-from sentral.llm.codex_credentials import extract_codex_access_token
+from sentral.llm.codex_credentials import extract_codex_access_token, read_codex_access_token
 from sentral.llm.ids import ProviderChoice, parse_provider_choice
 from sentral.llm.providers.gemini_oauth import GeminiOAuthCredentials
 from app.services.settings.system_settings import (
@@ -25,6 +25,7 @@ from app.services.settings.system_settings import (
 class ProviderAuthStatus:
     configured: bool
     auth_method: str | None
+    auth_source: str | None
     masked_key: str | None
 
 
@@ -41,7 +42,7 @@ class DesktopCodexOauthStatus:
 
 
 @dataclass(frozen=True, slots=True)
-class DesktopOauthImportResult:
+class DesktopOauthConnectionResult:
     masked_key: str
 
 
@@ -49,10 +50,13 @@ class SettingsService:
     PERSISTED_SETTINGS: tuple[str, ...] = (
         "anthropic_api_key",
         "anthropic_oauth_token",
+        "anthropic_oauth_source",
         "openai_api_key",
         "openai_oauth_token",
+        "openai_oauth_source",
         "gemini_api_key",
         "gemini_oauth_credentials",
+        "gemini_oauth_source",
         "primary_provider",
         "default_system_prompt",
         "telegram_bot_token",
@@ -69,6 +73,7 @@ class SettingsService:
         for row in result.scalars().all():
             if hasattr(instance_settings, row.key):
                 setattr(instance_settings, row.key, row.value)
+        await self._hydrate_cli_oauth(instance_settings)
         return instance_settings
 
     async def set_api_keys(
@@ -113,8 +118,26 @@ class SettingsService:
             setting_key="gemini_oauth_credentials",
             value=normalized_gemini_oauth,
         )
+        await self._select_manual_source(
+            db,
+            provider="anthropic",
+            api_key=anthropic_api_key,
+            oauth_credential=anthropic_oauth_token,
+        )
+        await self._select_manual_source(
+            db,
+            provider="openai",
+            api_key=openai_api_key,
+            oauth_credential=openai_oauth_token,
+        )
+        await self._select_manual_source(
+            db,
+            provider="gemini",
+            api_key=gemini_api_key,
+            oauth_credential=normalized_gemini_oauth,
+        )
 
-    async def import_desktop_claude_oauth_token(self, db: AsyncSession) -> DesktopOauthImportResult:
+    async def connect_desktop_claude_oauth(self, db: AsyncSession) -> DesktopOauthConnectionResult:
 
         try:
             token = await claude_credentials_module.read_claude_access_token()
@@ -126,28 +149,28 @@ class SettingsService:
         if not token:
             raise HTTPException(
                 status_code=404,
-                detail="No Claude CLI login found. Run claude auth login, then import again.",
+                detail="No Claude CLI login found. Run claude auth login, then try again.",
             )
-        await upsert_system_setting(db, key="anthropic_oauth_token", value=token)
-        return DesktopOauthImportResult(masked_key=self._mask_secret(token) or "****")
+        await self._enable_cli_oauth(db, provider="anthropic")
+        return DesktopOauthConnectionResult(masked_key=self._mask_secret(token) or "****")
 
-    async def import_desktop_gemini_oauth_token(self, db: AsyncSession) -> DesktopOauthImportResult:
+    async def connect_desktop_gemini_oauth(self, db: AsyncSession) -> DesktopOauthConnectionResult:
 
         try:
             credentials = await antigravity_credentials_module.read_antigravity_credentials()
         except (OSError, ValueError, TimeoutError) as exc:
             raise HTTPException(
                 status_code=422,
-                detail="Could not import Antigravity OAuth. Sign in with agy on this Mac and retry, "
+                detail="Could not read Antigravity OAuth. Sign in with agy on this Mac and retry, "
                 "or paste an exported Antigravity OAuth credential bundle.",
             ) from exc
         if credentials is None:
             raise HTTPException(
                 status_code=404,
-                detail="No Antigravity login found. Run agy and sign in with Google, then import again.",
+                detail="No Antigravity login found. Run agy and sign in with Google, then try again.",
             )
-        await upsert_system_setting(db, key="gemini_oauth_credentials", value=credentials.as_json())
-        return DesktopOauthImportResult(masked_key=credentials.mask_secret() or "****")
+        await self._enable_cli_oauth(db, provider="gemini")
+        return DesktopOauthConnectionResult(masked_key=credentials.mask_secret() or "****")
 
     def get_desktop_codex_oauth_status(
         self, *, auth_path: Path | None = None
@@ -157,27 +180,28 @@ class SettingsService:
             auth_file_found=(auth_path or self._codex_auth_path()).is_file(),
         )
 
-    async def import_desktop_codex_oauth_token(
+    async def connect_desktop_codex_oauth(
         self,
         db: AsyncSession,
         *,
         auth_path: Path | None = None,
-    ) -> DesktopOauthImportResult:
+    ) -> DesktopOauthConnectionResult:
         path = auth_path or self._codex_auth_path()
         try:
-            raw = path.read_text(encoding="utf-8")
-        except FileNotFoundError as exc:
-            raise HTTPException(
-                status_code=404, detail="Codex auth file was not found at ~/.codex/auth.json."
-            ) from exc
+            token = await read_codex_access_token(path)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(
                 status_code=422, detail="Codex auth file could not be read."
             ) from exc
 
-        token = self._extract_codex_access_token(raw)
-        await upsert_system_setting(db, key="openai_oauth_token", value=token)
-        return DesktopOauthImportResult(masked_key=self._mask_secret(token) or "****")
+        if not token:
+            raise HTTPException(
+                status_code=404, detail="Codex auth file was not found at ~/.codex/auth.json."
+            )
+        await self._enable_cli_oauth(db, provider="openai")
+        return DesktopOauthConnectionResult(masked_key=self._mask_secret(token) or "****")
 
     def get_api_keys_status(self, instance_settings: Settings | None = None) -> ApiKeysStatus:
         settings_source = instance_settings or settings
@@ -187,6 +211,9 @@ class SettingsService:
         openai_oauth = settings_source.openai_oauth_token
         gemini_key = settings_source.gemini_api_key
         gemini_oauth = settings_source.gemini_oauth_credentials
+        anthropic_source = settings_source.anthropic_oauth_source
+        openai_source = settings_source.openai_oauth_source
+        gemini_source = settings_source.gemini_oauth_source
         primary_provider = (
             parse_provider_choice(settings_source.primary_provider) or ProviderChoice.ANTHROPIC
         )
@@ -197,19 +224,56 @@ class SettingsService:
                 ProviderChoice.ANTHROPIC: ProviderAuthStatus(
                     configured=bool(anthropic_key or anthropic_oauth),
                     auth_method=(
-                        "oauth" if anthropic_oauth else ("api_key" if anthropic_key else None)
+                        "oauth"
+                        if anthropic_oauth or anthropic_source == "cli"
+                        else ("api_key" if anthropic_key else None)
                     ),
-                    masked_key=self._mask_secret(anthropic_oauth or anthropic_key),
+                    auth_source=(
+                        (anthropic_source or "manual")
+                        if anthropic_oauth or anthropic_source == "cli"
+                        else None
+                    ),
+                    masked_key=(
+                        "Claude CLI · Auto-sync"
+                        if anthropic_source == "cli"
+                        else self._mask_secret(anthropic_oauth or anthropic_key)
+                    ),
                 ),
                 ProviderChoice.OPENAI: ProviderAuthStatus(
                     configured=bool(openai_key or openai_oauth),
-                    auth_method="oauth" if openai_oauth else ("api_key" if openai_key else None),
-                    masked_key=self._mask_secret(openai_oauth or openai_key),
+                    auth_method=(
+                        "oauth"
+                        if openai_oauth or openai_source == "cli"
+                        else ("api_key" if openai_key else None)
+                    ),
+                    auth_source=(
+                        (openai_source or "manual")
+                        if openai_oauth or openai_source == "cli"
+                        else None
+                    ),
+                    masked_key=(
+                        "Codex CLI · Auto-sync"
+                        if openai_source == "cli"
+                        else self._mask_secret(openai_oauth or openai_key)
+                    ),
                 ),
                 ProviderChoice.GEMINI: ProviderAuthStatus(
                     configured=bool(gemini_key or gemini_oauth),
-                    auth_method="oauth" if gemini_oauth else ("api_key" if gemini_key else None),
-                    masked_key=self._mask_gemini_secret(gemini_oauth or gemini_key),
+                    auth_method=(
+                        "oauth"
+                        if gemini_oauth or gemini_source == "cli"
+                        else ("api_key" if gemini_key else None)
+                    ),
+                    auth_source=(
+                        (gemini_source or "manual")
+                        if gemini_oauth or gemini_source == "cli"
+                        else None
+                    ),
+                    masked_key=(
+                        "Antigravity · Auto-sync"
+                        if gemini_source == "cli"
+                        else self._mask_gemini_secret(gemini_oauth or gemini_key)
+                    ),
                 ),
             },
         )
@@ -218,14 +282,62 @@ class SettingsService:
         if provider == ProviderChoice.ANTHROPIC:
             await delete_system_setting(db, key="anthropic_api_key")
             await delete_system_setting(db, key="anthropic_oauth_token")
+            await delete_system_setting(db, key="anthropic_oauth_source")
             return
         if provider == ProviderChoice.OPENAI:
             await delete_system_setting(db, key="openai_api_key")
             await delete_system_setting(db, key="openai_oauth_token")
+            await delete_system_setting(db, key="openai_oauth_source")
             return
         if provider == ProviderChoice.GEMINI:
             await delete_system_setting(db, key="gemini_api_key")
             await delete_system_setting(db, key="gemini_oauth_credentials")
+            await delete_system_setting(db, key="gemini_oauth_source")
+
+    async def _hydrate_cli_oauth(self, instance_settings: Settings) -> None:
+        if instance_settings.anthropic_oauth_source == "cli":
+            try:
+                instance_settings.anthropic_oauth_token = (
+                    await claude_credentials_module.read_claude_access_token()
+                )
+            except (OSError, ValueError, TimeoutError):
+                instance_settings.anthropic_oauth_token = None
+        if instance_settings.openai_oauth_source == "cli":
+            try:
+                instance_settings.openai_oauth_token = await read_codex_access_token()
+            except (OSError, ValueError, TimeoutError):
+                instance_settings.openai_oauth_token = None
+        if instance_settings.gemini_oauth_source == "cli":
+            try:
+                credentials = await antigravity_credentials_module.read_antigravity_credentials()
+                instance_settings.gemini_oauth_credentials = (
+                    credentials.as_json() if credentials is not None else None
+                )
+            except (OSError, ValueError, TimeoutError):
+                instance_settings.gemini_oauth_credentials = None
+
+    @staticmethod
+    async def _enable_cli_oauth(db: AsyncSession, *, provider: str) -> None:
+        await upsert_system_setting(db, key=f"{provider}_oauth_source", value="cli")
+        await delete_system_setting(db, key=f"{provider}_api_key")
+
+    @staticmethod
+    async def _select_manual_source(
+        db: AsyncSession,
+        *,
+        provider: str,
+        api_key: str | None,
+        oauth_credential: str | None,
+    ) -> None:
+        if SettingsService._strip_or_none(oauth_credential) is not None:
+            await upsert_system_setting(db, key=f"{provider}_oauth_source", value="manual")
+            await delete_system_setting(db, key=f"{provider}_api_key")
+        elif SettingsService._strip_or_none(api_key) is not None:
+            await delete_system_setting(db, key=f"{provider}_oauth_source")
+            oauth_key = (
+                "gemini_oauth_credentials" if provider == "gemini" else f"{provider}_oauth_token"
+            )
+            await delete_system_setting(db, key=oauth_key)
 
     async def set_primary_provider(
         self,

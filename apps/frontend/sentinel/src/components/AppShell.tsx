@@ -49,6 +49,8 @@ interface NavItem {
   icon: typeof MessagesSquare;
 }
 
+type NavIndicatorCallback = (item: NavItem) => boolean;
+
 const navItems: NavItem[] = [
   { label: 'Chat', route: 'sessions', icon: MessagesSquare },
   { label: 'Desktop', route: 'desktop', icon: Globe },
@@ -92,6 +94,7 @@ export function AppShell({
   const toggleTheme = useThemeStore((state) => state.toggleTheme);
   const openTab = useWorkspaceStore((state) => state.openTab);
   const openTabIds = useOpenTabIds();
+  const activeWorkspaceTabId = useWorkspaceStore((state) => state.activeTabId);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const navigationDialog = useRef<HTMLDivElement>(null);
@@ -151,7 +154,15 @@ export function AppShell({
     onNavigate?.();
   };
 
-  const renderNav = (items: NavItem[], onNavigate?: () => void, expanded = isSidebarExpanded) => (
+  const focusedPaneIndicator: NavIndicatorCallback = (item) =>
+    launcherMode && item.route === activeWorkspaceTabId;
+
+  const renderNav = (
+    items: NavItem[],
+    onNavigate?: () => void,
+    expanded = isSidebarExpanded,
+    showIndicator?: NavIndicatorCallback,
+  ) => (
     <nav className="flex-1 overflow-y-auto overflow-x-hidden py-4 px-2 space-y-1">
       {items.map((item) => {
         const itemPath = instanceRouteFromPath(location.pathname, item.route);
@@ -192,6 +203,7 @@ export function AppShell({
             <span className={`transition-opacity duration-200 whitespace-nowrap ${expanded ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
               {item.label}
             </span>
+            {showIndicator?.(item) && <span className="navigation-menu-indicator" aria-hidden="true" />}
           </button>
         );
       })}
@@ -244,7 +256,7 @@ export function AppShell({
         <div className="desktop-navigation-scroll">
           {hasInstanceScope && navigationGroups.map(group => <section className="navigation-menu-section" key={group.label} aria-label={group.label} style={{ flexGrow: navItems.filter(item => group.routes.includes(item.route)).length }}>
             <h2>{group.label}</h2>
-            {renderNav(navItems.filter(item => group.routes.includes(item.route)))}
+            {renderNav(navItems.filter(item => group.routes.includes(item.route)), undefined, isSidebarExpanded, focusedPaneIndicator)}
           </section>)}
         </div>
 
@@ -312,7 +324,7 @@ export function AppShell({
             <div className="navigation-menu-scroll">
               {hasInstanceScope && navigationGroups.map(group => <section className="navigation-menu-section" key={group.label} aria-label={group.label} style={{ flexGrow: navItems.filter(item => group.routes.includes(item.route)).length }}>
                 <h2>{group.label}</h2>
-                {renderNav(navItems.filter(item => group.routes.includes(item.route)), () => setIsMobileMenuOpen(false), true)}
+                {renderNav(navItems.filter(item => group.routes.includes(item.route)), () => setIsMobileMenuOpen(false), true, focusedPaneIndicator)}
               </section>)}
             </div>
             <footer className="navigation-menu-footer">

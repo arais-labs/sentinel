@@ -1,0 +1,9 @@
+.sub-agent-overlay {
+  top: var(--desktop-titlebar-height, 0px);
+}
+
+.sub-agent-overlay button:focus-visible,
+.sub-agent-overlay summary:focus-visible {
+  outline: 2px solid var(--sentinel-blue);
+  outline-offset: 3px;
+}

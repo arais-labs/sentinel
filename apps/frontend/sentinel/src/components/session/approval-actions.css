@@ -4,13 +4,13 @@
 .session-approval-actions .session-approval-allow { color: var(--sentinel-blue); border-color: color-mix(in srgb, var(--sentinel-blue) 35%, transparent); background: color-mix(in srgb, var(--sentinel-blue) 8%, var(--surface-0)); }
 .session-approval-actions button:disabled { opacity: .45; cursor: default; }
 .session-approval-actions button:focus-visible { outline: 2px solid var(--sentinel-blue); outline-offset: 2px; }
-.session-permissions { padding: 12px 14px; }
-.session-permissions h3 { margin: 0 0 8px; font-size: 11px; font-weight: 600; color: var(--text-primary); }
-.session-permissions p { margin: 5px 0; font-size: 11px; color: var(--text-secondary); }
+.session-permissions { padding: 0; }
+.session-permissions-body { padding: 0 14px 14px; }
+.session-permissions p { margin: 5px 0 12px; line-height: 1.5; font-size: 11px; color: var(--text-secondary); }
 .session-permissions ul { margin: 0; padding: 0; list-style: none; }
-.session-permissions li { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+.session-permissions li { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
 .session-permissions code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 11px; color: var(--text-secondary); }
-.session-permissions button { border: 1px solid var(--border-subtle); border-radius: 999px; padding: 4px 8px; background: var(--surface-1); color: var(--text-secondary); font-size: 10px; cursor: pointer; }
-.session-permissions button:hover { color: var(--text-primary); background: var(--surface-2); }
-.session-permissions button:disabled { opacity: .45; cursor: default; }
-.session-permissions button:focus-visible { outline: 2px solid var(--sentinel-blue); outline-offset: 2px; }
+.session-permissions-body button { flex-shrink: 0; min-height: 28px; border: 1px solid var(--border-subtle); border-radius: 999px; padding: 4px 12px; background: var(--surface-1); color: var(--text-secondary); font-size: 10px; cursor: pointer; }
+.session-permissions-body button:hover { color: var(--text-primary); background: var(--surface-2); }
+.session-permissions-body button:disabled { opacity: .45; cursor: default; }
+.session-permissions-body button:focus-visible { outline: 2px solid var(--sentinel-blue); outline-offset: 2px; }

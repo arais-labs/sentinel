@@ -74,6 +74,7 @@ async def get_api_keys_status(
         provider.value: {
             "configured": item.configured,
             "auth_method": item.auth_method,
+            "auth_source": item.auth_source,
             "masked_key": item.masked_key,
         }
         for provider, item in status.providers.items()
@@ -95,35 +96,35 @@ async def get_desktop_codex_oauth_status(
     }
 
 
-@router.post("/desktop-codex-oauth/import")
-async def import_desktop_codex_oauth(
+@router.post("/desktop-codex-oauth/connect")
+async def connect_desktop_codex_oauth(
     request: Request,
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict[str, str | bool]:
-    result = await settings_service.import_desktop_codex_oauth_token(db)
+    result = await settings_service.connect_desktop_codex_oauth(db)
     await _rebuild_current_instance_runtime_context(request)
     return {"success": True, "masked_key": result.masked_key}
 
 
-@router.post("/desktop-claude-oauth/import")
-async def import_desktop_claude_oauth(
+@router.post("/desktop-claude-oauth/connect")
+async def connect_desktop_claude_oauth(
     request: Request,
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict[str, str | bool]:
-    result = await settings_service.import_desktop_claude_oauth_token(db)
+    result = await settings_service.connect_desktop_claude_oauth(db)
     await _rebuild_current_instance_runtime_context(request)
     return {"success": True, "masked_key": result.masked_key}
 
 
-@router.post("/desktop-gemini-oauth/import")
-async def import_desktop_gemini_oauth(
+@router.post("/desktop-gemini-oauth/connect")
+async def connect_desktop_gemini_oauth(
     request: Request,
     db: AsyncSession = Depends(get_db),
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> dict[str, str | bool]:
-    result = await settings_service.import_desktop_gemini_oauth_token(db)
+    result = await settings_service.connect_desktop_gemini_oauth(db)
     await _rebuild_current_instance_runtime_context(request)
     return {"success": True, "masked_key": result.masked_key}
 

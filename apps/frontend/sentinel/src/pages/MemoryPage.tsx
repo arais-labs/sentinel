@@ -65,8 +65,8 @@ const TreeRow = memo(({ entry, depth, isExpanded, isSelected, isLoading, hasChil
           if (hasChildren) onToggle(entry);
         }
       }}
-      className={`memory-tree-row group flex items-center gap-1 py-1 px-2 rounded-md transition-colors cursor-pointer ${
-        isSelected ? 'bg-(--surface-accent) text-(--text-primary)' : 'hover:bg-(--surface-1) text-(--text-secondary)'
+      className={`menu-selection-item memory-tree-row group flex items-center gap-1 py-1 px-2 transition-colors cursor-pointer ${
+        isSelected ? 'text-(--text-primary)' : 'hover:bg-(--surface-1) text-(--text-secondary)'
       }`}
       style={{ marginLeft: `${depth * 12}px` }}
       onClick={() => {

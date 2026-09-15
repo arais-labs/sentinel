@@ -25,6 +25,18 @@
 .project-sidebar-content { overflow:auto; flex:1; padding:4px 0 12px; min-height:0; }
 .project-root-label { padding:5px 12px 7px; font-size:11px; font-weight:600; color:var(--text-secondary); text-overflow:ellipsis; overflow:hidden; white-space:nowrap; }
 .project-tree-row { display:flex; align-items:center; gap:6px; height:26px; width:100%; padding-right:10px; text-align:left; color:var(--text-secondary); }
+.project-tree-item { position: relative; }
+.project-row-menu-button { position:absolute; right:6px; top:3px; display:flex; align-items:center; justify-content:center; width:22px; height:20px; border:0; border-radius:6px; color:var(--text-muted); background:transparent; opacity:.7; cursor:pointer; }
+.project-tree-item:hover .project-row-menu-button, .project-row-menu-button:focus-visible { opacity:1; }
+.project-row-menu-button:hover { color:var(--text-primary); background:var(--surface-3); }
+.project-file-menu { z-index:10050; min-width:142px; padding:4px; border:1px solid #ffffff0c; border-radius:9px; background:#111215; color:var(--text-primary); box-shadow:4px 8px 20px #00000055,inset 0 1px 0 #ffffff08; }
+.project-file-menu button { display:flex; align-items:center; gap:8px; width:100%; padding:7px 8px; border:0; border-radius:6px; color:var(--text-secondary); background:transparent; text-align:left; font-size:11px; cursor:pointer; }
+.project-file-menu button:hover { color:var(--text-primary); background:#ffffff08; }
+.project-file-menu button svg { flex-shrink:0; color:var(--sentinel-blue); }
+.project-file-menu button[data-danger] { color:#ff9aa6; }
+.project-file-menu button[data-danger]:hover { background:#ff9aa60d; }
+.project-file-menu button[data-danger] svg { color:#ff9aa6; }
+html:not(.dark) .project-file-menu { background:#fff; border-color:#e2e6ed; box-shadow:3px 7px 18px #182b4526,inset 0 1px 0 #fff; }
 .project-tree-row:hover,.project-change-row:hover,.project-search-result:hover { background:var(--surface-2); color:var(--text-primary); }
 .project-tree-row.selected { background:color-mix(in srgb,#62b5dc 12%,transparent); color:var(--text-primary); }
 .project-tree-row svg { flex-shrink:0; }

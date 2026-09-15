@@ -69,11 +69,11 @@ async def test_settings_mutations_rebuild_current_instance_context(
 
 
 @pytest.mark.asyncio
-async def test_claude_import_rebuilds_runtime_and_returns_mask_only(monkeypatch):
+async def test_claude_connection_rebuilds_runtime_and_returns_mask_only(monkeypatch):
     calls = []
 
     class Service:
-        async def import_desktop_claude_oauth_token(self, db):
+        async def connect_desktop_claude_oauth(self, db):
             calls.append("import")
             return SimpleNamespace(masked_key="sk-a...test")
 
@@ -81,7 +81,7 @@ async def test_claude_import_rebuilds_runtime_and_returns_mask_only(monkeypatch)
         calls.append("rebuild")
 
     monkeypatch.setattr(settings_router, "_rebuild_current_instance_runtime_context", rebuild)
-    result = await settings_router.import_desktop_claude_oauth(
+    result = await settings_router.connect_desktop_claude_oauth(
         SimpleNamespace(), object(), Service()
     )
     assert result == {"success": True, "masked_key": "sk-a...test"}
@@ -89,11 +89,11 @@ async def test_claude_import_rebuilds_runtime_and_returns_mask_only(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_gemini_import_rebuilds_runtime_and_returns_mask_only(monkeypatch):
+async def test_gemini_connection_rebuilds_runtime_and_returns_mask_only(monkeypatch):
     calls = []
 
     class Service:
-        async def import_desktop_gemini_oauth_token(self, db):
+        async def connect_desktop_gemini_oauth(self, db):
             calls.append("import")
             return SimpleNamespace(masked_key="refr...oken")
 
@@ -101,7 +101,7 @@ async def test_gemini_import_rebuilds_runtime_and_returns_mask_only(monkeypatch)
         calls.append("rebuild")
 
     monkeypatch.setattr(settings_router, "_rebuild_current_instance_runtime_context", rebuild)
-    result = await settings_router.import_desktop_gemini_oauth(
+    result = await settings_router.connect_desktop_gemini_oauth(
         SimpleNamespace(), object(), Service()
     )
     assert result == {"success": True, "masked_key": "refr...oken"}

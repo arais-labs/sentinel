@@ -1101,6 +1101,7 @@ export const SessionMessageCard = memo(({
   const showRetry = isUser && Boolean(onRetryMessage) && Boolean(retryError);
   const notice = messageNotice(message);
   if (notice) return <SessionNotice message={message} notice={notice} />;
+  if (message.role === 'assistant' && !renderedAssistantContent?.trim()) return null;
 
   return (
     <div className={`flex w-full flex-col gap-1 animate-in ${isUser ? 'items-end' : 'items-start'}`}>

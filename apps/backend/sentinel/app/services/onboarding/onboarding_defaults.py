@@ -65,8 +65,21 @@ def build_agent_identity_memory(
     return "\n".join(parts)
 
 
+def build_user_profile_memory(
+    *,
+    user_name: str | None = None,
+    user_context: str | None = None,
+) -> str:
+    name = _trim(user_name)
+    context = _trim(user_context)
+    parts = [
+        f"The user's name is {name}." if name else "The user's name is not known yet.",
+        context or "The user's detailed profile is not known yet.",
+        DEFAULT_USER_PROFILE_HINT,
+    ]
+    return "\n\n".join(parts)
+
+
 DEFAULT_SYSTEM_PROMPT = build_system_prompt()
 DEFAULT_AGENT_IDENTITY_MEMORY = build_agent_identity_memory()
-DEFAULT_USER_PROFILE_MEMORY = (
-    "The user's name and detailed profile are not known yet.\n\n" f"{DEFAULT_USER_PROFILE_HINT}"
-)
+DEFAULT_USER_PROFILE_MEMORY = build_user_profile_memory()

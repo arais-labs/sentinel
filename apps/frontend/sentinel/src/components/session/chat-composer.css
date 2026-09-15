@@ -127,30 +127,63 @@ html:not(.dark) .focus-chat-surface .tool-card-toolbar { background: #e9edf466; 
 
 html.dark .focus-chat-surface { background: #0c0c0e; }
 
-/* Chat typography: live preferences shared by saved and streaming messages. */
+/* Chat typography: live preferences shared by every conversation card. */
+.focus-chat-surface {
+  font-family: var(--app-font-family, inherit);
+  font-size: var(--app-font-size, 14px);
+  line-height: var(--app-line-height, 1.65);
+  font-weight: var(--app-font-weight, 450);
+}
+.focus-chat-surface :is(.chat-message-surface, .sentinel-tool-card, .agent-form, .session-thinking) { font-family: var(--app-font-family, inherit); font-weight: var(--app-font-weight, 450); }
+.focus-chat-surface .chat-message-surface { font-size: var(--app-font-size, 14px); line-height: var(--app-line-height, 1.65); }
+.focus-chat-surface .sentinel-tool-card { font-size: var(--app-font-size, 14px); line-height: var(--app-line-height, 1.65); }
+.focus-chat-surface .tool-card-subject,
+.focus-chat-surface .tool-card-stream-preview { font-family: inherit; font-size: calc(var(--app-font-size, 14px) * .93); line-height: var(--app-line-height, 1.65); font-weight: var(--app-font-tool-weight, 400); }
+.focus-chat-surface .tool-card-status-detail p,
+.focus-chat-surface .tool-card-payload { font-family: inherit; font-size: var(--app-font-secondary-size, 12px); line-height: var(--app-line-height, 1.65); font-weight: var(--app-font-tool-weight, 400); }
+.focus-chat-surface .tool-card-payload pre { font-size: var(--app-font-code-size, 11.2px); line-height: var(--app-line-height, 1.65); }
+.focus-chat-surface .tool-card-action,
+.focus-chat-surface .tool-card-detail,
+.focus-chat-surface .tool-card-views button,
+.focus-chat-surface .tool-card-copy,
+.focus-chat-surface .tool-card-image-copy > button { font-family: inherit; font-size: var(--app-font-small-size, 11px); line-height: var(--app-line-height, 1.65); }
+.focus-chat-surface .tool-card-name,
+.focus-chat-surface .tool-card-status-label,
+.focus-chat-surface .tool-card-inspect,
+.focus-chat-surface .tool-card-token-rate { font-size: var(--app-font-meta-size, 10px); line-height: var(--app-line-height, 1.65); }
+.focus-chat-surface .tool-card-action,
+.focus-chat-surface .tool-card-detail { font-family: inherit; line-height: var(--app-line-height, 1.65); font-weight: var(--app-font-tool-weight, 400); }
+.focus-chat-surface .agent-form { font-size: var(--app-font-size, 14px); line-height: var(--app-line-height, 1.65); }
+.focus-chat-surface .agent-form :is(p, label, input, textarea, button, select) { font-family: inherit; font-weight: var(--app-font-weight, 450); }
+.focus-chat-surface .agent-form :is(p, li, label, textarea, .agent-form-review-text),
+.focus-chat-surface .session-permissions :is(p, code),
+.focus-chat-surface .session-approval-actions { line-height: var(--app-line-height, 1.65); }
+.focus-chat-surface .session-approval-actions button,
+.focus-chat-surface .session-permissions { font-family: inherit; font-size: var(--app-font-small-size, 11px); }
+.focus-chat-surface .session-thinking { font-size: var(--app-font-secondary-size, 12px); }
 .chat-message-assistant .markdown-body {
-  font-size: var(--chat-font-size, 14px);
-  line-height: var(--chat-line-height, 1.65);
-  font-family: var(--chat-font-family, inherit);
-  font-weight: 400;
+  font-size: var(--app-font-size, 14px);
+  line-height: var(--app-line-height, 1.65);
+  font-family: var(--app-font-family, inherit);
+  font-weight: var(--app-font-agent-weight, 450);
   letter-spacing: normal;
 }
 .chat-message-assistant .markdown-body p,
 .chat-message-assistant .markdown-body ul,
 .chat-message-assistant .markdown-body ol { margin: 10px 0; }
 .chat-message-assistant .markdown-body li { margin: 4px 0; }
-.chat-message-assistant .markdown-body strong { font-weight: 600; }
+.chat-message-surface .markdown-body strong { font-weight: var(--app-font-strong-weight, 650); }
 .chat-message-assistant .markdown-body h1,
 .chat-message-assistant .markdown-body h2,
 .chat-message-assistant .markdown-body h3,
 .chat-message-assistant .markdown-body h4 {
-  font-size: var(--chat-font-size, 14px);
-  line-height: 1.5;
-  font-weight: 600;
+  font-size: var(--app-font-size, 14px);
+  line-height: var(--app-line-height, 1.65);
+  font-weight: var(--app-font-strong-weight, 650);
   margin: 17px 0 7px;
 }
 .chat-message-assistant .markdown-body :not(pre) > code {
-  font-size: calc(var(--chat-font-size, 14px) * .88);
+  font-size: calc(var(--app-font-size, 14px) * .88);
   padding: 1px 7px;
   border: 1px solid color-mix(in srgb, var(--text-primary) 12%, transparent);
   border-radius: 999px;
@@ -164,11 +197,13 @@ html.dark .focus-chat-surface { background: #0c0c0e; }
 
 .focus-chat-surface .markdown-body li::marker { color: inherit; }
 .chat-message-user .markdown-body, .chat-composer-input {
-  font-size: var(--chat-font-size, 14px);
-  line-height: var(--chat-line-height, 1.65);
-  font-family: var(--chat-font-family, inherit);
+  font-size: var(--app-font-size, 14px);
+  line-height: var(--app-line-height, 1.65);
+  font-family: var(--app-font-family, inherit);
+  font-weight: var(--app-font-weight, 450);
 }
-.chat-message-user .markdown-body :not(pre) > code { font-size: calc(var(--chat-font-size, 14px) * .88); }
+.focus-chat-surface .chat-message-surface .markdown-body :is(p, ul, ol, li, blockquote, table, th, td) { line-height: var(--app-line-height, 1.65); }
+.chat-message-user .markdown-body :not(pre) > code { font-size: calc(var(--app-font-size, 14px) * .88); }
 
 .chat-message-surface .markdown-body p,
 .chat-message-surface .markdown-body li {
@@ -202,7 +237,7 @@ html.dark .focus-chat-surface { background: #0c0c0e; }
   --composer-side-inset: var(--chat-column-gutter);
 }
 .focus-chat-surface .chat-message-assistant {
-  font-size: var(--chat-font-size, 14px);
+  font-size: var(--app-font-size, 14px);
   max-width: min(100%, 85ch);
 }
 .focus-chat-surface .chat-message-assistant:has(.markdown-pre-shell, .markdown-table-wrap) { max-width: 100%; }
@@ -226,14 +261,14 @@ html.dark .focus-chat-surface { background: #0c0c0e; }
 .chat-message-surface .markdown-body td {
   padding: 9px 18px;
   font-size: .95em;
-  line-height: 1.5;
+  line-height: var(--app-line-height, 1.65);
   border-bottom: 1px solid var(--border-subtle);
 }
 .chat-message-surface .markdown-body th:first-child,
 .chat-message-surface .markdown-body td:first-child { padding-left: 0; }
 .chat-message-surface .markdown-body th:last-child,
 .chat-message-surface .markdown-body td:last-child { padding-right: 0; }
-.chat-message-surface .markdown-body thead th { background: transparent; font-weight: 500; color: var(--text-secondary); }
+.chat-message-surface .markdown-body thead th { background: transparent; font-weight: var(--app-font-strong-weight, 650); color: var(--text-secondary); }
 .chat-message-surface .markdown-body tbody tr:nth-child(even) { background: transparent; }
 .chat-message-surface .markdown-body tbody tr:last-child td { border-bottom: 0; }
 
@@ -241,8 +276,5 @@ html.dark .chat-message-assistant .markdown-body {
   --text-primary: #ffffff;
   color: var(--text-primary);
 }
-
-/* Reversible agent-text weight trial: remove this rule to restore 400. */
-html.dark .chat-message-assistant .markdown-body { font-weight: 450; }
 
 .focus-chat-surface .session-chat-messages { min-width:0; min-height:0; overflow-x:hidden; }

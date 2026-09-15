@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, File, Folder, FolderOpen, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Folder, FolderOpen, Loader2, MoreVertical } from 'lucide-react';
 import { gitFileStatus, gitStatusLabel } from './gitStatus';
 import type { Change, FileEntry } from './types';
 
-export function ProjectTree({ entries, root, expanded, onExpanded, load, open, selected, changes, revision, hidden, uploadTarget }: {
+export function ProjectTree({ entries, root, expanded, onExpanded, load, open, selected, changes, revision, hidden, uploadTarget, onMenu }: {
   entries: FileEntry[]; root: string; expanded: string[]; onExpanded: (paths: string[]) => void;
   load: (path: string) => Promise<FileEntry[]>; open: (path: string) => void; selected: string | null;
   changes: Change[]; revision: number; hidden: boolean;
-  uploadTarget?: string | null;
+  uploadTarget?: string | null; onMenu?: (path: string, kind: FileEntry['kind'], button: HTMLElement) => void;
 }) {
   const [cache, setCache] = useState<Record<string, FileEntry[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
@@ -42,8 +42,8 @@ export function ProjectTree({ entries, root, expanded, onExpanded, load, open, s
       const change = changes.find(item => item.path === entry.path);
       const dirty = folder && changes.some(item => item.path.startsWith(`${entry.path}/`));
       const status = gitFileStatus(change);
-      return <div key={entry.path} role="none">
-        <button role="treeitem" aria-expanded={folder ? isOpen : undefined} aria-selected={selected === entry.path}
+      return <div key={entry.path} role="none" className="project-tree-item">
+        <button draggable data-file-path={entry.path} data-file-kind={entry.kind} role="treeitem" aria-expanded={folder ? isOpen : undefined} aria-selected={selected === entry.path}
           data-upload-directory={folder ? entry.path : undefined} data-upload-target={folder && uploadTarget === entry.path || undefined}
           className={`project-tree-row${selected === entry.path ? ' selected' : ''}`} title={`${entry.path}${change ? ` · ${gitStatusLabel(change)}` : ''}`} aria-label={`${entry.name}${change ? `, ${gitStatusLabel(change)}` : ''}`}
           style={{ paddingLeft: 16 + depth * 12 }}
@@ -60,6 +60,7 @@ export function ProjectTree({ entries, root, expanded, onExpanded, load, open, s
           {folder ? isOpen ? <FolderOpen size={14} /> : <Folder size={14} /> : <File size={13} />}
           <span className="project-tree-name" data-git-status={status ?? (dirty ? 'descendants' : undefined)}>{entry.name}</span>
         </button>
+        <button type="button" className="project-row-menu-button" aria-label={`Actions for ${entry.name}`} title={`Actions for ${entry.name}`} onClick={event => { event.stopPropagation(); onMenu?.(entry.path, entry.kind, event.currentTarget); }}><MoreVertical size={14} /></button>
         {folder && isOpen && <div role="group">
           {errors[entry.path] ? <p className="project-inline-error">{errors[entry.path]}</p> : cache[entry.path] ? visible(cache[entry.path]).length ? render(cache[entry.path], depth + 1) : <p className="project-tree-empty" style={{ paddingLeft: 42 + depth * 12 }}>Empty folder</p> : null}
         </div>}

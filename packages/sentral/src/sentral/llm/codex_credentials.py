@@ -1,7 +1,12 @@
 """Read Codex CLI OAuth credentials without changing its store."""
 
+import asyncio
 import json
+from pathlib import Path
 from typing import Any
+
+_cached_auth: tuple[Path, int, int, int, int, str] | None = None
+_cache_lock = asyncio.Lock()
 
 
 def _strip_or_none(value):
@@ -21,6 +26,37 @@ def extract_codex_access_token(raw: str) -> str:
     if token is None:
         raise ValueError("Codex auth file does not contain an access_token.")
     return token
+
+
+async def read_codex_access_token(auth_path: Path | None = None) -> str | None:
+    """Read the current Codex token, reparsing only when the auth file changes."""
+    path = (auth_path or Path.home() / ".codex" / "auth.json").expanduser()
+    async with _cache_lock:
+        try:
+            stat = await asyncio.to_thread(path.stat)
+        except FileNotFoundError:
+            return None
+        global _cached_auth
+        if (
+            _cached_auth is not None
+            and _cached_auth[0] == path
+            and _cached_auth[1] == stat.st_mtime_ns
+            and _cached_auth[2] == stat.st_ctime_ns
+            and _cached_auth[3] == stat.st_ino
+            and _cached_auth[4] == stat.st_size
+        ):
+            return _cached_auth[5]
+        raw = await asyncio.to_thread(path.read_text, encoding="utf-8")
+        token = extract_codex_access_token(raw)
+        _cached_auth = (
+            path,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+            stat.st_ino,
+            stat.st_size,
+            token,
+        )
+        return token
 
 
 def _find_codex_access_token(payload: dict[str, Any]) -> str | None:

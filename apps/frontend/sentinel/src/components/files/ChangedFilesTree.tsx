@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, File, Folder, FolderOpen } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Folder, FolderOpen, MoreVertical } from 'lucide-react';
 import { buildChangeTree, changeMode, type ChangeNode } from './changeTree';
 import { gitFileStatus, gitStatusLabel } from './gitStatus';
 import type { Change, FileTab } from './types';
 
-export function ChangedFilesTree({ changes, root, query, selected, open }: {
+export function ChangedFilesTree({ changes, root, query, selected, open, onMenu }: {
   changes: Change[]; root: string; query: string; selected: string | null; open: (path: string, mode: FileTab['mode']) => void;
+  onMenu?: (path: string, kind: 'file' | 'directory', button: HTMLElement) => void;
 }) {
   const nodes = useMemo(() => buildChangeTree(changes, root, query), [changes, root, query]);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -18,8 +19,8 @@ export function ChangedFilesTree({ changes, root, query, selected, open }: {
       const expanded = !collapsed.has(node.path);
       const status = gitFileStatus(change);
       const state = change ? change.conflicted ? 'Conflict' : change.untracked ? 'Unversioned' : change.staged && change.unstaged ? 'Staged and unstaged' : change.staged ? 'Staged' : 'Unstaged' : `${node.count} changed files`;
-      return <div key={node.path} role="none">
-        <button role="treeitem" aria-expanded={!change ? expanded : undefined} aria-selected={selected === node.path} aria-label={`${node.name}, ${gitStatusLabel(change)}, ${state}`}
+      return <div key={node.path} role="none" className="project-tree-item">
+        <button draggable={Boolean(change)} data-file-path={change?.path} role="treeitem" aria-expanded={!change ? expanded : undefined} aria-selected={selected === node.path} aria-label={`${node.name}, ${gitStatusLabel(change)}, ${state}`}
           className={`project-tree-row${selected === node.path ? ' selected' : ''}`} style={{ paddingLeft: 8 + depth * 12 }}
           title={`${change?.original_path ? `${change.original_path} → ` : ''}${node.path}\n${gitStatusLabel(change)} · ${state}`}
           onClick={() => change ? open(change.path, changeMode(change)) : toggle(node.path)}
@@ -36,6 +37,7 @@ export function ChangedFilesTree({ changes, root, query, selected, open }: {
           <span className="project-tree-name" data-git-status={status ?? 'descendants'}>{node.name}</span>
           {change ? <span className="project-change-state">{change.conflicted || change.untracked ? '' : change.staged && change.unstaged ? 'Partial' : change.staged ? 'Staged' : ''}</span> : <span className="project-folder-count">{node.count}</span>}
         </button>
+        <button type="button" className="project-row-menu-button" aria-label={`Actions for ${node.name}`} title={`Actions for ${node.name}`} onClick={event => { event.stopPropagation(); onMenu?.(node.path, change ? 'file' : 'directory', event.currentTarget); }}><MoreVertical size={14} /></button>
         {!change && expanded && <div role="group">{render(node.children, depth + 1)}</div>}
       </div>;
     });

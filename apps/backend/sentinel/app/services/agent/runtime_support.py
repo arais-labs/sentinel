@@ -325,7 +325,11 @@ class SentinelRuntimeSupport:
                         {
                             "id": block.id,
                             "name": block.name,
-                            "arguments": self._sanitize_tool_call_arguments(block.arguments),
+                            "arguments": (
+                                deepcopy(block.arguments)
+                                if block.name == "form"
+                                else self._sanitize_tool_call_arguments(block.arguments)
+                            ),
                             "thought_signature": block.thought_signature,
                         }
                     )
@@ -376,9 +380,14 @@ class SentinelRuntimeSupport:
                     metadata,
                     generation=latest_assistant_generation or requested_generation,
                 )
-                stored_content, truncation_meta = self._truncate_tool_result_for_storage(
-                    message.content or ""
-                )
+                # Forms are persisted UI state used to render questions and validate
+                # answers after reload, not a disposable tool-output preview.
+                if message.tool_name == "form" and not message.is_error:
+                    stored_content, truncation_meta = message.content or "", {}
+                else:
+                    stored_content, truncation_meta = self._truncate_tool_result_for_storage(
+                        message.content or ""
+                    )
                 if truncation_meta:
                     metadata.update(truncation_meta)
                 existing_record = None
