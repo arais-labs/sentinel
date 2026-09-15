@@ -68,3 +68,8 @@ tmp/
 .idea/
 .vscode/
 /.tmp/
+
+# Isolated Electron development data
+.desktop-dev/
+
+apps/desktop/sentinel/.test-dist/

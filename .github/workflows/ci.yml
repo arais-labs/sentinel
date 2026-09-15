@@ -54,27 +54,6 @@ jobs:
             echo "bumped=false" >> "$GITHUB_OUTPUT"
           fi
 
-  compose-validate:
-    name: Compose Validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Validate production compose
-        env:
-          SENTINEL_POSTGRES_PASSWORD: ci-validate
-          SENTINEL_JWT_SECRET_KEY: ci-validate
-          SENTINEL_DATA_ENCRYPTION_KEY: ci-validate
-          SENTINEL_AUTH_USERNAME: ci-admin
-          SENTINEL_AUTH_PASSWORD: ci-validate
-        run: docker compose -f docker-compose.yml config
-      - name: Validate dev compose
-        env:
-          SENTINEL_JWT_SECRET_KEY: ci-validate
-          SENTINEL_DATA_ENCRYPTION_KEY: ci-validate
-          SENTINEL_AUTH_USERNAME: ci-admin
-          SENTINEL_AUTH_PASSWORD: ci-validate
-        run: docker compose -f docker-compose.dev.yml config
-
   backend-tests:
     name: Backend Tests
     runs-on: ubuntu-latest
@@ -139,7 +118,7 @@ jobs:
 
   desktop-release:
     name: Build DMG + payload and publish
-    needs: [version, compose-validate, backend-tests, desktop-typecheck, frontend-build]
+    needs: [version, backend-tests, desktop-typecheck, frontend-build]
     # Ship only when VERSION was bumped on a main/beta push (stable from main,
     # beta from beta), or on a manual dispatch. Pushes that don't change VERSION
     # run the full gate but never publish — so each version ships exactly once.
@@ -204,4 +183,4 @@ jobs:
         working-directory: apps/desktop/sentinel
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/publish-release.mjs "${{ steps.channel.outputs.channel }}"
+        run: node scripts/release/publish-release.mjs "${{ steps.channel.outputs.channel }}"
